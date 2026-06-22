@@ -24,17 +24,40 @@ export interface CompletionRequest {
   position: SourcePosition;
 }
 
+export interface HostDefinition {
+  name: string;
+}
+
+export interface BuildVbaProjectOptions {
+  hostDefinitions?: HostDefinition[];
+}
+
 export interface DefinitionLocation {
   uri: string;
   range: SourceRange;
 }
 
+export type NameResolutionResult =
+  | {
+      source: 'vba';
+      definition: DefinitionLocation;
+    }
+  | {
+      source: 'host';
+      definition: HostDefinition;
+    };
+
 interface VbaDefinition {
   name: string;
-  kind: 'function';
-  visibility: 'public';
+  kind: 'function' | 'sub' | 'local' | 'parameter';
+  visibility: 'public' | 'private' | 'local';
   uri: string;
   range: SourceRange;
+}
+
+interface ProcedureScope {
+  range: SourceRange;
+  definitions: VbaDefinition[];
 }
 
 interface VbaModule {
@@ -43,20 +66,28 @@ interface VbaModule {
   identity: string;
   lines: string[];
   definitions: VbaDefinition[];
+  procedureScopes: ProcedureScope[];
 }
 
 export interface VbaProject {
   modules: VbaModule[];
+  hostDefinitions: HostDefinition[];
 }
 
 const C_IDENTIFIER_PATTERN = /[A-Za-z_][A-Za-z0-9_]*/;
 
-export function buildVbaProject(files: VbaProjectFile[]): VbaProject {
+export function buildVbaProject(
+  files: VbaProjectFile[],
+  options: BuildVbaProjectOptions = {}
+): VbaProject {
   const modules = files
     .filter((file) => isVbaSourceUri(file.uri))
     .map((file) => parseModule(file));
 
-  return { modules };
+  return {
+    modules,
+    hostDefinitions: options.hostDefinitions ?? []
+  };
 }
 
 export function getCompletions(project: VbaProject, request: CompletionRequest): CompletionEntry[] {
@@ -84,6 +115,14 @@ export function getDefinition(
   project: VbaProject,
   request: CompletionRequest
 ): DefinitionLocation | undefined {
+  const resolution = resolveName(project, request);
+  return resolution?.source === 'vba' ? resolution.definition : undefined;
+}
+
+export function resolveName(
+  project: VbaProject,
+  request: CompletionRequest
+): NameResolutionResult | undefined {
   const current_module = findModule(project, request.uri);
   if (current_module === undefined) {
     return undefined;
@@ -94,33 +133,71 @@ export function getDefinition(
     return undefined;
   }
 
-  const matches = project.modules
+  const local_definition = resolveLocalDefinition(current_module, request.position, identifier);
+  if (local_definition !== undefined) {
+    return toVbaResolution(local_definition);
+  }
+
+  const current_module_matches = current_module.definitions.filter((definition) =>
+    sameName(definition.name, identifier)
+  );
+  const current_module_definition = singleMatch(current_module_matches);
+  if (current_module_definition !== undefined) {
+    return toVbaResolution(current_module_definition);
+  }
+  if (current_module_matches.length > 1) {
+    return undefined;
+  }
+
+  const project_matches = project.modules
     .filter((module) => module.folderUri.toLowerCase() === current_module.folderUri.toLowerCase())
+    .filter((module) => !sameUri(module.uri, current_module.uri))
     .flatMap((module) => module.definitions)
     .filter((definition) => definition.visibility === 'public')
     .filter((definition) => definition.name.toLowerCase() === identifier.toLowerCase());
 
-  if (matches.length !== 1) {
+  const project_definition = singleMatch(project_matches);
+  if (project_definition !== undefined) {
+    return toVbaResolution(project_definition);
+  }
+
+  const host_matches = project.hostDefinitions.filter((definition) => sameName(definition.name, identifier));
+  const host_definition = singleMatch(host_matches);
+  if (host_definition !== undefined) {
+    return {
+      source: 'host',
+      definition: host_definition
+    };
+  }
+
+  return undefined;
+}
+
+function resolveLocalDefinition(
+  module: VbaModule,
+  position: SourcePosition,
+  identifier: string
+): VbaDefinition | undefined {
+  const procedure_scope = module.procedureScopes.find((scope) => containsPosition(scope.range, position));
+  if (procedure_scope === undefined) {
     return undefined;
   }
 
-  return {
-    uri: matches[0].uri,
-    range: matches[0].range
-  };
+  return procedure_scope.definitions.find((definition) => sameName(definition.name, identifier));
 }
 
 function parseModule(file: VbaProjectFile): VbaModule {
   const lines = file.text.split(/\r?\n/);
   const identity = parseModuleIdentity(lines) ?? fallbackModuleIdentity(file.uri);
-  const definitions = parseDefinitions(file.uri, lines);
+  const parsed_members = parseModuleMembers(file.uri, lines);
 
   return {
     uri: file.uri,
     folderUri: getFolderUri(file.uri),
     identity,
     lines,
-    definitions
+    definitions: parsed_members.definitions,
+    procedureScopes: parsed_members.procedureScopes
   };
 }
 
@@ -135,28 +212,130 @@ function parseModuleIdentity(lines: string[]): string | undefined {
   return undefined;
 }
 
-function parseDefinitions(uri: string, lines: string[]): VbaDefinition[] {
+function parseModuleMembers(
+  uri: string,
+  lines: string[]
+): { definitions: VbaDefinition[]; procedureScopes: ProcedureScope[] } {
   const definitions: VbaDefinition[] = [];
+  const procedureScopes: ProcedureScope[] = [];
 
-  lines.forEach((line, line_index) => {
-    const match = /^\s*Public\s+Function\s+([A-Za-z_][A-Za-z0-9_]*)\b/i.exec(line);
-    if (match === null) {
-      return;
+  for (let line_index = 0; line_index < lines.length; line_index += 1) {
+    const line = lines[line_index];
+    const procedure_match =
+      /^\s*(?:(Public|Private)\s+)?(Sub|Function)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(([^)]*)\))?/i.exec(line);
+    if (procedure_match === null) {
+      continue;
     }
 
-    const name = match[1];
+    const visibility = (procedure_match[1]?.toLowerCase() ?? 'public') as 'public' | 'private';
+    const procedure_kind = procedure_match[2].toLowerCase() as 'sub' | 'function';
+    const name = procedure_match[3];
     const name_start = line.indexOf(name);
     definitions.push({
       name,
-      kind: 'function',
-      visibility: 'public',
+      kind: procedure_kind,
+      visibility,
       uri,
       range: {
         start: { line: line_index, character: name_start },
         end: { line: line_index, character: name_start + name.length }
       }
     });
-  });
+
+    const end_line_index = findProcedureEndLine(lines, line_index + 1, procedure_kind);
+    const parameter_start = line.indexOf('(') + 1;
+    const parameter_definitions = procedure_match[4] === undefined
+      ? []
+      : parseParameterDefinitions(uri, line, line_index, procedure_match[4], parameter_start);
+
+    procedureScopes.push({
+      range: {
+        start: { line: line_index, character: 0 },
+        end: { line: end_line_index, character: lines[end_line_index]?.length ?? 0 }
+      },
+      definitions: [
+        ...parameter_definitions,
+        ...parseProcedureDefinitions(uri, lines, line_index + 1, end_line_index)
+      ]
+    });
+    line_index = end_line_index;
+  }
+
+  return { definitions, procedureScopes };
+}
+
+function parseParameterDefinitions(
+  uri: string,
+  line: string,
+  line_index: number,
+  parameter_text: string,
+  parameter_start: number
+): VbaDefinition[] {
+  const definitions: VbaDefinition[] = [];
+  let search_offset = 0;
+
+  for (const segment of parameter_text.split(',')) {
+    const segment_start = parameter_start + search_offset;
+    const match = /^(?:(?:Optional|ByVal|ByRef|ParamArray)\s+)*([A-Za-z_][A-Za-z0-9_]*)\b/i.exec(segment.trimStart());
+    if (match !== null) {
+      const name = match[1];
+      const name_start = line.indexOf(name, segment_start);
+      definitions.push({
+        name,
+        kind: 'parameter',
+        visibility: 'local',
+        uri,
+        range: {
+          start: { line: line_index, character: name_start },
+          end: { line: line_index, character: name_start + name.length }
+        }
+      });
+    }
+
+    search_offset += segment.length + 1;
+  }
+
+  return definitions;
+}
+
+function findProcedureEndLine(lines: string[], start_line: number, procedure_kind: 'sub' | 'function'): number {
+  for (let line_index = start_line; line_index < lines.length; line_index += 1) {
+    if (new RegExp(`^\\s*End\\s+${procedure_kind}\\b`, 'i').test(lines[line_index])) {
+      return line_index;
+    }
+  }
+
+  return Math.max(start_line - 1, 0);
+}
+
+function parseProcedureDefinitions(
+  uri: string,
+  lines: string[],
+  start_line: number,
+  end_line: number
+): VbaDefinition[] {
+  const definitions: VbaDefinition[] = [];
+
+  for (let line_index = start_line; line_index < end_line; line_index += 1) {
+    const line = lines[line_index];
+    const local_match = /^\s*Dim\s+([A-Za-z_][A-Za-z0-9_]*)\b/i.exec(line);
+    if (local_match === null) {
+      continue;
+    }
+
+    const name = local_match[1];
+    const name_start = line.indexOf(name);
+    definitions.push({
+      name,
+      kind: 'local',
+      visibility: 'local',
+      uri,
+      range: {
+        start: { line: line_index, character: name_start },
+        end: { line: line_index, character: name_start + name.length }
+      }
+    });
+  }
 
   return definitions;
 }
@@ -217,4 +396,38 @@ function uriPathname(uri: string): string {
 
 function sameUri(left: string, right: string): boolean {
   return left.toLowerCase() === right.toLowerCase();
+}
+
+function sameName(left: string, right: string): boolean {
+  return left.toLowerCase() === right.toLowerCase();
+}
+
+function singleMatch<T>(items: T[]): T | undefined {
+  return items.length === 1 ? items[0] : undefined;
+}
+
+function toDefinitionLocation(definition: VbaDefinition): DefinitionLocation {
+  return {
+    uri: definition.uri,
+    range: definition.range
+  };
+}
+
+function toVbaResolution(definition: VbaDefinition): NameResolutionResult {
+  return {
+    source: 'vba',
+    definition: toDefinitionLocation(definition)
+  };
+}
+
+function containsPosition(range: SourceRange, position: SourcePosition): boolean {
+  return comparePosition(range.start, position) <= 0 && comparePosition(position, range.end) <= 0;
+}
+
+function comparePosition(left: SourcePosition, right: SourcePosition): number {
+  if (left.line !== right.line) {
+    return left.line - right.line;
+  }
+
+  return left.character - right.character;
 }
