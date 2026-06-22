@@ -30,6 +30,7 @@ import {
   CompletionEntryKind,
   getCompletions,
   getDefinition,
+  getDocumentFormattingEdits,
   getHover,
   getRenameEdits,
   getRenameTarget,
@@ -60,6 +61,7 @@ connection.onInitialize((_params: InitializeParams): InitializeResult => {
       renameProvider: {
         prepareProvider: true
       },
+      documentFormattingProvider: true,
       signatureHelpProvider: {
         triggerCharacters: ['(', ',']
       },
@@ -170,6 +172,19 @@ connection.onRenameRequest((params): WorkspaceEdit => {
   );
 
   return toWorkspaceEdit(edits);
+});
+
+connection.onDocumentFormatting((params): TextEdit[] => {
+  const document = documents.get(params.textDocument.uri);
+  if (document === undefined) {
+    return [];
+  }
+
+  const project = buildProjectForDocument(document);
+  return getDocumentFormattingEdits(project, document.uri, {
+    tabSize: params.options.tabSize,
+    insertSpaces: params.options.insertSpaces
+  }).map((edit) => TextEdit.replace(toLspRange(edit.range), edit.text));
 });
 
 connection.onHover((params): Hover | undefined => {

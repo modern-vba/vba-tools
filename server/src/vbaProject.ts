@@ -68,6 +68,11 @@ export interface TextChange {
   text: string;
 }
 
+export interface VbaFormattingOptions {
+  tabSize: number;
+  insertSpaces: boolean;
+}
+
 export type VbaProjectUpdateStrategy = 'moduleMember' | 'fullRebuild';
 
 export interface VbaProjectUpdateResult {
@@ -387,6 +392,36 @@ export function getSemanticTokens(project: VbaProject, uri: string): VbaSemantic
   }
 
   return uniqueSemanticTokens(tokens).sort(compareSemanticTokens);
+}
+
+export function getDocumentFormattingEdits(
+  project: VbaProject,
+  uri: string,
+  options: VbaFormattingOptions
+): TextChange[] {
+  const current_module = findModule(project, uri);
+  if (current_module === undefined) {
+    return [];
+  }
+
+  const formatted_text = formatModuleText(project, current_module, options);
+  const original_text = current_module.lines.join('\n');
+  if (formatted_text === original_text) {
+    return [];
+  }
+
+  return [
+    {
+      range: {
+        start: { line: 0, character: 0 },
+        end: {
+          line: Math.max(current_module.lines.length - 1, 0),
+          character: current_module.lines[current_module.lines.length - 1]?.length ?? 0
+        }
+      },
+      text: formatted_text
+    }
+  ];
 }
 
 function uniqueCompletionEntries(entries: CompletionEntry[]): CompletionEntry[] {
@@ -1319,6 +1354,276 @@ function getMembersForType(
   return [];
 }
 
+const C_LANGUAGE_VOCABULARY = new Map<string, string>([
+  ['and', 'And'],
+  ['as', 'As'],
+  ['attribute', 'Attribute'],
+  ['base', 'Base'],
+  ['byref', 'ByRef'],
+  ['byval', 'ByVal'],
+  ['byte', 'Byte'],
+  ['boolean', 'Boolean'],
+  ['call', 'Call'],
+  ['case', 'Case'],
+  ['const', 'Const'],
+  ['currency', 'Currency'],
+  ['date', 'Date'],
+  ['decimal', 'Decimal'],
+  ['dim', 'Dim'],
+  ['do', 'Do'],
+  ['double', 'Double'],
+  ['each', 'Each'],
+  ['else', 'Else'],
+  ['elseif', 'ElseIf'],
+  ['empty', 'Empty'],
+  ['end', 'End'],
+  ['enum', 'Enum'],
+  ['event', 'Event'],
+  ['exit', 'Exit'],
+  ['explicit', 'Explicit'],
+  ['false', 'False'],
+  ['for', 'For'],
+  ['friend', 'Friend'],
+  ['function', 'Function'],
+  ['get', 'Get'],
+  ['if', 'If'],
+  ['implements', 'Implements'],
+  ['in', 'In'],
+  ['integer', 'Integer'],
+  ['let', 'Let'],
+  ['long', 'Long'],
+  ['longlong', 'LongLong'],
+  ['longptr', 'LongPtr'],
+  ['loop', 'Loop'],
+  ['mod', 'Mod'],
+  ['module', 'Module'],
+  ['new', 'New'],
+  ['next', 'Next'],
+  ['not', 'Not'],
+  ['nothing', 'Nothing'],
+  ['null', 'Null'],
+  ['object', 'Object'],
+  ['option', 'Option'],
+  ['optional', 'Optional'],
+  ['or', 'Or'],
+  ['paramarray', 'ParamArray'],
+  ['private', 'Private'],
+  ['property', 'Property'],
+  ['ptrsafe', 'PtrSafe'],
+  ['public', 'Public'],
+  ['raiseevent', 'RaiseEvent'],
+  ['select', 'Select'],
+  ['set', 'Set'],
+  ['single', 'Single'],
+  ['static', 'Static'],
+  ['string', 'String'],
+  ['sub', 'Sub'],
+  ['then', 'Then'],
+  ['true', 'True'],
+  ['type', 'Type'],
+  ['variant', 'Variant'],
+  ['vb_name', 'VB_Name'],
+  ['wend', 'Wend'],
+  ['while', 'While'],
+  ['with', 'With'],
+  ['xor', 'Xor']
+]);
+
+function formatModuleText(
+  project: VbaProject,
+  module: VbaModule,
+  options: VbaFormattingOptions
+): string {
+  const should_indent = hasBalancedFormattingBlocks(module);
+  const indent_text = options.insertSpaces ? ' '.repeat(options.tabSize) : '\t';
+  let block_depth = 0;
+
+  return module.lines.map((line, line_index) => {
+    if (line_index < module.codeStartLine) {
+      return line;
+    }
+
+    if (line.trim() === '') {
+      return '';
+    }
+
+    const cased_line = formatLineCasing(project, module, line, line_index);
+    if (isHeaderLine(cased_line)) {
+      return cased_line.trimStart();
+    }
+
+    if (!should_indent) {
+      return cased_line;
+    }
+
+    const structure_text = getCodeTextForStructure(cased_line).trim();
+    if (isClosingBlockLine(structure_text)) {
+      block_depth = Math.max(block_depth - 1, 0);
+    }
+
+    const line_depth = isMidBlockLine(structure_text)
+      ? Math.max(block_depth - 1, 0)
+      : block_depth;
+    const formatted_line = `${indent_text.repeat(line_depth)}${cased_line.trimStart()}`;
+
+    if (isOpeningBlockLine(structure_text)) {
+      block_depth += 1;
+    }
+
+    return formatted_line;
+  }).join('\n');
+}
+
+function formatLineCasing(project: VbaProject, module: VbaModule, line: string, lineIndex: number): string {
+  const ranges = getIdentifierRangesInCode(line, lineIndex).reverse();
+  let formatted_line = line;
+
+  for (const range of ranges) {
+    const original_text = line.slice(range.start.character, range.end.character);
+    const language_text = C_LANGUAGE_VOCABULARY.get(original_text.toLowerCase());
+    if (language_text !== undefined) {
+      formatted_line = replaceRangeText(formatted_line, range, language_text);
+      continue;
+    }
+
+    if (isDeclarationRange(project, module.uri, range)) {
+      continue;
+    }
+
+    const resolution = resolveName(project, {
+      uri: module.uri,
+      position: range.start
+    });
+    const resolved_text = resolution === undefined
+      ? undefined
+      : resolution.source === 'host'
+        ? resolution.definition.name
+        : getDefinitionText(project, resolution.definition);
+    if (resolved_text !== undefined) {
+      formatted_line = replaceRangeText(formatted_line, range, resolved_text);
+    }
+  }
+
+  return formatted_line;
+}
+
+function replaceRangeText(line: string, range: SourceRange, text: string): string {
+  return `${line.slice(0, range.start.character)}${text}${line.slice(range.end.character)}`;
+}
+
+function isDeclarationRange(project: VbaProject, uri: string, range: SourceRange): boolean {
+  return getAllVbaDefinitions(project).some((definition) =>
+    sameUri(definition.uri, uri) && sameRange(definition.range, range)
+  );
+}
+
+function getDefinitionText(project: VbaProject, location: DefinitionLocation): string | undefined {
+  const module = findModule(project, location.uri);
+  if (module === undefined || location.range.start.line !== location.range.end.line) {
+    return undefined;
+  }
+
+  const line = module.lines[location.range.start.line] ?? '';
+  return line.slice(location.range.start.character, location.range.end.character);
+}
+
+function hasBalancedFormattingBlocks(module: VbaModule): boolean {
+  let depth = 0;
+
+  for (let line_index = module.codeStartLine; line_index < module.lines.length; line_index += 1) {
+    const structure_text = getCodeTextForStructure(module.lines[line_index]).trim();
+    if (structure_text === '' || isCommentOnlyLine(module.lines[line_index]) || isHeaderLine(structure_text)) {
+      continue;
+    }
+
+    if (isClosingBlockLine(structure_text)) {
+      depth -= 1;
+      if (depth < 0) {
+        return false;
+      }
+    }
+    if (isOpeningBlockLine(structure_text)) {
+      depth += 1;
+    }
+  }
+
+  return depth === 0;
+}
+
+function getCodeTextForStructure(line: string): string {
+  let result = '';
+  let character_index = 0;
+  let is_in_string = false;
+
+  while (character_index < line.length) {
+    const character = line[character_index];
+    if (is_in_string) {
+      if (character === '"') {
+        if (line[character_index + 1] === '"') {
+          character_index += 2;
+        } else {
+          is_in_string = false;
+          character_index += 1;
+        }
+      } else {
+        character_index += 1;
+      }
+      continue;
+    }
+
+    if (character === "'") {
+      break;
+    }
+    if (character === '"') {
+      is_in_string = true;
+      character_index += 1;
+      continue;
+    }
+
+    result += character;
+    character_index += 1;
+  }
+
+  return result;
+}
+
+function isHeaderLine(line: string): boolean {
+  return /^\s*(?:Attribute|Option)\b/i.test(line);
+}
+
+function isCommentOnlyLine(line: string): boolean {
+  return /^\s*'/.test(line);
+}
+
+function isClosingBlockLine(text: string): boolean {
+  return /^End\s+(?:Sub|Function|Property|If|Select|With|Enum|Type)\b/i.test(text)
+    || /^Next\b/i.test(text)
+    || /^Loop\b/i.test(text)
+    || /^Wend\b/i.test(text);
+}
+
+function isMidBlockLine(text: string): boolean {
+  return /^ElseIf\b.*\bThen\b/i.test(text)
+    || /^Else\b/i.test(text)
+    || /^Case\b/i.test(text);
+}
+
+function isOpeningBlockLine(text: string): boolean {
+  if (/^ElseIf\b/i.test(text) || /^End\b/i.test(text)) {
+    return false;
+  }
+
+  return /^(?:(?:Public|Private|Friend)\s+)?(?:Sub|Function|Property\s+(?:Get|Let|Set))\b/i.test(text)
+    || /^If\b.*\bThen\s*$/i.test(text)
+    || /^For\b/i.test(text)
+    || /^Do\b/i.test(text)
+    || /^While\b/i.test(text)
+    || /^Select\s+Case\b/i.test(text)
+    || /^With\b/i.test(text)
+    || /^(?:(?:Public|Private)\s+)?Enum\b/i.test(text)
+    || /^(?:(?:Public|Private)\s+)?Type\b/i.test(text);
+}
+
 function findModule(project: VbaProject, uri: string): VbaModule | undefined {
   return project.modules.find((module) => sameUri(module.uri, uri));
 }
@@ -1489,8 +1794,12 @@ function sameName(left: string, right: string): boolean {
 
 function sameDefinitionLocation(left: DefinitionLocation, right: DefinitionLocation): boolean {
   return sameUri(left.uri, right.uri)
-    && comparePosition(left.range.start, right.range.start) === 0
-    && comparePosition(left.range.end, right.range.end) === 0;
+    && sameRange(left.range, right.range);
+}
+
+function sameRange(left: SourceRange, right: SourceRange): boolean {
+  return comparePosition(left.start, right.start) === 0
+    && comparePosition(left.end, right.end) === 0;
 }
 
 function isIdentifierName(value: string): boolean {

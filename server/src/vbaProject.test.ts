@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   buildVbaProject,
+  getDocumentFormattingEdits,
   getCompletions,
   getDefinition,
   getHover,
@@ -2248,4 +2249,288 @@ function assertNoSemanticTokensOnLine(tokens: ReturnType<typeof getSemanticToken
     false,
     `Expected no semantic tokens on line ${line}`
   );
+}
+
+test('SourceFormatting normalizes language and resolved identifier casing with block indentation', () => {
+  const project = buildVbaProject(
+    [
+      {
+        uri: 'file:///project/Caller.bas',
+        text: [
+          'Attribute vb_name = "Caller"',
+          'option explicit',
+          '',
+          'public sub Run()',
+          'dim target as range',
+          'buildvalue',
+          'range',
+          'if true then',
+          "'* @brief buildvalue remains prose.",
+          'else',
+          "' buildvalue remains an ordinary comment.",
+          'end if',
+          'End Sub'
+        ].join('\n')
+      },
+      {
+        uri: 'file:///project/Builder.bas',
+        text: [
+          'Attribute VB_Name = "Builder"',
+          'Option Explicit',
+          '',
+          'Public Function BuildValue() As String',
+          'End Function'
+        ].join('\n')
+      }
+    ],
+    {
+      hostDefinitions: [{ name: 'Range', kind: 'class' }]
+    }
+  );
+
+  assert.equal(formatText(project, 'file:///project/Caller.bas'), [
+    'Attribute VB_Name = "Caller"',
+    'Option Explicit',
+    '',
+    'Public Sub Run()',
+    '    Dim target As Range',
+    '    BuildValue',
+    '    Range',
+    '    If True Then',
+    "        '* @brief buildvalue remains prose.",
+    '    Else',
+    "        ' buildvalue remains an ordinary comment.",
+    '    End If',
+    'End Sub'
+  ].join('\n'));
+});
+
+test('SourceFormatting leaves declarations, strings, unresolved identifiers, and ambiguous references unchanged', () => {
+  const project = buildVbaProject(
+    [
+      {
+        uri: 'file:///project/Caller.bas',
+        text: [
+          'Attribute VB_Name = "Caller"',
+          'Option Explicit',
+          '',
+          'public function buildvalue() as string',
+          'buildvalue = "buildvalue and mixedcase"',
+          'mixedcase',
+          'missingvalue',
+          'End Function'
+        ].join('\n')
+      },
+      {
+        uri: 'file:///project/Other.bas',
+        text: [
+          'Attribute VB_Name = "Other"',
+          'Option Explicit',
+          '',
+          'Public Function MixedCase() As String',
+          'End Function'
+        ].join('\n')
+      },
+      {
+        uri: 'file:///project/FirstAmbiguous.bas',
+        text: [
+          'Attribute VB_Name = "FirstAmbiguous"',
+          'Option Explicit',
+          '',
+          'Public Function MissingValue() As String',
+          'End Function'
+        ].join('\n')
+      },
+      {
+        uri: 'file:///project/SecondAmbiguous.bas',
+        text: [
+          'Attribute VB_Name = "SecondAmbiguous"',
+          'Option Explicit',
+          '',
+          'Public Function MissingValue() As String',
+          'End Function'
+        ].join('\n')
+      }
+    ],
+    {
+      hostDefinitions: []
+    }
+  );
+
+  assert.equal(formatText(project, 'file:///project/Caller.bas'), [
+    'Attribute VB_Name = "Caller"',
+    'Option Explicit',
+    '',
+    'Public Function buildvalue() As String',
+    '    buildvalue = "buildvalue and mixedcase"',
+    '    MixedCase',
+    '    missingvalue',
+    'End Function'
+  ].join('\n'));
+});
+
+test('SourceFormatting indents VBA block families and mid-block lines', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Blocks.bas',
+      text: [
+        'Attribute VB_Name = "Blocks"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        'For Each item In items',
+        'If item.Enabled Then',
+        'Do',
+        'Loop',
+        'ElseIf item.Pending Then',
+        'While item.Ready',
+        'Wend',
+        'Else',
+        'With item',
+        'Select Case item.Kind',
+        'Case 1',
+        'item.Value = 1',
+        'Case Else',
+        'item.Value = 0',
+        'End Select',
+        'End With',
+        'End If',
+        'Next',
+        'End Sub',
+        '',
+        'Public Enum RunMode',
+        'Manual',
+        'End Enum',
+        '',
+        'Public Type CustomerRecord',
+        'Name As String',
+        'End Type'
+      ].join('\n')
+    }
+  ]);
+
+  assert.equal(formatText(project, 'file:///project/Blocks.bas'), [
+    'Attribute VB_Name = "Blocks"',
+    'Option Explicit',
+    '',
+    'Public Sub Run()',
+    '    For Each item In items',
+    '        If item.Enabled Then',
+    '            Do',
+    '            Loop',
+    '        ElseIf item.Pending Then',
+    '            While item.Ready',
+    '            Wend',
+    '        Else',
+    '            With item',
+    '                Select Case item.Kind',
+    '                Case 1',
+    '                    item.Value = 1',
+    '                Case Else',
+    '                    item.Value = 0',
+    '                End Select',
+    '            End With',
+    '        End If',
+    '    Next',
+    'End Sub',
+    '',
+    'Public Enum RunMode',
+    '    Manual',
+    'End Enum',
+    '',
+    'Public Type CustomerRecord',
+    '    Name As String',
+    'End Type'
+  ].join('\n'));
+});
+
+test('SourceFormatting preserves FormDesignerBlock text and formats only frm code', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/SampleForm.frm',
+      text: [
+        'VERSION 5.00',
+        'Begin VB.Form SampleForm',
+        ' Caption         =   "sample"',
+        'End',
+        'Attribute vb_name = "SampleForm"',
+        'option explicit',
+        '',
+        'public sub Run()',
+        'if true then',
+        'End If',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.equal(formatText(project, 'file:///project/SampleForm.frm'), [
+    'VERSION 5.00',
+    'Begin VB.Form SampleForm',
+    ' Caption         =   "sample"',
+    'End',
+    'Attribute VB_Name = "SampleForm"',
+    'Option Explicit',
+    '',
+    'Public Sub Run()',
+    '    If True Then',
+    '    End If',
+    'End Sub'
+  ].join('\n'));
+});
+
+test('SourceFormatting uses tab indentation when requested and skips indentation for incomplete blocks', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/TabBlock.bas',
+      text: [
+        'Attribute VB_Name = "TabBlock"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        'If True Then',
+        'End If',
+        'End Sub'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/Incomplete.bas',
+      text: [
+        'Attribute VB_Name = "Incomplete"',
+        'Option Explicit',
+        '',
+        'public sub Run()',
+        'if true then',
+        'value = nothing'
+      ].join('\n')
+    }
+  ]);
+
+  assert.equal(formatText(project, 'file:///project/TabBlock.bas', { tabSize: 4, insertSpaces: false }), [
+    'Attribute VB_Name = "TabBlock"',
+    'Option Explicit',
+    '',
+    'Public Sub Run()',
+    '\tIf True Then',
+    '\tEnd If',
+    'End Sub'
+  ].join('\n'));
+  assert.equal(formatText(project, 'file:///project/Incomplete.bas', { tabSize: 4, insertSpaces: false }), [
+    'Attribute VB_Name = "Incomplete"',
+    'Option Explicit',
+    '',
+    'Public Sub Run()',
+    'If True Then',
+    'value = Nothing'
+  ].join('\n'));
+});
+
+function formatText(
+  project: ReturnType<typeof buildVbaProject>,
+  uri: string,
+  options = { tabSize: 4, insertSpaces: true }
+): string {
+  const edits = getDocumentFormattingEdits(project, uri, options);
+  assert.equal(edits.length, 1);
+  return edits[0].text;
 }
