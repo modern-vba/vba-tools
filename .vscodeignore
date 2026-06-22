@@ -1,0 +1,15 @@
+.vscode/**
+.vscode-test/**
+.vscode-test-web/**
+.vscode-test-insiders/**
+client/src/**
+server/src/**
+**/*.ts
+**/tsconfig.json
+**/*.tsbuildinfo
+node_modules/@types/**
+node_modules/typescript/**
+coverage/**
+test-results/**
+playwright-report/**
+*.vsix

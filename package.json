@@ -1,0 +1,68 @@
+{
+  "name": "vba-language-server",
+  "displayName": "VBA Language Server",
+  "description": "Language server support for VBA in Visual Studio Code.",
+  "version": "0.0.1",
+  "publisher": "tkmr-akhs",
+  "engines": {
+    "vscode": "^1.125.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:vba"
+  ],
+  "main": "./client/out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "vba",
+        "aliases": [
+          "VBA",
+          "Visual Basic for Applications"
+        ],
+        "extensions": [
+          ".bas",
+          ".cls",
+          ".frm"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "configuration": {
+      "title": "VBA Language Server",
+      "properties": {
+        "vbaLanguageServer.trace.server": {
+          "scope": "window",
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Controls LSP trace output for the VBA language server."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -b",
+    "watch": "tsc -b -w",
+    "vscode:prepublish": "npm run compile",
+    "package": "vsce package"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1",
+    "vscode-languageserver": "^9.0.1",
+    "vscode-languageserver-textdocument": "^1.0.12"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/vscode": "^1.125.0",
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.6.0",
+    "typescript": "^5.9.0"
+  }
+}
