@@ -49,7 +49,7 @@ export type NameResolutionResult =
 
 interface VbaDefinition {
   name: string;
-  kind: 'function' | 'sub' | 'local' | 'parameter';
+  kind: 'function' | 'sub' | 'property' | 'local' | 'parameter';
   visibility: 'public' | 'private' | 'local';
   uri: string;
   range: SourceRange;
@@ -133,6 +133,21 @@ export function resolveName(
     return undefined;
   }
 
+  const qualified_reference = getQualifiedReferenceAt(current_module.lines, request.position);
+  if (qualified_reference !== undefined) {
+    const qualified_definition = resolveQualifiedModuleDefinition(
+      project,
+      current_module,
+      qualified_reference.qualifier,
+      qualified_reference.member
+    );
+    if (qualified_definition !== undefined) {
+      return toVbaResolution(qualified_definition);
+    }
+
+    return undefined;
+  }
+
   const local_definition = resolveLocalDefinition(current_module, request.position, identifier);
   if (local_definition !== undefined) {
     return toVbaResolution(local_definition);
@@ -173,6 +188,27 @@ export function resolveName(
   return undefined;
 }
 
+function resolveQualifiedModuleDefinition(
+  project: VbaProject,
+  current_module: VbaModule,
+  qualifier: string,
+  member: string
+): VbaDefinition | undefined {
+  const qualified_module = project.modules.find((module) =>
+    module.folderUri.toLowerCase() === current_module.folderUri.toLowerCase()
+      && sameName(module.identity, qualifier)
+  );
+  if (qualified_module === undefined) {
+    return undefined;
+  }
+
+  const matches = qualified_module.definitions
+    .filter((definition) => sameName(definition.name, member))
+    .filter((definition) => sameUri(qualified_module.uri, current_module.uri) || definition.visibility === 'public');
+
+  return singleMatch(matches);
+}
+
 function resolveLocalDefinition(
   module: VbaModule,
   position: SourcePosition,
@@ -189,7 +225,7 @@ function resolveLocalDefinition(
 function parseModule(file: VbaProjectFile): VbaModule {
   const lines = file.text.split(/\r?\n/);
   const identity = parseModuleIdentity(lines) ?? fallbackModuleIdentity(file.uri);
-  const parsed_members = parseModuleMembers(file.uri, lines);
+  const parsed_members = parseModuleMembers(file.uri, lines, getCodeStartLine(file.uri, lines));
 
   return {
     uri: file.uri,
@@ -214,22 +250,26 @@ function parseModuleIdentity(lines: string[]): string | undefined {
 
 function parseModuleMembers(
   uri: string,
-  lines: string[]
+  lines: string[],
+  start_line: number
 ): { definitions: VbaDefinition[]; procedureScopes: ProcedureScope[] } {
   const definitions: VbaDefinition[] = [];
   const procedureScopes: ProcedureScope[] = [];
 
-  for (let line_index = 0; line_index < lines.length; line_index += 1) {
+  for (let line_index = start_line; line_index < lines.length; line_index += 1) {
     const line = lines[line_index];
     const procedure_match =
-      /^\s*(?:(Public|Private)\s+)?(Sub|Function)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(([^)]*)\))?/i.exec(line);
+      /^\s*(?:(Public|Private)\s+)?(?:(Sub|Function)|Property\s+(Get|Let|Set))\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(([^)]*)\))?/i.exec(line);
     if (procedure_match === null) {
       continue;
     }
 
     const visibility = (procedure_match[1]?.toLowerCase() ?? 'public') as 'public' | 'private';
-    const procedure_kind = procedure_match[2].toLowerCase() as 'sub' | 'function';
-    const name = procedure_match[3];
+    const procedure_kind = procedure_match[2] === undefined
+      ? 'property'
+      : procedure_match[2].toLowerCase() as 'sub' | 'function';
+    const end_keyword = procedure_kind === 'property' ? 'property' : procedure_kind;
+    const name = procedure_match[4];
     const name_start = line.indexOf(name);
     definitions.push({
       name,
@@ -242,11 +282,11 @@ function parseModuleMembers(
       }
     });
 
-    const end_line_index = findProcedureEndLine(lines, line_index + 1, procedure_kind);
+    const end_line_index = findProcedureEndLine(lines, line_index + 1, end_keyword);
     const parameter_start = line.indexOf('(') + 1;
-    const parameter_definitions = procedure_match[4] === undefined
+    const parameter_definitions = procedure_match[5] === undefined
       ? []
-      : parseParameterDefinitions(uri, line, line_index, procedure_match[4], parameter_start);
+      : parseParameterDefinitions(uri, line, line_index, procedure_match[5], parameter_start);
 
     procedureScopes.push({
       range: {
@@ -262,6 +302,15 @@ function parseModuleMembers(
   }
 
   return { definitions, procedureScopes };
+}
+
+function getCodeStartLine(uri: string, lines: string[]): number {
+  if (!/\.frm$/i.test(uriPathname(uri))) {
+    return 0;
+  }
+
+  const attribute_line = lines.findIndex((line) => /^\s*Attribute\s+VB_Name\s*=/i.test(line));
+  return attribute_line === -1 ? 0 : attribute_line;
 }
 
 function parseParameterDefinitions(
@@ -298,7 +347,11 @@ function parseParameterDefinitions(
   return definitions;
 }
 
-function findProcedureEndLine(lines: string[], start_line: number, procedure_kind: 'sub' | 'function'): number {
+function findProcedureEndLine(
+  lines: string[],
+  start_line: number,
+  procedure_kind: 'sub' | 'function' | 'property'
+): number {
   for (let line_index = start_line; line_index < lines.length; line_index += 1) {
     if (new RegExp(`^\\s*End\\s+${procedure_kind}\\b`, 'i').test(lines[line_index])) {
       return line_index;
@@ -362,6 +415,34 @@ function getIdentifierAt(lines: string[], position: SourcePosition): string | un
     if (position.character >= start && position.character <= end) {
       return match[0];
     }
+  }
+
+  return undefined;
+}
+
+function getQualifiedReferenceAt(
+  lines: string[],
+  position: SourcePosition
+): { qualifier: string; member: string } | undefined {
+  const line = lines[position.line] ?? '';
+  const identifier_pattern = new RegExp(C_IDENTIFIER_PATTERN.source, 'g');
+
+  for (const match of line.matchAll(identifier_pattern)) {
+    const start = match.index;
+    const end = start + match[0].length;
+    if (position.character < start || position.character > end) {
+      continue;
+    }
+
+    const qualifier_match = /([A-Za-z_][A-Za-z0-9_]*)\.\s*$/.exec(line.slice(0, start));
+    if (qualifier_match === null) {
+      return undefined;
+    }
+
+    return {
+      qualifier: qualifier_match[1],
+      member: match[0]
+    };
   }
 
   return undefined;

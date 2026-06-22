@@ -405,3 +405,175 @@ test('NameResolution prefers a project definition over a HostDefinition with the
     }
   });
 });
+
+test('definition resolves a ModuleIdentity-qualified reference to the qualified public member', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Caller.bas',
+      text: [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    SecondBuilder.BuildValue',
+        'End Sub'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/FirstBuilder.bas',
+      text: [
+        'Attribute VB_Name = "FirstBuilder"',
+        'Option Explicit',
+        '',
+        'Public Function BuildValue() As String',
+        'End Function'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/SecondBuilder.bas',
+      text: [
+        'Attribute VB_Name = "SecondBuilder"',
+        'Option Explicit',
+        '',
+        'Public Function BuildValue() As String',
+        'End Function'
+      ].join('\n')
+    }
+  ]);
+
+  const definition = getDefinition(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 4, character: 23 }
+  });
+
+  assert.deepEqual(definition, {
+    uri: 'file:///project/SecondBuilder.bas',
+    range: {
+      start: { line: 3, character: 16 },
+      end: { line: 3, character: 26 }
+    }
+  });
+});
+
+test('FormDesignerBlock content does not create completion candidates', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Caller.bas',
+      text: [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    ',
+        'End Sub'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/SampleForm.frm',
+      text: [
+        'VERSION 5.00',
+        'Begin VB.Form SampleForm',
+        '   Caption = "Sample"',
+        '   Public Function DesignerValue() As String',
+        'End',
+        'Attribute VB_Name = "SampleForm"',
+        'Option Explicit',
+        '',
+        'Public Function CodeValue() As String',
+        'End Function'
+      ].join('\n')
+    }
+  ]);
+
+  const completions = getCompletions(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 4, character: 4 }
+  });
+
+  assert.deepEqual(
+    completions.map((item) => item.label),
+    ['Run', 'CodeValue']
+  );
+});
+
+test('public properties declared in sibling class modules appear in completion and definition lookup', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Caller.bas',
+      text: [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    DisplayName',
+        'End Sub'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/Customer.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "Customer"',
+        'Option Explicit',
+        '',
+        'Public Property Get DisplayName() As String',
+        '    DisplayName = "customer"',
+        'End Property'
+      ].join('\n')
+    }
+  ]);
+
+  const completions = getCompletions(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 4, character: 11 }
+  });
+  const definition = getDefinition(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 4, character: 8 }
+  });
+
+  assert.deepEqual(
+    completions.map((item) => item.label),
+    ['DisplayName']
+  );
+  assert.deepEqual(definition, {
+    uri: 'file:///project/Customer.cls',
+    range: {
+      start: { line: 4, character: 20 },
+      end: { line: 4, character: 31 }
+    }
+  });
+});
+
+test('qualified access to another module does not expose private members', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Caller.bas',
+      text: [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    Builder.HiddenValue',
+        'End Sub'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/Builder.bas',
+      text: [
+        'Attribute VB_Name = "Builder"',
+        'Option Explicit',
+        '',
+        'Private Function HiddenValue() As String',
+        'End Function'
+      ].join('\n')
+    }
+  ]);
+
+  const definition = getDefinition(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 4, character: 16 }
+  });
+
+  assert.equal(definition, undefined);
+});
