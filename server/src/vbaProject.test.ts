@@ -91,6 +91,177 @@ test('bundled Excel HostDefinitions are not source definition or rename targets'
   assert.equal(getRenameTarget(project, request), undefined);
 });
 
+test('explicit Worksheet variable type enables host member dot completion', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Caller.bas',
+      text: [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    Dim ws As Worksheet',
+        '    ws.Na',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  const completions = getCompletions(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 5, character: 9 }
+  });
+
+  assert.deepEqual(
+    completions.map((item) => item.label),
+    ['Name']
+  );
+});
+
+test('explicit procedure parameter type enables member dot completion', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Caller.bas',
+      text: [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        '',
+        'Public Sub Run(ByVal ws As Worksheet)',
+        '    ws.Ra',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  const completions = getCompletions(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 4, character: 9 }
+  });
+
+  assert.deepEqual(
+    completions.map((item) => item.label),
+    ['Range']
+  );
+});
+
+test('project-local class variable type exposes public class members in dot completion', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Caller.bas',
+      text: [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    Dim customer As Customer',
+        '    customer.Dis',
+        'End Sub'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/Customer.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "Customer"',
+        'Option Explicit',
+        '',
+        'Public Property Get DisplayName() As String',
+        'End Property',
+        '',
+        'Private Property Get DiscountCode() As String',
+        'End Property'
+      ].join('\n')
+    }
+  ]);
+
+  const completions = getCompletions(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 5, character: 16 }
+  });
+
+  assert.deepEqual(
+    completions.map((item) => item.label),
+    ['DisplayName']
+  );
+});
+
+test('function and property return types enable chained member dot completion', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Caller.bas',
+      text: [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        '',
+        'Public Function CreateCustomer() As Customer',
+        'End Function',
+        '',
+        'Public Property Get ActiveCustomer() As Customer',
+        'End Property',
+        '',
+        'Public Sub Run()',
+        '    CreateCustomer().Dis',
+        '    ActiveCustomer.Dis',
+        'End Sub'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/Customer.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "Customer"',
+        'Option Explicit',
+        '',
+        'Public Property Get DisplayName() As String',
+        'End Property'
+      ].join('\n')
+    }
+  ]);
+
+  const function_completions = getCompletions(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 10, character: 24 }
+  });
+  const property_completions = getCompletions(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 11, character: 22 }
+  });
+
+  assert.deepEqual(
+    function_completions.map((item) => item.label),
+    ['DisplayName']
+  );
+  assert.deepEqual(
+    property_completions.map((item) => item.label),
+    ['DisplayName']
+  );
+});
+
+test('assignment-based object inference does not enable member dot completion', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Caller.bas',
+      text: [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    Dim ws',
+        '    Set ws = Worksheets(1)',
+        '    ws.Na',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  const completions = getCompletions(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 6, character: 9 }
+  });
+
+  assert.deepEqual(completions, []);
+});
+
 test('completion includes a Public Function from a sibling module in the same VbaProject', () => {
   const project = buildVbaProject([
     {

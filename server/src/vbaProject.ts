@@ -29,6 +29,7 @@ export interface CompletionRequest {
 export interface HostDefinition {
   name: string;
   documentation?: string;
+  members?: HostDefinition[];
 }
 
 export interface BuildVbaProjectOptions {
@@ -83,6 +84,7 @@ interface VbaDefinition {
   children?: VbaDefinition[];
   documentation?: DocumentationComment;
   signature?: SignatureInfo;
+  typeName?: string;
 }
 
 interface DocumentationComment {
@@ -145,6 +147,11 @@ export function getCompletions(project: VbaProject, request: CompletionRequest):
     return [];
   }
 
+  const member_completion = getMemberCompletionAt(current_module.lines, request.position);
+  if (member_completion !== undefined) {
+    return getTypedMemberCompletions(project, current_module, request.position, member_completion);
+  }
+
   const prefix = getIdentifierPrefix(current_module.lines, request.position).toLowerCase();
   const project_candidates = project.modules
     .filter((module) => module.folderUri.toLowerCase() === current_module.folderUri.toLowerCase())
@@ -157,6 +164,23 @@ export function getCompletions(project: VbaProject, request: CompletionRequest):
     .map((definition) => ({ label: definition.name }));
 
   return uniqueCompletionEntries([...project_candidates, ...host_candidates]);
+}
+
+function getTypedMemberCompletions(
+  project: VbaProject,
+  currentModule: VbaModule,
+  position: SourcePosition,
+  request: { qualifier: string; prefix: string }
+): CompletionEntry[] {
+  const type_name = findTypeNameForExpression(project, currentModule, position, request.qualifier);
+  if (type_name === undefined) {
+    return [];
+  }
+
+  const prefix = request.prefix.toLowerCase();
+  return getMembersForType(project, currentModule, type_name)
+    .filter((member) => prefix === '' || member.name.toLowerCase().startsWith(prefix))
+    .map((member) => ({ label: member.name }));
 }
 
 export function getModuleIdentities(project: VbaProject): string[] {
@@ -648,7 +672,8 @@ function parseModuleMembers(
         end: { line: line_index, character: name_start + name.length }
       },
       documentation: parseDocumentationComment(lines, line_index),
-      signature: buildSignatureInfo(line, name, parameter_definitions)
+      signature: buildSignatureInfo(line, name, parameter_definitions),
+      typeName: parseReturnTypeName(line)
     });
 
     const end_line_index = findProcedureEndLine(lines, line_index + 1, end_keyword);
@@ -771,10 +796,12 @@ function parseParameterDefinitions(
 
   for (const segment of parameter_text.split(',')) {
     const segment_start = parameter_start + search_offset;
-    const match = /^(?:(?:Optional|ByVal|ByRef|ParamArray)\s+)*([A-Za-z_][A-Za-z0-9_]*)\b/i.exec(segment.trimStart());
+    const trimmed_segment = segment.trimStart();
+    const match = /^(?:(?:Optional|ByVal|ByRef|ParamArray)\s+)*([A-Za-z_][A-Za-z0-9_]*)\b/i.exec(trimmed_segment);
     if (match !== null) {
       const name = match[1];
       const name_start = line.indexOf(name, segment_start);
+      const type_match = /\bAs\s+([A-Za-z_][A-Za-z0-9_]*)\b/i.exec(trimmed_segment);
       definitions.push({
         name,
         kind: 'parameter',
@@ -783,7 +810,8 @@ function parseParameterDefinitions(
         range: {
           start: { line: line_index, character: name_start },
           end: { line: line_index, character: name_start + name.length }
-        }
+        },
+        typeName: type_match?.[1]
       });
     }
 
@@ -798,14 +826,19 @@ function buildSignatureInfo(
   name: string,
   parameterDefinitions: VbaDefinition[]
 ): SignatureInfo {
-  const return_match = /\)\s+As\s+(.+?)\s*$/i.exec(line);
   const parameters = parameterDefinitions.map((parameter) => parameter.name);
-  const return_suffix = return_match === null ? '' : ` As ${return_match[1].trim()}`;
+  const return_type_name = parseReturnTypeName(line);
+  const return_suffix = return_type_name === undefined ? '' : ` As ${return_type_name}`;
 
   return {
     label: `${name}(${parameters.join(', ')})${return_suffix}`,
     parameters
   };
+}
+
+function parseReturnTypeName(line: string): string | undefined {
+  const return_match = /\)\s+As\s+([A-Za-z_][A-Za-z0-9_]*)\b/i.exec(line);
+  return return_match?.[1];
 }
 
 function findProcedureEndLine(
@@ -832,7 +865,8 @@ function parseProcedureDefinitions(
 
   for (let line_index = start_line; line_index < end_line; line_index += 1) {
     const line = lines[line_index];
-    const local_match = /^\s*Dim\s+([A-Za-z_][A-Za-z0-9_]*)\b/i.exec(line);
+    const local_match =
+      /^\s*Dim\s+([A-Za-z_][A-Za-z0-9_]*)\b(?:\s+As\s+([A-Za-z_][A-Za-z0-9_]*))?/i.exec(line);
     if (local_match === null) {
       continue;
     }
@@ -847,11 +881,98 @@ function parseProcedureDefinitions(
       range: {
         start: { line: line_index, character: name_start },
         end: { line: line_index, character: name_start + name.length }
-      }
+      },
+      typeName: local_match[2]
     });
   }
 
   return definitions;
+}
+
+function getMemberCompletionAt(
+  lines: string[],
+  position: SourcePosition
+): { qualifier: string; prefix: string } | undefined {
+  const line = lines[position.line] ?? '';
+  const text_before_position = line.slice(0, position.character);
+  const match = /([A-Za-z_][A-Za-z0-9_]*(?:\s*\([^()]*\))?)\.\s*([A-Za-z_][A-Za-z0-9_]*)?$/i.exec(text_before_position);
+  if (match === null) {
+    return undefined;
+  }
+
+  return {
+    qualifier: match[1],
+    prefix: match[2] ?? ''
+  };
+}
+
+function findTypeNameForExpression(
+  project: VbaProject,
+  currentModule: VbaModule,
+  position: SourcePosition,
+  expression: string
+): string | undefined {
+  const trimmed_expression = expression.trim();
+  const call_match = /^([A-Za-z_][A-Za-z0-9_]*)\s*\([^()]*\)$/i.exec(trimmed_expression);
+  const identifier_match = /^([A-Za-z_][A-Za-z0-9_]*)$/i.exec(trimmed_expression);
+  const identifier = call_match?.[1] ?? identifier_match?.[1];
+  if (identifier === undefined) {
+    return undefined;
+  }
+
+  if (call_match === null) {
+    const local_type_name = resolveLocalDefinition(currentModule, position, identifier)?.typeName;
+    if (local_type_name !== undefined) {
+      return local_type_name;
+    }
+  }
+
+  const current_module_type_name = singleMatch(
+    currentModule.definitions
+      .filter((definition) => sameName(definition.name, identifier))
+      .filter((definition) => definition.typeName !== undefined)
+  )?.typeName;
+  if (current_module_type_name !== undefined) {
+    return current_module_type_name;
+  }
+
+  const project_type_name = singleMatch(
+    project.modules
+      .filter((module) => module.folderUri.toLowerCase() === currentModule.folderUri.toLowerCase())
+      .filter((module) => !sameUri(module.uri, currentModule.uri))
+      .flatMap((module) => module.definitions)
+      .filter((definition) => definition.visibility === 'public')
+      .filter((definition) => sameName(definition.name, identifier))
+      .filter((definition) => definition.typeName !== undefined)
+  )?.typeName;
+  if (project_type_name !== undefined) {
+    return project_type_name;
+  }
+
+  return undefined;
+}
+
+function getMembersForType(
+  project: VbaProject,
+  currentModule: VbaModule,
+  typeName: string
+): { name: string }[] {
+  const host_type = project.hostDefinitions.find((definition) => sameName(definition.name, typeName));
+  if (host_type?.members !== undefined) {
+    return host_type.members;
+  }
+
+  const project_type = project.modules.find((module) =>
+    module.folderUri.toLowerCase() === currentModule.folderUri.toLowerCase()
+      && sameName(module.identity, typeName)
+  );
+  if (project_type !== undefined) {
+    return project_type.definitions
+      .filter((definition) => definition.visibility === 'public')
+      .map((definition) => ({ name: definition.name }));
+  }
+
+  return [];
 }
 
 function findModule(project: VbaProject, uri: string): VbaModule | undefined {
