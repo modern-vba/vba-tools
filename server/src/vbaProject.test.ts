@@ -1072,3 +1072,160 @@ test('signature help ignores parenthesis-free calls', () => {
 
   assert.equal(signatureHelp, undefined);
 });
+
+test('hover falls back to interface DocumentationComment through Implements', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/IReader.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "IReader"',
+        'Option Explicit',
+        '',
+        "'* @brief Reads a value from the interface contract.",
+        "'* @param Key Key to read.",
+        "'* @return The resolved value.",
+        'Public Function ReadValue(ByVal Key As String) As String',
+        'End Function'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/Reader.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "Reader"',
+        'Option Explicit',
+        'Implements IReader',
+        '',
+        'Private Function IReader_ReadValue(ByVal Key As String) As String',
+        'End Function',
+        '',
+        'Public Sub Run()',
+        '    IReader_ReadValue("id")',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  const hover = getHover(project, {
+    uri: 'file:///project/Reader.cls',
+    position: { line: 9, character: 10 }
+  });
+  const signatureHelp = getSignatureHelp(project, {
+    uri: 'file:///project/Reader.cls',
+    position: { line: 9, character: 23 }
+  });
+
+  assert.deepEqual(hover, {
+    contents: [
+      'Reads a value from the interface contract.',
+      '',
+      '@param Key Key to read.',
+      '@return The resolved value.'
+    ].join('\n')
+  });
+  assert.deepEqual(signatureHelp, {
+    label: 'IReader_ReadValue(Key) As String',
+    activeParameter: 0,
+    documentation: [
+      'Reads a value from the interface contract.',
+      '',
+      '@return The resolved value.'
+    ].join('\n'),
+    parameters: [{ label: 'Key', documentation: 'Key to read.' }]
+  });
+});
+
+test('implementation DocumentationComment overrides Implements fallback for hover and signature help', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/IReader.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "IReader"',
+        'Option Explicit',
+        '',
+        "'* @brief Interface documentation.",
+        "'* @param Key Interface key documentation.",
+        "'* @return Interface return documentation.",
+        'Public Function ReadValue(ByVal Key As String) As String',
+        'End Function'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/Reader.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "Reader"',
+        'Option Explicit',
+        'Implements IReader',
+        '',
+        "'* @brief Implementation documentation.",
+        'Private Function IReader_ReadValue(ByVal Key As String) As String',
+        'End Function',
+        '',
+        'Public Sub Run()',
+        '    IReader_ReadValue("id")',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  const hover = getHover(project, {
+    uri: 'file:///project/Reader.cls',
+    position: { line: 10, character: 10 }
+  });
+  const signatureHelp = getSignatureHelp(project, {
+    uri: 'file:///project/Reader.cls',
+    position: { line: 10, character: 23 }
+  });
+
+  assert.deepEqual(hover, {
+    contents: 'Implementation documentation.'
+  });
+  assert.deepEqual(signatureHelp, {
+    label: 'IReader_ReadValue(Key) As String',
+    activeParameter: 0,
+    documentation: 'Implementation documentation.',
+    parameters: [{ label: 'Key', documentation: undefined }]
+  });
+});
+
+test('missing implementation and interface documentation produces no hover', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/IReader.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "IReader"',
+        'Option Explicit',
+        '',
+        'Public Function ReadValue(ByVal Key As String) As String',
+        'End Function'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/Reader.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "Reader"',
+        'Option Explicit',
+        'Implements IReader',
+        '',
+        'Private Function IReader_ReadValue(ByVal Key As String) As String',
+        'End Function',
+        '',
+        'Public Sub Run()',
+        '    IReader_ReadValue("id")',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  const hover = getHover(project, {
+    uri: 'file:///project/Reader.cls',
+    position: { line: 9, character: 10 }
+  });
+
+  assert.equal(hover, undefined);
+});

@@ -112,6 +112,7 @@ interface VbaModule {
   definitions: VbaDefinition[];
   procedureScopes: ProcedureScope[];
   withEventsDeclarations: WithEventsDeclaration[];
+  implements: string[];
 }
 
 export interface VbaProject {
@@ -174,12 +175,15 @@ export function getHover(project: VbaProject, request: CompletionRequest): Hover
   }
 
   const definition = findDefinitionByLocation(project, definition_location);
-  if (definition?.documentation === undefined) {
+  const documentation = definition === undefined
+    ? undefined
+    : findDocumentationForDefinition(project, definition);
+  if (documentation === undefined) {
     return undefined;
   }
 
   return {
-    contents: renderDocumentationComment(definition.documentation)
+    contents: renderDocumentationComment(documentation)
   };
 }
 
@@ -213,11 +217,12 @@ export function getSignatureHelp(
     return undefined;
   }
 
-  const parameter_docs = getParameterDocumentation(definition.documentation);
+  const documentation = findDocumentationForDefinition(project, definition);
+  const parameter_docs = getParameterDocumentation(documentation);
   return {
     label: definition.signature.label,
     activeParameter: Math.min(call_expression.activeParameter, Math.max(definition.signature.parameters.length - 1, 0)),
-    documentation: renderSignatureDocumentation(definition.documentation),
+    documentation: renderSignatureDocumentation(documentation),
     parameters: definition.signature.parameters.map((parameter) => ({
       label: parameter,
       documentation: parameter_docs.get(parameter.toLowerCase())
@@ -400,7 +405,8 @@ function parseModule(file: VbaProjectFile): VbaModule {
     lines,
     definitions: parsed_members.definitions,
     procedureScopes: parsed_members.procedureScopes,
-    withEventsDeclarations: parsed_members.withEventsDeclarations
+    withEventsDeclarations: parsed_members.withEventsDeclarations,
+    implements: parsed_members.implements
   };
 }
 
@@ -489,13 +495,21 @@ function parseModuleMembers(
   definitions: VbaDefinition[];
   procedureScopes: ProcedureScope[];
   withEventsDeclarations: WithEventsDeclaration[];
+  implements: string[];
 } {
   const definitions: VbaDefinition[] = [];
   const procedureScopes: ProcedureScope[] = [];
   const withEventsDeclarations: WithEventsDeclaration[] = [];
+  const implementedInterfaces: string[] = [];
 
   for (let line_index = start_line; line_index < lines.length; line_index += 1) {
     const line = lines[line_index];
+    const implements_match = /^\s*Implements\s+([A-Za-z_][A-Za-z0-9_]*)\b/i.exec(line);
+    if (implements_match !== null) {
+      implementedInterfaces.push(implements_match[1]);
+      continue;
+    }
+
     const with_events_match =
       /^\s*(?:(?:Public|Private|Dim)\s+)?WithEvents\s+([A-Za-z_][A-Za-z0-9_]*)\s+As\s+([A-Za-z_][A-Za-z0-9_]*)\b/i.exec(line);
     if (with_events_match !== null) {
@@ -615,7 +629,12 @@ function parseModuleMembers(
     line_index = end_line_index;
   }
 
-  return { definitions, procedureScopes, withEventsDeclarations };
+  return {
+    definitions,
+    procedureScopes,
+    withEventsDeclarations,
+    implements: implementedInterfaces
+  };
 }
 
 function parseEnumMemberDefinitions(
@@ -932,6 +951,41 @@ function findDefinitionByLocation(
         && comparePosition(definition.range.start, location.range.start) === 0
         && comparePosition(definition.range.end, location.range.end) === 0
     );
+}
+
+function findDocumentationForDefinition(
+  project: VbaProject,
+  definition: VbaDefinition
+): DocumentationComment | undefined {
+  if (definition.documentation !== undefined) {
+    return definition.documentation;
+  }
+
+  const owner_module = findModule(project, definition.uri);
+  if (owner_module === undefined) {
+    return undefined;
+  }
+
+  for (const interface_name of owner_module.implements) {
+    const handler_prefix = `${interface_name}_`;
+    if (!definition.name.toLowerCase().startsWith(handler_prefix.toLowerCase())) {
+      continue;
+    }
+
+    const member_name = definition.name.slice(handler_prefix.length);
+    const interface_module = project.modules.find((module) =>
+      module.folderUri.toLowerCase() === owner_module.folderUri.toLowerCase()
+        && sameName(module.identity, interface_name)
+    );
+    const interface_definition = interface_module?.definitions.find((candidate) =>
+      sameName(candidate.name, member_name)
+    );
+    if (interface_definition?.documentation !== undefined) {
+      return interface_definition.documentation;
+    }
+  }
+
+  return undefined;
 }
 
 function renderDocumentationComment(documentation: DocumentationComment): string {
