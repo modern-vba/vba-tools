@@ -26,6 +26,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { createDefaultHostCatalogManager } from './hostCatalogService';
+import { HostApplicationConfigurationProvider } from './hostApplicationSettings';
 import {
   buildVbaProject,
   CompletionEntryKind,
@@ -47,6 +48,9 @@ import {
 const connection = createConnection(ProposedFeatures.all);
 const documents: TextDocuments<TextDocument> = new TextDocuments(TextDocument);
 const hostCatalogManager = createDefaultHostCatalogManager();
+const hostApplicationConfigurationProvider = new HostApplicationConfigurationProvider((scopeUri) =>
+  connection.workspace.getConfiguration({ scopeUri, section: 'vbaLanguageServer' })
+);
 
 void hostCatalogManager.refreshFromExcelComAsync();
 
@@ -95,13 +99,13 @@ documents.onDidClose((event): void => {
   });
 });
 
-connection.onCompletion((params): CompletionItem[] => {
+connection.onCompletion(async (params): Promise<CompletionItem[]> => {
   const document = documents.get(params.textDocument.uri);
   if (document === undefined) {
     return [];
   }
 
-  const project = buildProjectForDocument(document);
+  const project = await buildProjectForDocument(document);
   return getCompletions(project, {
     uri: document.uri,
     position: params.position
@@ -114,23 +118,23 @@ connection.onCompletion((params): CompletionItem[] => {
   }));
 });
 
-connection.languages.semanticTokens.on((params) => {
+connection.languages.semanticTokens.on(async (params) => {
   const document = documents.get(params.textDocument.uri);
   if (document === undefined) {
     return { data: [] };
   }
 
-  const project = buildProjectForDocument(document);
+  const project = await buildProjectForDocument(document);
   return encodeSemanticTokens(getSemanticTokens(project, document.uri));
 });
 
-connection.onDefinition((params): Definition | undefined => {
+connection.onDefinition(async (params): Promise<Definition | undefined> => {
   const document = documents.get(params.textDocument.uri);
   if (document === undefined) {
     return undefined;
   }
 
-  const project = buildProjectForDocument(document);
+  const project = await buildProjectForDocument(document);
   const definition = getDefinition(project, {
     uri: document.uri,
     position: params.position
@@ -145,13 +149,13 @@ connection.onDefinition((params): Definition | undefined => {
   });
 });
 
-connection.onPrepareRename((params): Range | undefined => {
+connection.onPrepareRename(async (params): Promise<Range | undefined> => {
   const document = documents.get(params.textDocument.uri);
   if (document === undefined) {
     return undefined;
   }
 
-  const project = buildProjectForDocument(document);
+  const project = await buildProjectForDocument(document);
   const target = getRenameTarget(project, {
     uri: document.uri,
     position: params.position
@@ -159,13 +163,13 @@ connection.onPrepareRename((params): Range | undefined => {
   return target === undefined ? undefined : toLspRange(target.range);
 });
 
-connection.onRenameRequest((params): WorkspaceEdit => {
+connection.onRenameRequest(async (params): Promise<WorkspaceEdit> => {
   const document = documents.get(params.textDocument.uri);
   if (document === undefined) {
     return {};
   }
 
-  const project = buildProjectForDocument(document);
+  const project = await buildProjectForDocument(document);
   const edits = getRenameEdits(
     project,
     {
@@ -178,26 +182,26 @@ connection.onRenameRequest((params): WorkspaceEdit => {
   return toWorkspaceEdit(edits);
 });
 
-connection.onDocumentFormatting((params): TextEdit[] => {
+connection.onDocumentFormatting(async (params): Promise<TextEdit[]> => {
   const document = documents.get(params.textDocument.uri);
   if (document === undefined) {
     return [];
   }
 
-  const project = buildProjectForDocument(document);
+  const project = await buildProjectForDocument(document);
   return getDocumentFormattingEdits(project, document.uri, {
     tabSize: params.options.tabSize,
     insertSpaces: params.options.insertSpaces
   }).map((edit) => TextEdit.replace(toLspRange(edit.range), edit.text));
 });
 
-connection.onHover((params): Hover | undefined => {
+connection.onHover(async (params): Promise<Hover | undefined> => {
   const document = documents.get(params.textDocument.uri);
   if (document === undefined) {
     return undefined;
   }
 
-  const project = buildProjectForDocument(document);
+  const project = await buildProjectForDocument(document);
   const hover = getHover(project, {
     uri: document.uri,
     position: params.position
@@ -214,13 +218,13 @@ connection.onHover((params): Hover | undefined => {
   };
 });
 
-connection.onSignatureHelp((params): SignatureHelp | undefined => {
+connection.onSignatureHelp(async (params): Promise<SignatureHelp | undefined> => {
   const document = documents.get(params.textDocument.uri);
   if (document === undefined) {
     return undefined;
   }
 
-  const project = buildProjectForDocument(document);
+  const project = await buildProjectForDocument(document);
   const signatureHelp = getSignatureHelp(project, {
     uri: document.uri,
     position: params.position
@@ -247,7 +251,7 @@ connection.onSignatureHelp((params): SignatureHelp | undefined => {
 documents.listen(connection);
 connection.listen();
 
-function buildProjectForDocument(document: TextDocument): ReturnType<typeof buildVbaProject> {
+async function buildProjectForDocument(document: TextDocument): Promise<ReturnType<typeof buildVbaProject>> {
   const document_path = fileURLToPath(document.uri);
   const folder_path = path.dirname(document_path);
   const files = new Map<string, VbaProjectFile>();
@@ -285,8 +289,10 @@ function buildProjectForDocument(document: TextDocument): ReturnType<typeof buil
     });
   }
 
+  const host_application_options = await hostApplicationConfigurationProvider.getOptions(document.uri);
   return buildVbaProject([...files.values()], {
-    hostDefinitions: hostCatalogManager.getDefinitions()
+    ...host_application_options,
+    hostDefinitions: hostCatalogManager.getDefinitions(host_application_options)
   });
 }
 

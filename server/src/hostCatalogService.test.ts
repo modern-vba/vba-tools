@@ -70,3 +70,31 @@ test('COM refresh failure preserves cached definitions without breaking completi
 
   assert.deepEqual(manager.getDefinitions(), cached_definitions);
 });
+
+test('host catalog manager resolves definitions for the selected HostApplication', () => {
+  const manager = new HostCatalogManager({
+    platform: 'linux',
+    readCache: () => undefined
+  });
+
+  assert.deepEqual(
+    manager.getDefinitions({ mainHostApplication: 'word' }).map((definition) => definition.name),
+    ['Application', 'Document', 'Range', 'Selection']
+  );
+});
+
+test('host catalog manager reflects HostApplication selection changes without recreation', () => {
+  const manager = new HostCatalogManager({
+    platform: 'linux',
+    readCache: () => undefined
+  });
+
+  assert.equal(
+    manager.getDefinitions({ additionalHostApplications: ['word'] }).some((definition) => definition.name === 'Document'),
+    true
+  );
+  assert.equal(
+    manager.getDefinitions({ additionalHostApplications: [] }).some((definition) => definition.name === 'Document'),
+    false
+  );
+});

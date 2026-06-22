@@ -4,7 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
-import { getBundledExcelHostDefinitions } from './excelHostCatalog';
+import {
+  createHostApplicationSelection,
+  getBundledHostDefinitionsForApplication,
+  type HostApplicationSelectionOptions
+} from './officeHostCatalog';
 import type { HostDefinition } from './vbaProject';
 
 const execFileAsync = promisify(execFile);
@@ -31,11 +35,16 @@ export class HostCatalogManager {
     this.readCache = options.readCache;
     this.writeCache = options.writeCache;
     this.discoverFromCom = options.discoverFromCom ?? discoverExcelComHostDefinitions;
-    this.definitions = cloneHostDefinitions(this.readCacheSafely() ?? getBundledExcelHostDefinitions());
+    this.definitions = cloneHostDefinitions(this.readCacheSafely() ?? getBundledHostDefinitionsForApplication('excel'));
   }
 
-  public getDefinitions(): HostDefinition[] {
-    return cloneHostDefinitions(this.definitions);
+  public getDefinitions(options: HostApplicationSelectionOptions = {}): HostDefinition[] {
+    const selection = createHostApplicationSelection(options);
+    return selection.enabledHostApplications.flatMap((hostApplication) =>
+      hostApplication === 'excel'
+        ? cloneHostDefinitions(this.definitions)
+        : getBundledHostDefinitionsForApplication(hostApplication)
+    );
   }
 
   public async refreshFromExcelComAsync(): Promise<void> {
