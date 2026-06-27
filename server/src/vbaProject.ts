@@ -151,6 +151,7 @@ export type SyntaxDiagnosticCode =
   | 'syntax.invalidStatementSeparator'
   | 'syntax.malformedCall'
   | 'syntax.malformedCallableDeclaration'
+  | 'syntax.malformedConditionalCompilation'
   | 'syntax.malformedDeclaration'
   | 'syntax.malformedDeclarationBlock'
   | 'syntax.malformedBlockStructure'
@@ -1111,6 +1112,7 @@ function parseModuleIdentity(lines: string[]): { name: string; range: SourceRang
 function collectSyntaxDiagnostics(lines: string[], codeStartLine: number): SyntaxDiagnostic[] {
   const pre_expression_diagnostics = [
     ...collectHeaderSyntaxDiagnostics(lines, codeStartLine),
+    ...collectConditionalCompilationDiagnostics(lines, codeStartLine),
     ...collectDeclarationBlockDiagnostics(lines, codeStartLine),
     ...collectControlFlowDiagnostics(lines, codeStartLine)
   ];
@@ -1229,6 +1231,264 @@ function collectHeaderSyntaxDiagnostics(lines: string[], codeStartLine: number):
   }
 
   return diagnostics;
+}
+
+interface ConditionalCompilationBlock {
+  lineIndex: number;
+  startCharacter: number;
+  endCharacter: number;
+}
+
+function collectConditionalCompilationDiagnostics(lines: string[], codeStartLine: number): SyntaxDiagnostic[] {
+  const diagnostics: SyntaxDiagnostic[] = [];
+  const stack: ConditionalCompilationBlock[] = [];
+
+  for (let line_index = codeStartLine; line_index < lines.length; line_index += 1) {
+    const line = lines[line_index];
+    const code_end = getCodeEndCharacter(line);
+    const directive_start = skipWhitespace(line, 0, code_end);
+    if (directive_start >= code_end || line[directive_start] !== '#') {
+      continue;
+    }
+
+    const keyword_start = skipWhitespace(line, directive_start + 1, code_end);
+    const keyword = readIdentifierTokenAt(line, keyword_start, code_end);
+    if (keyword === undefined) {
+      continue;
+    }
+
+    const directive_end = trimEndIndex(line, code_end);
+    if (keyword.lowerText === 'const') {
+      diagnostics.push(...collectConstDirectiveDiagnostics(line, line_index, keyword.end, directive_end));
+      continue;
+    }
+
+    if (keyword.lowerText === 'if') {
+      const then_start = findKeywordOutsideLiterals(line, 'then', keyword.end, directive_end);
+      if (then_start === undefined) {
+        diagnostics.push(createMalformedConditionalCompilationDiagnostic(
+          '#If directive must include Then.',
+          line_index,
+          directive_start,
+          directive_end
+        ));
+        continue;
+      }
+
+      diagnostics.push(...collectConditionalCompilationExpressionDiagnostics(
+        line,
+        line_index,
+        keyword.end,
+        then_start,
+        '#If directive is missing an expression.',
+        then_start,
+        then_start + 'Then'.length
+      ));
+      stack.push({
+        lineIndex: line_index,
+        startCharacter: directive_start,
+        endCharacter: keyword.end
+      });
+      continue;
+    }
+
+    if (keyword.lowerText === 'elseif') {
+      const then_start = findKeywordOutsideLiterals(line, 'then', keyword.end, directive_end);
+      if (stack.length === 0) {
+        diagnostics.push(createMalformedConditionalCompilationDiagnostic(
+          'Unexpected #ElseIf without matching #If.',
+          line_index,
+          directive_start,
+          directive_end
+        ));
+        continue;
+      }
+      if (then_start === undefined) {
+        diagnostics.push(createMalformedConditionalCompilationDiagnostic(
+          '#ElseIf directive must include Then.',
+          line_index,
+          directive_start,
+          directive_end
+        ));
+        continue;
+      }
+
+      diagnostics.push(...collectConditionalCompilationExpressionDiagnostics(
+        line,
+        line_index,
+        keyword.end,
+        then_start,
+        '#ElseIf directive is missing an expression.',
+        then_start,
+        then_start + 'Then'.length
+      ));
+      continue;
+    }
+
+    if (keyword.lowerText === 'else') {
+      if (stack.length === 0) {
+        diagnostics.push(createMalformedConditionalCompilationDiagnostic(
+          'Unexpected #Else without matching #If.',
+          line_index,
+          directive_start,
+          directive_end
+        ));
+        continue;
+      }
+
+      const trailing_start = skipWhitespace(line, keyword.end, directive_end);
+      if (trailing_start < directive_end) {
+        diagnostics.push(createMalformedConditionalCompilationDiagnostic(
+          '#Else directive cannot include trailing text.',
+          line_index,
+          trailing_start,
+          directive_end
+        ));
+      }
+      continue;
+    }
+
+    if (keyword.lowerText === 'end') {
+      const second_keyword_start = skipWhitespace(line, keyword.end, directive_end);
+      const second_keyword = readIdentifierTokenAt(line, second_keyword_start, directive_end);
+      if (second_keyword?.lowerText !== 'if') {
+        continue;
+      }
+
+      const trailing_start = skipWhitespace(line, second_keyword.end, directive_end);
+      if (trailing_start < directive_end) {
+        diagnostics.push(createMalformedConditionalCompilationDiagnostic(
+          '#End If directive cannot include trailing text.',
+          line_index,
+          trailing_start,
+          directive_end
+        ));
+        continue;
+      }
+
+      if (stack.length === 0) {
+        diagnostics.push(createMalformedConditionalCompilationDiagnostic(
+          'Unexpected #End If without matching #If.',
+          line_index,
+          directive_start,
+          directive_end
+        ));
+        continue;
+      }
+
+      stack.pop();
+    }
+  }
+
+  for (const block of stack) {
+    diagnostics.push(createMalformedConditionalCompilationDiagnostic(
+      '#If directive is missing #End If.',
+      block.lineIndex,
+      block.startCharacter,
+      block.endCharacter
+    ));
+  }
+
+  return diagnostics;
+}
+
+function collectConstDirectiveDiagnostics(
+  line: string,
+  lineIndex: number,
+  valueStartCharacter: number,
+  directiveEnd: number
+): SyntaxDiagnostic[] {
+  const name_start = skipWhitespace(line, valueStartCharacter, directiveEnd);
+  const name = readIdentifierTokenAt(line, name_start, directiveEnd);
+  if (name === undefined) {
+    const equals_index = findTopLevelEquals(line, name_start, directiveEnd);
+    const diagnostic_start = equals_index ?? name_start;
+    const diagnostic_end = equals_index === undefined ? directiveEnd : equals_index + 1;
+    return [createMalformedConditionalCompilationDiagnostic(
+      '#Const directive is missing a name.',
+      lineIndex,
+      diagnostic_start,
+      diagnostic_end
+    )];
+  }
+
+  const equals_index = findTopLevelEquals(line, name.end, directiveEnd);
+  if (equals_index === undefined) {
+    return [createMalformedConditionalCompilationDiagnostic(
+      '#Const directive is missing a value.',
+      lineIndex,
+      name.end,
+      directiveEnd
+    )];
+  }
+
+  const expression_start = equals_index + 1;
+  return collectConditionalCompilationExpressionDiagnostics(
+    line,
+    lineIndex,
+    expression_start,
+    directiveEnd,
+    '#Const directive is missing a value.',
+    equals_index,
+    equals_index + 1
+  );
+}
+
+function collectConditionalCompilationExpressionDiagnostics(
+  line: string,
+  lineIndex: number,
+  expressionStart: number,
+  expressionEnd: number,
+  missingExpressionMessage: string,
+  missingExpressionStart: number,
+  missingExpressionEnd: number
+): SyntaxDiagnostic[] {
+  const trimmed_start = skipWhitespace(line, expressionStart, expressionEnd);
+  const trimmed_end = trimEndIndex(line, expressionEnd);
+  if (trimmed_start >= trimmed_end) {
+    return [createMalformedConditionalCompilationDiagnostic(
+      missingExpressionMessage,
+      lineIndex,
+      missingExpressionStart,
+      missingExpressionEnd
+    )];
+  }
+
+  return collectMalformedExpressionDiagnostics(line, lineIndex, trimmed_start, trimmed_end)
+    .map((diagnostic) => ({
+      ...diagnostic,
+      code: 'syntax.malformedConditionalCompilation' as const,
+      message: conditionalCompilationExpressionMessage(diagnostic.message)
+    }));
+}
+
+function conditionalCompilationExpressionMessage(message: string): string {
+  if (message.startsWith('Expression ')) {
+    return `Conditional compilation expression ${message.slice('Expression '.length)}`;
+  }
+  if (message.startsWith('Parenthesized expression ')) {
+    return `Conditional compilation parenthesized expression ${message.slice('Parenthesized expression '.length)}`;
+  }
+
+  return 'Conditional compilation expression is malformed.';
+}
+
+function createMalformedConditionalCompilationDiagnostic(
+  message: string,
+  lineIndex: number,
+  startCharacter: number,
+  endCharacter: number
+): SyntaxDiagnostic {
+  return {
+    code: 'syntax.malformedConditionalCompilation',
+    message,
+    range: {
+      start: { line: lineIndex, character: startCharacter },
+      end: { line: lineIndex, character: endCharacter }
+    },
+    severity: 'error',
+    source: 'vba-language-server'
+  };
 }
 
 function getMalformedAttributeRange(line: string, lineIndex: number): SourceRange | undefined {
