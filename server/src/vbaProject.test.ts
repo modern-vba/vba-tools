@@ -2670,6 +2670,263 @@ test('member access diagnostics cover bas cls and frm code while ignoring frm de
   ]);
 });
 
+test('syntax diagnostics report malformed executable statements and branch forms', () => {
+  const set_missing_equals_line = '    Set target';
+  const let_missing_equals_line = '    Let value';
+  const goto_missing_target_line = '    GoTo';
+  const on_error_missing_target_line = '    On Error GoTo';
+  const exit_missing_kind_line = '    Exit';
+  const resume_extra_line = '    Resume Next extra';
+  const date_missing_equals_line = '    Date #1/1/2024#';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Statements.bas',
+      text: [
+        'Attribute VB_Name = "Statements"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        set_missing_equals_line,
+        let_missing_equals_line,
+        goto_missing_target_line,
+        on_error_missing_target_line,
+        exit_missing_kind_line,
+        resume_extra_line,
+        date_missing_equals_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Statements.bas'), [
+    {
+      code: 'syntax.malformedStatement',
+      message: 'Set statement must assign with =.',
+      range: {
+        start: { line: 4, character: set_missing_equals_line.length },
+        end: { line: 4, character: set_missing_equals_line.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    },
+    {
+      code: 'syntax.malformedStatement',
+      message: 'Let statement must assign with =.',
+      range: {
+        start: { line: 5, character: let_missing_equals_line.length },
+        end: { line: 5, character: let_missing_equals_line.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    },
+    {
+      code: 'syntax.malformedStatement',
+      message: 'GoTo statement is missing a branch target.',
+      range: {
+        start: { line: 6, character: goto_missing_target_line.indexOf('GoTo') },
+        end: { line: 6, character: goto_missing_target_line.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    },
+    {
+      code: 'syntax.malformedStatement',
+      message: 'On Error GoTo statement is missing a branch target.',
+      range: {
+        start: { line: 7, character: on_error_missing_target_line.indexOf('GoTo') },
+        end: { line: 7, character: on_error_missing_target_line.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    },
+    {
+      code: 'syntax.malformedStatement',
+      message: 'Exit statement must specify Sub, Function, Property, For, or Do.',
+      range: {
+        start: { line: 8, character: exit_missing_kind_line.indexOf('Exit') },
+        end: { line: 8, character: exit_missing_kind_line.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    },
+    {
+      code: 'syntax.malformedStatement',
+      message: 'Resume Next cannot include an additional target.',
+      range: {
+        start: { line: 9, character: resume_extra_line.indexOf('extra') },
+        end: { line: 9, character: resume_extra_line.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    },
+    {
+      code: 'syntax.malformedStatement',
+      message: 'Date statement must assign with =.',
+      range: {
+        start: { line: 10, character: date_missing_equals_line.indexOf('Date') },
+        end: { line: 10, character: date_missing_equals_line.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    }
+  ]);
+});
+
+test('syntax diagnostics report malformed file and host-action statements', () => {
+  const open_missing_mode_line = '    Open "data.txt" For As #1';
+  const close_missing_number_line = '    Close #';
+  const input_missing_comma_line = '    Input #1';
+  const name_missing_as_line = '    Name "old.txt" "new.txt"';
+  const filecopy_missing_arg_line = '    FileCopy "old.txt"';
+  const beep_with_arg_line = '    Beep 1';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Statements.bas',
+      text: [
+        'Attribute VB_Name = "Statements"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        open_missing_mode_line,
+        close_missing_number_line,
+        input_missing_comma_line,
+        name_missing_as_line,
+        filecopy_missing_arg_line,
+        beep_with_arg_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Statements.bas'), [
+    {
+      code: 'syntax.malformedStatement',
+      message: 'Open statement must include For mode and As # file number.',
+      range: {
+        start: { line: 4, character: open_missing_mode_line.indexOf('Open') },
+        end: { line: 4, character: open_missing_mode_line.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    },
+    {
+      code: 'syntax.malformedStatement',
+      message: 'Close statement has a malformed file number list.',
+      range: {
+        start: { line: 5, character: close_missing_number_line.indexOf('#') },
+        end: { line: 5, character: close_missing_number_line.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    },
+    {
+      code: 'syntax.malformedStatement',
+      message: 'Input # statement must include a file number and target list.',
+      range: {
+        start: { line: 6, character: input_missing_comma_line.indexOf('Input') },
+        end: { line: 6, character: input_missing_comma_line.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    },
+    {
+      code: 'syntax.malformedStatement',
+      message: 'Name statement must include As newPath.',
+      range: {
+        start: { line: 7, character: name_missing_as_line.indexOf('Name') },
+        end: { line: 7, character: name_missing_as_line.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    },
+    {
+      code: 'syntax.malformedStatement',
+      message: 'FileCopy statement must include source and destination expressions.',
+      range: {
+        start: { line: 8, character: filecopy_missing_arg_line.indexOf('FileCopy') },
+        end: { line: 8, character: filecopy_missing_arg_line.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    },
+    {
+      code: 'syntax.malformedStatement',
+      message: 'Beep statement does not take arguments.',
+      range: {
+        start: { line: 9, character: beep_with_arg_line.indexOf('1') },
+        end: { line: 9, character: beep_with_arg_line.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    }
+  ]);
+});
+
+test('syntax diagnostics ignore valid executable statement catalog forms', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Statements.bas',
+      text: [
+        'Attribute VB_Name = "Statements"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        'StartLabel:',
+        '100',
+        '    Let value = 1',
+        '    Set target = Nothing',
+        '    LSet leftValue = rightValue',
+        '    RSet rightValue = leftValue',
+        '    Mid$(textValue, 1, 1) = "x"',
+        '    GoTo StartLabel',
+        '    GoSub 100',
+        '    Return',
+        '    On Error GoTo Handler',
+        '    On Error Resume Next',
+        '    On value GoTo First, Second',
+        '    On value GoSub First, Second',
+        '    Resume Next',
+        '    Resume Handler',
+        '    Exit Sub',
+        '    Error 5',
+        '    Load Form1',
+        '    Unload Form1',
+        '    Erase values',
+        '    Randomize value',
+        '    Reset',
+        '    Seek #1, 10',
+        '    Open "data.txt" For Input As #1',
+        '    Close #1',
+        '    Get #1, , value',
+        '    Put #1, , value',
+        '    Input #1, value',
+        '    Line Input #1, textValue',
+        '    Print #1, value',
+        '    Write #1, value',
+        '    Lock #1',
+        '    Unlock #1',
+        '    Name "old.txt" As "new.txt"',
+        '    Kill "old.txt"',
+        '    FileCopy "old.txt", "new.txt"',
+        '    MkDir "folder"',
+        '    RmDir "folder"',
+        '    ChDir "folder"',
+        '    ChDrive "C"',
+        '    SetAttr "data.txt", vbReadOnly',
+        '    Date = #1/1/2024#',
+        '    Time = #12:00:00#',
+        '    Beep',
+        '    AppActivate "Excel"',
+        '    SendKeys "%{F4}", True',
+        'Handler:',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Statements.bas'), []);
+});
+
 test('syntax diagnostics cover cls and frm code while ignoring frm designer text', () => {
   const class_invalid_line = '        "needle", _ \' class';
   const form_invalid_line = '        "needle", _ \' form';

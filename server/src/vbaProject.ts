@@ -157,6 +157,7 @@ export type SyntaxDiagnosticCode =
   | 'syntax.malformedControlFlow'
   | 'syntax.malformedExpression'
   | 'syntax.malformedMemberAccess'
+  | 'syntax.malformedStatement'
   | 'syntax.malformedAttribute'
   | 'syntax.malformedDateLiteral'
   | 'syntax.malformedOption'
@@ -1125,11 +1126,23 @@ function collectSyntaxDiagnostics(lines: string[], codeStartLine: number): Synta
     ...expression_diagnostics.map((diagnostic) => diagnostic.range.start.line),
     ...call_diagnostics.map((diagnostic) => diagnostic.range.start.line)
   ]);
+  const member_access_diagnostics = collectMemberAccessDiagnostics(
+    lines,
+    codeStartLine,
+    member_access_skip_lines
+  );
+  const statement_specific_skip_lines = new Set([
+    ...pre_expression_diagnostics.map((diagnostic) => diagnostic.range.start.line),
+    ...expression_diagnostics.map((diagnostic) => diagnostic.range.start.line),
+    ...call_diagnostics.map((diagnostic) => diagnostic.range.start.line),
+    ...member_access_diagnostics.map((diagnostic) => diagnostic.range.start.line)
+  ]);
   const diagnostics = [
     ...pre_expression_diagnostics,
     ...expression_diagnostics,
     ...call_diagnostics,
-    ...collectMemberAccessDiagnostics(lines, codeStartLine, member_access_skip_lines),
+    ...member_access_diagnostics,
+    ...collectStatementSpecificDiagnostics(lines, codeStartLine, statement_specific_skip_lines),
     ...collectBlockStructureDiagnostics(lines, codeStartLine)
   ];
   const header_diagnostic_lines = new Set(diagnostics.map((diagnostic) => diagnostic.range.start.line));
@@ -4760,6 +4773,384 @@ function createMalformedMemberAccessDiagnostic(
 ): SyntaxDiagnostic {
   return {
     code: 'syntax.malformedMemberAccess',
+    message,
+    range: {
+      start: { line: lineIndex, character: startCharacter },
+      end: { line: lineIndex, character: endCharacter }
+    },
+    severity: 'error',
+    source: 'vba-language-server'
+  };
+}
+
+function collectStatementSpecificDiagnostics(
+  lines: string[],
+  codeStartLine: number,
+  skipLines: Set<number>
+): SyntaxDiagnostic[] {
+  const diagnostics: SyntaxDiagnostic[] = [];
+  let skipped_declaration_block: DeclarationBlockKind | undefined;
+
+  for (let line_index = codeStartLine; line_index < lines.length; line_index += 1) {
+    if (skipLines.has(line_index)) {
+      continue;
+    }
+
+    const line = lines[line_index];
+    const code_end = getCodeEndCharacter(line);
+    const structure_text = getCodeTextForStructure(line).trim();
+    if (structure_text === '' || isCommentOnlyLine(line) || isHeaderLine(structure_text)) {
+      continue;
+    }
+    if (
+      collectLexicalSyntaxDiagnostics(line, line_index).length > 0
+      || getInvalidTrailingCommentContinuationRange(line, line_index) !== undefined
+    ) {
+      continue;
+    }
+
+    const declaration_closer = getDeclarationBlockCloser(line, line_index, code_end);
+    if (skipped_declaration_block !== undefined) {
+      if (declaration_closer?.kind === skipped_declaration_block) {
+        skipped_declaration_block = undefined;
+      }
+      continue;
+    }
+
+    const declaration_header = getDeclarationBlockHeader(line, line_index, code_end);
+    if (declaration_header !== undefined) {
+      skipped_declaration_block = declaration_header.kind;
+      continue;
+    }
+    if (declaration_closer !== undefined) {
+      continue;
+    }
+
+    for (const segment of getStatementSegments(line)) {
+      const diagnostic = getStatementSpecificDiagnostic(line, line_index, segment);
+      if (diagnostic !== undefined) {
+        diagnostics.push(diagnostic);
+      }
+    }
+  }
+
+  return diagnostics;
+}
+
+function getStatementSpecificDiagnostic(
+  line: string,
+  lineIndex: number,
+  segment: StatementSegment
+): SyntaxDiagnostic | undefined {
+  const statement = getStatementBoundaryText(segment);
+  const text = statement.text;
+  if (text === '' || isLineNumberStatement(text) || isValidLabelSegment(segment, text)) {
+    return undefined;
+  }
+
+  const first_token = readIdentifierTokenAt(text, 0, text.length);
+  if (first_token === undefined) {
+    return undefined;
+  }
+
+  const start = statement.start;
+  switch (first_token.lowerText) {
+    case 'let':
+    case 'set':
+    case 'lset':
+    case 'rset':
+      return getAssignmentKeywordStatementDiagnostic(line, lineIndex, text, start, first_token.text);
+    case 'mid':
+      return getMidStatementDiagnostic(line, lineIndex, text, start);
+    case 'goto':
+    case 'gosub':
+      return hasBranchTarget(text.slice(first_token.end))
+        ? undefined
+        : createMalformedStatementDiagnostic(
+          `${first_token.text} statement is missing a branch target.`,
+          lineIndex,
+          start,
+          start + text.length
+        );
+    case 'on':
+      return getOnStatementDiagnostic(lineIndex, text, start);
+    case 'resume':
+      return getResumeStatementDiagnostic(lineIndex, text, start);
+    case 'exit':
+      if (/^Exit\s+(?:Sub|Function|Property|For|Do)\b/i.test(text)) {
+        return undefined;
+      }
+      return /^Exit\s+(?:Sub|Function|Property|For|Do)\s*$/i.test(text)
+        ? undefined
+        : createMalformedStatementDiagnostic(
+          'Exit statement must specify Sub, Function, Property, For, or Do.',
+          lineIndex,
+          start,
+          start + text.length
+        );
+    case 'error':
+      return /\S/.test(text.slice(first_token.end))
+        ? undefined
+        : createMalformedStatementDiagnostic('Error statement is missing an error number.', lineIndex, start, start + text.length);
+    case 'load':
+    case 'unload':
+    case 'erase':
+    case 'kill':
+    case 'mkdir':
+    case 'rmdir':
+    case 'chdir':
+    case 'chdrive':
+    case 'appactivate':
+    case 'sendkeys':
+      return /\S/.test(text.slice(first_token.end))
+        ? undefined
+        : createMalformedStatementDiagnostic(
+          `${formatStatementKeyword(first_token.text)} statement is missing an argument.`,
+          lineIndex,
+          start,
+          start + text.length
+        );
+    case 'randomize':
+      return undefined;
+    case 'reset':
+    case 'beep':
+      return text.slice(first_token.end).trim() === ''
+        ? undefined
+        : createMalformedStatementDiagnostic(
+          `${formatStatementKeyword(first_token.text)} statement does not take arguments.`,
+          lineIndex,
+          start + first_token.end + /^\s*/.exec(text.slice(first_token.end))![0].length,
+          start + text.length
+        );
+    case 'seek':
+    case 'lock':
+    case 'unlock':
+      return /^Seek\s+#\s*\S+(?:\s*,\s*\S.*)?$/i.test(text)
+        || /^(?:Lock|Unlock)\s+#\s*\S+(?:\s*,\s*\S.*)?$/i.test(text)
+        ? undefined
+        : createMalformedStatementDiagnostic(
+          `${formatStatementKeyword(first_token.text)} statement must include a file number.`,
+          lineIndex,
+          start,
+          start + text.length
+        );
+    case 'open':
+      return /^Open\s+\S.+\bFor\s+(?:Input|Output|Append|Binary|Random)\b.*\bAs\s+#\s*\S+/i.test(text)
+        ? undefined
+        : createMalformedStatementDiagnostic(
+          'Open statement must include For mode and As # file number.',
+          lineIndex,
+          start,
+          start + text.length
+        );
+    case 'close':
+      return getCloseStatementDiagnostic(lineIndex, text, start);
+    case 'get':
+    case 'put':
+      return /^(?:Get|Put)\s+#\s*\S+/i.test(text)
+        ? undefined
+        : createMalformedStatementDiagnostic(
+          `${formatStatementKeyword(first_token.text)} statement must include a file number.`,
+          lineIndex,
+          start,
+          start + text.length
+        );
+    case 'input':
+      return /^Input\s+#\s*\S+\s*,\s*\S/i.test(text)
+        ? undefined
+        : createMalformedStatementDiagnostic(
+          'Input # statement must include a file number and target list.',
+          lineIndex,
+          start,
+          start + text.length
+        );
+    case 'line':
+      return /^Line\s+Input\s+#\s*\S+\s*,\s*\S/i.test(text)
+        ? undefined
+        : /^Line\s+Input\b/i.test(text)
+          ? createMalformedStatementDiagnostic(
+            'Line Input # statement must include a file number and target.',
+            lineIndex,
+            start,
+            start + text.length
+          )
+          : undefined;
+    case 'print':
+    case 'write':
+      return /^(?:Print|Write)\s+#\s*\S+/i.test(text) || !/^(?:Print|Write)\s+#/i.test(text)
+        ? undefined
+        : createMalformedStatementDiagnostic(
+          `${formatStatementKeyword(first_token.text)} # statement has a malformed file number.`,
+          lineIndex,
+          start,
+          start + text.length
+        );
+    case 'name':
+      return /\bAs\s+\S/i.test(text)
+        ? undefined
+        : createMalformedStatementDiagnostic('Name statement must include As newPath.', lineIndex, start, start + text.length);
+    case 'filecopy':
+      return hasTopLevelComma(text, first_token.end, text.length)
+        ? undefined
+        : createMalformedStatementDiagnostic(
+          'FileCopy statement must include source and destination expressions.',
+          lineIndex,
+          start,
+          start + text.length
+        );
+    case 'setattr':
+      return hasTopLevelComma(text, first_token.end, text.length)
+        ? undefined
+        : createMalformedStatementDiagnostic(
+          'SetAttr statement must include path and attributes expressions.',
+          lineIndex,
+          start,
+          start + text.length
+        );
+    case 'date':
+    case 'time':
+      return new RegExp(`^${first_token.text}\\s*=\\s*\\S`, 'i').test(text)
+        ? undefined
+        : createMalformedStatementDiagnostic(
+          `${formatStatementKeyword(first_token.text)} statement must assign with =.`,
+          lineIndex,
+          start,
+          start + text.length
+        );
+    default:
+      return undefined;
+  }
+}
+
+function getAssignmentKeywordStatementDiagnostic(
+  line: string,
+  lineIndex: number,
+  text: string,
+  startCharacter: number,
+  keyword: string
+): SyntaxDiagnostic | undefined {
+  const equals_index = findTopLevelEquals(line, startCharacter + keyword.length, startCharacter + text.length);
+  return equals_index === undefined
+    ? createMalformedStatementDiagnostic(
+      `${formatStatementKeyword(keyword)} statement must assign with =.`,
+      lineIndex,
+      startCharacter + text.length,
+      startCharacter + text.length
+    )
+    : undefined;
+}
+
+function getMidStatementDiagnostic(
+  line: string,
+  lineIndex: number,
+  text: string,
+  startCharacter: number
+): SyntaxDiagnostic | undefined {
+  if (/^Mid\$?\s*\(.+\)\s*=\s*\S/i.test(text)) {
+    return undefined;
+  }
+
+  return createMalformedStatementDiagnostic(
+    'Mid statement must include a parenthesized target and assignment.',
+    lineIndex,
+    startCharacter,
+    startCharacter + text.length
+  );
+}
+
+function getOnStatementDiagnostic(lineIndex: number, text: string, startCharacter: number): SyntaxDiagnostic | undefined {
+  if (/^On\s+Error\s+Resume\s+Next\s*$/i.test(text)) {
+    return undefined;
+  }
+  if (/^On\s+Error\s+GoTo\s+\S/i.test(text)) {
+    return undefined;
+  }
+  if (/^On\s+\S.+\s+Go(?:To|Sub)\s+\S/i.test(text)) {
+    return undefined;
+  }
+  if (/^On\s+Error\s+GoTo\s*$/i.test(text)) {
+    const goto_index = text.search(/\bGoTo\b/i);
+    return createMalformedStatementDiagnostic(
+      'On Error GoTo statement is missing a branch target.',
+      lineIndex,
+      startCharacter + goto_index,
+      startCharacter + text.length
+    );
+  }
+
+  return createMalformedStatementDiagnostic(
+    'On statement is malformed.',
+    lineIndex,
+    startCharacter,
+    startCharacter + text.length
+  );
+}
+
+function getResumeStatementDiagnostic(lineIndex: number, text: string, startCharacter: number): SyntaxDiagnostic | undefined {
+  if (/^Resume\s*$/i.test(text) || /^Resume\s+(?!Next\b)\S+\s*$/i.test(text)) {
+    return undefined;
+  }
+  if (/^Resume\s+Next\s*$/i.test(text)) {
+    return undefined;
+  }
+
+  const extra_match = /^Resume\s+Next\s+(\S.*)$/i.exec(text);
+  if (extra_match !== null) {
+    const extra_start = text.indexOf(extra_match[1]);
+    return createMalformedStatementDiagnostic(
+      'Resume Next cannot include an additional target.',
+      lineIndex,
+      startCharacter + extra_start,
+      startCharacter + text.length
+    );
+  }
+
+  return createMalformedStatementDiagnostic('Resume statement is malformed.', lineIndex, startCharacter, startCharacter + text.length);
+}
+
+function getCloseStatementDiagnostic(lineIndex: number, text: string, startCharacter: number): SyntaxDiagnostic | undefined {
+  const rest = text.replace(/^Close\b/i, '').trim();
+  if (rest === '' || /^#\s*\S+(?:\s*,\s*#\s*\S+)*$/i.test(rest)) {
+    return undefined;
+  }
+
+  const hash_index = text.indexOf('#');
+  return createMalformedStatementDiagnostic(
+    'Close statement has a malformed file number list.',
+    lineIndex,
+    hash_index === -1 ? startCharacter : startCharacter + hash_index,
+    startCharacter + text.length
+  );
+}
+
+function isLineNumberStatement(text: string): boolean {
+  return /^\d+\s*$/.test(text);
+}
+
+function isValidLabelSegment(segment: StatementSegment, text: string): boolean {
+  return segment.terminator !== undefined && /^[A-Za-z_][A-Za-z0-9_]*$/.test(text);
+}
+
+function hasBranchTarget(text: string): boolean {
+  return /^\s*(?:\d+|[A-Za-z_][A-Za-z0-9_]*)\s*$/i.test(text);
+}
+
+function hasTopLevelComma(text: string, startCharacter: number, endCharacter: number): boolean {
+  return splitTopLevelSegments(text, startCharacter, endCharacter).length > 1;
+}
+
+function formatStatementKeyword(keyword: string): string {
+  return keyword[0].toUpperCase() + keyword.slice(1);
+}
+
+function createMalformedStatementDiagnostic(
+  message: string,
+  lineIndex: number,
+  startCharacter: number,
+  endCharacter: number
+): SyntaxDiagnostic {
+  return {
+    code: 'syntax.malformedStatement',
     message,
     range: {
       start: { line: lineIndex, character: startCharacter },
