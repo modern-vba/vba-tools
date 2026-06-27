@@ -603,6 +603,211 @@ test('unexpected-token diagnostics preserve valid statements before and after re
   );
 });
 
+test('syntax diagnostics report malformed Attribute and Option statements', () => {
+  const attribute_line = 'Attribute VB_Name = Worker';
+  const option_base_line = 'Option Base 2';
+  const option_compare_line = 'Option Compare Locale';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        attribute_line,
+        option_base_line,
+        option_compare_line,
+        '',
+        'Public Sub Run()',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Worker.bas'), [
+    {
+      code: 'syntax.malformedAttribute',
+      message: 'Attribute statement is malformed.',
+      range: {
+        start: { line: 0, character: attribute_line.indexOf('Worker') },
+        end: { line: 0, character: attribute_line.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    },
+    {
+      code: 'syntax.malformedOption',
+      message: 'Option Base must be 0 or 1.',
+      range: {
+        start: { line: 1, character: option_base_line.indexOf('2') },
+        end: { line: 1, character: option_base_line.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    },
+    {
+      code: 'syntax.malformedOption',
+      message: 'Option Compare must be Binary, Text, or Database.',
+      range: {
+        start: { line: 2, character: option_compare_line.indexOf('Locale') },
+        end: { line: 2, character: option_compare_line.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    }
+  ]);
+});
+
+test('ModuleIdentity falls back when Attribute VB_Name is absent or malformed', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Fallback.bas',
+      text: [
+        'Attribute VB_Name = FallbackBroken',
+        'Option Explicit'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/Absent.bas',
+      text: 'Option Explicit'
+    }
+  ]);
+
+  assert.deepEqual(getModuleIdentities(project), ['Fallback', 'Absent']);
+});
+
+test('syntax diagnostics ignore valid exported bas cls and frm headers', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Attribute VB_Description = "Worker module"',
+        'Option Explicit',
+        'Option Base 1',
+        'Option Compare Text',
+        'Option Private Module',
+        '',
+        'Public Sub Run()',
+        'End Sub'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/Customer.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "Customer"',
+        'Attribute VB_PredeclaredId = False',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        'End Sub'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/Dialog.frm',
+      text: [
+        'VERSION 5.00',
+        'Begin VB.Form Dialog',
+        '  Caption = "Dialog"',
+        'End',
+        'Attribute VB_Name = "Dialog"',
+        'Attribute VB_PredeclaredId = False',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Worker.bas'), []);
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Customer.cls'), []);
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Dialog.frm'), []);
+});
+
+test('syntax diagnostics report misplaced module header statements', () => {
+  const misplaced_option_line = 'Option Explicit';
+  const misplaced_attribute_line = 'Attribute VB_Name = "LateName"';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        '',
+        'Public Sub Run()',
+        'End Sub',
+        misplaced_option_line,
+        misplaced_attribute_line
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Worker.bas'), [
+    {
+      code: 'syntax.misplacedHeaderStatement',
+      message: 'Module header statement must appear before code members.',
+      range: {
+        start: { line: 4, character: 0 },
+        end: { line: 4, character: misplaced_option_line.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    },
+    {
+      code: 'syntax.misplacedHeaderStatement',
+      message: 'Module header statement must appear before code members.',
+      range: {
+        start: { line: 5, character: 0 },
+        end: { line: 5, character: misplaced_attribute_line.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    }
+  ]);
+});
+
+test('frm header boundary ignores designer text and diagnoses code after Attribute boundary', () => {
+  const malformed_attribute_line = 'Attribute VB_Name = Dialog';
+  const invalid_code_line = 'Option Base 2';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Dialog.frm',
+      text: [
+        'VERSION 5.00',
+        'Begin VB.Form Dialog',
+        '  Caption = "unterminated `',
+        'End',
+        malformed_attribute_line,
+        invalid_code_line,
+        '',
+        'Public Sub Run()',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Dialog.frm'), [
+    {
+      code: 'syntax.malformedAttribute',
+      message: 'Attribute statement is malformed.',
+      range: {
+        start: { line: 4, character: malformed_attribute_line.indexOf('Dialog') },
+        end: { line: 4, character: malformed_attribute_line.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    },
+    {
+      code: 'syntax.malformedOption',
+      message: 'Option Base must be 0 or 1.',
+      range: {
+        start: { line: 5, character: invalid_code_line.indexOf('2') },
+        end: { line: 5, character: invalid_code_line.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    }
+  ]);
+});
+
 test('syntax diagnostics cover cls and frm code while ignoring frm designer text', () => {
   const class_invalid_line = '        "needle", _ \' class';
   const form_invalid_line = '        "needle", _ \' form';
