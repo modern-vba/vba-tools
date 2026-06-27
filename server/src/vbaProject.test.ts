@@ -134,6 +134,267 @@ test('syntax diagnostics ignore valid continuations and apostrophe comments cont
   assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Worker.bas'), []);
 });
 
+test('syntax diagnostics report unterminated string literals', () => {
+  const invalid_line = '    value = "unterminated';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        invalid_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Worker.bas'), [
+    {
+      code: 'syntax.unterminatedStringLiteral',
+      message: 'String literal is missing a closing double quote.',
+      range: {
+        start: { line: 4, character: invalid_line.indexOf('"') },
+        end: { line: 4, character: invalid_line.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    }
+  ]);
+});
+
+test('syntax diagnostics report malformed escaped string literal quotes', () => {
+  const invalid_line = '    value = "malformed ""escape""';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        invalid_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Worker.bas'), [
+    {
+      code: 'syntax.unterminatedStringLiteral',
+      message: 'String literal is missing a closing double quote.',
+      range: {
+        start: { line: 4, character: invalid_line.indexOf('"') },
+        end: { line: 4, character: invalid_line.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    }
+  ]);
+});
+
+test('syntax diagnostics report malformed date literals and invalid source characters', () => {
+  const malformed_date_line = '    started = #not-a-date#';
+  const invalid_character_line = '    value = `bad';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        malformed_date_line,
+        invalid_character_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Worker.bas'), [
+    {
+      code: 'syntax.malformedDateLiteral',
+      message: 'Date literal is malformed.',
+      range: {
+        start: { line: 4, character: malformed_date_line.indexOf('#') },
+        end: { line: 4, character: malformed_date_line.lastIndexOf('#') + 1 }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    },
+    {
+      code: 'syntax.invalidSourceCharacter',
+      message: 'Character cannot begin a supported VBA token.',
+      range: {
+        start: { line: 5, character: invalid_character_line.indexOf('`') },
+        end: { line: 5, character: invalid_character_line.indexOf('`') + 1 }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    }
+  ]);
+});
+
+test('syntax diagnostics report unterminated date literals', () => {
+  const invalid_line = '    started = #1/2/2024';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        invalid_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Worker.bas'), [
+    {
+      code: 'syntax.unterminatedDateLiteral',
+      message: 'Date literal is missing a closing # delimiter.',
+      range: {
+        start: { line: 4, character: invalid_line.indexOf('#') },
+        end: { line: 4, character: invalid_line.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    }
+  ]);
+});
+
+test('syntax diagnostics ignore valid lexical forms and comments', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    Dim ordinary_identifier As String',
+        '    ordinary_identifier = "a ""quoted"" value"',
+        '    Dim started As Date',
+        '    started = #1/2/2024#',
+        '    value = 1 \' #not-a-date# "unterminated `',
+        '    Rem #not-a-date# "unterminated `',
+        '#If VBA7 Then',
+        '    Debug.Print #1',
+        '#End If',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Worker.bas'), []);
+});
+
+test('lexical syntax diagnostics cover cls and frm code while ignoring frm designer text', () => {
+  const class_invalid_line = '    value = "unterminated';
+  const form_invalid_line = '    value = `bad';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        class_invalid_line,
+        'End Sub'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/Dialog.frm',
+      text: [
+        'VERSION 5.00',
+        'Begin VB.Form Dialog',
+        '  Caption = "unterminated `',
+        'End',
+        'Attribute VB_Name = "Dialog"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        form_invalid_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Worker.cls'), [
+    {
+      code: 'syntax.unterminatedStringLiteral',
+      message: 'String literal is missing a closing double quote.',
+      range: {
+        start: { line: 5, character: class_invalid_line.indexOf('"') },
+        end: { line: 5, character: class_invalid_line.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    }
+  ]);
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Dialog.frm'), [
+    {
+      code: 'syntax.invalidSourceCharacter',
+      message: 'Character cannot begin a supported VBA token.',
+      range: {
+        start: { line: 8, character: form_invalid_line.indexOf('`') },
+        end: { line: 8, character: form_invalid_line.indexOf('`') + 1 }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    }
+  ]);
+});
+
+test('lexical syntax diagnostics preserve valid regions and invalid fail-closed behavior', () => {
+  const invalid_line = '    value = "unterminated';
+  const active_line = '        ';
+  const chain_line = '    Application.ActiveWorkbook.Worksheets(1).Range("A1").Fi';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Function ReadValue(ByVal Key As String) As String',
+        'End Function',
+        '',
+        'Public Sub Run()',
+        '    ReadValue(',
+        invalid_line,
+        active_line,
+        'End Sub',
+        '',
+        'Public Sub ValidRegion()',
+        chain_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.equal(getSyntaxDiagnostics(project, 'file:///project/Worker.bas').length, 1);
+  assert.equal(
+    getSignatureHelp(project, {
+      uri: 'file:///project/Worker.bas',
+      position: { line: 9, character: active_line.length }
+    }),
+    undefined
+  );
+  assert.deepEqual(
+    getCompletions(project, {
+      uri: 'file:///project/Worker.bas',
+      position: { line: 13, character: chain_line.length }
+    }).map((item) => ({ label: item.label, detail: item.detail })),
+    [{ label: 'Find', detail: 'Excel.Find' }]
+  );
+});
+
 test('syntax diagnostics cover cls and frm code while ignoring frm designer text', () => {
   const class_invalid_line = '        "needle", _ \' class';
   const form_invalid_line = '        "needle", _ \' form';
