@@ -145,7 +145,12 @@ export interface VbaSemanticToken {
 }
 
 export type SyntaxDiagnosticSeverity = 'error';
-export type SyntaxDiagnosticCode = 'syntax.invalidTrailingCommentContinuation';
+export type SyntaxDiagnosticCode =
+  | 'syntax.invalidTrailingCommentContinuation'
+  | 'syntax.invalidSourceCharacter'
+  | 'syntax.malformedDateLiteral'
+  | 'syntax.unterminatedDateLiteral'
+  | 'syntax.unterminatedStringLiteral';
 
 export interface SyntaxDiagnostic {
   code: SyntaxDiagnosticCode;
@@ -1034,8 +1039,8 @@ function parseModule(file: VbaProjectFile): VbaModule {
   const parsed_identity = parseModuleIdentity(lines);
   const identity = parsed_identity?.name ?? fallbackModuleIdentity(file.uri);
   const code_start_line = getCodeStartLine(file.uri, lines);
-  const parsed_members = parseModuleMembers(file.uri, lines, code_start_line);
   const syntax_diagnostics = collectSyntaxDiagnostics(lines, code_start_line);
+  const parsed_members = parseModuleMembers(file.uri, lines, code_start_line);
 
   return {
     uri: file.uri,
@@ -1077,21 +1082,166 @@ function parseModuleIdentity(lines: string[]): { name: string; range: SourceRang
 function collectSyntaxDiagnostics(lines: string[], codeStartLine: number): SyntaxDiagnostic[] {
   const diagnostics: SyntaxDiagnostic[] = [];
   for (let line_index = codeStartLine; line_index < lines.length; line_index += 1) {
-    const range = getInvalidTrailingCommentContinuationRange(lines[line_index], line_index);
-    if (range === undefined) {
-      continue;
-    }
+    const line = lines[line_index];
+    diagnostics.push(...collectLexicalSyntaxDiagnostics(line, line_index));
 
-    diagnostics.push({
-      code: 'syntax.invalidTrailingCommentContinuation',
-      message: 'Code line-continuation marker cannot be followed by a comment.',
-      range,
-      severity: 'error',
-      source: 'vba-language-server'
-    });
+    const invalid_trailing_comment_range = getInvalidTrailingCommentContinuationRange(line, line_index);
+    if (invalid_trailing_comment_range !== undefined) {
+      diagnostics.push({
+        code: 'syntax.invalidTrailingCommentContinuation',
+        message: 'Code line-continuation marker cannot be followed by a comment.',
+        range: invalid_trailing_comment_range,
+        severity: 'error',
+        source: 'vba-language-server'
+      });
+    }
   }
 
   return diagnostics;
+}
+
+function collectLexicalSyntaxDiagnostics(line: string, lineIndex: number): SyntaxDiagnostic[] {
+  const diagnostics: SyntaxDiagnostic[] = [];
+  let character_index = 0;
+
+  while (character_index < line.length) {
+    const character = line[character_index];
+    if (character === "'" || isRemCommentStart(line, character_index)) {
+      break;
+    }
+
+    if (character === '"') {
+      const string_end = getStringLiteralEnd(line, character_index);
+      if (string_end === undefined) {
+        diagnostics.push({
+          code: 'syntax.unterminatedStringLiteral',
+          message: 'String literal is missing a closing double quote.',
+          range: {
+            start: { line: lineIndex, character: character_index },
+            end: { line: lineIndex, character: line.length }
+          },
+          severity: 'error',
+          source: 'vba-language-server'
+        });
+        break;
+      }
+
+      character_index = string_end;
+      continue;
+    }
+
+    if (character === '#') {
+      if (shouldSkipHashCharacter(line, character_index)) {
+        character_index += 1;
+        continue;
+      }
+
+      const closing_index = line.indexOf('#', character_index + 1);
+      if (closing_index === -1) {
+        diagnostics.push({
+          code: 'syntax.unterminatedDateLiteral',
+          message: 'Date literal is missing a closing # delimiter.',
+          range: {
+            start: { line: lineIndex, character: character_index },
+            end: { line: lineIndex, character: line.length }
+          },
+          severity: 'error',
+          source: 'vba-language-server'
+        });
+        break;
+      }
+
+      if (!isValidDateLiteralText(line.slice(character_index + 1, closing_index).trim())) {
+        diagnostics.push({
+          code: 'syntax.malformedDateLiteral',
+          message: 'Date literal is malformed.',
+          range: {
+            start: { line: lineIndex, character: character_index },
+            end: { line: lineIndex, character: closing_index + 1 }
+          },
+          severity: 'error',
+          source: 'vba-language-server'
+        });
+      }
+
+      character_index = closing_index + 1;
+      continue;
+    }
+
+    if (!isValidSourceCharacter(character)) {
+      diagnostics.push({
+        code: 'syntax.invalidSourceCharacter',
+        message: 'Character cannot begin a supported VBA token.',
+        range: {
+          start: { line: lineIndex, character: character_index },
+          end: { line: lineIndex, character: character_index + 1 }
+        },
+        severity: 'error',
+        source: 'vba-language-server'
+      });
+    }
+
+    character_index += 1;
+  }
+
+  return diagnostics;
+}
+
+function getStringLiteralEnd(line: string, startCharacter: number): number | undefined {
+  let character_index = startCharacter + 1;
+  while (character_index < line.length) {
+    if (line[character_index] !== '"') {
+      character_index += 1;
+      continue;
+    }
+
+    if (line[character_index + 1] === '"') {
+      character_index += 2;
+      continue;
+    }
+
+    return character_index + 1;
+  }
+
+  return undefined;
+}
+
+function shouldSkipHashCharacter(line: string, characterIndex: number): boolean {
+  const before = line.slice(0, characterIndex).trimEnd();
+  if (before === '' && /^#\s*(?:If|ElseIf|Else|End\s+If|Const)\b/i.test(line.slice(characterIndex))) {
+    return true;
+  }
+
+  const previous_character = findPreviousNonWhitespace(line, characterIndex - 1);
+  return previous_character !== undefined && isIdentifierPart(line[previous_character]);
+}
+
+function isValidDateLiteralText(text: string): boolean {
+  if (text.length === 0 || !/[0-9]/.test(text) || /[^0-9A-Za-z\s/:.,-]/.test(text)) {
+    return false;
+  }
+
+  if (!Number.isNaN(Date.parse(text))) {
+    return true;
+  }
+
+  return /^\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AP]M)?$/i.test(text);
+}
+
+function isValidSourceCharacter(character: string): boolean {
+  return /\s/.test(character)
+    || /[A-Za-z0-9_]/.test(character)
+    || character.charCodeAt(0) > 127
+    || '()[]:.,;!?+-*/\\^=&<>$%@'.includes(character);
+}
+
+function isRemCommentStart(line: string, characterIndex: number): boolean {
+  if (!/^Rem\b/i.test(line.slice(characterIndex))) {
+    return false;
+  }
+
+  const before = line.slice(0, characterIndex).trimEnd();
+  return before === '' || before.endsWith(':');
 }
 
 function getInvalidTrailingCommentContinuationRange(line: string, lineIndex: number): SourceRange | undefined {
