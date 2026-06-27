@@ -71,6 +71,127 @@ test('syntax diagnostics report invalid trailing-comment code continuations', ()
   ]);
 });
 
+test('syntax diagnostics report continuation markers missing preceding whitespace', () => {
+  const invalid_line = '    ReadValue(_';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        invalid_line,
+        '        "needle")',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Worker.bas'), [
+    {
+      code: 'syntax.invalidContinuationMarkerSpacing',
+      message: 'Code line-continuation marker must be preceded by whitespace.',
+      range: {
+        start: { line: 4, character: invalid_line.indexOf('_') },
+        end: { line: 4, character: invalid_line.indexOf('_') + 1 }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    }
+  ]);
+});
+
+test('syntax diagnostics report continuation markers followed by source text', () => {
+  const invalid_line = '    Dim value _ As Long';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        invalid_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Worker.bas'), [
+    {
+      code: 'syntax.invalidContinuationMarkerText',
+      message: 'Code line-continuation marker cannot be followed by source text.',
+      range: {
+        start: { line: 4, character: invalid_line.indexOf('_') },
+        end: { line: 4, character: invalid_line.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    }
+  ]);
+});
+
+test('syntax diagnostics report continuation markers without a continued fragment', () => {
+  const invalid_line = '    ReadValue _';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        invalid_line
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Worker.bas'), [
+    {
+      code: 'syntax.incompleteContinuation',
+      message: 'Code line-continuation marker must be followed by continued source text.',
+      range: {
+        start: { line: 4, character: invalid_line.indexOf('_') },
+        end: { line: 4, character: invalid_line.indexOf('_') + 1 }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    }
+  ]);
+});
+
+test('syntax diagnostics report missing continuation markers before continued source text', () => {
+  const invalid_line = '    ReadValue(';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        invalid_line,
+        '        "needle")',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Worker.bas'), [
+    {
+      code: 'syntax.missingContinuationMarker',
+      message: 'Continued source text requires a code line-continuation marker.',
+      range: {
+        start: { line: 4, character: invalid_line.length },
+        end: { line: 4, character: invalid_line.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    }
+  ]);
+});
+
 test('syntax diagnostics return multiple invalid trailing-comment code continuations', () => {
   const first_invalid_line = '        "needle", _ \' first';
   const second_invalid_line = '        "haystack", _ \' second';
@@ -127,6 +248,41 @@ test('syntax diagnostics ignore valid continuations and apostrophe comments cont
         '        "needle", _',
         '        "haystack") \' comment _',
         'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Worker.bas'), []);
+});
+
+test('syntax diagnostics ignore Rem comments containing continuation markers', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    Rem comment _',
+        '    Dim example_val As Long',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Worker.bas'), []);
+});
+
+test('syntax diagnostics ignore Rem comments ending with continuation markers at end of file', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Rem module comment _'
       ].join('\n')
     }
   ]);
@@ -195,6 +351,66 @@ test('syntax diagnostics cover cls and frm code while ignoring frm designer text
   ]);
 });
 
+test('physical-line syntax diagnostics cover cls and frm code while ignoring frm designer text', () => {
+  const class_invalid_line = '    ReadValue(_';
+  const form_invalid_line = '    Dim value _ As Long';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        class_invalid_line,
+        '        "needle")',
+        'End Sub'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/Dialog.frm',
+      text: [
+        'VERSION 5.00',
+        'Begin VB.Form Dialog',
+        '  Caption = "needle" _ As Long',
+        'End',
+        'Attribute VB_Name = "Dialog"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        form_invalid_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Worker.cls'), [
+    {
+      code: 'syntax.invalidContinuationMarkerSpacing',
+      message: 'Code line-continuation marker must be preceded by whitespace.',
+      range: {
+        start: { line: 5, character: class_invalid_line.indexOf('_') },
+        end: { line: 5, character: class_invalid_line.indexOf('_') + 1 }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    }
+  ]);
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Dialog.frm'), [
+    {
+      code: 'syntax.invalidContinuationMarkerText',
+      message: 'Code line-continuation marker cannot be followed by source text.',
+      range: {
+        start: { line: 8, character: form_invalid_line.indexOf('_') },
+        end: { line: 8, character: form_invalid_line.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    }
+  ]);
+});
+
 test('syntax diagnostics are additive to valid regions and preserve invalid fail-closed behavior', () => {
   const invalid_line = '        "id", _ \' invalid continuation';
   const active_line = '        ';
@@ -223,6 +439,53 @@ test('syntax diagnostics are additive to valid regions and preserve invalid fail
   ]);
 
   assert.equal(getSyntaxDiagnostics(project, 'file:///project/Worker.bas').length, 1);
+  assert.equal(
+    getSignatureHelp(project, {
+      uri: 'file:///project/Worker.bas',
+      position: { line: 9, character: active_line.length }
+    }),
+    undefined
+  );
+  assert.deepEqual(
+    getCompletions(project, {
+      uri: 'file:///project/Worker.bas',
+      position: { line: 13, character: chain_line.length }
+    }).map((item) => ({ label: item.label, detail: item.detail })),
+    [{ label: 'Find', detail: 'Excel.Find' }]
+  );
+});
+
+test('physical-line syntax diagnostics preserve valid regions and invalid fail-closed behavior', () => {
+  const invalid_line = '    ReadValue(';
+  const active_line = '        ';
+  const chain_line = '    Application.ActiveWorkbook.Worksheets(1).Range("A1").Fi';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Function ReadValue(ByVal Key As String, ByVal Fallback As String) As String',
+        'End Function',
+        '',
+        'Public Sub Run()',
+        invalid_line,
+        '        "id",',
+        active_line,
+        'End Sub',
+        '',
+        'Public Sub ValidRegion()',
+        chain_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(
+    getSyntaxDiagnostics(project, 'file:///project/Worker.bas').map((diagnostic) => diagnostic.code),
+    ['syntax.missingContinuationMarker']
+  );
   assert.equal(
     getSignatureHelp(project, {
       uri: 'file:///project/Worker.bas',
