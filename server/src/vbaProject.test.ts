@@ -2442,6 +2442,234 @@ test('call syntax diagnostics cover bas cls and frm code while ignoring frm desi
   ]);
 });
 
+test('syntax diagnostics report malformed member access and leading-dot expressions', () => {
+  const missing_dot_member_line = '    Application.ActiveWorkbook.';
+  const missing_bang_member_line = '    recordset!';
+  const leading_dot_line = '    .Find "needle"';
+  const terminated_dot_line = '    Application.ActiveWorkbook. + 1';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Members.bas',
+      text: [
+        'Attribute VB_Name = "Members"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        missing_dot_member_line,
+        missing_bang_member_line,
+        leading_dot_line,
+        terminated_dot_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Members.bas'), [
+    {
+      code: 'syntax.malformedMemberAccess',
+      message: 'Member access is missing a member name.',
+      range: {
+        start: { line: 4, character: missing_dot_member_line.lastIndexOf('.') },
+        end: { line: 4, character: missing_dot_member_line.lastIndexOf('.') + 1 }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    },
+    {
+      code: 'syntax.malformedMemberAccess',
+      message: 'Member access is missing a member name.',
+      range: {
+        start: { line: 5, character: missing_bang_member_line.indexOf('!') },
+        end: { line: 5, character: missing_bang_member_line.indexOf('!') + 1 }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    },
+    {
+      code: 'syntax.malformedMemberAccess',
+      message: 'Leading-dot member access is only valid inside a With block or continued member chain.',
+      range: {
+        start: { line: 6, character: leading_dot_line.indexOf('.') },
+        end: { line: 6, character: leading_dot_line.indexOf('.') + 1 }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    },
+    {
+      code: 'syntax.malformedMemberAccess',
+      message: 'Member access is missing a member name.',
+      range: {
+        start: { line: 7, character: terminated_dot_line.lastIndexOf('.') },
+        end: { line: 7, character: terminated_dot_line.lastIndexOf('.') + 1 }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    }
+  ]);
+});
+
+test('syntax diagnostics ignore valid source host continued and With member chains', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Caller.bas',
+      text: [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    Dim rng As Range',
+        '    rng.Find "needle"',
+        '    Application.ActiveWorkbook.Worksheets(1).Range("A1").Find "needle"',
+        '    Application.ActiveWorkbook _',
+        '        .Worksheets(1) _',
+        '        .Range("A1").Find "needle"',
+        '    With Application.ActiveWorkbook.Worksheets(1).Range("A1")',
+        '        .Find "needle"',
+        '    End With',
+        '    CustomerFactory.CreateCustomer().LookupOrder "A001"',
+        'End Sub'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/CustomerFactory.bas',
+      text: [
+        'Attribute VB_Name = "CustomerFactory"',
+        'Option Explicit',
+        '',
+        'Public Function CreateCustomer() As Customer',
+        'End Function'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/Customer.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "Customer"',
+        'Option Explicit',
+        '',
+        'Public Function LookupOrder(ByVal Key As String) As String',
+        'End Function'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Caller.bas'), []);
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/CustomerFactory.bas'), []);
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Customer.cls'), []);
+});
+
+test('malformed member access regions fail closed without guessed language services', () => {
+  const malformed_completion_line = '    Application.ActiveWorkbook.';
+  const malformed_signature_line = '    .Find("needle", ';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Members.bas',
+      text: [
+        'Attribute VB_Name = "Members"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        malformed_completion_line,
+        malformed_signature_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.equal(getSyntaxDiagnostics(project, 'file:///project/Members.bas').length, 2);
+  assert.deepEqual(getCompletions(project, {
+    uri: 'file:///project/Members.bas',
+    position: { line: 4, character: malformed_completion_line.length }
+  }), []);
+  assert.equal(getSignatureHelp(project, {
+    uri: 'file:///project/Members.bas',
+    position: { line: 5, character: malformed_signature_line.length }
+  }), undefined);
+});
+
+test('member access diagnostics cover bas cls and frm code while ignoring frm designer text', () => {
+  const bas_invalid_line = '    Application.ActiveWorkbook.';
+  const class_invalid_line = '    recordset!';
+  const form_invalid_line = '    .Find "needle"';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Members.bas',
+      text: [
+        'Attribute VB_Name = "Members"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        bas_invalid_line,
+        'End Sub'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/Worker.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        class_invalid_line,
+        'End Sub'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/Dialog.frm',
+      text: [
+        'VERSION 5.00',
+        'Begin VB.Form Dialog',
+        '  Caption = ".Find needle"',
+        'End',
+        'Attribute VB_Name = "Dialog"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        form_invalid_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Members.bas'), [
+    {
+      code: 'syntax.malformedMemberAccess',
+      message: 'Member access is missing a member name.',
+      range: {
+        start: { line: 4, character: bas_invalid_line.lastIndexOf('.') },
+        end: { line: 4, character: bas_invalid_line.lastIndexOf('.') + 1 }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    }
+  ]);
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Worker.cls'), [
+    {
+      code: 'syntax.malformedMemberAccess',
+      message: 'Member access is missing a member name.',
+      range: {
+        start: { line: 5, character: class_invalid_line.indexOf('!') },
+        end: { line: 5, character: class_invalid_line.indexOf('!') + 1 }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    }
+  ]);
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Dialog.frm'), [
+    {
+      code: 'syntax.malformedMemberAccess',
+      message: 'Leading-dot member access is only valid inside a With block or continued member chain.',
+      range: {
+        start: { line: 8, character: form_invalid_line.indexOf('.') },
+        end: { line: 8, character: form_invalid_line.indexOf('.') + 1 }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    }
+  ]);
+});
+
 test('syntax diagnostics cover cls and frm code while ignoring frm designer text', () => {
   const class_invalid_line = '        "needle", _ \' class';
   const form_invalid_line = '        "needle", _ \' form';

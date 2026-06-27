@@ -156,6 +156,7 @@ export type SyntaxDiagnosticCode =
   | 'syntax.malformedBlockStructure'
   | 'syntax.malformedControlFlow'
   | 'syntax.malformedExpression'
+  | 'syntax.malformedMemberAccess'
   | 'syntax.malformedAttribute'
   | 'syntax.malformedDateLiteral'
   | 'syntax.malformedOption'
@@ -389,7 +390,10 @@ export function getCompletions(project: VbaProject, request: CompletionRequest):
   if (current_module === undefined) {
     return [];
   }
-  if (isInMalformedExpressionRegion(current_module, request.position)) {
+  if (
+    isInMalformedExpressionRegion(current_module, request.position)
+    || isInMalformedMemberAccessRegion(current_module, request.position)
+  ) {
     return [];
   }
 
@@ -665,6 +669,9 @@ export function getSignatureHelp(
   if (current_module === undefined) {
     return undefined;
   }
+  if (isInMalformedMemberAccessRegion(current_module, request.position)) {
+    return undefined;
+  }
 
   const call_expression = getCallExpressionAt(current_module.lines, request.position);
   if (call_expression === undefined) {
@@ -761,7 +768,10 @@ export function resolveName(
   if (current_module === undefined) {
     return undefined;
   }
-  if (isInMalformedExpressionRegion(current_module, request.position)) {
+  if (
+    isInMalformedExpressionRegion(current_module, request.position)
+    || isInMalformedMemberAccessRegion(current_module, request.position)
+  ) {
     return undefined;
   }
 
@@ -1109,10 +1119,17 @@ function collectSyntaxDiagnostics(lines: string[], codeStartLine: number): Synta
     ...pre_expression_diagnostics.map((diagnostic) => diagnostic.range.start.line),
     ...expression_diagnostics.map((diagnostic) => diagnostic.range.start.line)
   ]);
+  const call_diagnostics = collectCallSyntaxDiagnostics(lines, codeStartLine, call_skip_lines);
+  const member_access_skip_lines = new Set([
+    ...pre_expression_diagnostics.map((diagnostic) => diagnostic.range.start.line),
+    ...expression_diagnostics.map((diagnostic) => diagnostic.range.start.line),
+    ...call_diagnostics.map((diagnostic) => diagnostic.range.start.line)
+  ]);
   const diagnostics = [
     ...pre_expression_diagnostics,
     ...expression_diagnostics,
-    ...collectCallSyntaxDiagnostics(lines, codeStartLine, call_skip_lines),
+    ...call_diagnostics,
+    ...collectMemberAccessDiagnostics(lines, codeStartLine, member_access_skip_lines),
     ...collectBlockStructureDiagnostics(lines, codeStartLine)
   ];
   const header_diagnostic_lines = new Set(diagnostics.map((diagnostic) => diagnostic.range.start.line));
@@ -4550,6 +4567,209 @@ function createMalformedCallDiagnostic(
   };
 }
 
+type LeadingDotContext = 'none' | 'with' | 'continued';
+
+function collectMemberAccessDiagnostics(
+  lines: string[],
+  codeStartLine: number,
+  skipLines: Set<number>
+): SyntaxDiagnostic[] {
+  const diagnostics: SyntaxDiagnostic[] = [];
+  let skipped_declaration_block: DeclarationBlockKind | undefined;
+  let with_depth = 0;
+
+  for (let line_index = codeStartLine; line_index < lines.length; line_index += 1) {
+    const line = lines[line_index];
+    const code_end = getCodeEndCharacter(line);
+    const structure_text = getCodeTextForStructure(line).trim();
+    if (structure_text === '' || isCommentOnlyLine(line) || isHeaderLine(structure_text)) {
+      continue;
+    }
+
+    const declaration_closer = getDeclarationBlockCloser(line, line_index, code_end);
+    if (skipped_declaration_block !== undefined) {
+      if (declaration_closer?.kind === skipped_declaration_block) {
+        skipped_declaration_block = undefined;
+      }
+      continue;
+    }
+
+    const declaration_header = getDeclarationBlockHeader(line, line_index, code_end);
+    if (declaration_header !== undefined) {
+      skipped_declaration_block = declaration_header.kind;
+      continue;
+    }
+    if (declaration_closer !== undefined) {
+      continue;
+    }
+
+    if (/^End\s+With\b/i.test(structure_text)) {
+      with_depth = Math.max(0, with_depth - 1);
+    }
+
+    if (
+      !skipLines.has(line_index)
+      && collectLexicalSyntaxDiagnostics(line, line_index).length === 0
+      && getInvalidTrailingCommentContinuationRange(line, line_index) === undefined
+    ) {
+      const leading_dot_context = getLeadingDotContext(lines, line_index, with_depth);
+      diagnostics.push(...collectMalformedMemberAccessDiagnosticsForLine(
+        line,
+        line_index,
+        code_end,
+        leading_dot_context
+      ));
+    }
+
+    if (/^With\b/i.test(structure_text) && !/^With\b.*\bThen\b/i.test(structure_text)) {
+      with_depth += 1;
+    }
+  }
+
+  return diagnostics;
+}
+
+function getLeadingDotContext(
+  lines: string[],
+  lineIndex: number,
+  withDepth: number
+): LeadingDotContext {
+  if (withDepth > 0) {
+    return 'with';
+  }
+  return isContinuationTail(lines, lineIndex) ? 'continued' : 'none';
+}
+
+function collectMalformedMemberAccessDiagnosticsForLine(
+  line: string,
+  lineIndex: number,
+  codeEnd: number,
+  leadingDotContext: LeadingDotContext
+): SyntaxDiagnostic[] {
+  const diagnostics: SyntaxDiagnostic[] = [];
+  let character_index = 0;
+  let is_in_string = false;
+
+  while (character_index < codeEnd) {
+    const character = line[character_index];
+    if (is_in_string) {
+      if (character === '"') {
+        if (line[character_index + 1] === '"') {
+          character_index += 2;
+          continue;
+        }
+        is_in_string = false;
+      }
+      character_index += 1;
+      continue;
+    }
+
+    if (character === '"') {
+      is_in_string = true;
+      character_index += 1;
+      continue;
+    }
+
+    if (character !== '.' && character !== '!') {
+      character_index += 1;
+      continue;
+    }
+
+    if (character === '.' && isDecimalPoint(line, character_index, codeEnd)) {
+      character_index += 1;
+      continue;
+    }
+
+    const previous_character = findPreviousNonWhitespace(line, character_index - 1);
+    const is_leading_dot = character === '.'
+      && (previous_character === undefined || line[previous_character] === ':');
+    const member_start = skipWhitespace(line, character_index + 1, codeEnd);
+    if (
+      character === '.'
+      && member_start >= codeEnd
+      && isSingleIdentifierQualifierDot(line, character_index)
+    ) {
+      character_index += 1;
+      continue;
+    }
+
+    if (is_leading_dot) {
+      if (leadingDotContext === 'none') {
+        diagnostics.push(createMalformedMemberAccessDiagnostic(
+          'Leading-dot member access is only valid inside a With block or continued member chain.',
+          lineIndex,
+          character_index,
+          character_index + 1
+        ));
+        character_index += 1;
+        continue;
+      }
+
+      if (
+        leadingDotContext === 'continued'
+        && (member_start >= codeEnd || !isIdentifierStart(line[member_start]))
+      ) {
+        diagnostics.push(createMalformedMemberAccessDiagnostic(
+          'Member access is missing a member name.',
+          lineIndex,
+          character_index,
+          character_index + 1
+        ));
+        character_index += 1;
+        continue;
+      }
+
+      character_index += 1;
+      continue;
+    }
+
+    if (member_start >= codeEnd || !isIdentifierStart(line[member_start])) {
+      diagnostics.push(createMalformedMemberAccessDiagnostic(
+        'Member access is missing a member name.',
+        lineIndex,
+        character_index,
+        character_index + 1
+      ));
+      character_index += 1;
+      continue;
+    }
+
+    character_index += 1;
+  }
+
+  return diagnostics;
+}
+
+function isSingleIdentifierQualifierDot(line: string, dotIndex: number): boolean {
+  const qualifier_text = line.slice(0, dotIndex).trim();
+  return new RegExp(`^${C_IDENTIFIER_PATTERN.source}$`).test(qualifier_text);
+}
+
+function isDecimalPoint(line: string, dotIndex: number, codeEnd: number): boolean {
+  return dotIndex > 0
+    && dotIndex + 1 < codeEnd
+    && /[0-9]/.test(line[dotIndex - 1])
+    && /[0-9]/.test(line[dotIndex + 1]);
+}
+
+function createMalformedMemberAccessDiagnostic(
+  message: string,
+  lineIndex: number,
+  startCharacter: number,
+  endCharacter: number
+): SyntaxDiagnostic {
+  return {
+    code: 'syntax.malformedMemberAccess',
+    message,
+    range: {
+      start: { line: lineIndex, character: startCharacter },
+      end: { line: lineIndex, character: endCharacter }
+    },
+    severity: 'error',
+    source: 'vba-language-server'
+  };
+}
+
 interface StatementSegment {
   start: number;
   end: number;
@@ -6687,6 +6907,14 @@ function findModule(project: VbaProject, uri: string): VbaModule | undefined {
 function isInMalformedExpressionRegion(module: VbaModule, position: SourcePosition): boolean {
   return module.syntaxDiagnostics.some((diagnostic) =>
     diagnostic.code === 'syntax.malformedExpression'
+    && diagnostic.range.start.line === position.line
+    && position.character >= diagnostic.range.start.character
+  );
+}
+
+function isInMalformedMemberAccessRegion(module: VbaModule, position: SourcePosition): boolean {
+  return module.syntaxDiagnostics.some((diagnostic) =>
+    diagnostic.code === 'syntax.malformedMemberAccess'
     && diagnostic.range.start.line === position.line
     && position.character >= diagnostic.range.start.character
   );
