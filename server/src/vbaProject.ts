@@ -149,7 +149,10 @@ export type SyntaxDiagnosticCode =
   | 'syntax.invalidTrailingCommentContinuation'
   | 'syntax.invalidSourceCharacter'
   | 'syntax.invalidStatementSeparator'
+  | 'syntax.malformedAttribute'
   | 'syntax.malformedDateLiteral'
+  | 'syntax.malformedOption'
+  | 'syntax.misplacedHeaderStatement'
   | 'syntax.unexpectedToken'
   | 'syntax.unterminatedDateLiteral'
   | 'syntax.unterminatedStringLiteral';
@@ -1082,8 +1085,13 @@ function parseModuleIdentity(lines: string[]): { name: string; range: SourceRang
 }
 
 function collectSyntaxDiagnostics(lines: string[], codeStartLine: number): SyntaxDiagnostic[] {
-  const diagnostics: SyntaxDiagnostic[] = [];
+  const diagnostics = collectHeaderSyntaxDiagnostics(lines, codeStartLine);
+  const header_diagnostic_lines = new Set(diagnostics.map((diagnostic) => diagnostic.range.start.line));
   for (let line_index = codeStartLine; line_index < lines.length; line_index += 1) {
+    if (header_diagnostic_lines.has(line_index)) {
+      continue;
+    }
+
     const line = lines[line_index];
     const lexical_diagnostics = collectLexicalSyntaxDiagnostics(line, line_index);
     diagnostics.push(...lexical_diagnostics);
@@ -1105,6 +1113,180 @@ function collectSyntaxDiagnostics(lines: string[], codeStartLine: number): Synta
   }
 
   return diagnostics;
+}
+
+function collectHeaderSyntaxDiagnostics(lines: string[], codeStartLine: number): SyntaxDiagnostic[] {
+  const diagnostics: SyntaxDiagnostic[] = [];
+  const first_code_member_line = findFirstCodeMemberLine(lines, codeStartLine);
+
+  for (let line_index = codeStartLine; line_index < lines.length; line_index += 1) {
+    const line = lines[line_index];
+    const malformed_attribute_range = getMalformedAttributeRange(line, line_index);
+    if (malformed_attribute_range !== undefined) {
+      diagnostics.push({
+        code: 'syntax.malformedAttribute',
+        message: 'Attribute statement is malformed.',
+        range: malformed_attribute_range,
+        severity: 'error',
+        source: 'vba-language-server'
+      });
+      continue;
+    }
+
+    const malformed_option = getMalformedOptionDiagnostic(line, line_index);
+    if (malformed_option !== undefined) {
+      diagnostics.push(malformed_option);
+      continue;
+    }
+
+    if (
+      first_code_member_line !== undefined
+      && line_index > first_code_member_line
+      && isMisplaceableHeaderStatement(line)
+    ) {
+      diagnostics.push({
+        code: 'syntax.misplacedHeaderStatement',
+        message: 'Module header statement must appear before code members.',
+        range: getTrimmedLineRange(line, line_index),
+        severity: 'error',
+        source: 'vba-language-server'
+      });
+    }
+  }
+
+  return diagnostics;
+}
+
+function getMalformedAttributeRange(line: string, lineIndex: number): SourceRange | undefined {
+  if (!/^\s*Attribute\b/i.test(line)) {
+    return undefined;
+  }
+
+  const code_end = getCodeEndCharacter(line);
+  const code_text = line.slice(0, code_end).trimEnd();
+  const valid_attribute =
+    /^\s*Attribute\s+[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\s*=\s*(?:"(?:""|[^"])*"|True|False|-?\d+(?:\.\d+)?)\s*$/i.exec(code_text);
+  if (valid_attribute !== null) {
+    return undefined;
+  }
+
+  const equals_index = line.indexOf('=');
+  if (equals_index !== -1) {
+    const value_start = skipWhitespace(line, equals_index + 1, code_end);
+    return {
+      start: { line: lineIndex, character: value_start },
+      end: { line: lineIndex, character: code_end }
+    };
+  }
+
+  return getTrimmedLineRange(line, lineIndex);
+}
+
+function getMalformedOptionDiagnostic(line: string, lineIndex: number): SyntaxDiagnostic | undefined {
+  if (!/^\s*Option\b/i.test(line)) {
+    return undefined;
+  }
+
+  const code_end = getCodeEndCharacter(line);
+  const code_text = line.slice(0, code_end).trimEnd();
+  if (/^\s*Option\s+Explicit\b/i.test(code_text)) {
+    return undefined;
+  }
+  if (/^\s*Option\s+Private\s+Module\s*$/i.test(code_text)) {
+    return undefined;
+  }
+
+  const base_match = /^\s*Option\s+Base\s+(\S+)/i.exec(code_text);
+  if (base_match !== null) {
+    if (/^\s*Option\s+Base\s+[01]\s*$/i.test(code_text)) {
+      return undefined;
+    }
+
+    const value_start = line.indexOf(base_match[1], base_match.index);
+    return {
+      code: 'syntax.malformedOption',
+      message: 'Option Base must be 0 or 1.',
+      range: {
+        start: { line: lineIndex, character: value_start },
+        end: { line: lineIndex, character: code_end }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    };
+  }
+
+  const compare_match = /^\s*Option\s+Compare\s+(\S+)/i.exec(code_text);
+  if (compare_match !== null) {
+    if (/^\s*Option\s+Compare\s+(?:Binary|Text|Database)\s*$/i.test(code_text)) {
+      return undefined;
+    }
+
+    const value_start = line.indexOf(compare_match[1], compare_match.index);
+    return {
+      code: 'syntax.malformedOption',
+      message: 'Option Compare must be Binary, Text, or Database.',
+      range: {
+        start: { line: lineIndex, character: value_start },
+        end: { line: lineIndex, character: code_end }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    };
+  }
+
+  if (/^\s*Option\s+Private\b/i.test(code_text)) {
+    return {
+      code: 'syntax.malformedOption',
+      message: 'Option Private must be followed by Module.',
+      range: getTrimmedLineRange(line, lineIndex),
+      severity: 'error',
+      source: 'vba-language-server'
+    };
+  }
+
+  return {
+    code: 'syntax.malformedOption',
+    message: 'Option statement is malformed.',
+    range: getTrimmedLineRange(line, lineIndex),
+    severity: 'error',
+    source: 'vba-language-server'
+  };
+}
+
+function findFirstCodeMemberLine(lines: string[], codeStartLine: number): number | undefined {
+  for (let line_index = codeStartLine; line_index < lines.length; line_index += 1) {
+    const line = lines[line_index];
+    const structure_text = getCodeTextForStructure(line).trim();
+    if (
+      structure_text === ''
+      || isCommentOnlyLine(line)
+      || isHeaderStatementLine(line)
+      || /^VERSION\b/i.test(structure_text)
+    ) {
+      continue;
+    }
+
+    return line_index;
+  }
+
+  return undefined;
+}
+
+function isHeaderStatementLine(line: string): boolean {
+  return /^\s*(?:Attribute|Option)\b/i.test(line);
+}
+
+function isMisplaceableHeaderStatement(line: string): boolean {
+  return /^\s*Option\b/i.test(line) || /^\s*Attribute\s+VB_Name\b/i.test(line);
+}
+
+function getTrimmedLineRange(line: string, lineIndex: number): SourceRange {
+  const start = line.search(/\S/);
+  const end = line.trimEnd().length;
+  return {
+    start: { line: lineIndex, character: start === -1 ? 0 : start },
+    end: { line: lineIndex, character: end }
+  };
 }
 
 function collectLexicalSyntaxDiagnostics(line: string, lineIndex: number): SyntaxDiagnostic[] {
@@ -1891,8 +2073,8 @@ function getCodeStartLine(uri: string, lines: string[]): number {
     return 0;
   }
 
-  const attribute_line = lines.findIndex((line) => /^\s*Attribute\s+VB_Name\s*=/i.test(line));
-  return attribute_line === -1 ? 0 : attribute_line;
+  const attribute_line = lines.findIndex((line) => /^\s*Attribute\s+VB_Name\b/i.test(line));
+  return attribute_line === -1 ? lines.length : attribute_line;
 }
 
 function parseParameterDefinitions(
