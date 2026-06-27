@@ -2927,6 +2927,207 @@ test('syntax diagnostics ignore valid executable statement catalog forms', () =>
   assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Statements.bas'), []);
 });
 
+test('syntax diagnostics report malformed conditional compilation directives', () => {
+  const missing_const_name_line = '#Const = 1';
+  const missing_then_line = '#If DEBUG';
+  const missing_elseif_expression_line = '#ElseIf Then';
+  const else_trailing_line = '#Else extra';
+  const unexpected_end_line = '#End If';
+  const missing_end_line = '#If DEBUG Then';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Directives.bas',
+      text: [
+        'Attribute VB_Name = "Directives"',
+        'Option Explicit',
+        missing_const_name_line,
+        missing_then_line,
+        '#If DEBUG Then',
+        missing_elseif_expression_line,
+        else_trailing_line,
+        '#End If',
+        unexpected_end_line,
+        missing_end_line,
+        '',
+        'Public Sub StillIndexed()',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Directives.bas'), [
+    {
+      code: 'syntax.malformedConditionalCompilation',
+      message: '#Const directive is missing a name.',
+      range: {
+        start: { line: 2, character: missing_const_name_line.indexOf('=') },
+        end: { line: 2, character: missing_const_name_line.indexOf('=') + 1 }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    },
+    {
+      code: 'syntax.malformedConditionalCompilation',
+      message: '#If directive must include Then.',
+      range: {
+        start: { line: 3, character: missing_then_line.indexOf('#If') },
+        end: { line: 3, character: missing_then_line.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    },
+    {
+      code: 'syntax.malformedConditionalCompilation',
+      message: '#ElseIf directive is missing an expression.',
+      range: {
+        start: { line: 5, character: missing_elseif_expression_line.indexOf('Then') },
+        end: { line: 5, character: missing_elseif_expression_line.indexOf('Then') + 'Then'.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    },
+    {
+      code: 'syntax.malformedConditionalCompilation',
+      message: '#Else directive cannot include trailing text.',
+      range: {
+        start: { line: 6, character: else_trailing_line.indexOf('extra') },
+        end: { line: 6, character: else_trailing_line.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    },
+    {
+      code: 'syntax.malformedConditionalCompilation',
+      message: 'Unexpected #End If without matching #If.',
+      range: {
+        start: { line: 8, character: unexpected_end_line.indexOf('#End') },
+        end: { line: 8, character: unexpected_end_line.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    },
+    {
+      code: 'syntax.malformedConditionalCompilation',
+      message: '#If directive is missing #End If.',
+      range: {
+        start: { line: 9, character: missing_end_line.indexOf('#If') },
+        end: { line: 9, character: missing_end_line.indexOf('#If') + '#If'.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    }
+  ]);
+  assert.equal(getModuleMemberRanges(project, 'file:///project/Directives.bas').length, 1);
+});
+
+test('syntax diagnostics report malformed conditional compilation expressions', () => {
+  const trailing_operator_line = '#If DEBUG And Then';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Directives.bas',
+      text: [
+        'Attribute VB_Name = "Directives"',
+        'Option Explicit',
+        trailing_operator_line,
+        '#End If'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Directives.bas'), [
+    {
+      code: 'syntax.malformedConditionalCompilation',
+      message: 'Conditional compilation expression is missing an operand after this operator.',
+      range: {
+        start: { line: 2, character: trailing_operator_line.indexOf('And') },
+        end: { line: 2, character: trailing_operator_line.indexOf('And') + 'And'.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    }
+  ]);
+});
+
+test('syntax diagnostics ignore valid conditional compilation directives and inactive-looking text', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Directives.bas',
+      text: [
+        'Attribute VB_Name = "Directives"',
+        'Option Explicit',
+        '#Const DEBUG = True',
+        '#If DEBUG Then',
+        'Public Sub Active()',
+        '    value = "#End If"',
+        "    '#Else",
+        'End Sub',
+        '#ElseIf VBA7 Then',
+        'Public Sub Alternate()',
+        'End Sub',
+        '#Else',
+        'Public Sub Fallback()',
+        'End Sub',
+        '#End If'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Directives.bas'), []);
+});
+
+test('conditional compilation diagnostics cover cls and frm code while ignoring frm designer text', () => {
+  const class_invalid_line = '#Else';
+  const form_invalid_line = '#If FORM_FLAG';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        class_invalid_line
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/Dialog.frm',
+      text: [
+        'VERSION 5.00',
+        'Begin VB.Form Dialog',
+        '  Caption = "#If DESIGNER Then"',
+        'End',
+        'Attribute VB_Name = "Dialog"',
+        'Option Explicit',
+        form_invalid_line
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Worker.cls'), [
+    {
+      code: 'syntax.malformedConditionalCompilation',
+      message: 'Unexpected #Else without matching #If.',
+      range: {
+        start: { line: 3, character: class_invalid_line.indexOf('#Else') },
+        end: { line: 3, character: class_invalid_line.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    }
+  ]);
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Dialog.frm'), [
+    {
+      code: 'syntax.malformedConditionalCompilation',
+      message: '#If directive must include Then.',
+      range: {
+        start: { line: 6, character: form_invalid_line.indexOf('#If') },
+        end: { line: 6, character: form_invalid_line.length }
+      },
+      severity: 'error',
+      source: 'vba-language-server'
+    }
+  ]);
+});
+
 test('syntax diagnostics cover cls and frm code while ignoring frm designer text', () => {
   const class_invalid_line = '        "needle", _ \' class';
   const form_invalid_line = '        "needle", _ \' form';
