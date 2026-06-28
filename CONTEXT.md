@@ -73,6 +73,10 @@ _Avoid_: comment, note, description
 The structured call shape for a callable `VbaDefinition` or `HostDefinition`. It includes the displayed signature label, ordered parameters, optional parameter metadata, parameter passing metadata, parameter type names, default values, return type names, and parameter documentation when that documentation is available from source comments or host catalog metadata.
 _Avoid_: parameter list, call text, method shape
 
+**NamedArgument**:
+A call argument that uses a top-level `Identifier:=` prefix to select a `CallableSignature` parameter by name. A `NamedArgument` belongs to the caller's argument syntax, not to the `CallableSignature` metadata itself.
+_Avoid_: named parameter, keyword argument, signature parameter
+
 **HostSignatureDiscovery**:
 The process of collecting `CallableSignature` and type metadata for `HostDefinition`s from an available `HostApplication` catalog source. It enriches host metadata so editor features can show accurate signature help without guessing signatures from member names alone.
 _Avoid_: COM refresh, member scan, metadata scrape

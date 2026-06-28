@@ -251,6 +251,7 @@ interface CallExpression {
   name: string;
   nameStart: number;
   activeParameter: number;
+  namedArgumentName?: string;
   chain?: MemberChainExpression;
 }
 
@@ -698,13 +699,22 @@ export function getSignatureHelp(
   }
 
   if (resolution.source === 'host') {
-    return getHostSignatureHelp(resolution.definition, call_expression.activeParameter);
+    return getHostSignatureHelp(
+      resolution.definition,
+      call_expression.activeParameter,
+      call_expression.namedArgumentName
+    );
   }
 
   const definition = findDefinitionByLocation(project, resolution.definition);
   return definition?.signature === undefined
     ? undefined
-    : getSourceSignatureHelp(project, definition, call_expression.activeParameter);
+    : getSourceSignatureHelp(
+        project,
+        definition,
+        call_expression.activeParameter,
+        call_expression.namedArgumentName
+      );
 }
 
 export function getDefinition(
@@ -4666,6 +4676,8 @@ function findPreviousTopLevelComma(
 
     if (character === '"') {
       is_in_string = true;
+    } else if (character === "'") {
+      break;
     } else if (character === '(') {
       paren_depth += 1;
     } else if (character === ')' && paren_depth > 0) {
@@ -7853,6 +7865,7 @@ function getCallExpressionAt(
     name: target_segment.name,
     nameStart: target_segment.range.start.character,
     activeParameter: countTopLevelCommas(line.slice(open_paren + 1, effective_character)),
+    namedArgumentName: getNamedArgumentNameInActiveArgument(line, open_paren + 1, effective_character),
     chain
   };
 }
@@ -7882,8 +7895,36 @@ function getContinuedCallExpressionAt(
     name: target_segment.name,
     nameStart: target_segment.range.start.character,
     activeParameter: countTopLevelCommas(logical_source.text.slice(open_paren + 1)),
+    namedArgumentName: getNamedArgumentNameInActiveArgument(
+      logical_source.text,
+      open_paren + 1,
+      logical_source.text.length
+    ),
     chain
   };
+}
+
+function getNamedArgumentNameInActiveArgument(
+  text: string,
+  argumentListStart: number,
+  cursorCharacter: number
+): string | undefined {
+  const previous_comma = findPreviousTopLevelComma(text, argumentListStart, cursorCharacter);
+  const active_argument_start = previous_comma === undefined
+    ? argumentListStart
+    : previous_comma + 1;
+  const name_start = skipWhitespace(text, active_argument_start, cursorCharacter);
+  const name_token = readIdentifierTokenAt(text, name_start, cursorCharacter);
+  if (name_token === undefined) {
+    return undefined;
+  }
+
+  const separator_start = skipWhitespace(text, name_token.end, cursorCharacter);
+  return separator_start + 1 < cursorCharacter
+    && text[separator_start] === ':'
+    && text[separator_start + 1] === '='
+    ? name_token.text
+    : undefined;
 }
 
 function parseMemberChainEndingBeforeSource(
@@ -8091,17 +8132,23 @@ function findDefinitionByLocation(
 function getSourceSignatureHelp(
   project: VbaProject,
   definition: VbaDefinition,
-  activeParameter: number
+  activeParameter: number,
+  namedArgumentName?: string
 ): SignatureHelpResult | undefined {
   if (definition.signature === undefined) {
     return undefined;
   }
 
+  const selected_parameter = selectActiveSignatureParameter(
+    definition.signature,
+    activeParameter,
+    namedArgumentName
+  );
   const documentation = findDocumentationForDefinition(project, definition);
   const parameter_docs = getParameterDocumentation(documentation);
   return toSignatureHelpResult(
     definition.signature,
-    activeParameter,
+    selected_parameter,
     renderSignatureDocumentation(documentation),
     (parameter) => parameter_docs.get(parameter.name.toLowerCase()) ?? renderSourceCallableParameterMetadata(parameter)
   );
@@ -8109,18 +8156,41 @@ function getSourceSignatureHelp(
 
 function getHostSignatureHelp(
   definition: HostDefinition,
-  activeParameter: number
+  activeParameter: number,
+  namedArgumentName?: string
 ): SignatureHelpResult | undefined {
   if (definition.signature === undefined) {
     return undefined;
   }
 
-  return toSignatureHelpResult(
+  const selected_parameter = selectActiveSignatureParameter(
     definition.signature,
     activeParameter,
+    namedArgumentName
+  );
+  return toSignatureHelpResult(
+    definition.signature,
+    selected_parameter,
     definition.signature.documentation ?? definition.documentation,
     (parameter) => parameter.documentation ?? renderCallableParameterMetadata(parameter)
   );
+}
+
+function selectActiveSignatureParameter(
+  signature: CallableSignature,
+  fallbackParameter: number,
+  namedArgumentName?: string
+): number {
+  if (namedArgumentName === undefined) {
+    return fallbackParameter;
+  }
+
+  const matches = signature.parameters
+    .map((parameter, index) => ({ parameter, index }))
+    .filter(({ parameter }) => parameter.name !== '' && sameName(parameter.name, namedArgumentName));
+  return matches.length === 1
+    ? matches[0].index
+    : fallbackParameter;
 }
 
 function toSignatureHelpResult(
