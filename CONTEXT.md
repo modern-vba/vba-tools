@@ -109,6 +109,10 @@ _Avoid_: COM refresh, object member scan, signature-only discovery
 A call syntax where the caller writes a callable name or member chain as a statement target, then statement-call spacing and optional argument text, without an opening `(` after the callable. A `ParenthesisFreeCall` belongs to the caller's statement syntax, not to the `CallableSignature` metadata itself.
 _Avoid_: unparenthesized call, no-paren call, parenthesis-free call statement
 
+**NamedArgument**:
+A call argument that uses a top-level `Identifier:=` prefix to select a `CallableSignature` parameter by name. A `NamedArgument` belongs to the caller's argument syntax, not to the `CallableSignature` metadata itself.
+_Avoid_: named parameter, keyword argument, signature parameter
+
 **HostSignatureDiscovery**:
 The part of `HostTypeLibraryDiscovery` that collects `CallableSignature` and callable type metadata for `HostDefinition`s. It enriches host metadata so editor features can show accurate signature help without guessing signatures from member names alone.
 _Avoid_: COM refresh, member scan, full type-library discovery

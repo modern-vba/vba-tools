@@ -7874,6 +7874,225 @@ test('signature help displays documented parameters and return value for parenth
   });
 });
 
+test('signature help selects source parameters by named argument', () => {
+  const call_line = '    ReadValue("id", matchcase:=True';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Function ReadValue(ByVal Key As String, Optional ByVal Fallback As String = "n/a", Optional ByVal MatchCase As Boolean = False) As String',
+        'End Function',
+        '',
+        'Public Sub Run()',
+        call_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  const signatureHelp = getSignatureHelp(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 7, character: call_line.length }
+  });
+
+  assert.equal(signatureHelp?.activeParameter, 2);
+});
+
+test('signature help selects HostDefinition parameters by named argument', () => {
+  const call_line = '    Application.ActiveWorkbook.Worksheets(1).Range("A1").Find("needle", LookAt:=xlWhole';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Caller.bas',
+      text: [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        call_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  const signatureHelp = getSignatureHelp(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 4, character: call_line.length }
+  });
+
+  assert.equal(signatureHelp?.activeParameter, 3);
+});
+
+test('signature help preserves comma-count fallback for unknown and ambiguous named arguments', () => {
+  const source_call_line = '    ReadValue("id", Unknown:=True';
+  const host_call_line = '    thing.Configure("id", Target:=True';
+  const missing_name_call_line = '    thing.ConfigureMissing("id", Target:=True';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Function ReadValue(ByVal Key As String, Optional ByVal Fallback As String = "n/a", Optional ByVal MatchCase As Boolean = False) As String',
+        'End Function',
+        '',
+        'Public Sub Run()',
+        source_call_line,
+        '    Dim thing As TestThing',
+        host_call_line,
+        missing_name_call_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ], {
+    hostDefinitions: [
+      {
+        name: 'TestThing',
+        kind: 'class',
+        hostApplication: 'excel',
+        members: [
+          {
+            name: 'Configure',
+            kind: 'function',
+            hostApplication: 'excel',
+            signature: {
+              label: 'Configure(Key, Target, Target)',
+              parameters: [
+                { name: 'Key' },
+                { name: 'Target' },
+                { name: 'Target' }
+              ]
+            }
+          },
+          {
+            name: 'ConfigureMissing',
+            kind: 'function',
+            hostApplication: 'excel',
+            signature: {
+              label: 'ConfigureMissing(Key, Target)',
+              parameters: [
+                { name: 'Key' },
+                { name: '', label: 'Target' }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  });
+
+  assert.equal(getSignatureHelp(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 7, character: source_call_line.length }
+  })?.activeParameter, 1);
+  assert.equal(getSignatureHelp(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 9, character: host_call_line.length }
+  })?.activeParameter, 1);
+  assert.equal(getSignatureHelp(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 10, character: missing_name_call_line.length }
+  })?.activeParameter, 1);
+});
+
+test('signature help preserves comma-count fallback until named argument syntax is complete before the cursor', () => {
+  const call_line = '    ReadValue("id", matchcase:=True';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Function ReadValue(ByVal Key As String, Optional ByVal Fallback As String = "n/a", Optional ByVal MatchCase As Boolean = False) As String',
+        'End Function',
+        '',
+        'Public Sub Run()',
+        call_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  const cursor_before_separator = call_line.indexOf(':');
+  assert.equal(getSignatureHelp(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 7, character: cursor_before_separator }
+  })?.activeParameter, 1);
+});
+
+test('signature help ignores named-argument separators outside the active argument prefix', () => {
+  const string_call_line = '    ReadValue("MatchCase:=True", ';
+  const comment_call_line = '    ReadValue("id", \' comment, MatchCase:=True';
+  const nested_call_line = '    ReadValue(BuildValue(MatchCase:=True), ';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Function ReadValue(ByVal Key As String, Optional ByVal Fallback As String = "n/a", Optional ByVal MatchCase As Boolean = False) As String',
+        'End Function',
+        '',
+        'Public Function BuildValue(Optional ByVal MatchCase As Boolean = False) As String',
+        'End Function',
+        '',
+        'Public Sub Run()',
+        string_call_line,
+        comment_call_line,
+        nested_call_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.equal(getSignatureHelp(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 10, character: string_call_line.length }
+  })?.activeParameter, 1);
+  assert.equal(getSignatureHelp(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 11, character: comment_call_line.length }
+  })?.activeParameter, 1);
+  assert.equal(getSignatureHelp(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 12, character: nested_call_line.length }
+  })?.activeParameter, 1);
+});
+
+test('signature help selects source parameters by named argument in continued argument lists', () => {
+  const active_line = '        matchcase:=True';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Function ReadValue(ByVal Key As String, Optional ByVal Fallback As String = "n/a", Optional ByVal MatchCase As Boolean = False) As String',
+        'End Function',
+        '',
+        'Public Sub Run()',
+        '    ReadValue( _',
+        '        "id", _',
+        active_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  const signatureHelp = getSignatureHelp(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 9, character: active_line.length }
+  });
+
+  assert.equal(signatureHelp?.activeParameter, 2);
+});
+
 test('signature help remains active for source continued argument lists', () => {
   const active_line = '        ';
   const project = buildVbaProject([
