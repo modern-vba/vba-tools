@@ -105,6 +105,10 @@ _Avoid_: parameter list, call text, method shape
 The process of collecting host catalog metadata from an available Office type library for an enabled `HostApplication`. It may provide `HostEnum`, `HostEnumMember`, `HostConstant`, `CallableSignature`, type, value, and documentation metadata.
 _Avoid_: COM refresh, object member scan, signature-only discovery
 
+**ParenthesisFreeCall**:
+A call syntax where the caller writes a callable name or member chain as a statement target, then statement-call spacing and optional argument text, without an opening `(` after the callable. A `ParenthesisFreeCall` belongs to the caller's statement syntax, not to the `CallableSignature` metadata itself.
+_Avoid_: unparenthesized call, no-paren call, parenthesis-free call statement
+
 **HostSignatureDiscovery**:
 The part of `HostTypeLibraryDiscovery` that collects `CallableSignature` and callable type metadata for `HostDefinition`s. It enriches host metadata so editor features can show accurate signature help without guessing signatures from member names alone.
 _Avoid_: COM refresh, member scan, full type-library discovery

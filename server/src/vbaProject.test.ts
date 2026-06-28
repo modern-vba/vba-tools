@@ -8905,7 +8905,7 @@ test('ordinary apostrophe comments are ignored by hover and signature help', () 
   });
 });
 
-test('signature help ignores parenthesis-free calls', () => {
+test('signature help activates for source ParenthesisFreeCall statements', () => {
   const project = buildVbaProject([
     {
       uri: 'file:///project/Worker.bas',
@@ -8930,7 +8930,366 @@ test('signature help ignores parenthesis-free calls', () => {
     position: { line: 9, character: 15 }
   });
 
-  assert.equal(signatureHelp, undefined);
+  assert.deepEqual(signatureHelp, {
+    label: 'ReadValue(Key)',
+    activeParameter: 0,
+    documentation: 'Reads a value.',
+    parameters: [
+      {
+        label: 'Key',
+        documentation: 'Key to read.'
+      }
+    ]
+  });
+});
+
+test('signature help activates for host ParenthesisFreeCall statements', () => {
+  const call_line = '    rng.Find "needle", ';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    Dim rng As Range',
+        call_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ], {
+    hostDefinitions: [
+      {
+        name: 'Range',
+        kind: 'class',
+        hostApplication: 'excel',
+        members: [
+          {
+            name: 'Find',
+            kind: 'function',
+            hostApplication: 'excel',
+            typeName: 'Range',
+            signature: {
+              label: 'Find(What, Optional After) As Range',
+              returnTypeName: 'Range',
+              documentation: 'Finds specific information in a range.',
+              parameters: [
+                {
+                  name: 'What',
+                  typeName: 'Variant',
+                  documentation: 'The data to search for.'
+                },
+                {
+                  name: 'After',
+                  label: 'Optional After',
+                  optional: true,
+                  typeName: 'Variant',
+                  documentation: 'The cell after which the search begins.'
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  });
+
+  const signatureHelp = getSignatureHelp(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 5, character: call_line.length }
+  });
+
+  assert.deepEqual(signatureHelp, {
+    label: 'Find(What, Optional After) As Range',
+    activeParameter: 1,
+    documentation: 'Finds specific information in a range.',
+    parameters: [
+      {
+        label: 'What',
+        documentation: 'The data to search for.'
+      },
+      {
+        label: 'Optional After',
+        documentation: 'The cell after which the search begins.'
+      }
+    ]
+  });
+});
+
+test('signature help activates for source member-chain ParenthesisFreeCall statements', () => {
+  const call_line = '    CustomerFactory.CreateCustomer().LookupOrder "A001", ';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Caller.bas',
+      text: [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        call_line,
+        'End Sub'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/CustomerFactory.bas',
+      text: [
+        'Attribute VB_Name = "CustomerFactory"',
+        'Option Explicit',
+        '',
+        'Public Function CreateCustomer() As Customer',
+        'End Function'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/Customer.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "Customer"',
+        'Option Explicit',
+        '',
+        "'* @brief Looks up an order.",
+        "'* @param Key Order key.",
+        "'* @return Order name.",
+        'Public Function LookupOrder(ByVal Key As String, Optional ByVal Fallback As String = "n/a") As String',
+        'End Function'
+      ].join('\n')
+    }
+  ]);
+
+  const signatureHelp = getSignatureHelp(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 4, character: call_line.length }
+  });
+
+  assert.deepEqual(signatureHelp, {
+    label: 'LookupOrder(Key, Optional Fallback) As String',
+    activeParameter: 1,
+    documentation: 'Looks up an order.\n\n@return Order name.',
+    parameters: [
+      { label: 'Key', documentation: 'Order key.' },
+      { label: 'Optional Fallback', documentation: 'String Optional. Default: "n/a".' }
+    ]
+  });
+});
+
+test('signature help activates for WithReceiver ParenthesisFreeCall statements', () => {
+  const call_line = '        .Find "needle", ';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Caller.bas',
+      text: [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    With Application.ActiveWorkbook.Worksheets(1).Range("A1")',
+        call_line,
+        '    End With',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  const signatureHelp = getSignatureHelp(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 5, character: call_line.length }
+  });
+
+  assert.equal(
+    signatureHelp?.label,
+    'Find(What, Optional After, Optional LookIn, Optional LookAt, Optional SearchOrder, Optional SearchDirection, Optional MatchCase, Optional MatchByte, Optional SearchFormat) As Range'
+  );
+  assert.equal(signatureHelp?.activeParameter, 1);
+  assert.equal(signatureHelp?.documentation, 'Finds specific information in a range.');
+});
+
+test('signature help selects ParenthesisFreeCall parameters by named argument', () => {
+  const call_line = '    rng.Find "needle", LookAt:=xlWhole';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    Dim rng As Range',
+        call_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ], {
+    hostDefinitions: [
+      {
+        name: 'Range',
+        kind: 'class',
+        hostApplication: 'excel',
+        members: [
+          {
+            name: 'Find',
+            kind: 'function',
+            hostApplication: 'excel',
+            signature: {
+              label: 'Find(What, Optional After, Optional LookAt) As Range',
+              returnTypeName: 'Range',
+              parameters: [
+                { name: 'What' },
+                { name: 'After', label: 'Optional After', optional: true },
+                { name: 'LookAt', label: 'Optional LookAt', optional: true }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  });
+
+  const signatureHelp = getSignatureHelp(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 5, character: call_line.length }
+  });
+
+  assert.equal(signatureHelp?.activeParameter, 2);
+});
+
+test('signature help counts only top-level ParenthesisFreeCall argument separators', () => {
+  const call_line = '    Invoke (BuildValue(1, 2)), "a,b", ';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Sub Invoke(ByVal First As String, ByVal Second As Variant, ByVal Third As Variant)',
+        'End Sub',
+        '',
+        'Public Function BuildValue(ByVal Left As Integer, ByVal Right As Integer) As Variant',
+        'End Function',
+        '',
+        'Public Sub Run()',
+        call_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  const signatureHelp = getSignatureHelp(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 10, character: call_line.length }
+  });
+
+  assert.equal(signatureHelp?.activeParameter, 2);
+});
+
+test('signature help fails closed for unsupported ParenthesisFreeCall shapes', () => {
+  const no_space_line = '    ReadValue';
+  const assignment_line = '    ReadValue = "id"';
+  const unresolved_line = '    MissingValue ';
+  const keyword_line = '    If ReadValue ';
+  const call_keyword_line = '    Call ReadValue ';
+  const continuation_line = '    ReadValue _';
+  const missing_signature_line = '    rng.Clear ';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Function ReadValue(ByVal Key As String) As String',
+        'End Function',
+        '',
+        'Public Sub Run()',
+        '    Dim rng As Range',
+        no_space_line,
+        assignment_line,
+        unresolved_line,
+        keyword_line,
+        call_keyword_line,
+        continuation_line,
+        missing_signature_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ], {
+    hostDefinitions: [
+      {
+        name: 'Range',
+        kind: 'class',
+        hostApplication: 'excel',
+        members: [
+          {
+            name: 'Clear',
+            kind: 'function',
+            hostApplication: 'excel'
+          }
+        ]
+      }
+    ]
+  });
+
+  const uri = 'file:///project/Worker.bas';
+  assert.equal(getSignatureHelp(project, {
+    uri,
+    position: { line: 8, character: no_space_line.length }
+  }), undefined);
+  assert.equal(getSignatureHelp(project, {
+    uri,
+    position: { line: 9, character: assignment_line.length }
+  }), undefined);
+  assert.equal(getSignatureHelp(project, {
+    uri,
+    position: { line: 10, character: unresolved_line.length }
+  }), undefined);
+  assert.equal(getSignatureHelp(project, {
+    uri,
+    position: { line: 11, character: keyword_line.length }
+  }), undefined);
+  assert.equal(getSignatureHelp(project, {
+    uri,
+    position: { line: 12, character: call_keyword_line.length }
+  }), undefined);
+  assert.equal(getSignatureHelp(project, {
+    uri,
+    position: { line: 13, character: continuation_line.length }
+  }), undefined);
+  assert.equal(getSignatureHelp(project, {
+    uri,
+    position: { line: 14, character: missing_signature_line.length }
+  }), undefined);
+});
+
+test('signature help uses the current ParenthesisFreeCall statement segment', () => {
+  const call_line = '    ReadValue "a:b" : Invoke "id", ';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Sub ReadValue(ByVal Key As String)',
+        'End Sub',
+        '',
+        'Public Sub Invoke(ByVal Key As String, ByVal Fallback As String)',
+        'End Sub',
+        '',
+        'Public Sub Run()',
+        call_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  const signatureHelp = getSignatureHelp(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 10, character: call_line.length }
+  });
+
+  assert.equal(signatureHelp?.label, 'Invoke(Key, Fallback)');
+  assert.equal(signatureHelp?.activeParameter, 1);
 });
 
 test('hover falls back to interface DocumentationComment through Implements', () => {

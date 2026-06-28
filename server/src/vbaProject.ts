@@ -8342,7 +8342,8 @@ function getCallExpressionAt(
   const effective_character = Math.min(position.character, line.length);
   const open_paren = findActiveCallOpenParen(line, effective_character);
   if (open_paren === undefined) {
-    return getContinuedCallExpressionAt(lines, position, effective_character);
+    return getContinuedCallExpressionAt(lines, position, effective_character)
+      ?? getParenthesisFreeCallExpressionAt(lines, position, effective_character);
   }
 
   const chain = parseContinuedMemberChainEndingBefore(lines, position.line, open_paren)
@@ -8357,6 +8358,204 @@ function getCallExpressionAt(
     nameStart: target_segment.range.start.character,
     activeParameter: countTopLevelCommas(line.slice(open_paren + 1, effective_character)),
     chain
+  };
+}
+
+function getParenthesisFreeCallExpressionAt(
+  lines: string[],
+  position: SourcePosition,
+  effectiveCharacter: number
+): CallExpression | undefined {
+  const line = lines[position.line] ?? '';
+  const code_end = getCodeEndCharacter(line);
+  if (
+    effectiveCharacter > code_end
+    || getCodeContinuationMarkerStart(line) !== undefined
+    || (position.line > 0 && getCodeContinuationMarkerStart(lines[position.line - 1] ?? '') !== undefined)
+  ) {
+    return undefined;
+  }
+
+  const segment = getStatementSegmentAtPosition(line, effectiveCharacter);
+  if (segment === undefined) {
+    return undefined;
+  }
+
+  const segment_start = skipWhitespace(line, segment.start, segment.end);
+  const segment_end = trimEndIndex(line, segment.end);
+  if (segment_start >= segment_end) {
+    return undefined;
+  }
+
+  const first_token = readIdentifierTokenAt(line, segment_start, segment_end);
+  if (
+    first_token !== undefined
+    && (
+      first_token.lowerText === 'call'
+      || first_token.lowerText === 'raiseevent'
+      || first_token.lowerText === 'set'
+      || first_token.lowerText === 'let'
+      || shouldSkipCallDiagnosticsForStatement(first_token.lowerText)
+    )
+  ) {
+    return undefined;
+  }
+
+  const target = readParenthesisFreeCallableTargetAt(line, position.line, segment_start, segment_end);
+  const target_segment = target?.chain.segments.at(-1);
+  if (target === undefined || target_segment === undefined || target_segment.hasCall) {
+    return undefined;
+  }
+
+  const argument_start = skipWhitespace(line, target.targetEnd, segment_end);
+  if (argument_start <= target.targetEnd || line[argument_start] === '=') {
+    return undefined;
+  }
+
+  if (effectiveCharacter <= target.targetEnd) {
+    return undefined;
+  }
+
+  return {
+    name: target_segment.name,
+    nameStart: target_segment.range.start.character,
+    activeParameter: countTopLevelCommas(line.slice(target.targetEnd, effectiveCharacter)),
+    namedArgumentName: getNamedArgumentNameInActiveArgument(line, target.targetEnd, effectiveCharacter),
+    chain: target.chain
+  };
+}
+
+function getStatementSegmentAtPosition(line: string, positionCharacter: number): StatementSegment | undefined {
+  const code_end = getCodeEndCharacter(line);
+  if (positionCharacter > code_end) {
+    return undefined;
+  }
+
+  let segment_start = 0;
+  let character_index = 0;
+  let is_in_string = false;
+  let paren_depth = 0;
+
+  while (character_index < code_end) {
+    const character = line[character_index];
+    if (is_in_string) {
+      if (character === '"') {
+        if (line[character_index + 1] === '"') {
+          character_index += 2;
+          continue;
+        }
+        is_in_string = false;
+      }
+      character_index += 1;
+      continue;
+    }
+
+    if (character === '"') {
+      is_in_string = true;
+    } else if (character === '(') {
+      paren_depth += 1;
+    } else if (character === ')' && paren_depth > 0) {
+      paren_depth -= 1;
+    } else if (character === ':' && line[character_index + 1] !== '=' && paren_depth === 0) {
+      if (positionCharacter <= character_index) {
+        return {
+          start: segment_start,
+          end: character_index,
+          terminator: character_index,
+          text: line.slice(segment_start, character_index)
+        };
+      }
+      segment_start = character_index + 1;
+    }
+
+    character_index += 1;
+  }
+
+  return {
+    start: segment_start,
+    end: code_end,
+    text: line.slice(segment_start, code_end)
+  };
+}
+
+function readParenthesisFreeCallableTargetAt(
+  line: string,
+  lineIndex: number,
+  startCharacter: number,
+  endCharacter: number
+): { chain: MemberChainExpression; targetEnd: number } | undefined {
+  let character_index = skipWhitespace(line, startCharacter, endCharacter);
+  let uses_with_receiver = false;
+  if (line[character_index] === '.') {
+    uses_with_receiver = true;
+    character_index = skipWhitespace(line, character_index + 1, endCharacter);
+  }
+
+  const segments: MemberChainSegment[] = [];
+  while (character_index < endCharacter) {
+    character_index = skipWhitespace(line, character_index, endCharacter);
+    const identifier = readIdentifierAt(line, character_index);
+    if (identifier === undefined || identifier.end > endCharacter) {
+      return undefined;
+    }
+
+    const segment: MemberChainSegment = {
+      name: identifier.name,
+      range: {
+        start: { line: lineIndex, character: identifier.start },
+        end: { line: lineIndex, character: identifier.end }
+      },
+      hasCall: false
+    };
+
+    const after_identifier = identifier.end;
+    const next_code = skipWhitespace(line, after_identifier, endCharacter);
+    if (line[next_code] === '(') {
+      const close_paren = findMatchingParen(line, next_code, endCharacter);
+      if (close_paren === undefined) {
+        return undefined;
+      }
+
+      const after_call = skipWhitespace(line, close_paren + 1, endCharacter);
+      if (line[after_call] === '.') {
+        segment.hasCall = true;
+        segments.push(segment);
+        character_index = after_call + 1;
+        continue;
+      }
+
+      if (next_code === after_identifier) {
+        segment.hasCall = true;
+      }
+      segments.push(segment);
+      return {
+        chain: toMemberChainExpression(segments, uses_with_receiver),
+        targetEnd: after_identifier
+      };
+    }
+
+    segments.push(segment);
+    if (line[next_code] !== '.') {
+      return {
+        chain: toMemberChainExpression(segments, uses_with_receiver),
+        targetEnd: after_identifier
+      };
+    }
+
+    character_index = next_code + 1;
+  }
+
+  return undefined;
+}
+
+function toMemberChainExpression(
+  segments: MemberChainSegment[],
+  usesWithReceiver: boolean
+): MemberChainExpression {
+  return {
+    segments,
+    targetSegmentIndex: segments.length - 1,
+    usesWithReceiver
   };
 }
 

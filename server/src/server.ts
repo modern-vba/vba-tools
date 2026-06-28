@@ -71,7 +71,7 @@ connection.onInitialize((_params: InitializeParams): InitializeResult => {
       },
       documentFormattingProvider: true,
       signatureHelpProvider: {
-        triggerCharacters: ['(', ',']
+        triggerCharacters: ['(', ',', ' ']
       },
       semanticTokensProvider: {
         legend: {
