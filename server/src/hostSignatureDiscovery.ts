@@ -420,7 +420,9 @@ function isHostDefinition(value: unknown): value is HostDefinition {
   return typeof candidate.name === 'string'
     && (candidate.kind === undefined || isHostDefinitionKind(candidate.kind))
     && (candidate.hostApplication === undefined || isHostApplication(candidate.hostApplication))
+    && (candidate.parentName === undefined || typeof candidate.parentName === 'string')
     && (candidate.documentation === undefined || typeof candidate.documentation === 'string')
+    && (candidate.value === undefined || typeof candidate.value === 'string')
     && (candidate.typeName === undefined || typeof candidate.typeName === 'string')
     && (candidate.signature === undefined || isCallableSignature(candidate.signature))
     && (candidate.members === undefined || isHostDefinitionArray(candidate.members));
@@ -460,7 +462,8 @@ function isHostDefinitionKind(value: unknown): boolean {
     || value === 'property'
     || value === 'function'
     || value === 'enum'
-    || value === 'enumMember';
+    || value === 'enumMember'
+    || value === 'constant';
 }
 
 function isHostApplication(value: unknown): value is HostApplication {

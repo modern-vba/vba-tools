@@ -17,6 +17,18 @@ _Avoid_: symbol, item, thing
 A definition supplied by an enabled `HostApplication` rather than by exported source files in a `VbaProject`. Office object model members such as Excel workbook APIs, Word document APIs, PowerPoint presentation APIs, and Access database APIs are `HostDefinition`s, and they retain their originating `HostApplication`.
 _Avoid_: built-in, standard library, external symbol
 
+**HostEnum**:
+An Office host enumeration supplied by an enabled `HostApplication`. Its members are `HostEnumMember`s, and both the enum and its members retain their originating `HostApplication`.
+_Avoid_: VBA enum, project enum, built-in enum
+
+**HostEnumMember**:
+A named value that belongs to a `HostEnum`, commonly written in VBA as an Office constant such as `xlUp` or `wdStory`. When enum membership is known, use `HostEnumMember` rather than `HostConstant`.
+_Avoid_: host constant, magic value, literal
+
+**HostConstant**:
+A named value supplied by an enabled `HostApplication` whose `HostEnum` membership is not known or does not exist. Prefer `HostEnumMember` for Office named values that can be tied to a host enum.
+_Avoid_: enum member, language constant, intrinsic constant
+
 **HostApplication**:
 An Office application whose object model can supply `HostDefinition`s for a `VbaProject`. Excel, Word, PowerPoint, and Access are separate `HostApplication`s even though they all use VBA.
 _Avoid_: language, runtime, library
@@ -141,6 +153,24 @@ Domain Expert: "An `Event` is a `VbaDefinition`. Event handler procedure names a
 
 Dev: "Where do Office object model completions come from?"
 Domain Expert: "They are `HostDefinition`s supplied by enabled `HostApplication`s, even when the language server stores or discovers their metadata locally."
+
+Dev: "Is `xlUp` a `HostConstant`?"
+Domain Expert: "Not when the catalog knows it belongs to an Excel enum. Then it is a `HostEnumMember`; `HostConstant` is reserved for host-supplied named values without known `HostEnum` membership."
+
+Dev: "Do callers need to write a host enum qualifier to use `xlUp`?"
+Domain Expert: "No. A `HostEnumMember` belongs to a `HostEnum` in catalog metadata, but VBA source commonly references it as an unqualified named value when `NameResolution` can select one candidate."
+
+Dev: "Is `XlDirection` itself a host definition?"
+Domain Expert: "Yes. A `HostEnum` is a root `HostDefinition` that can participate in completion, hover, semantic tokens, casing normalization, and type annotations when its `HostApplication` is enabled."
+
+Dev: "Does `XlDirection.xlUp` mean the same thing as `xlUp`?"
+Domain Expert: "Not in the baseline model. `HostEnum` membership is catalog metadata for a `HostEnumMember`; enum-qualified member access is a separate reference form from ordinary unqualified or `HostApplication`-qualified host references."
+
+Dev: "If two enabled hosts define the same enum member name, does the member behave differently from other host definitions?"
+Domain Expert: "No. Unqualified `HostEnumMember` and `HostConstant` references follow normal `NameResolution`: the `MainHostApplication` can break a host tie, and equal-rank non-main host matches remain ambiguous."
+
+Dev: "If one host defines the same enum member name in two different host enums, should the main host break the tie?"
+Domain Expert: "No. The `MainHostApplication` can break ties between host applications, not between multiple same-name `HostEnumMember`s inside the same host. That unqualified reference remains ambiguous unless a future enum-qualified reference form selects the enum."
 
 Dev: "Does enabling Access also enable DAO and ADO completions?"
 Domain Expert: "No. Access contributes its `HostApplication` object model; DAO and ADO are separate `ReferenceLibrary` candidates."

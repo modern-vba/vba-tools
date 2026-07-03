@@ -78,6 +78,14 @@ export const C_OFFICE_HOST_CATALOG_SNAPSHOT: Partial<Record<HostApplication, Hos
           }
         }
       ]
+    },
+    {
+      name: 'XlDirection',
+      kind: 'enum',
+      documentation: 'Specifies the direction in which to move.',
+      members: [
+        { name: 'xlUp', kind: 'enumMember', documentation: 'Up.', value: '-4162' }
+      ]
     }
   ],
   word: [
@@ -155,6 +163,14 @@ export const C_OFFICE_HOST_CATALOG_SNAPSHOT: Partial<Record<HostApplication, Hos
         { name: 'Text', kind: 'property', documentation: 'Returns or sets the selected text.', typeName: 'String' },
         { name: 'Range', kind: 'property', documentation: 'Returns the selection range.', typeName: 'Range' }
       ]
+    },
+    {
+      name: 'WdUnits',
+      kind: 'enum',
+      documentation: 'Specifies a unit of measure to use.',
+      members: [
+        { name: 'wdStory', kind: 'enumMember', documentation: 'A story.', value: '6' }
+      ]
     }
   ],
   powerpoint: [
@@ -210,6 +226,14 @@ export const C_OFFICE_HOST_CATALOG_SNAPSHOT: Partial<Record<HostApplication, Hos
         { name: 'Name', kind: 'property', documentation: 'Returns the shape name.', typeName: 'String' },
         { name: 'TextFrame', kind: 'property', documentation: 'Returns the text frame for the shape.', typeName: 'TextFrame' },
         { name: 'Visible', kind: 'property', documentation: 'Returns or sets whether the shape is visible.', typeName: 'Boolean' }
+      ]
+    },
+    {
+      name: 'PpSlideLayout',
+      kind: 'enum',
+      documentation: 'Specifies a slide layout.',
+      members: [
+        { name: 'ppLayoutText', kind: 'enumMember', documentation: 'Text.', value: '2' }
       ]
     }
   ],
@@ -270,6 +294,14 @@ export const C_OFFICE_HOST_CATALOG_SNAPSHOT: Partial<Record<HostApplication, Hos
         { name: 'Name', kind: 'property', documentation: 'Returns the report name.', typeName: 'String' },
         { name: 'RecordSource', kind: 'property', documentation: 'Returns or sets the source of records for the report.', typeName: 'String' },
         { name: 'Controls', kind: 'property', documentation: 'Returns the Controls collection.', typeName: 'Controls' }
+      ]
+    },
+    {
+      name: 'AcObjectType',
+      kind: 'enum',
+      documentation: 'Specifies the type of object.',
+      members: [
+        { name: 'acForm', kind: 'enumMember', documentation: 'Form.', value: '2' }
       ]
     }
   ]

@@ -325,6 +325,8 @@ function toLspCompletionItemKind(kind: CompletionEntryKind): CompletionItemKind 
   switch (kind) {
     case 'class':
       return CompletionItemKind.Class;
+    case 'constant':
+      return CompletionItemKind.Constant;
     case 'enum':
       return CompletionItemKind.Enum;
     case 'enumMember':

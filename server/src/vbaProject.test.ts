@@ -35,9 +35,9 @@ test('VbaProject loads the bundled Excel HostDefinition catalog by default', () 
 
   assert.deepEqual(
     catalog.map((definition) => definition.name),
-    ['Application', 'Workbook', 'Worksheet', 'Range']
+    ['Application', 'Workbook', 'Worksheet', 'Range', 'XlDirection']
   );
-  assert.deepEqual(host_names, ['Application', 'Workbook', 'Worksheet', 'Range']);
+  assert.deepEqual(host_names, ['Application', 'Workbook', 'Worksheet', 'Range', 'XlDirection']);
 });
 
 test('syntax diagnostics report invalid trailing-comment code continuations', () => {
@@ -3531,6 +3531,230 @@ test('bundled Excel HostDefinitions appear in completion and hover', () => {
   });
 });
 
+test('bundled Excel HostEnumMember appears in completion and hover', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Caller.bas',
+      text: [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    xl',
+        '    xlUp',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  const completions = getCompletions(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 4, character: 6 }
+  });
+  const hover = getHover(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 5, character: 6 }
+  });
+
+  assert.deepEqual(
+    completions
+      .filter((item) => item.label === 'XlDirection' || item.label === 'xlUp')
+      .map((item) => ({ label: item.label, kind: item.kind, detail: item.detail })),
+    [
+      { label: 'XlDirection', kind: 'enum', detail: 'Excel.XlDirection' },
+      { label: 'xlUp', kind: 'enumMember', detail: 'Excel.XlDirection.xlUp' }
+    ]
+  );
+  assert.deepEqual(hover, {
+    contents: 'Excel.XlDirection.xlUp\n\nValue: -4162\n\nUp.'
+  });
+});
+
+test('bundled HostEnumMembers cover Word PowerPoint and Access HostApplications', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Caller.bas',
+      text: [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    wd',
+        '    pp',
+        '    ac',
+        '    wdStory',
+        '    ppLayoutText',
+        '    acForm',
+        'End Sub'
+      ].join('\n')
+    }
+  ], {
+    mainHostApplication: 'word',
+    additionalHostApplications: ['powerpoint', 'access']
+  });
+
+  assert.deepEqual(
+    getCompletions(project, {
+      uri: 'file:///project/Caller.bas',
+      position: { line: 4, character: 6 }
+    })
+      .filter((item) => item.label === 'WdUnits' || item.label === 'wdStory')
+      .map((item) => ({ label: item.label, kind: item.kind, detail: item.detail })),
+    [
+      { label: 'WdUnits', kind: 'enum', detail: 'Word.WdUnits' },
+      { label: 'wdStory', kind: 'enumMember', detail: 'Word.WdUnits.wdStory' }
+    ]
+  );
+  assert.deepEqual(
+    getCompletions(project, {
+      uri: 'file:///project/Caller.bas',
+      position: { line: 5, character: 6 }
+    })
+      .filter((item) => item.label === 'PpSlideLayout' || item.label === 'ppLayoutText')
+      .map((item) => ({ label: item.label, kind: item.kind, detail: item.detail })),
+    [
+      { label: 'PpSlideLayout', kind: 'enum', detail: 'PowerPoint.PpSlideLayout' },
+      { label: 'ppLayoutText', kind: 'enumMember', detail: 'PowerPoint.PpSlideLayout.ppLayoutText' }
+    ]
+  );
+  assert.deepEqual(
+    getCompletions(project, {
+      uri: 'file:///project/Caller.bas',
+      position: { line: 6, character: 6 }
+    })
+      .filter((item) => item.label === 'AcObjectType' || item.label === 'acForm')
+      .map((item) => ({ label: item.label, kind: item.kind, detail: item.detail })),
+    [
+      { label: 'AcObjectType', kind: 'enum', detail: 'Access.AcObjectType' },
+      { label: 'acForm', kind: 'enumMember', detail: 'Access.AcObjectType.acForm' }
+    ]
+  );
+  assert.deepEqual(getHover(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 7, character: 6 }
+  }), {
+    contents: 'Word.WdUnits.wdStory\n\nValue: 6\n\nA story.'
+  });
+  assert.deepEqual(getHover(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 8, character: 6 }
+  }), {
+    contents: 'PowerPoint.PpSlideLayout.ppLayoutText\n\nValue: 2\n\nText.'
+  });
+  assert.deepEqual(getHover(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 9, character: 6 }
+  }), {
+    contents: 'Access.AcObjectType.acForm\n\nValue: 2\n\nForm.'
+  });
+});
+
+test('host-qualified HostEnumMember references resolve without enabling enum-qualified paths', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Caller.bas',
+      text: [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    Excel.xlUp',
+        '    Excel.XlDirection.xlUp',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getHover(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 4, character: 10 }
+  }), {
+    contents: 'Excel.XlDirection.xlUp\n\nValue: -4162\n\nUp.'
+  });
+  assert.equal(getHover(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 5, character: 22 }
+  }), undefined);
+});
+
+test('HostConstant metadata participates in completion hover and semantic tokens', () => {
+  const constant_line = '    xlHostFlag';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Caller.bas',
+      text: [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    xl',
+        constant_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ], {
+    hostDefinitions: [
+      {
+        name: 'xlHostFlag',
+        kind: 'constant',
+        hostApplication: 'excel',
+        documentation: 'Host flag.',
+        value: '99'
+      }
+    ]
+  });
+
+  const completions = getCompletions(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 4, character: 6 }
+  });
+  const hover = getHover(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 5, character: constant_line.indexOf('Host') }
+  });
+  const tokens = getSemanticTokens(project, 'file:///project/Caller.bas');
+
+  assert.deepEqual(
+    completions.map((item) => ({ label: item.label, kind: item.kind, detail: item.detail })),
+    [{ label: 'xlHostFlag', kind: 'constant', detail: 'Excel.xlHostFlag' }]
+  );
+  assert.deepEqual(hover, {
+    contents: 'Excel.xlHostFlag\n\nValue: 99\n\nHost flag.'
+  });
+  assertSemanticToken(tokens, 5, 4, 14, 'variable');
+});
+
+test('SourceFormatting and SemanticTokens handle HostEnums and HostEnumMembers', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Caller.bas',
+      text: [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        'dim direction as xldirection',
+        'direction = xlup',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  const tokens = getSemanticTokens(project, 'file:///project/Caller.bas');
+
+  assertSemanticToken(tokens, 4, 17, 28, 'enum');
+  assertSemanticToken(tokens, 5, 12, 16, 'enumMember');
+  assert.equal(formatText(project, 'file:///project/Caller.bas'), [
+    'Attribute VB_Name = "Caller"',
+    'Option Explicit',
+    '',
+    'Public Sub Run()',
+    '    Dim direction As XlDirection',
+    '    direction = xlUp',
+    'End Sub'
+  ].join('\n'));
+});
+
 test('main HostApplication selects bundled Word HostDefinitions', () => {
   const project = buildVbaProject([
     {
@@ -3634,7 +3858,9 @@ test('additional HostApplication preserves main host completion and enables host
       { label: 'Documents', detail: 'Word.Documents' },
       { label: 'Document', detail: 'Word.Document' },
       { label: 'Range', detail: 'Word.Range' },
-      { label: 'Selection', detail: 'Word.Selection' }
+      { label: 'Selection', detail: 'Word.Selection' },
+      { label: 'WdUnits', detail: 'Word.WdUnits' },
+      { label: 'wdStory', detail: 'Word.WdUnits.wdStory' }
     ]
   );
 });
@@ -3780,6 +4006,40 @@ test('disabled HostApplication qualifiers do not resolve', () => {
   assert.deepEqual(completions, []);
 });
 
+test('disabled HostApplications do not contribute HostEnumMembers', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Caller.bas',
+      text: [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    wdStory',
+        '    Word.wdStory',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  const unqualified_hover = getHover(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 4, character: 6 }
+  });
+  const qualified_hover = getHover(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 5, character: 11 }
+  });
+  const completions = getCompletions(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 4, character: 8 }
+  });
+
+  assert.equal(unqualified_hover, undefined);
+  assert.equal(qualified_hover, undefined);
+  assert.deepEqual(completions, []);
+});
+
 test('same-name non-main HostDefinitions remain ambiguous for unqualified references and completion', () => {
   const project = buildVbaProject([
     {
@@ -3825,6 +4085,165 @@ test('same-name non-main HostDefinitions remain ambiguous for unqualified refere
   assert.deepEqual(completions, []);
 });
 
+test('source definitions outrank unqualified HostEnumMembers and HostConstants', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Caller.bas',
+      text: [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    Dim xlHostFlag As Long',
+        '    xlUp',
+        '    xlHostFlag = 2',
+        'End Sub'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/Overrides.bas',
+      text: [
+        'Attribute VB_Name = "Overrides"',
+        'Option Explicit',
+        '',
+        'Public Function xlUp() As Long',
+        'End Function'
+      ].join('\n')
+    }
+  ], {
+    hostDefinitions: [
+      {
+        name: 'XlTestEnum',
+        kind: 'enum',
+        hostApplication: 'excel',
+        members: [
+          {
+            name: 'xlUp',
+            kind: 'enumMember',
+            documentation: 'Host enum member.',
+            value: '-4162'
+          }
+        ]
+      },
+      {
+        name: 'xlHostFlag',
+        kind: 'constant',
+        hostApplication: 'excel',
+        documentation: 'Host constant.',
+        value: '99'
+      }
+    ]
+  });
+
+  assert.deepEqual(getDefinition(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 5, character: 6 }
+  }), {
+    uri: 'file:///project/Overrides.bas',
+    range: {
+      start: { line: 3, character: 16 },
+      end: { line: 3, character: 20 }
+    }
+  });
+  assert.deepEqual(getDefinition(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 6, character: 8 }
+  }), {
+    uri: 'file:///project/Caller.bas',
+    range: {
+      start: { line: 4, character: 8 },
+      end: { line: 4, character: 18 }
+    }
+  });
+});
+
+test('same-name HostEnumMembers remain ambiguous across enabled hosts and within a host', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Caller.bas',
+      text: [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    SharedAcrossHosts',
+        '    SharedWithinHost',
+        'End Sub'
+      ].join('\n')
+    }
+  ], {
+    mainHostApplication: 'excel',
+    additionalHostApplications: ['word', 'powerpoint'],
+    hostDefinitions: [
+      {
+        name: 'WordEnum',
+        kind: 'enum',
+        hostApplication: 'word',
+        members: [
+          {
+            name: 'SharedAcrossHosts',
+            kind: 'enumMember',
+            documentation: 'Word member.'
+          }
+        ]
+      },
+      {
+        name: 'PowerPointEnum',
+        kind: 'enum',
+        hostApplication: 'powerpoint',
+        members: [
+          {
+            name: 'SharedAcrossHosts',
+            kind: 'enumMember',
+            documentation: 'PowerPoint member.'
+          }
+        ]
+      },
+      {
+        name: 'FirstExcelEnum',
+        kind: 'enum',
+        hostApplication: 'excel',
+        members: [
+          {
+            name: 'SharedWithinHost',
+            kind: 'enumMember',
+            documentation: 'First Excel member.'
+          }
+        ]
+      },
+      {
+        name: 'SecondExcelEnum',
+        kind: 'enum',
+        hostApplication: 'excel',
+        members: [
+          {
+            name: 'SharedWithinHost',
+            kind: 'enumMember',
+            documentation: 'Second Excel member.'
+          }
+        ]
+      }
+    ]
+  });
+
+  assert.equal(getHover(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 4, character: 8 }
+  }), undefined);
+  assert.deepEqual(getCompletions(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 4, character: 15 }
+  }), []);
+  assert.equal(getHover(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 5, character: 8 }
+  }), undefined);
+  assert.deepEqual(getCompletions(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 5, character: 15 }
+  }), []);
+});
+
 test('PowerPoint and Access bundled HostApplications provide root completion', () => {
   const powerpoint_line = '    Application';
   const access_line = '    Access.';
@@ -3865,7 +4284,9 @@ test('PowerPoint and Access bundled HostApplications provide root completion', (
       { label: 'Application', detail: 'Access.Application' },
       { label: 'DoCmd', detail: 'Access.DoCmd' },
       { label: 'Form', detail: 'Access.Form' },
-      { label: 'Report', detail: 'Access.Report' }
+      { label: 'Report', detail: 'Access.Report' },
+      { label: 'AcObjectType', detail: 'Access.AcObjectType' },
+      { label: 'acForm', detail: 'Access.AcObjectType.acForm' }
     ]
   );
 });
@@ -3937,7 +4358,7 @@ test('Access bundled HostApplication excludes external reference libraries', () 
 
   assert.deepEqual(
     completions.map((item) => item.label),
-    ['Application', 'DoCmd', 'Form', 'Report']
+    ['Application', 'DoCmd', 'Form', 'Report', 'AcObjectType', 'acForm']
   );
 });
 

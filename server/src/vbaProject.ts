@@ -37,6 +37,7 @@ export interface CompletionRequest {
 
 export type CompletionEntryKind =
   | 'class'
+  | 'constant'
   | 'enum'
   | 'enumMember'
   | 'event'
@@ -48,7 +49,7 @@ export type CompletionEntryKind =
   | 'type'
   | 'variable';
 
-export type HostDefinitionKind = 'class' | 'property' | 'function' | 'enum' | 'enumMember';
+export type HostDefinitionKind = 'class' | 'property' | 'function' | 'enum' | 'enumMember' | 'constant';
 export type HostApplication = 'excel' | 'word' | 'powerpoint' | 'access';
 
 export interface CallableParameter {
@@ -73,7 +74,9 @@ export interface HostDefinition {
   name: string;
   kind?: HostDefinitionKind;
   hostApplication?: HostApplication;
+  parentName?: string;
   documentation?: string;
+  value?: string;
   typeName?: string;
   signature?: CallableSignature;
   members?: HostDefinition[];
@@ -419,9 +422,10 @@ export function getCompletions(project: VbaProject, request: CompletionRequest):
       label: definition.name,
       kind: completionKindForVbaDefinition(definition)
     }));
-  const host_candidates = project.hostDefinitions
+  const host_definitions = getUnqualifiedHostDefinitions(project);
+  const host_candidates = host_definitions
     .filter((definition) => prefix === '' || definition.name.toLowerCase().startsWith(prefix))
-    .filter((definition) => isUnqualifiedHostCompletionDefinition(project, definition))
+    .filter((definition) => isUnqualifiedHostCompletionDefinition(project, definition, host_definitions))
     .map((definition) => ({
       label: definition.name,
       kind: completionKindForHostDefinition(definition),
@@ -435,8 +439,12 @@ export function getCompletions(project: VbaProject, request: CompletionRequest):
   ]);
 }
 
-function isUnqualifiedHostCompletionDefinition(project: VbaProject, definition: HostDefinition): boolean {
-  const matches = project.hostDefinitions.filter((candidate) => sameName(candidate.name, definition.name));
+function isUnqualifiedHostCompletionDefinition(
+  project: VbaProject,
+  definition: HostDefinition,
+  hostDefinitions: HostDefinition[] = getUnqualifiedHostDefinitions(project)
+): boolean {
+  const matches = hostDefinitions.filter((candidate) => sameName(candidate.name, definition.name));
   return selectUnqualifiedHostDefinition(project, matches) === definition;
 }
 
@@ -451,9 +459,12 @@ function getRootHostCompletions(
     return undefined;
   }
 
-  return project.hostDefinitions
+  return getUnqualifiedHostDefinitions(project)
     .filter((definition) => definition.hostApplication === host_application)
     .filter((definition) => prefix === '' || definition.name.toLowerCase().startsWith(prefix))
+    .filter((definition, _index, definitions) =>
+      selectHostApplicationQualifiedDefinition(definitions, host_application, definition.name) === definition
+    )
     .map((definition) => ({
       label: definition.name,
       kind: completionKindForHostDefinition(definition),
@@ -864,7 +875,7 @@ export function resolveName(
     return toVbaResolution(project_definition);
   }
 
-  const host_matches = project.hostDefinitions.filter((definition) => sameName(definition.name, identifier));
+  const host_matches = getUnqualifiedHostDefinitions(project).filter((definition) => sameName(definition.name, identifier));
   const host_definition = selectUnqualifiedHostDefinition(project, host_matches);
   if (host_definition !== undefined) {
     return {
@@ -948,7 +959,7 @@ function resolveHostQualifiedDefinition(
   member: string
 ): HostDefinition | undefined {
   const host_path_definition = resolveHostQualifiedPath(project, currentModule, qualifier);
-  if (host_path_definition !== undefined) {
+  if (host_path_definition !== undefined && host_path_definition.kind !== 'enum') {
     return singleMatch(host_path_definition.members?.filter((definition) =>
       sameName(definition.name, member)
     ) ?? []);
@@ -959,9 +970,11 @@ function resolveHostQualifiedDefinition(
     return undefined;
   }
 
-  return singleMatch(project.hostDefinitions.filter((definition) =>
-    definition.hostApplication === host_application && sameName(definition.name, member)
-  ));
+  return selectHostApplicationQualifiedDefinition(
+    getUnqualifiedHostDefinitions(project),
+    host_application,
+    member
+  );
 }
 
 function resolveHostQualifiedPath(
@@ -1018,6 +1031,37 @@ function selectUnqualifiedHostDefinition(
     definition.hostApplication === project.hostApplicationSelection.mainHostApplication
   );
   return singleMatch(main_host_matches);
+}
+
+function selectHostApplicationQualifiedDefinition(
+  definitions: HostDefinition[],
+  hostApplication: HostApplication,
+  name: string
+): HostDefinition | undefined {
+  return singleMatch(definitions.filter((definition) =>
+    definition.hostApplication === hostApplication && sameName(definition.name, name)
+  ));
+}
+
+function getUnqualifiedHostDefinitions(project: VbaProject): HostDefinition[] {
+  return project.hostDefinitions.flatMap((definition) => [
+    definition,
+    ...getUnqualifiedHostEnumMembers(definition)
+  ]);
+}
+
+function getUnqualifiedHostEnumMembers(definition: HostDefinition): HostDefinition[] {
+  if (definition.kind !== 'enum') {
+    return [];
+  }
+
+  return (definition.members ?? [])
+    .filter((member) => member.kind === 'enumMember' || member.kind === 'constant')
+    .map((member) => ({
+      ...member,
+      hostApplication: member.hostApplication ?? definition.hostApplication,
+      parentName: member.parentName ?? definition.name
+    }));
 }
 
 function resolveTypedMemberDefinition(
@@ -7153,10 +7197,12 @@ function resolveMemberChain(
       const host_application = resolveHostApplicationQualifier(project, currentModule, segments[0].name);
       const host_root = host_application === undefined
         ? undefined
-        : singleMatch(project.hostDefinitions.filter((definition) =>
-          definition.hostApplication === host_application && sameName(definition.name, segments[1].name)
-        ));
-      if (host_root !== undefined) {
+        : selectHostApplicationQualifiedDefinition(
+          getUnqualifiedHostDefinitions(project),
+          host_application,
+          segments[1].name
+        );
+      if (host_root !== undefined && (segments.length === 2 || host_root.kind !== 'enum')) {
         current_type_ref = typeRefForHostDefinition(host_root, segments[1].hasCall);
         resolved_segments.push({ resolution: { source: 'host', definition: host_root }, typeRef: current_type_ref });
         segment_index = 2;
@@ -8207,14 +8253,19 @@ function renderDocumentationComment(documentation: DocumentationComment): string
 
 function renderHostDefinitionHover(definition: HostDefinition): string {
   const detail = getHostDefinitionDetail(definition);
+  const value = definition.value === undefined ? undefined : `Value: ${definition.value}`;
   return detail === undefined
-    ? definition.documentation ?? ''
-    : [detail, definition.documentation].filter((section) => section !== undefined && section !== '').join('\n\n');
+    ? [value, definition.documentation].filter((section) => section !== undefined && section !== '').join('\n\n')
+    : [detail, value, definition.documentation].filter((section) => section !== undefined && section !== '').join('\n\n');
 }
 
 function getHostDefinitionDetail(definition: HostDefinition): string | undefined {
   if (definition.hostApplication === undefined) {
     return undefined;
+  }
+
+  if (definition.parentName !== undefined) {
+    return `${formatHostApplicationName(definition.hostApplication)}.${definition.parentName}.${definition.name}`;
   }
 
   return `${formatHostApplicationName(definition.hostApplication)}.${definition.name}`;
@@ -8320,6 +8371,10 @@ function completionKindForVbaDefinition(definition: VbaDefinition): CompletionEn
 }
 
 function completionKindForHostDefinition(definition: HostDefinition): CompletionEntryKind {
+  if (definition.kind === 'constant') {
+    return 'constant';
+  }
+
   return semanticTokenTypeForHostDefinition(definition);
 }
 
@@ -8366,6 +8421,8 @@ function semanticTokenTypeForHostDefinition(definition: HostDefinition): Semanti
       return 'enum';
     case 'enumMember':
       return 'enumMember';
+    case 'constant':
+      return 'variable';
     case 'class':
       return 'class';
     default:
