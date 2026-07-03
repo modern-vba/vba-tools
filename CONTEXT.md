@@ -13,6 +13,14 @@ _Avoid_: workspace, repository, package
 An identifiable declaration in a `VbaProject` that editor features can refer to. It includes modules, classes, forms, procedures, properties, constants, variables, parameters, enums, user-defined types, and events.
 _Avoid_: symbol, item, thing
 
+**SourceConstant**:
+A `Const` declaration defined inside a `VbaProject`. It is a source `VbaDefinition` named value, distinct from a `HostConstant`, a `HostEnumMember`, and intrinsic constants in `LanguageVocabulary`.
+_Avoid_: host constant, enum member, intrinsic constant
+
+**ConditionalCompilationConstant**:
+A named value introduced by a `#Const` directive and referenced by conditional compilation directives such as `#If` and `#ElseIf`. It belongs to conditional compilation, not ordinary `NameResolution`, so it is not a `VbaDefinition`.
+_Avoid_: source constant, host constant, variable
+
 **HostDefinition**:
 A definition supplied by an enabled `HostApplication` rather than by exported source files in a `VbaProject`. Office object model members such as Excel workbook APIs, Word document APIs, PowerPoint presentation APIs, and Access database APIs are `HostDefinition`s, and they retain their originating `HostApplication`.
 _Avoid_: built-in, standard library, external symbol
@@ -54,7 +62,7 @@ An editor diagnostic that reports malformed VBA source syntax in a `VbaProject`.
 _Avoid_: compile error, semantic diagnostic, runtime error
 
 **SemanticToken**:
-A meaning-aware classification of a source range, derived from parsed `VbaProject` information. `SemanticToken`s refine `SyntaxHighlighting` for declarations and references, using standard editor token categories whenever a VBA meaning can be represented by one.
+A meaning-aware classification of a source range, derived from parsed `VbaProject` information. `SemanticToken`s refine `SyntaxHighlighting` for declarations, references, and conditional-compilation names, using standard editor token categories and modifiers whenever a VBA meaning can be represented by them.
 _Avoid_: syntax token, text token
 
 **SourceFormatting**:
@@ -156,6 +164,12 @@ Domain Expert: "They are `HostDefinition`s supplied by enabled `HostApplication`
 
 Dev: "Is `xlUp` a `HostConstant`?"
 Domain Expert: "Not when the catalog knows it belongs to an Excel enum. Then it is a `HostEnumMember`; `HostConstant` is reserved for host-supplied named values without known `HostEnum` membership."
+
+Dev: "Should a source `Const` and a `HostConstant` be highlighted like enum members?"
+Domain Expert: "No. A `HostEnumMember` uses enum-member classification. A `SourceConstant` and a `HostConstant` use readonly variable classification so source and host constants align without implying enum membership."
+
+Dev: "Is `#Const DEBUG = True` a `SourceConstant`?"
+Domain Expert: "No. `DEBUG` is a `ConditionalCompilationConstant`. It should be classified as conditional-compilation metadata, not resolved as an ordinary `VbaDefinition`."
 
 Dev: "Do callers need to write a host enum qualifier to use `xlUp`?"
 Domain Expert: "No. A `HostEnumMember` belongs to a `HostEnum` in catalog metadata, but VBA source commonly references it as an unqualified named value when `NameResolution` can select one candidate."

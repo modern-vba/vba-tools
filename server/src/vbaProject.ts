@@ -140,11 +140,15 @@ export type SemanticTokenType =
   | 'enum'
   | 'enumMember'
   | 'type'
-  | 'event';
+  | 'event'
+  | 'macro';
+
+export type SemanticTokenModifier = 'readonly';
 
 export interface VbaSemanticToken {
   range: SourceRange;
   tokenType: SemanticTokenType;
+  tokenModifiers?: SemanticTokenModifier[];
 }
 
 export type SyntaxDiagnosticSeverity = 'error';
@@ -192,7 +196,12 @@ export const VBA_SEMANTIC_TOKEN_TYPES: SemanticTokenType[] = [
   'enum',
   'enumMember',
   'type',
-  'event'
+  'event',
+  'macro'
+];
+
+export const VBA_SEMANTIC_TOKEN_MODIFIERS: SemanticTokenModifier[] = [
+  'readonly'
 ];
 
 export type NameResolutionResult =
@@ -216,6 +225,7 @@ interface VbaDefinition {
     | 'type'
     | 'typeField'
     | 'event'
+    | 'constant'
     | 'local'
     | 'parameter';
   visibility: 'public' | 'private' | 'local';
@@ -605,6 +615,8 @@ export function getSemanticTokens(project: VbaProject, uri: string): VbaSemantic
   }
 
   for (let line_index = current_module.codeStartLine; line_index < current_module.lines.length; line_index += 1) {
+    tokens.push(...getConditionalCompilationSemanticTokens(current_module.lines[line_index], line_index));
+
     for (const range of getIdentifierRangesInCode(current_module.lines[line_index], line_index)) {
       const resolution = resolveName(project, {
         uri,
@@ -620,15 +632,91 @@ export function getSemanticTokens(project: VbaProject, uri: string): VbaSemantic
       if (token_type === undefined) {
         continue;
       }
+      const token_modifiers = resolution.source === 'host'
+        ? semanticTokenModifiersForHostDefinition(resolution.definition)
+        : semanticTokenModifiersForVbaLocation(project, resolution.definition);
 
-      tokens.push({
+      const token: VbaSemanticToken = {
         range,
         tokenType: token_type
-      });
+      };
+      if (token_modifiers !== undefined && token_modifiers.length > 0) {
+        token.tokenModifiers = token_modifiers;
+      }
+      tokens.push(token);
     }
   }
 
   return uniqueSemanticTokens(tokens).sort(compareSemanticTokens);
+}
+
+function getConditionalCompilationSemanticTokens(line: string, lineIndex: number): VbaSemanticToken[] {
+  const code_end = getCodeEndCharacter(line);
+  const directive_start = skipWhitespace(line, 0, code_end);
+  if (directive_start >= code_end || line[directive_start] !== '#') {
+    return [];
+  }
+
+  const keyword_start = skipWhitespace(line, directive_start + 1, code_end);
+  const keyword = readIdentifierTokenAt(line, keyword_start, code_end);
+  if (keyword === undefined) {
+    return [];
+  }
+
+  if (keyword.lowerText === 'const') {
+    const name_start = skipWhitespace(line, keyword.end, code_end);
+    const name = readIdentifierTokenAt(line, name_start, code_end);
+    return name === undefined
+      ? []
+      : [toMacroSemanticToken(lineIndex, name.start, name.end)];
+  }
+
+  if (keyword.lowerText !== 'if' && keyword.lowerText !== 'elseif') {
+    return [];
+  }
+
+  const tokens: VbaSemanticToken[] = [];
+  let character_index = skipWhitespace(line, keyword.end, code_end);
+  while (character_index < code_end) {
+    const token = readIdentifierTokenAt(line, character_index, code_end);
+    if (token === undefined) {
+      character_index += 1;
+      continue;
+    }
+
+    if (token.lowerText === 'then') {
+      break;
+    }
+
+    if (!isConditionalCompilationExpressionKeyword(token.lowerText)) {
+      tokens.push(toMacroSemanticToken(lineIndex, token.start, token.end));
+    }
+    character_index = token.end;
+  }
+
+  return tokens;
+}
+
+function toMacroSemanticToken(line: number, startCharacter: number, endCharacter: number): VbaSemanticToken {
+  return {
+    range: {
+      start: { line, character: startCharacter },
+      end: { line, character: endCharacter }
+    },
+    tokenType: 'macro'
+  };
+}
+
+function isConditionalCompilationExpressionKeyword(value: string): boolean {
+  return value === 'and'
+    || value === 'or'
+    || value === 'not'
+    || value === 'xor'
+    || value === 'eqv'
+    || value === 'imp'
+    || value === 'mod'
+    || value === 'true'
+    || value === 'false';
 }
 
 export function getDocumentFormattingEdits(
@@ -6004,6 +6092,19 @@ function parseModuleMembers(
       continue;
     }
 
+    const constant_definition = parseSingleSourceConstantDefinition(uri, line, line_index, 'module');
+    if (constant_definition !== undefined) {
+      definitions.push(constant_definition);
+      moduleMembers.push({
+        range: createModuleMemberRange(lines, line_index, line_index),
+        definitions: [constant_definition],
+        procedureScopes: [],
+        withEventsDeclarations: [],
+        implements: []
+      });
+      continue;
+    }
+
     const event_match = /^\s*(?:(Public|Private)\s+)?Event\s+([A-Za-z_][A-Za-z0-9_]*)\b/i.exec(line);
     if (event_match !== null) {
       const visibility = (event_match[1]?.toLowerCase() ?? 'public') as 'public' | 'private';
@@ -6247,6 +6348,57 @@ function parseTypeFieldDefinitions(
   return definitions;
 }
 
+function parseSingleSourceConstantDefinition(
+  uri: string,
+  line: string,
+  lineIndex: number,
+  scope: 'module' | 'procedure'
+): VbaDefinition | undefined {
+  const code_end = getCodeEndCharacter(line);
+  const prefix = getDeclarationListPrefix(line, code_end);
+  if (prefix?.kind !== 'constant') {
+    return undefined;
+  }
+
+  const segments = splitTopLevelSegments(line, prefix.declaratorsStart, code_end);
+  if (segments.length !== 1) {
+    return undefined;
+  }
+
+  const segment = segments[0];
+  const trimmed_start = skipWhitespace(line, segment.start, segment.end);
+  const trimmed_end = trimEndIndex(line, segment.end);
+  const name_token = readIdentifierTokenAt(line, trimmed_start, trimmed_end);
+  if (name_token === undefined || name_token.lowerText === 'as') {
+    return undefined;
+  }
+
+  const equals_index = findTopLevelEquals(line, name_token.end, trimmed_end);
+  const type_annotation_end = equals_index ?? trimmed_end;
+  const type_match = new RegExp(`\\bAs\\s+(${C_TYPE_NAME_PATTERN.source})\\b`, 'i')
+    .exec(line.slice(name_token.end, type_annotation_end));
+  const visibility = scope === 'procedure'
+    ? 'local'
+    : getSourceConstantVisibility(line, code_end);
+
+  return {
+    name: name_token.text,
+    kind: 'constant',
+    visibility,
+    uri,
+    range: {
+      start: { line: lineIndex, character: name_token.start },
+      end: { line: lineIndex, character: name_token.end }
+    },
+    typeName: type_match?.[1]
+  };
+}
+
+function getSourceConstantVisibility(line: string, codeEnd: number): 'public' | 'private' {
+  const first_token = readIdentifierTokenAt(line, skipWhitespace(line, 0, codeEnd), codeEnd);
+  return first_token?.lowerText === 'public' ? 'public' : 'private';
+}
+
 function findBlockEndLine(lines: string[], start_line: number, block_kind: 'enum' | 'type'): number {
   for (let line_index = start_line; line_index < lines.length; line_index += 1) {
     if (new RegExp(`^\\s*End\\s+${block_kind}\\b`, 'i').test(lines[line_index])) {
@@ -6377,6 +6529,12 @@ function parseProcedureDefinitions(
 
   for (let line_index = start_line; line_index < end_line; line_index += 1) {
     const line = lines[line_index];
+    const constant_definition = parseSingleSourceConstantDefinition(uri, line, line_index, 'procedure');
+    if (constant_definition !== undefined) {
+      definitions.push(constant_definition);
+      continue;
+    }
+
     const local_match =
       new RegExp(`^\\s*Dim\\s+(${C_IDENTIFIER_PATTERN.source})\\b(?:\\s+As\\s+(${C_TYPE_NAME_PATTERN.source}))?`, 'i').exec(line);
     if (local_match === null) {
@@ -8366,8 +8524,12 @@ function getModuleKind(uri: string): VbaModuleKind {
 }
 
 function completionKindForVbaDefinition(definition: VbaDefinition): CompletionEntryKind {
+  if (definition.kind === 'constant') {
+    return 'constant';
+  }
+
   const token_type = semanticTokenTypeForVbaDefinition(definition);
-  return token_type === undefined ? 'variable' : token_type;
+  return token_type === undefined ? 'variable' : completionKindForSemanticTokenType(token_type);
 }
 
 function completionKindForHostDefinition(definition: HostDefinition): CompletionEntryKind {
@@ -8375,7 +8537,11 @@ function completionKindForHostDefinition(definition: HostDefinition): Completion
     return 'constant';
   }
 
-  return semanticTokenTypeForHostDefinition(definition);
+  return completionKindForSemanticTokenType(semanticTokenTypeForHostDefinition(definition));
+}
+
+function completionKindForSemanticTokenType(tokenType: SemanticTokenType): CompletionEntryKind {
+  return tokenType === 'macro' ? 'variable' : tokenType;
 }
 
 function semanticTokenTypeForVbaLocation(
@@ -8384,6 +8550,14 @@ function semanticTokenTypeForVbaLocation(
 ): SemanticTokenType | undefined {
   const definition = findDefinitionByLocation(project, location);
   return definition === undefined ? undefined : semanticTokenTypeForVbaDefinition(definition);
+}
+
+function semanticTokenModifiersForVbaLocation(
+  project: VbaProject,
+  location: DefinitionLocation
+): SemanticTokenModifier[] | undefined {
+  const definition = findDefinitionByLocation(project, location);
+  return definition === undefined ? undefined : semanticTokenModifiersForVbaDefinition(definition);
 }
 
 function semanticTokenTypeForVbaDefinition(definition: VbaDefinition): SemanticTokenType | undefined {
@@ -8395,6 +8569,8 @@ function semanticTokenTypeForVbaDefinition(definition: VbaDefinition): SemanticT
     case 'typeField':
       return 'property';
     case 'local':
+      return 'variable';
+    case 'constant':
       return 'variable';
     case 'parameter':
       return 'parameter';
@@ -8409,6 +8585,10 @@ function semanticTokenTypeForVbaDefinition(definition: VbaDefinition): SemanticT
     default:
       return undefined;
   }
+}
+
+function semanticTokenModifiersForVbaDefinition(definition: VbaDefinition): SemanticTokenModifier[] | undefined {
+  return definition.kind === 'constant' ? ['readonly'] : undefined;
 }
 
 function semanticTokenTypeForHostDefinition(definition: HostDefinition): SemanticTokenType {
@@ -8430,6 +8610,10 @@ function semanticTokenTypeForHostDefinition(definition: HostDefinition): Semanti
   }
 }
 
+function semanticTokenModifiersForHostDefinition(definition: HostDefinition): SemanticTokenModifier[] | undefined {
+  return definition.kind === 'constant' ? ['readonly'] : undefined;
+}
+
 function uniqueSemanticTokens(tokens: VbaSemanticToken[]): VbaSemanticToken[] {
   const seen_ranges = new Set<string>();
   const unique_tokens: VbaSemanticToken[] = [];
@@ -8440,7 +8624,8 @@ function uniqueSemanticTokens(tokens: VbaSemanticToken[]): VbaSemanticToken[] {
       token.range.start.character,
       token.range.end.line,
       token.range.end.character,
-      token.tokenType
+      token.tokenType,
+      ...(token.tokenModifiers ?? [])
     ].join(':');
     if (seen_ranges.has(key)) {
       continue;
@@ -8456,5 +8641,6 @@ function uniqueSemanticTokens(tokens: VbaSemanticToken[]): VbaSemanticToken[] {
 function compareSemanticTokens(left: VbaSemanticToken, right: VbaSemanticToken): number {
   return comparePosition(left.range.start, right.range.start)
     || comparePosition(left.range.end, right.range.end)
-    || left.tokenType.localeCompare(right.tokenType);
+    || left.tokenType.localeCompare(right.tokenType)
+    || (left.tokenModifiers ?? []).join(':').localeCompare((right.tokenModifiers ?? []).join(':'));
 }

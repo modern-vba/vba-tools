@@ -44,10 +44,11 @@ import {
   getSignatureHelp,
   RenameEdit,
   SourceRange,
+  VBA_SEMANTIC_TOKEN_MODIFIERS,
   VBA_SEMANTIC_TOKEN_TYPES,
-  VbaSemanticToken,
   VbaProjectFile
 } from './vbaProject';
+import { encodeSemanticTokens } from './semanticTokenEncoding';
 
 const connection = createConnection(ProposedFeatures.all);
 const documents: TextDocuments<TextDocument> = new TextDocuments(TextDocument);
@@ -75,7 +76,7 @@ connection.onInitialize((_params: InitializeParams): InitializeResult => {
       semanticTokensProvider: {
         legend: {
           tokenTypes: [...VBA_SEMANTIC_TOKEN_TYPES],
-          tokenModifiers: []
+          tokenModifiers: [...VBA_SEMANTIC_TOKEN_MODIFIERS]
         },
         full: true
       }
@@ -349,33 +350,4 @@ function toLspCompletionItemKind(kind: CompletionEntryKind): CompletionItemKind 
     default:
       return CompletionItemKind.Function;
   }
-}
-
-function encodeSemanticTokens(tokens: VbaSemanticToken[]): { data: number[] } {
-  const data: number[] = [];
-  let previous_line = 0;
-  let previous_character = 0;
-
-  for (const token of tokens) {
-    const token_type = VBA_SEMANTIC_TOKEN_TYPES.indexOf(token.tokenType);
-    if (token_type === -1) {
-      continue;
-    }
-
-    const line_delta = token.range.start.line - previous_line;
-    const character_delta = line_delta === 0
-      ? token.range.start.character - previous_character
-      : token.range.start.character;
-    data.push(
-      line_delta,
-      character_delta,
-      token.range.end.character - token.range.start.character,
-      token_type,
-      0
-    );
-    previous_line = token.range.start.line;
-    previous_character = token.range.start.character;
-  }
-
-  return { data };
 }

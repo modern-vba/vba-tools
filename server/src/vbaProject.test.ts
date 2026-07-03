@@ -3721,7 +3721,7 @@ test('HostConstant metadata participates in completion hover and semantic tokens
   assert.deepEqual(hover, {
     contents: 'Excel.xlHostFlag\n\nValue: 99\n\nHost flag.'
   });
-  assertSemanticToken(tokens, 5, 4, 14, 'variable');
+  assertSemanticToken(tokens, 5, 4, 14, 'variable', ['readonly']);
 });
 
 test('SourceFormatting and SemanticTokens handle HostEnums and HostEnumMembers', () => {
@@ -8708,12 +8708,194 @@ test('SemanticTokens classify class/form identity, properties, types, events, an
   );
 });
 
+test('SemanticTokens classify SourceConstants as readonly variables', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Caller.bas',
+      text: [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        '',
+        'Public Const ModuleLimit As Long = 10',
+        '',
+        'Public Sub Run()',
+        '    Const ProcedureLimit As Long = 5',
+        '    Dim mutableValue As Long',
+        '    mutableValue = ModuleLimit + ProcedureLimit',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  const tokens = getSemanticTokens(project, 'file:///project/Caller.bas');
+
+  assertSemanticToken(tokens, 3, 13, 24, 'variable', ['readonly']);
+  assertSemanticToken(tokens, 6, 10, 24, 'variable', ['readonly']);
+  assertSemanticToken(tokens, 7, 8, 20, 'variable');
+  assertSemanticToken(tokens, 8, 4, 16, 'variable');
+  assertSemanticToken(tokens, 8, 19, 30, 'variable', ['readonly']);
+  assertSemanticToken(tokens, 8, 33, 47, 'variable', ['readonly']);
+});
+
+test('SourceConstants support source definition behavior and visibility', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Constants.bas',
+      text: [
+        'Attribute VB_Name = "Constants"',
+        'Option Explicit',
+        '',
+        'Public Enum RunMode',
+        '    Manual',
+        'End Enum',
+        '',
+        'Public Const PublicMode As runmode = Manual',
+        'Private Const PrivateLimit As Long = 2',
+        'Const ModuleLimit As Long = 3',
+        '',
+        'Public Sub Run()',
+        '    Const LocalLimit As Long = 4',
+        '    LocalLimit',
+        '    publicmode',
+        'End Sub'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/Caller.bas',
+      text: [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    Pu',
+        '    PublicMode',
+        '    PrivateLimit',
+        '    ModuleLimit',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(
+    getCompletions(project, {
+      uri: 'file:///project/Caller.bas',
+      position: { line: 4, character: 6 }
+    }).map((item) => ({ label: item.label, kind: item.kind })),
+    [{ label: 'PublicMode', kind: 'constant' }]
+  );
+  assert.deepEqual(getDefinition(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 5, character: 8 }
+  }), {
+    uri: 'file:///project/Constants.bas',
+    range: {
+      start: { line: 7, character: 13 },
+      end: { line: 7, character: 23 }
+    }
+  });
+  assert.equal(getDefinition(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 6, character: 8 }
+  }), undefined);
+  assert.equal(getDefinition(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 7, character: 8 }
+  }), undefined);
+
+  const tokens = getSemanticTokens(project, 'file:///project/Constants.bas');
+  assertSemanticToken(tokens, 7, 13, 23, 'variable', ['readonly']);
+  assertSemanticToken(tokens, 7, 27, 34, 'enum');
+  assertSemanticToken(tokens, 7, 37, 43, 'enumMember');
+
+  assert.deepEqual(
+    getRenameEdits(project, {
+      uri: 'file:///project/Caller.bas',
+      position: { line: 5, character: 8 }
+    }, 'DefaultMode')
+      .map((edit) => ({ uri: edit.uri, start: edit.range.start, end: edit.range.end, newText: edit.newText })),
+    [
+      {
+        uri: 'file:///project/Constants.bas',
+        start: { line: 7, character: 13 },
+        end: { line: 7, character: 23 },
+        newText: 'DefaultMode'
+      },
+      {
+        uri: 'file:///project/Constants.bas',
+        start: { line: 14, character: 4 },
+        end: { line: 14, character: 14 },
+        newText: 'DefaultMode'
+      },
+      {
+        uri: 'file:///project/Caller.bas',
+        start: { line: 5, character: 4 },
+        end: { line: 5, character: 14 },
+        newText: 'DefaultMode'
+      }
+    ]
+  );
+  assert.equal(formatText(project, 'file:///project/Constants.bas'), [
+    'Attribute VB_Name = "Constants"',
+    'Option Explicit',
+    '',
+    'Public Enum RunMode',
+    '    Manual',
+    'End Enum',
+    '',
+    'Public Const PublicMode As RunMode = Manual',
+    'Private Const PrivateLimit As Long = 2',
+    'Const ModuleLimit As Long = 3',
+    '',
+    'Public Sub Run()',
+    '    Const LocalLimit As Long = 4',
+    '    LocalLimit',
+    '    PublicMode',
+    'End Sub'
+  ].join('\n'));
+});
+
+test('SemanticTokens classify ConditionalCompilationConstants as macros without ordinary NameResolution', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Caller.bas',
+      text: [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        '#Const DEBUG = True',
+        '#If DEBUG Then',
+        '#ElseIf DEBUG Then',
+        '#End If',
+        '',
+        'Public Sub Run()',
+        '    DEBUG',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  const tokens = getSemanticTokens(project, 'file:///project/Caller.bas');
+
+  assertSemanticToken(tokens, 2, 7, 12, 'macro');
+  assertSemanticToken(tokens, 3, 4, 9, 'macro');
+  assertSemanticToken(tokens, 4, 8, 13, 'macro');
+  assertNoSemanticTokensOnLine(tokens, 8);
+  assert.equal(getDefinition(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 8, character: 6 }
+  }), undefined);
+  assert.deepEqual(getRenameEdits(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 3, character: 5 }
+  }, 'TRACE'), []);
+});
+
 function assertSemanticToken(
   tokens: ReturnType<typeof getSemanticTokens>,
   line: number,
   startCharacter: number,
   endCharacter: number,
-  tokenType: ReturnType<typeof getSemanticTokens>[number]['tokenType']
+  tokenType: ReturnType<typeof getSemanticTokens>[number]['tokenType'],
+  tokenModifiers: readonly string[] = []
 ): void {
   assert.ok(
     tokens.some((token) =>
@@ -8722,9 +8904,21 @@ function assertSemanticToken(
         && token.range.end.line === line
         && token.range.end.character === endCharacter
         && token.tokenType === tokenType
+        && assertTokenModifiersEqual(token.tokenModifiers ?? [], tokenModifiers)
     ),
-    `Expected ${tokenType} token at ${line}:${startCharacter}-${endCharacter}`
+    `Expected ${formatExpectedSemanticToken(tokenType, tokenModifiers)} token at ${line}:${startCharacter}-${endCharacter}`
   );
+}
+
+function assertTokenModifiersEqual(actual: readonly string[], expected: readonly string[]): boolean {
+  return actual.length === expected.length
+    && expected.every((modifier) => actual.includes(modifier));
+}
+
+function formatExpectedSemanticToken(tokenType: string, tokenModifiers: readonly string[]): string {
+  return tokenModifiers.length === 0
+    ? tokenType
+    : `${tokenType}.${tokenModifiers.join('.')}`;
 }
 
 function assertNoSemanticTokensOnLine(tokens: ReturnType<typeof getSemanticTokens>, line: number): void {
