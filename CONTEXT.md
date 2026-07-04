@@ -137,6 +137,10 @@ _Avoid_: with context, current object, implicit type
 An identifier reference written with a qualifier, such as `ModuleIdentity.MemberName`, `variable.MemberName`, or `Word.Application`. When the qualifier names a module, class, or form, only public members of that definition are visible from outside that module; when it names an enabled `HostApplication`, only that host's `HostDefinition`s are visible.
 _Avoid_: dotted lookup, member access, qualified symbol
 
+**HostEnumQualifiedReference**:
+A qualified reference whose qualifier names a `HostEnum` and whose final identifier selects one of that enum's `HostEnumMember`s. It is a host catalog reference form, not `MemberChainResolution`; a `HostApplication` qualifier may appear before the `HostEnum`.
+_Avoid_: member chain, type member access, enum method
+
 **EventReference**:
 A reference to an event definition from either a `RaiseEvent` statement or a `WithEvents` handler name. The MVP resolves `RaiseEvent EventName` within the current module and resolves `WithEventsVariable_EventName` handlers through an explicit `WithEvents` variable declaration.
 _Avoid_: callback, event procedure, handler lookup
@@ -188,7 +192,19 @@ Dev: "Is `XlDirection` itself a host definition?"
 Domain Expert: "Yes. A `HostEnum` is a root `HostDefinition` that can participate in completion, hover, semantic tokens, casing normalization, and type annotations when its `HostApplication` is enabled."
 
 Dev: "Does `XlDirection.xlUp` mean the same thing as `xlUp`?"
-Domain Expert: "Not in the baseline model. `HostEnum` membership is catalog metadata for a `HostEnumMember`; enum-qualified member access is a separate reference form from ordinary unqualified or `HostApplication`-qualified host references."
+Domain Expert: "No. It is a `HostEnumQualifiedReference`: `XlDirection` selects the host enum catalog entry, and `xlUp` selects a `HostEnumMember` from that enum. It is not `MemberChainResolution`."
+
+Dev: "If there is a source module named `XlDirection`, does `XlDirection.xlUp` still force the host enum?"
+Domain Expert: "No. Source `VbaDefinition`s outrank host qualifier names, so `HostEnumQualifiedReference` applies only after source qualifiers fail to resolve."
+
+Dev: "If Excel and Word both define a host enum named `XlDirection`, which enum does `XlDirection.xlUp` use?"
+Domain Expert: "`HostEnumQualifiedReference` follows host `NameResolution`: the `MainHostApplication` can break a cross-host tie, equal-rank non-main host matches stay ambiguous, and same-host duplicate enum names stay ambiguous."
+
+Dev: "What should completion show after `XlDirection.`?"
+Domain Expert: "When `XlDirection` resolves to a `HostEnum`, completion shows that enum's `HostEnumMember`s. It does not switch to runtime receiver `MemberChainResolution`."
+
+Dev: "Should `XlDirection.xlUp` be treated as one synthetic symbol for hover and semantic tokens?"
+Domain Expert: "No. The qualifier keeps its `HostEnum` meaning, and the final identifier keeps its `HostEnumMember` meaning. Hover, semantic tokens, and casing normalization should reuse those existing host definition meanings."
 
 Dev: "If two enabled hosts define the same enum member name, does the member behave differently from other host definitions?"
 Domain Expert: "No. Unqualified `HostEnumMember` and `HostConstant` references follow normal `NameResolution`: the `MainHostApplication` can break a host tie, and equal-rank non-main host matches remain ambiguous."

@@ -3649,7 +3649,7 @@ test('bundled HostEnumMembers cover Word PowerPoint and Access HostApplications'
   });
 });
 
-test('host-qualified HostEnumMember references resolve without enabling enum-qualified paths', () => {
+test('host enum qualified references resolve HostEnumMembers', () => {
   const project = buildVbaProject([
     {
       uri: 'file:///project/Caller.bas',
@@ -3659,6 +3659,7 @@ test('host-qualified HostEnumMember references resolve without enabling enum-qua
         '',
         'Public Sub Run()',
         '    Excel.xlUp',
+        '    XlDirection.xlUp',
         '    Excel.XlDirection.xlUp',
         'End Sub'
       ].join('\n')
@@ -3671,9 +3672,262 @@ test('host-qualified HostEnumMember references resolve without enabling enum-qua
   }), {
     contents: 'Excel.XlDirection.xlUp\n\nValue: -4162\n\nUp.'
   });
+  assert.deepEqual(getHover(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 5, character: 18 }
+  }), {
+    contents: 'Excel.XlDirection.xlUp\n\nValue: -4162\n\nUp.'
+  });
+  assert.deepEqual(getHover(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 6, character: 22 }
+  }), {
+    contents: 'Excel.XlDirection.xlUp\n\nValue: -4162\n\nUp.'
+  });
+});
+
+test('host enum qualified completion offers HostEnumMembers', () => {
+  const enum_line = '    MyDirection.';
+  const host_enum_line = '    Excel.MyDirection.';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Caller.bas',
+      text: [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        enum_line,
+        host_enum_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ], {
+    hostDefinitions: [
+      {
+        name: 'MyDirection',
+        kind: 'enum',
+        hostApplication: 'excel',
+        members: [
+          {
+            name: 'myUp',
+            kind: 'enumMember',
+            documentation: 'Up.'
+          },
+          {
+            name: 'myDown',
+            kind: 'enumMember',
+            documentation: 'Down.'
+          }
+        ]
+      }
+    ]
+  });
+
+  assert.deepEqual(
+    getCompletions(project, {
+      uri: 'file:///project/Caller.bas',
+      position: { line: 4, character: enum_line.length }
+    }).map((item) => ({ label: item.label, kind: item.kind, detail: item.detail })),
+    [
+      { label: 'myUp', kind: 'enumMember', detail: 'Excel.MyDirection.myUp' },
+      { label: 'myDown', kind: 'enumMember', detail: 'Excel.MyDirection.myDown' }
+    ],
+    'unqualified host enum qualifier completion'
+  );
+  assert.deepEqual(
+    getCompletions(project, {
+      uri: 'file:///project/Caller.bas',
+      position: { line: 5, character: host_enum_line.length }
+    }).map((item) => ({ label: item.label, kind: item.kind, detail: item.detail })),
+    [
+      { label: 'myUp', kind: 'enumMember', detail: 'Excel.MyDirection.myUp' },
+      { label: 'myDown', kind: 'enumMember', detail: 'Excel.MyDirection.myDown' }
+    ],
+    'host-plus-enum qualifier completion'
+  );
+});
+
+test('source definitions outrank host enum qualifier names', () => {
+  const enum_line = '    MyDirection.';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Caller.bas',
+      text: [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    MyDirection.myUp',
+        '    Excel.MyDirection.myUp',
+        enum_line,
+        'End Sub'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/MyDirection.bas',
+      text: [
+        'Attribute VB_Name = "MyDirection"',
+        'Option Explicit',
+        '',
+        'Public Function otherMember() As Long',
+        'End Function'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/Excel.bas',
+      text: [
+        'Attribute VB_Name = "Excel"',
+        'Option Explicit',
+        '',
+        'Public Function otherMember() As Long',
+        'End Function'
+      ].join('\n')
+    }
+  ], {
+    hostDefinitions: [
+      {
+        name: 'MyDirection',
+        kind: 'enum',
+        hostApplication: 'excel',
+        members: [
+          {
+            name: 'myUp',
+            kind: 'enumMember',
+            documentation: 'Host enum member.'
+          }
+        ]
+      }
+    ]
+  });
+
   assert.equal(getHover(project, {
     uri: 'file:///project/Caller.bas',
-    position: { line: 5, character: 22 }
+    position: { line: 4, character: 18 }
+  }), undefined);
+  assert.equal(getHover(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 5, character: 24 }
+  }), undefined);
+  assert.deepEqual(getCompletions(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 6, character: enum_line.length }
+  }), []);
+});
+
+test('host enum qualified references follow host ambiguity rules', () => {
+  const non_main_line = '    SharedNonMain.';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Caller.bas',
+      text: [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    SharedMain.sharedMember',
+        '    SharedNonMain.sharedMember',
+        non_main_line,
+        '    DuplicateExcel.sharedMember',
+        'End Sub'
+      ].join('\n')
+    }
+  ], {
+    mainHostApplication: 'excel',
+    additionalHostApplications: ['word', 'powerpoint'],
+    hostDefinitions: [
+      {
+        name: 'SharedMain',
+        kind: 'enum',
+        hostApplication: 'excel',
+        members: [
+          {
+            name: 'sharedMember',
+            kind: 'enumMember',
+            documentation: 'Excel member.'
+          }
+        ]
+      },
+      {
+        name: 'SharedMain',
+        kind: 'enum',
+        hostApplication: 'word',
+        members: [
+          {
+            name: 'sharedMember',
+            kind: 'enumMember',
+            documentation: 'Word member.'
+          }
+        ]
+      },
+      {
+        name: 'SharedNonMain',
+        kind: 'enum',
+        hostApplication: 'word',
+        members: [
+          {
+            name: 'sharedMember',
+            kind: 'enumMember',
+            documentation: 'Word member.'
+          }
+        ]
+      },
+      {
+        name: 'SharedNonMain',
+        kind: 'enum',
+        hostApplication: 'powerpoint',
+        members: [
+          {
+            name: 'sharedMember',
+            kind: 'enumMember',
+            documentation: 'PowerPoint member.'
+          }
+        ]
+      },
+      {
+        name: 'DuplicateExcel',
+        kind: 'enum',
+        hostApplication: 'excel',
+        members: [
+          {
+            name: 'sharedMember',
+            kind: 'enumMember',
+            documentation: 'First Excel member.'
+          }
+        ]
+      },
+      {
+        name: 'DuplicateExcel',
+        kind: 'enum',
+        hostApplication: 'excel',
+        members: [
+          {
+            name: 'sharedMember',
+            kind: 'enumMember',
+            documentation: 'Second Excel member.'
+          }
+        ]
+      }
+    ]
+  });
+
+  assert.deepEqual(getHover(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 4, character: 20 }
+  }), {
+    contents: 'Excel.SharedMain.sharedMember\n\nExcel member.'
+  });
+  assert.equal(getHover(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 5, character: 23 }
+  }), undefined);
+  assert.deepEqual(getCompletions(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 6, character: non_main_line.length }
+  }), []);
+  assert.equal(getHover(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 7, character: 25 }
   }), undefined);
 });
 
@@ -3735,6 +3989,7 @@ test('SourceFormatting and SemanticTokens handle HostEnums and HostEnumMembers',
         'Public Sub Run()',
         'dim direction as xldirection',
         'direction = xlup',
+        'xldirection.xlup',
         'End Sub'
       ].join('\n')
     }
@@ -3744,6 +3999,8 @@ test('SourceFormatting and SemanticTokens handle HostEnums and HostEnumMembers',
 
   assertSemanticToken(tokens, 4, 17, 28, 'enum');
   assertSemanticToken(tokens, 5, 12, 16, 'enumMember');
+  assertSemanticToken(tokens, 6, 0, 11, 'enum');
+  assertSemanticToken(tokens, 6, 12, 16, 'enumMember');
   assert.equal(formatText(project, 'file:///project/Caller.bas'), [
     'Attribute VB_Name = "Caller"',
     'Option Explicit',
@@ -3751,6 +4008,7 @@ test('SourceFormatting and SemanticTokens handle HostEnums and HostEnumMembers',
     'Public Sub Run()',
     '    Dim direction As XlDirection',
     '    direction = xlUp',
+    '    XlDirection.xlUp',
     'End Sub'
   ].join('\n'));
 });
@@ -4007,6 +4265,7 @@ test('disabled HostApplication qualifiers do not resolve', () => {
 });
 
 test('disabled HostApplications do not contribute HostEnumMembers', () => {
+  const disabled_enum_line = '    Word.WdUnits.';
   const project = buildVbaProject([
     {
       uri: 'file:///project/Caller.bas',
@@ -4017,6 +4276,8 @@ test('disabled HostApplications do not contribute HostEnumMembers', () => {
         'Public Sub Run()',
         '    wdStory',
         '    Word.wdStory',
+        '    Word.WdUnits.wdStory',
+        disabled_enum_line,
         'End Sub'
       ].join('\n')
     }
@@ -4030,14 +4291,47 @@ test('disabled HostApplications do not contribute HostEnumMembers', () => {
     uri: 'file:///project/Caller.bas',
     position: { line: 5, character: 11 }
   });
+  const host_enum_qualified_hover = getHover(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 6, character: 22 }
+  });
   const completions = getCompletions(project, {
     uri: 'file:///project/Caller.bas',
     position: { line: 4, character: 8 }
   });
+  const host_enum_qualified_completions = getCompletions(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 7, character: disabled_enum_line.length }
+  });
 
   assert.equal(unqualified_hover, undefined);
   assert.equal(qualified_hover, undefined);
+  assert.equal(host_enum_qualified_hover, undefined);
   assert.deepEqual(completions, []);
+  assert.deepEqual(host_enum_qualified_completions, []);
+});
+
+test('host-plus enum qualified references require matching host metadata', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Caller.bas',
+      text: [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    Word.XlDirection.xlUp',
+        'End Sub'
+      ].join('\n')
+    }
+  ], {
+    additionalHostApplications: ['word']
+  });
+
+  assert.equal(getHover(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 4, character: 22 }
+  }), undefined);
 });
 
 test('same-name non-main HostDefinitions remain ambiguous for unqualified references and completion', () => {
