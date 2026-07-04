@@ -226,6 +226,7 @@ interface VbaDefinition {
     | 'typeField'
     | 'event'
     | 'constant'
+    | 'variable'
     | 'local'
     | 'parameter';
   visibility: 'public' | 'private' | 'local';
@@ -426,10 +427,7 @@ export function getCompletions(project: VbaProject, request: CompletionRequest):
 
   const end_statement_completion = getEndStatementCompletionAt(current_module, request.position);
   const prefix = getIdentifierPrefix(current_module.lines, request.position).toLowerCase();
-  const project_candidates = project.modules
-    .filter((module) => module.folderUri.toLowerCase() === current_module.folderUri.toLowerCase())
-    .flatMap((module) => module.definitions)
-    .filter((definition) => definition.visibility === 'public')
+  const source_candidates = getSourceCompletionDefinitions(project, current_module, request.position)
     .filter((definition) => prefix === '' || definition.name.toLowerCase().startsWith(prefix))
     .map((definition) => ({
       label: definition.name,
@@ -447,9 +445,32 @@ export function getCompletions(project: VbaProject, request: CompletionRequest):
 
   return uniqueCompletionEntries([
     ...(end_statement_completion === undefined ? [] : [end_statement_completion]),
-    ...project_candidates,
+    ...source_candidates,
     ...host_candidates
   ]);
+}
+
+function getSourceCompletionDefinitions(
+  project: VbaProject,
+  currentModule: VbaModule,
+  position: SourcePosition
+): VbaDefinition[] {
+  const procedure_scope = currentModule.procedureScopes.find((scope) => containsPosition(scope.range, position));
+  const local_definitions = procedure_scope?.definitions ?? [];
+  const current_module_definitions = currentModule.definitions;
+  const project_definitions = project.modules
+    .filter((module) =>
+      module.folderUri.toLowerCase() === currentModule.folderUri.toLowerCase()
+        && !sameUri(module.uri, currentModule.uri)
+    )
+    .flatMap((module) => module.definitions)
+    .filter((definition) => definition.visibility === 'public');
+
+  return [
+    ...local_definitions,
+    ...current_module_definitions,
+    ...project_definitions
+  ];
 }
 
 function isUnqualifiedHostCompletionDefinition(
@@ -2595,29 +2616,40 @@ function collectWithEventsDeclarationDiagnostics(
     return undefined;
   }
 
-  const name_start = skipWhitespace(line, match[0].length, codeEnd);
-  const name_token = readIdentifierTokenAt(line, name_start, codeEnd);
-  if (name_token === undefined || name_token.lowerText === 'as') {
-    return [createMalformedDeclarationDiagnostic(
-      'WithEvents declaration is missing an identifier.',
-      lineIndex,
-      name_start,
-      name_token?.end ?? name_start
-    )];
+  const diagnostics: SyntaxDiagnostic[] = [];
+  const declarators_start = skipWhitespace(line, match[0].length, codeEnd);
+  for (const segment of splitTopLevelSegments(line, declarators_start, codeEnd)) {
+    const trimmed_start = skipWhitespace(line, segment.start, segment.end);
+    const trimmed_end = trimEndIndex(line, segment.end);
+    const name_token = readIdentifierTokenAt(line, trimmed_start, trimmed_end);
+    if (name_token === undefined || name_token.lowerText === 'as') {
+      diagnostics.push(createMalformedDeclarationDiagnostic(
+        'WithEvents declaration is missing an identifier.',
+        lineIndex,
+        trimmed_start,
+        name_token?.end ?? trimmed_start
+      ));
+      continue;
+    }
+
+    const after_name = skipWhitespace(line, name_token.end, trimmed_end);
+    if (!startsWithKeywordAt(line, after_name, 'as', trimmed_end)) {
+      diagnostics.push(createMalformedDeclarationDiagnostic(
+        'WithEvents declaration must include As type.',
+        lineIndex,
+        after_name,
+        trimmed_end
+      ));
+      continue;
+    }
+
+    const type_diagnostic = getTypeAnnotationDiagnostic(line, lineIndex, after_name, trimmed_end);
+    if (type_diagnostic !== undefined) {
+      diagnostics.push(type_diagnostic);
+    }
   }
 
-  const after_name = skipWhitespace(line, name_token.end, codeEnd);
-  if (!startsWithKeywordAt(line, after_name, 'as', codeEnd)) {
-    return [createMalformedDeclarationDiagnostic(
-      'WithEvents declaration must include As type.',
-      lineIndex,
-      after_name,
-      codeEnd
-    )];
-  }
-
-  const type_diagnostic = getTypeAnnotationDiagnostic(line, lineIndex, after_name, codeEnd);
-  return type_diagnostic === undefined ? [] : [type_diagnostic];
+  return diagnostics;
 }
 
 function collectDefTypeDeclarationDiagnostics(
@@ -6167,30 +6199,39 @@ function parseModuleMembers(
       continue;
     }
 
-    const with_events_match =
-      new RegExp(`^\\s*(?:(?:Public|Private|Dim)\\s+)?WithEvents\\s+(${C_IDENTIFIER_PATTERN.source})\\s+As\\s+(${C_TYPE_NAME_PATTERN.source})\\b`, 'i').exec(line);
-    if (with_events_match !== null) {
-      const declaration = {
-        name: with_events_match[1],
-        typeName: with_events_match[2]
-      };
-      withEventsDeclarations.push(declaration);
+    const with_events_result = parseWithEventsDeclarationList(uri, line, line_index);
+    if (with_events_result !== undefined) {
+      definitions.push(...with_events_result.definitions);
+      withEventsDeclarations.push(...with_events_result.declarations);
       moduleMembers.push({
         range: createModuleMemberRange(lines, line_index, line_index),
-        definitions: [],
+        definitions: with_events_result.definitions,
         procedureScopes: [],
-        withEventsDeclarations: [declaration],
+        withEventsDeclarations: with_events_result.declarations,
         implements: []
       });
       continue;
     }
 
-    const constant_definition = parseSingleSourceConstantDefinition(uri, line, line_index, 'module');
-    if (constant_definition !== undefined) {
-      definitions.push(constant_definition);
+    const variable_definitions = parseModuleVariableDefinitions(uri, line, line_index);
+    if (variable_definitions.length > 0) {
+      definitions.push(...variable_definitions);
       moduleMembers.push({
         range: createModuleMemberRange(lines, line_index, line_index),
-        definitions: [constant_definition],
+        definitions: variable_definitions,
+        procedureScopes: [],
+        withEventsDeclarations: [],
+        implements: []
+      });
+      continue;
+    }
+
+    const constant_definitions = parseSourceConstantDefinitions(uri, line, line_index, 'module');
+    if (constant_definitions.length > 0) {
+      definitions.push(...constant_definitions);
+      moduleMembers.push({
+        range: createModuleMemberRange(lines, line_index, line_index),
+        definitions: constant_definitions,
         procedureScopes: [],
         withEventsDeclarations: [],
         implements: []
@@ -6441,26 +6482,50 @@ function parseTypeFieldDefinitions(
   return definitions;
 }
 
-function parseSingleSourceConstantDefinition(
+function parseSourceConstantDefinitions(
   uri: string,
   line: string,
   lineIndex: number,
   scope: 'module' | 'procedure'
-): VbaDefinition | undefined {
+): VbaDefinition[] {
   const code_end = getCodeEndCharacter(line);
   const prefix = getDeclarationListPrefix(line, code_end);
   if (prefix?.kind !== 'constant') {
-    return undefined;
+    return [];
   }
 
+  const visibility = scope === 'procedure'
+    ? 'local'
+    : getSourceDeclarationVisibility(line, code_end);
+  const definitions: VbaDefinition[] = [];
   const segments = splitTopLevelSegments(line, prefix.declaratorsStart, code_end);
-  if (segments.length !== 1) {
-    return undefined;
+  for (const segment of segments) {
+    const definition = parseSourceConstantDeclaratorDefinition(
+      uri,
+      line,
+      lineIndex,
+      segment.start,
+      segment.end,
+      visibility
+    );
+    if (definition !== undefined) {
+      definitions.push(definition);
+    }
   }
 
-  const segment = segments[0];
-  const trimmed_start = skipWhitespace(line, segment.start, segment.end);
-  const trimmed_end = trimEndIndex(line, segment.end);
+  return definitions;
+}
+
+function parseSourceConstantDeclaratorDefinition(
+  uri: string,
+  line: string,
+  lineIndex: number,
+  startCharacter: number,
+  endCharacter: number,
+  visibility: 'public' | 'private' | 'local'
+): VbaDefinition | undefined {
+  const trimmed_start = skipWhitespace(line, startCharacter, endCharacter);
+  const trimmed_end = trimEndIndex(line, endCharacter);
   const name_token = readIdentifierTokenAt(line, trimmed_start, trimmed_end);
   if (name_token === undefined || name_token.lowerText === 'as') {
     return undefined;
@@ -6468,11 +6533,6 @@ function parseSingleSourceConstantDefinition(
 
   const equals_index = findTopLevelEquals(line, name_token.end, trimmed_end);
   const type_annotation_end = equals_index ?? trimmed_end;
-  const type_match = new RegExp(`\\bAs\\s+(${C_TYPE_NAME_PATTERN.source})\\b`, 'i')
-    .exec(line.slice(name_token.end, type_annotation_end));
-  const visibility = scope === 'procedure'
-    ? 'local'
-    : getSourceConstantVisibility(line, code_end);
 
   return {
     name: name_token.text,
@@ -6483,11 +6543,11 @@ function parseSingleSourceConstantDefinition(
       start: { line: lineIndex, character: name_token.start },
       end: { line: lineIndex, character: name_token.end }
     },
-    typeName: type_match?.[1]
+    typeName: parseDeclaratorTypeName(line, name_token.end, type_annotation_end)
   };
 }
 
-function getSourceConstantVisibility(line: string, codeEnd: number): 'public' | 'private' {
+function getSourceDeclarationVisibility(line: string, codeEnd: number): 'public' | 'private' {
   const first_token = readIdentifierTokenAt(line, skipWhitespace(line, 0, codeEnd), codeEnd);
   return first_token?.lowerText === 'public' ? 'public' : 'private';
 }
@@ -6622,34 +6682,170 @@ function parseProcedureDefinitions(
 
   for (let line_index = start_line; line_index < end_line; line_index += 1) {
     const line = lines[line_index];
-    const constant_definition = parseSingleSourceConstantDefinition(uri, line, line_index, 'procedure');
-    if (constant_definition !== undefined) {
-      definitions.push(constant_definition);
+    const constant_definitions = parseSourceConstantDefinitions(uri, line, line_index, 'procedure');
+    if (constant_definitions.length > 0) {
+      definitions.push(...constant_definitions);
       continue;
     }
 
-    const local_match =
-      new RegExp(`^\\s*Dim\\s+(${C_IDENTIFIER_PATTERN.source})\\b(?:\\s+As\\s+(${C_TYPE_NAME_PATTERN.source}))?`, 'i').exec(line);
-    if (local_match === null) {
+    const local_definitions = parseProcedureVariableDefinitions(uri, line, line_index);
+    if (local_definitions.length === 0) {
       continue;
     }
 
-    const name = local_match[1];
-    const name_start = line.indexOf(name);
-    definitions.push({
-      name,
-      kind: 'local',
-      visibility: 'local',
-      uri,
-      range: {
-        start: { line: line_index, character: name_start },
-        end: { line: line_index, character: name_start + name.length }
-      },
-      typeName: local_match[2]
-    });
+    definitions.push(...local_definitions);
   }
 
   return definitions;
+}
+
+function parseProcedureVariableDefinitions(
+  uri: string,
+  line: string,
+  lineIndex: number
+): VbaDefinition[] {
+  const code_end = getCodeEndCharacter(line);
+  const prefix = getDeclarationListPrefix(line, code_end);
+  if (prefix?.kind !== 'variable') {
+    return [];
+  }
+
+  const definitions: VbaDefinition[] = [];
+  for (const segment of splitTopLevelSegments(line, prefix.declaratorsStart, code_end)) {
+    const definition = parseVariableDeclaratorDefinition(uri, line, lineIndex, segment.start, segment.end, 'local', 'local');
+    if (definition !== undefined) {
+      definitions.push(definition);
+    }
+  }
+
+  return definitions;
+}
+
+function parseWithEventsDeclarationList(
+  uri: string,
+  line: string,
+  lineIndex: number
+): { definitions: VbaDefinition[]; declarations: WithEventsDeclaration[] } | undefined {
+  const code_end = getCodeEndCharacter(line);
+  const match = /^\s*(?:(?:Public|Private|Dim)\s+)?WithEvents\b/i.exec(line.slice(0, code_end));
+  if (match === null) {
+    return undefined;
+  }
+
+  const visibility = getSourceDeclarationVisibility(line, code_end);
+  const declarators_start = skipWhitespace(line, match[0].length, code_end);
+  const definitions: VbaDefinition[] = [];
+  const declarations: WithEventsDeclaration[] = [];
+
+  for (const segment of splitTopLevelSegments(line, declarators_start, code_end)) {
+    const definition = parseVariableDeclaratorDefinition(
+      uri,
+      line,
+      lineIndex,
+      segment.start,
+      segment.end,
+      visibility,
+      'variable'
+    );
+    if (definition?.typeName === undefined) {
+      continue;
+    }
+
+    definitions.push(definition);
+    declarations.push({
+      name: definition.name,
+      typeName: definition.typeName
+    });
+  }
+
+  return { definitions, declarations };
+}
+
+function parseModuleVariableDefinitions(
+  uri: string,
+  line: string,
+  lineIndex: number
+): VbaDefinition[] {
+  const code_end = getCodeEndCharacter(line);
+  const prefix = getDeclarationListPrefix(line, code_end);
+  if (prefix?.kind !== 'variable') {
+    return [];
+  }
+
+  const visibility = getSourceDeclarationVisibility(line, code_end);
+  const definitions: VbaDefinition[] = [];
+  for (const segment of splitTopLevelSegments(line, prefix.declaratorsStart, code_end)) {
+    const definition = parseVariableDeclaratorDefinition(
+      uri,
+      line,
+      lineIndex,
+      segment.start,
+      segment.end,
+      visibility,
+      'variable'
+    );
+    if (definition !== undefined) {
+      definitions.push(definition);
+    }
+  }
+
+  return definitions;
+}
+
+function parseVariableDeclaratorDefinition(
+  uri: string,
+  line: string,
+  lineIndex: number,
+  startCharacter: number,
+  endCharacter: number,
+  visibility: 'public' | 'private' | 'local',
+  kind: 'local' | 'variable'
+): VbaDefinition | undefined {
+  const trimmed_start = skipWhitespace(line, startCharacter, endCharacter);
+  const trimmed_end = trimEndIndex(line, endCharacter);
+  const name_token = readIdentifierTokenAt(line, trimmed_start, trimmed_end);
+  if (name_token === undefined || name_token.lowerText === 'as') {
+    return undefined;
+  }
+
+  return {
+    name: name_token.text,
+    kind,
+    visibility,
+    uri,
+    range: {
+      start: { line: lineIndex, character: name_token.start },
+      end: { line: lineIndex, character: name_token.end }
+    },
+    typeName: parseDeclaratorTypeName(line, name_token.end, trimmed_end)
+  };
+}
+
+function parseDeclaratorTypeName(
+  line: string,
+  afterNameCharacter: number,
+  endCharacter: number
+): string | undefined {
+  let character_index = skipWhitespace(line, afterNameCharacter, endCharacter);
+  if (character_index < endCharacter && line[character_index] === '(') {
+    const closing_paren = findClosingParenInCode(line, character_index, endCharacter);
+    if (closing_paren === undefined) {
+      return undefined;
+    }
+    character_index = skipWhitespace(line, closing_paren + 1, endCharacter);
+  }
+
+  if (!startsWithKeywordAt(line, character_index, 'as', endCharacter)) {
+    return undefined;
+  }
+
+  let type_start = skipWhitespace(line, character_index + 'As'.length, endCharacter);
+  if (startsWithKeywordAt(line, type_start, 'new', endCharacter)) {
+    type_start = skipWhitespace(line, type_start + 'New'.length, endCharacter);
+  }
+
+  const type_end = readTypeNameEnd(line, type_start, endCharacter);
+  return type_end === undefined ? undefined : line.slice(type_start, type_end);
 }
 
 function getMemberCompletionAt(
@@ -8671,6 +8867,7 @@ function semanticTokenTypeForVbaDefinition(definition: VbaDefinition): SemanticT
     case 'property':
     case 'typeField':
       return 'property';
+    case 'variable':
     case 'local':
       return 'variable';
     case 'constant':

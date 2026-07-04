@@ -6190,6 +6190,263 @@ test('rename supports local variables and parameters', () => {
   );
 });
 
+test('comma-separated local Dim declarators behave as separate SourceVariables', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    Dim firstValue, secondValue As Long',
+        '    firstValue = secondValue',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getDefinition(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 5, character: 19 }
+  }), {
+    uri: 'file:///project/Worker.bas',
+    range: {
+      start: { line: 4, character: 20 },
+      end: { line: 4, character: 31 }
+    }
+  });
+
+  const tokens = getSemanticTokens(project, 'file:///project/Worker.bas');
+  assertSemanticToken(tokens, 4, 8, 18, 'variable');
+  assertSemanticToken(tokens, 4, 20, 31, 'variable');
+  assertSemanticToken(tokens, 5, 4, 14, 'variable');
+  assertSemanticToken(tokens, 5, 17, 28, 'variable');
+
+  assert.deepEqual(
+    getRenameEdits(project, {
+      uri: 'file:///project/Worker.bas',
+      position: { line: 5, character: 19 }
+    }, 'renamedValue'),
+    [
+      {
+        uri: 'file:///project/Worker.bas',
+        range: {
+          start: { line: 4, character: 20 },
+          end: { line: 4, character: 31 }
+        },
+        newText: 'renamedValue'
+      },
+      {
+        uri: 'file:///project/Worker.bas',
+        range: {
+          start: { line: 5, character: 17 },
+          end: { line: 5, character: 28 }
+        },
+        newText: 'renamedValue'
+      }
+    ]
+  );
+});
+
+test('completion includes comma-separated local variable and constant declarators', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    Dim firstValue, secondValue As Long',
+        '    Const FirstLimit = 1, SecondLimit = 2',
+        '    Sec',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(
+    getCompletions(project, {
+      uri: 'file:///project/Worker.bas',
+      position: { line: 6, character: 7 }
+    })
+      .filter((item) => item.label === 'SecondLimit' || item.label === 'secondValue')
+      .map((item) => ({ label: item.label, kind: item.kind }))
+      .sort((left, right) => left.label.localeCompare(right.label)),
+    [
+      { label: 'SecondLimit', kind: 'constant' },
+      { label: 'secondValue', kind: 'variable' }
+    ]
+  );
+});
+
+test('comma-separated ReDim declarators do not create SourceVariables', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    ReDim values(1 To 10), otherValues(1 To 10)',
+        '    values',
+        '    otherValues',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.equal(getDefinition(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 5, character: 8 }
+  }), undefined);
+  assert.equal(getDefinition(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 6, character: 8 }
+  }), undefined);
+  assert.deepEqual(
+    getCompletions(project, {
+      uri: 'file:///project/Worker.bas',
+      position: { line: 6, character: 9 }
+    }).filter((item) => item.label === 'otherValues'),
+    []
+  );
+});
+
+test('comma-separated Static declarators keep type annotations per declarator', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    Static firstCustomer, secondCustomer As Customer',
+        '    firstCustomer.DisplayName',
+        '    secondCustomer.DisplayName',
+        'End Sub'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/Customer.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "Customer"',
+        'Option Explicit',
+        '',
+        'Public Property Get DisplayName() As String',
+        'End Property'
+      ].join('\n')
+    }
+  ]);
+
+  assert.equal(getDefinition(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 5, character: 19 }
+  }), undefined);
+  assert.deepEqual(getDefinition(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 6, character: 20 }
+  }), {
+    uri: 'file:///project/Customer.cls',
+    range: {
+      start: { line: 4, character: 20 },
+      end: { line: 4, character: 31 }
+    }
+  });
+});
+
+test('comma-separated module SourceVariables respect declaration visibility', () => {
+  const public_line = 'Public publicFirst As String, publicSecond As Long';
+  const private_line = 'Private privateFirst As String, privateSecond As Long';
+  const bare_line = 'Dim moduleFirst As String, moduleSecond As Long';
+  const local_reference_line = '    privateSecond = moduleSecond';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Globals.bas',
+      text: [
+        'Attribute VB_Name = "Globals"',
+        'Option Explicit',
+        '',
+        public_line,
+        private_line,
+        bare_line,
+        '',
+        'Public Sub Run()',
+        local_reference_line,
+        'End Sub'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/Caller.bas',
+      text: [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    publicSecond',
+        '    privateSecond',
+        '    moduleSecond',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  const public_second_start = public_line.indexOf('publicSecond');
+  const private_second_start = private_line.indexOf('privateSecond');
+  const module_second_start = bare_line.indexOf('moduleSecond');
+
+  assert.deepEqual(getDefinition(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 4, character: 8 }
+  }), {
+    uri: 'file:///project/Globals.bas',
+    range: {
+      start: { line: 3, character: public_second_start },
+      end: { line: 3, character: public_second_start + 'publicSecond'.length }
+    }
+  });
+  assert.equal(getDefinition(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 5, character: 8 }
+  }), undefined);
+  assert.equal(getDefinition(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 6, character: 8 }
+  }), undefined);
+  assert.deepEqual(getDefinition(project, {
+    uri: 'file:///project/Globals.bas',
+    position: { line: 8, character: local_reference_line.indexOf('privateSecond') }
+  }), {
+    uri: 'file:///project/Globals.bas',
+    range: {
+      start: { line: 4, character: private_second_start },
+      end: { line: 4, character: private_second_start + 'privateSecond'.length }
+    }
+  });
+  assert.deepEqual(getDefinition(project, {
+    uri: 'file:///project/Globals.bas',
+    position: { line: 8, character: local_reference_line.indexOf('moduleSecond') }
+  }), {
+    uri: 'file:///project/Globals.bas',
+    range: {
+      start: { line: 5, character: module_second_start },
+      end: { line: 5, character: module_second_start + 'moduleSecond'.length }
+    }
+  });
+
+  const tokens = getSemanticTokens(project, 'file:///project/Globals.bas');
+  assertSemanticToken(tokens, 3, public_line.indexOf('publicFirst'), public_line.indexOf('publicFirst') + 'publicFirst'.length, 'variable');
+  assertSemanticToken(tokens, 3, public_second_start, public_second_start + 'publicSecond'.length, 'variable');
+  assertSemanticToken(tokens, 4, private_line.indexOf('privateFirst'), private_line.indexOf('privateFirst') + 'privateFirst'.length, 'variable');
+  assertSemanticToken(tokens, 4, private_second_start, private_second_start + 'privateSecond'.length, 'variable');
+  assertSemanticToken(tokens, 5, bare_line.indexOf('moduleFirst'), bare_line.indexOf('moduleFirst') + 'moduleFirst'.length, 'variable');
+  assertSemanticToken(tokens, 5, module_second_start, module_second_start + 'moduleSecond'.length, 'variable');
+});
+
 test('rename supports properties, enums, user-defined types, and events', () => {
   const property_project = buildVbaProject([
     {
@@ -7372,6 +7629,72 @@ test('WithEvents handler names resolve to the declared type event', () => {
     range: {
       start: { line: 4, character: 13 },
       end: { line: 4, character: 18 }
+    }
+  });
+});
+
+test('comma-separated WithEvents declarators resolve handlers and source variable references', () => {
+  const declaration_line = 'Private WithEvents Button As CommandButton, TextBox1 As TextBox';
+  const handler_line = 'Private Sub TextBox1_Change()';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/FormModule.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "FormModule"',
+        'Option Explicit',
+        '',
+        declaration_line,
+        '',
+        handler_line,
+        'End Sub',
+        '',
+        'Private Sub Run()',
+        '    TextBox1',
+        'End Sub'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/CommandButton.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "CommandButton"',
+        'Option Explicit',
+        '',
+        'Public Event Click()'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/TextBox.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "TextBox"',
+        'Option Explicit',
+        '',
+        'Public Event Change()'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/FormModule.cls'), []);
+  assert.deepEqual(getDefinition(project, {
+    uri: 'file:///project/FormModule.cls',
+    position: { line: 6, character: handler_line.indexOf('Change') }
+  }), {
+    uri: 'file:///project/TextBox.cls',
+    range: {
+      start: { line: 4, character: 13 },
+      end: { line: 4, character: 19 }
+    }
+  });
+  assert.deepEqual(getDefinition(project, {
+    uri: 'file:///project/FormModule.cls',
+    position: { line: 10, character: 8 }
+  }), {
+    uri: 'file:///project/FormModule.cls',
+    range: {
+      start: { line: 4, character: declaration_line.indexOf('TextBox1') },
+      end: { line: 4, character: declaration_line.indexOf('TextBox1') + 'TextBox1'.length }
     }
   });
 });
@@ -9029,6 +9352,173 @@ test('SemanticTokens classify SourceConstants as readonly variables', () => {
   assertSemanticToken(tokens, 8, 4, 16, 'variable');
   assertSemanticToken(tokens, 8, 19, 30, 'variable', ['readonly']);
   assertSemanticToken(tokens, 8, 33, 47, 'variable', ['readonly']);
+});
+
+test('comma-separated procedure Const declarators behave as separate SourceConstants', () => {
+  const declaration_line = '    Const FirstLimit As Long = 1, SecondLimit As Long = 2';
+  const reference_line = '    FirstLimit + SecondLimit';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Caller.bas',
+      text: [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        declaration_line,
+        reference_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  const second_start = declaration_line.indexOf('SecondLimit');
+  const second_reference_start = reference_line.indexOf('SecondLimit');
+
+  assert.deepEqual(getDefinition(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 5, character: second_reference_start }
+  }), {
+    uri: 'file:///project/Caller.bas',
+    range: {
+      start: { line: 4, character: second_start },
+      end: { line: 4, character: second_start + 'SecondLimit'.length }
+    }
+  });
+
+  const tokens = getSemanticTokens(project, 'file:///project/Caller.bas');
+  assertSemanticToken(tokens, 4, declaration_line.indexOf('FirstLimit'), declaration_line.indexOf('FirstLimit') + 'FirstLimit'.length, 'variable', ['readonly']);
+  assertSemanticToken(tokens, 4, second_start, second_start + 'SecondLimit'.length, 'variable', ['readonly']);
+  assertSemanticToken(tokens, 5, reference_line.indexOf('FirstLimit'), reference_line.indexOf('FirstLimit') + 'FirstLimit'.length, 'variable', ['readonly']);
+  assertSemanticToken(tokens, 5, second_reference_start, second_reference_start + 'SecondLimit'.length, 'variable', ['readonly']);
+
+  assert.deepEqual(
+    getRenameEdits(project, {
+      uri: 'file:///project/Caller.bas',
+      position: { line: 5, character: second_reference_start }
+    }, 'MaxLimit'),
+    [
+      {
+        uri: 'file:///project/Caller.bas',
+        range: {
+          start: { line: 4, character: second_start },
+          end: { line: 4, character: second_start + 'SecondLimit'.length }
+        },
+        newText: 'MaxLimit'
+      },
+      {
+        uri: 'file:///project/Caller.bas',
+        range: {
+          start: { line: 5, character: second_reference_start },
+          end: { line: 5, character: second_reference_start + 'SecondLimit'.length }
+        },
+        newText: 'MaxLimit'
+      }
+    ]
+  );
+});
+
+test('comma-separated module Const declarators respect visibility and casing', () => {
+  const public_const_line = 'Public Const PublicA = Manual, PublicB As runmode = manual';
+  const private_const_line = 'Private Const PrivateA = 1, PrivateB As Long = 2';
+  const bare_const_line = 'Const ModuleA = 1, ModuleB As Long = 2';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Constants.bas',
+      text: [
+        'Attribute VB_Name = "Constants"',
+        'Option Explicit',
+        '',
+        'Public Enum RunMode',
+        '    Manual',
+        'End Enum',
+        '',
+        public_const_line,
+        private_const_line,
+        bare_const_line,
+        '',
+        'Public Sub Run()',
+        '    PrivateB',
+        '    ModuleB',
+        'End Sub'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/Caller.bas',
+      text: [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    PublicB',
+        '    PrivateB',
+        '    ModuleB',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getDefinition(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 4, character: 8 }
+  }), {
+    uri: 'file:///project/Constants.bas',
+    range: {
+      start: { line: 7, character: public_const_line.indexOf('PublicB') },
+      end: { line: 7, character: public_const_line.indexOf('PublicB') + 'PublicB'.length }
+    }
+  });
+  assert.equal(getDefinition(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 5, character: 8 }
+  }), undefined);
+  assert.equal(getDefinition(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 6, character: 8 }
+  }), undefined);
+  assert.deepEqual(getDefinition(project, {
+    uri: 'file:///project/Constants.bas',
+    position: { line: 12, character: 8 }
+  }), {
+    uri: 'file:///project/Constants.bas',
+    range: {
+      start: { line: 8, character: private_const_line.indexOf('PrivateB') },
+      end: { line: 8, character: private_const_line.indexOf('PrivateB') + 'PrivateB'.length }
+    }
+  });
+  assert.deepEqual(getDefinition(project, {
+    uri: 'file:///project/Constants.bas',
+    position: { line: 13, character: 8 }
+  }), {
+    uri: 'file:///project/Constants.bas',
+    range: {
+      start: { line: 9, character: bare_const_line.indexOf('ModuleB') },
+      end: { line: 9, character: bare_const_line.indexOf('ModuleB') + 'ModuleB'.length }
+    }
+  });
+
+  const tokens = getSemanticTokens(project, 'file:///project/Constants.bas');
+  assertSemanticToken(tokens, 7, public_const_line.indexOf('PublicA'), public_const_line.indexOf('PublicA') + 'PublicA'.length, 'variable', ['readonly']);
+  assertSemanticToken(tokens, 7, public_const_line.indexOf('PublicB'), public_const_line.indexOf('PublicB') + 'PublicB'.length, 'variable', ['readonly']);
+  assertSemanticToken(tokens, 12, 4, 12, 'variable', ['readonly']);
+  assertSemanticToken(tokens, 13, 4, 11, 'variable', ['readonly']);
+  assert.equal(formatText(project, 'file:///project/Constants.bas'), [
+    'Attribute VB_Name = "Constants"',
+    'Option Explicit',
+    '',
+    'Public Enum RunMode',
+    '    Manual',
+    'End Enum',
+    '',
+    'Public Const PublicA = Manual, PublicB As RunMode = Manual',
+    'Private Const PrivateA = 1, PrivateB As Long = 2',
+    'Const ModuleA = 1, ModuleB As Long = 2',
+    '',
+    'Public Sub Run()',
+    '    PrivateB',
+    '    ModuleB',
+    'End Sub'
+  ].join('\n'));
 });
 
 test('SourceConstants support source definition behavior and visibility', () => {

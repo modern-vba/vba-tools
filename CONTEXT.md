@@ -17,6 +17,14 @@ _Avoid_: symbol, item, thing
 A `Const` declaration defined inside a `VbaProject`. It is a source `VbaDefinition` named value, distinct from a `HostConstant`, a `HostEnumMember`, and intrinsic constants in `LanguageVocabulary`.
 _Avoid_: host constant, enum member, intrinsic constant
 
+**SourceVariable**:
+A variable declaration defined inside a `VbaProject`. Procedure-level `Dim` and `Static` declarations are local `SourceVariable`s; module-level `Public`, `Private`, and bare `Dim` variable declarations are module `SourceVariable`s with visibility.
+_Avoid_: constant, parameter, host variable
+
+**WithEventsDeclaration**:
+A module-level `SourceVariable` declaration that can receive events from its declared type. Event handler names combine the variable name and event name, as in `Button_Click`.
+_Avoid_: with receiver, callback registration, form control metadata
+
 **ConditionalCompilationConstant**:
 A named value introduced by a `#Const` directive and referenced by conditional compilation directives such as `#If` and `#ElseIf`. It belongs to conditional compilation, not ordinary `NameResolution`, so it is not a `VbaDefinition`.
 _Avoid_: source constant, host constant, variable
@@ -181,6 +189,12 @@ Domain Expert: "Not when the catalog knows it belongs to an Excel enum. Then it 
 
 Dev: "Should a source `Const` and a `HostConstant` be highlighted like enum members?"
 Domain Expert: "No. A `HostEnumMember` uses enum-member classification. A `SourceConstant` and a `HostConstant` use readonly variable classification so source and host constants align without implying enum membership."
+
+Dev: "Is `Private cache As Long` a local variable?"
+Domain Expert: "No. It is a module-level `SourceVariable`. Procedure-level `Dim` and `Static` declarations are local `SourceVariable`s."
+
+Dev: "Is `Private WithEvents Button As CommandButton` just a normal module variable?"
+Domain Expert: "It is a `WithEventsDeclaration`: a module-level `SourceVariable` that also participates in `EventReference` resolution for handler names such as `Button_Click`."
 
 Dev: "Is `#Const DEBUG = True` a `SourceConstant`?"
 Domain Expert: "No. `DEBUG` is a `ConditionalCompilationConstant`. It should be classified as conditional-compilation metadata, not resolved as an ordinary `VbaDefinition`."
