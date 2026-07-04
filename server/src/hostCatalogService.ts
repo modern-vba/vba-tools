@@ -10,7 +10,7 @@ import {
   getBundledHostDefinitionsForApplication,
   type HostApplicationSelectionOptions
 } from './officeHostCatalog';
-import { discoverHostSignaturesFromTypeLibrary } from './hostSignatureDiscovery';
+import { discoverHostDefinitionsFromTypeLibrary } from './hostTypeLibraryDiscovery';
 import type { HostApplication, HostDefinition } from './vbaProject';
 
 const execFileAsync = promisify(execFile);
@@ -27,6 +27,7 @@ export type HostCatalogCacheWriter = (
 ) => void | Promise<void>;
 
 export type HostCatalogComDiscovery = (hostApplication: HostApplication) => Promise<HostDefinition[]>;
+export type HostCatalogTypeLibraryDiscovery = (hostApplication: HostApplication) => Promise<HostDefinition[]>;
 
 export interface HostCatalogManagerOptions {
   platform?: NodeJS.Platform;
@@ -34,7 +35,8 @@ export interface HostCatalogManagerOptions {
   readCache?: HostCatalogCacheReader;
   writeCache?: HostCatalogCacheWriter;
   discoverFromCom?: HostCatalogComDiscovery;
-  discoverSignaturesFromTypeLibrary?: HostCatalogComDiscovery;
+  discoverFromTypeLibrary?: HostCatalogTypeLibraryDiscovery;
+  discoverSignaturesFromTypeLibrary?: HostCatalogTypeLibraryDiscovery;
 }
 
 export class HostCatalogManager {
@@ -44,7 +46,7 @@ export class HostCatalogManager {
   private readonly readCache?: HostCatalogCacheReader;
   private readonly writeCache?: HostCatalogCacheWriter;
   private readonly discoverFromCom: HostCatalogComDiscovery;
-  private readonly discoverSignaturesFromTypeLibrary: HostCatalogComDiscovery;
+  private readonly discoverFromTypeLibrary: HostCatalogTypeLibraryDiscovery;
   private readonly refreshAttempts = new Set<HostApplication>();
   private readonly refreshesInFlight = new Map<HostApplication, Promise<void>>();
 
@@ -54,8 +56,9 @@ export class HostCatalogManager {
     this.readCache = options.readCache;
     this.writeCache = options.writeCache;
     this.discoverFromCom = options.discoverFromCom ?? discoverOfficeComHostDefinitions;
-    this.discoverSignaturesFromTypeLibrary = options.discoverSignaturesFromTypeLibrary
-      ?? discoverHostSignaturesFromTypeLibrary;
+    this.discoverFromTypeLibrary = options.discoverFromTypeLibrary
+      ?? options.discoverSignaturesFromTypeLibrary
+      ?? discoverHostDefinitionsFromTypeLibrary;
 
     for (const host_application of C_SUPPORTED_HOST_APPLICATIONS) {
       this.definitionsByApplication.set(
@@ -108,29 +111,38 @@ export class HostCatalogManager {
   }
 
   private async refreshHostApplicationFromComOnceAsync(hostApplication: HostApplication): Promise<void> {
-    try {
-      const discovered_definitions = await this.discoverFromCom(hostApplication);
-      if (discovered_definitions.length === 0) {
-        return;
-      }
-
-      const signature_definitions = await this.discoverSignaturesFromTypeLibrarySafely(hostApplication);
-      const definitions = cloneHostDefinitionsWithApplication(
-        mergeHostDefinitions(discovered_definitions, signature_definitions),
-        hostApplication
-      );
-      this.definitionsByApplication.set(hostApplication, definitions);
-      await this.writeCacheSafely(hostApplication, definitions);
-    } catch {
+    const discovered_definitions = await this.discoverFromComSafely(hostApplication);
+    const type_library_definitions = await this.discoverFromTypeLibrarySafely(hostApplication);
+    if (discovered_definitions.length === 0 && type_library_definitions.length === 0) {
       return;
     }
+
+    const base_definitions = discovered_definitions.length === 0
+      ? this.getDefinitionsForApplication(hostApplication)
+      : discovered_definitions;
+    const definitions = cloneHostDefinitionsWithApplication(
+      mergeHostDefinitions(base_definitions, type_library_definitions),
+      hostApplication
+    );
+    this.definitionsByApplication.set(hostApplication, definitions);
+    await this.writeCacheSafely(hostApplication, definitions);
   }
 
-  private async discoverSignaturesFromTypeLibrarySafely(
+  private async discoverFromComSafely(
     hostApplication: HostApplication
   ): Promise<HostDefinition[]> {
     try {
-      return await this.discoverSignaturesFromTypeLibrary(hostApplication);
+      return await this.discoverFromCom(hostApplication);
+    } catch {
+      return [];
+    }
+  }
+
+  private async discoverFromTypeLibrarySafely(
+    hostApplication: HostApplication
+  ): Promise<HostDefinition[]> {
+    try {
+      return await this.discoverFromTypeLibrary(hostApplication);
     } catch {
       return [];
     }

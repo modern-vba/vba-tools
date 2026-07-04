@@ -93,9 +93,13 @@ _Avoid_: comment, note, description
 The structured call shape for a callable `VbaDefinition` or `HostDefinition`. It includes the displayed signature label, ordered parameters, optional parameter metadata, parameter passing metadata, parameter type names, default values, return type names, and parameter documentation when that documentation is available from source comments or host catalog metadata.
 _Avoid_: parameter list, call text, method shape
 
+**HostTypeLibraryDiscovery**:
+The process of collecting host catalog metadata from an available Office type library for an enabled `HostApplication`. It may provide `HostEnum`, `HostEnumMember`, `HostConstant`, `CallableSignature`, type, value, and documentation metadata.
+_Avoid_: COM refresh, object member scan, signature-only discovery
+
 **HostSignatureDiscovery**:
-The process of collecting `CallableSignature` and type metadata for `HostDefinition`s from an available `HostApplication` catalog source. It enriches host metadata so editor features can show accurate signature help without guessing signatures from member names alone.
-_Avoid_: COM refresh, member scan, metadata scrape
+The part of `HostTypeLibraryDiscovery` that collects `CallableSignature` and callable type metadata for `HostDefinition`s. It enriches host metadata so editor features can show accurate signature help without guessing signatures from member names alone.
+_Avoid_: COM refresh, member scan, full type-library discovery
 
 **RenameTarget**:
 A source-defined `VbaDefinition` that can be renamed inside its `VbaProject`. `HostDefinition`s, string literals, and `DocumentationComment`s are not `RenameTarget`s.
@@ -161,6 +165,12 @@ Domain Expert: "An `Event` is a `VbaDefinition`. Event handler procedure names a
 
 Dev: "Where do Office object model completions come from?"
 Domain Expert: "They are `HostDefinition`s supplied by enabled `HostApplication`s, even when the language server stores or discovers their metadata locally."
+
+Dev: "Should enum and constant discovery be called `HostSignatureDiscovery`?"
+Domain Expert: "No. Use `HostTypeLibraryDiscovery` for Office type-library metadata as a whole. `HostSignatureDiscovery` is only the callable-signature part of that discovery."
+
+Dev: "When `HostTypeLibraryDiscovery` reads `xlUp`, should it store that value as a root `HostDefinition`?"
+Domain Expert: "No. If the type library exposes its enum membership, store it as a `HostEnumMember` under the parent `HostEnum`; unqualified `NameResolution` may project it as a named value without duplicating the catalog shape."
 
 Dev: "Is `xlUp` a `HostConstant`?"
 Domain Expert: "Not when the catalog knows it belongs to an Excel enum. Then it is a `HostEnumMember`; `HostConstant` is reserved for host-supplied named values without known `HostEnum` membership."

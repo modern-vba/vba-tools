@@ -14,11 +14,12 @@ import type {
 
 const execFileAsync = promisify(execFile);
 
-export type HostSignaturePowerShellRunner = (script: string) => Promise<string>;
+export type HostTypeLibraryPowerShellRunner = (script: string) => Promise<string>;
+export type HostSignaturePowerShellRunner = HostTypeLibraryPowerShellRunner;
 
-export async function discoverHostSignaturesFromTypeLibrary(
+export async function discoverHostDefinitionsFromTypeLibrary(
   hostApplication: HostApplication,
-  runPowerShell: HostSignaturePowerShellRunner = runPowerShellScript
+  runPowerShell: HostTypeLibraryPowerShellRunner = runPowerShellScript
 ): Promise<HostDefinition[]> {
   const stdout = await runPowerShell(createTypeLibraryDiscoveryScript(hostApplication));
   const parsed = stripNullProperties(JSON.parse(stdout) as unknown);
@@ -27,6 +28,13 @@ export async function discoverHostSignaturesFromTypeLibrary(
   }
 
   return cloneHostDefinitionsWithApplication(parsed, hostApplication);
+}
+
+export async function discoverHostSignaturesFromTypeLibrary(
+  hostApplication: HostApplication,
+  runPowerShell: HostSignaturePowerShellRunner = runPowerShellScript
+): Promise<HostDefinition[]> {
+  return discoverHostDefinitionsFromTypeLibrary(hostApplication, runPowerShell);
 }
 
 async function runPowerShellScript(script: string): Promise<string> {
@@ -63,11 +71,14 @@ using PARAMFLAG = System.Runtime.InteropServices.ComTypes.PARAMFLAG;
 using TYPEATTR = System.Runtime.InteropServices.ComTypes.TYPEATTR;
 using TYPEDESC = System.Runtime.InteropServices.ComTypes.TYPEDESC;
 using TYPEKIND = System.Runtime.InteropServices.ComTypes.TYPEKIND;
+using VARDESC = System.Runtime.InteropServices.ComTypes.VARDESC;
+using VARKIND = System.Runtime.InteropServices.ComTypes.VARKIND;
 
 public sealed class HostDefinitionDto {
   public string name { get; set; }
   public string kind { get; set; }
   public string documentation { get; set; }
+  public string value { get; set; }
   public string typeName { get; set; }
   public CallableSignatureDto signature { get; set; }
   public List<HostDefinitionDto> members { get; set; }
@@ -134,6 +145,19 @@ public static class HostTypeLibraryReader {
       typeInfo.GetTypeAttr(out typeAttrPointer);
       TYPEATTR typeAttr = (TYPEATTR)Marshal.PtrToStructure(typeAttrPointer, typeof(TYPEATTR));
       try {
+        if (typeAttr.typekind == TYPEKIND.TKIND_ENUM) {
+          HostDefinitionDto enumDefinition = ReadEnum(typeInfo, typeAttr);
+          if (enumDefinition != null) {
+            definitions.Add(enumDefinition);
+          }
+          continue;
+        }
+
+        if (typeAttr.typekind == TYPEKIND.TKIND_MODULE) {
+          definitions.AddRange(ReadStandaloneConstants(typeInfo, typeAttr));
+          continue;
+        }
+
         if (typeAttr.typekind != TYPEKIND.TKIND_DISPATCH && typeAttr.typekind != TYPEKIND.TKIND_INTERFACE) {
           continue;
         }
@@ -155,6 +179,55 @@ public static class HostTypeLibraryReader {
     }
 
     return definitions.ToArray();
+  }
+
+  private static HostDefinitionDto ReadEnum(ITypeInfo typeInfo, TYPEATTR typeAttr) {
+    string enumName = NormalizeTypeName(GetDocumentationName(typeInfo, -1));
+    if (String.IsNullOrEmpty(enumName)) {
+      return null;
+    }
+
+    HostDefinitionDto definition = new HostDefinitionDto();
+    definition.name = enumName;
+    definition.kind = "enum";
+    definition.documentation = GetDocumentationText(typeInfo, -1);
+    definition.members = ReadConstantVariables(typeInfo, typeAttr, "enumMember");
+    return definition;
+  }
+
+  private static List<HostDefinitionDto> ReadStandaloneConstants(ITypeInfo typeInfo, TYPEATTR typeAttr) {
+    return ReadConstantVariables(typeInfo, typeAttr, "constant");
+  }
+
+  private static List<HostDefinitionDto> ReadConstantVariables(ITypeInfo typeInfo, TYPEATTR typeAttr, string kind) {
+    List<HostDefinitionDto> constants = new List<HostDefinitionDto>();
+    for (int index = 0; index < typeAttr.cVars; index += 1) {
+      IntPtr varDescPointer;
+      typeInfo.GetVarDesc(index, out varDescPointer);
+      VARDESC varDesc = (VARDESC)Marshal.PtrToStructure(varDescPointer, typeof(VARDESC));
+      try {
+        if (varDesc.varkind != VARKIND.VAR_CONST) {
+          continue;
+        }
+
+        string name = NormalizeTypeName(GetDocumentationName(typeInfo, varDesc.memid));
+        if (String.IsNullOrEmpty(name)) {
+          continue;
+        }
+
+        HostDefinitionDto constant = new HostDefinitionDto();
+        constant.name = name;
+        constant.kind = kind;
+        constant.documentation = GetDocumentationText(typeInfo, varDesc.memid);
+        constant.value = GetConstantValue(varDesc);
+        constant.typeName = GetTypeName(typeInfo, varDesc.elemdescVar.tdesc);
+        constants.Add(constant);
+      } finally {
+        typeInfo.ReleaseVarDesc(varDescPointer);
+      }
+    }
+
+    return constants;
   }
 
   private static List<HostDefinitionDto> ReadMembers(ITypeInfo typeInfo, TYPEATTR typeAttr) {
@@ -239,6 +312,19 @@ public static class HostTypeLibraryReader {
     signature.label = memberName + "(" + String.Join(", ", parameters.ConvertAll(p => p.label ?? p.name).ToArray()) + ")" +
       (String.IsNullOrEmpty(returnTypeName) ? "" : " As " + returnTypeName);
     return signature;
+  }
+
+  private static string GetConstantValue(VARDESC varDesc) {
+    if (varDesc.varkind != VARKIND.VAR_CONST || varDesc.desc.lpvarValue == IntPtr.Zero) {
+      return null;
+    }
+
+    try {
+      object value = Marshal.GetObjectForNativeVariant(varDesc.desc.lpvarValue);
+      return value == null ? null : Convert.ToString(value, CultureInfo.InvariantCulture);
+    } catch (ArgumentException) {
+      return null;
+    }
   }
 
   private static string GetDefaultValue(ELEMDESC elemDesc) {

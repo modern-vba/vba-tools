@@ -45,7 +45,8 @@ test('COM refresh runs only for selected HostApplications on Windows', async () 
     discoverFromCom: async (hostApplication) => {
       discovery_calls.push(hostApplication);
       return [{ name: `Com${hostApplication}` }];
-    }
+    },
+    discoverFromTypeLibrary: async () => []
   });
 
   await manager.refreshSelectedHostApplicationsFromComAsync({
@@ -79,7 +80,8 @@ test('selected COM refresh keeps cached definitions available while discovery is
     platform: 'win32',
     readCache: (hostApplication) =>
       hostApplication === 'excel' ? [{ name: 'CachedExcel' }] : undefined,
-    discoverFromCom: async () => pending_discovery
+    discoverFromCom: async () => pending_discovery,
+    discoverFromTypeLibrary: async () => []
   });
 
   const refresh = manager.refreshSelectedHostApplicationsFromComAsync({ mainHostApplication: 'excel' });
@@ -113,7 +115,8 @@ test('successful selected COM refresh writes only the selected host cache', asyn
     writeCache: (hostApplication, cachePath, definitions) => {
       writes.push({ hostApplication, cachePath, definitions });
     },
-    discoverFromCom: async (hostApplication) => [{ name: `Discovered${hostApplication}` }]
+    discoverFromCom: async (hostApplication) => [{ name: `Discovered${hostApplication}` }],
+    discoverFromTypeLibrary: async () => []
   });
 
   await manager.refreshSelectedHostApplicationsFromComAsync({ mainHostApplication: 'word' });
@@ -135,7 +138,7 @@ test('successful selected COM refresh writes only the selected host cache', asyn
   );
 });
 
-test('selected refresh enriches host catalogs with Type Library signature metadata', async () => {
+test('selected refresh enriches host catalogs with Type Library metadata', async () => {
   let written_definitions: HostDefinition[] | undefined;
   const manager = new HostCatalogManager({
     platform: 'win32',
@@ -153,7 +156,7 @@ test('selected refresh enriches host catalogs with Type Library signature metada
         ]
       }
     ],
-    discoverSignaturesFromTypeLibrary: async () => [
+    discoverFromTypeLibrary: async () => [
       {
         name: 'Range',
         kind: 'class',
@@ -169,6 +172,18 @@ test('selected refresh enriches host catalogs with Type Library signature metada
             }
           }
         ]
+      },
+      {
+        name: 'XlDirection',
+        kind: 'enum',
+        members: [
+          { name: 'xlUp', kind: 'enumMember', value: '-4162' }
+        ]
+      },
+      {
+        name: 'xlCalculationManual',
+        kind: 'constant',
+        value: '-4135'
       }
     ]
   });
@@ -194,9 +209,118 @@ test('selected refresh enriches host catalogs with Type Library signature metada
         },
         { name: 'Clear', kind: 'function', hostApplication: 'excel' }
       ]
+    },
+    {
+      name: 'XlDirection',
+      kind: 'enum',
+      hostApplication: 'excel',
+      members: [
+        { name: 'xlUp', kind: 'enumMember', value: '-4162', hostApplication: 'excel' }
+      ]
+    },
+    {
+      name: 'xlCalculationManual',
+      kind: 'constant',
+      value: '-4135',
+      hostApplication: 'excel'
     }
   ]);
   assert.deepEqual(written_definitions, manager.getDefinitions({ mainHostApplication: 'excel' }));
+});
+
+test('selected refresh caches Type Library metadata when COM discovery is empty', async () => {
+  let written_definitions: HostDefinition[] | undefined;
+  const manager = new HostCatalogManager({
+    platform: 'win32',
+    readCache: () => [],
+    writeCache: (_hostApplication, _cachePath, definitions) => {
+      written_definitions = definitions;
+    },
+    discoverFromCom: async () => [],
+    discoverFromTypeLibrary: async () => [
+      {
+        name: 'XlDirection',
+        kind: 'enum',
+        members: [
+          { name: 'xlUp', kind: 'enumMember', value: '-4162' }
+        ]
+      },
+      {
+        name: 'xlCalculationManual',
+        kind: 'constant',
+        value: '-4135'
+      }
+    ]
+  });
+
+  await manager.refreshSelectedHostApplicationsFromComAsync({ mainHostApplication: 'excel' });
+
+  assert.deepEqual(manager.getDefinitions({ mainHostApplication: 'excel' }), [
+    {
+      name: 'XlDirection',
+      kind: 'enum',
+      hostApplication: 'excel',
+      members: [
+        { name: 'xlUp', kind: 'enumMember', value: '-4162', hostApplication: 'excel' }
+      ]
+    },
+    {
+      name: 'xlCalculationManual',
+      kind: 'constant',
+      value: '-4135',
+      hostApplication: 'excel'
+    }
+  ]);
+  assert.deepEqual(written_definitions, manager.getDefinitions({ mainHostApplication: 'excel' }));
+});
+
+test('selected refresh preserves cached object members when only Type Library metadata is discovered', async () => {
+  const manager = new HostCatalogManager({
+    platform: 'win32',
+    readCache: (hostApplication) =>
+      hostApplication === 'excel'
+        ? [
+            {
+              name: 'Range',
+              kind: 'class',
+              members: [
+                { name: 'Clear', kind: 'function' }
+              ]
+            }
+          ]
+        : undefined,
+    discoverFromCom: async () => [],
+    discoverFromTypeLibrary: async () => [
+      {
+        name: 'XlDirection',
+        kind: 'enum',
+        members: [
+          { name: 'xlUp', kind: 'enumMember', value: '-4162' }
+        ]
+      }
+    ]
+  });
+
+  await manager.refreshSelectedHostApplicationsFromComAsync({ mainHostApplication: 'excel' });
+
+  assert.deepEqual(manager.getDefinitions({ mainHostApplication: 'excel' }), [
+    {
+      name: 'Range',
+      kind: 'class',
+      hostApplication: 'excel',
+      members: [
+        { name: 'Clear', kind: 'function', hostApplication: 'excel' }
+      ]
+    },
+    {
+      name: 'XlDirection',
+      kind: 'enum',
+      hostApplication: 'excel',
+      members: [
+        { name: 'xlUp', kind: 'enumMember', value: '-4162', hostApplication: 'excel' }
+      ]
+    }
+  ]);
 });
 
 test('COM refresh is skipped outside Windows and preserves bundled fallback', async () => {
@@ -243,7 +367,8 @@ test('COM refresh failure preserves cached definitions without surfacing an erro
     },
     discoverFromCom: async () => {
       throw new Error('Office is not installed');
-    }
+    },
+    discoverFromTypeLibrary: async () => []
   });
 
   await manager.refreshSelectedHostApplicationsFromComAsync({ mainHostApplication: 'word' });
@@ -253,6 +378,43 @@ test('COM refresh failure preserves cached definitions without surfacing an erro
     manager.getDefinitions({ mainHostApplication: 'word' }),
     [{ name: 'CachedWord', hostApplication: 'word' }]
   );
+});
+
+test('Type Library discovery failure preserves COM-discovered definitions without surfacing an error', async () => {
+  let write_called = false;
+  const manager = new HostCatalogManager({
+    platform: 'win32',
+    readCache: () => undefined,
+    writeCache: () => {
+      write_called = true;
+    },
+    discoverFromCom: async () => [
+      {
+        name: 'Range',
+        kind: 'class',
+        members: [
+          { name: 'Clear', kind: 'function' }
+        ]
+      }
+    ],
+    discoverFromTypeLibrary: async () => {
+      throw new Error('Type library is unavailable');
+    }
+  });
+
+  await manager.refreshSelectedHostApplicationsFromComAsync({ mainHostApplication: 'excel' });
+
+  assert.equal(write_called, true);
+  assert.deepEqual(manager.getDefinitions({ mainHostApplication: 'excel' }), [
+    {
+      name: 'Range',
+      kind: 'class',
+      hostApplication: 'excel',
+      members: [
+        { name: 'Clear', kind: 'function', hostApplication: 'excel' }
+      ]
+    }
+  ]);
 });
 
 test('host catalog manager reflects HostApplication selection changes without recreation', () => {
