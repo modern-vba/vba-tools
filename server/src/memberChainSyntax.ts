@@ -1,4 +1,5 @@
 import {
+  getContinuedSourceTextEndingBefore,
   getLogicalSourceRange,
   type LogicalSourceText
 } from './logicalSource';
@@ -163,6 +164,19 @@ export function parseMemberChainEndingBeforeSource(
         targetSegmentIndex: selected.segments.length - 1,
         usesWithReceiver: isLeadingDotChainInRange(source.text, selected.startIndex, startCharacter)
       };
+}
+
+export function parseContinuedMemberChainEndingBefore(
+  lines: string[],
+  lineIndex: number,
+  endCharacter: number
+): MemberChainExpression | undefined {
+  const logical_source = getContinuedSourceTextEndingBefore(lines, lineIndex, endCharacter);
+  if (logical_source === undefined) {
+    return undefined;
+  }
+
+  return parseMemberChainEndingBeforeSource(logical_source, logical_source.text.length);
 }
 
 export function readParenthesisFreeCallableTargetAt(
