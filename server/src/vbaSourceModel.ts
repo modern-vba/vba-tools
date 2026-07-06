@@ -1,5 +1,4 @@
 import type { CallableSignature, HostApplication, HostDefinition } from './hostDefinition';
-import type { LogicalSourceText } from './logicalSource';
 import type { SourcePosition, SourceRange } from './sourceRange';
 
 export interface DefinitionLocation {
@@ -73,12 +72,6 @@ export interface CallExpression {
 export interface WithReceiverDeclaration {
   chain?: MemberChainExpression;
   end: SourcePosition;
-}
-
-export interface WithReceiverSourceText extends LogicalSourceText {
-  endLine: number;
-  endCharacter: number;
-  hasCommentContinuation: boolean;
 }
 
 export type TypeResolutionRef =

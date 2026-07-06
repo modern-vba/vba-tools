@@ -11,6 +11,13 @@ export interface LogicalCodeSource extends LogicalSourceText {
   endLine: number;
 }
 
+export interface LogicalSourceSpan extends LogicalSourceText {
+  startLine: number;
+  endLine: number;
+  endCharacter: number;
+  hasCommentContinuation: boolean;
+}
+
 export interface StatementSegment {
   start: number;
   end: number;
@@ -35,16 +42,35 @@ export function getLogicalCodeSourceFromLine(
   lines: string[],
   startLine: number
 ): LogicalCodeSource | undefined {
+  const source = getLogicalSourceSpanFromLine(lines, startLine);
+  return source === undefined
+    ? undefined
+    : {
+        text: source.text,
+        positions: source.positions,
+        startLine: source.startLine,
+        endLine: source.endLine
+      };
+}
+
+export function getLogicalSourceSpanFromLine(
+  lines: string[],
+  startLine: number,
+  startCharacter = 0
+): LogicalSourceSpan | undefined {
   const text_parts: string[] = [];
   const positions: SourcePosition[] = [];
+  let has_comment_continuation = false;
 
   for (let line_index = startLine; line_index < lines.length; line_index += 1) {
     const line = lines[line_index] ?? '';
+    const line_start = line_index === startLine ? startCharacter : 0;
     const continuation_marker = getCodeContinuationMarkerStart(line);
     const line_end = continuation_marker ?? getCodeEndCharacter(line);
+    has_comment_continuation = has_comment_continuation || hasCommentContinuationMarker(line);
 
-    text_parts.push(line.slice(0, line_end));
-    for (let character = 0; character < line_end; character += 1) {
+    text_parts.push(line.slice(line_start, line_end));
+    for (let character = line_start; character < line_end; character += 1) {
       positions.push({ line: line_index, character });
     }
 
@@ -53,7 +79,9 @@ export function getLogicalCodeSourceFromLine(
         text: text_parts.join(''),
         positions,
         startLine,
-        endLine: line_index
+        endLine: line_index,
+        endCharacter: line_end,
+        hasCommentContinuation: has_comment_continuation
       };
     }
   }
