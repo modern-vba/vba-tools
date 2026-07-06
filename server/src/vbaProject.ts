@@ -65,6 +65,28 @@ import {
   type SourcePosition,
   type SourceRange
 } from './sourceRange';
+import type {
+  CallExpression,
+  DefinitionLocation,
+  DocumentationComment,
+  MemberChainExpression,
+  MemberChainSegment,
+  MemberCompletionRequest,
+  ModuleMember,
+  NameResolutionResult,
+  ProcedureScope,
+  ResolvedChainSegment,
+  SyntaxDiagnostic,
+  SyntaxDiagnosticCode,
+  SyntaxDiagnosticSeverity,
+  TypeResolutionRef,
+  VbaDefinition,
+  VbaModule,
+  VbaModuleKind,
+  WithEventsDeclaration,
+  WithReceiverDeclaration,
+  WithReceiverSourceText
+} from './vbaSourceModel';
 
 export type {
   CallableParameter,
@@ -74,6 +96,13 @@ export type {
   HostDefinitionKind
 } from './hostDefinition';
 export type { SourcePosition, SourceRange } from './sourceRange';
+export type {
+  DefinitionLocation,
+  NameResolutionResult,
+  SyntaxDiagnostic,
+  SyntaxDiagnosticCode,
+  SyntaxDiagnosticSeverity
+} from './vbaSourceModel';
 
 export interface VbaProjectFile {
   uri: string;
@@ -111,11 +140,6 @@ export interface BuildVbaProjectOptions {
   hostDefinitions?: HostDefinition[];
   mainHostApplication?: HostApplication;
   additionalHostApplications?: HostApplication[];
-}
-
-export interface DefinitionLocation {
-  uri: string;
-  range: SourceRange;
 }
 
 export interface RenameEdit {
@@ -176,41 +200,6 @@ export interface VbaSemanticToken {
   tokenModifiers?: SemanticTokenModifier[];
 }
 
-export type SyntaxDiagnosticSeverity = 'error';
-export type SyntaxDiagnosticCode =
-  | 'syntax.invalidTrailingCommentContinuation'
-  | 'syntax.invalidContinuationMarkerSpacing'
-  | 'syntax.invalidContinuationMarkerText'
-  | 'syntax.incompleteContinuation'
-  | 'syntax.missingContinuationMarker'
-  | 'syntax.invalidSourceCharacter'
-  | 'syntax.invalidStatementSeparator'
-  | 'syntax.malformedCall'
-  | 'syntax.malformedCallableDeclaration'
-  | 'syntax.malformedConditionalCompilation'
-  | 'syntax.malformedDeclaration'
-  | 'syntax.malformedDeclarationBlock'
-  | 'syntax.malformedBlockStructure'
-  | 'syntax.malformedControlFlow'
-  | 'syntax.malformedExpression'
-  | 'syntax.malformedMemberAccess'
-  | 'syntax.malformedStatement'
-  | 'syntax.malformedAttribute'
-  | 'syntax.malformedDateLiteral'
-  | 'syntax.malformedOption'
-  | 'syntax.misplacedHeaderStatement'
-  | 'syntax.unexpectedToken'
-  | 'syntax.unterminatedDateLiteral'
-  | 'syntax.unterminatedStringLiteral';
-
-export interface SyntaxDiagnostic {
-  code: SyntaxDiagnosticCode;
-  message: string;
-  range: SourceRange;
-  severity: SyntaxDiagnosticSeverity;
-  source: 'vba-language-server';
-}
-
 export const VBA_SEMANTIC_TOKEN_TYPES: SemanticTokenType[] = [
   'namespace',
   'class',
@@ -228,143 +217,6 @@ export const VBA_SEMANTIC_TOKEN_TYPES: SemanticTokenType[] = [
 export const VBA_SEMANTIC_TOKEN_MODIFIERS: SemanticTokenModifier[] = [
   'readonly'
 ];
-
-export type NameResolutionResult =
-  | {
-      source: 'vba';
-      definition: DefinitionLocation;
-    }
-  | {
-      source: 'host';
-      definition: HostDefinition;
-    };
-
-interface VbaDefinition {
-  name: string;
-  kind:
-    | 'function'
-    | 'sub'
-    | 'property'
-    | 'enum'
-    | 'enumMember'
-    | 'type'
-    | 'typeField'
-    | 'event'
-    | 'constant'
-    | 'variable'
-    | 'local'
-    | 'parameter';
-  visibility: 'public' | 'private' | 'local';
-  uri: string;
-  range: SourceRange;
-  children?: VbaDefinition[];
-  documentation?: DocumentationComment;
-  signature?: CallableSignature;
-  typeName?: string;
-  optional?: boolean;
-  passingMode?: 'ByVal' | 'ByRef';
-  isParamArray?: boolean;
-  defaultValue?: string;
-}
-
-interface MemberChainSegment {
-  name: string;
-  range: SourceRange;
-  hasCall: boolean;
-}
-
-interface MemberChainExpression {
-  segments: MemberChainSegment[];
-  targetSegmentIndex: number;
-  usesWithReceiver?: boolean;
-}
-
-interface MemberCompletionRequest {
-  qualifier: string;
-  prefix: string;
-  receiverChain?: MemberChainExpression;
-  usesWithReceiver?: boolean;
-}
-
-interface CallExpression {
-  name: string;
-  nameStart: number;
-  activeParameter: number;
-  namedArgumentName?: string;
-  chain?: MemberChainExpression;
-  eventReference?: boolean;
-}
-
-interface WithReceiverDeclaration {
-  chain?: MemberChainExpression;
-  end: SourcePosition;
-}
-
-interface WithReceiverSourceText extends LogicalSourceText {
-  endLine: number;
-  endCharacter: number;
-  hasCommentContinuation: boolean;
-}
-
-type TypeResolutionRef =
-  | {
-      source: 'vba';
-      typeName: string;
-      allowPrivate: boolean;
-    }
-  | {
-      source: 'host';
-      typeName: string;
-      hostApplication?: HostApplication;
-    };
-
-interface ResolvedChainSegment {
-  resolution?: NameResolutionResult;
-  typeRef?: TypeResolutionRef;
-}
-
-interface DocumentationComment {
-  brief: string[];
-  details: string[];
-  params: string[];
-  returns?: string;
-}
-
-interface ProcedureScope {
-  range: SourceRange;
-  definitions: VbaDefinition[];
-}
-
-interface ModuleMember {
-  range: SourceRange;
-  definitions: VbaDefinition[];
-  procedureScopes: ProcedureScope[];
-  withEventsDeclarations: WithEventsDeclaration[];
-  implements: string[];
-}
-
-interface WithEventsDeclaration {
-  name: string;
-  typeName: string;
-}
-
-type VbaModuleKind = 'standard' | 'class' | 'form';
-
-interface VbaModule {
-  uri: string;
-  folderUri: string;
-  identity: string;
-  identityRange?: SourceRange;
-  kind: VbaModuleKind;
-  codeStartLine: number;
-  lines: string[];
-  definitions: VbaDefinition[];
-  procedureScopes: ProcedureScope[];
-  withEventsDeclarations: WithEventsDeclaration[];
-  implements: string[];
-  moduleMembers: ModuleMember[];
-  syntaxDiagnostics: SyntaxDiagnostic[];
-}
 
 export interface VbaProject {
   modules: VbaModule[];
