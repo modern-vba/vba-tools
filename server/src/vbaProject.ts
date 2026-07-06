@@ -1,6 +1,5 @@
 import {
   createHostApplicationSelection,
-  formatHostApplicationName,
   getBundledHostDefinitions
 } from './officeHostCatalog';
 import {
@@ -119,6 +118,25 @@ import {
   findHostTypeDefinition,
   resolveTypeNameRef
 } from './typeResolution';
+import {
+  completionKindForHostDefinition,
+  completionKindForVbaDefinition,
+  getHostDefinitionDetail,
+  getParameterDocumentation,
+  renderCallableParameterMetadata,
+  renderDocumentationComment,
+  renderHostDefinitionHover,
+  renderSignatureDocumentation,
+  renderSourceCallableParameterMetadata,
+  semanticTokenModifiersForHostDefinition,
+  semanticTokenModifiersForVbaDefinition,
+  semanticTokenTypeForHostDefinition,
+  semanticTokenTypeForVbaDefinition,
+  type CompletionEntryKind,
+  type SemanticTokenModifier,
+  type SemanticTokenType,
+  type VbaSemanticToken
+} from './vbaPresentation';
 import type {
   DefinitionLocation,
   DocumentationComment,
@@ -138,6 +156,16 @@ import type {
 } from './vbaSourceModel';
 
 export type { VbaProject } from './vbaProjectModel';
+export {
+  VBA_SEMANTIC_TOKEN_MODIFIERS,
+  VBA_SEMANTIC_TOKEN_TYPES
+} from './vbaPresentation';
+export type {
+  CompletionEntryKind,
+  SemanticTokenModifier,
+  SemanticTokenType,
+  VbaSemanticToken
+} from './vbaPresentation';
 export type {
   CallableParameter,
   CallableSignature,
@@ -171,20 +199,6 @@ export interface CompletionRequest {
   uri: string;
   position: SourcePosition;
 }
-
-export type CompletionEntryKind =
-  | 'class'
-  | 'constant'
-  | 'enum'
-  | 'enumMember'
-  | 'event'
-  | 'function'
-  | 'namespace'
-  | 'parameter'
-  | 'property'
-  | 'snippet'
-  | 'type'
-  | 'variable';
 
 export interface BuildVbaProjectOptions {
   hostDefinitions?: HostDefinition[];
@@ -228,45 +242,6 @@ export interface SignatureHelpResult {
     documentation?: string;
   }>;
 }
-
-export type SemanticTokenType =
-  | 'namespace'
-  | 'class'
-  | 'function'
-  | 'property'
-  | 'variable'
-  | 'parameter'
-  | 'enum'
-  | 'enumMember'
-  | 'type'
-  | 'event'
-  | 'macro';
-
-export type SemanticTokenModifier = 'readonly';
-
-export interface VbaSemanticToken {
-  range: SourceRange;
-  tokenType: SemanticTokenType;
-  tokenModifiers?: SemanticTokenModifier[];
-}
-
-export const VBA_SEMANTIC_TOKEN_TYPES: SemanticTokenType[] = [
-  'namespace',
-  'class',
-  'function',
-  'property',
-  'variable',
-  'parameter',
-  'enum',
-  'enumMember',
-  'type',
-  'event',
-  'macro'
-];
-
-export const VBA_SEMANTIC_TOKEN_MODIFIERS: SemanticTokenModifier[] = [
-  'readonly'
-];
 
 const C_TYPE_NAME_PATTERN = /[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?/;
 
@@ -5649,101 +5624,6 @@ function findDocumentationForDefinition(
   return undefined;
 }
 
-function renderDocumentationComment(documentation: DocumentationComment): string {
-  const sections: string[] = [];
-  const brief = documentation.brief.join(' ').trim();
-  const details = documentation.details.join(' ').trim();
-
-  if (brief !== '') {
-    sections.push(brief);
-  }
-  if (details !== '') {
-    sections.push(details);
-  }
-  if (documentation.params.length > 0 || documentation.returns !== undefined) {
-    const tags = [
-      ...documentation.params.map((param) => `@param ${param}`),
-      ...(documentation.returns === undefined ? [] : [`@return ${documentation.returns}`])
-    ];
-    sections.push(tags.join('\n'));
-  }
-
-  return sections.join('\n\n');
-}
-
-function renderHostDefinitionHover(definition: HostDefinition): string {
-  const detail = getHostDefinitionDetail(definition);
-  const value = definition.value === undefined ? undefined : `Value: ${definition.value}`;
-  return detail === undefined
-    ? [value, definition.documentation].filter((section) => section !== undefined && section !== '').join('\n\n')
-    : [detail, value, definition.documentation].filter((section) => section !== undefined && section !== '').join('\n\n');
-}
-
-function getHostDefinitionDetail(definition: HostDefinition): string | undefined {
-  if (definition.hostApplication === undefined) {
-    return undefined;
-  }
-
-  if (definition.parentName !== undefined) {
-    return `${formatHostApplicationName(definition.hostApplication)}.${definition.parentName}.${definition.name}`;
-  }
-
-  return `${formatHostApplicationName(definition.hostApplication)}.${definition.name}`;
-}
-
-function renderSignatureDocumentation(documentation: DocumentationComment | undefined): string | undefined {
-  if (documentation === undefined) {
-    return undefined;
-  }
-
-  const sections: string[] = [];
-  const brief = documentation.brief.join(' ').trim();
-  if (brief !== '') {
-    sections.push(brief);
-  }
-  if (documentation.returns !== undefined) {
-    sections.push(`@return ${documentation.returns}`);
-  }
-
-  return sections.length === 0 ? undefined : sections.join('\n\n');
-}
-
-function renderCallableParameterMetadata(parameter: CallableParameter): string | undefined {
-  const sections = [
-    parameter.typeName,
-    parameter.optional === true ? 'Optional.' : undefined,
-    parameter.defaultValue === undefined ? undefined : `Default: ${parameter.defaultValue}.`
-  ].filter((section) => section !== undefined && section !== '');
-
-  return sections.length === 0 ? undefined : sections.join(' ');
-}
-
-function renderSourceCallableParameterMetadata(parameter: CallableParameter): string | undefined {
-  if (parameter.optional !== true
-    && parameter.isParamArray !== true
-    && parameter.defaultValue === undefined) {
-    return undefined;
-  }
-
-  return renderCallableParameterMetadata(parameter);
-}
-
-function getParameterDocumentation(documentation: DocumentationComment | undefined): Map<string, string> {
-  const result = new Map<string, string>();
-  if (documentation === undefined) {
-    return result;
-  }
-
-  for (const parameter of documentation.params) {
-    const match = /^([A-Za-z_][A-Za-z0-9_]*)\s+(.+)$/.exec(parameter);
-    if (match !== null) {
-      result.set(match[1].toLowerCase(), match[2]);
-    }
-  }
-
-  return result;
-}
-
 function getModuleKind(uri: string): VbaModuleKind {
   if (/\.bas$/i.test(uriPathname(uri))) {
     return 'standard';
@@ -5753,27 +5633,6 @@ function getModuleKind(uri: string): VbaModuleKind {
   }
 
   return 'class';
-}
-
-function completionKindForVbaDefinition(definition: VbaDefinition): CompletionEntryKind {
-  if (definition.kind === 'constant') {
-    return 'constant';
-  }
-
-  const token_type = semanticTokenTypeForVbaDefinition(definition);
-  return token_type === undefined ? 'variable' : completionKindForSemanticTokenType(token_type);
-}
-
-function completionKindForHostDefinition(definition: HostDefinition): CompletionEntryKind {
-  if (definition.kind === 'constant') {
-    return 'constant';
-  }
-
-  return completionKindForSemanticTokenType(semanticTokenTypeForHostDefinition(definition));
-}
-
-function completionKindForSemanticTokenType(tokenType: SemanticTokenType): CompletionEntryKind {
-  return tokenType === 'macro' ? 'variable' : tokenType;
 }
 
 function semanticTokenTypeForVbaLocation(
@@ -5790,61 +5649,6 @@ function semanticTokenModifiersForVbaLocation(
 ): SemanticTokenModifier[] | undefined {
   const definition = findDefinitionByLocation(project, location);
   return definition === undefined ? undefined : semanticTokenModifiersForVbaDefinition(definition);
-}
-
-function semanticTokenTypeForVbaDefinition(definition: VbaDefinition): SemanticTokenType | undefined {
-  switch (definition.kind) {
-    case 'sub':
-    case 'function':
-      return 'function';
-    case 'property':
-    case 'typeField':
-      return 'property';
-    case 'variable':
-    case 'local':
-      return 'variable';
-    case 'constant':
-      return 'variable';
-    case 'parameter':
-      return 'parameter';
-    case 'enum':
-      return 'enum';
-    case 'enumMember':
-      return 'enumMember';
-    case 'type':
-      return 'type';
-    case 'event':
-      return 'event';
-    default:
-      return undefined;
-  }
-}
-
-function semanticTokenModifiersForVbaDefinition(definition: VbaDefinition): SemanticTokenModifier[] | undefined {
-  return definition.kind === 'constant' ? ['readonly'] : undefined;
-}
-
-function semanticTokenTypeForHostDefinition(definition: HostDefinition): SemanticTokenType {
-  switch (definition.kind) {
-    case 'function':
-      return 'function';
-    case 'property':
-      return 'property';
-    case 'enum':
-      return 'enum';
-    case 'enumMember':
-      return 'enumMember';
-    case 'constant':
-      return 'variable';
-    case 'class':
-      return 'class';
-    default:
-      return definition.members === undefined ? 'property' : 'class';
-  }
-}
-
-function semanticTokenModifiersForHostDefinition(definition: HostDefinition): SemanticTokenModifier[] | undefined {
-  return definition.kind === 'constant' ? ['readonly'] : undefined;
 }
 
 function uniqueSemanticTokens(tokens: VbaSemanticToken[]): VbaSemanticToken[] {
