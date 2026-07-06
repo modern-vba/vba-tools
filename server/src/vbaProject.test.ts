@@ -7246,6 +7246,113 @@ test('colon-separated declaration parsing ignores colons inside strings before d
   });
 });
 
+test('continued qualified type names preserve host-qualified type annotations', () => {
+  const module_target_member_line = '    moduleTarget.Value';
+  const local_target_member_line = '    localTarget.Value';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        'Public moduleTarget As Excel. _',
+        '    Range',
+        'Public Const ModeValue As Excel _',
+        '    .XlDirection = xlUp',
+        '',
+        'Public Sub Run()',
+        '    Dim localTarget As Excel. _',
+        '        Range',
+        '    Static cachedTarget As Excel _',
+        '        .Range',
+        module_target_member_line,
+        local_target_member_line,
+        '    cachedTarget.Value',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getCompletions(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 12, character: module_target_member_line.length }
+  })
+    .filter((item) => item.label === 'Value')
+    .map((item) => ({ label: item.label, kind: item.kind })), [
+    { label: 'Value', kind: 'property' }
+  ]);
+  assert.deepEqual(getCompletions(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 13, character: local_target_member_line.length }
+  })
+    .filter((item) => item.label === 'Value')
+    .map((item) => ({ label: item.label, kind: item.kind })), [
+    { label: 'Value', kind: 'property' }
+  ]);
+  assert.deepEqual(getCompletions(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 14, character: '    cachedTarget.Value'.length }
+  })
+    .filter((item) => item.label === 'Value')
+    .map((item) => ({ label: item.label, kind: item.kind })), [
+    { label: 'Value', kind: 'property' }
+  ]);
+
+  const tokens = getSemanticTokens(project, 'file:///project/Worker.bas');
+  assertSemanticToken(tokens, 2, 'Public '.length, 'Public '.length + 'moduleTarget'.length, 'variable');
+  assertSemanticToken(tokens, 4, 'Public Const '.length, 'Public Const '.length + 'ModeValue'.length, 'variable', ['readonly']);
+  assertSemanticToken(tokens, 8, '    Dim '.length, '    Dim '.length + 'localTarget'.length, 'variable');
+  assertSemanticToken(tokens, 10, '    Static '.length, '    Static '.length + 'cachedTarget'.length, 'variable');
+});
+
+test('continued qualified type names preserve WithEvents metadata', () => {
+  const handler_line = 'Private Sub Button_Click()';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/FormModule.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "FormModule"',
+        'Option Explicit',
+        'Private WithEvents Button As Forms. _',
+        '    CommandButton',
+        '',
+        handler_line,
+        'End Sub'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/Forms.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "Forms"',
+        'Option Explicit'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/CommandButton.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "CommandButton"',
+        'Option Explicit',
+        '',
+        'Public Event Click()'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getDefinition(project, {
+    uri: 'file:///project/FormModule.cls',
+    position: { line: 6, character: handler_line.indexOf('Click') }
+  }), {
+    uri: 'file:///project/CommandButton.cls',
+    range: {
+      start: { line: 4, character: 13 },
+      end: { line: 4, character: 18 }
+    }
+  });
+});
+
 test('rename supports properties, enums, user-defined types, and events', () => {
   const property_project = buildVbaProject([
     {

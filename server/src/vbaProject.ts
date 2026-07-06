@@ -1083,9 +1083,10 @@ function resolveWithEventsHandlerDefinition(
       continue;
     }
 
+    const declared_type_name = unqualifiedTypeName(declaration.typeName);
     const event_source_module = project.modules.find((module) =>
       module.folderUri.toLowerCase() === current_module.folderUri.toLowerCase()
-        && sameName(module.identity, declaration.typeName)
+        && sameName(module.identity, declared_type_name)
     );
     if (event_source_module === undefined) {
       continue;
@@ -7002,8 +7003,29 @@ function parseDeclaratorTypeName(
     type_start = skipWhitespace(line, type_start + 'New'.length, endCharacter);
   }
 
-  const type_end = readTypeNameEnd(line, type_start, endCharacter);
-  return type_end === undefined ? undefined : line.slice(type_start, type_end);
+  return readDeclarationTypeName(line, type_start, endCharacter);
+}
+
+function readDeclarationTypeName(
+  line: string,
+  startCharacter: number,
+  endCharacter: number
+): string | undefined {
+  const qualifier = readIdentifierTokenAt(line, startCharacter, endCharacter);
+  if (qualifier === undefined) {
+    return undefined;
+  }
+
+  const dot_index = skipWhitespace(line, qualifier.end, endCharacter);
+  if (dot_index >= endCharacter || line[dot_index] !== '.') {
+    return qualifier.text;
+  }
+
+  const member_start = skipWhitespace(line, dot_index + 1, endCharacter);
+  const member = readIdentifierTokenAt(line, member_start, endCharacter);
+  return member === undefined
+    ? undefined
+    : `${qualifier.text}.${member.text}`;
 }
 
 function getMemberCompletionAt(
@@ -9226,6 +9248,10 @@ function sameUri(left: string, right: string): boolean {
 
 function sameName(left: string, right: string): boolean {
   return left.toLowerCase() === right.toLowerCase();
+}
+
+function unqualifiedTypeName(typeName: string): string {
+  return typeName.split('.').at(-1) ?? typeName;
 }
 
 function sameDefinitionLocation(left: DefinitionLocation, right: DefinitionLocation): boolean {
