@@ -17,7 +17,7 @@ import {
   mergeHostDefinitions
 } from './hostDefinitionCatalog';
 import { discoverHostDefinitionsFromTypeLibrary } from './hostTypeLibraryDiscovery';
-import type { HostApplication, HostDefinition } from './vbaProject';
+import type { HostApplication, HostDefinition } from './hostDefinition';
 
 const execFileAsync = promisify(execFile);
 

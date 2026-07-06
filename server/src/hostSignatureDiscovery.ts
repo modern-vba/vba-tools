@@ -7,7 +7,7 @@ import {
   isHostDefinitionArray,
   stripNullProperties
 } from './hostDefinitionCatalog';
-import type { HostApplication, HostDefinition } from './vbaProject';
+import type { HostApplication, HostDefinition } from './hostDefinition';
 
 const execFileAsync = promisify(execFile);
 

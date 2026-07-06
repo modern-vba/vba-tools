@@ -12,6 +12,12 @@ import {
   selectUnqualifiedHostDefinition,
   withHostMemberContext
 } from './hostDefinitionCatalog';
+import type {
+  CallableParameter,
+  CallableSignature,
+  HostApplication,
+  HostDefinition
+} from './hostDefinition';
 import {
   getCodeContinuationMarkerStart,
   getCodeEndCharacter,
@@ -51,16 +57,23 @@ import {
   trimEndIndex,
   type VbaIdentifierToken
 } from './vbaText';
+import {
+  comparePosition,
+  containsPosition,
+  containsRange,
+  sameRange,
+  type SourcePosition,
+  type SourceRange
+} from './sourceRange';
 
-export interface SourcePosition {
-  line: number;
-  character: number;
-}
-
-export interface SourceRange {
-  start: SourcePosition;
-  end: SourcePosition;
-}
+export type {
+  CallableParameter,
+  CallableSignature,
+  HostApplication,
+  HostDefinition,
+  HostDefinitionKind
+} from './hostDefinition';
+export type { SourcePosition, SourceRange } from './sourceRange';
 
 export interface VbaProjectFile {
   uri: string;
@@ -93,39 +106,6 @@ export type CompletionEntryKind =
   | 'snippet'
   | 'type'
   | 'variable';
-
-export type HostDefinitionKind = 'class' | 'property' | 'function' | 'enum' | 'enumMember' | 'constant';
-export type HostApplication = 'excel' | 'word' | 'powerpoint' | 'access';
-
-export interface CallableParameter {
-  name: string;
-  label?: string;
-  documentation?: string;
-  optional?: boolean;
-  passingMode?: 'ByVal' | 'ByRef';
-  isParamArray?: boolean;
-  typeName?: string;
-  defaultValue?: string;
-}
-
-export interface CallableSignature {
-  label: string;
-  parameters: CallableParameter[];
-  returnTypeName?: string;
-  documentation?: string;
-}
-
-export interface HostDefinition {
-  name: string;
-  kind?: HostDefinitionKind;
-  hostApplication?: HostApplication;
-  parentName?: string;
-  documentation?: string;
-  value?: string;
-  typeName?: string;
-  signature?: CallableSignature;
-  members?: HostDefinition[];
-}
 
 export interface BuildVbaProjectOptions {
   hostDefinitions?: HostDefinition[];
@@ -8780,11 +8760,6 @@ function sameDefinitionLocation(left: DefinitionLocation, right: DefinitionLocat
     && sameRange(left.range, right.range);
 }
 
-function sameRange(left: SourceRange, right: SourceRange): boolean {
-  return comparePosition(left.start, right.start) === 0
-    && comparePosition(left.end, right.end) === 0;
-}
-
 function singleMatch<T>(items: T[]): T | undefined {
   return items.length === 1 ? items[0] : undefined;
 }
@@ -9032,22 +9007,6 @@ function toVbaResolution(definition: VbaDefinition): NameResolutionResult {
     source: 'vba',
     definition: toDefinitionLocation(definition)
   };
-}
-
-function containsPosition(range: SourceRange, position: SourcePosition): boolean {
-  return comparePosition(range.start, position) <= 0 && comparePosition(position, range.end) <= 0;
-}
-
-function containsRange(outerRange: SourceRange, innerRange: SourceRange): boolean {
-  return containsPosition(outerRange, innerRange.start) && containsPosition(outerRange, innerRange.end);
-}
-
-function comparePosition(left: SourcePosition, right: SourcePosition): number {
-  if (left.line !== right.line) {
-    return left.line - right.line;
-  }
-
-  return left.character - right.character;
 }
 
 function getModuleKind(uri: string): VbaModuleKind {

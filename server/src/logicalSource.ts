@@ -1,4 +1,4 @@
-import type { SourcePosition, SourceRange } from './vbaProject';
+import type { SourcePosition, SourceRange } from './sourceRange';
 import { findPreviousNonWhitespace, isRemCommentStart } from './vbaText';
 
 export interface LogicalSourceText {

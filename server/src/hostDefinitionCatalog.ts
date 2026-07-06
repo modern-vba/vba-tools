@@ -3,7 +3,7 @@ import type {
   CallableSignature,
   HostApplication,
   HostDefinition
-} from './vbaProject';
+} from './hostDefinition';
 
 export const C_SUPPORTED_HOST_APPLICATIONS: readonly HostApplication[] = [
   'excel',

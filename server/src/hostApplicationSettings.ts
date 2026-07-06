@@ -1,5 +1,5 @@
 import { C_DEFAULT_MAIN_HOST_APPLICATION, type HostApplicationSelectionOptions } from './officeHostCatalog';
-import type { HostApplication } from './vbaProject';
+import type { HostApplication } from './hostDefinition';
 
 export type HostApplicationConfigurationReader = (scopeUri: string) => unknown | Promise<unknown>;
 

@@ -1,4 +1,4 @@
-import type { HostApplication, HostDefinition } from './vbaProject';
+import type { HostApplication, HostDefinition } from './hostDefinition';
 import { C_OFFICE_HOST_CATALOG_SNAPSHOT } from './generated/officeHostCatalogSnapshot';
 import {
   C_SUPPORTED_HOST_APPLICATIONS,
