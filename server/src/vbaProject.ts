@@ -1,8 +1,7 @@
 import {
   createHostApplicationSelection,
   formatHostApplicationName,
-  getBundledHostDefinitions,
-  type HostApplicationSelection
+  getBundledHostDefinitions
 } from './officeHostCatalog';
 import {
   getUnqualifiedHostDefinitions,
@@ -102,6 +101,7 @@ import {
   getIdentifierRangesInCode,
   isCodePosition
 } from './vbaIdentifierSource';
+import type { VbaProject } from './vbaProjectModel';
 import type {
   CallExpression,
   DefinitionLocation,
@@ -125,6 +125,7 @@ import type {
   WithReceiverSourceText
 } from './vbaSourceModel';
 
+export type { VbaProject } from './vbaProjectModel';
 export type {
   CallableParameter,
   CallableSignature,
@@ -254,12 +255,6 @@ export const VBA_SEMANTIC_TOKEN_TYPES: SemanticTokenType[] = [
 export const VBA_SEMANTIC_TOKEN_MODIFIERS: SemanticTokenModifier[] = [
   'readonly'
 ];
-
-export interface VbaProject {
-  modules: VbaModule[];
-  hostDefinitions: HostDefinition[];
-  hostApplicationSelection: HostApplicationSelection;
-}
 
 const C_TYPE_NAME_PATTERN = /[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?/;
 
