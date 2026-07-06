@@ -294,6 +294,13 @@ export function isRemCommentStart(line: string, characterIndex: number): boolean
   return before === '' || before.endsWith(':');
 }
 
+export function isPlausibleConstantInitializer(text: string): boolean {
+  const trimmed_text = text.trim();
+  return trimmed_text !== ''
+    && !/[,+\-*/\\^&=<>]\s*$/.test(trimmed_text)
+    && !/^(?:,|[*/\\^&=<>])/.test(trimmed_text);
+}
+
 export function readIdentifierAt(
   line: string,
   startCharacter: number
