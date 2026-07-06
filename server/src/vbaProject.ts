@@ -6606,6 +6606,10 @@ function parseSourceConstantDefinitionsFromStatement(
   const definitions: VbaDefinition[] = [];
   const segments = splitTopLevelSegments(line, Math.max(prefix.declaratorsStart, startCharacter), endCharacter);
   for (const segment of segments) {
+    if (hasMalformedDeclaratorTypeAnnotation(line, segment.start, segment.end)) {
+      return { prefixMatched: true, definitions: [] };
+    }
+
     const definition = parseSourceConstantDeclaratorDefinitionFromSource(
       uri,
       source,
@@ -6842,6 +6846,10 @@ function parseVariableDefinitionsFromStatement(
 
   const definitions: VbaDefinition[] = [];
   for (const segment of splitTopLevelSegments(line, Math.max(prefix.declaratorsStart, startCharacter), endCharacter)) {
+    if (hasMalformedDeclaratorTypeAnnotation(line, segment.start, segment.end)) {
+      return { prefixMatched: true, definitions: [] };
+    }
+
     const definition = parseVariableDeclaratorDefinitionFromSource(
       uri,
       source,
@@ -6880,6 +6888,10 @@ function parseWithEventsDeclarationList(
   const declarations: WithEventsDeclaration[] = [];
 
   for (const segment of splitTopLevelSegments(line, declarators_start, statement.end)) {
+    if (hasMalformedDeclaratorTypeAnnotation(line, segment.start, segment.end)) {
+      return { definitions: [], declarations: [], endLine: statement.source.endLine };
+    }
+
     const definition = parseVariableDeclaratorDefinitionFromSource(
       uri,
       statement.source,
@@ -6953,6 +6965,37 @@ function parseVariableDeclaratorDefinitionFromSource(
     range: getLogicalSourceRange(source, name_token.start, name_token.end),
     typeName: parseDeclaratorTypeName(line, name_token.end, trimmed_end)
   };
+}
+
+function hasMalformedDeclaratorTypeAnnotation(
+  line: string,
+  startCharacter: number,
+  endCharacter: number
+): boolean {
+  const trimmed_start = skipWhitespace(line, startCharacter, endCharacter);
+  const trimmed_end = trimEndIndex(line, endCharacter);
+  const name_token = readIdentifierTokenAt(line, trimmed_start, trimmed_end);
+  if (name_token === undefined || name_token.lowerText === 'as') {
+    return false;
+  }
+
+  const equals_index = findTopLevelEquals(line, name_token.end, trimmed_end);
+  const type_annotation_end = equals_index ?? trimmed_end;
+  let character_index = skipWhitespace(line, name_token.end, type_annotation_end);
+  if (character_index < type_annotation_end && line[character_index] === '(') {
+    const closing_paren = findClosingParenInCode(line, character_index, type_annotation_end);
+    if (closing_paren === undefined) {
+      return false;
+    }
+    character_index = skipWhitespace(line, closing_paren + 1, type_annotation_end);
+  }
+
+  if (!startsWithKeywordAt(line, character_index, 'as', type_annotation_end)) {
+    return false;
+  }
+
+  const type_name = parseDeclaratorTypeName(line, name_token.end, type_annotation_end);
+  return type_name === undefined || type_name === '_';
 }
 
 function parseDeclaratorTypeName(

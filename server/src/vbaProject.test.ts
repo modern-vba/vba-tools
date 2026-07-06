@@ -6779,6 +6779,215 @@ test('invalid continued declaration lists fail closed for continued declarators'
   );
 });
 
+test('continued type annotations preserve type names for variables constants and WithEvents', () => {
+  const public_target_line = '       Excel.Range';
+  const button_type_line = '                   CommandButton';
+  const public_mode_type_line = '             RunMode _';
+  const local_target_line = '        Excel.Range';
+  const cached_customer_line = '           Customer';
+  const local_limit_type_line = '          Long = 2';
+  const target_member_line = '    localTarget.Value';
+  const customer_member_line = '    cachedCustomer.DisplayName';
+  const handler_line = 'Private Sub Button_Click()';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Declarations.bas',
+      text: [
+        'Attribute VB_Name = "Declarations"',
+        'Option Explicit',
+        '',
+        'Public Enum RunMode',
+        '    Manual',
+        'End Enum',
+        'Public publicTarget As _',
+        public_target_line,
+        'Private WithEvents Button As _',
+        button_type_line,
+        'Public Const PublicMode As _',
+        public_mode_type_line,
+        '             = Manual',
+        '',
+        'Public Sub Run()',
+        '    Dim localTarget As _',
+        local_target_line,
+        '    Static cachedCustomer As New _',
+        cached_customer_line,
+        '    Const LocalLimit As _',
+        local_limit_type_line,
+        target_member_line,
+        customer_member_line,
+        '    PublicMode + LocalLimit',
+        'End Sub'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/Customer.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "Customer"',
+        'Option Explicit',
+        '',
+        'Public Property Get DisplayName() As String',
+        'End Property'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/CommandButton.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "CommandButton"',
+        'Option Explicit',
+        '',
+        'Public Event Click()'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getSyntaxDiagnostics(project, 'file:///project/Declarations.bas'), []);
+  assert.deepEqual(getModuleMemberRanges(project, 'file:///project/Declarations.bas').map((range) => [
+    range.start.line,
+    range.end.line
+  ]), [
+    [3, 5],
+    [6, 7],
+    [8, 9],
+    [10, 12],
+    [14, 24]
+  ]);
+  assert.deepEqual(getCompletions(project, {
+    uri: 'file:///project/Declarations.bas',
+    position: { line: 21, character: target_member_line.length }
+  })
+    .filter((item) => item.label === 'Value')
+    .map((item) => ({ label: item.label, kind: item.kind })), [
+    { label: 'Value', kind: 'property' }
+  ]);
+  assert.deepEqual(getDefinition(project, {
+    uri: 'file:///project/Declarations.bas',
+    position: { line: 22, character: customer_member_line.indexOf('DisplayName') }
+  }), {
+    uri: 'file:///project/Customer.cls',
+    range: {
+      start: { line: 4, character: 20 },
+      end: { line: 4, character: 31 }
+    }
+  });
+  assert.deepEqual(getDefinition(project, {
+    uri: 'file:///project/Declarations.bas',
+    position: { line: 23, character: 6 }
+  }), {
+    uri: 'file:///project/Declarations.bas',
+    range: {
+      start: { line: 10, character: 'Public Const '.length },
+      end: { line: 10, character: 'Public Const '.length + 'PublicMode'.length }
+    }
+  });
+  assert.deepEqual(getDefinition(project, {
+    uri: 'file:///project/Declarations.bas',
+    position: { line: 23, character: 19 }
+  }), {
+    uri: 'file:///project/Declarations.bas',
+    range: {
+      start: { line: 19, character: '    Const '.length },
+      end: { line: 19, character: '    Const '.length + 'LocalLimit'.length }
+    }
+  });
+  assert.deepEqual(getDefinition(project, {
+    uri: 'file:///project/Declarations.bas',
+    position: { line: 21, character: target_member_line.indexOf('localTarget') }
+  }), {
+    uri: 'file:///project/Declarations.bas',
+    range: {
+      start: { line: 15, character: '    Dim '.length },
+      end: { line: 15, character: '    Dim '.length + 'localTarget'.length }
+    }
+  });
+  assert.deepEqual(getDefinition(project, {
+    uri: 'file:///project/Declarations.bas',
+    position: { line: 22, character: customer_member_line.indexOf('cachedCustomer') }
+  }), {
+    uri: 'file:///project/Declarations.bas',
+    range: {
+      start: { line: 17, character: '    Static '.length },
+      end: { line: 17, character: '    Static '.length + 'cachedCustomer'.length }
+    }
+  });
+
+  const tokens = getSemanticTokens(project, 'file:///project/Declarations.bas');
+  assertSemanticToken(tokens, 6, 'Public '.length, 'Public '.length + 'publicTarget'.length, 'variable');
+  assertSemanticToken(tokens, 8, 'Private WithEvents '.length, 'Private WithEvents '.length + 'Button'.length, 'variable');
+  assertSemanticToken(tokens, 10, 'Public Const '.length, 'Public Const '.length + 'PublicMode'.length, 'variable', ['readonly']);
+  assertSemanticToken(tokens, 19, '    Const '.length, '    Const '.length + 'LocalLimit'.length, 'variable', ['readonly']);
+
+  const handler_project = buildVbaProject([
+    {
+      uri: 'file:///project/FormModule.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "FormModule"',
+        'Option Explicit',
+        'Private WithEvents Button As _',
+        button_type_line,
+        '',
+        handler_line,
+        'End Sub'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/CommandButton.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "CommandButton"',
+        'Option Explicit',
+        '',
+        'Public Event Click()'
+      ].join('\n')
+    }
+  ]);
+  assert.deepEqual(getDefinition(handler_project, {
+    uri: 'file:///project/FormModule.cls',
+    position: { line: 6, character: handler_line.indexOf('Click') }
+  }), {
+    uri: 'file:///project/CommandButton.cls',
+    range: {
+      start: { line: 4, character: 13 },
+      end: { line: 4, character: 18 }
+    }
+  });
+});
+
+test('invalid continuations inside a declarator fail closed for the whole declaration list', () => {
+  const invalid_line = "    Dim firstValue As _ ' trailing comment";
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        invalid_line,
+        '        Long, secondValue As Long',
+        '    firstValue = secondValue',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.equal(getDefinition(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 6, character: 6 }
+  }), undefined);
+  assert.equal(getDefinition(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 6, character: 19 }
+  }), undefined);
+  assert.deepEqual(
+    getSyntaxDiagnostics(project, 'file:///project/Worker.bas').map((diagnostic) => diagnostic.code),
+    ['syntax.invalidTrailingCommentContinuation']
+  );
+});
+
 test('rename supports properties, enums, user-defined types, and events', () => {
   const property_project = buildVbaProject([
     {
