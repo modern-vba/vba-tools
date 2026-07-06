@@ -8549,6 +8549,14 @@ function getCallExpressionAt(
   const effective_character = Math.min(position.character, line.length);
   const open_paren = findActiveCallOpenParen(line, effective_character);
   if (open_paren === undefined) {
+    const continued_raise_event_call = getContinuedRaiseEventCallExpressionAt(lines, position, effective_character);
+    if (
+      continued_raise_event_call !== undefined
+      || isContinuedRaiseEventArgumentListAt(lines, position, effective_character)
+    ) {
+      return continued_raise_event_call;
+    }
+
     return getContinuedCallExpressionAt(lines, position, effective_character)
       ?? getContinuedParenthesisFreeCallExpressionAt(lines, position, effective_character)
       ?? getParenthesisFreeCallExpressionAt(lines, position, effective_character);
@@ -8581,38 +8589,48 @@ function getRaiseEventCallExpressionAt(
   openParen: number,
   effectiveCharacter: number
 ): CallExpression | undefined {
-  const segment = getStatementSegmentAtPosition(line, effectiveCharacter);
+  return getRaiseEventCallExpressionInSource(
+    getSingleLineLogicalSourceText(line, lineIndex, line.length),
+    openParen,
+    effectiveCharacter
+  );
+}
+
+function getRaiseEventCallExpressionInSource(
+  source: LogicalSourceText,
+  openParen: number,
+  effectiveCharacter: number
+): CallExpression | undefined {
+  const segment = getStatementSegmentAtPosition(source.text, effectiveCharacter);
   if (segment === undefined) {
     return undefined;
   }
 
-  const segment_start = skipWhitespace(line, segment.start, segment.end);
-  const first_token = readIdentifierTokenAt(line, segment_start, openParen);
+  const segment_start = skipWhitespace(source.text, segment.start, segment.end);
+  const first_token = readIdentifierTokenAt(source.text, segment_start, openParen);
   if (first_token?.lowerText !== 'raiseevent') {
     return undefined;
   }
 
-  const event_start = skipWhitespace(line, first_token.end, openParen);
-  const event_token = readIdentifierTokenAt(line, event_start, openParen);
-  if (event_token === undefined || skipWhitespace(line, event_token.end, openParen) !== openParen) {
+  const event_start = skipWhitespace(source.text, first_token.end, openParen);
+  const event_token = readIdentifierTokenAt(source.text, event_start, openParen);
+  if (event_token === undefined || skipWhitespace(source.text, event_token.end, openParen) !== openParen) {
     return undefined;
   }
 
-  if (findTopLevelNamedArgumentSeparator(line, openParen + 1, effectiveCharacter) !== undefined) {
+  if (findTopLevelNamedArgumentSeparator(source.text, openParen + 1, effectiveCharacter) !== undefined) {
     return undefined;
   }
 
+  const event_range = getLogicalSourceRange(source, event_token.start, event_token.end);
   return {
     name: event_token.text,
-    nameStart: event_token.start,
-    activeParameter: countTopLevelCommas(line.slice(openParen + 1, effectiveCharacter)),
+    nameStart: event_range.start.character,
+    activeParameter: countTopLevelCommas(source.text.slice(openParen + 1, effectiveCharacter)),
     eventReference: true,
     chain: toMemberChainExpression([{
       name: event_token.text,
-      range: {
-        start: { line: lineIndex, character: event_token.start },
-        end: { line: lineIndex, character: event_token.end }
-      },
+      range: event_range,
       hasCall: false
     }], false)
   };
@@ -8623,20 +8641,63 @@ function isRaiseEventArgumentListOpenParen(
   openParen: number,
   effectiveCharacter: number
 ): boolean {
-  const segment = getStatementSegmentAtPosition(line, effectiveCharacter);
+  return isRaiseEventArgumentListOpenParenInSource(
+    getSingleLineLogicalSourceText(line, 0, line.length),
+    openParen,
+    effectiveCharacter
+  );
+}
+
+function isRaiseEventArgumentListOpenParenInSource(
+  source: LogicalSourceText,
+  openParen: number,
+  effectiveCharacter: number
+): boolean {
+  const segment = getStatementSegmentAtPosition(source.text, effectiveCharacter);
   if (segment === undefined) {
     return false;
   }
 
-  const segment_start = skipWhitespace(line, segment.start, segment.end);
-  const first_token = readIdentifierTokenAt(line, segment_start, openParen);
+  const segment_start = skipWhitespace(source.text, segment.start, segment.end);
+  const first_token = readIdentifierTokenAt(source.text, segment_start, openParen);
   if (first_token?.lowerText !== 'raiseevent') {
     return false;
   }
 
-  const event_start = skipWhitespace(line, first_token.end, openParen);
-  const event_token = readIdentifierTokenAt(line, event_start, openParen);
-  return event_token !== undefined && skipWhitespace(line, event_token.end, openParen) === openParen;
+  const event_start = skipWhitespace(source.text, first_token.end, openParen);
+  const event_token = readIdentifierTokenAt(source.text, event_start, openParen);
+  return event_token !== undefined && skipWhitespace(source.text, event_token.end, openParen) === openParen;
+}
+
+function getContinuedRaiseEventCallExpressionAt(
+  lines: string[],
+  position: SourcePosition,
+  effectiveCharacter: number
+): CallExpression | undefined {
+  const logical_source = getContinuedSourceTextEndingBefore(lines, position.line, effectiveCharacter);
+  if (logical_source === undefined) {
+    return undefined;
+  }
+
+  const open_paren = findActiveCallOpenParen(logical_source.text, logical_source.text.length);
+  return open_paren === undefined
+    ? undefined
+    : getRaiseEventCallExpressionInSource(logical_source, open_paren, logical_source.text.length);
+}
+
+function isContinuedRaiseEventArgumentListAt(
+  lines: string[],
+  position: SourcePosition,
+  effectiveCharacter: number
+): boolean {
+  const logical_source = getContinuedSourceTextEndingBefore(lines, position.line, effectiveCharacter);
+  if (logical_source === undefined) {
+    return false;
+  }
+
+  const open_paren = findActiveCallOpenParen(logical_source.text, logical_source.text.length);
+  return open_paren !== undefined
+    && isRaiseEventArgumentListOpenParenInSource(logical_source, open_paren, logical_source.text.length);
 }
 
 function getParenthesisFreeCallExpressionAt(

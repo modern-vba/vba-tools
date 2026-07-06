@@ -9003,6 +9003,112 @@ test('signature help counts RaiseEvent arguments without accepting unsupported f
   }), undefined);
 });
 
+test('signature help remains active for continued RaiseEvent argument lists', () => {
+  const active_line = '        200';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/TaskRunner.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "TaskRunner"',
+        'Option Explicit',
+        '',
+        "'* @brief Raised when work completes.",
+        "'* @param Result Completion result.",
+        "'* @param Message Completion message.",
+        "'* @param StatusCode Completion status.",
+        'Public Event Completed(ByVal Result As Variant, ByVal Message As String, Optional ByVal StatusCode As Long = 0)',
+        '',
+        'Private Function BuildValue(ByVal Left As String, ByVal Right As Long) As Variant',
+        'End Function',
+        '',
+        'Public Sub Run()',
+        '    RaiseEvent Completed( _',
+        '        BuildValue("a,b", 1), _',
+        '        "ok", _',
+        active_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getSignatureHelp(project, {
+    uri: 'file:///project/TaskRunner.cls',
+    position: { line: 17, character: active_line.length }
+  }), {
+    label: 'Completed(Result, Message, Optional StatusCode)',
+    activeParameter: 2,
+    documentation: 'Raised when work completes.',
+    parameters: [
+      { label: 'Result', documentation: 'Completion result.' },
+      { label: 'Message', documentation: 'Completion message.' },
+      { label: 'Optional StatusCode', documentation: 'Completion status.' }
+    ]
+  });
+});
+
+test('signature help fails closed for unsupported continued RaiseEvent forms', () => {
+  const unresolved_active_line = '        "ok"';
+  const named_argument_line = '        Result:="ok"';
+  const missing_marker_active_line = '        200';
+  const invalid_marker_active_line = '        "ok"';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/TaskRunner.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "TaskRunner"',
+        'Option Explicit',
+        '',
+        'Public Event Completed(ByVal Result As String, Optional ByVal StatusCode As Long = 0)',
+        '',
+        'Public Sub Run()',
+        '    RaiseEvent Missing( _',
+        unresolved_active_line,
+        '    RaiseEvent Completed( _',
+        named_argument_line,
+        '    RaiseEvent Completed( _',
+        '        "ok",',
+        missing_marker_active_line,
+        "    RaiseEvent Completed( _ ' invalid continuation",
+        invalid_marker_active_line,
+        '    RaiseEvent Completed "ok"',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  const uri = 'file:///project/TaskRunner.cls';
+  assert.equal(getSignatureHelp(project, {
+    uri,
+    position: { line: 8, character: unresolved_active_line.length }
+  }), undefined);
+  assert.equal(getSignatureHelp(project, {
+    uri,
+    position: { line: 10, character: named_argument_line.length }
+  }), undefined);
+  assert.equal(getSignatureHelp(project, {
+    uri,
+    position: { line: 13, character: missing_marker_active_line.length }
+  }), undefined);
+  assert.equal(getSignatureHelp(project, {
+    uri,
+    position: { line: 15, character: invalid_marker_active_line.length }
+  }), undefined);
+  assert.equal(getSignatureHelp(project, {
+    uri,
+    position: { line: 16, character: '    RaiseEvent Completed "ok"'.length }
+  }), undefined);
+  assert.deepEqual(
+    getSyntaxDiagnostics(project, uri).map((diagnostic) => diagnostic.code),
+    [
+      'syntax.invalidTrailingCommentContinuation',
+      'syntax.malformedCall',
+      'syntax.malformedCall'
+    ]
+  );
+});
+
 test('signature help selects source parameters by named argument', () => {
   const call_line = '    ReadValue("id", matchcase:=True';
   const project = buildVbaProject([
