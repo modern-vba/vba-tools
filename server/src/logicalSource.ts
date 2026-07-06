@@ -1,4 +1,5 @@
 import type { SourcePosition, SourceRange } from './vbaProject';
+import { findPreviousNonWhitespace, isRemCommentStart } from './vbaText';
 
 export interface LogicalSourceText {
   text: string;
@@ -305,24 +306,4 @@ export function getStatementSegmentAtPosition(
     end: code_end,
     text: line.slice(segment_start, code_end)
   };
-}
-
-function findPreviousNonWhitespace(line: string, startCharacter: number): number | undefined {
-  for (let character_index = startCharacter; character_index >= 0; character_index -= 1) {
-    if (!/\s/.test(line[character_index])) {
-      return character_index;
-    }
-  }
-
-  return undefined;
-}
-
-function isRemCommentStart(line: string, characterIndex: number): boolean {
-  if (line.slice(characterIndex, characterIndex + 3).toLowerCase() !== 'rem') {
-    return false;
-  }
-
-  const previous = characterIndex === 0 ? '' : line[characterIndex - 1];
-  const next = line[characterIndex + 3] ?? '';
-  return (characterIndex === 0 || /\s|:/.test(previous)) && (next === '' || /\s/.test(next));
 }
