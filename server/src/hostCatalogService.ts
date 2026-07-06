@@ -10,6 +10,12 @@ import {
   getBundledHostDefinitionsForApplication,
   type HostApplicationSelectionOptions
 } from './officeHostCatalog';
+import {
+  cloneHostDefinitions,
+  cloneHostDefinitionsWithApplication,
+  isHostDefinitionArray,
+  mergeHostDefinitions
+} from './hostDefinitionCatalog';
 import { discoverHostDefinitionsFromTypeLibrary } from './hostTypeLibraryDiscovery';
 import type { HostApplication, HostDefinition } from './vbaProject';
 
@@ -210,53 +216,6 @@ function writeHostCatalogCache(cachePath: string, definitions: HostDefinition[])
   fs.writeFileSync(cachePath, `${JSON.stringify(definitions, null, 2)}\n`, 'utf8');
 }
 
-function mergeHostDefinitions(
-  baseDefinitions: HostDefinition[],
-  enrichmentDefinitions: HostDefinition[]
-): HostDefinition[] {
-  const merged_definitions = baseDefinitions.map((definition) =>
-    mergeHostDefinition(
-      definition,
-      enrichmentDefinitions.find((candidate) => sameName(candidate.name, definition.name))
-    )
-  );
-  const base_names = new Set(baseDefinitions.map((definition) => definition.name.toLowerCase()));
-  return [
-    ...merged_definitions,
-    ...enrichmentDefinitions.filter((definition) => !base_names.has(definition.name.toLowerCase()))
-  ];
-}
-
-function mergeHostDefinition(
-  baseDefinition: HostDefinition,
-  enrichmentDefinition: HostDefinition | undefined
-): HostDefinition {
-  if (enrichmentDefinition === undefined) {
-    return cloneHostDefinition(baseDefinition);
-  }
-
-  const merged_definition: HostDefinition = {
-    ...baseDefinition
-  };
-  if (enrichmentDefinition.documentation !== undefined) {
-    merged_definition.documentation = enrichmentDefinition.documentation;
-  }
-  if (enrichmentDefinition.typeName !== undefined) {
-    merged_definition.typeName = enrichmentDefinition.typeName;
-  }
-  if (enrichmentDefinition.signature !== undefined) {
-    merged_definition.signature = enrichmentDefinition.signature;
-  }
-  if (baseDefinition.members !== undefined || enrichmentDefinition.members !== undefined) {
-    merged_definition.members = mergeHostDefinitions(
-      baseDefinition.members ?? [],
-      enrichmentDefinition.members ?? []
-    );
-  }
-
-  return merged_definition;
-}
-
 async function discoverOfficeComHostDefinitions(hostApplication: HostApplication): Promise<HostDefinition[]> {
   switch (hostApplication) {
     case 'excel':
@@ -427,78 +386,4 @@ async function executePowerShellHostCatalogScript(
   }
 
   return parsed;
-}
-
-function cloneHostDefinitions(definitions: HostDefinition[]): HostDefinition[] {
-  return definitions.map(cloneHostDefinition);
-}
-
-function cloneHostDefinition(definition: HostDefinition): HostDefinition {
-  const clone: HostDefinition = { ...definition };
-  if (definition.members !== undefined) {
-    clone.members = definition.members.map(cloneHostDefinition);
-  }
-
-  return clone;
-}
-
-function cloneHostDefinitionsWithApplication(
-  definitions: HostDefinition[],
-  hostApplication: HostApplication
-): HostDefinition[] {
-  return definitions.map((definition) => cloneHostDefinitionWithApplication(definition, hostApplication));
-}
-
-function cloneHostDefinitionWithApplication(
-  definition: HostDefinition,
-  hostApplication: HostApplication
-): HostDefinition {
-  const clone: HostDefinition = {
-    ...definition,
-    hostApplication
-  };
-  if (definition.members !== undefined) {
-    clone.members = definition.members.map((member) =>
-      cloneHostDefinitionWithApplication(member, hostApplication)
-    );
-  }
-
-  return clone;
-}
-
-function isHostDefinitionArray(value: unknown): value is HostDefinition[] {
-  return Array.isArray(value) && value.every(isHostDefinition);
-}
-
-function isHostDefinition(value: unknown): value is HostDefinition {
-  if (typeof value !== 'object' || value === null) {
-    return false;
-  }
-
-  const candidate = value as Partial<HostDefinition>;
-  return typeof candidate.name === 'string'
-    && (candidate.kind === undefined || isHostDefinitionKind(candidate.kind))
-    && (candidate.hostApplication === undefined || isHostApplication(candidate.hostApplication))
-    && (candidate.parentName === undefined || typeof candidate.parentName === 'string')
-    && (candidate.documentation === undefined || typeof candidate.documentation === 'string')
-    && (candidate.value === undefined || typeof candidate.value === 'string')
-    && (candidate.members === undefined || isHostDefinitionArray(candidate.members));
-}
-
-function isHostDefinitionKind(value: unknown): boolean {
-  return value === 'class'
-    || value === 'property'
-    || value === 'function'
-    || value === 'enum'
-    || value === 'enumMember'
-    || value === 'constant';
-}
-
-function isHostApplication(value: unknown): value is HostApplication {
-  return typeof value === 'string'
-    && (C_SUPPORTED_HOST_APPLICATIONS as readonly string[]).includes(value);
-}
-
-function sameName(left: string, right: string): boolean {
-  return left.toLowerCase() === right.toLowerCase();
 }

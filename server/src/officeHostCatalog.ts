@@ -1,13 +1,13 @@
 import type { HostApplication, HostDefinition } from './vbaProject';
 import { C_OFFICE_HOST_CATALOG_SNAPSHOT } from './generated/officeHostCatalogSnapshot';
+import {
+  C_SUPPORTED_HOST_APPLICATIONS,
+  cloneHostDefinitionsWithApplication
+} from './hostDefinitionCatalog';
+
+export { C_SUPPORTED_HOST_APPLICATIONS } from './hostDefinitionCatalog';
 
 export const C_DEFAULT_MAIN_HOST_APPLICATION: HostApplication = 'excel';
-export const C_SUPPORTED_HOST_APPLICATIONS: readonly HostApplication[] = [
-  'excel',
-  'word',
-  'powerpoint',
-  'access'
-];
 
 export interface HostApplicationSelectionOptions {
   mainHostApplication?: HostApplication;
@@ -238,26 +238,6 @@ export function formatHostApplicationName(hostApplication: HostApplication): str
     case 'access':
       return 'Access';
   }
-}
-
-function cloneHostDefinitionsWithApplication(
-  definitions: HostDefinition[],
-  hostApplication: HostApplication
-): HostDefinition[] {
-  return definitions.map((definition) => cloneHostDefinitionWithApplication(definition, hostApplication));
-}
-
-function cloneHostDefinitionWithApplication(
-  definition: HostDefinition,
-  hostApplication: HostApplication
-): HostDefinition {
-  return {
-    ...definition,
-    hostApplication,
-    members: definition.members?.map((member) =>
-      cloneHostDefinitionWithApplication(member, hostApplication)
-    )
-  };
 }
 
 function uniqueHostApplications(hostApplications: HostApplication[]): HostApplication[] {

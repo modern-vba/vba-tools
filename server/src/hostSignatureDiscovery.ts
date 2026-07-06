@@ -1,16 +1,13 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
+import { formatHostApplicationName } from './officeHostCatalog';
 import {
-  C_SUPPORTED_HOST_APPLICATIONS,
-  formatHostApplicationName
-} from './officeHostCatalog';
-import type {
-  CallableParameter,
-  CallableSignature,
-  HostApplication,
-  HostDefinition
-} from './vbaProject';
+  cloneHostDefinitionsWithApplication,
+  isHostDefinitionArray,
+  stripNullProperties
+} from './hostDefinitionCatalog';
+import type { HostApplication, HostDefinition } from './vbaProject';
 
 const execFileAsync = promisify(execFile);
 
@@ -451,108 +448,4 @@ function progIdForHostApplication(hostApplication: HostApplication): string {
     case 'access':
       return 'Access.Application';
   }
-}
-
-function cloneHostDefinitionsWithApplication(
-  definitions: HostDefinition[],
-  hostApplication: HostApplication
-): HostDefinition[] {
-  return definitions.map((definition) => cloneHostDefinitionWithApplication(definition, hostApplication));
-}
-
-function cloneHostDefinitionWithApplication(
-  definition: HostDefinition,
-  hostApplication: HostApplication
-): HostDefinition {
-  const clone: HostDefinition = {
-    ...definition,
-    hostApplication
-  };
-  if (definition.members !== undefined) {
-    clone.members = definition.members.map((member) =>
-      cloneHostDefinitionWithApplication(member, hostApplication)
-    );
-  }
-
-  return clone;
-}
-
-function stripNullProperties(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(stripNullProperties);
-  }
-
-  if (typeof value !== 'object' || value === null) {
-    return value;
-  }
-
-  return Object.fromEntries(
-    Object.entries(value)
-      .filter(([, entry_value]) => entry_value !== null)
-      .map(([key, entry_value]) => [key, stripNullProperties(entry_value)])
-  );
-}
-
-function isHostDefinitionArray(value: unknown): value is HostDefinition[] {
-  return Array.isArray(value) && value.every(isHostDefinition);
-}
-
-function isHostDefinition(value: unknown): value is HostDefinition {
-  if (typeof value !== 'object' || value === null) {
-    return false;
-  }
-
-  const candidate = value as Partial<HostDefinition>;
-  return typeof candidate.name === 'string'
-    && (candidate.kind === undefined || isHostDefinitionKind(candidate.kind))
-    && (candidate.hostApplication === undefined || isHostApplication(candidate.hostApplication))
-    && (candidate.parentName === undefined || typeof candidate.parentName === 'string')
-    && (candidate.documentation === undefined || typeof candidate.documentation === 'string')
-    && (candidate.value === undefined || typeof candidate.value === 'string')
-    && (candidate.typeName === undefined || typeof candidate.typeName === 'string')
-    && (candidate.signature === undefined || isCallableSignature(candidate.signature))
-    && (candidate.members === undefined || isHostDefinitionArray(candidate.members));
-}
-
-function isCallableSignature(value: unknown): value is CallableSignature {
-  if (typeof value !== 'object' || value === null) {
-    return false;
-  }
-
-  const candidate = value as Partial<CallableSignature>;
-  return typeof candidate.label === 'string'
-    && Array.isArray(candidate.parameters)
-    && candidate.parameters.every(isCallableParameter)
-    && (candidate.returnTypeName === undefined || typeof candidate.returnTypeName === 'string')
-    && (candidate.documentation === undefined || typeof candidate.documentation === 'string');
-}
-
-function isCallableParameter(value: unknown): value is CallableParameter {
-  if (typeof value !== 'object' || value === null) {
-    return false;
-  }
-
-  const candidate = value as Partial<CallableParameter>;
-  return typeof candidate.name === 'string'
-    && (candidate.label === undefined || typeof candidate.label === 'string')
-    && (candidate.documentation === undefined || typeof candidate.documentation === 'string')
-    && (candidate.optional === undefined || typeof candidate.optional === 'boolean')
-    && (candidate.passingMode === undefined || candidate.passingMode === 'ByVal' || candidate.passingMode === 'ByRef')
-    && (candidate.isParamArray === undefined || typeof candidate.isParamArray === 'boolean')
-    && (candidate.typeName === undefined || typeof candidate.typeName === 'string')
-    && (candidate.defaultValue === undefined || typeof candidate.defaultValue === 'string');
-}
-
-function isHostDefinitionKind(value: unknown): boolean {
-  return value === 'class'
-    || value === 'property'
-    || value === 'function'
-    || value === 'enum'
-    || value === 'enumMember'
-    || value === 'constant';
-}
-
-function isHostApplication(value: unknown): value is HostApplication {
-  return typeof value === 'string'
-    && (C_SUPPORTED_HOST_APPLICATIONS as readonly string[]).includes(value);
 }

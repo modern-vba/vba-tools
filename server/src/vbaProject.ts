@@ -6,6 +6,29 @@ import {
   getBundledHostDefinitions,
   type HostApplicationSelection
 } from './officeHostCatalog';
+import {
+  getUnqualifiedHostDefinitions,
+  selectHostApplicationQualifiedDefinition,
+  selectUnqualifiedHostDefinition,
+  withHostMemberContext
+} from './hostDefinitionCatalog';
+import {
+  getCodeContinuationMarkerStart,
+  getCodeEndCharacter,
+  getContinuedSourceTextEndingBefore,
+  getLogicalCodeSourceFromLine,
+  getLogicalSourceRange,
+  getSingleLineLogicalSourceText,
+  getStatementSegmentAtPosition,
+  getTopLevelStatementSegments,
+  hasCommentContinuationMarker,
+  hasSourceText,
+  isContinuationTail,
+  sourceLineRange,
+  type LogicalCodeSource,
+  type LogicalSourceText,
+  type StatementSegment
+} from './logicalSource';
 
 export interface SourcePosition {
   line: number;
@@ -270,11 +293,6 @@ interface CallExpression {
   eventReference?: boolean;
 }
 
-interface LogicalSourceText {
-  text: string;
-  positions: SourcePosition[];
-}
-
 interface WithReceiverDeclaration {
   chain?: MemberChainExpression;
   end: SourcePosition;
@@ -435,7 +453,7 @@ export function getCompletions(project: VbaProject, request: CompletionRequest):
       label: definition.name,
       kind: completionKindForVbaDefinition(definition)
     }));
-  const host_definitions = getUnqualifiedHostDefinitions(project);
+  const host_definitions = getUnqualifiedHostDefinitions(project.hostDefinitions);
   const host_candidates = host_definitions
     .filter((definition) => prefix === '' || definition.name.toLowerCase().startsWith(prefix))
     .filter((definition) => isUnqualifiedHostCompletionDefinition(project, definition, host_definitions))
@@ -478,10 +496,13 @@ function getSourceCompletionDefinitions(
 function isUnqualifiedHostCompletionDefinition(
   project: VbaProject,
   definition: HostDefinition,
-  hostDefinitions: HostDefinition[] = getUnqualifiedHostDefinitions(project)
+  hostDefinitions: HostDefinition[] = getUnqualifiedHostDefinitions(project.hostDefinitions)
 ): boolean {
   const matches = hostDefinitions.filter((candidate) => sameName(candidate.name, definition.name));
-  return selectUnqualifiedHostDefinition(project, matches) === definition;
+  return selectUnqualifiedHostDefinition(
+    matches,
+    project.hostApplicationSelection.mainHostApplication
+  ) === definition;
 }
 
 function getRootHostCompletions(
@@ -495,7 +516,7 @@ function getRootHostCompletions(
     return undefined;
   }
 
-  return getUnqualifiedHostDefinitions(project)
+  return getUnqualifiedHostDefinitions(project.hostDefinitions)
     .filter((definition) => definition.hostApplication === host_application)
     .filter((definition) => prefix === '' || definition.name.toLowerCase().startsWith(prefix))
     .filter((definition, _index, definitions) =>
@@ -1043,8 +1064,13 @@ export function resolveName(
     return toVbaResolution(project_definition);
   }
 
-  const host_matches = getUnqualifiedHostDefinitions(project).filter((definition) => sameName(definition.name, identifier));
-  const host_definition = selectUnqualifiedHostDefinition(project, host_matches);
+  const host_matches = getUnqualifiedHostDefinitions(project.hostDefinitions).filter((definition) =>
+    sameName(definition.name, identifier)
+  );
+  const host_definition = selectUnqualifiedHostDefinition(
+    host_matches,
+    project.hostApplicationSelection.mainHostApplication
+  );
   if (host_definition !== undefined) {
     return {
       source: 'host',
@@ -1147,7 +1173,7 @@ function resolveHostQualifiedDefinition(
   }
 
   return selectHostApplicationQualifiedDefinition(
-    getUnqualifiedHostDefinitions(project),
+    getUnqualifiedHostDefinitions(project.hostDefinitions),
     host_application,
     member
   );
@@ -1184,10 +1210,10 @@ function resolveUnqualifiedHostEnumQualifier(
   }
 
   const host_definition = selectUnqualifiedHostDefinition(
-    project,
     project.hostDefinitions.filter((definition) =>
       definition.kind === 'enum' && sameName(definition.name, qualifier)
-    )
+    ),
+    project.hostApplicationSelection.mainHostApplication
   );
   return host_definition?.kind === 'enum' ? host_definition : undefined;
 }
@@ -1238,59 +1264,6 @@ function resolveHostApplicationQualifier(
   );
 }
 
-function selectUnqualifiedHostDefinition(
-  project: VbaProject,
-  matches: HostDefinition[]
-): HostDefinition | undefined {
-  if (matches.length === 1) {
-    return matches[0];
-  }
-
-  const main_host_matches = matches.filter((definition) =>
-    definition.hostApplication === project.hostApplicationSelection.mainHostApplication
-  );
-  return singleMatch(main_host_matches);
-}
-
-function selectHostApplicationQualifiedDefinition(
-  definitions: HostDefinition[],
-  hostApplication: HostApplication,
-  name: string
-): HostDefinition | undefined {
-  return singleMatch(definitions.filter((definition) =>
-    definition.hostApplication === hostApplication && sameName(definition.name, name)
-  ));
-}
-
-function getUnqualifiedHostDefinitions(project: VbaProject): HostDefinition[] {
-  return project.hostDefinitions.flatMap((definition) => [
-    definition,
-    ...getUnqualifiedHostEnumMembers(definition)
-  ]);
-}
-
-function getUnqualifiedHostEnumMembers(definition: HostDefinition): HostDefinition[] {
-  if (definition.kind !== 'enum') {
-    return [];
-  }
-
-  return (definition.members ?? [])
-    .filter((member) => member.kind === 'enumMember' || member.kind === 'constant')
-    .map((member) => withHostMemberContext(definition, member));
-}
-
-function withHostMemberContext(parent: HostDefinition, member: HostDefinition): HostDefinition {
-  if (parent.kind !== 'enum') {
-    return member;
-  }
-
-  return {
-    ...member,
-    hostApplication: member.hostApplication ?? parent.hostApplication,
-    parentName: member.parentName ?? parent.name
-  };
-}
-
 function resolveTypedMemberDefinition(
   project: VbaProject,
   current_module: VbaModule,
@@ -1305,8 +1278,8 @@ function resolveTypedMemberDefinition(
 
   const host_type = resolveHostQualifiedPath(project, current_module, type_name)
     ?? selectUnqualifiedHostDefinition(
-      project,
-      project.hostDefinitions.filter((definition) => sameName(definition.name, type_name))
+      project.hostDefinitions.filter((definition) => sameName(definition.name, type_name)),
+      project.hostApplicationSelection.mainHostApplication
     );
   const host_member = singleMatch(host_type?.members?.filter((definition) => sameName(definition.name, member)) ?? []);
   if (host_member !== undefined) {
@@ -4575,11 +4548,6 @@ function createMalformedExpressionDiagnostic(
   };
 }
 
-interface LogicalCodeSource extends LogicalSourceText {
-  startLine: number;
-  endLine: number;
-}
-
 function collectCallSyntaxDiagnostics(
   lines: string[],
   codeStartLine: number,
@@ -4640,15 +4608,6 @@ function collectCallSyntaxDiagnostics(
   return diagnostics;
 }
 
-function sourceLineRange(source: LogicalCodeSource): number[] {
-  const lines: number[] = [];
-  for (let line_index = source.startLine; line_index <= source.endLine; line_index += 1) {
-    lines.push(line_index);
-  }
-
-  return lines;
-}
-
 function getCallStatementSegments(text: string): StatementSegment[] {
   const segments: StatementSegment[] = [];
   let segment_start = 0;
@@ -4696,37 +4655,6 @@ function getCallStatementSegments(text: string): StatementSegment[] {
     text: text.slice(segment_start, character_index)
   });
   return segments;
-}
-
-function isContinuationTail(lines: string[], lineIndex: number): boolean {
-  return lineIndex > 0 && getCodeContinuationMarkerStart(lines[lineIndex - 1] ?? '') !== undefined;
-}
-
-function getLogicalCodeSourceFromLine(lines: string[], startLine: number): LogicalCodeSource | undefined {
-  const text_parts: string[] = [];
-  const positions: SourcePosition[] = [];
-
-  for (let line_index = startLine; line_index < lines.length; line_index += 1) {
-    const line = lines[line_index] ?? '';
-    const continuation_marker = getCodeContinuationMarkerStart(line);
-    const line_end = continuation_marker ?? getCodeEndCharacter(line);
-
-    text_parts.push(line.slice(0, line_end));
-    for (let character = 0; character < line_end; character += 1) {
-      positions.push({ line: line_index, character });
-    }
-
-    if (continuation_marker === undefined) {
-      return {
-        text: text_parts.join(''),
-        positions,
-        startLine,
-        endLine: line_index
-      };
-    }
-  }
-
-  return undefined;
 }
 
 function collectMalformedCallDiagnosticsForSegment(
@@ -5732,13 +5660,6 @@ function createMalformedStatementDiagnostic(
   };
 }
 
-interface StatementSegment {
-  start: number;
-  end: number;
-  terminator?: number;
-  text: string;
-}
-
 function collectStatementBoundaryDiagnostics(line: string, lineIndex: number): SyntaxDiagnostic[] {
   const diagnostics: SyntaxDiagnostic[] = [];
   const segments = getStatementSegments(line);
@@ -6097,10 +6018,6 @@ function getIncompleteContinuationRange(lines: string[], lineIndex: number): Sou
     start: { line: lineIndex, character: marker_index },
     end: { line: lineIndex, character: marker_index + 1 }
   };
-}
-
-function hasSourceText(line: string): boolean {
-  return line.slice(0, getCodeEndCharacter(line)).trim().length > 0;
 }
 
 function getInvalidContinuationMarkerTextRange(line: string, lineIndex: number): SourceRange | undefined {
@@ -7108,78 +7025,6 @@ function parseContinuedMemberChainEndingBefore(
   return parseMemberChainEndingBeforeSource(logical_source, logical_source.text.length);
 }
 
-function getContinuedSourceTextEndingBefore(
-  lines: string[],
-  lineIndex: number,
-  endCharacter: number
-): LogicalSourceText | undefined {
-  let start_line = lineIndex;
-  while (start_line > 0 && getCodeContinuationMarkerStart(lines[start_line - 1] ?? '') !== undefined) {
-    start_line -= 1;
-  }
-
-  if (start_line === lineIndex) {
-    return undefined;
-  }
-
-  const text_parts: string[] = [];
-  const positions: SourcePosition[] = [];
-  for (let current_line_index = start_line; current_line_index <= lineIndex; current_line_index += 1) {
-    const line = lines[current_line_index] ?? '';
-    const line_end = current_line_index === lineIndex
-      ? Math.min(endCharacter, line.length)
-      : getCodeContinuationMarkerStart(line);
-    if (line_end === undefined) {
-      return undefined;
-    }
-
-    text_parts.push(line.slice(0, line_end));
-    for (let character = 0; character < line_end; character += 1) {
-      positions.push({ line: current_line_index, character });
-    }
-  }
-
-  return {
-    text: text_parts.join(''),
-    positions
-  };
-}
-
-function getLogicalSourceRange(
-  source: LogicalSourceText,
-  start: number,
-  end: number
-): SourceRange {
-  const start_position = source.positions[start];
-  const last_position = source.positions[end - 1];
-  return {
-    start: start_position,
-    end: {
-      line: last_position.line,
-      character: last_position.character + 1
-    }
-  };
-}
-
-function getCodeContinuationMarkerStart(line: string): number | undefined {
-  const code_end = getCodeEndCharacter(line);
-  if (code_end < line.length) {
-    return undefined;
-  }
-
-  const marker_index = findPreviousNonWhitespace(line, code_end - 1);
-  if (
-    marker_index === undefined
-    || line[marker_index] !== '_'
-    || marker_index === 0
-    || !/\s/.test(line[marker_index - 1])
-  ) {
-    return undefined;
-  }
-
-  return marker_index;
-}
-
 function parseMemberChainEndingAt(
   line: string,
   lineIndex: number,
@@ -7721,20 +7566,6 @@ function getWithReceiverSourceText(
   return undefined;
 }
 
-function hasCommentContinuationMarker(line: string): boolean {
-  const code_end = getCodeEndCharacter(line);
-  if (code_end >= line.length) {
-    return false;
-  }
-
-  const marker_index = findPreviousNonWhitespace(line, line.length - 1);
-  return marker_index !== undefined
-    && marker_index > code_end
-    && line[marker_index] === '_'
-    && marker_index > 0
-    && /\s/.test(line[marker_index - 1]);
-}
-
 function getWithReceiverChainFromSource(
   source: LogicalSourceText
 ): MemberChainExpression | undefined {
@@ -7770,42 +7601,6 @@ function getWithReceiverChainFromSource(
     targetSegmentIndex: receiver_chain.segments.length - 1,
     usesWithReceiver: uses_with_receiver
   };
-}
-
-function getCodeEndCharacter(line: string): number {
-  let character_index = 0;
-  let is_in_string = false;
-
-  while (character_index < line.length) {
-    const character = line[character_index];
-    if (is_in_string) {
-      if (character === '"') {
-        if (line[character_index + 1] === '"') {
-          character_index += 2;
-        } else {
-          is_in_string = false;
-          character_index += 1;
-        }
-      } else {
-        character_index += 1;
-      }
-      continue;
-    }
-
-    if (character === "'") {
-      return character_index;
-    }
-    if (isRemCommentStart(line, character_index)) {
-      return character_index;
-    }
-    if (character === '"') {
-      is_in_string = true;
-    }
-
-    character_index += 1;
-  }
-
-  return line.length;
 }
 
 function resolveMemberChain(
@@ -7852,7 +7647,7 @@ function resolveMemberChain(
       const host_root = host_application === undefined
         ? undefined
         : selectHostApplicationQualifiedDefinition(
-          getUnqualifiedHostDefinitions(project),
+          getUnqualifiedHostDefinitions(project.hostDefinitions),
           host_application,
           segments[1].name
         );
@@ -7954,8 +7749,8 @@ function resolveRootChainSegment(
   }
 
   const host_definition = selectUnqualifiedHostDefinition(
-    project,
-    project.hostDefinitions.filter((definition) => sameName(definition.name, segment.name))
+    project.hostDefinitions.filter((definition) => sameName(definition.name, segment.name)),
+    project.hostApplicationSelection.mainHostApplication
   );
   if (host_definition !== undefined) {
     return {
@@ -8060,8 +7855,8 @@ function resolveTypeNameRef(
   }
 
   const unqualified_host_type = selectUnqualifiedHostDefinition(
-    project,
-    project.hostDefinitions.filter((definition) => sameName(definition.name, typeName))
+    project.hostDefinitions.filter((definition) => sameName(definition.name, typeName)),
+    project.hostApplicationSelection.mainHostApplication
   );
   return unqualified_host_type === undefined
     ? undefined
@@ -8104,8 +7899,8 @@ function findHostTypeDefinition(
   }
 
   return selectUnqualifiedHostDefinition(
-    project,
-    project.hostDefinitions.filter((definition) => sameName(definition.name, typeRef.typeName))
+    project.hostDefinitions.filter((definition) => sameName(definition.name, typeRef.typeName)),
+    project.hostApplicationSelection.mainHostApplication
   );
 }
 
@@ -8978,124 +8773,6 @@ function getContinuedParenthesisFreeCallSourceTextAt(
   }
 
   return getContinuedSourceTextEndingBefore(lines, lineIndex, effectiveCharacter);
-}
-
-function getSingleLineLogicalSourceText(
-  line: string,
-  lineIndex: number,
-  endCharacter: number
-): LogicalSourceText {
-  const positions: SourcePosition[] = [];
-  for (let character = 0; character < endCharacter; character += 1) {
-    positions.push({ line: lineIndex, character });
-  }
-
-  return {
-    text: line.slice(0, endCharacter),
-    positions
-  };
-}
-
-function getTopLevelStatementSegments(line: string): StatementSegment[] {
-  const code_end = getCodeEndCharacter(line);
-  const segments: StatementSegment[] = [];
-  let segment_start = 0;
-  let character_index = 0;
-  let is_in_string = false;
-  let paren_depth = 0;
-
-  while (character_index < code_end) {
-    const character = line[character_index];
-    if (is_in_string) {
-      if (character === '"') {
-        if (line[character_index + 1] === '"') {
-          character_index += 2;
-          continue;
-        }
-        is_in_string = false;
-      }
-      character_index += 1;
-      continue;
-    }
-
-    if (character === '"') {
-      is_in_string = true;
-    } else if (character === '(') {
-      paren_depth += 1;
-    } else if (character === ')' && paren_depth > 0) {
-      paren_depth -= 1;
-    } else if (character === ':' && line[character_index + 1] !== '=' && paren_depth === 0) {
-      segments.push({
-        start: segment_start,
-        end: character_index,
-        terminator: character_index,
-        text: line.slice(segment_start, character_index)
-      });
-      segment_start = character_index + 1;
-    }
-
-    character_index += 1;
-  }
-
-  segments.push({
-    start: segment_start,
-    end: code_end,
-    text: line.slice(segment_start, code_end)
-  });
-  return segments;
-}
-
-function getStatementSegmentAtPosition(line: string, positionCharacter: number): StatementSegment | undefined {
-  const code_end = getCodeEndCharacter(line);
-  if (positionCharacter > code_end) {
-    return undefined;
-  }
-
-  let segment_start = 0;
-  let character_index = 0;
-  let is_in_string = false;
-  let paren_depth = 0;
-
-  while (character_index < code_end) {
-    const character = line[character_index];
-    if (is_in_string) {
-      if (character === '"') {
-        if (line[character_index + 1] === '"') {
-          character_index += 2;
-          continue;
-        }
-        is_in_string = false;
-      }
-      character_index += 1;
-      continue;
-    }
-
-    if (character === '"') {
-      is_in_string = true;
-    } else if (character === '(') {
-      paren_depth += 1;
-    } else if (character === ')' && paren_depth > 0) {
-      paren_depth -= 1;
-    } else if (character === ':' && line[character_index + 1] !== '=' && paren_depth === 0) {
-      if (positionCharacter <= character_index) {
-        return {
-          start: segment_start,
-          end: character_index,
-          terminator: character_index,
-          text: line.slice(segment_start, character_index)
-        };
-      }
-      segment_start = character_index + 1;
-    }
-
-    character_index += 1;
-  }
-
-  return {
-    start: segment_start,
-    end: code_end,
-    text: line.slice(segment_start, code_end)
-  };
 }
 
 function readParenthesisFreeCallableTargetAt(
