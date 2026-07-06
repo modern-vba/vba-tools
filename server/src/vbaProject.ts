@@ -8355,6 +8355,7 @@ function getCallExpressionAt(
   const open_paren = findActiveCallOpenParen(line, effective_character);
   if (open_paren === undefined) {
     return getContinuedCallExpressionAt(lines, position, effective_character)
+      ?? getContinuedParenthesisFreeCallExpressionAt(lines, position, effective_character)
       ?? getParenthesisFreeCallExpressionAt(lines, position, effective_character);
   }
 
@@ -8435,6 +8436,109 @@ function getParenthesisFreeCallExpressionAt(
     activeParameter: countTopLevelCommas(line.slice(target.targetEnd, effectiveCharacter)),
     namedArgumentName: getNamedArgumentNameInActiveArgument(line, target.targetEnd, effectiveCharacter),
     chain: target.chain
+  };
+}
+
+function getContinuedParenthesisFreeCallExpressionAt(
+  lines: string[],
+  position: SourcePosition,
+  effectiveCharacter: number
+): CallExpression | undefined {
+  const line = lines[position.line] ?? '';
+  if (effectiveCharacter > getCodeEndCharacter(line)) {
+    return undefined;
+  }
+
+  const logical_source = getContinuedParenthesisFreeCallSourceTextAt(lines, position.line, effectiveCharacter);
+  if (logical_source === undefined) {
+    return undefined;
+  }
+
+  const segment = getStatementSegmentAtPosition(logical_source.text, logical_source.text.length);
+  if (segment === undefined) {
+    return undefined;
+  }
+
+  const segment_start = skipWhitespace(logical_source.text, segment.start, segment.end);
+  const segment_end = trimEndIndex(logical_source.text, segment.end);
+  if (segment_start >= segment_end) {
+    return undefined;
+  }
+
+  const first_token = readIdentifierTokenAt(logical_source.text, segment_start, segment_end);
+  if (
+    first_token !== undefined
+    && (
+      first_token.lowerText === 'call'
+      || first_token.lowerText === 'raiseevent'
+      || first_token.lowerText === 'set'
+      || first_token.lowerText === 'let'
+      || shouldSkipCallDiagnosticsForStatement(first_token.lowerText)
+    )
+  ) {
+    return undefined;
+  }
+
+  const target = readParenthesisFreeCallableTargetInSource(logical_source, segment_start, segment_end);
+  const target_segment = target?.chain.segments.at(-1);
+  if (target === undefined || target_segment === undefined || target_segment.hasCall) {
+    return undefined;
+  }
+
+  const argument_start = skipWhitespace(logical_source.text, target.targetEnd, segment_end);
+  if (argument_start <= target.targetEnd || logical_source.text[argument_start] === '=') {
+    return undefined;
+  }
+
+  if (logical_source.text.length <= target.targetEnd) {
+    return undefined;
+  }
+
+  return {
+    name: target_segment.name,
+    nameStart: target_segment.range.start.character,
+    activeParameter: countTopLevelCommas(logical_source.text.slice(target.targetEnd)),
+    namedArgumentName: getNamedArgumentNameInActiveArgument(
+      logical_source.text,
+      target.targetEnd,
+      logical_source.text.length
+    ),
+    chain: target.chain
+  };
+}
+
+function getContinuedParenthesisFreeCallSourceTextAt(
+  lines: string[],
+  lineIndex: number,
+  effectiveCharacter: number
+): LogicalSourceText | undefined {
+  const line = lines[lineIndex] ?? '';
+  const continuation_marker = getCodeContinuationMarkerStart(line);
+  if (continuation_marker !== undefined && effectiveCharacter >= continuation_marker) {
+    if (!hasSourceText(lines[lineIndex + 1] ?? '')) {
+      return undefined;
+    }
+
+    return getContinuedSourceTextEndingBefore(lines, lineIndex, continuation_marker)
+      ?? getSingleLineLogicalSourceText(line, lineIndex, continuation_marker);
+  }
+
+  return getContinuedSourceTextEndingBefore(lines, lineIndex, effectiveCharacter);
+}
+
+function getSingleLineLogicalSourceText(
+  line: string,
+  lineIndex: number,
+  endCharacter: number
+): LogicalSourceText {
+  const positions: SourcePosition[] = [];
+  for (let character = 0; character < endCharacter; character += 1) {
+    positions.push({ line: lineIndex, character });
+  }
+
+  return {
+    text: line.slice(0, endCharacter),
+    positions
   };
 }
 
@@ -8549,6 +8653,73 @@ function readParenthesisFreeCallableTargetAt(
 
     segments.push(segment);
     if (line[next_code] !== '.') {
+      return {
+        chain: toMemberChainExpression(segments, uses_with_receiver),
+        targetEnd: after_identifier
+      };
+    }
+
+    character_index = next_code + 1;
+  }
+
+  return undefined;
+}
+
+function readParenthesisFreeCallableTargetInSource(
+  source: LogicalSourceText,
+  startCharacter: number,
+  endCharacter: number
+): { chain: MemberChainExpression; targetEnd: number } | undefined {
+  const text = source.text;
+  let character_index = skipWhitespace(text, startCharacter, endCharacter);
+  let uses_with_receiver = false;
+  if (text[character_index] === '.') {
+    uses_with_receiver = true;
+    character_index = skipWhitespace(text, character_index + 1, endCharacter);
+  }
+
+  const segments: MemberChainSegment[] = [];
+  while (character_index < endCharacter) {
+    character_index = skipWhitespace(text, character_index, endCharacter);
+    const identifier = readIdentifierAt(text, character_index);
+    if (identifier === undefined || identifier.end > endCharacter) {
+      return undefined;
+    }
+
+    const segment: MemberChainSegment = {
+      name: identifier.name,
+      range: getLogicalSourceRange(source, identifier.start, identifier.end),
+      hasCall: false
+    };
+
+    const after_identifier = identifier.end;
+    const next_code = skipWhitespace(text, after_identifier, endCharacter);
+    if (text[next_code] === '(') {
+      const close_paren = findMatchingParen(text, next_code, endCharacter);
+      if (close_paren === undefined) {
+        return undefined;
+      }
+
+      const after_call = skipWhitespace(text, close_paren + 1, endCharacter);
+      if (text[after_call] === '.') {
+        segment.hasCall = true;
+        segments.push(segment);
+        character_index = after_call + 1;
+        continue;
+      }
+
+      if (next_code === after_identifier) {
+        segment.hasCall = true;
+      }
+      segments.push(segment);
+      return {
+        chain: toMemberChainExpression(segments, uses_with_receiver),
+        targetEnd: after_identifier
+      };
+    }
+
+    segments.push(segment);
+    if (text[next_code] !== '.') {
       return {
         chain: toMemberChainExpression(segments, uses_with_receiver),
         targetEnd: after_identifier

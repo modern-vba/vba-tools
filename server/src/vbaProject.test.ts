@@ -9162,6 +9162,46 @@ test('signature help activates for source ParenthesisFreeCall statements', () =>
   });
 });
 
+test('signature help remains active for source ContinuedParenthesisFreeCall statements', () => {
+  const fallback_line = '        "fallback"';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        "'* @brief Reads a value.",
+        "'* @param Key Key to read.",
+        "'* @param Fallback Fallback value.",
+        'Public Sub ReadValue(ByVal Key As String, Optional ByVal Fallback As String = "n/a")',
+        'End Sub',
+        '',
+        'Public Sub Run()',
+        '    ReadValue _',
+        '        "id", _',
+        fallback_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  const signatureHelp = getSignatureHelp(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 12, character: fallback_line.length }
+  });
+
+  assert.deepEqual(signatureHelp, {
+    label: 'ReadValue(Key, Optional Fallback)',
+    activeParameter: 1,
+    documentation: 'Reads a value.',
+    parameters: [
+      { label: 'Key', documentation: 'Key to read.' },
+      { label: 'Optional Fallback', documentation: 'Fallback value.' }
+    ]
+  });
+});
+
 test('signature help activates for host ParenthesisFreeCall statements', () => {
   const call_line = '    rng.Find "needle", ';
   const project = buildVbaProject([
@@ -9234,6 +9274,102 @@ test('signature help activates for host ParenthesisFreeCall statements', () => {
       }
     ]
   });
+});
+
+test('signature help selects named host parameters in ContinuedParenthesisFreeCall statements', () => {
+  const look_at_line = '        LookAt:=xlWhole';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    Dim rng As Range',
+        '    rng.Find "needle", _',
+        look_at_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ], {
+    hostDefinitions: [
+      {
+        name: 'Range',
+        kind: 'class',
+        hostApplication: 'excel',
+        members: [
+          {
+            name: 'Find',
+            kind: 'function',
+            hostApplication: 'excel',
+            signature: {
+              label: 'Find(What, Optional After, Optional LookAt) As Range',
+              returnTypeName: 'Range',
+              parameters: [
+                { name: 'What' },
+                { name: 'After', label: 'Optional After', optional: true },
+                { name: 'LookAt', label: 'Optional LookAt', optional: true }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  });
+
+  const signatureHelp = getSignatureHelp(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 6, character: look_at_line.length }
+  });
+
+  assert.deepEqual(signatureHelp, {
+    label: 'Find(What, Optional After, Optional LookAt) As Range',
+    activeParameter: 2,
+    documentation: undefined,
+    parameters: [
+      { label: 'What', documentation: undefined },
+      { label: 'Optional After', documentation: 'Optional.' },
+      { label: 'Optional LookAt', documentation: 'Optional.' }
+    ]
+  });
+});
+
+test('signature help preserves ContinuedParenthesisFreeCall parameters on continuation whitespace', () => {
+  const continued_call_line = '    ReadValue "id", _';
+  const indented_argument_line = '        "fallback"';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Sub ReadValue(ByVal Key As String, Optional ByVal Fallback As String = "n/a")',
+        'End Sub',
+        '',
+        'Public Sub Run()',
+        continued_call_line,
+        indented_argument_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  const uri = 'file:///project/Worker.bas';
+  const markerSignatureHelp = getSignatureHelp(project, {
+    uri,
+    position: { line: 7, character: continued_call_line.length }
+  });
+  const indentationSignatureHelp = getSignatureHelp(project, {
+    uri,
+    position: { line: 8, character: indented_argument_line.indexOf('"') }
+  });
+
+  assert.equal(markerSignatureHelp?.label, 'ReadValue(Key, Optional Fallback)');
+  assert.equal(markerSignatureHelp?.activeParameter, 1);
+  assert.equal(indentationSignatureHelp?.label, markerSignatureHelp?.label);
+  assert.equal(indentationSignatureHelp?.activeParameter, 1);
 });
 
 test('signature help activates for source member-chain ParenthesisFreeCall statements', () => {
@@ -9323,6 +9459,46 @@ test('signature help activates for WithReceiver ParenthesisFreeCall statements',
   assert.equal(signatureHelp?.documentation, 'Finds specific information in a range.');
 });
 
+test('signature help resolves ContinuedParenthesisFreeCall callables through continued receivers', () => {
+  const member_chain_arg_line = '    LookAt:=xlWhole';
+  const with_receiver_arg_line = '        LookAt:=xlWhole';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Caller.bas',
+      text: [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    Application.ActiveWorkbook _',
+        '        .Worksheets(1).Range("A1").Find "needle", _',
+        member_chain_arg_line,
+        '    With Application.ActiveWorkbook _',
+        '        .Worksheets(1).Range("A1")',
+        '        .Find "needle", _',
+        with_receiver_arg_line,
+        '    End With',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  const uri = 'file:///project/Caller.bas';
+  const memberChainSignatureHelp = getSignatureHelp(project, {
+    uri,
+    position: { line: 6, character: member_chain_arg_line.length }
+  });
+  const withReceiverSignatureHelp = getSignatureHelp(project, {
+    uri,
+    position: { line: 10, character: with_receiver_arg_line.length }
+  });
+
+  assert.equal(memberChainSignatureHelp?.label, 'Find(What, Optional After, Optional LookIn, Optional LookAt, Optional SearchOrder, Optional SearchDirection, Optional MatchCase, Optional MatchByte, Optional SearchFormat) As Range');
+  assert.equal(memberChainSignatureHelp?.activeParameter, 3);
+  assert.equal(withReceiverSignatureHelp?.label, memberChainSignatureHelp?.label);
+  assert.equal(withReceiverSignatureHelp?.activeParameter, 3);
+});
+
 test('signature help selects ParenthesisFreeCall parameters by named argument', () => {
   const call_line = '    rng.Find "needle", LookAt:=xlWhole';
   const project = buildVbaProject([
@@ -9402,13 +9578,137 @@ test('signature help counts only top-level ParenthesisFreeCall argument separato
   assert.equal(signatureHelp?.activeParameter, 2);
 });
 
+test('signature help counts ContinuedParenthesisFreeCall separators outside nested calls', () => {
+  const nested_argument_line = '        2), _';
+  const outer_argument_line = '        "third"';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Sub Invoke(ByVal First As Variant, ByVal Second As String, ByVal Third As String)',
+        'End Sub',
+        '',
+        'Public Function BuildValue(ByVal Left As Integer, ByVal Right As Integer) As Variant',
+        'End Function',
+        '',
+        'Public Sub Run()',
+        '    Invoke (BuildValue(1, _',
+        nested_argument_line,
+        '        "a,b", _',
+        outer_argument_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  const uri = 'file:///project/Worker.bas';
+  const nestedSignatureHelp = getSignatureHelp(project, {
+    uri,
+    position: { line: 11, character: nested_argument_line.indexOf('2') + 1 }
+  });
+  const outerSignatureHelp = getSignatureHelp(project, {
+    uri,
+    position: { line: 13, character: outer_argument_line.length }
+  });
+
+  assert.equal(nestedSignatureHelp?.label, 'BuildValue(Left, Right) As Variant');
+  assert.equal(nestedSignatureHelp?.activeParameter, 1);
+  assert.equal(outerSignatureHelp?.label, 'Invoke(First, Second, Third)');
+  assert.equal(outerSignatureHelp?.activeParameter, 2);
+});
+
+test('signature help stops ContinuedParenthesisFreeCall arguments at top-level colons', () => {
+  const colon_line = '        "fallback": ReadValue "other"';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Sub Invoke(ByVal First As String, ByVal Second As String)',
+        'End Sub',
+        '',
+        'Public Sub ReadValue(ByVal Key As String)',
+        'End Sub',
+        '',
+        'Public Sub Run()',
+        '    Invoke "id", _',
+        colon_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  const signatureHelp = getSignatureHelp(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 11, character: colon_line.length }
+  });
+
+  assert.equal(signatureHelp?.label, 'ReadValue(Key)');
+  assert.equal(signatureHelp?.activeParameter, 0);
+});
+
+test('signature help fails closed for invalid ContinuedParenthesisFreeCall continuations', () => {
+  const missing_marker_argument_line = '        "fallback"';
+  const blank_interstitial_argument_line = '        "blank fallback"';
+  const comment_interstitial_argument_line = '        "comment fallback"';
+  const incomplete_continuation_line = '    ReadValue "id", _';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Sub ReadValue(ByVal Key As String, Optional ByVal Fallback As String = "n/a")',
+        'End Sub',
+        '',
+        'Public Sub Run()',
+        '    ReadValue "id",',
+        missing_marker_argument_line,
+        '    ReadValue "id", _',
+        '',
+        blank_interstitial_argument_line,
+        '    ReadValue "id", _',
+        '    \' comment',
+        comment_interstitial_argument_line,
+        incomplete_continuation_line,
+        '',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  const uri = 'file:///project/Worker.bas';
+  assert.equal(getSignatureHelp(project, {
+    uri,
+    position: { line: 8, character: missing_marker_argument_line.length }
+  }), undefined);
+  assert.equal(getSignatureHelp(project, {
+    uri,
+    position: { line: 11, character: blank_interstitial_argument_line.length }
+  }), undefined);
+  assert.equal(getSignatureHelp(project, {
+    uri,
+    position: { line: 14, character: comment_interstitial_argument_line.length }
+  }), undefined);
+  assert.equal(getSignatureHelp(project, {
+    uri,
+    position: { line: 15, character: incomplete_continuation_line.length }
+  }), undefined);
+});
+
 test('signature help fails closed for unsupported ParenthesisFreeCall shapes', () => {
   const no_space_line = '    ReadValue';
   const assignment_line = '    ReadValue = "id"';
   const unresolved_line = '    MissingValue ';
   const keyword_line = '    If ReadValue ';
   const call_keyword_line = '    Call ReadValue ';
-  const continuation_line = '    ReadValue _';
+  const trailing_comment_continuation_line = '    ReadValue _ \' comment';
   const missing_signature_line = '    rng.Clear ';
   const project = buildVbaProject([
     {
@@ -9427,7 +9727,7 @@ test('signature help fails closed for unsupported ParenthesisFreeCall shapes', (
         unresolved_line,
         keyword_line,
         call_keyword_line,
-        continuation_line,
+        trailing_comment_continuation_line,
         missing_signature_line,
         'End Sub'
       ].join('\n')
@@ -9472,7 +9772,7 @@ test('signature help fails closed for unsupported ParenthesisFreeCall shapes', (
   }), undefined);
   assert.equal(getSignatureHelp(project, {
     uri,
-    position: { line: 13, character: continuation_line.length }
+    position: { line: 13, character: trailing_comment_continuation_line.length }
   }), undefined);
   assert.equal(getSignatureHelp(project, {
     uri,
