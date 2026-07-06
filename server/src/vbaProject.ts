@@ -8557,6 +8557,18 @@ function getCallExpressionAt(
       return continued_raise_event_call;
     }
 
+    const continued_call_statement_call = getContinuedCallStatementCallExpressionAt(
+      lines,
+      position,
+      effective_character
+    );
+    if (
+      continued_call_statement_call !== undefined
+      || isContinuedCallStatementArgumentListAt(lines, position, effective_character)
+    ) {
+      return continued_call_statement_call;
+    }
+
     return getContinuedCallExpressionAt(lines, position, effective_character)
       ?? getContinuedParenthesisFreeCallExpressionAt(lines, position, effective_character)
       ?? getParenthesisFreeCallExpressionAt(lines, position, effective_character);
@@ -8565,6 +8577,14 @@ function getCallExpressionAt(
   const raise_event_call = getRaiseEventCallExpressionAt(line, position.line, open_paren, effective_character);
   if (raise_event_call !== undefined || isRaiseEventArgumentListOpenParen(line, open_paren, effective_character)) {
     return raise_event_call;
+  }
+
+  const call_statement_call = getCallStatementCallExpressionAt(line, position.line, open_paren, effective_character);
+  if (
+    call_statement_call !== undefined
+    || isCallStatementArgumentListOpenParen(line, open_paren, effective_character)
+  ) {
+    return call_statement_call;
   }
 
   const chain = parseContinuedMemberChainEndingBefore(lines, position.line, open_paren)
@@ -8698,6 +8718,115 @@ function isContinuedRaiseEventArgumentListAt(
   const open_paren = findActiveCallOpenParen(logical_source.text, logical_source.text.length);
   return open_paren !== undefined
     && isRaiseEventArgumentListOpenParenInSource(logical_source, open_paren, logical_source.text.length);
+}
+
+function getCallStatementCallExpressionAt(
+  line: string,
+  lineIndex: number,
+  openParen: number,
+  effectiveCharacter: number
+): CallExpression | undefined {
+  return getCallStatementCallExpressionInSource(
+    getSingleLineLogicalSourceText(line, lineIndex, line.length),
+    openParen,
+    effectiveCharacter
+  );
+}
+
+function getCallStatementCallExpressionInSource(
+  source: LogicalSourceText,
+  openParen: number,
+  effectiveCharacter: number
+): CallExpression | undefined {
+  const segment = getStatementSegmentAtPosition(source.text, effectiveCharacter);
+  if (segment === undefined) {
+    return undefined;
+  }
+
+  const segment_start = skipWhitespace(source.text, segment.start, segment.end);
+  const first_token = readIdentifierTokenAt(source.text, segment_start, openParen);
+  if (first_token?.lowerText !== 'call') {
+    return undefined;
+  }
+
+  const target_start = skipWhitespace(source.text, first_token.end, openParen);
+  const chain = parseMemberChainEndingBeforeSource(source, openParen, target_start);
+  const target_segment = chain?.segments.at(-1);
+  if (target_segment === undefined) {
+    return undefined;
+  }
+
+  return {
+    name: target_segment.name,
+    nameStart: target_segment.range.start.character,
+    activeParameter: countTopLevelCommas(source.text.slice(openParen + 1, effectiveCharacter)),
+    namedArgumentName: getNamedArgumentNameInActiveArgument(source.text, openParen + 1, effectiveCharacter),
+    chain
+  };
+}
+
+function isCallStatementArgumentListOpenParen(
+  line: string,
+  openParen: number,
+  effectiveCharacter: number
+): boolean {
+  return isCallStatementArgumentListOpenParenInSource(
+    getSingleLineLogicalSourceText(line, 0, line.length),
+    openParen,
+    effectiveCharacter
+  );
+}
+
+function isCallStatementArgumentListOpenParenInSource(
+  source: LogicalSourceText,
+  openParen: number,
+  effectiveCharacter: number
+): boolean {
+  const segment = getStatementSegmentAtPosition(source.text, effectiveCharacter);
+  if (segment === undefined) {
+    return false;
+  }
+
+  const segment_start = skipWhitespace(source.text, segment.start, segment.end);
+  const first_token = readIdentifierTokenAt(source.text, segment_start, openParen);
+  if (first_token?.lowerText !== 'call') {
+    return false;
+  }
+
+  const target_start = skipWhitespace(source.text, first_token.end, openParen);
+  const chain = parseMemberChainEndingBeforeSource(source, openParen, target_start);
+  return chain?.segments.at(-1) !== undefined;
+}
+
+function getContinuedCallStatementCallExpressionAt(
+  lines: string[],
+  position: SourcePosition,
+  effectiveCharacter: number
+): CallExpression | undefined {
+  const logical_source = getContinuedSourceTextEndingBefore(lines, position.line, effectiveCharacter);
+  if (logical_source === undefined) {
+    return undefined;
+  }
+
+  const open_paren = findActiveCallOpenParen(logical_source.text, logical_source.text.length);
+  return open_paren === undefined
+    ? undefined
+    : getCallStatementCallExpressionInSource(logical_source, open_paren, logical_source.text.length);
+}
+
+function isContinuedCallStatementArgumentListAt(
+  lines: string[],
+  position: SourcePosition,
+  effectiveCharacter: number
+): boolean {
+  const logical_source = getContinuedSourceTextEndingBefore(lines, position.line, effectiveCharacter);
+  if (logical_source === undefined) {
+    return false;
+  }
+
+  const open_paren = findActiveCallOpenParen(logical_source.text, logical_source.text.length);
+  return open_paren !== undefined
+    && isCallStatementArgumentListOpenParenInSource(logical_source, open_paren, logical_source.text.length);
 }
 
 function getParenthesisFreeCallExpressionAt(
@@ -9176,7 +9305,8 @@ function getNamedArgumentNameInActiveArgument(
 
 function parseMemberChainEndingBeforeSource(
   source: LogicalSourceText,
-  endCharacter: number
+  endCharacter: number,
+  startCharacter = 0
 ): MemberChainExpression | undefined {
   const expression_end = findPreviousNonWhitespace(source.text, endCharacter - 1);
   if (expression_end === undefined) {
@@ -9186,7 +9316,7 @@ function parseMemberChainEndingBeforeSource(
   const end_index = expression_end + 1;
   const candidates: Array<{ segments: MemberChainSegment[]; endIndex: number; startIndex: number }> = [];
   for (const range of getIdentifierRangesInCode(source.text, source.positions[0]?.line ?? 0)) {
-    if (range.start.character >= end_index) {
+    if (range.start.character < startCharacter || range.start.character >= end_index) {
       continue;
     }
 
@@ -9214,8 +9344,22 @@ function parseMemberChainEndingBeforeSource(
     : {
         segments: selected.segments,
         targetSegmentIndex: selected.segments.length - 1,
-        usesWithReceiver: isLeadingDotChain(source.text, selected.startIndex)
+        usesWithReceiver: isLeadingDotChainInRange(source.text, selected.startIndex, startCharacter)
       };
+}
+
+function isLeadingDotChainInRange(
+  line: string,
+  firstSegmentStart: number,
+  rangeStart: number
+): boolean {
+  const dot_index = findPreviousNonWhitespace(line, firstSegmentStart - 1);
+  if (dot_index === undefined || line[dot_index] !== '.') {
+    return false;
+  }
+
+  const previous_code = findPreviousNonWhitespace(line, dot_index - 1);
+  return previous_code === undefined || previous_code < rangeStart;
 }
 
 function findActiveCallOpenParen(line: string, positionCharacter: number): number | undefined {

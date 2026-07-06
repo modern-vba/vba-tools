@@ -9583,6 +9583,163 @@ test('signature help fails closed for comment continuation markers in continued 
   assert.equal(signatureHelp, undefined);
 });
 
+test('signature help remains active for continued explicit Call source statements', () => {
+  const active_line = '        MatchCase:=True';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        "'* @brief Invokes work.",
+        "'* @param First First value.",
+        "'* @param Second Second value.",
+        "'* @param MatchCase Match casing.",
+        'Public Sub Invoke(ByVal First As Variant, ByVal Second As Variant, Optional ByVal MatchCase As Boolean = False)',
+        'End Sub',
+        '',
+        'Public Function BuildValue(ByVal Left As String, ByVal Right As Long) As Variant',
+        'End Function',
+        '',
+        'Public Sub Run()',
+        '    Call Invoke( _',
+        '        BuildValue("a,b", 1), _',
+        active_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getSignatureHelp(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 16, character: active_line.length }
+  }), {
+    label: 'Invoke(First, Second, Optional MatchCase)',
+    activeParameter: 2,
+    documentation: 'Invokes work.',
+    parameters: [
+      { label: 'First', documentation: 'First value.' },
+      { label: 'Second', documentation: 'Second value.' },
+      { label: 'Optional MatchCase', documentation: 'Match casing.' }
+    ]
+  });
+});
+
+test('signature help remains active for continued explicit Call host and WithReceiver statements', () => {
+  const member_chain_line = '        LookAt:=xlWhole';
+  const with_receiver_line = '        LookAt:=xlWhole';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    Dim rng As Range',
+        '    Call rng.Find( _',
+        '        "needle", _',
+        member_chain_line,
+        '    With rng',
+        '        Call .Find( _',
+        '            "other", _',
+        with_receiver_line,
+        '    End With',
+        'End Sub'
+      ].join('\n')
+    }
+  ], {
+    hostDefinitions: [
+      {
+        name: 'Range',
+        kind: 'class',
+        hostApplication: 'excel',
+        members: [
+          {
+            name: 'Find',
+            kind: 'function',
+            hostApplication: 'excel',
+            typeName: 'Range',
+            signature: {
+              label: 'Find(What, Optional After, Optional LookAt) As Range',
+              returnTypeName: 'Range',
+              parameters: [
+                { name: 'What' },
+                { name: 'After', label: 'Optional After', optional: true },
+                { name: 'LookAt', label: 'Optional LookAt', optional: true }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  });
+
+  const uri = 'file:///project/Worker.bas';
+  const memberChainSignatureHelp = getSignatureHelp(project, {
+    uri,
+    position: { line: 7, character: member_chain_line.length }
+  });
+  const withReceiverSignatureHelp = getSignatureHelp(project, {
+    uri,
+    position: { line: 11, character: with_receiver_line.length }
+  });
+
+  assert.equal(memberChainSignatureHelp?.label, 'Find(What, Optional After, Optional LookAt) As Range');
+  assert.equal(memberChainSignatureHelp?.activeParameter, 2);
+  assert.equal(withReceiverSignatureHelp?.label, memberChainSignatureHelp?.label);
+  assert.equal(withReceiverSignatureHelp?.activeParameter, 2);
+});
+
+test('signature help fails closed for unsupported continued explicit Call forms', () => {
+  const non_parenthesized_line = '    Call Invoke "id"';
+  const missing_marker_active_line = '        "fallback"';
+  const invalid_marker_active_line = '        "fallback"';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Sub Invoke(ByVal First As String, Optional ByVal Second As String = "")',
+        'End Sub',
+        '',
+        'Public Sub Run()',
+        non_parenthesized_line,
+        '    Call Invoke( _',
+        '        "id",',
+        missing_marker_active_line,
+        "    Call Invoke( _ ' invalid continuation",
+        invalid_marker_active_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  const uri = 'file:///project/Worker.bas';
+  assert.equal(getSignatureHelp(project, {
+    uri,
+    position: { line: 7, character: non_parenthesized_line.length }
+  }), undefined);
+  assert.equal(getSignatureHelp(project, {
+    uri,
+    position: { line: 10, character: missing_marker_active_line.length }
+  }), undefined);
+  assert.equal(getSignatureHelp(project, {
+    uri,
+    position: { line: 12, character: invalid_marker_active_line.length }
+  }), undefined);
+  assert.deepEqual(
+    getSyntaxDiagnostics(project, uri).map((diagnostic) => diagnostic.code),
+    [
+      'syntax.invalidTrailingCommentContinuation',
+      'syntax.malformedCall'
+    ]
+  );
+});
+
 test('signature help displays source CallableSignature parameter metadata when available', () => {
   const project = buildVbaProject([
     {

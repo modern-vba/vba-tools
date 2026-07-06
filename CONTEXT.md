@@ -145,6 +145,38 @@ _Avoid_: logical line, multiline chain, wrapped chain
 A parenthesized call argument list that spans multiple physical VBA lines using code line-continuation markers. It keeps signature help active and counts the active parameter across those physical lines, but it does not change `MemberChainResolution` or `ContinuedMemberChain`.
 _Avoid_: multiline call, wrapped call, logical call
 
+**ContinuedParenthesisFreeCall**:
+A parenthesis-free VBA call statement whose argument text spans multiple physical source lines using contiguous code line-continuation markers. Its callable is selected by parenthesis-free call resolution, while signature help counts the active parameter over the logical argument text; comment continuations and blank interstitial lines are not part of it, and a top-level colon ends the call statement and begins a separate `ColonSeparatedStatementSequence` segment.
+_Avoid_: continued argument list, multiline call, wrapped call
+
+**ContinuedRaiseEventArgumentList**:
+A parenthesized `RaiseEvent` argument list that spans multiple physical source lines using code line-continuation markers. Its event is selected by `EventReference`, while signature help counts the active parameter over the logical event argument text.
+_Avoid_: parenthesis-free call, ordinary call argument list, continued member chain
+
+**ContinuedCallStatementArgumentList**:
+A parenthesized argument list in an explicit `Call` statement that spans multiple physical source lines using code line-continuation markers. It follows `Call` statement syntax rather than `ParenthesisFreeCall` syntax.
+_Avoid_: parenthesis-free call, continued argument list, bare call
+
+**ContinuedDeclarationList**:
+A VBA data declaration list that spans multiple physical source lines using code line-continuation markers. It is one declaration list for `SourceVariable`, `SourceConstant`, and `WithEventsDeclaration` indexing, while each declarator keeps the physical source range of its declared name. A top-level colon ends the declaration list and begins a separate statement; at module scope, one `ContinuedDeclarationList` is one `ModuleMember` range from the first declaration physical line through the final continued physical line.
+_Avoid_: wrapped declaration, multiline declaration, continued member
+
+**ContinuedTypeAnnotation**:
+A VBA `As Type` or `As New Type` annotation inside one declaration declarator that spans multiple physical source lines using code line-continuation markers. It belongs to the declarator's `TypeResolution` metadata, while the declared identifier remains the `VbaDefinition` range.
+_Avoid_: multiline type, wrapped type, continued declaration list
+
+**ContinuedArrayBounds**:
+A declaration declarator's array bounds that span multiple physical source lines using code line-continuation markers before the declarator's type annotation. The bounds are part of the declarator syntax, but they are not `VbaDefinition` metadata.
+_Avoid_: array type metadata, dimension metadata, continued type annotation
+
+**ContinuedQualifiedTypeName**:
+A qualified type annotation whose qualifier, dot, or final type identifier spans multiple physical source lines using code line-continuation markers, such as `Excel. _` followed by `Range`. It is still a `TypeResolution` annotation, not `QualifiedReference` or `ContinuedMemberChain`.
+_Avoid_: continued member chain, qualified reference, dotted lookup
+
+**ColonSeparatedStatementSequence**:
+Multiple VBA statements written on one logical line with top-level colons between them. Each statement remains its own statement even when the logical line was formed by code line continuation.
+_Avoid_: chained line, colon list, inline block
+
 **WithReceiver**:
 The nearest active `With ... End With` expression that supplies the implicit receiver for a leading-dot member chain that is not part of a `ContinuedMemberChain`. Its receiver expression may itself be a `ContinuedMemberChain`; nested `With` blocks use the innermost active `WithReceiver`, and missing or ambiguous receiver types do not produce guessed member results.
 _Avoid_: with context, current object, implicit type
@@ -296,6 +328,51 @@ Domain Expert: "No. It is a `ContinuedMemberChain`: one `MemberChainResolution` 
 
 Dev: "Is `Find( _` followed by arguments on later lines a `ContinuedMemberChain`?"
 Domain Expert: "No. It is a `ContinuedArgumentList`: the receiver chain has already selected the callable, and the continued lines keep signature help active while identifying the active parameter."
+
+Dev: "Is `Find _` followed by arguments on later lines a `ContinuedArgumentList`?"
+Domain Expert: "No. Without an opening parenthesis it is a `ContinuedParenthesisFreeCall`; the callable is selected first, then the logical argument text drives signature help."
+
+Dev: "Is `Find ""needle"", _` followed by named arguments on later lines still a `ContinuedParenthesisFreeCall`?"
+Domain Expert: "Yes. A `ContinuedParenthesisFreeCall` may have leading arguments on the callable line; the logical argument text starts after the callable and spans the continued physical lines."
+
+Dev: "If a continued member chain selects `.Find`, can the parenthesis-free arguments also continue onto later lines?"
+Domain Expert: "Yes. `ContinuedMemberChain` selects the callable, then `ContinuedParenthesisFreeCall` covers the logical argument text after that callable."
+
+Dev: "Inside a continued `With` receiver, is `.Find ""needle"", _` still a `ContinuedParenthesisFreeCall`?"
+Domain Expert: "Yes. The `WithReceiver` supplies the receiver for the callable; the continued parenthesis-free arguments remain a `ContinuedParenthesisFreeCall`."
+
+Dev: "If the cursor is inside `BuildNeedle(""a"", _` within a continued parenthesis-free `Find` call, which signature help wins?"
+Domain Expert: "The innermost active call wins. `BuildNeedle` owns the cursor while it is inside that parenthesized argument list; the outer `ContinuedParenthesisFreeCall` resumes only outside that nested expression."
+
+Dev: "Can a comment-only or blank physical line keep a parenthesis-free call's arguments going?"
+Domain Expert: "No. A `ContinuedParenthesisFreeCall` requires contiguous code line-continuation markers; comment continuations and blank interstitial lines end the logical argument text."
+
+Dev: "Is `RaiseEvent Completed( _` followed by event arguments a `ContinuedParenthesisFreeCall`?"
+Domain Expert: "No. It is a `ContinuedRaiseEventArgumentList`: the event is selected by `EventReference`, and the parenthesized event arguments drive signature help."
+
+Dev: "Is `Call Find( _` followed by arguments a `ContinuedParenthesisFreeCall`?"
+Domain Expert: "No. It is a `ContinuedCallStatementArgumentList`: explicit `Call` uses parenthesized call syntax, not parenthesis-free call syntax."
+
+Dev: "Is `Dim firstValue As Long, _` followed by `secondValue As Long` a set of separate declarations?"
+Domain Expert: "No. It is a `ContinuedDeclarationList`: one declaration list split across physical lines. Each declarator still keeps the source range of its physical line."
+
+Dev: "Should a malformed continued declaration list be partially indexed?"
+Domain Expert: "No. If a declaration list depends on an invalid, missing, or comment-based continuation, definition indexing fails closed for that whole continued declaration list."
+
+Dev: "Should a module-level continued declaration list become several `ModuleMember`s?"
+Domain Expert: "No. It is one `ModuleMember` spanning from the declaration head through the final continued physical line, so incremental parsing replaces the whole declaration list."
+
+Dev: "If a continued declaration list is followed by `: Dim thirdValue As Long`, is `thirdValue` part of the same declaration list?"
+Domain Expert: "No. The colon creates a `ColonSeparatedStatementSequence`; `thirdValue` belongs to a separate declaration statement."
+
+Dev: "Is `Dim value As _` followed by `Long` another `ContinuedDeclarationList`?"
+Domain Expert: "No. The declaration list has one declarator; its `ContinuedTypeAnnotation` spans physical lines, and the declared identifier still keeps its own physical source range."
+
+Dev: "Should `Dim values(1 To _` followed by `10) As Long` record array bounds metadata?"
+Domain Expert: "No. That is `ContinuedArrayBounds`; the bounds are parsed only enough to find the declarator's type annotation and definition range."
+
+Dev: "Is `Dim target As Excel. _` followed by `Range` a `ContinuedMemberChain`?"
+Domain Expert: "No. It is a `ContinuedQualifiedTypeName`: a qualified type annotation for `TypeResolution`, not a value expression or member chain."
 
 Dev: "Inside `With Application.ActiveWorkbook.Worksheets(1).Range(\"A1\")`, what does `.Find` mean?"
 Domain Expert: "The `WithReceiver` is the resolved range expression, so `.Find` is resolved as a member chain on that receiver. If the `WithReceiver` type is missing or ambiguous, no guessed member result is produced."
