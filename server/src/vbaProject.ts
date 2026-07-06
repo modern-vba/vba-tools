@@ -87,7 +87,7 @@ import {
   type SourcePosition,
   type SourceRange
 } from './sourceRange';
-import { sameName, unqualifiedTypeName } from './vbaNames';
+import { sameName } from './vbaNames';
 import {
   fallbackModuleIdentity,
   getFolderUri,
@@ -101,7 +101,20 @@ import {
   getIdentifierRangesInCode,
   isCodePosition
 } from './vbaIdentifierSource';
+import {
+  findSourceTypeModule,
+  hasAmbiguousCurrentModuleDefinition,
+  hasSourceQualifierName,
+  isWithEventsHandlerName,
+  resolveCurrentModuleDefinition,
+  resolveCurrentModuleEventDefinition,
+  resolveLocalDefinition,
+  resolveProjectPublicDefinition,
+  resolveQualifiedModuleDefinition,
+  resolveWithEventsHandlerDefinition
+} from './sourceDefinitionLookup';
 import type { VbaProject } from './vbaProjectModel';
+import { singleMatch, toVbaResolution } from './vbaResolution';
 import type {
   CallExpression,
   DefinitionLocation,
@@ -926,25 +939,15 @@ export function resolveName(
     return undefined;
   }
 
-  const current_module_matches = current_module.definitions.filter((definition) =>
-    sameName(definition.name, identifier)
-  );
-  const current_module_definition = singleMatch(current_module_matches);
+  const current_module_definition = resolveCurrentModuleDefinition(current_module, identifier);
   if (current_module_definition !== undefined) {
     return toVbaResolution(current_module_definition);
   }
-  if (current_module_matches.length > 1) {
+  if (hasAmbiguousCurrentModuleDefinition(current_module, identifier)) {
     return undefined;
   }
 
-  const project_matches = project.modules
-    .filter((module) => sameUri(module.folderUri, current_module.folderUri))
-    .filter((module) => !sameUri(module.uri, current_module.uri))
-    .flatMap((module) => module.definitions)
-    .filter((definition) => definition.visibility === 'public')
-    .filter((definition) => sameName(definition.name, identifier));
-
-  const project_definition = singleMatch(project_matches);
+  const project_definition = resolveProjectPublicDefinition(project, current_module, identifier);
   if (project_definition !== undefined) {
     return toVbaResolution(project_definition);
   }
@@ -964,78 +967,6 @@ export function resolveName(
   }
 
   return undefined;
-}
-
-function isWithEventsHandlerName(module: VbaModule, identifier: string): boolean {
-  return module.withEventsDeclarations.some((declaration) =>
-    identifier.toLowerCase().startsWith(`${declaration.name}_`.toLowerCase())
-  );
-}
-
-function resolveCurrentModuleEventDefinition(module: VbaModule, identifier: string): VbaDefinition | undefined {
-  return singleMatch(module.definitions
-    .filter((definition) => definition.kind === 'event')
-    .filter((definition) => sameName(definition.name, identifier)));
-}
-
-function resolveWithEventsHandlerDefinition(
-  project: VbaProject,
-  current_module: VbaModule,
-  identifier: string
-): VbaDefinition | undefined {
-  for (const declaration of current_module.withEventsDeclarations) {
-    const handler_prefix = `${declaration.name}_`;
-    if (!identifier.toLowerCase().startsWith(handler_prefix.toLowerCase())) {
-      continue;
-    }
-
-    const event_name = identifier.slice(handler_prefix.length);
-    if (event_name === '') {
-      continue;
-    }
-
-    const declared_type_name = unqualifiedTypeName(declaration.typeName);
-    const event_source_module = project.modules.find((module) =>
-      sameUri(module.folderUri, current_module.folderUri)
-        && sameName(module.identity, declared_type_name)
-    );
-    if (event_source_module === undefined) {
-      continue;
-    }
-
-    const matches = event_source_module.definitions
-      .filter((definition) => definition.kind === 'event')
-      .filter((definition) => definition.visibility === 'public')
-      .filter((definition) => sameName(definition.name, event_name));
-
-    const event_definition = singleMatch(matches);
-    if (event_definition !== undefined) {
-      return event_definition;
-    }
-  }
-
-  return undefined;
-}
-
-function resolveQualifiedModuleDefinition(
-  project: VbaProject,
-  current_module: VbaModule,
-  qualifier: string,
-  member: string
-): VbaDefinition | undefined {
-  const qualified_module = project.modules.find((module) =>
-    sameUri(module.folderUri, current_module.folderUri)
-      && sameName(module.identity, qualifier)
-  );
-  if (qualified_module === undefined) {
-    return undefined;
-  }
-
-  const matches = qualified_module.definitions
-    .filter((definition) => sameName(definition.name, member))
-    .filter((definition) => sameUri(qualified_module.uri, current_module.uri) || definition.visibility === 'public');
-
-  return singleMatch(matches);
 }
 
 function resolveHostQualifiedDefinition(
@@ -1103,30 +1034,6 @@ function resolveUnqualifiedHostEnumQualifier(
   return host_definition?.kind === 'enum' ? host_definition : undefined;
 }
 
-function hasSourceQualifierName(
-  project: VbaProject,
-  currentModule: VbaModule,
-  position: SourcePosition,
-  name: string
-): boolean {
-  if (resolveLocalDefinition(currentModule, position, name) !== undefined) {
-    return true;
-  }
-
-  if (currentModule.definitions.some((definition) => sameName(definition.name, name))) {
-    return true;
-  }
-
-  return project.modules
-    .filter((module) => sameUri(module.folderUri, currentModule.folderUri))
-    .some((module) =>
-      sameName(module.identity, name)
-        || module.definitions
-          .filter((definition) => sameUri(module.uri, currentModule.uri) || definition.visibility === 'public')
-          .some((definition) => sameName(definition.name, name))
-    );
-}
-
 function resolveHostApplicationQualifier(
   project: VbaProject,
   currentModule: VbaModule,
@@ -1182,19 +1089,6 @@ function resolveTypedMemberDefinition(
     .filter((definition) => definition.visibility === 'public')
     .filter((definition) => sameName(definition.name, member)) ?? []);
   return project_member === undefined ? undefined : toVbaResolution(project_member);
-}
-
-function resolveLocalDefinition(
-  module: VbaModule,
-  position: SourcePosition,
-  identifier: string
-): VbaDefinition | undefined {
-  const procedure_scope = module.procedureScopes.find((scope) => containsPosition(scope.range, position));
-  if (procedure_scope === undefined) {
-    return undefined;
-  }
-
-  return procedure_scope.definitions.find((definition) => sameName(definition.name, identifier));
 }
 
 function parseModule(file: VbaProjectFile): VbaModule {
@@ -5780,10 +5674,7 @@ function resolveRootChainSegment(
     }
   }
 
-  const current_module_definition = singleMatch(
-    currentModule.definitions
-      .filter((definition) => sameName(definition.name, segment.name))
-  );
+  const current_module_definition = resolveCurrentModuleDefinition(currentModule, segment.name);
   if (current_module_definition !== undefined) {
     return {
       resolution: toVbaResolution(current_module_definition),
@@ -5791,14 +5682,7 @@ function resolveRootChainSegment(
     };
   }
 
-  const project_definition = singleMatch(
-    project.modules
-      .filter((module) => sameUri(module.folderUri, currentModule.folderUri))
-      .filter((module) => !sameUri(module.uri, currentModule.uri))
-      .flatMap((module) => module.definitions)
-      .filter((definition) => definition.visibility === 'public')
-      .filter((definition) => sameName(definition.name, segment.name))
-  );
+  const project_definition = resolveProjectPublicDefinition(project, currentModule, segment.name);
   if (project_definition !== undefined) {
     return {
       resolution: toVbaResolution(project_definition),
@@ -5927,21 +5811,6 @@ function resolveTypeNameRef(
         typeName: unqualified_host_type.name,
         hostApplication: unqualified_host_type.hostApplication
       };
-}
-
-function findSourceTypeModule(
-  project: VbaProject,
-  currentModule: VbaModule,
-  typeName: string
-): VbaModule | undefined {
-  if (typeName.includes('.')) {
-    return undefined;
-  }
-
-  return project.modules.find((module) =>
-    sameUri(module.folderUri, currentModule.folderUri)
-      && sameName(module.identity, typeName)
-  );
 }
 
 function findHostTypeDefinition(
@@ -6868,10 +6737,6 @@ function sameDefinitionLocation(left: DefinitionLocation, right: DefinitionLocat
     && sameRange(left.range, right.range);
 }
 
-function singleMatch<T>(items: T[]): T | undefined {
-  return items.length === 1 ? items[0] : undefined;
-}
-
 function findDefinitionByLocation(
   project: VbaProject,
   location: DefinitionLocation
@@ -7101,20 +6966,6 @@ function getParameterDocumentation(documentation: DocumentationComment | undefin
   }
 
   return result;
-}
-
-function toDefinitionLocation(definition: VbaDefinition): DefinitionLocation {
-  return {
-    uri: definition.uri,
-    range: definition.range
-  };
-}
-
-function toVbaResolution(definition: VbaDefinition): NameResolutionResult {
-  return {
-    source: 'vba',
-    definition: toDefinitionLocation(definition)
-  };
 }
 
 function getModuleKind(uri: string): VbaModuleKind {
