@@ -301,6 +301,25 @@ export function isPlausibleConstantInitializer(text: string): boolean {
     && !/^(?:,|[*/\\^&=<>])/.test(trimmed_text);
 }
 
+export function getStringLiteralEnd(line: string, startCharacter: number): number | undefined {
+  let character_index = startCharacter + 1;
+  while (character_index < line.length) {
+    if (line[character_index] !== '"') {
+      character_index += 1;
+      continue;
+    }
+
+    if (line[character_index + 1] === '"') {
+      character_index += 2;
+      continue;
+    }
+
+    return character_index + 1;
+  }
+
+  return undefined;
+}
+
 export function readIdentifierAt(
   line: string,
   startCharacter: number
