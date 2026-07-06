@@ -10887,6 +10887,58 @@ test('signature help stops ContinuedParenthesisFreeCall arguments at top-level c
   assert.equal(signatureHelp?.activeParameter, 0);
 });
 
+test('signature help bounds ContinuedParenthesisFreeCall to the active colon statement segment', () => {
+  const after_colon_argument_line = '        "fallback"';
+  const later_segment_line = '        "fallback": total = 1';
+  const nested_colon_argument_line = '        BuildValue("x:y", (1)), _';
+  const nested_colon_active_line = '        "third"';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Sub Invoke(ByVal First As Variant, ByVal Second As Variant, ByVal Third As Variant)',
+        'End Sub',
+        '',
+        'Public Function BuildValue(ByVal Left As String, ByVal Right As Long) As Variant',
+        'End Function',
+        '',
+        'Public Sub Run()',
+        '    Dim total As Long',
+        '    total = 1: Invoke "id", _',
+        after_colon_argument_line,
+        '    Invoke "id", _',
+        later_segment_line,
+        '    Invoke "a:b", _',
+        nested_colon_argument_line,
+        nested_colon_active_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  const uri = 'file:///project/Worker.bas';
+  const afterColonSignatureHelp = getSignatureHelp(project, {
+    uri,
+    position: { line: 12, character: after_colon_argument_line.length }
+  });
+  const nestedColonSignatureHelp = getSignatureHelp(project, {
+    uri,
+    position: { line: 17, character: nested_colon_active_line.length }
+  });
+
+  assert.equal(afterColonSignatureHelp?.label, 'Invoke(First, Second, Third)');
+  assert.equal(afterColonSignatureHelp?.activeParameter, 1);
+  assert.equal(getSignatureHelp(project, {
+    uri,
+    position: { line: 14, character: later_segment_line.length }
+  }), undefined);
+  assert.equal(nestedColonSignatureHelp?.label, 'Invoke(First, Second, Third)');
+  assert.equal(nestedColonSignatureHelp?.activeParameter, 2);
+});
+
 test('signature help fails closed for invalid ContinuedParenthesisFreeCall continuations', () => {
   const missing_marker_argument_line = '        "fallback"';
   const blank_interstitial_argument_line = '        "blank fallback"';
