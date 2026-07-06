@@ -267,6 +267,7 @@ interface CallExpression {
   activeParameter: number;
   namedArgumentName?: string;
   chain?: MemberChainExpression;
+  eventReference?: boolean;
 }
 
 interface LogicalSourceText {
@@ -846,6 +847,13 @@ export function getSignatureHelp(
     return undefined;
   }
 
+  if (call_expression.eventReference === true) {
+    const definition = resolveCurrentModuleEventDefinition(current_module, call_expression.name);
+    return definition?.signature === undefined
+      ? undefined
+      : getSourceSignatureHelp(project, definition, call_expression.activeParameter);
+  }
+
   const resolution = call_expression.chain === undefined
     ? resolveName(project, {
       uri: request.uri,
@@ -1051,6 +1059,12 @@ function isWithEventsHandlerName(module: VbaModule, identifier: string): boolean
   return module.withEventsDeclarations.some((declaration) =>
     identifier.toLowerCase().startsWith(`${declaration.name}_`.toLowerCase())
   );
+}
+
+function resolveCurrentModuleEventDefinition(module: VbaModule, identifier: string): VbaDefinition | undefined {
+  return singleMatch(module.definitions
+    .filter((definition) => definition.kind === 'event')
+    .filter((definition) => sameName(definition.name, identifier)));
 }
 
 function resolveWithEventsHandlerDefinition(
@@ -6251,11 +6265,16 @@ function parseModuleMembers(
       continue;
     }
 
-    const event_match = /^\s*(?:(Public|Private)\s+)?Event\s+([A-Za-z_][A-Za-z0-9_]*)\b/i.exec(line);
+    const event_match =
+      /^\s*(?:(Public|Private)\s+)?Event\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(([^)]*)\))?/i.exec(line);
     if (event_match !== null) {
       const visibility = (event_match[1]?.toLowerCase() ?? 'public') as 'public' | 'private';
       const name = event_match[2];
       const name_start = line.indexOf(name);
+      const parameter_start = line.indexOf('(', name_start + name.length) + 1;
+      const parameter_definitions = event_match[3] === undefined
+        ? []
+        : parseParameterDefinitions(uri, line, line_index, event_match[3], parameter_start);
       const definition: VbaDefinition = {
         name,
         kind: 'event',
@@ -6265,7 +6284,8 @@ function parseModuleMembers(
           start: { line: line_index, character: name_start },
           end: { line: line_index, character: name_start + name.length }
         },
-        documentation: parseDocumentationComment(lines, line_index)
+        documentation: parseDocumentationComment(lines, line_index),
+        signature: buildSignatureInfo(line, name, parameter_definitions)
       };
       definitions.push(definition);
       moduleMembers.push({
@@ -8359,6 +8379,11 @@ function getCallExpressionAt(
       ?? getParenthesisFreeCallExpressionAt(lines, position, effective_character);
   }
 
+  const raise_event_call = getRaiseEventCallExpressionAt(line, position.line, open_paren, effective_character);
+  if (raise_event_call !== undefined || isRaiseEventArgumentListOpenParen(line, open_paren, effective_character)) {
+    return raise_event_call;
+  }
+
   const chain = parseContinuedMemberChainEndingBefore(lines, position.line, open_paren)
     ?? parseMemberChainEndingBefore(line, position.line, open_paren);
   const target_segment = chain?.segments.at(-1);
@@ -8373,6 +8398,70 @@ function getCallExpressionAt(
     namedArgumentName: getNamedArgumentNameInActiveArgument(line, open_paren + 1, effective_character),
     chain
   };
+}
+
+function getRaiseEventCallExpressionAt(
+  line: string,
+  lineIndex: number,
+  openParen: number,
+  effectiveCharacter: number
+): CallExpression | undefined {
+  const segment = getStatementSegmentAtPosition(line, effectiveCharacter);
+  if (segment === undefined) {
+    return undefined;
+  }
+
+  const segment_start = skipWhitespace(line, segment.start, segment.end);
+  const first_token = readIdentifierTokenAt(line, segment_start, openParen);
+  if (first_token?.lowerText !== 'raiseevent') {
+    return undefined;
+  }
+
+  const event_start = skipWhitespace(line, first_token.end, openParen);
+  const event_token = readIdentifierTokenAt(line, event_start, openParen);
+  if (event_token === undefined || skipWhitespace(line, event_token.end, openParen) !== openParen) {
+    return undefined;
+  }
+
+  if (findTopLevelNamedArgumentSeparator(line, openParen + 1, effectiveCharacter) !== undefined) {
+    return undefined;
+  }
+
+  return {
+    name: event_token.text,
+    nameStart: event_token.start,
+    activeParameter: countTopLevelCommas(line.slice(openParen + 1, effectiveCharacter)),
+    eventReference: true,
+    chain: toMemberChainExpression([{
+      name: event_token.text,
+      range: {
+        start: { line: lineIndex, character: event_token.start },
+        end: { line: lineIndex, character: event_token.end }
+      },
+      hasCall: false
+    }], false)
+  };
+}
+
+function isRaiseEventArgumentListOpenParen(
+  line: string,
+  openParen: number,
+  effectiveCharacter: number
+): boolean {
+  const segment = getStatementSegmentAtPosition(line, effectiveCharacter);
+  if (segment === undefined) {
+    return false;
+  }
+
+  const segment_start = skipWhitespace(line, segment.start, segment.end);
+  const first_token = readIdentifierTokenAt(line, segment_start, openParen);
+  if (first_token?.lowerText !== 'raiseevent') {
+    return false;
+  }
+
+  const event_start = skipWhitespace(line, first_token.end, openParen);
+  const event_token = readIdentifierTokenAt(line, event_start, openParen);
+  return event_token !== undefined && skipWhitespace(line, event_token.end, openParen) === openParen;
 }
 
 function getParenthesisFreeCallExpressionAt(

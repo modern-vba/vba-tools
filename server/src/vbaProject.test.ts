@@ -7874,6 +7874,102 @@ test('signature help displays documented parameters and return value for parenth
   });
 });
 
+test('signature help activates for parenthesized RaiseEvent statements', () => {
+  const raise_line = '    RaiseEvent Completed("ok", 200)';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/TaskRunner.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "TaskRunner"',
+        'Option Explicit',
+        '',
+        "'* @brief Raised when work completes.",
+        "'* @param Result Completion result.",
+        "'* @param StatusCode Completion status.",
+        'Public Event Completed(ByVal Result As String, Optional ByVal StatusCode As Long = 0)',
+        '',
+        'Public Sub Run()',
+        raise_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  const signatureHelp = getSignatureHelp(project, {
+    uri: 'file:///project/TaskRunner.cls',
+    position: { line: 10, character: raise_line.length - 1 }
+  });
+
+  assert.deepEqual(signatureHelp, {
+    label: 'Completed(Result, Optional StatusCode)',
+    activeParameter: 1,
+    documentation: 'Raised when work completes.',
+    parameters: [
+      { label: 'Result', documentation: 'Completion result.' },
+      { label: 'Optional StatusCode', documentation: 'Completion status.' }
+    ]
+  });
+});
+
+test('signature help counts RaiseEvent arguments without accepting unsupported forms', () => {
+  const open_line = '    RaiseEvent Completed(';
+  const nested_line = '    RaiseEvent Completed(BuildValue("a,b", 1), "ok")';
+  const parenthesis_free_line = '    RaiseEvent Completed "ok"';
+  const named_argument_line = '    RaiseEvent Completed(Result:="ok")';
+  const unresolved_line = '    RaiseEvent Missing("ok")';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/TaskRunner.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "TaskRunner"',
+        'Option Explicit',
+        '',
+        'Public Event Completed(ByVal Result As Variant, Optional ByVal Message As String = "")',
+        '',
+        'Public Function BuildValue(ByVal Left As String, ByVal Right As Long) As Variant',
+        'End Function',
+        '',
+        'Public Sub Run()',
+        open_line,
+        nested_line,
+        parenthesis_free_line,
+        named_argument_line,
+        unresolved_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  const uri = 'file:///project/TaskRunner.cls';
+  const openSignatureHelp = getSignatureHelp(project, {
+    uri,
+    position: { line: 10, character: open_line.length }
+  });
+  const nestedSignatureHelp = getSignatureHelp(project, {
+    uri,
+    position: { line: 11, character: nested_line.length - 1 }
+  });
+
+  assert.equal(openSignatureHelp?.label, 'Completed(Result, Optional Message)');
+  assert.equal(openSignatureHelp?.activeParameter, 0);
+  assert.equal(nestedSignatureHelp?.label, 'Completed(Result, Optional Message)');
+  assert.equal(nestedSignatureHelp?.activeParameter, 1);
+  assert.equal(getSignatureHelp(project, {
+    uri,
+    position: { line: 12, character: parenthesis_free_line.length }
+  }), undefined);
+  assert.equal(getSignatureHelp(project, {
+    uri,
+    position: { line: 13, character: named_argument_line.length - 1 }
+  }), undefined);
+  assert.equal(getSignatureHelp(project, {
+    uri,
+    position: { line: 14, character: unresolved_line.length - 1 }
+  }), undefined);
+});
+
 test('signature help selects source parameters by named argument', () => {
   const call_line = '    ReadValue("id", matchcase:=True';
   const project = buildVbaProject([
