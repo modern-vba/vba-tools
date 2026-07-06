@@ -1437,7 +1437,10 @@ function collectSyntaxDiagnostics(lines: string[], codeStartLine: number): Synta
       : [];
     diagnostics.push(...callable_diagnostics);
 
-    const declaration_diagnostics = lexical_diagnostics.length === 0 && callable_diagnostics.length === 0
+    const declaration_diagnostics = lexical_diagnostics.length === 0
+        && callable_diagnostics.length === 0
+        && getCodeContinuationMarkerStart(line) === undefined
+        && !isContinuationTail(lines, line_index)
       ? collectDeclarationDiagnostics(line, line_index)
       : [];
     diagnostics.push(...declaration_diagnostics);
@@ -2523,6 +2526,21 @@ function canonicalPropertyKind(value: string): 'Get' | 'Let' | 'Set' {
 interface DeclarationListPrefix {
   kind: 'variable' | 'constant' | 'redim';
   declaratorsStart: number;
+}
+
+interface DeclarationStatementSource {
+  source: LogicalCodeSource;
+  start: number;
+  end: number;
+}
+
+interface ParsedDefinitionList {
+  definitions: VbaDefinition[];
+  endLine: number;
+}
+
+interface ParsedWithEventsDeclarationList extends ParsedDefinitionList {
+  declarations: WithEventsDeclaration[];
 }
 
 function collectDeclarationDiagnostics(line: string, lineIndex: number): SyntaxDiagnostic[] {
@@ -6225,43 +6243,50 @@ function parseModuleMembers(
       continue;
     }
 
-    const with_events_result = parseWithEventsDeclarationList(uri, line, line_index);
+    const with_events_result = parseWithEventsDeclarationList(uri, lines, line_index);
     if (with_events_result !== undefined) {
       definitions.push(...with_events_result.definitions);
       withEventsDeclarations.push(...with_events_result.declarations);
       moduleMembers.push({
-        range: createModuleMemberRange(lines, line_index, line_index),
+        range: createModuleMemberRange(lines, line_index, with_events_result.endLine),
         definitions: with_events_result.definitions,
         procedureScopes: [],
         withEventsDeclarations: with_events_result.declarations,
         implements: []
       });
+      line_index = with_events_result.endLine;
       continue;
     }
 
-    const variable_definitions = parseModuleVariableDefinitions(uri, line, line_index);
-    if (variable_definitions.length > 0) {
-      definitions.push(...variable_definitions);
-      moduleMembers.push({
-        range: createModuleMemberRange(lines, line_index, line_index),
-        definitions: variable_definitions,
-        procedureScopes: [],
-        withEventsDeclarations: [],
-        implements: []
-      });
+    const variable_result = parseModuleVariableDefinitionList(uri, lines, line_index);
+    if (variable_result !== undefined) {
+      definitions.push(...variable_result.definitions);
+      if (variable_result.definitions.length > 0) {
+        moduleMembers.push({
+          range: createModuleMemberRange(lines, line_index, variable_result.endLine),
+          definitions: variable_result.definitions,
+          procedureScopes: [],
+          withEventsDeclarations: [],
+          implements: []
+        });
+      }
+      line_index = variable_result.endLine;
       continue;
     }
 
-    const constant_definitions = parseSourceConstantDefinitions(uri, line, line_index, 'module');
-    if (constant_definitions.length > 0) {
-      definitions.push(...constant_definitions);
-      moduleMembers.push({
-        range: createModuleMemberRange(lines, line_index, line_index),
-        definitions: constant_definitions,
-        procedureScopes: [],
-        withEventsDeclarations: [],
-        implements: []
-      });
+    const constant_result = parseSourceConstantDefinitionList(uri, lines, line_index, 'module');
+    if (constant_result !== undefined) {
+      definitions.push(...constant_result.definitions);
+      if (constant_result.definitions.length > 0) {
+        moduleMembers.push({
+          range: createModuleMemberRange(lines, line_index, constant_result.endLine),
+          definitions: constant_result.definitions,
+          procedureScopes: [],
+          withEventsDeclarations: [],
+          implements: []
+        });
+      }
+      line_index = constant_result.endLine;
       continue;
     }
 
@@ -6431,6 +6456,28 @@ function createModuleMemberRange(lines: string[], startLine: number, endLine: nu
   };
 }
 
+function getDeclarationStatementSource(lines: string[], lineIndex: number): DeclarationStatementSource | undefined {
+  if (isContinuationTail(lines, lineIndex)) {
+    return undefined;
+  }
+
+  const source = getLogicalCodeSourceFromLine(lines, lineIndex);
+  if (source === undefined) {
+    return undefined;
+  }
+
+  const segment = getStatementSegmentAtPosition(source.text, 0);
+  if (segment === undefined) {
+    return undefined;
+  }
+
+  return {
+    source,
+    start: segment.start,
+    end: segment.end
+  };
+}
+
 function applyTextChange(lines: string[], change: TextChange): string {
   const text = lines.join('\n');
   const start_offset = getTextOffset(lines, change.range.start);
@@ -6514,28 +6561,54 @@ function parseTypeFieldDefinitions(
   return definitions;
 }
 
-function parseSourceConstantDefinitions(
+function parseSourceConstantDefinitionList(
   uri: string,
-  line: string,
+  lines: string[],
   lineIndex: number,
   scope: 'module' | 'procedure'
-): VbaDefinition[] {
-  const code_end = getCodeEndCharacter(line);
-  const prefix = getDeclarationListPrefix(line, code_end);
+): ParsedDefinitionList | undefined {
+  const statement = getDeclarationStatementSource(lines, lineIndex);
+  if (statement === undefined) {
+    return undefined;
+  }
+
+  const result = parseSourceConstantDefinitionsFromStatement(
+    uri,
+    statement.source,
+    statement.start,
+    statement.end,
+    scope
+  );
+  return result.prefixMatched
+    ? {
+        definitions: result.definitions,
+        endLine: statement.source.endLine
+      }
+    : undefined;
+}
+
+function parseSourceConstantDefinitionsFromStatement(
+  uri: string,
+  source: LogicalSourceText,
+  startCharacter: number,
+  endCharacter: number,
+  scope: 'module' | 'procedure'
+): { prefixMatched: boolean; definitions: VbaDefinition[] } {
+  const line = source.text;
+  const prefix = getDeclarationListPrefix(line, endCharacter);
   if (prefix?.kind !== 'constant') {
-    return [];
+    return { prefixMatched: false, definitions: [] };
   }
 
   const visibility = scope === 'procedure'
     ? 'local'
-    : getSourceDeclarationVisibility(line, code_end);
+    : getSourceDeclarationVisibility(line, endCharacter);
   const definitions: VbaDefinition[] = [];
-  const segments = splitTopLevelSegments(line, prefix.declaratorsStart, code_end);
+  const segments = splitTopLevelSegments(line, Math.max(prefix.declaratorsStart, startCharacter), endCharacter);
   for (const segment of segments) {
-    const definition = parseSourceConstantDeclaratorDefinition(
+    const definition = parseSourceConstantDeclaratorDefinitionFromSource(
       uri,
-      line,
-      lineIndex,
+      source,
       segment.start,
       segment.end,
       visibility
@@ -6545,17 +6618,17 @@ function parseSourceConstantDefinitions(
     }
   }
 
-  return definitions;
+  return { prefixMatched: true, definitions };
 }
 
-function parseSourceConstantDeclaratorDefinition(
+function parseSourceConstantDeclaratorDefinitionFromSource(
   uri: string,
-  line: string,
-  lineIndex: number,
+  source: LogicalSourceText,
   startCharacter: number,
   endCharacter: number,
   visibility: 'public' | 'private' | 'local'
 ): VbaDefinition | undefined {
+  const line = source.text;
   const trimmed_start = skipWhitespace(line, startCharacter, endCharacter);
   const trimmed_end = trimEndIndex(line, endCharacter);
   const name_token = readIdentifierTokenAt(line, trimmed_start, trimmed_end);
@@ -6571,10 +6644,7 @@ function parseSourceConstantDeclaratorDefinition(
     kind: 'constant',
     visibility,
     uri,
-    range: {
-      start: { line: lineIndex, character: name_token.start },
-      end: { line: lineIndex, character: name_token.end }
-    },
+    range: getLogicalSourceRange(source, name_token.start, name_token.end),
     typeName: parseDeclaratorTypeName(line, name_token.end, type_annotation_end)
   };
 }
@@ -6713,67 +6783,106 @@ function parseProcedureDefinitions(
   const definitions: VbaDefinition[] = [];
 
   for (let line_index = start_line; line_index < end_line; line_index += 1) {
-    const line = lines[line_index];
-    const constant_definitions = parseSourceConstantDefinitions(uri, line, line_index, 'procedure');
-    if (constant_definitions.length > 0) {
-      definitions.push(...constant_definitions);
+    const constant_result = parseSourceConstantDefinitionList(uri, lines, line_index, 'procedure');
+    if (constant_result !== undefined) {
+      definitions.push(...constant_result.definitions);
+      line_index = Math.min(constant_result.endLine, end_line - 1);
       continue;
     }
 
-    const local_definitions = parseProcedureVariableDefinitions(uri, line, line_index);
-    if (local_definitions.length === 0) {
-      continue;
+    const local_result = parseProcedureVariableDefinitionList(uri, lines, line_index);
+    if (local_result !== undefined) {
+      definitions.push(...local_result.definitions);
+      line_index = Math.min(local_result.endLine, end_line - 1);
     }
-
-    definitions.push(...local_definitions);
   }
 
   return definitions;
 }
 
-function parseProcedureVariableDefinitions(
+function parseProcedureVariableDefinitionList(
   uri: string,
-  line: string,
+  lines: string[],
   lineIndex: number
-): VbaDefinition[] {
-  const code_end = getCodeEndCharacter(line);
-  const prefix = getDeclarationListPrefix(line, code_end);
+): ParsedDefinitionList | undefined {
+  const statement = getDeclarationStatementSource(lines, lineIndex);
+  if (statement === undefined) {
+    return undefined;
+  }
+
+  const result = parseVariableDefinitionsFromStatement(
+    uri,
+    statement.source,
+    statement.start,
+    statement.end,
+    'local',
+    'local'
+  );
+  return result.prefixMatched
+    ? {
+        definitions: result.definitions,
+        endLine: statement.source.endLine
+      }
+    : undefined;
+}
+
+function parseVariableDefinitionsFromStatement(
+  uri: string,
+  source: LogicalSourceText,
+  startCharacter: number,
+  endCharacter: number,
+  visibility: 'public' | 'private' | 'local',
+  kind: 'local' | 'variable'
+): { prefixMatched: boolean; definitions: VbaDefinition[] } {
+  const line = source.text;
+  const prefix = getDeclarationListPrefix(line, endCharacter);
   if (prefix?.kind !== 'variable') {
-    return [];
+    return { prefixMatched: false, definitions: [] };
   }
 
   const definitions: VbaDefinition[] = [];
-  for (const segment of splitTopLevelSegments(line, prefix.declaratorsStart, code_end)) {
-    const definition = parseVariableDeclaratorDefinition(uri, line, lineIndex, segment.start, segment.end, 'local', 'local');
+  for (const segment of splitTopLevelSegments(line, Math.max(prefix.declaratorsStart, startCharacter), endCharacter)) {
+    const definition = parseVariableDeclaratorDefinitionFromSource(
+      uri,
+      source,
+      segment.start,
+      segment.end,
+      visibility,
+      kind
+    );
     if (definition !== undefined) {
       definitions.push(definition);
     }
   }
 
-  return definitions;
+  return { prefixMatched: true, definitions };
 }
 
 function parseWithEventsDeclarationList(
   uri: string,
-  line: string,
+  lines: string[],
   lineIndex: number
-): { definitions: VbaDefinition[]; declarations: WithEventsDeclaration[] } | undefined {
-  const code_end = getCodeEndCharacter(line);
-  const match = /^\s*(?:(?:Public|Private|Dim)\s+)?WithEvents\b/i.exec(line.slice(0, code_end));
+): ParsedWithEventsDeclarationList | undefined {
+  const statement = getDeclarationStatementSource(lines, lineIndex);
+  if (statement === undefined) {
+    return undefined;
+  }
+
+  const line = statement.source.text;
+  const match = /^\s*(?:(?:Public|Private|Dim)\s+)?WithEvents\b/i.exec(line.slice(0, statement.end));
   if (match === null) {
     return undefined;
   }
 
-  const visibility = getSourceDeclarationVisibility(line, code_end);
-  const declarators_start = skipWhitespace(line, match[0].length, code_end);
+  const visibility = getSourceDeclarationVisibility(line, statement.end);
+  const declarators_start = skipWhitespace(line, match[0].length, statement.end);
   const definitions: VbaDefinition[] = [];
   const declarations: WithEventsDeclaration[] = [];
 
-  for (const segment of splitTopLevelSegments(line, declarators_start, code_end)) {
-    const definition = parseVariableDeclaratorDefinition(
+  for (const segment of splitTopLevelSegments(line, declarators_start, statement.end)) {
+    const definition = parseVariableDeclaratorDefinitionFromSource(
       uri,
-      line,
-      lineIndex,
+      statement.source,
       segment.start,
       segment.end,
       visibility,
@@ -6790,49 +6899,45 @@ function parseWithEventsDeclarationList(
     });
   }
 
-  return { definitions, declarations };
+  return { definitions, declarations, endLine: statement.source.endLine };
 }
 
-function parseModuleVariableDefinitions(
+function parseModuleVariableDefinitionList(
   uri: string,
-  line: string,
+  lines: string[],
   lineIndex: number
-): VbaDefinition[] {
-  const code_end = getCodeEndCharacter(line);
-  const prefix = getDeclarationListPrefix(line, code_end);
-  if (prefix?.kind !== 'variable') {
-    return [];
+): ParsedDefinitionList | undefined {
+  const statement = getDeclarationStatementSource(lines, lineIndex);
+  if (statement === undefined) {
+    return undefined;
   }
 
-  const visibility = getSourceDeclarationVisibility(line, code_end);
-  const definitions: VbaDefinition[] = [];
-  for (const segment of splitTopLevelSegments(line, prefix.declaratorsStart, code_end)) {
-    const definition = parseVariableDeclaratorDefinition(
-      uri,
-      line,
-      lineIndex,
-      segment.start,
-      segment.end,
-      visibility,
-      'variable'
-    );
-    if (definition !== undefined) {
-      definitions.push(definition);
-    }
-  }
-
-  return definitions;
+  const visibility = getSourceDeclarationVisibility(statement.source.text, statement.end);
+  const result = parseVariableDefinitionsFromStatement(
+    uri,
+    statement.source,
+    statement.start,
+    statement.end,
+    visibility,
+    'variable'
+  );
+  return result.prefixMatched
+    ? {
+        definitions: result.definitions,
+        endLine: statement.source.endLine
+      }
+    : undefined;
 }
 
-function parseVariableDeclaratorDefinition(
+function parseVariableDeclaratorDefinitionFromSource(
   uri: string,
-  line: string,
-  lineIndex: number,
+  source: LogicalSourceText,
   startCharacter: number,
   endCharacter: number,
   visibility: 'public' | 'private' | 'local',
   kind: 'local' | 'variable'
 ): VbaDefinition | undefined {
+  const line = source.text;
   const trimmed_start = skipWhitespace(line, startCharacter, endCharacter);
   const trimmed_end = trimEndIndex(line, endCharacter);
   const name_token = readIdentifierTokenAt(line, trimmed_start, trimmed_end);
@@ -6845,10 +6950,7 @@ function parseVariableDeclaratorDefinition(
     kind,
     visibility,
     uri,
-    range: {
-      start: { line: lineIndex, character: name_token.start },
-      end: { line: lineIndex, character: name_token.end }
-    },
+    range: getLogicalSourceRange(source, name_token.start, name_token.end),
     typeName: parseDeclaratorTypeName(line, name_token.end, trimmed_end)
   };
 }
