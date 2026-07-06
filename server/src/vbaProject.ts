@@ -1,5 +1,3 @@
-import path from 'node:path';
-
 import {
   createHostApplicationSelection,
   formatHostApplicationName,
@@ -84,6 +82,13 @@ import {
   type SourceRange
 } from './sourceRange';
 import { sameName, unqualifiedTypeName } from './vbaNames';
+import {
+  fallbackModuleIdentity,
+  getFolderUri,
+  isVbaSourceUri,
+  sameUri,
+  uriPathname
+} from './vbaUris';
 import type {
   CallExpression,
   DefinitionLocation,
@@ -352,7 +357,7 @@ function getSourceCompletionDefinitions(
   const current_module_definitions = currentModule.definitions;
   const project_definitions = project.modules
     .filter((module) =>
-      module.folderUri.toLowerCase() === currentModule.folderUri.toLowerCase()
+      sameUri(module.folderUri, currentModule.folderUri)
         && !sameUri(module.uri, currentModule.uri)
     )
     .flatMap((module) => module.definitions)
@@ -816,7 +821,7 @@ export function getRenameEdits(
 
   const edits: RenameEdit[] = [];
   for (const module of project.modules.filter((candidate) =>
-    candidate.folderUri.toLowerCase() === target_module.folderUri.toLowerCase()
+    sameUri(candidate.folderUri, target_module.folderUri)
   )) {
     for (let line_index = 0; line_index < module.lines.length; line_index += 1) {
       for (const range of getIdentifierRangesInCode(module.lines[line_index], line_index)) {
@@ -925,7 +930,7 @@ export function resolveName(
   }
 
   const project_matches = project.modules
-    .filter((module) => module.folderUri.toLowerCase() === current_module.folderUri.toLowerCase())
+    .filter((module) => sameUri(module.folderUri, current_module.folderUri))
     .filter((module) => !sameUri(module.uri, current_module.uri))
     .flatMap((module) => module.definitions)
     .filter((definition) => definition.visibility === 'public')
@@ -983,7 +988,7 @@ function resolveWithEventsHandlerDefinition(
 
     const declared_type_name = unqualifiedTypeName(declaration.typeName);
     const event_source_module = project.modules.find((module) =>
-      module.folderUri.toLowerCase() === current_module.folderUri.toLowerCase()
+      sameUri(module.folderUri, current_module.folderUri)
         && sameName(module.identity, declared_type_name)
     );
     if (event_source_module === undefined) {
@@ -1011,7 +1016,7 @@ function resolveQualifiedModuleDefinition(
   member: string
 ): VbaDefinition | undefined {
   const qualified_module = project.modules.find((module) =>
-    module.folderUri.toLowerCase() === current_module.folderUri.toLowerCase()
+    sameUri(module.folderUri, current_module.folderUri)
       && sameName(module.identity, qualifier)
   );
   if (qualified_module === undefined) {
@@ -1105,7 +1110,7 @@ function hasSourceQualifierName(
   }
 
   return project.modules
-    .filter((module) => module.folderUri.toLowerCase() === currentModule.folderUri.toLowerCase())
+    .filter((module) => sameUri(module.folderUri, currentModule.folderUri))
     .some((module) =>
       sameName(module.identity, name)
         || module.definitions
@@ -1124,7 +1129,7 @@ function resolveHostApplicationQualifier(
   }
 
   const source_module = project.modules.find((module) =>
-    module.folderUri.toLowerCase() === currentModule.folderUri.toLowerCase()
+    sameUri(module.folderUri, currentModule.folderUri)
       && sameName(module.identity, qualifier)
   );
   if (source_module !== undefined) {
@@ -1162,7 +1167,7 @@ function resolveTypedMemberDefinition(
   }
 
   const project_type = project.modules.find((module) =>
-    module.folderUri.toLowerCase() === current_module.folderUri.toLowerCase()
+    sameUri(module.folderUri, current_module.folderUri)
       && sameName(module.identity, type_name)
   );
   const project_member = singleMatch(project_type?.definitions
@@ -5575,7 +5580,7 @@ function findTypeNameForExpression(
 
   const project_type_name = singleMatch(
     project.modules
-      .filter((module) => module.folderUri.toLowerCase() === currentModule.folderUri.toLowerCase())
+      .filter((module) => sameUri(module.folderUri, currentModule.folderUri))
       .filter((module) => !sameUri(module.uri, currentModule.uri))
       .flatMap((module) => module.definitions)
       .filter((definition) => definition.visibility === 'public')
@@ -5915,7 +5920,7 @@ function resolveRootChainSegment(
 
   const project_definition = singleMatch(
     project.modules
-      .filter((module) => module.folderUri.toLowerCase() === currentModule.folderUri.toLowerCase())
+      .filter((module) => sameUri(module.folderUri, currentModule.folderUri))
       .filter((module) => !sameUri(module.uri, currentModule.uri))
       .flatMap((module) => module.definitions)
       .filter((definition) => definition.visibility === 'public')
@@ -6061,7 +6066,7 @@ function findSourceTypeModule(
   }
 
   return project.modules.find((module) =>
-    module.folderUri.toLowerCase() === currentModule.folderUri.toLowerCase()
+    sameUri(module.folderUri, currentModule.folderUri)
       && sameName(module.identity, typeName)
   );
 }
@@ -7264,37 +7269,6 @@ function findActiveCallOpenParen(line: string, positionCharacter: number): numbe
   return open_parens.at(-1);
 }
 
-function isVbaSourceUri(uri: string): boolean {
-  return /\.(bas|cls|frm)$/i.test(uriPathname(uri));
-}
-
-function fallbackModuleIdentity(uri: string): string {
-  const parsed_path = uriPathname(uri);
-  const file_name = path.posix.basename(parsed_path);
-  const extension = path.posix.extname(file_name);
-
-  return file_name.slice(0, file_name.length - extension.length);
-}
-
-function getFolderUri(uri: string): string {
-  const parsed_path = uriPathname(uri);
-  const folder_path = path.posix.dirname(parsed_path);
-
-  return `file://${folder_path}`;
-}
-
-function uriPathname(uri: string): string {
-  if (uri.startsWith('file://')) {
-    return new URL(uri).pathname;
-  }
-
-  return uri;
-}
-
-function sameUri(left: string, right: string): boolean {
-  return left.toLowerCase() === right.toLowerCase();
-}
-
 function sameDefinitionLocation(left: DefinitionLocation, right: DefinitionLocation): boolean {
   return sameUri(left.uri, right.uri)
     && sameRange(left.range, right.range);
@@ -7426,7 +7400,7 @@ function findDocumentationForDefinition(
 
     const member_name = definition.name.slice(handler_prefix.length);
     const interface_module = project.modules.find((module) =>
-      module.folderUri.toLowerCase() === owner_module.folderUri.toLowerCase()
+      sameUri(module.folderUri, owner_module.folderUri)
         && sameName(module.identity, interface_name)
     );
     const interface_definition = interface_module?.definitions.find((candidate) =>
