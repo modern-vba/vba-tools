@@ -42,7 +42,6 @@ export interface HostCatalogManagerOptions {
   writeCache?: HostCatalogCacheWriter;
   discoverFromCom?: HostCatalogComDiscovery;
   discoverFromTypeLibrary?: HostCatalogTypeLibraryDiscovery;
-  discoverSignaturesFromTypeLibrary?: HostCatalogTypeLibraryDiscovery;
 }
 
 interface OfficeComDiscoverySpec {
@@ -67,9 +66,7 @@ export class HostCatalogManager {
     this.readCache = options.readCache;
     this.writeCache = options.writeCache;
     this.discoverFromCom = options.discoverFromCom ?? discoverOfficeComHostDefinitions;
-    this.discoverFromTypeLibrary = options.discoverFromTypeLibrary
-      ?? options.discoverSignaturesFromTypeLibrary
-      ?? discoverHostDefinitionsFromTypeLibrary;
+    this.discoverFromTypeLibrary = options.discoverFromTypeLibrary ?? discoverHostDefinitionsFromTypeLibrary;
 
     for (const host_application of C_SUPPORTED_HOST_APPLICATIONS) {
       this.definitionsByApplication.set(

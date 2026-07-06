@@ -9938,7 +9938,7 @@ test('signature help remains active for host continued argument lists', () => {
   });
 });
 
-test('signature help uses bundled HostSignatureDiscovery snapshot metadata', () => {
+test('signature help uses bundled HostTypeLibraryDiscovery snapshot metadata', () => {
   const project = buildVbaProject([
     {
       uri: 'file:///project/Worker.bas',

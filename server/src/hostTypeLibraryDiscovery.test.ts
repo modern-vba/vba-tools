@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { discoverHostSignaturesFromTypeLibrary } from './hostSignatureDiscovery';
 import { discoverHostDefinitionsFromTypeLibrary } from './hostTypeLibraryDiscovery';
 
 test('HostTypeLibraryDiscovery reads enum metadata into HostDefinitions', async () => {
@@ -75,9 +74,9 @@ test('HostTypeLibraryDiscovery reads standalone constants into HostDefinitions',
   ]);
 });
 
-test('HostSignatureDiscovery reads Type Library metadata into HostDefinitions', async () => {
+test('HostTypeLibraryDiscovery reads Type Library metadata into HostDefinitions', async () => {
   let captured_script = '';
-  const definitions = await discoverHostSignaturesFromTypeLibrary('excel', async (script) => {
+  const definitions = await discoverHostDefinitionsFromTypeLibrary('excel', async (script) => {
     captured_script = script;
     return JSON.stringify([
       {
@@ -142,8 +141,8 @@ test('HostSignatureDiscovery reads Type Library metadata into HostDefinitions', 
   ]);
 });
 
-test('HostSignatureDiscovery treats PowerShell null DTO properties as missing metadata', async () => {
-  const definitions = await discoverHostSignaturesFromTypeLibrary('excel', async () =>
+test('HostTypeLibraryDiscovery treats PowerShell null DTO properties as missing metadata', async () => {
+  const definitions = await discoverHostDefinitionsFromTypeLibrary('excel', async () =>
     JSON.stringify([
       {
         name: 'Range',
