@@ -4,6 +4,7 @@ import type {
   HostApplication,
   HostDefinition
 } from './hostDefinition';
+import { sameName } from './vbaNames';
 
 export const C_SUPPORTED_HOST_APPLICATIONS: readonly HostApplication[] = [
   'excel',
@@ -152,7 +153,7 @@ export function isHostApplication(value: unknown): value is HostApplication {
 }
 
 export function sameHostDefinitionName(left: string, right: string): boolean {
-  return left.toLowerCase() === right.toLowerCase();
+  return sameName(left, right);
 }
 
 function mergeHostDefinition(

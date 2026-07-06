@@ -83,6 +83,7 @@ import {
   type SourcePosition,
   type SourceRange
 } from './sourceRange';
+import { sameName, unqualifiedTypeName } from './vbaNames';
 import type {
   CallExpression,
   DefinitionLocation,
@@ -928,7 +929,7 @@ export function resolveName(
     .filter((module) => !sameUri(module.uri, current_module.uri))
     .flatMap((module) => module.definitions)
     .filter((definition) => definition.visibility === 'public')
-    .filter((definition) => definition.name.toLowerCase() === identifier.toLowerCase());
+    .filter((definition) => sameName(definition.name, identifier));
 
   const project_definition = singleMatch(project_matches);
   if (project_definition !== undefined) {
@@ -7292,14 +7293,6 @@ function uriPathname(uri: string): string {
 
 function sameUri(left: string, right: string): boolean {
   return left.toLowerCase() === right.toLowerCase();
-}
-
-function sameName(left: string, right: string): boolean {
-  return left.toLowerCase() === right.toLowerCase();
-}
-
-function unqualifiedTypeName(typeName: string): string {
-  return typeName.split('.').at(-1) ?? typeName;
 }
 
 function sameDefinitionLocation(left: DefinitionLocation, right: DefinitionLocation): boolean {
