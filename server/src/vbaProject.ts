@@ -2445,6 +2445,85 @@ function createMalformedDeclarationBlockDiagnostic(
   };
 }
 
+interface DiagnosticSourceLine {
+  lineIndex: number;
+  line: string;
+  codeEnd: number;
+  structureText: string;
+  skipped: boolean;
+}
+
+interface DiagnosticSourceLineOptions {
+  skipLines?: Set<number>;
+  includeSkippedLines?: boolean;
+  skipContinuationTails?: boolean;
+  skipLexicalDiagnostics?: boolean;
+  skipInvalidTrailingCommentContinuation?: boolean;
+}
+
+function getDiagnosticSourceLines(
+  lines: string[],
+  codeStartLine: number,
+  options: DiagnosticSourceLineOptions = {}
+): DiagnosticSourceLine[] {
+  const source_lines: DiagnosticSourceLine[] = [];
+  let skipped_declaration_block: DeclarationBlockKind | undefined;
+
+  for (let line_index = codeStartLine; line_index < lines.length; line_index += 1) {
+    if (options.skipContinuationTails === true && isContinuationTail(lines, line_index)) {
+      continue;
+    }
+
+    const line = lines[line_index];
+    const code_end = getCodeEndCharacter(line);
+    const structure_text = getCodeTextForStructure(line).trim();
+    if (structure_text === '' || isCommentOnlyLine(line) || isHeaderLine(structure_text)) {
+      continue;
+    }
+
+    const declaration_closer = getDeclarationBlockCloser(line, line_index, code_end);
+    if (skipped_declaration_block !== undefined) {
+      if (declaration_closer?.kind === skipped_declaration_block) {
+        skipped_declaration_block = undefined;
+      }
+      continue;
+    }
+
+    const declaration_header = getDeclarationBlockHeader(line, line_index, code_end);
+    if (declaration_header !== undefined) {
+      skipped_declaration_block = declaration_header.kind;
+      continue;
+    }
+    if (declaration_closer !== undefined) {
+      continue;
+    }
+
+    const skipped = options.skipLines?.has(line_index) ?? false;
+    if (skipped && options.includeSkippedLines !== true) {
+      continue;
+    }
+    if (options.skipLexicalDiagnostics === true && collectLexicalSyntaxDiagnostics(line, line_index).length > 0) {
+      continue;
+    }
+    if (
+      options.skipInvalidTrailingCommentContinuation === true
+      && getInvalidTrailingCommentContinuationRange(line, line_index) !== undefined
+    ) {
+      continue;
+    }
+
+    source_lines.push({
+      lineIndex: line_index,
+      line,
+      codeEnd: code_end,
+      structureText: structure_text,
+      skipped
+    });
+  }
+
+  return source_lines;
+}
+
 type ExecutableBlockKind =
   | 'sub'
   | 'function'
@@ -2476,43 +2555,18 @@ interface ExecutableBlockCloser {
 function collectBlockStructureDiagnostics(lines: string[], codeStartLine: number): SyntaxDiagnostic[] {
   const diagnostics: SyntaxDiagnostic[] = [];
   const stack: ExecutableBlock[] = [];
-  let skipped_declaration_block: DeclarationBlockKind | undefined;
 
-  for (let line_index = codeStartLine; line_index < lines.length; line_index += 1) {
-    const line = lines[line_index];
-    const code_end = getCodeEndCharacter(line);
-    const structure_text = getCodeTextForStructure(line).trim();
-    if (structure_text === '' || isCommentOnlyLine(line) || isHeaderLine(structure_text)) {
-      continue;
-    }
-
-    const declaration_closer = getDeclarationBlockCloser(line, line_index, code_end);
-    if (skipped_declaration_block !== undefined) {
-      if (declaration_closer?.kind === skipped_declaration_block) {
-        skipped_declaration_block = undefined;
-      }
-      continue;
-    }
-
-    const declaration_header = getDeclarationBlockHeader(line, line_index, code_end);
-    if (declaration_header !== undefined) {
-      skipped_declaration_block = declaration_header.kind;
-      continue;
-    }
-    if (declaration_closer !== undefined) {
-      continue;
-    }
-
-    const closer = getExecutableBlockCloser(line, code_end);
+  for (const source_line of getDiagnosticSourceLines(lines, codeStartLine)) {
+    const closer = getExecutableBlockCloser(source_line.line, source_line.codeEnd);
     if (closer !== undefined) {
       const open_block = stack[stack.length - 1];
       if (open_block === undefined) {
-        if (shouldSuppressUnexpectedCallableCloser(lines, line_index, closer)) {
+        if (shouldSuppressUnexpectedCallableCloser(lines, source_line.lineIndex, closer)) {
           continue;
         }
         diagnostics.push(createMalformedBlockStructureDiagnostic(
           `Unexpected ${closer.label} without a matching ${closer.openerName} block.`,
-          line_index,
+          source_line.lineIndex,
           closer.start,
           closer.end
         ));
@@ -2524,7 +2578,7 @@ function collectBlockStructureDiagnostics(lines: string[], codeStartLine: number
         if (matching_index === -1) {
           diagnostics.push(createMalformedBlockStructureDiagnostic(
             `Unexpected ${closer.label} without a matching ${closer.openerName} block.`,
-            line_index,
+            source_line.lineIndex,
             closer.start,
             closer.end
           ));
@@ -2533,7 +2587,7 @@ function collectBlockStructureDiagnostics(lines: string[], codeStartLine: number
 
         diagnostics.push(createMalformedBlockStructureDiagnostic(
           `Mismatched block closer; expected ${open_block.expectedCloser}.`,
-          line_index,
+          source_line.lineIndex,
           closer.start,
           closer.end
         ));
@@ -2546,11 +2600,11 @@ function collectBlockStructureDiagnostics(lines: string[], codeStartLine: number
       continue;
     }
 
-    const opener = getExecutableBlockOpener(line, code_end);
+    const opener = getExecutableBlockOpener(source_line.line, source_line.codeEnd);
     if (opener !== undefined) {
       stack.push({
         ...opener,
-        openerLine: line_index
+        openerLine: source_line.lineIndex
       });
     }
   }
@@ -2873,34 +2927,12 @@ interface ControlFlowState {
 function collectControlFlowDiagnostics(lines: string[], codeStartLine: number): SyntaxDiagnostic[] {
   const diagnostics: SyntaxDiagnostic[] = [];
   const stack: ControlFlowState[] = [];
-  let skipped_declaration_block: DeclarationBlockKind | undefined;
 
-  for (let line_index = codeStartLine; line_index < lines.length; line_index += 1) {
-    const line = lines[line_index];
-    const code_end = getCodeEndCharacter(line);
-    const structure_text = getCodeTextForStructure(line).trim();
-    if (structure_text === '' || isCommentOnlyLine(line) || isHeaderLine(structure_text)) {
-      continue;
-    }
-
-    const declaration_closer = getDeclarationBlockCloser(line, line_index, code_end);
-    if (skipped_declaration_block !== undefined) {
-      if (declaration_closer?.kind === skipped_declaration_block) {
-        skipped_declaration_block = undefined;
-      }
-      continue;
-    }
-    const declaration_header = getDeclarationBlockHeader(line, line_index, code_end);
-    if (declaration_header !== undefined) {
-      skipped_declaration_block = declaration_header.kind;
-      continue;
-    }
-    if (declaration_closer !== undefined) {
-      continue;
-    }
-
+  for (const source_line of getDiagnosticSourceLines(lines, codeStartLine)) {
+    const line = source_line.line;
+    const line_index = source_line.lineIndex;
     const trimmed_start = line.search(/\S/);
-    const trimmed_end = getCodeEndCharacter(line);
+    const trimmed_end = source_line.codeEnd;
     const trimmed_code = line.slice(trimmed_start === -1 ? 0 : trimmed_start, trimmed_end).trimEnd();
 
     if (/^If\b/i.test(trimmed_code)) {
@@ -3126,52 +3158,26 @@ function collectExpressionDiagnostics(
   skipLines: Set<number>
 ): SyntaxDiagnostic[] {
   const diagnostics: SyntaxDiagnostic[] = [];
-  let skipped_declaration_block: DeclarationBlockKind | undefined;
 
-  for (let line_index = codeStartLine; line_index < lines.length; line_index += 1) {
-    if (skipLines.has(line_index)) {
-      continue;
-    }
-
-    const line = lines[line_index];
-    const code_end = getCodeEndCharacter(line);
-    const structure_text = getCodeTextForStructure(line).trim();
-    if (structure_text === '' || isCommentOnlyLine(line) || isHeaderLine(structure_text)) {
-      continue;
-    }
-    if (collectLexicalSyntaxDiagnostics(line, line_index).length > 0) {
-      continue;
-    }
-    if (getInvalidTrailingCommentContinuationRange(line, line_index) !== undefined) {
-      continue;
-    }
-
-    const declaration_closer = getDeclarationBlockCloser(line, line_index, code_end);
-    if (skipped_declaration_block !== undefined) {
-      if (declaration_closer?.kind === skipped_declaration_block) {
-        skipped_declaration_block = undefined;
-      }
-      continue;
-    }
-
-    const declaration_header = getDeclarationBlockHeader(line, line_index, code_end);
-    if (declaration_header !== undefined) {
-      skipped_declaration_block = declaration_header.kind;
-      continue;
-    }
-    if (declaration_closer !== undefined) {
-      continue;
-    }
-
-    for (const segment of getStatementSegments(line)) {
-      const segment_end = Math.min(segment.end, code_end);
+  for (const source_line of getDiagnosticSourceLines(lines, codeStartLine, {
+    skipLines,
+    skipLexicalDiagnostics: true,
+    skipInvalidTrailingCommentContinuation: true
+  })) {
+    for (const segment of getStatementSegments(source_line.line)) {
+      const segment_end = Math.min(segment.end, source_line.codeEnd);
       if (segment.start >= segment_end) {
         continue;
       }
 
-      const spans = getExpressionSpansForDiagnostics(line, segment.start, segment_end);
+      const spans = getExpressionSpansForDiagnostics(source_line.line, segment.start, segment_end);
       for (const span of spans) {
-        diagnostics.push(...collectMalformedExpressionDiagnostics(line, line_index, span.start, span.end));
+        diagnostics.push(...collectMalformedExpressionDiagnostics(
+          source_line.line,
+          source_line.lineIndex,
+          span.start,
+          span.end
+        ));
       }
     }
   }
@@ -3519,41 +3525,13 @@ function collectCallSyntaxDiagnostics(
   skipLines: Set<number>
 ): SyntaxDiagnostic[] {
   const diagnostics: SyntaxDiagnostic[] = [];
-  let skipped_declaration_block: DeclarationBlockKind | undefined;
 
-  for (let line_index = codeStartLine; line_index < lines.length; line_index += 1) {
-    if (skipLines.has(line_index) || isContinuationTail(lines, line_index)) {
-      continue;
-    }
-
-    const line = lines[line_index];
-    const code_end = getCodeEndCharacter(line);
-    const structure_text = getCodeTextForStructure(line).trim();
-    if (structure_text === '' || isCommentOnlyLine(line) || isHeaderLine(structure_text)) {
-      continue;
-    }
-    if (collectLexicalSyntaxDiagnostics(line, line_index).length > 0) {
-      continue;
-    }
-
-    const declaration_closer = getDeclarationBlockCloser(line, line_index, code_end);
-    if (skipped_declaration_block !== undefined) {
-      if (declaration_closer?.kind === skipped_declaration_block) {
-        skipped_declaration_block = undefined;
-      }
-      continue;
-    }
-
-    const declaration_header = getDeclarationBlockHeader(line, line_index, code_end);
-    if (declaration_header !== undefined) {
-      skipped_declaration_block = declaration_header.kind;
-      continue;
-    }
-    if (declaration_closer !== undefined) {
-      continue;
-    }
-
-    const source = getLogicalCodeSourceFromLine(lines, line_index);
+  for (const source_line of getDiagnosticSourceLines(lines, codeStartLine, {
+    skipLines,
+    skipContinuationTails: true,
+    skipLexicalDiagnostics: true
+  })) {
+    const source = getLogicalCodeSourceFromLine(lines, source_line.lineIndex);
     if (source === undefined || source.positions.length === 0) {
       continue;
     }
@@ -3581,53 +3559,31 @@ function collectMemberAccessDiagnostics(
   skipLines: Set<number>
 ): SyntaxDiagnostic[] {
   const diagnostics: SyntaxDiagnostic[] = [];
-  let skipped_declaration_block: DeclarationBlockKind | undefined;
   let with_depth = 0;
 
-  for (let line_index = codeStartLine; line_index < lines.length; line_index += 1) {
-    const line = lines[line_index];
-    const code_end = getCodeEndCharacter(line);
-    const structure_text = getCodeTextForStructure(line).trim();
-    if (structure_text === '' || isCommentOnlyLine(line) || isHeaderLine(structure_text)) {
-      continue;
-    }
-
-    const declaration_closer = getDeclarationBlockCloser(line, line_index, code_end);
-    if (skipped_declaration_block !== undefined) {
-      if (declaration_closer?.kind === skipped_declaration_block) {
-        skipped_declaration_block = undefined;
-      }
-      continue;
-    }
-
-    const declaration_header = getDeclarationBlockHeader(line, line_index, code_end);
-    if (declaration_header !== undefined) {
-      skipped_declaration_block = declaration_header.kind;
-      continue;
-    }
-    if (declaration_closer !== undefined) {
-      continue;
-    }
-
-    if (/^End\s+With\b/i.test(structure_text)) {
+  for (const source_line of getDiagnosticSourceLines(lines, codeStartLine, {
+    skipLines,
+    includeSkippedLines: true
+  })) {
+    if (/^End\s+With\b/i.test(source_line.structureText)) {
       with_depth = Math.max(0, with_depth - 1);
     }
 
     if (
-      !skipLines.has(line_index)
-      && collectLexicalSyntaxDiagnostics(line, line_index).length === 0
-      && getInvalidTrailingCommentContinuationRange(line, line_index) === undefined
+      !source_line.skipped
+      && collectLexicalSyntaxDiagnostics(source_line.line, source_line.lineIndex).length === 0
+      && getInvalidTrailingCommentContinuationRange(source_line.line, source_line.lineIndex) === undefined
     ) {
-      const leading_dot_context = getLeadingDotContext(lines, line_index, with_depth);
+      const leading_dot_context = getLeadingDotContext(lines, source_line.lineIndex, with_depth);
       diagnostics.push(...collectMalformedMemberAccessDiagnosticsForLine(
-        line,
-        line_index,
-        code_end,
+        source_line.line,
+        source_line.lineIndex,
+        source_line.codeEnd,
         leading_dot_context
       ));
     }
 
-    if (/^With\b/i.test(structure_text) && !/^With\b.*\bThen\b/i.test(structure_text)) {
+    if (/^With\b/i.test(source_line.structureText) && !/^With\b.*\bThen\b/i.test(source_line.structureText)) {
       with_depth += 1;
     }
   }
@@ -3782,45 +3738,14 @@ function collectStatementSpecificDiagnostics(
   skipLines: Set<number>
 ): SyntaxDiagnostic[] {
   const diagnostics: SyntaxDiagnostic[] = [];
-  let skipped_declaration_block: DeclarationBlockKind | undefined;
 
-  for (let line_index = codeStartLine; line_index < lines.length; line_index += 1) {
-    if (skipLines.has(line_index)) {
-      continue;
-    }
-
-    const line = lines[line_index];
-    const code_end = getCodeEndCharacter(line);
-    const structure_text = getCodeTextForStructure(line).trim();
-    if (structure_text === '' || isCommentOnlyLine(line) || isHeaderLine(structure_text)) {
-      continue;
-    }
-    if (
-      collectLexicalSyntaxDiagnostics(line, line_index).length > 0
-      || getInvalidTrailingCommentContinuationRange(line, line_index) !== undefined
-    ) {
-      continue;
-    }
-
-    const declaration_closer = getDeclarationBlockCloser(line, line_index, code_end);
-    if (skipped_declaration_block !== undefined) {
-      if (declaration_closer?.kind === skipped_declaration_block) {
-        skipped_declaration_block = undefined;
-      }
-      continue;
-    }
-
-    const declaration_header = getDeclarationBlockHeader(line, line_index, code_end);
-    if (declaration_header !== undefined) {
-      skipped_declaration_block = declaration_header.kind;
-      continue;
-    }
-    if (declaration_closer !== undefined) {
-      continue;
-    }
-
-    for (const segment of getStatementSegments(line)) {
-      const diagnostic = getStatementSpecificDiagnostic(line, line_index, segment);
+  for (const source_line of getDiagnosticSourceLines(lines, codeStartLine, {
+    skipLines,
+    skipLexicalDiagnostics: true,
+    skipInvalidTrailingCommentContinuation: true
+  })) {
+    for (const segment of getStatementSegments(source_line.line)) {
+      const diagnostic = getStatementSpecificDiagnostic(source_line.line, source_line.lineIndex, segment);
       if (diagnostic !== undefined) {
         diagnostics.push(diagnostic);
       }
