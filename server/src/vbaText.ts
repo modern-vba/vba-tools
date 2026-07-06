@@ -439,6 +439,43 @@ export function trimEndIndex(line: string, endCharacter: number): number {
   return character_index;
 }
 
+export function getCodeTextForStructure(line: string): string {
+  let result = '';
+  let character_index = 0;
+  let is_in_string = false;
+
+  while (character_index < line.length) {
+    const character = line[character_index];
+    if (is_in_string) {
+      if (character === '"') {
+        if (line[character_index + 1] === '"') {
+          character_index += 2;
+        } else {
+          is_in_string = false;
+          character_index += 1;
+        }
+      } else {
+        character_index += 1;
+      }
+      continue;
+    }
+
+    if (character === "'") {
+      break;
+    }
+    if (character === '"') {
+      is_in_string = true;
+      character_index += 1;
+      continue;
+    }
+
+    result += character;
+    character_index += 1;
+  }
+
+  return result;
+}
+
 function isAssignmentEquals(line: string, equalsIndex: number): boolean {
   const previous_character = findPreviousNonWhitespace(line, equalsIndex - 1);
   if (

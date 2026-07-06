@@ -35,11 +35,11 @@ import {
   parseMemberChainEndingAt,
   parseMemberChainEndingBefore,
   parseMemberChainEndingBeforeSource,
-  parseMemberChainFrom,
   readParenthesisFreeCallableTargetAt,
   readParenthesisFreeCallableTargetInSource,
   toMemberChainExpression
 } from './memberChainSyntax';
+import { getWithReceiverDeclarationAt } from './withReceiverSyntax';
 import type {
   CallableParameter,
   CallableSignature,
@@ -71,6 +71,7 @@ import {
   findPreviousNonWhitespace,
   findTopLevelAssignmentEquals,
   findTopLevelEquals,
+  getCodeTextForStructure,
   getStringLiteralEnd,
   isIdentifierName,
   isIdentifierPart,
@@ -139,9 +140,7 @@ import type {
   VbaDefinition,
   VbaModule,
   VbaModuleKind,
-  WithEventsDeclaration,
-  WithReceiverDeclaration,
-  WithReceiverSourceText
+  WithEventsDeclaration
 } from './vbaSourceModel';
 
 export type { VbaProject } from './vbaProjectModel';
@@ -5372,112 +5371,6 @@ function resolveActiveWithReceiverType(
   return receiver_stack.at(-1);
 }
 
-function getWithReceiverDeclarationAt(lines: string[], lineIndex: number): WithReceiverDeclaration | undefined {
-  const line = lines[lineIndex] ?? '';
-  const code_text = getCodeTextForStructure(line);
-  const with_match = /^\s*With\b/i.exec(code_text);
-  if (with_match === null) {
-    return undefined;
-  }
-
-  const first_line_end = getCodeContinuationMarkerStart(line) ?? getCodeEndCharacter(line);
-  const receiver_source = getWithReceiverSourceText(lines, lineIndex, with_match[0].length);
-  if (receiver_source === undefined) {
-    return {
-      end: { line: lineIndex, character: first_line_end }
-    };
-  }
-  if (receiver_source.hasCommentContinuation) {
-    return {
-      end: {
-        line: receiver_source.endLine,
-        character: receiver_source.endCharacter
-      }
-    };
-  }
-
-  const receiver_chain = getWithReceiverChainFromSource(receiver_source);
-  return {
-    chain: receiver_chain,
-    end: {
-      line: receiver_source.endLine,
-      character: receiver_source.endCharacter
-    }
-  };
-}
-
-function getWithReceiverSourceText(
-  lines: string[],
-  lineIndex: number,
-  receiverStart: number
-): WithReceiverSourceText | undefined {
-  const text_parts: string[] = [];
-  const positions: SourcePosition[] = [];
-  let has_comment_continuation = false;
-
-  for (let current_line_index = lineIndex; current_line_index < lines.length; current_line_index += 1) {
-    const line = lines[current_line_index] ?? '';
-    const line_start = current_line_index === lineIndex ? receiverStart : 0;
-    const continuation_marker = getCodeContinuationMarkerStart(line);
-    const line_end = continuation_marker ?? getCodeEndCharacter(line);
-    has_comment_continuation = has_comment_continuation || hasCommentContinuationMarker(line);
-
-    text_parts.push(line.slice(line_start, line_end));
-    for (let character = line_start; character < line_end; character += 1) {
-      positions.push({ line: current_line_index, character });
-    }
-
-    if (continuation_marker === undefined) {
-      return {
-        text: text_parts.join(''),
-        positions,
-        endLine: current_line_index,
-        endCharacter: line_end,
-        hasCommentContinuation: has_comment_continuation
-      };
-    }
-  }
-
-  return undefined;
-}
-
-function getWithReceiverChainFromSource(
-  source: LogicalSourceText
-): MemberChainExpression | undefined {
-  const expression_end = findPreviousNonWhitespace(source.text, source.text.length - 1);
-  if (expression_end === undefined) {
-    return undefined;
-  }
-  if (source.text[expression_end] === '.') {
-    return undefined;
-  }
-
-  const code_end = expression_end + 1;
-  let receiver_start = skipWhitespace(source.text, 0, code_end);
-  let uses_with_receiver = false;
-  if (source.text[receiver_start] === '.') {
-    uses_with_receiver = true;
-    receiver_start = skipWhitespace(source.text, receiver_start + 1, code_end);
-  }
-
-  const receiver_chain = parseMemberChainFrom(
-    source.text,
-    source.positions[receiver_start]?.line ?? 0,
-    receiver_start,
-    code_end,
-    (start, end) => getLogicalSourceRange(source, start, end)
-  );
-  if (receiver_chain === undefined || receiver_chain.endIndex !== code_end) {
-    return undefined;
-  }
-
-  return {
-    segments: receiver_chain.segments,
-    targetSegmentIndex: receiver_chain.segments.length - 1,
-    usesWithReceiver: uses_with_receiver
-  };
-}
-
 function resolveMemberChain(
   project: VbaProject,
   currentModule: VbaModule,
@@ -5990,43 +5883,6 @@ function hasBalancedFormattingBlocks(module: VbaModule): boolean {
   }
 
   return depth === 0;
-}
-
-function getCodeTextForStructure(line: string): string {
-  let result = '';
-  let character_index = 0;
-  let is_in_string = false;
-
-  while (character_index < line.length) {
-    const character = line[character_index];
-    if (is_in_string) {
-      if (character === '"') {
-        if (line[character_index + 1] === '"') {
-          character_index += 2;
-        } else {
-          is_in_string = false;
-          character_index += 1;
-        }
-      } else {
-        character_index += 1;
-      }
-      continue;
-    }
-
-    if (character === "'") {
-      break;
-    }
-    if (character === '"') {
-      is_in_string = true;
-      character_index += 1;
-      continue;
-    }
-
-    result += character;
-    character_index += 1;
-  }
-
-  return result;
 }
 
 function isHeaderLine(line: string): boolean {
