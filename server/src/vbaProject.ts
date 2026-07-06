@@ -41,6 +41,11 @@ import {
   findTypeNameForExpression,
   resolveName
 } from './nameResolution';
+import {
+  buildSourceCallableSignature,
+  parseSourceCallableParameterDefinitions,
+  parseSourceCallableReturnTypeName
+} from './sourceCallableSignature';
 import type {
   CallableParameter,
   CallableSignature,
@@ -234,8 +239,6 @@ export interface SignatureHelpResult {
     documentation?: string;
   }>;
 }
-
-const C_TYPE_NAME_PATTERN = /[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?/;
 
 export function buildVbaProject(
   files: VbaProjectFile[],
@@ -4435,7 +4438,7 @@ function parseModuleMembers(
       const parameter_start = line.indexOf('(', name_start + name.length) + 1;
       const parameter_definitions = event_match[3] === undefined
         ? []
-        : parseParameterDefinitions(uri, line, line_index, event_match[3], parameter_start);
+        : parseSourceCallableParameterDefinitions(uri, line, line_index, event_match[3], parameter_start);
       const definition: VbaDefinition = {
         name,
         kind: 'event',
@@ -4446,7 +4449,7 @@ function parseModuleMembers(
           end: { line: line_index, character: name_start + name.length }
         },
         documentation: parseDocumentationComment(lines, line_index),
-        signature: buildSignatureInfo(line, name, parameter_definitions)
+        signature: buildSourceCallableSignature(line, name, parameter_definitions)
       };
       definitions.push(definition);
       moduleMembers.push({
@@ -4537,7 +4540,7 @@ function parseModuleMembers(
     const parameter_start = line.indexOf('(') + 1;
     const parameter_definitions = procedure_match[5] === undefined
       ? []
-      : parseParameterDefinitions(uri, line, line_index, procedure_match[5], parameter_start);
+      : parseSourceCallableParameterDefinitions(uri, line, line_index, procedure_match[5], parameter_start);
     const definition: VbaDefinition = {
       name,
       kind: procedure_kind,
@@ -4548,8 +4551,8 @@ function parseModuleMembers(
         end: { line: line_index, character: name_start + name.length }
       },
       documentation: parseDocumentationComment(lines, line_index),
-      signature: buildSignatureInfo(line, name, parameter_definitions),
-      typeName: parseReturnTypeName(line)
+      signature: buildSourceCallableSignature(line, name, parameter_definitions),
+      typeName: parseSourceCallableReturnTypeName(line)
     };
     definitions.push(definition);
 
@@ -4692,93 +4695,6 @@ function getCodeStartLine(uri: string, lines: string[]): number {
 
   const attribute_line = lines.findIndex((line) => /^\s*Attribute\s+VB_Name\b/i.test(line));
   return attribute_line === -1 ? lines.length : attribute_line;
-}
-
-function parseParameterDefinitions(
-  uri: string,
-  line: string,
-  line_index: number,
-  parameter_text: string,
-  parameter_start: number
-): VbaDefinition[] {
-  const definitions: VbaDefinition[] = [];
-  let search_offset = 0;
-
-  for (const segment of parameter_text.split(',')) {
-    const segment_start = parameter_start + search_offset;
-    const trimmed_segment = segment.trimStart();
-    const match = /^(?:(?:Optional|ByVal|ByRef|ParamArray)\s+)*([A-Za-z_][A-Za-z0-9_]*)\b/i.exec(trimmed_segment);
-    if (match !== null) {
-      const name = match[1];
-      const name_start = line.indexOf(name, segment_start);
-      const type_match = new RegExp(`\\bAs\\s+(${C_TYPE_NAME_PATTERN.source})\\b`, 'i').exec(trimmed_segment);
-      const passing_mode_match = /\b(ByVal|ByRef)\b/i.exec(trimmed_segment);
-      const default_value_match = /=\s*(.+)\s*$/.exec(trimmed_segment);
-      definitions.push({
-        name,
-        kind: 'parameter',
-        visibility: 'local',
-        uri,
-        range: {
-          start: { line: line_index, character: name_start },
-          end: { line: line_index, character: name_start + name.length }
-        },
-        typeName: type_match?.[1],
-        optional: /\bOptional\b/i.test(trimmed_segment),
-        passingMode: passing_mode_match === null
-          ? undefined
-          : canonicalPassingMode(passing_mode_match[1]),
-        isParamArray: /\bParamArray\b/i.test(trimmed_segment),
-        defaultValue: default_value_match?.[1].trim()
-      });
-    }
-
-    search_offset += segment.length + 1;
-  }
-
-  return definitions;
-}
-
-function buildSignatureInfo(
-  line: string,
-  name: string,
-  parameterDefinitions: VbaDefinition[]
-): CallableSignature {
-  const parameters = parameterDefinitions.map((parameter) => ({
-    name: parameter.name,
-    label: formatCallableParameterLabel(parameter),
-    optional: parameter.optional,
-    passingMode: parameter.passingMode,
-    isParamArray: parameter.isParamArray,
-    typeName: parameter.typeName,
-    defaultValue: parameter.defaultValue
-  }));
-  const return_type_name = parseReturnTypeName(line);
-  const return_suffix = return_type_name === undefined ? '' : ` As ${return_type_name}`;
-
-  return {
-    label: `${name}(${parameters.map((parameter) => parameter.label ?? parameter.name).join(', ')})${return_suffix}`,
-    parameters,
-    returnTypeName: return_type_name
-  };
-}
-
-function canonicalPassingMode(value: string): 'ByVal' | 'ByRef' {
-  return value.toLowerCase() === 'byval' ? 'ByVal' : 'ByRef';
-}
-
-function formatCallableParameterLabel(parameter: VbaDefinition): string {
-  const modifiers = [
-    parameter.isParamArray === true ? 'ParamArray' : undefined,
-    parameter.optional === true ? 'Optional' : undefined
-  ].filter((modifier) => modifier !== undefined);
-
-  return [...modifiers, parameter.name].join(' ');
-}
-
-function parseReturnTypeName(line: string): string | undefined {
-  const return_match = new RegExp(`\\)\\s+As\\s+(${C_TYPE_NAME_PATTERN.source})\\b`, 'i').exec(line);
-  return return_match?.[1];
 }
 
 function findProcedureEndLine(
