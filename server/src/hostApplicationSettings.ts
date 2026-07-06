@@ -1,5 +1,5 @@
 import { C_DEFAULT_MAIN_HOST_APPLICATION, type HostApplicationSelectionOptions } from './officeHostCatalog';
-import type { HostApplication } from './hostDefinition';
+import { isHostApplication } from './hostDefinitionCatalog';
 
 export type HostApplicationConfigurationReader = (scopeUri: string) => unknown | Promise<unknown>;
 
@@ -32,11 +32,4 @@ export function normalizeHostApplicationConfiguration(value: unknown): Required<
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
-}
-
-function isHostApplication(value: unknown): value is HostApplication {
-  return value === 'excel'
-    || value === 'word'
-    || value === 'powerpoint'
-    || value === 'access';
 }

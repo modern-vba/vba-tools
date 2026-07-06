@@ -45,6 +45,11 @@ export interface HostCatalogManagerOptions {
   discoverSignaturesFromTypeLibrary?: HostCatalogTypeLibraryDiscovery;
 }
 
+interface OfficeComDiscoverySpec {
+  createScript: () => string;
+  invalidCatalogMessage: string;
+}
+
 export class HostCatalogManager {
   private readonly definitionsByApplication = new Map<HostApplication, HostDefinition[]>();
   private readonly platform: NodeJS.Platform;
@@ -217,16 +222,8 @@ function writeHostCatalogCache(cachePath: string, definitions: HostDefinition[])
 }
 
 async function discoverOfficeComHostDefinitions(hostApplication: HostApplication): Promise<HostDefinition[]> {
-  switch (hostApplication) {
-    case 'excel':
-      return discoverExcelComHostDefinitions();
-    case 'word':
-      return discoverWordComHostDefinitions();
-    case 'powerpoint':
-      return discoverPowerPointComHostDefinitions();
-    case 'access':
-      return discoverAccessComHostDefinitions();
-  }
+  const spec = C_OFFICE_COM_DISCOVERY_SPECS[hostApplication];
+  return executePowerShellHostCatalogScript(spec.createScript(), spec.invalidCatalogMessage);
 }
 
 const C_CONVERT_HOST_DEFINITION_SCRIPT = `
@@ -242,8 +239,27 @@ function Convert-HostDefinition([string]$Name, $Object, [string]$Documentation, 
 }
 `;
 
-async function discoverExcelComHostDefinitions(): Promise<HostDefinition[]> {
-  const script = `
+const C_OFFICE_COM_DISCOVERY_SPECS: Record<HostApplication, OfficeComDiscoverySpec> = {
+  excel: {
+    createScript: createExcelComHostDiscoveryScript,
+    invalidCatalogMessage: 'Excel COM discovery returned an invalid host catalog.'
+  },
+  word: {
+    createScript: createWordComHostDiscoveryScript,
+    invalidCatalogMessage: 'Word COM discovery returned an invalid host catalog.'
+  },
+  powerpoint: {
+    createScript: createPowerPointComHostDiscoveryScript,
+    invalidCatalogMessage: 'PowerPoint COM discovery returned an invalid host catalog.'
+  },
+  access: {
+    createScript: createAccessComHostDiscoveryScript,
+    invalidCatalogMessage: 'Access COM discovery returned an invalid host catalog.'
+  }
+};
+
+function createExcelComHostDiscoveryScript(): string {
+  return `
 $ErrorActionPreference = 'Stop'
 $excel = New-Object -ComObject Excel.Application
 $excel.Visible = $false
@@ -266,12 +282,10 @@ try {
   $excel.Quit()
 }
 `;
-
-  return executePowerShellHostCatalogScript(script, 'Excel COM discovery returned an invalid host catalog.');
 }
 
-async function discoverWordComHostDefinitions(): Promise<HostDefinition[]> {
-  const script = `
+function createWordComHostDiscoveryScript(): string {
+  return `
 $ErrorActionPreference = 'Stop'
 $word = New-Object -ComObject Word.Application
 $word.Visible = $false
@@ -294,12 +308,10 @@ try {
   $word.Quit()
 }
 `;
-
-  return executePowerShellHostCatalogScript(script, 'Word COM discovery returned an invalid host catalog.');
 }
 
-async function discoverPowerPointComHostDefinitions(): Promise<HostDefinition[]> {
-  const script = `
+function createPowerPointComHostDiscoveryScript(): string {
+  return `
 $ErrorActionPreference = 'Stop'
 $powerpoint = New-Object -ComObject PowerPoint.Application
 $presentation = $null
@@ -321,12 +333,10 @@ try {
   $powerpoint.Quit()
 }
 `;
-
-  return executePowerShellHostCatalogScript(script, 'PowerPoint COM discovery returned an invalid host catalog.');
 }
 
-async function discoverAccessComHostDefinitions(): Promise<HostDefinition[]> {
-  const script = `
+function createAccessComHostDiscoveryScript(): string {
+  return `
 $ErrorActionPreference = 'Stop'
 $access = New-Object -ComObject Access.Application
 $databasePath = Join-Path ([System.IO.Path]::GetTempPath()) ("vba-language-server-" + [System.Guid]::NewGuid().ToString() + ".accdb")
@@ -363,8 +373,6 @@ try {
   }
 }
 `;
-
-  return executePowerShellHostCatalogScript(script, 'Access COM discovery returned an invalid host catalog.');
 }
 
 async function executePowerShellHostCatalogScript(

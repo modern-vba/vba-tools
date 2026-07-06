@@ -9,6 +9,13 @@ export { C_SUPPORTED_HOST_APPLICATIONS } from './hostDefinitionCatalog';
 
 export const C_DEFAULT_MAIN_HOST_APPLICATION: HostApplication = 'excel';
 
+const C_HOST_APPLICATION_DISPLAY_NAMES: Record<HostApplication, string> = {
+  excel: 'Excel',
+  word: 'Word',
+  powerpoint: 'PowerPoint',
+  access: 'Access'
+};
+
 export interface HostApplicationSelectionOptions {
   mainHostApplication?: HostApplication;
   additionalHostApplications?: HostApplication[];
@@ -228,16 +235,7 @@ export function getBundledWordHostDefinitions(): HostDefinition[] {
 }
 
 export function formatHostApplicationName(hostApplication: HostApplication): string {
-  switch (hostApplication) {
-    case 'excel':
-      return 'Excel';
-    case 'word':
-      return 'Word';
-    case 'powerpoint':
-      return 'PowerPoint';
-    case 'access':
-      return 'Access';
-  }
+  return C_HOST_APPLICATION_DISPLAY_NAMES[hostApplication];
 }
 
 function uniqueHostApplications(hostApplications: HostApplication[]): HostApplication[] {
