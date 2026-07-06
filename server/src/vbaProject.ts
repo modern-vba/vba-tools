@@ -6649,6 +6649,9 @@ function parseSourceConstantDefinitionsFromStatement(
   const definitions: VbaDefinition[] = [];
   const segments = splitTopLevelSegments(line, Math.max(prefix.declaratorsStart, startCharacter), endCharacter);
   for (const segment of segments) {
+    if (hasMalformedDeclaratorArrayBounds(line, segment.start, segment.end)) {
+      return { prefixMatched: true, definitions: [] };
+    }
     if (hasMalformedDeclaratorTypeAnnotation(line, segment.start, segment.end)) {
       return { prefixMatched: true, definitions: [] };
     }
@@ -6860,6 +6863,9 @@ function parseVariableDefinitionsFromStatement(
 
   const definitions: VbaDefinition[] = [];
   for (const segment of splitTopLevelSegments(line, Math.max(prefix.declaratorsStart, startCharacter), endCharacter)) {
+    if (hasMalformedDeclaratorArrayBounds(line, segment.start, segment.end)) {
+      return { prefixMatched: true, definitions: [] };
+    }
     if (hasMalformedDeclaratorTypeAnnotation(line, segment.start, segment.end)) {
       return { prefixMatched: true, definitions: [] };
     }
@@ -6897,6 +6903,9 @@ function parseWithEventsDeclarationListFromStatement(
   const declarations: WithEventsDeclaration[] = [];
 
   for (const segment of splitTopLevelSegments(line, declarators_start, statement.end)) {
+    if (hasMalformedDeclaratorArrayBounds(line, segment.start, segment.end)) {
+      return { definitions: [], declarations: [], endLine: statement.source.endLine };
+    }
     if (hasMalformedDeclaratorTypeAnnotation(line, segment.start, segment.end)) {
       return { definitions: [], declarations: [], endLine: statement.source.endLine };
     }
@@ -6978,6 +6987,24 @@ function hasMalformedDeclaratorTypeAnnotation(
 
   const type_name = parseDeclaratorTypeName(line, name_token.end, type_annotation_end);
   return type_name === undefined || type_name === '_';
+}
+
+function hasMalformedDeclaratorArrayBounds(
+  line: string,
+  startCharacter: number,
+  endCharacter: number
+): boolean {
+  const trimmed_start = skipWhitespace(line, startCharacter, endCharacter);
+  const trimmed_end = trimEndIndex(line, endCharacter);
+  const name_token = readIdentifierTokenAt(line, trimmed_start, trimmed_end);
+  if (name_token === undefined || name_token.lowerText === 'as') {
+    return false;
+  }
+
+  const bounds_start = skipWhitespace(line, name_token.end, trimmed_end);
+  return bounds_start < trimmed_end
+    && line[bounds_start] === '('
+    && findClosingParenInCode(line, bounds_start, trimmed_end) === undefined;
 }
 
 function parseDeclaratorTypeName(

@@ -7353,6 +7353,133 @@ test('continued qualified type names preserve WithEvents metadata', () => {
   });
 });
 
+test('continued array bounds preserve declaration definitions and type annotations', () => {
+  const module_member_line = '    moduleTargets.Value';
+  const local_member_line = '    localTargets.Value';
+  const cached_member_line = '    cachedTargets.Value';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        'Public moduleTargets( _',
+        '    1 To 10) As Excel.Range',
+        '',
+        'Public Sub Run()',
+        '    Dim localTargets( _',
+        '        1 To 10) As Excel.Range',
+        '    Static cachedTargets(1 To _',
+        '        10) As Excel.Range',
+        module_member_line,
+        local_member_line,
+        cached_member_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getCompletions(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 10, character: module_member_line.length }
+  })
+    .filter((item) => item.label === 'Value')
+    .map((item) => ({ label: item.label, kind: item.kind })), [
+    { label: 'Value', kind: 'property' }
+  ]);
+  assert.deepEqual(getCompletions(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 11, character: local_member_line.length }
+  })
+    .filter((item) => item.label === 'Value')
+    .map((item) => ({ label: item.label, kind: item.kind })), [
+    { label: 'Value', kind: 'property' }
+  ]);
+  assert.deepEqual(getCompletions(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 12, character: cached_member_line.length }
+  })
+    .filter((item) => item.label === 'Value')
+    .map((item) => ({ label: item.label, kind: item.kind })), [
+    { label: 'Value', kind: 'property' }
+  ]);
+
+  const tokens = getSemanticTokens(project, 'file:///project/Worker.bas');
+  assertSemanticToken(tokens, 2, 'Public '.length, 'Public '.length + 'moduleTargets'.length, 'variable');
+  assertSemanticToken(tokens, 6, '    Dim '.length, '    Dim '.length + 'localTargets'.length, 'variable');
+  assertSemanticToken(tokens, 8, '    Static '.length, '    Static '.length + 'cachedTargets'.length, 'variable');
+
+  assert.deepEqual(getDefinition(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 10, character: 8 }
+  }), {
+    uri: 'file:///project/Worker.bas',
+    range: {
+      start: { line: 2, character: 'Public '.length },
+      end: { line: 2, character: 'Public '.length + 'moduleTargets'.length }
+    }
+  });
+  assert.deepEqual(getDefinition(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 11, character: 8 }
+  }), {
+    uri: 'file:///project/Worker.bas',
+    range: {
+      start: { line: 6, character: '    Dim '.length },
+      end: { line: 6, character: '    Dim '.length + 'localTargets'.length }
+    }
+  });
+  assert.deepEqual(getRenameEdits(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 12, character: 8 }
+  }, 'renamedTargets'), [
+    {
+      uri: 'file:///project/Worker.bas',
+      range: {
+        start: { line: 8, character: '    Static '.length },
+        end: { line: 8, character: '    Static '.length + 'cachedTargets'.length }
+      },
+      newText: 'renamedTargets'
+    },
+    {
+      uri: 'file:///project/Worker.bas',
+      range: {
+        start: { line: 12, character: 4 },
+        end: { line: 12, character: 4 + 'cachedTargets'.length }
+      },
+      newText: 'renamedTargets'
+    }
+  ]);
+  assert.equal(formatText(project, 'file:///project/Worker.bas').split('\n')[11], '    localTargets.Value');
+});
+
+test('invalid continuations inside array bounds fail closed for declaration indexing', () => {
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        "    Dim values(1 To _ ' trailing comment",
+        '        10) As Long',
+        '    values',
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.equal(getDefinition(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 6, character: 8 }
+  }), undefined);
+  assert.deepEqual(
+    getSyntaxDiagnostics(project, 'file:///project/Worker.bas').map((diagnostic) => diagnostic.code),
+    ['syntax.invalidTrailingCommentContinuation']
+  );
+});
+
 test('rename supports properties, enums, user-defined types, and events', () => {
   const property_project = buildVbaProject([
     {
