@@ -6707,7 +6707,7 @@ test('continued WithEvents declarators resolve handlers and source variable refe
   });
 });
 
-test('continued declaration lists stop at colons and keep ReDim declarators unindexed', () => {
+test('continued declaration lists handle colon declarations and keep ReDim declarators unindexed', () => {
   const second_line = '        secondValue As Long: Dim thirdValue As Long';
   const redim_second_line = '          otherValues(1 To 10)';
   const project = buildVbaProject([
@@ -6740,10 +6740,16 @@ test('continued declaration lists stop at colons and keep ReDim declarators unin
       end: { line: 5, character: second_line.indexOf('secondValue') + 'secondValue'.length }
     }
   });
-  assert.equal(getDefinition(project, {
+  assert.deepEqual(getDefinition(project, {
     uri: 'file:///project/Worker.bas',
     position: { line: 7, character: 8 }
-  }), undefined);
+  }), {
+    uri: 'file:///project/Worker.bas',
+    range: {
+      start: { line: 5, character: second_line.indexOf('thirdValue') },
+      end: { line: 5, character: second_line.indexOf('thirdValue') + 'thirdValue'.length }
+    }
+  });
   assert.equal(getDefinition(project, {
     uri: 'file:///project/Worker.bas',
     position: { line: 10, character: 8 }
@@ -6986,6 +6992,258 @@ test('invalid continuations inside a declarator fail closed for the whole declar
     getSyntaxDiagnostics(project, 'file:///project/Worker.bas').map((diagnostic) => diagnostic.code),
     ['syntax.invalidTrailingCommentContinuation']
   );
+});
+
+test('colon-separated procedure declarations create local definitions', () => {
+  const declaration_line = '    Debug.Print "start": Dim firstValue As Long: Static cache As Customer: Const LocalLimit As Long = 3';
+  const assignment_line = '    firstValue = LocalLimit';
+  const member_line = '    cache.DisplayName';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        declaration_line,
+        assignment_line,
+        member_line,
+        'End Sub'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/Customer.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "Customer"',
+        'Option Explicit',
+        '',
+        'Public Property Get DisplayName() As String',
+        'End Property'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getDefinition(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 5, character: assignment_line.indexOf('firstValue') }
+  }), {
+    uri: 'file:///project/Worker.bas',
+    range: {
+      start: { line: 4, character: declaration_line.indexOf('firstValue') },
+      end: { line: 4, character: declaration_line.indexOf('firstValue') + 'firstValue'.length }
+    }
+  });
+  assert.deepEqual(getDefinition(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 5, character: assignment_line.indexOf('LocalLimit') }
+  }), {
+    uri: 'file:///project/Worker.bas',
+    range: {
+      start: { line: 4, character: declaration_line.indexOf('LocalLimit') },
+      end: { line: 4, character: declaration_line.indexOf('LocalLimit') + 'LocalLimit'.length }
+    }
+  });
+  assert.deepEqual(getDefinition(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 6, character: member_line.indexOf('DisplayName') }
+  }), {
+    uri: 'file:///project/Customer.cls',
+    range: {
+      start: { line: 4, character: 20 },
+      end: { line: 4, character: 31 }
+    }
+  });
+
+  const tokens = getSemanticTokens(project, 'file:///project/Worker.bas');
+  assertSemanticToken(tokens, 4, declaration_line.indexOf('firstValue'), declaration_line.indexOf('firstValue') + 'firstValue'.length, 'variable');
+  assertSemanticToken(tokens, 4, declaration_line.indexOf('cache'), declaration_line.indexOf('cache') + 'cache'.length, 'variable');
+  assertSemanticToken(tokens, 4, declaration_line.indexOf('LocalLimit'), declaration_line.indexOf('LocalLimit') + 'LocalLimit'.length, 'variable', ['readonly']);
+});
+
+test('colon-separated module declarations preserve visibility constants and WithEvents metadata', () => {
+  const public_line = 'Public publicFirst As Long: Public publicSecond As Long';
+  const private_line = 'Private privateFirst As Long: Private privateSecond As Long';
+  const const_line = 'Public Const FirstLimit As Long = 1: Public Const SecondLimit As Long = 2';
+  const with_events_line = 'Private WithEvents Button As CommandButton: Private WithEvents TextBox1 As TextBox';
+  const handler_line = 'Private Sub TextBox1_Change()';
+  const local_reference_line = '    privateSecond = SecondLimit';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/FormModule.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "FormModule"',
+        'Option Explicit',
+        public_line,
+        private_line,
+        const_line,
+        with_events_line,
+        '',
+        handler_line,
+        'End Sub',
+        '',
+        'Private Sub Run()',
+        local_reference_line,
+        'End Sub'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/Caller.bas',
+      text: [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    publicSecond',
+        '    privateSecond',
+        '    SecondLimit',
+        'End Sub'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/CommandButton.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "CommandButton"',
+        'Option Explicit',
+        '',
+        'Public Event Click()'
+      ].join('\n')
+    },
+    {
+      uri: 'file:///project/TextBox.cls',
+      text: [
+        'VERSION 1.0 CLASS',
+        'Attribute VB_Name = "TextBox"',
+        'Option Explicit',
+        '',
+        'Public Event Change()'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getDefinition(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 4, character: 8 }
+  }), {
+    uri: 'file:///project/FormModule.cls',
+    range: {
+      start: { line: 3, character: public_line.indexOf('publicSecond') },
+      end: { line: 3, character: public_line.indexOf('publicSecond') + 'publicSecond'.length }
+    }
+  });
+  assert.equal(getDefinition(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 5, character: 8 }
+  }), undefined);
+  assert.deepEqual(getDefinition(project, {
+    uri: 'file:///project/Caller.bas',
+    position: { line: 6, character: 8 }
+  }), {
+    uri: 'file:///project/FormModule.cls',
+    range: {
+      start: { line: 5, character: const_line.indexOf('SecondLimit') },
+      end: { line: 5, character: const_line.indexOf('SecondLimit') + 'SecondLimit'.length }
+    }
+  });
+  assert.deepEqual(getDefinition(project, {
+    uri: 'file:///project/FormModule.cls',
+    position: { line: 8, character: handler_line.indexOf('Change') }
+  }), {
+    uri: 'file:///project/TextBox.cls',
+    range: {
+      start: { line: 4, character: 13 },
+      end: { line: 4, character: 19 }
+    }
+  });
+  assert.deepEqual(getDefinition(project, {
+    uri: 'file:///project/FormModule.cls',
+    position: { line: 12, character: local_reference_line.indexOf('privateSecond') }
+  }), {
+    uri: 'file:///project/FormModule.cls',
+    range: {
+      start: { line: 4, character: private_line.indexOf('privateSecond') },
+      end: { line: 4, character: private_line.indexOf('privateSecond') + 'privateSecond'.length }
+    }
+  });
+
+  const tokens = getSemanticTokens(project, 'file:///project/FormModule.cls');
+  assertSemanticToken(tokens, 3, public_line.indexOf('publicSecond'), public_line.indexOf('publicSecond') + 'publicSecond'.length, 'variable');
+  assertSemanticToken(tokens, 5, const_line.indexOf('SecondLimit'), const_line.indexOf('SecondLimit') + 'SecondLimit'.length, 'variable', ['readonly']);
+  assertSemanticToken(tokens, 6, with_events_line.indexOf('TextBox1'), with_events_line.indexOf('TextBox1') + 'TextBox1'.length, 'variable');
+});
+
+test('continued declaration lists followed by colon-separated declarations index both statements', () => {
+  const second_line = '    secondValue As Long: Dim thirdValue As Long';
+  const reference_line = '    firstValue = secondValue + thirdValue';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        '    Dim firstValue As Long, _',
+        second_line,
+        reference_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getDefinition(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 6, character: reference_line.indexOf('secondValue') }
+  }), {
+    uri: 'file:///project/Worker.bas',
+    range: {
+      start: { line: 5, character: second_line.indexOf('secondValue') },
+      end: { line: 5, character: second_line.indexOf('secondValue') + 'secondValue'.length }
+    }
+  });
+  assert.deepEqual(getDefinition(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 6, character: reference_line.indexOf('thirdValue') }
+  }), {
+    uri: 'file:///project/Worker.bas',
+    range: {
+      start: { line: 5, character: second_line.indexOf('thirdValue') },
+      end: { line: 5, character: second_line.indexOf('thirdValue') + 'thirdValue'.length }
+    }
+  });
+});
+
+test('colon-separated declaration parsing ignores colons inside strings before declarations', () => {
+  const declaration_line = '    Debug.Print "prefix:still text": Dim afterColon As Long';
+  const reference_line = '    afterColon';
+  const project = buildVbaProject([
+    {
+      uri: 'file:///project/Worker.bas',
+      text: [
+        'Attribute VB_Name = "Worker"',
+        'Option Explicit',
+        '',
+        'Public Sub Run()',
+        declaration_line,
+        reference_line,
+        'End Sub'
+      ].join('\n')
+    }
+  ]);
+
+  assert.deepEqual(getDefinition(project, {
+    uri: 'file:///project/Worker.bas',
+    position: { line: 5, character: reference_line.indexOf('afterColon') }
+  }), {
+    uri: 'file:///project/Worker.bas',
+    range: {
+      start: { line: 4, character: declaration_line.indexOf('afterColon') },
+      end: { line: 4, character: declaration_line.indexOf('afterColon') + 'afterColon'.length }
+    }
+  });
 });
 
 test('rename supports properties, enums, user-defined types, and events', () => {

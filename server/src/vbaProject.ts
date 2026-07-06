@@ -2573,8 +2573,12 @@ function collectDeclarationDiagnostics(line: string, lineIndex: number): SyntaxD
   );
 }
 
-function getDeclarationListPrefix(line: string, codeEnd: number): DeclarationListPrefix | undefined {
-  const first_token = readIdentifierTokenAt(line, skipWhitespace(line, 0, codeEnd), codeEnd);
+function getDeclarationListPrefix(
+  line: string,
+  codeEnd: number,
+  startCharacter = 0
+): DeclarationListPrefix | undefined {
+  const first_token = readIdentifierTokenAt(line, skipWhitespace(line, startCharacter, codeEnd), codeEnd);
   if (first_token === undefined) {
     return undefined;
   }
@@ -6243,50 +6247,18 @@ function parseModuleMembers(
       continue;
     }
 
-    const with_events_result = parseWithEventsDeclarationList(uri, lines, line_index);
-    if (with_events_result !== undefined) {
-      definitions.push(...with_events_result.definitions);
-      withEventsDeclarations.push(...with_events_result.declarations);
+    const data_declaration_result = parseModuleDataDeclarationLists(uri, lines, line_index);
+    if (data_declaration_result !== undefined) {
+      definitions.push(...data_declaration_result.definitions);
+      withEventsDeclarations.push(...data_declaration_result.declarations);
       moduleMembers.push({
-        range: createModuleMemberRange(lines, line_index, with_events_result.endLine),
-        definitions: with_events_result.definitions,
+        range: createModuleMemberRange(lines, line_index, data_declaration_result.endLine),
+        definitions: data_declaration_result.definitions,
         procedureScopes: [],
-        withEventsDeclarations: with_events_result.declarations,
+        withEventsDeclarations: data_declaration_result.declarations,
         implements: []
       });
-      line_index = with_events_result.endLine;
-      continue;
-    }
-
-    const variable_result = parseModuleVariableDefinitionList(uri, lines, line_index);
-    if (variable_result !== undefined) {
-      definitions.push(...variable_result.definitions);
-      if (variable_result.definitions.length > 0) {
-        moduleMembers.push({
-          range: createModuleMemberRange(lines, line_index, variable_result.endLine),
-          definitions: variable_result.definitions,
-          procedureScopes: [],
-          withEventsDeclarations: [],
-          implements: []
-        });
-      }
-      line_index = variable_result.endLine;
-      continue;
-    }
-
-    const constant_result = parseSourceConstantDefinitionList(uri, lines, line_index, 'module');
-    if (constant_result !== undefined) {
-      definitions.push(...constant_result.definitions);
-      if (constant_result.definitions.length > 0) {
-        moduleMembers.push({
-          range: createModuleMemberRange(lines, line_index, constant_result.endLine),
-          definitions: constant_result.definitions,
-          procedureScopes: [],
-          withEventsDeclarations: [],
-          implements: []
-        });
-      }
-      line_index = constant_result.endLine;
+      line_index = data_declaration_result.endLine;
       continue;
     }
 
@@ -6456,26 +6428,21 @@ function createModuleMemberRange(lines: string[], startLine: number, endLine: nu
   };
 }
 
-function getDeclarationStatementSource(lines: string[], lineIndex: number): DeclarationStatementSource | undefined {
+function getDeclarationStatementSources(lines: string[], lineIndex: number): DeclarationStatementSource[] {
   if (isContinuationTail(lines, lineIndex)) {
-    return undefined;
+    return [];
   }
 
   const source = getLogicalCodeSourceFromLine(lines, lineIndex);
   if (source === undefined) {
-    return undefined;
+    return [];
   }
 
-  const segment = getStatementSegmentAtPosition(source.text, 0);
-  if (segment === undefined) {
-    return undefined;
-  }
-
-  return {
+  return getTopLevelStatementSegments(source.text).map((segment) => ({
     source,
     start: segment.start,
     end: segment.end
-  };
+  }));
 }
 
 function applyTextChange(lines: string[], change: TextChange): string {
@@ -6561,28 +6528,103 @@ function parseTypeFieldDefinitions(
   return definitions;
 }
 
-function parseSourceConstantDefinitionList(
+function parseProcedureDataDeclarationLists(
   uri: string,
   lines: string[],
-  lineIndex: number,
-  scope: 'module' | 'procedure'
+  lineIndex: number
 ): ParsedDefinitionList | undefined {
-  const statement = getDeclarationStatementSource(lines, lineIndex);
-  if (statement === undefined) {
-    return undefined;
+  const statements = getDeclarationStatementSources(lines, lineIndex);
+  const definitions: VbaDefinition[] = [];
+  let matched = false;
+
+  for (const statement of statements) {
+    const constant_result = parseSourceConstantDefinitionsFromStatement(
+      uri,
+      statement.source,
+      statement.start,
+      statement.end,
+      'procedure'
+    );
+    if (constant_result.prefixMatched) {
+      matched = true;
+      definitions.push(...constant_result.definitions);
+      continue;
+    }
+
+    const variable_result = parseVariableDefinitionsFromStatement(
+      uri,
+      statement.source,
+      statement.start,
+      statement.end,
+      'local',
+      'local'
+    );
+    if (variable_result.prefixMatched) {
+      matched = true;
+      definitions.push(...variable_result.definitions);
+    }
   }
 
-  const result = parseSourceConstantDefinitionsFromStatement(
-    uri,
-    statement.source,
-    statement.start,
-    statement.end,
-    scope
-  );
-  return result.prefixMatched
+  return matched && statements[0] !== undefined
     ? {
-        definitions: result.definitions,
-        endLine: statement.source.endLine
+        definitions,
+        endLine: statements[0].source.endLine
+      }
+    : undefined;
+}
+
+function parseModuleDataDeclarationLists(
+  uri: string,
+  lines: string[],
+  lineIndex: number
+): ParsedWithEventsDeclarationList | undefined {
+  const statements = getDeclarationStatementSources(lines, lineIndex);
+  const definitions: VbaDefinition[] = [];
+  const declarations: WithEventsDeclaration[] = [];
+  let matched = false;
+
+  for (const statement of statements) {
+    const with_events_result = parseWithEventsDeclarationListFromStatement(uri, statement);
+    if (with_events_result !== undefined) {
+      matched = true;
+      definitions.push(...with_events_result.definitions);
+      declarations.push(...with_events_result.declarations);
+      continue;
+    }
+
+    const visibility = getSourceDeclarationVisibility(statement.source.text, statement.end, statement.start);
+    const variable_result = parseVariableDefinitionsFromStatement(
+      uri,
+      statement.source,
+      statement.start,
+      statement.end,
+      visibility,
+      'variable'
+    );
+    if (variable_result.prefixMatched) {
+      matched = true;
+      definitions.push(...variable_result.definitions);
+      continue;
+    }
+
+    const constant_result = parseSourceConstantDefinitionsFromStatement(
+      uri,
+      statement.source,
+      statement.start,
+      statement.end,
+      'module'
+    );
+    if (constant_result.prefixMatched) {
+      matched = true;
+      definitions.push(...constant_result.definitions);
+    }
+  }
+
+  return matched && statements[0] !== undefined
+    ? {
+        definitions,
+        declarations,
+        endLine: statements[0].source.endLine
       }
     : undefined;
 }
@@ -6595,14 +6637,14 @@ function parseSourceConstantDefinitionsFromStatement(
   scope: 'module' | 'procedure'
 ): { prefixMatched: boolean; definitions: VbaDefinition[] } {
   const line = source.text;
-  const prefix = getDeclarationListPrefix(line, endCharacter);
+  const prefix = getDeclarationListPrefix(line, endCharacter, startCharacter);
   if (prefix?.kind !== 'constant') {
     return { prefixMatched: false, definitions: [] };
   }
 
   const visibility = scope === 'procedure'
     ? 'local'
-    : getSourceDeclarationVisibility(line, endCharacter);
+    : getSourceDeclarationVisibility(line, endCharacter, startCharacter);
   const definitions: VbaDefinition[] = [];
   const segments = splitTopLevelSegments(line, Math.max(prefix.declaratorsStart, startCharacter), endCharacter);
   for (const segment of segments) {
@@ -6653,8 +6695,12 @@ function parseSourceConstantDeclaratorDefinitionFromSource(
   };
 }
 
-function getSourceDeclarationVisibility(line: string, codeEnd: number): 'public' | 'private' {
-  const first_token = readIdentifierTokenAt(line, skipWhitespace(line, 0, codeEnd), codeEnd);
+function getSourceDeclarationVisibility(
+  line: string,
+  codeEnd: number,
+  startCharacter = 0
+): 'public' | 'private' {
+  const first_token = readIdentifierTokenAt(line, skipWhitespace(line, startCharacter, codeEnd), codeEnd);
   return first_token?.lowerText === 'public' ? 'public' : 'private';
 }
 
@@ -6787,47 +6833,14 @@ function parseProcedureDefinitions(
   const definitions: VbaDefinition[] = [];
 
   for (let line_index = start_line; line_index < end_line; line_index += 1) {
-    const constant_result = parseSourceConstantDefinitionList(uri, lines, line_index, 'procedure');
-    if (constant_result !== undefined) {
-      definitions.push(...constant_result.definitions);
-      line_index = Math.min(constant_result.endLine, end_line - 1);
-      continue;
-    }
-
-    const local_result = parseProcedureVariableDefinitionList(uri, lines, line_index);
-    if (local_result !== undefined) {
-      definitions.push(...local_result.definitions);
-      line_index = Math.min(local_result.endLine, end_line - 1);
+    const data_declaration_result = parseProcedureDataDeclarationLists(uri, lines, line_index);
+    if (data_declaration_result !== undefined) {
+      definitions.push(...data_declaration_result.definitions);
+      line_index = Math.min(data_declaration_result.endLine, end_line - 1);
     }
   }
 
   return definitions;
-}
-
-function parseProcedureVariableDefinitionList(
-  uri: string,
-  lines: string[],
-  lineIndex: number
-): ParsedDefinitionList | undefined {
-  const statement = getDeclarationStatementSource(lines, lineIndex);
-  if (statement === undefined) {
-    return undefined;
-  }
-
-  const result = parseVariableDefinitionsFromStatement(
-    uri,
-    statement.source,
-    statement.start,
-    statement.end,
-    'local',
-    'local'
-  );
-  return result.prefixMatched
-    ? {
-        definitions: result.definitions,
-        endLine: statement.source.endLine
-      }
-    : undefined;
 }
 
 function parseVariableDefinitionsFromStatement(
@@ -6839,7 +6852,7 @@ function parseVariableDefinitionsFromStatement(
   kind: 'local' | 'variable'
 ): { prefixMatched: boolean; definitions: VbaDefinition[] } {
   const line = source.text;
-  const prefix = getDeclarationListPrefix(line, endCharacter);
+  const prefix = getDeclarationListPrefix(line, endCharacter, startCharacter);
   if (prefix?.kind !== 'variable') {
     return { prefixMatched: false, definitions: [] };
   }
@@ -6866,24 +6879,19 @@ function parseVariableDefinitionsFromStatement(
   return { prefixMatched: true, definitions };
 }
 
-function parseWithEventsDeclarationList(
+function parseWithEventsDeclarationListFromStatement(
   uri: string,
-  lines: string[],
-  lineIndex: number
+  statement: DeclarationStatementSource
 ): ParsedWithEventsDeclarationList | undefined {
-  const statement = getDeclarationStatementSource(lines, lineIndex);
-  if (statement === undefined) {
-    return undefined;
-  }
-
   const line = statement.source.text;
-  const match = /^\s*(?:(?:Public|Private|Dim)\s+)?WithEvents\b/i.exec(line.slice(0, statement.end));
+  const statement_start = skipWhitespace(line, statement.start, statement.end);
+  const match = /^(?:(?:Public|Private|Dim)\s+)?WithEvents\b/i.exec(line.slice(statement_start, statement.end));
   if (match === null) {
     return undefined;
   }
 
-  const visibility = getSourceDeclarationVisibility(line, statement.end);
-  const declarators_start = skipWhitespace(line, match[0].length, statement.end);
+  const visibility = getSourceDeclarationVisibility(line, statement.end, statement.start);
+  const declarators_start = skipWhitespace(line, statement_start + match[0].length, statement.end);
   const definitions: VbaDefinition[] = [];
   const declarations: WithEventsDeclaration[] = [];
 
@@ -6912,33 +6920,6 @@ function parseWithEventsDeclarationList(
   }
 
   return { definitions, declarations, endLine: statement.source.endLine };
-}
-
-function parseModuleVariableDefinitionList(
-  uri: string,
-  lines: string[],
-  lineIndex: number
-): ParsedDefinitionList | undefined {
-  const statement = getDeclarationStatementSource(lines, lineIndex);
-  if (statement === undefined) {
-    return undefined;
-  }
-
-  const visibility = getSourceDeclarationVisibility(statement.source.text, statement.end);
-  const result = parseVariableDefinitionsFromStatement(
-    uri,
-    statement.source,
-    statement.start,
-    statement.end,
-    visibility,
-    'variable'
-  );
-  return result.prefixMatched
-    ? {
-        definitions: result.definitions,
-        endLine: statement.source.endLine
-      }
-    : undefined;
 }
 
 function parseVariableDeclaratorDefinitionFromSource(
@@ -8774,6 +8755,55 @@ function getSingleLineLogicalSourceText(
     text: line.slice(0, endCharacter),
     positions
   };
+}
+
+function getTopLevelStatementSegments(line: string): StatementSegment[] {
+  const code_end = getCodeEndCharacter(line);
+  const segments: StatementSegment[] = [];
+  let segment_start = 0;
+  let character_index = 0;
+  let is_in_string = false;
+  let paren_depth = 0;
+
+  while (character_index < code_end) {
+    const character = line[character_index];
+    if (is_in_string) {
+      if (character === '"') {
+        if (line[character_index + 1] === '"') {
+          character_index += 2;
+          continue;
+        }
+        is_in_string = false;
+      }
+      character_index += 1;
+      continue;
+    }
+
+    if (character === '"') {
+      is_in_string = true;
+    } else if (character === '(') {
+      paren_depth += 1;
+    } else if (character === ')' && paren_depth > 0) {
+      paren_depth -= 1;
+    } else if (character === ':' && line[character_index + 1] !== '=' && paren_depth === 0) {
+      segments.push({
+        start: segment_start,
+        end: character_index,
+        terminator: character_index,
+        text: line.slice(segment_start, character_index)
+      });
+      segment_start = character_index + 1;
+    }
+
+    character_index += 1;
+  }
+
+  segments.push({
+    start: segment_start,
+    end: code_end,
+    text: line.slice(segment_start, code_end)
+  });
+  return segments;
 }
 
 function getStatementSegmentAtPosition(line: string, positionCharacter: number): StatementSegment | undefined {
