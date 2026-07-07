@@ -1,5 +1,7 @@
 using VbaDevTools.App.Cli;
 using VbaDevTools.Composition;
+using VbaDevTools.Domain;
+using VbaDevTools.Infrastructure.Projects;
 using Xunit;
 
 namespace VbaDevTools.Tests;
@@ -56,7 +58,12 @@ public sealed class CliSurfaceTests
     [Fact]
     public void PlaceholderCommandReturnsNotImplementedResult()
     {
-        var result = application.Run(["new", "SampleProject"]);
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        var projectApplication = ToolingCompositionRoot.CreateCommandLineApplication(root);
+
+        var result = projectApplication.Run(["build"]);
 
         Assert.Equal(2, result.ExitCode);
         Assert.Contains("not implemented", result.StandardError, StringComparison.Ordinal);

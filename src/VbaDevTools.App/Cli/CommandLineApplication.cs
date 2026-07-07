@@ -9,17 +9,20 @@ public sealed class CommandLineApplication
     private readonly IReadOnlyDictionary<string, ToolingCommandDefinition> commands;
     private readonly ProjectContextResolver projectContextResolver;
     private readonly DoctorCommand doctorCommand;
+    private readonly NewProjectCommand newProjectCommand;
     private readonly Func<string> getWorkingDirectory;
 
     public CommandLineApplication(
         IEnumerable<ToolingCommandDefinition> commands,
         ProjectContextResolver projectContextResolver,
         DoctorCommand doctorCommand,
+        NewProjectCommand newProjectCommand,
         Func<string> getWorkingDirectory)
     {
         this.commands = commands.ToDictionary(command => command.Name, StringComparer.OrdinalIgnoreCase);
         this.projectContextResolver = projectContextResolver;
         this.doctorCommand = doctorCommand;
+        this.newProjectCommand = newProjectCommand;
         this.getWorkingDirectory = getWorkingDirectory;
     }
 
@@ -46,6 +49,14 @@ public sealed class CommandLineApplication
         if (parsedArgs.Error is not null)
         {
             return CommandResult.UsageError(parsedArgs.Error);
+        }
+
+        if (command.Name.Equals("new", StringComparison.OrdinalIgnoreCase))
+        {
+            return newProjectCommand.Run(new NewProjectCommandRequest(
+                parsedArgs.Positionals.FirstOrDefault(),
+                parsedArgs.Options.GetValueOrDefault("--document"),
+                getWorkingDirectory()));
         }
 
         if (command.Name.Equals("doctor", StringComparison.OrdinalIgnoreCase))
@@ -111,11 +122,13 @@ public sealed class CommandLineApplication
     private static ParsedCommandLine ParseOptions(ToolingCommandDefinition command, IReadOnlyList<string> args)
     {
         var options = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        var positionals = new List<string>();
         for (var i = 0; i < args.Count; i++)
         {
             var arg = args[i];
             if (!arg.StartsWith("--", StringComparison.Ordinal))
             {
+                positionals.Add(arg);
                 continue;
             }
 
@@ -164,14 +177,20 @@ public sealed class CommandLineApplication
             options[option.Name] = value;
         }
 
-        return ParsedCommandLine.Success(options);
+        return ParsedCommandLine.Success(options, positionals);
     }
 
-    private sealed record ParsedCommandLine(IReadOnlyDictionary<string, string?> Options, string? Error)
+    private sealed record ParsedCommandLine(
+        IReadOnlyDictionary<string, string?> Options,
+        IReadOnlyList<string> Positionals,
+        string? Error)
     {
-        public static ParsedCommandLine Success(IReadOnlyDictionary<string, string?> options) => new(options, null);
+        public static ParsedCommandLine Success(
+            IReadOnlyDictionary<string, string?> options,
+            IReadOnlyList<string> positionals)
+            => new(options, positionals, null);
 
-        public static ParsedCommandLine Failure(string error) => new(new Dictionary<string, string?>(), error);
+        public static ParsedCommandLine Failure(string error) => new(new Dictionary<string, string?>(), [], error);
     }
 
     private sealed record ProjectResolutionResult(ResolvedProjectContext? Context, string? Error)
