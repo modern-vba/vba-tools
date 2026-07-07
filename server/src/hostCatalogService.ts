@@ -13,9 +13,12 @@ import {
 import {
   cloneHostDefinitions,
   cloneHostDefinitionsWithApplication,
-  isHostDefinitionArray,
-  mergeHostDefinitions
+  isHostDefinitionArray
 } from './hostDefinitionCatalog';
+import {
+  refreshHostApplicationCatalog,
+  type HostCatalogDiscoveryAdapter
+} from './hostCatalogRefresh';
 import { discoverHostDefinitionsFromTypeLibrary } from './hostTypeLibraryDiscovery';
 import type { HostApplication, HostDefinition } from './hostDefinition';
 
@@ -32,8 +35,8 @@ export type HostCatalogCacheWriter = (
   definitions: HostDefinition[]
 ) => void | Promise<void>;
 
-export type HostCatalogComDiscovery = (hostApplication: HostApplication) => Promise<HostDefinition[]>;
-export type HostCatalogTypeLibraryDiscovery = (hostApplication: HostApplication) => Promise<HostDefinition[]>;
+export type HostCatalogComDiscovery = HostCatalogDiscoveryAdapter;
+export type HostCatalogTypeLibraryDiscovery = HostCatalogDiscoveryAdapter;
 
 export interface HostCatalogManagerOptions {
   platform?: NodeJS.Platform;
@@ -119,41 +122,18 @@ export class HostCatalogManager {
   }
 
   private async refreshHostApplicationFromComOnceAsync(hostApplication: HostApplication): Promise<void> {
-    const discovered_definitions = await this.discoverFromComSafely(hostApplication);
-    const type_library_definitions = await this.discoverFromTypeLibrarySafely(hostApplication);
-    if (discovered_definitions.length === 0 && type_library_definitions.length === 0) {
+    const definitions = await refreshHostApplicationCatalog(hostApplication, {
+      discoverFromCom: this.discoverFromCom,
+      discoverFromTypeLibrary: this.discoverFromTypeLibrary,
+      getCurrentDefinitions: (selectedHostApplication) =>
+        this.getDefinitionsForApplication(selectedHostApplication)
+    });
+    if (definitions === undefined) {
       return;
     }
 
-    const base_definitions = discovered_definitions.length === 0
-      ? this.getDefinitionsForApplication(hostApplication)
-      : discovered_definitions;
-    const definitions = cloneHostDefinitionsWithApplication(
-      mergeHostDefinitions(base_definitions, type_library_definitions),
-      hostApplication
-    );
     this.definitionsByApplication.set(hostApplication, definitions);
     await this.writeCacheSafely(hostApplication, definitions);
-  }
-
-  private async discoverFromComSafely(
-    hostApplication: HostApplication
-  ): Promise<HostDefinition[]> {
-    try {
-      return await this.discoverFromCom(hostApplication);
-    } catch {
-      return [];
-    }
-  }
-
-  private async discoverFromTypeLibrarySafely(
-    hostApplication: HostApplication
-  ): Promise<HostDefinition[]> {
-    try {
-      return await this.discoverFromTypeLibrary(hostApplication);
-    } catch {
-      return [];
-    }
   }
 
   private getDefinitionsForApplication(hostApplication: HostApplication): HostDefinition[] {
