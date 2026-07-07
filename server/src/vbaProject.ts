@@ -64,7 +64,6 @@ import {
   findTopLevelEquals,
   getCodeTextForStructure,
   getStringLiteralEnd,
-  isIdentifierName,
   isIdentifierPart,
   isIdentifierStart,
   isPlausibleConstantInitializer,
@@ -108,6 +107,11 @@ import {
 } from './syntaxAnalysis';
 import type { VbaProject } from './vbaProjectModel';
 import {
+  findDefinitionByLocation,
+  findModule,
+  getAllVbaDefinitions
+} from './vbaProjectIndex';
+import {
   findHostTypeDefinition,
   resolveTypeNameRef
 } from './typeResolution';
@@ -147,6 +151,17 @@ import type {
 } from './vbaSourceModel';
 
 export type { VbaProject } from './vbaProjectModel';
+export {
+  getDefinition,
+  getRenameEdits,
+  getRenameTarget
+} from './vbaLanguageFeatures';
+export type { RenameEdit } from './vbaLanguageFeatures';
+export {
+  getModuleIdentities,
+  getModuleMemberRanges,
+  getTypeFields
+} from './vbaProjectIndex';
 export {
   VBA_SEMANTIC_TOKEN_MODIFIERS,
   VBA_SEMANTIC_TOKEN_TYPES
@@ -196,12 +211,6 @@ export interface BuildVbaProjectOptions {
   hostDefinitions?: HostDefinition[];
   mainHostApplication?: HostApplication;
   additionalHostApplications?: HostApplication[];
-}
-
-export interface RenameEdit {
-  uri: string;
-  range: SourceRange;
-  newText: string;
 }
 
 export interface TextChange {
@@ -458,25 +467,6 @@ function completionEntriesForResolvedMembers(
     }));
 }
 
-export function getModuleIdentities(project: VbaProject): string[] {
-  return project.modules.map((module) => module.identity);
-}
-
-export function getModuleMemberRanges(project: VbaProject, uri: string): SourceRange[] {
-  return findModule(project, uri)?.moduleMembers.map((member) => member.range) ?? [];
-}
-
-export function getTypeFields(project: VbaProject, typeName: string): { name: string; range: SourceRange }[] {
-  const type_definition = project.modules
-    .flatMap((module) => module.definitions)
-    .find((definition) => definition.kind === 'type' && sameName(definition.name, typeName));
-
-  return type_definition?.children?.map((field) => ({
-    name: field.name,
-    range: field.range
-  })) ?? [];
-}
-
 export function getSyntaxDiagnostics(project: VbaProject, uri: string): SyntaxDiagnostic[] {
   return findModule(project, uri)?.syntaxDiagnostics ?? [];
 }
@@ -724,65 +714,6 @@ export function getSignatureHelp(
         call_expression.activeParameter,
         call_expression.namedArgumentName
       );
-}
-
-export function getDefinition(
-  project: VbaProject,
-  request: CompletionRequest
-): DefinitionLocation | undefined {
-  const resolution = resolveName(project, request);
-  return resolution?.source === 'vba' ? resolution.definition : undefined;
-}
-
-export function getRenameTarget(
-  project: VbaProject,
-  request: CompletionRequest
-): DefinitionLocation | undefined {
-  const resolution = resolveName(project, request);
-  return resolution?.source === 'vba' ? resolution.definition : undefined;
-}
-
-export function getRenameEdits(
-  project: VbaProject,
-  request: CompletionRequest,
-  newName: string
-): RenameEdit[] {
-  if (!isIdentifierName(newName)) {
-    return [];
-  }
-
-  const target = getRenameTarget(project, request);
-  if (target === undefined) {
-    return [];
-  }
-
-  const target_module = findModule(project, target.uri);
-  if (target_module === undefined) {
-    return [];
-  }
-
-  const edits: RenameEdit[] = [];
-  for (const module of project.modules.filter((candidate) =>
-    sameUri(candidate.folderUri, target_module.folderUri)
-  )) {
-    for (let line_index = 0; line_index < module.lines.length; line_index += 1) {
-      for (const range of getIdentifierRangesInCode(module.lines[line_index], line_index)) {
-        const resolution = resolveName(project, {
-          uri: module.uri,
-          position: range.start
-        });
-        if (resolution?.source === 'vba' && sameDefinitionLocation(resolution.definition, target)) {
-          edits.push({
-            uri: module.uri,
-            range,
-            newText: newName
-          });
-        }
-      }
-    }
-  }
-
-  return edits;
 }
 
 function parseModule(file: VbaProjectFile): VbaModule {
@@ -5077,27 +5008,6 @@ function isOpeningBlockLine(text: string): boolean {
     || /^(?:(?:Public|Private)\s+)?Type\b/i.test(text);
 }
 
-function findModule(project: VbaProject, uri: string): VbaModule | undefined {
-  return project.modules.find((module) => sameUri(module.uri, uri));
-}
-
-function sameDefinitionLocation(left: DefinitionLocation, right: DefinitionLocation): boolean {
-  return sameUri(left.uri, right.uri)
-    && sameRange(left.range, right.range);
-}
-
-function findDefinitionByLocation(
-  project: VbaProject,
-  location: DefinitionLocation
-): VbaDefinition | undefined {
-  return getAllVbaDefinitions(project)
-    .find((definition) =>
-      sameUri(definition.uri, location.uri)
-        && comparePosition(definition.range.start, location.range.start) === 0
-        && comparePosition(definition.range.end, location.range.end) === 0
-    );
-}
-
 function getSourceSignatureHelp(
   project: VbaProject,
   definition: VbaDefinition,
@@ -5177,14 +5087,6 @@ function toSignatureHelpResult(
       documentation: getParameterDocumentation(parameter)
     }))
   };
-}
-
-function getAllVbaDefinitions(project: VbaProject): VbaDefinition[] {
-  return project.modules.flatMap((module) => [
-    ...module.definitions,
-    ...module.definitions.flatMap((definition) => definition.children ?? []),
-    ...module.procedureScopes.flatMap((scope) => scope.definitions)
-  ]);
 }
 
 function findDocumentationForDefinition(

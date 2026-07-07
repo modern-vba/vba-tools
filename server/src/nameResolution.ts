@@ -40,6 +40,7 @@ import type {
 import { singleMatch, toVbaResolution } from './vbaResolution';
 import { C_IDENTIFIER_PATTERN } from './vbaText';
 import { getIdentifierAt, getIdentifierRangesInCode } from './vbaIdentifierSource';
+import { findModule } from './vbaProjectIndex';
 import { sameName } from './vbaNames';
 import { sameRange } from './sourceRange';
 import { sameUri } from './vbaUris';
@@ -412,8 +413,4 @@ function getQualifiedReferenceAt(
   }
 
   return undefined;
-}
-
-function findModule(project: VbaProject, uri: string): VbaModule | undefined {
-  return project.modules.find((module) => sameUri(module.uri, uri));
 }
