@@ -63,7 +63,7 @@ public sealed class CliSurfaceTests
         new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
         var projectApplication = ToolingCompositionRoot.CreateCommandLineApplication(root);
 
-        var result = projectApplication.Run(["build"]);
+        var result = projectApplication.Run(["publish"]);
 
         Assert.Equal(2, result.ExitCode);
         Assert.Contains("not implemented", result.StandardError, StringComparison.Ordinal);

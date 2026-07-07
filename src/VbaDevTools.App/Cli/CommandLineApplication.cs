@@ -1,4 +1,5 @@
 using System.Text;
+using VbaDevTools.App.Build;
 using VbaDevTools.App.CommonModules;
 using VbaDevTools.App.Diagnostics;
 using VbaDevTools.App.Projects;
@@ -12,6 +13,7 @@ public sealed class CommandLineApplication
     private readonly DoctorCommand doctorCommand;
     private readonly NewProjectCommand newProjectCommand;
     private readonly CommonModulesService commonModulesService;
+    private readonly BuildCommand buildCommand;
     private readonly Func<string> getWorkingDirectory;
 
     public CommandLineApplication(
@@ -20,6 +22,7 @@ public sealed class CommandLineApplication
         DoctorCommand doctorCommand,
         NewProjectCommand newProjectCommand,
         CommonModulesService commonModulesService,
+        BuildCommand buildCommand,
         Func<string> getWorkingDirectory)
     {
         this.commands = commands.ToDictionary(command => command.Name, StringComparer.OrdinalIgnoreCase);
@@ -27,6 +30,7 @@ public sealed class CommandLineApplication
         this.doctorCommand = doctorCommand;
         this.newProjectCommand = newProjectCommand;
         this.commonModulesService = commonModulesService;
+        this.buildCommand = buildCommand;
         this.getWorkingDirectory = getWorkingDirectory;
     }
 
@@ -94,6 +98,11 @@ public sealed class CommandLineApplication
         if (command.Name.Equals("add", StringComparison.OrdinalIgnoreCase) && resolution.Context is not null)
         {
             return commonModulesService.Add(resolution.Context, parsedArgs.Positionals);
+        }
+
+        if (command.Name.Equals("build", StringComparison.OrdinalIgnoreCase) && resolution.Context is not null)
+        {
+            return buildCommand.Run(resolution.Context);
         }
 
         if (command.Name.Equals("update", StringComparison.OrdinalIgnoreCase) && resolution.Context is not null)
