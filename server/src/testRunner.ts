@@ -1,5 +1,5 @@
 import './vbaProject.test';
-import './callSyntax.test';
+import './callSite.test';
 import './diagnostics.test';
 import './hostCatalogService.test';
 import './hostTypeLibraryDiscovery.test';

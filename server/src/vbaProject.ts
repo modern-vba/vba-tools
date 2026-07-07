@@ -23,11 +23,10 @@ import {
   parseProcedureDataDeclarationLists
 } from './declarationList';
 import {
-  collectMalformedCallDiagnosticsForSegment,
-  getCallExpressionAt,
-  getCallStatementSegments,
+  collectMalformedCallSiteDiagnostics,
+  getCallSiteAt,
   shouldSkipCallDiagnosticsForStatement
-} from './callSyntax';
+} from './callSite';
 import {
   parseContinuedMemberChainEndingBefore,
   parseMemberChainEndingAt
@@ -730,7 +729,7 @@ export function getSignatureHelp(
     return undefined;
   }
 
-  const call_expression = getCallExpressionAt(current_module.lines, request.position);
+  const call_expression = getCallSiteAt(current_module.lines, request.position);
   if (call_expression === undefined) {
     return undefined;
   }
@@ -3373,9 +3372,7 @@ function collectCallSyntaxDiagnostics(
       continue;
     }
 
-    for (const segment of getCallStatementSegments(source.text)) {
-      diagnostics.push(...collectMalformedCallDiagnosticsForSegment(source, segment.start, segment.end));
-    }
+    diagnostics.push(...collectMalformedCallSiteDiagnostics(source));
   }
 
   return diagnostics;

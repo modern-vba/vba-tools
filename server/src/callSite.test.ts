@@ -2,11 +2,11 @@ import { deepEqual, equal, ok } from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  getCallExpressionAt,
+  getCallSiteAt,
   getCallStatementSegments
-} from './callSyntax';
+} from './callSite';
 
-test('CallSyntax statement segmentation follows LogicalSource statement boundaries', () => {
+test('CallSite statement segmentation follows LogicalSource statement boundaries', () => {
   const line = 'Log "a:b", Named:=Value: Call Target(Left("x:y", 1)): Debug.Print 1 \' : ignored';
 
   deepEqual(
@@ -19,13 +19,13 @@ test('CallSyntax statement segmentation follows LogicalSource statement boundari
   );
 });
 
-test('CallSyntax resolves continued explicit Call expressions', () => {
+test('CallSite resolves continued explicit Call expressions', () => {
   const lines = [
     'Call Factory.Build( _',
     '  firstArg, secondArg:=42'
   ];
 
-  const expression = getCallExpressionAt(lines, {
+  const expression = getCallSiteAt(lines, {
     line: 1,
     character: lines[1].length
   });

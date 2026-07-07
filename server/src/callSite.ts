@@ -37,7 +37,17 @@ export function getCallStatementSegments(text: string): StatementSegment[] {
   return getTopLevelStatementSegments(text);
 }
 
-export function collectMalformedCallDiagnosticsForSegment(
+export function collectMalformedCallSiteDiagnostics(source: LogicalCodeSource): SyntaxDiagnostic[] {
+  const diagnostics: SyntaxDiagnostic[] = [];
+
+  for (const segment of getCallStatementSegments(source.text)) {
+    diagnostics.push(...collectMalformedCallDiagnosticsForSegment(source, segment.start, segment.end));
+  }
+
+  return diagnostics;
+}
+
+function collectMalformedCallDiagnosticsForSegment(
   source: LogicalCodeSource,
   segmentStart: number,
   segmentEnd: number
@@ -198,7 +208,7 @@ export function shouldSkipCallDiagnosticsForStatement(firstToken: string): boole
     || firstToken === 'exit';
 }
 
-export function getCallExpressionAt(
+export function getCallSiteAt(
   lines: string[],
   position: SourcePosition
 ): CallExpression | undefined {
