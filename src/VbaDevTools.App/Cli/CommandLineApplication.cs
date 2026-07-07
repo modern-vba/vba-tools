@@ -3,6 +3,7 @@ using VbaDevTools.App.Build;
 using VbaDevTools.App.CommonModules;
 using VbaDevTools.App.Diagnostics;
 using VbaDevTools.App.Projects;
+using VbaDevTools.App.Testing;
 
 namespace VbaDevTools.App.Cli;
 
@@ -14,6 +15,7 @@ public sealed class CommandLineApplication
     private readonly NewProjectCommand newProjectCommand;
     private readonly CommonModulesService commonModulesService;
     private readonly BuildCommand buildCommand;
+    private readonly TestCommand testCommand;
     private readonly Func<string> getWorkingDirectory;
 
     public CommandLineApplication(
@@ -23,6 +25,7 @@ public sealed class CommandLineApplication
         NewProjectCommand newProjectCommand,
         CommonModulesService commonModulesService,
         BuildCommand buildCommand,
+        TestCommand testCommand,
         Func<string> getWorkingDirectory)
     {
         this.commands = commands.ToDictionary(command => command.Name, StringComparer.OrdinalIgnoreCase);
@@ -31,6 +34,7 @@ public sealed class CommandLineApplication
         this.newProjectCommand = newProjectCommand;
         this.commonModulesService = commonModulesService;
         this.buildCommand = buildCommand;
+        this.testCommand = testCommand;
         this.getWorkingDirectory = getWorkingDirectory;
     }
 
@@ -85,9 +89,14 @@ public sealed class CommandLineApplication
         {
             try
             {
-                CommandDefaultResolver.ResolveTestFormat(
+                var format = CommandDefaultResolver.ResolveTestFormat(
                     resolution.Context.Manifest,
                     parsedArgs.Options.GetValueOrDefault("--format"));
+                return testCommand.Run(
+                    resolution.Context,
+                    new TestCommandRequest(
+                        format,
+                        parsedArgs.Options.ContainsKey("--build")));
             }
             catch (ProjectManifestException ex)
             {

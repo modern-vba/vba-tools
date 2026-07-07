@@ -3,6 +3,7 @@ using VbaDevTools.App.Build;
 using VbaDevTools.App.CommonModules;
 using VbaDevTools.App.Diagnostics;
 using VbaDevTools.App.Projects;
+using VbaDevTools.App.Testing;
 using VbaDevTools.App.Workbooks;
 using VbaDevTools.Infrastructure.Diagnostics;
 using VbaDevTools.Infrastructure.Projects;
@@ -19,7 +20,8 @@ public static class ToolingCompositionRoot
         string workingDirectory,
         IEnvironmentDiagnosticPort? environmentDiagnosticPort = null,
         IInitialWorkbookCreator? initialWorkbookCreator = null,
-        IWorkbookBuildAutomation? workbookBuildAutomation = null)
+        IWorkbookBuildAutomation? workbookBuildAutomation = null,
+        IWorkbookTestRunner? workbookTestRunner = null)
     {
         var manifestStore = new JsonProjectManifestStore();
         var commonModulesManifestReader = new CommonModulesManifestReader();
@@ -36,6 +38,10 @@ public static class ToolingCompositionRoot
             commonModulesManifestReader,
             commonModulesService,
             workbookBuildAutomation ?? new ExcelComWorkbookBuildAutomation());
+        var testCommand = new TestCommand(
+            buildCommand,
+            workbookTestRunner ?? new ExcelComWorkbookTestRunner(),
+            new TestResultOutputFormatter());
         return new CommandLineApplication(
             ToolingCommandCatalog.CreateDefault(),
             projectContextResolver,
@@ -43,6 +49,7 @@ public static class ToolingCompositionRoot
             newProjectCommand,
             commonModulesService,
             buildCommand,
+            testCommand,
             () => workingDirectory);
     }
 }
