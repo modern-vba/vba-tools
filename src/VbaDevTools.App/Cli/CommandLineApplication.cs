@@ -1,14 +1,22 @@
 using System.Text;
+using VbaDevTools.App.Projects;
 
 namespace VbaDevTools.App.Cli;
 
 public sealed class CommandLineApplication
 {
     private readonly IReadOnlyDictionary<string, ToolingCommandDefinition> commands;
+    private readonly ProjectContextResolver projectContextResolver;
+    private readonly Func<string> getWorkingDirectory;
 
-    public CommandLineApplication(IEnumerable<ToolingCommandDefinition> commands)
+    public CommandLineApplication(
+        IEnumerable<ToolingCommandDefinition> commands,
+        ProjectContextResolver projectContextResolver,
+        Func<string> getWorkingDirectory)
     {
         this.commands = commands.ToDictionary(command => command.Name, StringComparer.OrdinalIgnoreCase);
+        this.projectContextResolver = projectContextResolver;
+        this.getWorkingDirectory = getWorkingDirectory;
     }
 
     public CommandResult Run(IReadOnlyList<string> args)
@@ -30,17 +38,67 @@ public sealed class CommandLineApplication
             return CommandResult.Success(RenderCommandHelp(command));
         }
 
-        var validationError = ValidateOptions(command, commandArgs);
-        if (validationError is not null)
+        var parsedArgs = ParseOptions(command, commandArgs);
+        if (parsedArgs.Error is not null)
         {
-            return CommandResult.UsageError(validationError);
+            return CommandResult.UsageError(parsedArgs.Error);
+        }
+
+        var resolution = ResolveProjectContext(command, parsedArgs.Options);
+        if (resolution.Error is not null)
+        {
+            return CommandResult.UsageError(resolution.Error);
+        }
+
+        if (command.Name.Equals("test", StringComparison.OrdinalIgnoreCase) && resolution.Context is not null)
+        {
+            try
+            {
+                CommandDefaultResolver.ResolveTestFormat(
+                    resolution.Context.Manifest,
+                    parsedArgs.Options.GetValueOrDefault("--format"));
+            }
+            catch (ProjectManifestException ex)
+            {
+                return CommandResult.UsageError(ex.Message);
+            }
         }
 
         return CommandResult.NotImplemented($"Command '{command.Name}' is not implemented yet.");
     }
 
-    private static string? ValidateOptions(ToolingCommandDefinition command, IReadOnlyList<string> args)
+    private ProjectResolutionResult ResolveProjectContext(
+        ToolingCommandDefinition command,
+        IReadOnlyDictionary<string, string?> options)
     {
+        if (command.ProjectResolutionMode == ProjectResolutionMode.None)
+        {
+            return ProjectResolutionResult.Success(null);
+        }
+
+        var hasProjectOption = options.ContainsKey("--project");
+        if (command.ProjectResolutionMode == ProjectResolutionMode.Optional && !hasProjectOption)
+        {
+            return ProjectResolutionResult.Success(null);
+        }
+
+        try
+        {
+            var context = projectContextResolver.Resolve(new ProjectResolutionRequest(
+                ProjectRoot: options.GetValueOrDefault("--project"),
+                DocumentName: options.GetValueOrDefault("--document"),
+                StartDirectory: getWorkingDirectory()));
+            return ProjectResolutionResult.Success(context);
+        }
+        catch (ProjectManifestException ex)
+        {
+            return ProjectResolutionResult.Failure(ex.Message);
+        }
+    }
+
+    private static ParsedCommandLine ParseOptions(ToolingCommandDefinition command, IReadOnlyList<string> args)
+    {
+        var options = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         for (var i = 0; i < args.Count; i++)
         {
             var arg = args[i];
@@ -61,16 +119,17 @@ public sealed class CommandLineApplication
             var option = command.Options.FirstOrDefault(candidate => candidate.Name.Equals(optionName, StringComparison.OrdinalIgnoreCase));
             if (option is null)
             {
-                return $"Unknown option '{optionName}' for command '{command.Name}'.";
+                return ParsedCommandLine.Failure($"Unknown option '{optionName}' for command '{command.Name}'.");
             }
 
             if (!option.RequiresValue)
             {
                 if (inlineValue is not null)
                 {
-                    return $"Option '{optionName}' does not accept a value.";
+                    return ParsedCommandLine.Failure($"Option '{optionName}' does not accept a value.");
                 }
 
+                options[option.Name] = "true";
                 continue;
             }
 
@@ -79,7 +138,7 @@ public sealed class CommandLineApplication
             {
                 if (i + 1 >= args.Count)
                 {
-                    return $"Option '{optionName}' requires a value.";
+                    return ParsedCommandLine.Failure($"Option '{optionName}' requires a value.");
                 }
 
                 value = args[++i];
@@ -87,11 +146,27 @@ public sealed class CommandLineApplication
 
             if (option.AllowedValues.Count > 0 && !option.AllowedValues.Contains(value, StringComparer.OrdinalIgnoreCase))
             {
-                return $"Unsupported value '{value}' for {option.Name}.";
+                return ParsedCommandLine.Failure($"Unsupported value '{value}' for {option.Name}.");
             }
+
+            options[option.Name] = value;
         }
 
-        return null;
+        return ParsedCommandLine.Success(options);
+    }
+
+    private sealed record ParsedCommandLine(IReadOnlyDictionary<string, string?> Options, string? Error)
+    {
+        public static ParsedCommandLine Success(IReadOnlyDictionary<string, string?> options) => new(options, null);
+
+        public static ParsedCommandLine Failure(string error) => new(new Dictionary<string, string?>(), error);
+    }
+
+    private sealed record ProjectResolutionResult(ResolvedProjectContext? Context, string? Error)
+    {
+        public static ProjectResolutionResult Success(ResolvedProjectContext? context) => new(context, null);
+
+        public static ProjectResolutionResult Failure(string error) => new(null, error);
     }
 
     private string RenderRootHelp()

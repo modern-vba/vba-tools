@@ -20,6 +20,7 @@
     <ProjectReference Include="..\..\src\VbaDevTools.App\VbaDevTools.App.csproj" />
     <ProjectReference Include="..\..\src\VbaDevTools.Domain\VbaDevTools.Domain.csproj" />
     <ProjectReference Include="..\..\src\VbaDevTools.Composition\VbaDevTools.Composition.csproj" />
+    <ProjectReference Include="..\..\src\VbaDevTools.Infrastructure\VbaDevTools.Infrastructure.csproj" />
   </ItemGroup>
 
 </Project>

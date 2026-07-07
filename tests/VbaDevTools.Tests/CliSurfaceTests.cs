@@ -56,7 +56,7 @@ public sealed class CliSurfaceTests
     [Fact]
     public void PlaceholderCommandReturnsNotImplementedResult()
     {
-        var result = application.Run(["build", "--project", "sample", "--document", "Book1"]);
+        var result = application.Run(["new", "SampleProject"]);
 
         Assert.Equal(2, result.ExitCode);
         Assert.Contains("not implemented", result.StandardError, StringComparison.Ordinal);
