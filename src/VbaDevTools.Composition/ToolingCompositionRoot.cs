@@ -34,10 +34,13 @@ public static class ToolingCompositionRoot
             manifestStore,
             initialWorkbookCreator ?? new ExcelComInitialWorkbookCreator(),
             commonModulesManifestReader);
-        var buildCommand = new BuildCommand(
+        var sourcePlanner = new WorkbookSourcePlanner(
             commonModulesManifestReader,
-            commonModulesService,
+            commonModulesService);
+        var generationPipeline = new WorkbookGenerationPipeline(
             workbookBuildAutomation ?? new ExcelComWorkbookBuildAutomation());
+        var buildCommand = new BuildCommand(sourcePlanner, generationPipeline);
+        var publishCommand = new PublishCommand(sourcePlanner, generationPipeline);
         var testCommand = new TestCommand(
             buildCommand,
             workbookTestRunner ?? new ExcelComWorkbookTestRunner(),
@@ -49,6 +52,7 @@ public static class ToolingCompositionRoot
             newProjectCommand,
             commonModulesService,
             buildCommand,
+            publishCommand,
             testCommand,
             () => workingDirectory);
     }

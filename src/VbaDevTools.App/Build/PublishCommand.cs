@@ -6,12 +6,12 @@ using VbaDevTools.Domain;
 
 namespace VbaDevTools.App.Build;
 
-public sealed class BuildCommand
+public sealed class PublishCommand
 {
     private readonly WorkbookSourcePlanner sourcePlanner;
     private readonly WorkbookGenerationPipeline generationPipeline;
 
-    public BuildCommand(
+    public PublishCommand(
         WorkbookSourcePlanner sourcePlanner,
         WorkbookGenerationPipeline generationPipeline)
     {
@@ -25,17 +25,17 @@ public sealed class BuildCommand
         {
             if (!context.Document.Kind.Equals(ProjectDocument.ExcelKind, StringComparison.OrdinalIgnoreCase))
             {
-                return CommandResult.UsageError($"Build supports only Excel documents: {context.DocumentName}");
+                return CommandResult.UsageError($"Publish supports only Excel documents: {context.DocumentName}");
             }
 
-            var sourceFiles = sourcePlanner.ResolveBuildSourceFiles(context);
+            var sourceFiles = sourcePlanner.ResolvePublishSourceFiles(context);
             generationPipeline.Generate(
                 context.TemplateDocumentPath,
-                context.BinDocumentPath,
+                context.PublishDocumentPath,
                 sourceFiles);
 
             var output = new StringBuilder();
-            output.AppendLine($"Built {context.BinDocumentPath}");
+            output.AppendLine($"Published {context.PublishDocumentPath}");
             output.AppendLine($"Imported {sourceFiles.Count} source files.");
             return CommandResult.Success(output.ToString());
         }

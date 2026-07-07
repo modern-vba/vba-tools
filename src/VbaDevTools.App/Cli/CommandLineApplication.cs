@@ -15,6 +15,7 @@ public sealed class CommandLineApplication
     private readonly NewProjectCommand newProjectCommand;
     private readonly CommonModulesService commonModulesService;
     private readonly BuildCommand buildCommand;
+    private readonly PublishCommand publishCommand;
     private readonly TestCommand testCommand;
     private readonly Func<string> getWorkingDirectory;
 
@@ -25,6 +26,7 @@ public sealed class CommandLineApplication
         NewProjectCommand newProjectCommand,
         CommonModulesService commonModulesService,
         BuildCommand buildCommand,
+        PublishCommand publishCommand,
         TestCommand testCommand,
         Func<string> getWorkingDirectory)
     {
@@ -34,6 +36,7 @@ public sealed class CommandLineApplication
         this.newProjectCommand = newProjectCommand;
         this.commonModulesService = commonModulesService;
         this.buildCommand = buildCommand;
+        this.publishCommand = publishCommand;
         this.testCommand = testCommand;
         this.getWorkingDirectory = getWorkingDirectory;
     }
@@ -112,6 +115,11 @@ public sealed class CommandLineApplication
         if (command.Name.Equals("build", StringComparison.OrdinalIgnoreCase) && resolution.Context is not null)
         {
             return buildCommand.Run(resolution.Context);
+        }
+
+        if (command.Name.Equals("publish", StringComparison.OrdinalIgnoreCase) && resolution.Context is not null)
+        {
+            return publishCommand.Run(resolution.Context);
         }
 
         if (command.Name.Equals("update", StringComparison.OrdinalIgnoreCase) && resolution.Context is not null)
