@@ -1,4 +1,5 @@
 using System.Text;
+using VbaDevTools.App.Diagnostics;
 using VbaDevTools.App.Projects;
 
 namespace VbaDevTools.App.Cli;
@@ -7,15 +8,18 @@ public sealed class CommandLineApplication
 {
     private readonly IReadOnlyDictionary<string, ToolingCommandDefinition> commands;
     private readonly ProjectContextResolver projectContextResolver;
+    private readonly DoctorCommand doctorCommand;
     private readonly Func<string> getWorkingDirectory;
 
     public CommandLineApplication(
         IEnumerable<ToolingCommandDefinition> commands,
         ProjectContextResolver projectContextResolver,
+        DoctorCommand doctorCommand,
         Func<string> getWorkingDirectory)
     {
         this.commands = commands.ToDictionary(command => command.Name, StringComparer.OrdinalIgnoreCase);
         this.projectContextResolver = projectContextResolver;
+        this.doctorCommand = doctorCommand;
         this.getWorkingDirectory = getWorkingDirectory;
     }
 
@@ -42,6 +46,14 @@ public sealed class CommandLineApplication
         if (parsedArgs.Error is not null)
         {
             return CommandResult.UsageError(parsedArgs.Error);
+        }
+
+        if (command.Name.Equals("doctor", StringComparison.OrdinalIgnoreCase))
+        {
+            return doctorCommand.Run(new DoctorCommandRequest(
+                parsedArgs.Options.GetValueOrDefault("--project"),
+                parsedArgs.Options.GetValueOrDefault("--document"),
+                getWorkingDirectory()));
         }
 
         var resolution = ResolveProjectContext(command, parsedArgs.Options);
