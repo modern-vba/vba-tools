@@ -79,12 +79,12 @@ Run VBA unit tests for the selected built document.
 
 ### Options
 
-| Options                         | Description |
-|---------------------------------|-------------|
-| `--project <path>`              | Project root containing project.json. |
-| `--document <name>`             | Document name from the project manifest. |
-| `--format <ndjson\|json\|text>` | Test output format. |
-| `--build`                       | Build before running tests. |
+| Options                   | Description |
+|---------------------------|-------------|
+| `--project <path>`        | Project root containing project.json. |
+| `--document <name>`       | Document name from the project manifest. |
+| `--format <ndjson\|text>` | Test output format. |
+| `--build`                 | Build before running tests. |
 
 ## publish
 

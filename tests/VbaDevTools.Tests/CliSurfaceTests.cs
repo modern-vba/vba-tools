@@ -41,7 +41,7 @@ public sealed class CliSurfaceTests
         var result = application.Run(["test", "--help"]);
 
         Assert.Equal(0, result.ExitCode);
-        Assert.Contains("--format <ndjson|json|text>", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("--format <ndjson|text>", result.StandardOutput, StringComparison.Ordinal);
         Assert.Contains("--build", result.StandardOutput, StringComparison.Ordinal);
     }
 
@@ -67,9 +67,9 @@ public sealed class CliSurfaceTests
     [Fact]
     public void InvalidTestFormatIsRejected()
     {
-        var result = application.Run(["test", "--format", "xml"]);
+        var result = application.Run(["test", "--format", "json"]);
 
         Assert.Equal(1, result.ExitCode);
-        Assert.Contains("Unsupported value 'xml' for --format.", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("Unsupported value 'json' for --format.", result.StandardError, StringComparison.Ordinal);
     }
 }

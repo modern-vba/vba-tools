@@ -16,7 +16,7 @@ Common modules are copied from a canonical `common_modules_repo`. `new` creates 
 
 `build`, `publish`, `test`, and `export` use a dedicated hidden Excel COM instance instead of attaching to a user's existing Excel session. `build` and `publish` create a temporary workbook from the source template, flush existing standard modules/classes/forms, import source deterministically, save to a temporary output, and replace the target output only after success. `publish` excludes CommonModules entries classified as test-only by the CommonModules manifest and excludes project-local source marked with `'#ExcludePublish`.
 
-`test` does not build implicitly unless `--build` is supplied. It emits `ndjson`, `json`, or `text`, with `ndjson` as the default for VS Code-friendly streaming. `publish` does not require tests to pass; callers can compose `build`, `test`, and `publish` explicitly.
+`test` does not build implicitly unless `--build` is supplied. It emits `ndjson` or `text`, with `ndjson` as the default for VS Code-friendly streaming. `publish` does not require tests to pass; callers can compose `build`, `test`, and `publish` explicitly.
 
 `export` defaults to reading the manifest-resolved bin workbook and writing to the manifest-resolved document source set. `--from` may point at another workbook, and `--to` may point at another directory. The default document source set export deletes existing `.bas`, `.cls`, `.frm`, and related `.frx` files before export; explicit `--to` exports do not clean the destination.
 

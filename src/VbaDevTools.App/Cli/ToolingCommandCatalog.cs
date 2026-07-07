@@ -15,7 +15,7 @@ public static class ToolingCommandCatalog
             new("new", "Create a workbook-backed VBA project.", "<project-name> [--document <name>]", [Option("--document", "Document name. Defaults to the project name.", "<name>")], 10),
             new("add", "Copy CommonModules entries into the selected document source set.", "[modules...] [options]", projectOptions, 20, ProjectResolutionMode.Required),
             new("build", "Build the selected document into bin output.", "[options]", projectOptions, 30, ProjectResolutionMode.Required),
-            new("test", "Run VBA unit tests for the selected built document.", "[options]", [.. projectOptions, Option("--format", "Test output format.", "<ndjson|json|text>", ["ndjson", "json", "text"]), Flag("--build", "Build before running tests.")], 40, ProjectResolutionMode.Required),
+            new("test", "Run VBA unit tests for the selected built document.", "[options]", [.. projectOptions, Option("--format", "Test output format.", "<ndjson|text>", ["ndjson", "text"]), Flag("--build", "Build before running tests.")], 40, ProjectResolutionMode.Required),
             new("publish", "Publish the selected document.", "[options]", projectOptions, 50, ProjectResolutionMode.Required),
             new("update", "Update installed CommonModules entries.", "[options]", projectOptions, 60, ProjectResolutionMode.Required),
             new("export", "Export modules from a workbook into source.", "[options]", [.. projectOptions, Option("--from", "Workbook to export from.", "<path>"), Option("--to", "Directory to export to.", "<dir>")], 70, ProjectResolutionMode.Required),

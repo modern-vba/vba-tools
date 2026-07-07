@@ -7,7 +7,6 @@ public static class CommandDefaultResolver
     private static readonly HashSet<string> SupportedTestFormats = new(StringComparer.OrdinalIgnoreCase)
     {
         "ndjson",
-        "json",
         "text"
     };
 

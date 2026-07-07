@@ -16,7 +16,6 @@ public sealed class TestResultOutputFormatter
         => format.ToLowerInvariant() switch
         {
             "ndjson" => FormatNdjson(results),
-            "json" => FormatJson(results),
             "text" => FormatText(results),
             _ => throw new InvalidOperationException($"Unsupported test output format: {format}")
         };
@@ -33,12 +32,6 @@ public sealed class TestResultOutputFormatter
         builder.Append(JsonSerializer.Serialize(SummaryJsonRecord.FromResults(results), JsonOptions));
         builder.Append('\n');
         return builder.ToString();
-    }
-
-    private static string FormatJson(IReadOnlyList<TestResultRecord> results)
-    {
-        var document = TestResultDocumentJsonRecord.FromResults(results);
-        return JsonSerializer.Serialize(document, JsonOptions) + "\n";
     }
 
     private static string FormatText(IReadOnlyList<TestResultRecord> results)
@@ -93,20 +86,4 @@ public sealed class TestResultOutputFormatter
         }
     }
 
-    private sealed record TestResultDocumentJsonRecord(
-        string Document,
-        TestResultSummaryJsonRecord Summary,
-        IReadOnlyList<ResultJsonRecord> Results)
-    {
-        public static TestResultDocumentJsonRecord FromResults(IReadOnlyList<TestResultRecord> results)
-        {
-            var summary = TestResultSummary.FromResults(results);
-            return new(
-                summary.Document,
-                new TestResultSummaryJsonRecord(summary.Total, summary.Passed, summary.Failed, summary.Errors),
-                results.Select(ResultJsonRecord.FromResult).ToArray());
-        }
-    }
-
-    private sealed record TestResultSummaryJsonRecord(int Total, int Passed, int Failed, int Errors);
 }

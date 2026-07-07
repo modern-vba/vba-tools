@@ -1,5 +1,4 @@
 using System.Text;
-using System.Text.Json;
 using VbaDevTools.App.Testing;
 using VbaDevTools.App.Workbooks;
 using VbaDevTools.Composition;
@@ -25,20 +24,6 @@ public sealed class TestCommandTests
             "{\"type\":\"result\",\"document\":\"Book1\",\"category\":\"Test_Module\",\"testName\":\"Test_Errors\",\"outcome\":\"error\",\"message\":\"Runtime error\"}\n" +
             "{\"type\":\"summary\",\"document\":\"Book1\",\"total\":3,\"passed\":1,\"failed\":1,\"errors\":1}\n",
             output);
-    }
-
-    [Fact]
-    public void JsonFormatEmitsAggregateResultDocument()
-    {
-        var formatter = new TestResultOutputFormatter();
-
-        var output = formatter.Format("json", SampleResults());
-
-        using var document = JsonDocument.Parse(output);
-        Assert.Equal("Book1", document.RootElement.GetProperty("document").GetString());
-        Assert.Equal(3, document.RootElement.GetProperty("summary").GetProperty("total").GetInt32());
-        Assert.Equal("Test_Fails", document.RootElement.GetProperty("results")[1].GetProperty("testName").GetString());
-        Assert.Equal("failed", document.RootElement.GetProperty("results")[1].GetProperty("outcome").GetString());
     }
 
     [Fact]
@@ -117,7 +102,7 @@ public sealed class TestCommandTests
             new WorkbookTestResultRow("Test_Module", "Test_Errors", "ERR", "errored"));
         var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
 
-        var result = application.Run(["test", "--format", "json"]);
+        var result = application.Run(["test", "--format", "ndjson"]);
 
         Assert.Equal(1, result.ExitCode);
         Assert.Contains("\"outcome\":\"passed\"", result.StandardOutput, StringComparison.Ordinal);
