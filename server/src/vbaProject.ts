@@ -111,6 +111,10 @@ import {
   findSourceTypeModule,
   resolveCurrentModuleEventDefinition
 } from './sourceDefinitionLookup';
+import {
+  shouldSuppressCompletionAt,
+  shouldSuppressSignatureHelpAt
+} from './syntaxAnalysis';
 import type { VbaProject } from './vbaProjectModel';
 import {
   findHostTypeDefinition,
@@ -297,13 +301,9 @@ export function getCompletions(project: VbaProject, request: CompletionRequest):
   if (current_module === undefined) {
     return [];
   }
-  if (
-    isInMalformedExpressionRegion(current_module, request.position)
-    || (
-      isInMalformedMemberAccessRegion(current_module, request.position)
-      && !isHostEnumQualifierCompletion(project, current_module, request.position)
-    )
-  ) {
+  if (shouldSuppressCompletionAt(current_module, request.position, {
+    allowMalformedMemberAccess: isHostEnumQualifierCompletion(project, current_module, request.position)
+  })) {
     return [];
   }
 
@@ -726,7 +726,7 @@ export function getSignatureHelp(
   if (current_module === undefined) {
     return undefined;
   }
-  if (isInMalformedMemberAccessRegion(current_module, request.position)) {
+  if (shouldSuppressSignatureHelpAt(current_module, request.position)) {
     return undefined;
   }
 
@@ -5129,22 +5129,6 @@ function isOpeningBlockLine(text: string): boolean {
 
 function findModule(project: VbaProject, uri: string): VbaModule | undefined {
   return project.modules.find((module) => sameUri(module.uri, uri));
-}
-
-function isInMalformedExpressionRegion(module: VbaModule, position: SourcePosition): boolean {
-  return module.syntaxDiagnostics.some((diagnostic) =>
-    diagnostic.code === 'syntax.malformedExpression'
-    && diagnostic.range.start.line === position.line
-    && position.character >= diagnostic.range.start.character
-  );
-}
-
-function isInMalformedMemberAccessRegion(module: VbaModule, position: SourcePosition): boolean {
-  return module.syntaxDiagnostics.some((diagnostic) =>
-    diagnostic.code === 'syntax.malformedMemberAccess'
-    && diagnostic.range.start.line === position.line
-    && position.character >= diagnostic.range.start.character
-  );
 }
 
 function sameDefinitionLocation(left: DefinitionLocation, right: DefinitionLocation): boolean {

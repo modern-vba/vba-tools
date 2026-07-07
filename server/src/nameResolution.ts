@@ -33,6 +33,7 @@ import { getIdentifierAt, getIdentifierRangesInCode } from './vbaIdentifierSourc
 import { sameName } from './vbaNames';
 import { sameRange } from './sourceRange';
 import { sameUri } from './vbaUris';
+import { shouldSuppressNameResolutionAt } from './syntaxAnalysis';
 
 export interface NameResolutionRequest {
   uri: string;
@@ -47,10 +48,7 @@ export function resolveName(
   if (current_module === undefined) {
     return undefined;
   }
-  if (
-    isInMalformedExpressionRegion(current_module, request.position)
-    || isInMalformedMemberAccessRegion(current_module, request.position)
-  ) {
+  if (shouldSuppressNameResolutionAt(current_module, request.position)) {
     return undefined;
   }
 
@@ -285,20 +283,4 @@ function getQualifiedReferenceAt(
 
 function findModule(project: VbaProject, uri: string): VbaModule | undefined {
   return project.modules.find((module) => sameUri(module.uri, uri));
-}
-
-function isInMalformedExpressionRegion(module: VbaModule, position: SourcePosition): boolean {
-  return module.syntaxDiagnostics.some((diagnostic) =>
-    diagnostic.code === 'syntax.malformedExpression'
-    && diagnostic.range.start.line === position.line
-    && position.character >= diagnostic.range.start.character
-  );
-}
-
-function isInMalformedMemberAccessRegion(module: VbaModule, position: SourcePosition): boolean {
-  return module.syntaxDiagnostics.some((diagnostic) =>
-    diagnostic.code === 'syntax.malformedMemberAccess'
-    && diagnostic.range.start.line === position.line
-    && position.character >= diagnostic.range.start.character
-  );
 }
