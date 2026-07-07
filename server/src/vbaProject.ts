@@ -9,11 +9,6 @@ import {
   withHostMemberContext
 } from './hostDefinitionCatalog';
 import {
-  resolveHostApplicationQualifier,
-  resolveHostQualifiedPath,
-  resolveUnqualifiedHostEnumQualifier
-} from './hostDefinitionLookup';
-import {
   collectDeclarationListDiagnostics,
   collectDeclaratorDiagnostics,
   collectDefTypeDeclarationDiagnostics,
@@ -32,12 +27,9 @@ import {
   parseMemberChainEndingAt
 } from './memberChainSyntax';
 import {
-  resolveActiveWithReceiverType,
-  resolveMemberChainReceiverType,
-  resolveMemberChainTarget
-} from './memberChainResolution';
-import {
-  findTypeNameForExpression,
+  isHostEnumCompletionQualifier,
+  resolveCallSiteTarget,
+  resolveMemberCompletionTarget,
   resolveName
 } from './nameResolution';
 import {
@@ -371,82 +363,59 @@ function isUnqualifiedHostCompletionDefinition(
   ) === definition;
 }
 
-function getRootHostCompletions(
-  project: VbaProject,
-  currentModule: VbaModule,
-  qualifier: string,
-  prefix: string
-): CompletionEntry[] | undefined {
-  const host_application = resolveHostApplicationQualifier(project, currentModule, qualifier);
-  if (host_application === undefined) {
-    return undefined;
-  }
-
-  return getUnqualifiedHostDefinitions(project.hostDefinitions)
-    .filter((definition) => definition.hostApplication === host_application)
-    .filter((definition) => prefix === '' || definition.name.toLowerCase().startsWith(prefix))
-    .filter((definition, _index, definitions) =>
-      selectHostApplicationQualifiedDefinition(definitions, host_application, definition.name) === definition
-    )
-    .map((definition) => ({
-      label: definition.name,
-      kind: completionKindForHostDefinition(definition),
-      detail: getHostDefinitionDetail(definition)
-    }));
-}
-
 function getTypedMemberCompletions(
   project: VbaProject,
   currentModule: VbaModule,
   position: SourcePosition,
   request: MemberCompletionRequest
 ): CompletionEntry[] {
-  const root_host_completions = getRootHostCompletions(project, currentModule, request.qualifier, request.prefix);
-  if (root_host_completions !== undefined) {
-    return root_host_completions;
-  }
-
-  const host_definition = resolveHostQualifiedPath(project, currentModule, request.qualifier);
-  if (host_definition?.members !== undefined) {
-    return getHostMemberCompletionEntries(host_definition, request.prefix);
-  }
-
-  if (request.receiverChain !== undefined) {
-    const type_ref = resolveMemberChainReceiverType(project, currentModule, position, request.receiverChain);
-    if (type_ref !== undefined) {
-      return completionEntriesForResolvedMembers(
-        getMembersForResolvedType(project, currentModule, type_ref),
-        request.prefix
-      );
-    }
-  }
-
-  const host_enum = resolveHostEnumCompletionQualifier(project, currentModule, position, request.qualifier);
-  if (host_enum !== undefined) {
-    return getHostMemberCompletionEntries(host_enum, request.prefix);
-  }
-
-  if (request.usesWithReceiver === true) {
-    const type_ref = resolveActiveWithReceiverType(project, currentModule, position);
-    if (type_ref !== undefined) {
-      return completionEntriesForResolvedMembers(
-        getMembersForResolvedType(project, currentModule, type_ref),
-        request.prefix
-      );
-    }
-
+  const target = resolveMemberCompletionTarget(project, currentModule, position, request);
+  if (target === undefined) {
     return [];
   }
 
-  const type_name = findTypeNameForExpression(project, currentModule, position, request.qualifier);
-  if (type_name === undefined) {
-    return [];
+  switch (target.kind) {
+    case 'hostRoot':
+      return getRootHostCompletions(project, target.hostApplication, request.prefix);
+    case 'hostDefinition':
+    case 'hostEnum':
+      return getHostMemberCompletionEntries(target.definition, request.prefix);
+    case 'resolvedType':
+      return completionEntriesForResolvedMembers(
+        getMembersForResolvedType(project, currentModule, target.typeRef),
+        request.prefix
+      );
+    case 'withReceiver':
+      return target.typeRef === undefined
+        ? []
+        : completionEntriesForResolvedMembers(
+            getMembersForResolvedType(project, currentModule, target.typeRef),
+            request.prefix
+          );
+    case 'typeName':
+      return completionEntriesForResolvedMembers(
+        getMembersForType(project, currentModule, target.typeName),
+        request.prefix
+      );
   }
+}
 
-  return completionEntriesForResolvedMembers(
-    getMembersForType(project, currentModule, type_name),
-    request.prefix
-  );
+function getRootHostCompletions(
+  project: VbaProject,
+  hostApplication: HostApplication,
+  prefix: string
+): CompletionEntry[] {
+  return getUnqualifiedHostDefinitions(project.hostDefinitions)
+    .filter((definition) => definition.hostApplication === hostApplication)
+    .filter((definition) => prefix === '' || definition.name.toLowerCase().startsWith(prefix))
+    .filter((definition, _index, definitions) =>
+      selectHostApplicationQualifiedDefinition(definitions, hostApplication, definition.name) === definition
+    )
+    .map((definition) => ({
+      label: definition.name,
+      kind: completionKindForHostDefinition(definition),
+      detail: getHostDefinitionDetail(definition)
+    }));
 }
 
 function getHostMemberCompletionEntries(
@@ -472,21 +441,7 @@ function isHostEnumQualifierCompletion(
   const request = getMemberCompletionAt(currentModule.lines, position);
   return request === undefined
     ? false
-    : resolveHostEnumCompletionQualifier(project, currentModule, position, request.qualifier) !== undefined;
-}
-
-function resolveHostEnumCompletionQualifier(
-  project: VbaProject,
-  currentModule: VbaModule,
-  position: SourcePosition,
-  qualifier: string
-): HostDefinition | undefined {
-  if (qualifier.includes('.')) {
-    const host_definition = resolveHostQualifiedPath(project, currentModule, qualifier);
-    return host_definition?.kind === 'enum' ? host_definition : undefined;
-  }
-
-  return resolveUnqualifiedHostEnumQualifier(project, currentModule, position, qualifier);
+    : isHostEnumCompletionQualifier(project, currentModule, position, request);
 }
 
 function completionEntriesForResolvedMembers(
@@ -741,15 +696,13 @@ export function getSignatureHelp(
       : getSourceSignatureHelp(project, definition, call_expression.activeParameter);
   }
 
-  const resolution = call_expression.chain === undefined
-    ? resolveName(project, {
-      uri: request.uri,
-      position: {
-        line: request.position.line,
-        character: call_expression.nameStart
-      }
-    })
-    : resolveMemberChainTarget(project, current_module, request.position, call_expression.chain);
+  const resolution = resolveCallSiteTarget(
+    project,
+    current_module,
+    request.uri,
+    request.position,
+    call_expression
+  );
   if (resolution === undefined) {
     return undefined;
   }

@@ -3,14 +3,21 @@ import {
   selectUnqualifiedHostDefinition
 } from './hostDefinitionCatalog';
 import {
+  resolveHostApplicationQualifier,
   resolveHostQualifiedDefinition,
-  resolveHostQualifiedPath
+  resolveHostQualifiedPath,
+  resolveUnqualifiedHostEnumQualifier
 } from './hostDefinitionLookup';
+import type { HostApplication, HostDefinition } from './hostDefinition';
 import {
   parseContinuedMemberChainEndingBefore,
   parseMemberChainEndingBefore
 } from './memberChainSyntax';
-import { resolveMemberChainTarget } from './memberChainResolution';
+import {
+  resolveActiveWithReceiverType,
+  resolveMemberChainReceiverType,
+  resolveMemberChainTarget
+} from './memberChainResolution';
 import type { SourcePosition } from './sourceRange';
 import {
   hasAmbiguousCurrentModuleDefinition,
@@ -23,8 +30,11 @@ import {
 } from './sourceDefinitionLookup';
 import type { VbaProject } from './vbaProjectModel';
 import type {
+  CallExpression,
+  MemberCompletionRequest,
   MemberChainExpression,
   NameResolutionResult,
+  TypeResolutionRef,
   VbaModule
 } from './vbaSourceModel';
 import { singleMatch, toVbaResolution } from './vbaResolution';
@@ -39,6 +49,32 @@ export interface NameResolutionRequest {
   uri: string;
   position: SourcePosition;
 }
+
+export type MemberCompletionTarget =
+  | {
+      kind: 'hostRoot';
+      hostApplication: HostApplication;
+    }
+  | {
+      kind: 'hostDefinition';
+      definition: HostDefinition;
+    }
+  | {
+      kind: 'hostEnum';
+      definition: HostDefinition;
+    }
+  | {
+      kind: 'resolvedType';
+      typeRef: TypeResolutionRef;
+    }
+  | {
+      kind: 'withReceiver';
+      typeRef?: TypeResolutionRef;
+    }
+  | {
+      kind: 'typeName';
+      typeName: string;
+    };
 
 export function resolveName(
   project: VbaProject,
@@ -142,6 +178,89 @@ export function resolveName(
   return undefined;
 }
 
+export function resolveMemberCompletionTarget(
+  project: VbaProject,
+  currentModule: VbaModule,
+  position: SourcePosition,
+  request: MemberCompletionRequest
+): MemberCompletionTarget | undefined {
+  const host_application = resolveHostApplicationQualifier(project, currentModule, request.qualifier);
+  if (host_application !== undefined) {
+    return {
+      kind: 'hostRoot',
+      hostApplication: host_application
+    };
+  }
+
+  const host_definition = resolveHostQualifiedPath(project, currentModule, request.qualifier);
+  if (host_definition?.members !== undefined) {
+    return {
+      kind: 'hostDefinition',
+      definition: host_definition
+    };
+  }
+
+  if (request.receiverChain !== undefined) {
+    const type_ref = resolveMemberChainReceiverType(project, currentModule, position, request.receiverChain);
+    if (type_ref !== undefined) {
+      return {
+        kind: 'resolvedType',
+        typeRef: type_ref
+      };
+    }
+  }
+
+  const host_enum = resolveHostEnumCompletionQualifier(project, currentModule, position, request.qualifier);
+  if (host_enum !== undefined) {
+    return {
+      kind: 'hostEnum',
+      definition: host_enum
+    };
+  }
+
+  if (request.usesWithReceiver === true) {
+    return {
+      kind: 'withReceiver',
+      typeRef: resolveActiveWithReceiverType(project, currentModule, position)
+    };
+  }
+
+  const type_name = findTypeNameForExpression(project, currentModule, position, request.qualifier);
+  return type_name === undefined
+    ? undefined
+    : {
+        kind: 'typeName',
+        typeName: type_name
+      };
+}
+
+export function isHostEnumCompletionQualifier(
+  project: VbaProject,
+  currentModule: VbaModule,
+  position: SourcePosition,
+  request: MemberCompletionRequest
+): boolean {
+  return resolveHostEnumCompletionQualifier(project, currentModule, position, request.qualifier) !== undefined;
+}
+
+export function resolveCallSiteTarget(
+  project: VbaProject,
+  currentModule: VbaModule,
+  uri: string,
+  position: SourcePosition,
+  callSite: CallExpression
+): NameResolutionResult | undefined {
+  return callSite.chain === undefined
+    ? resolveName(project, {
+        uri,
+        position: {
+          line: position.line,
+          character: callSite.nameStart
+        }
+      })
+    : resolveMemberChainTarget(project, currentModule, position, callSite.chain);
+}
+
 function resolveTypedMemberDefinition(
   project: VbaProject,
   current_module: VbaModule,
@@ -221,6 +340,20 @@ export function findTypeNameForExpression(
   }
 
   return undefined;
+}
+
+function resolveHostEnumCompletionQualifier(
+  project: VbaProject,
+  currentModule: VbaModule,
+  position: SourcePosition,
+  qualifier: string
+): HostDefinition | undefined {
+  if (qualifier.includes('.')) {
+    const host_definition = resolveHostQualifiedPath(project, currentModule, qualifier);
+    return host_definition?.kind === 'enum' ? host_definition : undefined;
+  }
+
+  return resolveUnqualifiedHostEnumQualifier(project, currentModule, position, qualifier);
 }
 
 function getMemberChainExpressionAt(
