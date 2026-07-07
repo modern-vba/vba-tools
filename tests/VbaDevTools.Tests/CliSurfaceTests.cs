@@ -56,17 +56,12 @@ public sealed class CliSurfaceTests
     }
 
     [Fact]
-    public void PlaceholderCommandReturnsNotImplementedResult()
+    public void UnknownCommandReturnsUsageError()
     {
-        using var temp = TempDirectory.Create();
-        var root = temp.CreateDirectory("Project");
-        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
-        var projectApplication = ToolingCompositionRoot.CreateCommandLineApplication(root);
+        var result = application.Run(["missing"]);
 
-        var result = projectApplication.Run(["export"]);
-
-        Assert.Equal(2, result.ExitCode);
-        Assert.Contains("not implemented", result.StandardError, StringComparison.Ordinal);
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("Unknown command 'missing'.", result.StandardError, StringComparison.Ordinal);
     }
 
     [Fact]

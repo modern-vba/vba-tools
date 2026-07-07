@@ -2,6 +2,7 @@ using System.Text;
 using VbaDevTools.App.Build;
 using VbaDevTools.App.CommonModules;
 using VbaDevTools.App.Diagnostics;
+using VbaDevTools.App.Export;
 using VbaDevTools.App.Projects;
 using VbaDevTools.App.Testing;
 
@@ -17,6 +18,7 @@ public sealed class CommandLineApplication
     private readonly BuildCommand buildCommand;
     private readonly PublishCommand publishCommand;
     private readonly TestCommand testCommand;
+    private readonly ExportCommand exportCommand;
     private readonly Func<string> getWorkingDirectory;
 
     public CommandLineApplication(
@@ -28,6 +30,7 @@ public sealed class CommandLineApplication
         BuildCommand buildCommand,
         PublishCommand publishCommand,
         TestCommand testCommand,
+        ExportCommand exportCommand,
         Func<string> getWorkingDirectory)
     {
         this.commands = commands.ToDictionary(command => command.Name, StringComparer.OrdinalIgnoreCase);
@@ -38,6 +41,7 @@ public sealed class CommandLineApplication
         this.buildCommand = buildCommand;
         this.publishCommand = publishCommand;
         this.testCommand = testCommand;
+        this.exportCommand = exportCommand;
         this.getWorkingDirectory = getWorkingDirectory;
     }
 
@@ -120,6 +124,16 @@ public sealed class CommandLineApplication
         if (command.Name.Equals("publish", StringComparison.OrdinalIgnoreCase) && resolution.Context is not null)
         {
             return publishCommand.Run(resolution.Context);
+        }
+
+        if (command.Name.Equals("export", StringComparison.OrdinalIgnoreCase) && resolution.Context is not null)
+        {
+            return exportCommand.Run(
+                resolution.Context,
+                new ExportCommandRequest(
+                    parsedArgs.Options.GetValueOrDefault("--from"),
+                    parsedArgs.Options.GetValueOrDefault("--to"),
+                    getWorkingDirectory()));
         }
 
         if (command.Name.Equals("update", StringComparison.OrdinalIgnoreCase) && resolution.Context is not null)
