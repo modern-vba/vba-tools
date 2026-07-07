@@ -69,7 +69,14 @@ public sealed class NewProjectCommand
 
         if (commonModulesRepository is not null)
         {
-            CopyInitialCommonModules(commonModulesRepository, sourceSetPath);
+            try
+            {
+                CopyInitialCommonModules(commonModulesRepository, sourceSetPath);
+            }
+            catch (CommonModulesManifestException ex)
+            {
+                return CommandResult.UsageError(ex.Message);
+            }
         }
 
         return new CommandResult(

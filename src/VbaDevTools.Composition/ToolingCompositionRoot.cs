@@ -20,6 +20,8 @@ public static class ToolingCompositionRoot
         IInitialWorkbookCreator? initialWorkbookCreator = null)
     {
         var manifestStore = new JsonProjectManifestStore();
+        var commonModulesManifestReader = new CommonModulesManifestReader();
+        var commonModulesService = new CommonModulesService(commonModulesManifestReader);
         var projectContextResolver = new ProjectContextResolver(manifestStore);
         var doctorCommand = new DoctorCommand(
             projectContextResolver,
@@ -27,12 +29,13 @@ public static class ToolingCompositionRoot
         var newProjectCommand = new NewProjectCommand(
             manifestStore,
             initialWorkbookCreator ?? new ExcelComInitialWorkbookCreator(),
-            new CommonModulesManifestReader());
+            commonModulesManifestReader);
         return new CommandLineApplication(
             ToolingCommandCatalog.CreateDefault(),
             projectContextResolver,
             doctorCommand,
             newProjectCommand,
+            commonModulesService,
             () => workingDirectory);
     }
 }

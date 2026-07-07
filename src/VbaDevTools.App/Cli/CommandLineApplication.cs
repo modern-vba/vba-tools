@@ -1,4 +1,5 @@
 using System.Text;
+using VbaDevTools.App.CommonModules;
 using VbaDevTools.App.Diagnostics;
 using VbaDevTools.App.Projects;
 
@@ -10,6 +11,7 @@ public sealed class CommandLineApplication
     private readonly ProjectContextResolver projectContextResolver;
     private readonly DoctorCommand doctorCommand;
     private readonly NewProjectCommand newProjectCommand;
+    private readonly CommonModulesService commonModulesService;
     private readonly Func<string> getWorkingDirectory;
 
     public CommandLineApplication(
@@ -17,12 +19,14 @@ public sealed class CommandLineApplication
         ProjectContextResolver projectContextResolver,
         DoctorCommand doctorCommand,
         NewProjectCommand newProjectCommand,
+        CommonModulesService commonModulesService,
         Func<string> getWorkingDirectory)
     {
         this.commands = commands.ToDictionary(command => command.Name, StringComparer.OrdinalIgnoreCase);
         this.projectContextResolver = projectContextResolver;
         this.doctorCommand = doctorCommand;
         this.newProjectCommand = newProjectCommand;
+        this.commonModulesService = commonModulesService;
         this.getWorkingDirectory = getWorkingDirectory;
     }
 
@@ -85,6 +89,16 @@ public sealed class CommandLineApplication
             {
                 return CommandResult.UsageError(ex.Message);
             }
+        }
+
+        if (command.Name.Equals("add", StringComparison.OrdinalIgnoreCase) && resolution.Context is not null)
+        {
+            return commonModulesService.Add(resolution.Context, parsedArgs.Positionals);
+        }
+
+        if (command.Name.Equals("update", StringComparison.OrdinalIgnoreCase) && resolution.Context is not null)
+        {
+            return commonModulesService.Update(resolution.Context);
         }
 
         return CommandResult.NotImplemented($"Command '{command.Name}' is not implemented yet.");

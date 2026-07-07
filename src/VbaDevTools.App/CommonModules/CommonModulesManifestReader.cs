@@ -51,7 +51,36 @@ public sealed class CommonModulesManifestReader
             throw new CommonModulesManifestException("CommonModules manifest header was not found.");
         }
 
+        Validate(entries);
         return entries;
+    }
+
+    private static void Validate(IReadOnlyList<CommonModuleManifestEntry> entries)
+    {
+        var byFileName = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in entries)
+        {
+            if (string.IsNullOrWhiteSpace(entry.ModuleFile))
+            {
+                throw new CommonModulesManifestException("CommonModules manifest contains an empty ModuleFile value.");
+            }
+
+            if (!byFileName.Add(entry.ModuleFile))
+            {
+                throw new CommonModulesManifestException($"CommonModules manifest duplicates module '{entry.ModuleFile}'.");
+            }
+        }
+
+        foreach (var entry in entries)
+        {
+            foreach (var dependency in entry.Dependencies)
+            {
+                if (!byFileName.Contains(dependency))
+                {
+                    throw new CommonModulesManifestException($"CommonModules manifest references unknown dependency '{dependency}' from '{entry.ModuleFile}'.");
+                }
+            }
+        }
     }
 
     private static IReadOnlyList<string> SplitList(string value)
