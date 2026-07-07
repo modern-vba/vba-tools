@@ -11,11 +11,25 @@ public sealed class ProjectContextResolver
         this.manifestStore = manifestStore;
     }
 
-    public ResolvedProjectContext Resolve(ProjectResolutionRequest request)
+    public ResolvedProject ResolveProject(ProjectResolutionRequest request)
     {
         var projectRoot = ResolveProjectRoot(request);
         var manifestPath = Path.Combine(projectRoot, ProjectManifest.ManifestFileName);
         var manifest = manifestStore.Load(manifestPath);
+
+        return new ResolvedProject(
+            ProjectRoot: projectRoot,
+            ManifestPath: manifestPath,
+            Manifest: manifest,
+            CommonModulesRepositoryPath: string.IsNullOrWhiteSpace(manifest.CommonModulesRepository)
+                ? null
+                : ResolvePath(projectRoot, manifest.CommonModulesRepository));
+    }
+
+    public ResolvedProjectContext Resolve(ProjectResolutionRequest request)
+    {
+        var project = ResolveProject(request);
+        var manifest = project.Manifest;
         var documentName = string.IsNullOrWhiteSpace(request.DocumentName)
             ? manifest.PrimaryDocument
             : request.DocumentName;
@@ -26,18 +40,16 @@ public sealed class ProjectContextResolver
         }
 
         return new ResolvedProjectContext(
-            ProjectRoot: projectRoot,
-            ManifestPath: manifestPath,
+            ProjectRoot: project.ProjectRoot,
+            ManifestPath: project.ManifestPath,
             Manifest: manifest,
             DocumentName: documentName,
             Document: document,
-            DocumentSourceSetPath: ResolvePath(projectRoot, document.SourcePath),
-            TemplateDocumentPath: ResolvePath(projectRoot, document.TemplatePath),
-            BinDocumentPath: ResolvePath(projectRoot, document.BinPath),
-            PublishDocumentPath: ResolvePath(projectRoot, document.PublishPath),
-            CommonModulesRepositoryPath: string.IsNullOrWhiteSpace(manifest.CommonModulesRepository)
-                ? null
-                : ResolvePath(projectRoot, manifest.CommonModulesRepository));
+            DocumentSourceSetPath: project.ResolvePath(document.SourcePath),
+            TemplateDocumentPath: project.ResolvePath(document.TemplatePath),
+            BinDocumentPath: project.ResolvePath(document.BinPath),
+            PublishDocumentPath: project.ResolvePath(document.PublishPath),
+            CommonModulesRepositoryPath: project.CommonModulesRepositoryPath);
     }
 
     private static string ResolveProjectRoot(ProjectResolutionRequest request)

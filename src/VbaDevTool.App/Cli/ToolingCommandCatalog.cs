@@ -4,6 +4,10 @@ public static class ToolingCommandCatalog
 {
     public static IReadOnlyList<ToolingCommandDefinition> CreateDefault()
     {
+        var projectRootOptions = new[]
+        {
+            Option("--project", "Project root containing project.json.", "<path>")
+        };
         var projectOptions = new[]
         {
             Option("--project", "Project root containing project.json.", "<path>"),
@@ -17,9 +21,9 @@ public static class ToolingCommandCatalog
             new("build", "Build the selected document into bin output.", "[options]", projectOptions, 30, ProjectResolutionMode.Required),
             new("test", "Run VBA unit tests for the selected built document.", "[options]", [.. projectOptions, Option("--format", "Test output format.", "<ndjson|text>", ["ndjson", "text"]), Flag("--build", "Build before running tests.")], 40, ProjectResolutionMode.Required),
             new("publish", "Publish the selected document.", "[options]", projectOptions, 50, ProjectResolutionMode.Required),
-            new("update", "Update installed CommonModules entries.", "[options]", projectOptions, 60, ProjectResolutionMode.Required),
+            new("update", "Update installed CommonModules entries.", "[options]", projectRootOptions, 60, ProjectResolutionMode.Required),
             new("export", "Export modules from a workbook into source.", "[options]", [.. projectOptions, Option("--from", "Workbook to export from.", "<path>"), Option("--to", "Directory to export to.", "<dir>")], 70, ProjectResolutionMode.Required),
-            new("doctor", "Check project and machine prerequisites.", "[options]", projectOptions, 80, ProjectResolutionMode.Optional)
+            new("doctor", "Check project and machine prerequisites.", "[options]", projectRootOptions, 80, ProjectResolutionMode.Optional)
         ];
     }
 

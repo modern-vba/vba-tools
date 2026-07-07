@@ -121,7 +121,42 @@ public sealed class CommonModulesCommandTests
         Assert.Equal("base v2", File.ReadAllText(Path.Combine(sourceSet, "Base.bas")));
         Assert.Equal("feature v2", File.ReadAllText(Path.Combine(sourceSet, "Feature.bas")));
         Assert.Equal("obsolete", File.ReadAllText(Path.Combine(sourceSet, "Obsolete.bas")));
-        Assert.Contains("Updated Feature.bas", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("Updated Book1/Feature.bas", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void UpdateAppliesToInstalledModulesAcrossAllDocumentSourceSets()
+    {
+        using var temp = TempDirectory.Create();
+        var commonRepo = temp.CreateDirectory("common_modules_repo");
+        var projectRoot = temp.CreateDirectory("Project");
+        Directory.CreateDirectory(Path.Combine(projectRoot, "src", "Book1"));
+        Directory.CreateDirectory(Path.Combine(projectRoot, "src", "SecondBook"));
+        new JsonProjectManifestStore().Save(projectRoot, ProjectManifestTestData.TwoDocumentManifest(projectRoot) with
+        {
+            CommonModulesRepository = "../common_modules_repo"
+        });
+        WriteManifest(
+            commonRepo,
+            ("Base.bas", "runtime-baseline", ""),
+            ("Feature.bas", "optional", "Base.bas"));
+        WriteModule(commonRepo, "Base.bas", "base v2");
+        WriteModule(commonRepo, "Feature.bas", "feature v2");
+        var firstSourceSet = Path.Combine(projectRoot, "src", "Book1");
+        var secondSourceSet = Path.Combine(projectRoot, "src", "SecondBook");
+        WriteModule(firstSourceSet, "Feature.bas", "first feature v1");
+        WriteModule(secondSourceSet, "Feature.bas", "second feature v1");
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+
+        var result = application.Run(["update"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal("base v2", File.ReadAllText(Path.Combine(firstSourceSet, "Base.bas")));
+        Assert.Equal("feature v2", File.ReadAllText(Path.Combine(firstSourceSet, "Feature.bas")));
+        Assert.Equal("base v2", File.ReadAllText(Path.Combine(secondSourceSet, "Base.bas")));
+        Assert.Equal("feature v2", File.ReadAllText(Path.Combine(secondSourceSet, "Feature.bas")));
+        Assert.Contains("Updated Book1/Feature.bas", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("Updated SecondBook/Feature.bas", result.StandardOutput, StringComparison.Ordinal);
     }
 
     private static string CreateProjectWithCommonModules(TempDirectory temp, string projectName)

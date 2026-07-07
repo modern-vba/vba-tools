@@ -44,6 +44,27 @@ public sealed class DoctorCommandTests
     }
 
     [Fact]
+    public void DoctorWithProjectChecksEveryDocument()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        Directory.CreateDirectory(Path.Combine(root, "src", "Book1"));
+        File.WriteAllText(Path.Combine(root, "src", "Book1", "Book1.xlsm"), string.Empty);
+        var store = new JsonProjectManifestStore();
+        store.Save(root, ProjectManifestTestData.TwoDocumentManifest(root));
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+            root,
+            new FakeEnvironmentDiagnosticPort());
+
+        var result = application.Run(["doctor"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("[PASS] Source template (Book1)", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("[FAIL] Document source set (SecondBook)", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("[FAIL] Source template (SecondBook)", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void DoctorMapsFakeEnvironmentDiagnosticStatuses()
     {
         using var temp = TempDirectory.Create();

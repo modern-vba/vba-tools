@@ -34,24 +34,33 @@ public sealed class CommonModulesService
         }
     }
 
-    public CommandResult Update(ResolvedProjectContext context)
+    public CommandResult Update(ResolvedProject project)
     {
         try
         {
-            var repositoryPath = GetRepositoryPath(context);
+            var repositoryPath = GetRepositoryPath(project);
             var entries = manifestReader.Load(repositoryPath);
-            var installedEntries = entries
-                .Where(entry => File.Exists(Path.Combine(context.DocumentSourceSetPath, entry.ModuleFile)))
-                .Select(entry => entry.ModuleFile)
-                .ToArray();
-            if (installedEntries.Length == 0)
+            var output = new StringBuilder();
+
+            foreach (var (documentName, document) in project.Manifest.Documents.OrderBy(item => item.Key, StringComparer.OrdinalIgnoreCase))
             {
-                return CommandResult.Success("No installed CommonModules entries were found." + Environment.NewLine);
+                var documentSourceSetPath = project.ResolvePath(document.SourcePath);
+                var installedEntries = entries
+                    .Where(entry => File.Exists(Path.Combine(documentSourceSetPath, entry.ModuleFile)))
+                    .Select(entry => entry.ModuleFile)
+                    .ToArray();
+                if (installedEntries.Length == 0)
+                {
+                    continue;
+                }
+
+                var orderedEntries = ResolveRequestedEntries(entries, installedEntries);
+                output.Append(CopyEntries(repositoryPath, documentSourceSetPath, orderedEntries, "Updated", documentName));
             }
 
-            var orderedEntries = ResolveRequestedEntries(entries, installedEntries);
-            var copied = CopyEntries(repositoryPath, context.DocumentSourceSetPath, orderedEntries, "Updated");
-            return CommandResult.Success(copied);
+            return output.Length == 0
+                ? CommandResult.Success("No installed CommonModules entries were found." + Environment.NewLine)
+                : CommandResult.Success(output.ToString());
         }
         catch (CommonModulesManifestException ex)
         {
@@ -128,7 +137,8 @@ public sealed class CommonModulesService
         string repositoryPath,
         string documentSourceSetPath,
         IReadOnlyList<CommonModuleManifestEntry> entries,
-        string verb)
+        string verb,
+        string? documentName = null)
     {
         Directory.CreateDirectory(documentSourceSetPath);
         var output = new StringBuilder();
@@ -141,24 +151,31 @@ public sealed class CommonModulesService
             }
 
             File.Copy(sourcePath, Path.Combine(documentSourceSetPath, entry.ModuleFile), overwrite: true);
-            output.AppendLine($"{verb} {entry.ModuleFile}");
+            var outputPath = documentName is null ? entry.ModuleFile : $"{documentName}/{entry.ModuleFile}";
+            output.AppendLine($"{verb} {outputPath}");
         }
 
         return output.ToString();
     }
 
     private static string GetRepositoryPath(ResolvedProjectContext context)
+        => GetRepositoryPath(context.CommonModulesRepositoryPath);
+
+    private static string GetRepositoryPath(ResolvedProject project)
+        => GetRepositoryPath(project.CommonModulesRepositoryPath);
+
+    private static string GetRepositoryPath(string? commonModulesRepositoryPath)
     {
-        if (context.CommonModulesRepositoryPath is null)
+        if (commonModulesRepositoryPath is null)
         {
             throw new CommonModulesManifestException("CommonModulesRepository is not configured in project.json.");
         }
 
-        if (!Directory.Exists(context.CommonModulesRepositoryPath))
+        if (!Directory.Exists(commonModulesRepositoryPath))
         {
-            throw new CommonModulesManifestException($"CommonModulesRepository was not found: {context.CommonModulesRepositoryPath}");
+            throw new CommonModulesManifestException($"CommonModulesRepository was not found: {commonModulesRepositoryPath}");
         }
 
-        return context.CommonModulesRepositoryPath;
+        return commonModulesRepositoryPath;
     }
 }

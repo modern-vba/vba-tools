@@ -25,13 +25,26 @@ public sealed class CliSurfaceTests
     [Fact]
     public void ProjectCommandsExposeProjectAndDocumentOptions()
     {
-        foreach (var commandName in new[] { "add", "build", "test", "publish", "update", "export", "doctor" })
+        foreach (var commandName in new[] { "add", "build", "test", "publish", "export" })
         {
             var result = application.Run([commandName, "--help"]);
 
             Assert.Equal(0, result.ExitCode);
             Assert.Contains("--project", result.StandardOutput, StringComparison.Ordinal);
             Assert.Contains("--document", result.StandardOutput, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void ProjectLevelCommandsDoNotExposeDocumentOptions()
+    {
+        foreach (var commandName in new[] { "update", "doctor" })
+        {
+            var result = application.Run([commandName, "--help"]);
+
+            Assert.Equal(0, result.ExitCode);
+            Assert.Contains("--project", result.StandardOutput, StringComparison.Ordinal);
+            Assert.DoesNotContain("--document", result.StandardOutput, StringComparison.Ordinal);
         }
     }
 

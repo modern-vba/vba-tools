@@ -118,7 +118,6 @@ Update installed CommonModules entries.
 | Options             | Description |
 |---------------------|-------------|
 | `--project <path>`  | Project root containing project.json. |
-| `--document <name>` | Document name from the project manifest. |
 
 ## export
 
@@ -154,7 +153,6 @@ Check project and machine prerequisites.
 | Options             | Description |
 |---------------------|-------------|
 | `--project <path>`  | Project root containing project.json. |
-| `--document <name>` | Document name from the project manifest. |
 
 ## project.json
 

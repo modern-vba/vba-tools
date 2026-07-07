@@ -82,8 +82,18 @@ public sealed class CommandLineApplication
         {
             return doctorCommand.Run(new DoctorCommandRequest(
                 parsedArgs.Options.GetValueOrDefault("--project"),
-                parsedArgs.Options.GetValueOrDefault("--document"),
                 getWorkingDirectory()));
+        }
+
+        if (command.Name.Equals("update", StringComparison.OrdinalIgnoreCase))
+        {
+            var projectResolution = ResolveProject(command, parsedArgs.Options);
+            if (projectResolution.Error is not null)
+            {
+                return CommandResult.UsageError(projectResolution.Error);
+            }
+
+            return commonModulesService.Update(projectResolution.Project!);
         }
 
         var resolution = ResolveProjectContext(command, parsedArgs.Options);
@@ -136,12 +146,36 @@ public sealed class CommandLineApplication
                     getWorkingDirectory()));
         }
 
-        if (command.Name.Equals("update", StringComparison.OrdinalIgnoreCase) && resolution.Context is not null)
+        return CommandResult.NotImplemented($"Command '{command.Name}' is not implemented yet.");
+    }
+
+    private ResolvedProjectResolutionResult ResolveProject(
+        ToolingCommandDefinition command,
+        IReadOnlyDictionary<string, string?> options)
+    {
+        if (command.ProjectResolutionMode == ProjectResolutionMode.None)
         {
-            return commonModulesService.Update(resolution.Context);
+            return ResolvedProjectResolutionResult.Success(null);
         }
 
-        return CommandResult.NotImplemented($"Command '{command.Name}' is not implemented yet.");
+        var hasProjectOption = options.ContainsKey("--project");
+        if (command.ProjectResolutionMode == ProjectResolutionMode.Optional && !hasProjectOption)
+        {
+            return ResolvedProjectResolutionResult.Success(null);
+        }
+
+        try
+        {
+            var project = projectContextResolver.ResolveProject(new ProjectResolutionRequest(
+                ProjectRoot: options.GetValueOrDefault("--project"),
+                DocumentName: null,
+                StartDirectory: getWorkingDirectory()));
+            return ResolvedProjectResolutionResult.Success(project);
+        }
+        catch (ProjectManifestException ex)
+        {
+            return ResolvedProjectResolutionResult.Failure(ex.Message);
+        }
     }
 
     private ProjectResolutionResult ResolveProjectContext(
@@ -252,6 +286,13 @@ public sealed class CommandLineApplication
         public static ProjectResolutionResult Success(ResolvedProjectContext? context) => new(context, null);
 
         public static ProjectResolutionResult Failure(string error) => new(null, error);
+    }
+
+    private sealed record ResolvedProjectResolutionResult(ResolvedProject? Project, string? Error)
+    {
+        public static ResolvedProjectResolutionResult Success(ResolvedProject? project) => new(project, null);
+
+        public static ResolvedProjectResolutionResult Failure(string error) => new(null, error);
     }
 
     private string RenderRootHelp()
