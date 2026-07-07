@@ -17,10 +17,10 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\VbaDevTools.App\VbaDevTools.App.csproj" />
-    <ProjectReference Include="..\..\src\VbaDevTools.Domain\VbaDevTools.Domain.csproj" />
-    <ProjectReference Include="..\..\src\VbaDevTools.Composition\VbaDevTools.Composition.csproj" />
-    <ProjectReference Include="..\..\src\VbaDevTools.Infrastructure\VbaDevTools.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\VbaDevTool.App\VbaDevTool.App.csproj" />
+    <ProjectReference Include="..\..\src\VbaDevTool.Domain\VbaDevTool.Domain.csproj" />
+    <ProjectReference Include="..\..\src\VbaDevTool.Composition\VbaDevTool.Composition.csproj" />
+    <ProjectReference Include="..\..\src\VbaDevTool.Infrastructure\VbaDevTool.Infrastructure.csproj" />
   </ItemGroup>
 
 </Project>

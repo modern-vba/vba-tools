@@ -72,7 +72,7 @@ public sealed class DoctorCommand
         results.Add(DiagnosticResult.Pass("Project manifest", $"Loaded {context.ManifestPath}."));
         results.Add(Directory.Exists(context.DocumentSourceSetPath)
             ? DiagnosticResult.Pass("Document source set", $"Found {context.DocumentSourceSetPath}.")
-            : DiagnosticResult.Fail("Document source set", $"Create the source directory or run vba-devtools new: {context.DocumentSourceSetPath}."));
+            : DiagnosticResult.Fail("Document source set", $"Create the source directory or run vba-devtool new: {context.DocumentSourceSetPath}."));
         results.Add(File.Exists(context.TemplateDocumentPath)
             ? DiagnosticResult.Pass("Source template", $"Found {context.TemplateDocumentPath}.")
             : DiagnosticResult.Fail("Source template", $"Create the macro-enabled template workbook: {context.TemplateDocumentPath}."));
@@ -108,7 +108,7 @@ public sealed class DoctorCommand
     private static string Render(IReadOnlyList<DiagnosticResult> results)
     {
         var builder = new StringBuilder();
-        builder.AppendLine("vba-devtools doctor");
+        builder.AppendLine("vba-devtool doctor");
         builder.AppendLine();
         foreach (var result in results)
         {

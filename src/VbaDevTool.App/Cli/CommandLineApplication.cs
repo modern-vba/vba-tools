@@ -257,10 +257,10 @@ public sealed class CommandLineApplication
     private string RenderRootHelp()
     {
         var builder = new StringBuilder();
-        builder.AppendLine("vba-devtools");
+        builder.AppendLine("vba-devtool");
         builder.AppendLine();
         builder.AppendLine("Usage:");
-        builder.AppendLine("  vba-devtools <command> [options]");
+        builder.AppendLine("  vba-devtool <command> [options]");
         builder.AppendLine();
         builder.AppendLine("Commands:");
         foreach (var command in commands.Values.OrderBy(command => command.DisplayOrder))
@@ -274,12 +274,12 @@ public sealed class CommandLineApplication
     private static string RenderCommandHelp(ToolingCommandDefinition command)
     {
         var builder = new StringBuilder();
-        builder.AppendLine($"vba-devtools {command.Name}");
+        builder.AppendLine($"vba-devtool {command.Name}");
         builder.AppendLine();
         builder.AppendLine(command.Description);
         builder.AppendLine();
         builder.AppendLine("Usage:");
-        builder.AppendLine($"  vba-devtools {command.Name} {command.UsageSuffix}".TrimEnd());
+        builder.AppendLine($"  vba-devtool {command.Name} {command.UsageSuffix}".TrimEnd());
 
         if (command.Options.Count > 0)
         {

@@ -1,8 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
-    <ProjectReference Include="..\VbaDevTools.Domain\VbaDevTools.Domain.csproj" />
-    <ProjectReference Include="..\VbaDevTools.App\VbaDevTools.App.csproj" />
+    <ProjectReference Include="..\VbaDevTool.Domain\VbaDevTool.Domain.csproj" />
+    <ProjectReference Include="..\VbaDevTool.App\VbaDevTool.App.csproj" />
   </ItemGroup>
 
   <PropertyGroup>
