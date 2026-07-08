@@ -133,6 +133,29 @@ public sealed class TestCommandTests
         Assert.StartsWith("Book1: 1 passed", result.StandardOutput, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void TestUsesTextOutputWhenNoFormatOptionOrManifestDefaultExists()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null) with
+        {
+            CommandDefaults = null
+        };
+        new JsonProjectManifestStore().Save(root, manifest);
+        var binPath = Path.Combine(root, "bin", "Book1", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
+        File.WriteAllText(binPath, "bin", Encoding.UTF8);
+        var runner = new FakeWorkbookTestRunner(new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
+
+        var result = application.Run(["test", "--no-build"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.StartsWith("Book1: 1 passed", result.StandardOutput, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"type\":\"summary\"", result.StandardOutput, StringComparison.Ordinal);
+    }
+
     private static IReadOnlyList<TestResultRecord> SampleResults()
         =>
         [
