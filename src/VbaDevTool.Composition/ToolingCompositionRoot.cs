@@ -4,6 +4,7 @@ using VbaDevTools.App.CommonModules;
 using VbaDevTools.App.Diagnostics;
 using VbaDevTools.App.Export;
 using VbaDevTools.App.Projects;
+using VbaDevTools.App.References;
 using VbaDevTools.App.Testing;
 using VbaDevTools.App.Workbooks;
 using VbaDevTools.Infrastructure.Diagnostics;
@@ -28,6 +29,7 @@ public static class ToolingCompositionRoot
         var manifestStore = new JsonProjectManifestStore();
         var commonModulesManifestReader = new CommonModulesManifestReader();
         var commonModulesService = new CommonModulesService(commonModulesManifestReader, manifestStore);
+        var referenceService = new VbaProjectReferenceService(manifestStore);
         var projectContextResolver = new ProjectContextResolver(manifestStore);
         var doctorCommand = new DoctorCommand(
             projectContextResolver,
@@ -57,6 +59,7 @@ public static class ToolingCompositionRoot
             doctorCommand,
             newProjectCommand,
             commonModulesService,
+            referenceService,
             buildCommand,
             publishCommand,
             testCommand,

@@ -4,6 +4,7 @@ using VbaDevTools.App.CommonModules;
 using VbaDevTools.App.Diagnostics;
 using VbaDevTools.App.Export;
 using VbaDevTools.App.Projects;
+using VbaDevTools.App.References;
 using VbaDevTools.App.Testing;
 
 namespace VbaDevTools.App.Cli;
@@ -15,6 +16,7 @@ public sealed class CommandLineApplication
     private readonly DoctorCommand doctorCommand;
     private readonly NewProjectCommand newProjectCommand;
     private readonly CommonModulesService commonModulesService;
+    private readonly VbaProjectReferenceService referenceService;
     private readonly BuildCommand buildCommand;
     private readonly PublishCommand publishCommand;
     private readonly TestCommand testCommand;
@@ -27,6 +29,7 @@ public sealed class CommandLineApplication
         DoctorCommand doctorCommand,
         NewProjectCommand newProjectCommand,
         CommonModulesService commonModulesService,
+        VbaProjectReferenceService referenceService,
         BuildCommand buildCommand,
         PublishCommand publishCommand,
         TestCommand testCommand,
@@ -38,6 +41,7 @@ public sealed class CommandLineApplication
         this.doctorCommand = doctorCommand;
         this.newProjectCommand = newProjectCommand;
         this.commonModulesService = commonModulesService;
+        this.referenceService = referenceService;
         this.buildCommand = buildCommand;
         this.publishCommand = publishCommand;
         this.testCommand = testCommand;
@@ -135,6 +139,23 @@ public sealed class CommandLineApplication
         if (command.Name.Equals("common-module list", StringComparison.OrdinalIgnoreCase) && resolution.Context is not null)
         {
             return commonModulesService.List(
+                resolution.Context,
+                parsedArgs.Options.GetValueOrDefault("--format") ?? "text");
+        }
+
+        if (command.Name.Equals("reference add", StringComparison.OrdinalIgnoreCase) && resolution.Context is not null)
+        {
+            return referenceService.Add(resolution.Context, parsedArgs.Positionals);
+        }
+
+        if (command.Name.Equals("reference remove", StringComparison.OrdinalIgnoreCase) && resolution.Context is not null)
+        {
+            return referenceService.Remove(resolution.Context, parsedArgs.Positionals);
+        }
+
+        if (command.Name.Equals("reference list", StringComparison.OrdinalIgnoreCase) && resolution.Context is not null)
+        {
+            return referenceService.List(
                 resolution.Context,
                 parsedArgs.Options.GetValueOrDefault("--format") ?? "text");
         }
