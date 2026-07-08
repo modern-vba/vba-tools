@@ -18,7 +18,7 @@ public sealed class NewProjectCommandTests
             temp.Path,
             initialWorkbookCreator: workbookCreator);
 
-        var result = application.Run(["new", "SampleProject"]);
+        var result = application.Run(["new", "excel", "--name", "SampleProject"]);
 
         Assert.Equal(0, result.ExitCode);
         Assert.Contains("CommonModulesRepository was not found", result.StandardError, StringComparison.Ordinal);
@@ -41,21 +41,17 @@ public sealed class NewProjectCommandTests
     }
 
     [Fact]
-    public void NewUsesDistinctDocumentNameWhenProvided()
+    public void NewExcelRequiresNameOption()
     {
         using var temp = TempDirectory.Create();
         var application = ToolingCompositionRoot.CreateCommandLineApplication(
             temp.Path,
             initialWorkbookCreator: new FakeInitialWorkbookCreator());
 
-        var result = application.Run(["new", "SampleProject", "--document", "WorkbookMain"]);
+        var result = application.Run(["new", "excel"]);
 
-        Assert.Equal(0, result.ExitCode);
-        var projectRoot = Path.Combine(temp.Path, "SampleProject");
-        Assert.True(File.Exists(Path.Combine(projectRoot, "src", "WorkbookMain", "WorkbookMain.xlsm")));
-        var manifest = new JsonProjectManifestStore().Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
-        Assert.Equal("WorkbookMain", manifest.PrimaryDocument);
-        Assert.True(manifest.Documents.ContainsKey("WorkbookMain"));
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("new requires a project name", result.StandardError, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -72,8 +68,8 @@ public sealed class NewProjectCommandTests
             temp.Path,
             initialWorkbookCreator: new FakeInitialWorkbookCreator());
 
-        var emptyResult = application.Run(["new", "EmptyProject"]);
-        var nonEmptyResult = application.Run(["new", "NonEmptyProject"]);
+        var emptyResult = application.Run(["new", "excel", "-n", "EmptyProject"]);
+        var nonEmptyResult = application.Run(["new", "excel", "-n", "NonEmptyProject"]);
 
         Assert.Equal(0, emptyResult.ExitCode);
         Assert.Equal(1, nonEmptyResult.ExitCode);
@@ -93,7 +89,7 @@ public sealed class NewProjectCommandTests
             temp.Path,
             initialWorkbookCreator: new FakeInitialWorkbookCreator());
 
-        var result = application.Run(["new", "ExistingProject"]);
+        var result = application.Run(["new", "excel", "--name", "ExistingProject"]);
 
         Assert.Equal(1, result.ExitCode);
         Assert.True(File.Exists(manifestPath));
@@ -114,7 +110,7 @@ public sealed class NewProjectCommandTests
             temp.Path,
             initialWorkbookCreator: new FakeInitialWorkbookCreator());
 
-        var result = application.Run(["new", "SampleProject"]);
+        var result = application.Run(["new", "excel", "--name", "SampleProject"]);
 
         Assert.Equal(0, result.ExitCode);
         var sourceSet = Path.Combine(temp.Path, "SampleProject", "src", "SampleProject");

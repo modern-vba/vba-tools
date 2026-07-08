@@ -42,7 +42,7 @@ public sealed class TestCommandTests
     }
 
     [Fact]
-    public void TestRunsAgainstManifestResolvedBinWorkbookWithoutImplicitBuild()
+    public void TestRunsAgainstManifestResolvedBinWorkbookWhenBuildIsDisabled()
     {
         using var temp = TempDirectory.Create();
         var root = temp.CreateDirectory("Project");
@@ -57,7 +57,7 @@ public sealed class TestCommandTests
             workbookBuildAutomation: buildAutomation,
             workbookTestRunner: runner);
 
-        var result = application.Run(["test", "--format", "text"]);
+        var result = application.Run(["test", "--no-build", "--format", "text"]);
 
         Assert.Equal(0, result.ExitCode);
         Assert.Equal([binPath], runner.Workbooks);
@@ -66,7 +66,7 @@ public sealed class TestCommandTests
     }
 
     [Fact]
-    public void TestBuildOptionInvokesBuildBeforeRunningTests()
+    public void TestBuildsBeforeRunningTestsByDefault()
     {
         using var temp = TempDirectory.Create();
         var root = temp.CreateDirectory("Project");
@@ -79,7 +79,7 @@ public sealed class TestCommandTests
             workbookBuildAutomation: buildAutomation,
             workbookTestRunner: runner);
 
-        var result = application.Run(["test", "--build", "--format", "text"]);
+        var result = application.Run(["test", "--format", "text"]);
 
         Assert.Equal(0, result.ExitCode);
         Assert.NotEmpty(buildAutomation.OpenedWorkbooks);
@@ -102,7 +102,7 @@ public sealed class TestCommandTests
             new WorkbookTestResultRow("Test_Module", "Test_Errors", "ERR", "errored"));
         var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
 
-        var result = application.Run(["test", "--format", "ndjson"]);
+        var result = application.Run(["test", "--no-build", "--format", "ndjson"]);
 
         Assert.Equal(1, result.ExitCode);
         Assert.Contains("\"outcome\":\"passed\"", result.StandardOutput, StringComparison.Ordinal);
@@ -127,7 +127,7 @@ public sealed class TestCommandTests
         var runner = new FakeWorkbookTestRunner(new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
         var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
 
-        var result = application.Run(["test"]);
+        var result = application.Run(["test", "--no-build"]);
 
         Assert.Equal(0, result.ExitCode);
         Assert.StartsWith("Book1: 1 passed", result.StandardOutput, StringComparison.Ordinal);

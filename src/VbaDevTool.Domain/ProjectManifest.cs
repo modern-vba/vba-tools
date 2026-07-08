@@ -28,7 +28,7 @@ public sealed record ProjectManifest(
             documentName,
             documents,
             ToManifestPath(projectRoot, commonModulesRepositoryPath),
-            new CommandDefaults(Test: new TestCommandDefaults(Format: "ndjson")));
+            new CommandDefaults(Test: new TestCommandDefaults(Format: "text")));
     }
 
     private static string? ToManifestPath(string projectRoot, string? path)

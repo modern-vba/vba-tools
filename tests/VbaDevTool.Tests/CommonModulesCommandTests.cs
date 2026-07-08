@@ -53,7 +53,7 @@ public sealed class CommonModulesCommandTests
         WriteModule(commonRepo, "Feature.bas", "feature");
         var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
 
-        var result = application.Run(["add", "Feature"]);
+        var result = application.Run(["common-module", "add", "Feature"]);
 
         Assert.Equal(0, result.ExitCode);
         var sourceSet = Path.Combine(projectRoot, "src", "Book1");
@@ -76,7 +76,7 @@ public sealed class CommonModulesCommandTests
         WriteModule(commonRepo, "Foo.cls", "cls");
         var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
 
-        var result = application.Run(["add", "Foo"]);
+        var result = application.Run(["common-module", "add", "Foo"]);
 
         Assert.Equal(1, result.ExitCode);
         Assert.Contains("ambiguous", result.StandardError, StringComparison.OrdinalIgnoreCase);
@@ -92,7 +92,7 @@ public sealed class CommonModulesCommandTests
         new JsonProjectManifestStore().Save(projectRoot, ProjectManifest.CreateDefault("Project", "Book1", projectRoot, missingRepo));
         var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
 
-        var result = application.Run(["add", "Runtime.bas"]);
+        var result = application.Run(["common-module", "add", "Runtime.bas"]);
 
         Assert.Equal(1, result.ExitCode);
         Assert.Contains("CommonModulesRepository was not found", result.StandardError, StringComparison.Ordinal);
@@ -115,7 +115,7 @@ public sealed class CommonModulesCommandTests
         WriteModule(sourceSet, "Obsolete.bas", "obsolete");
         var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
 
-        var result = application.Run(["update"]);
+        var result = application.Run(["common-module", "update"]);
 
         Assert.Equal(0, result.ExitCode);
         Assert.Equal("base v2", File.ReadAllText(Path.Combine(sourceSet, "Base.bas")));
@@ -148,7 +148,7 @@ public sealed class CommonModulesCommandTests
         WriteModule(secondSourceSet, "Feature.bas", "second feature v1");
         var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
 
-        var result = application.Run(["update"]);
+        var result = application.Run(["common-module", "update"]);
 
         Assert.Equal(0, result.ExitCode);
         Assert.Equal("base v2", File.ReadAllText(Path.Combine(firstSourceSet, "Base.bas")));

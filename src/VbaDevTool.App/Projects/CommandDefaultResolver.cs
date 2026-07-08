@@ -18,7 +18,7 @@ public static class CommandDefaultResolver
 
         if (string.IsNullOrWhiteSpace(format))
         {
-            return "ndjson";
+            return "text";
         }
 
         if (!SupportedTestFormats.Contains(format))

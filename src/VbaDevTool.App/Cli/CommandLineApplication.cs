@@ -52,13 +52,15 @@ public sealed class CommandLineApplication
             return CommandResult.Success(RenderRootHelp());
         }
 
-        var commandName = args[0];
-        if (!commands.TryGetValue(commandName, out var command))
+        var commandMatch = MatchCommand(args);
+        if (commandMatch.Command is null)
         {
+            var commandName = args[0];
             return CommandResult.UsageError($"Unknown command '{commandName}'.{Environment.NewLine}{Environment.NewLine}{RenderRootHelp()}");
         }
 
-        var commandArgs = args.Skip(1).ToArray();
+        var command = commandMatch.Command;
+        var commandArgs = args.Skip(commandMatch.ConsumedArguments).ToArray();
         if (commandArgs.Any(IsHelp))
         {
             return CommandResult.Success(RenderCommandHelp(command));
@@ -70,11 +72,11 @@ public sealed class CommandLineApplication
             return CommandResult.UsageError(parsedArgs.Error);
         }
 
-        if (command.Name.Equals("new", StringComparison.OrdinalIgnoreCase))
+        if (command.Name.Equals("new excel", StringComparison.OrdinalIgnoreCase))
         {
             return newProjectCommand.Run(new NewProjectCommandRequest(
-                parsedArgs.Positionals.FirstOrDefault(),
-                parsedArgs.Options.GetValueOrDefault("--document"),
+                parsedArgs.Options.GetValueOrDefault("--name"),
+                null,
                 getWorkingDirectory()));
         }
 
@@ -85,7 +87,7 @@ public sealed class CommandLineApplication
                 getWorkingDirectory()));
         }
 
-        if (command.Name.Equals("update", StringComparison.OrdinalIgnoreCase))
+        if (command.Name.Equals("common-module update", StringComparison.OrdinalIgnoreCase))
         {
             var projectResolution = ResolveProject(command, parsedArgs.Options);
             if (projectResolution.Error is not null)
@@ -113,7 +115,7 @@ public sealed class CommandLineApplication
                     resolution.Context,
                     new TestCommandRequest(
                         format,
-                        parsedArgs.Options.ContainsKey("--build")));
+                        !parsedArgs.Options.ContainsKey("--no-build")));
             }
             catch (ProjectManifestException ex)
             {
@@ -121,7 +123,7 @@ public sealed class CommandLineApplication
             }
         }
 
-        if (command.Name.Equals("add", StringComparison.OrdinalIgnoreCase) && resolution.Context is not null)
+        if (command.Name.Equals("common-module add", StringComparison.OrdinalIgnoreCase) && resolution.Context is not null)
         {
             return commonModulesService.Add(resolution.Context, parsedArgs.Positionals);
         }
@@ -147,6 +149,35 @@ public sealed class CommandLineApplication
         }
 
         return CommandResult.NotImplemented($"Command '{command.Name}' is not implemented yet.");
+    }
+
+    private CommandMatch MatchCommand(IReadOnlyList<string> args)
+    {
+        foreach (var command in commands.Values.OrderByDescending(command => command.Name.Split(' ').Length))
+        {
+            var tokens = command.Name.Split(' ');
+            if (args.Count < tokens.Length)
+            {
+                continue;
+            }
+
+            var matches = true;
+            for (var i = 0; i < tokens.Length; i++)
+            {
+                if (!args[i].Equals(tokens[i], StringComparison.OrdinalIgnoreCase))
+                {
+                    matches = false;
+                    break;
+                }
+            }
+
+            if (matches)
+            {
+                return new CommandMatch(command, tokens.Length);
+            }
+        }
+
+        return new CommandMatch(null, 0);
     }
 
     private ResolvedProjectResolutionResult ResolveProject(
@@ -214,7 +245,7 @@ public sealed class CommandLineApplication
         for (var i = 0; i < args.Count; i++)
         {
             var arg = args[i];
-            if (!arg.StartsWith("--", StringComparison.Ordinal))
+            if (!arg.StartsWith("-", StringComparison.Ordinal) || arg == "-")
             {
                 positionals.Add(arg);
                 continue;
@@ -229,7 +260,9 @@ public sealed class CommandLineApplication
                 inlineValue = arg[(equalsIndex + 1)..];
             }
 
-            var option = command.Options.FirstOrDefault(candidate => candidate.Name.Equals(optionName, StringComparison.OrdinalIgnoreCase));
+            var option = command.Options.FirstOrDefault(candidate =>
+                candidate.Name.Equals(optionName, StringComparison.OrdinalIgnoreCase) ||
+                candidate.Aliases.Any(alias => alias.Equals(optionName, StringComparison.OrdinalIgnoreCase)));
             if (option is null)
             {
                 return ParsedCommandLine.Failure($"Unknown option '{optionName}' for command '{command.Name}'.");
@@ -281,6 +314,8 @@ public sealed class CommandLineApplication
         public static ParsedCommandLine Failure(string error) => new(new Dictionary<string, string?>(), [], error);
     }
 
+    private sealed record CommandMatch(ToolingCommandDefinition? Command, int ConsumedArguments);
+
     private sealed record ProjectResolutionResult(ResolvedProjectContext? Context, string? Error)
     {
         public static ProjectResolutionResult Success(ResolvedProjectContext? context) => new(context, null);
@@ -304,9 +339,13 @@ public sealed class CommandLineApplication
         builder.AppendLine("  vba-devtool <command> [options]");
         builder.AppendLine();
         builder.AppendLine("Commands:");
-        foreach (var command in commands.Values.OrderBy(command => command.DisplayOrder))
+        foreach (var command in commands.Values
+                     .GroupBy(command => command.Name.Split(' ')[0], StringComparer.OrdinalIgnoreCase)
+                     .Select(group => group.OrderBy(command => command.DisplayOrder).First())
+                     .OrderBy(command => command.DisplayOrder))
         {
-            builder.AppendLine($"  {command.Name,-10} {command.Description}");
+            var displayName = command.Name.Split(' ')[0];
+            builder.AppendLine($"  {displayName,-14} {command.Description}");
         }
 
         return builder.ToString();

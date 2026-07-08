@@ -110,7 +110,7 @@ public sealed class ProjectManifestTests
 
         Assert.Equal("ndjson", CommandDefaultResolver.ResolveTestFormat(manifest, "ndjson"));
         Assert.Equal("text", CommandDefaultResolver.ResolveTestFormat(manifest, null));
-        Assert.Equal("ndjson", CommandDefaultResolver.ResolveTestFormat(ProjectManifest.CreateDefault("Project", "Book1", root, null), null));
+        Assert.Equal("text", CommandDefaultResolver.ResolveTestFormat(ProjectManifest.CreateDefault("Project", "Book1", root, null), null));
 
         var unsupportedManifest = manifest with
         {
