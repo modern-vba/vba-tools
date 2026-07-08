@@ -28,14 +28,35 @@ invokes `vba-devtool`.
 
 Expected capabilities:
 
-- detect `project.json` from the active workspace or active VBA file;
-- resolve the bundled or configured `vba-devtool` executable;
-- check the companion CLI version expected by the extension;
+- detect `project.json` by walking upward from the active VBA, manifest, or
+  workbook-related file;
+- use the manifest directory as the `WorkbookBackedProject` root and pass it to
+  `vba-devtool` explicitly as `--project`;
+- choose from workspace `project.json` candidates when no active file determines
+  one project unambiguously;
+- resolve the bundled `vba-devtool` executable by default, or an explicit
+  `vbaTools.devtool.path` override when configured;
+- check the companion CLI command contract expected by the extension and reject
+  incompatible explicit CLI path overrides;
+- obtain CLI `toolVersion`, `contractVersion`, and per-command schema versions
+  from `vba-devtool capabilities --format json`;
+- avoid implicit `PATH` discovery for the companion CLI;
 - register VS Code commands for `doctor`, `build`, `test`, `publish`, `export`,
   CommonModules actions, and reference actions;
+- activate on VBA files, workbook-backed project manifests, and explicit
+  `vbaTools.*` commands rather than using always-on activation;
+- run project discovery during command execution so limited activation does not
+  prevent commands from finding the active `WorkbookBackedProject`;
+- expose initial Command Palette entries for `Doctor`, `Build`, `Test`,
+  `Publish`, `Export`, `Add Common Module`, `Update Common Modules`,
+  `Add Reference`, `Remove Reference`, and `List References`;
+- keep project creation, future restore commands, internal capabilities checks,
+  and no-build test runs out of the initial user-facing command palette;
 - show command output in a dedicated Output Channel;
 - surface clear errors when Excel, VBIDE trust access, workbook locks, or
   project manifest problems block automation.
+- for initial `doctor` command integration, show full output in the dedicated
+  Output Channel and use a notification only when blocking issues are found.
 
 ## Phase 2: Test Explorer integration
 
@@ -43,13 +64,31 @@ Connect `vba-devtool test --format ndjson` to the VS Code Testing API.
 
 Expected capabilities:
 
-- discover test modules and test procedures from exported VBA source;
-- create a test tree grouped by project, document, module, and procedure;
-- run all tests, one document's tests, one module's tests, or a single test;
-- stream `ndjson` results into VS Code test states;
+- create initial Test Explorer nodes for each discovered `WorkbookBackedProject`
+  and `DocumentSourceSet`;
+- add module and `TestProcedure` nodes after a project or document test run
+  reports them;
+- treat `DocumentSourceSet` test output as the source of truth for runnable leaf
+  tests;
+- run all tests, one document's tests, one known module's tests, or one known
+  test procedure;
+- invoke `vba-devtool test` directly for the default run profile, leaving
+  build-before-test behavior inside the CLI command contract;
+- stream `runStarted`, `testStarted`, `testFinished`, and `runFinished`
+  `ndjson` events into VS Code test states;
+- use `testFinished` project, document, module, and procedure identity to add
+  discovered leaf tests after a run;
+- report `testFinished` failures as individual test failures;
+- report build failures, Excel automation failures, VBIDE trust failures,
+  workbook locks, manifest errors, reference-resolution failures, and abnormal
+  CLI exits as project-level or document-level test run errors rather than
+  individual test failures;
 - map failures back to source locations when the test output provides enough
   identity;
-- support both default build-before-test behavior and explicit no-build runs.
+- avoid showing standalone VBA files that do not belong to a `ProjectManifest`
+  in Test Explorer;
+- track explicit no-build test reruns as a later separate run profile rather
+  than part of the initial default profile.
 
 ## Phase 3: Diagnostics and Problems integration
 
@@ -59,6 +98,8 @@ Expected capabilities:
 
 - keep language-server syntax and semantic diagnostics in Problems;
 - map `vba-devtool doctor` failures and warnings into project-level diagnostics;
+- promote `doctor` output to Problems only after a stable machine-readable
+  output format can provide diagnostic owner, severity, URI, and range mapping;
 - map build, reference-resolution, and CommonModules dependency failures into
   actionable messages;
 - add Quick Fix entries only when the repair operation is deterministic and
@@ -87,8 +128,9 @@ Expected capabilities:
 
 - list installed CommonModules for the selected document;
 - show `requested: true` roots and `requested: false` dependencies distinctly;
-- run `common-module add`, `common-module update`, and future restore/source
-  commands from VS Code;
+- run `common-module add`, `common-module update`, and a future
+  `common-module restore` or equivalent explicit package-restore command from
+  VS Code;
 - show what files and manifest entries changed after add/update;
 - visualize missing dependencies and unreachable dependency entries reported by
   `doctor`.
@@ -129,9 +171,13 @@ Prepare the Marketplace and GitHub Releases distribution path.
 Expected capabilities:
 
 - package the VS Code extension for Marketplace publication;
-- decide whether the extension bundles `vba-devtool.exe` or downloads a pinned
-  CLI release on first use;
+- bundle a self-contained Windows `vba-devtool.exe` in the Marketplace
+  extension by default under `bin/vba-devtool/win-x64/vba-devtool.exe`;
+- exclude the `tools/vba-devtool` source tree from VSIX packaging while
+  including only the published CLI artifact path;
 - publish standalone `vba-devtool.exe` artifacts from GitHub Releases;
+- support a user or developer override for the companion CLI path;
+- verify the resolved CLI command contract before project operations;
 - verify the CLI works on Windows 11 without requiring a separately installed
   .NET runtime;
 - verify first-run setup on a clean Windows 11 machine with Office installed;
@@ -140,8 +186,10 @@ Expected capabilities:
 
 ## CommonModules package distribution
 
-`xls-common-devtools` remains outside this repository and should publish a
-versioned `common_modules_repo.zip` release artifact.
+`xls-common-devtools` remains outside this repository. A future release flow may
+publish a versioned `common_modules_repo.zip` release artifact, but network
+package acquisition is a future option rather than an implementation commitment
+for the initial extension work.
 
 The intended artifact shape is:
 
@@ -156,10 +204,17 @@ common_modules_repo.zip
   *.frx
 ```
 
-`vba-devtool` should restore that package explicitly instead of allowing normal
-build/test/update commands to perform implicit network access. User projects
-should pin the CommonModules package source and version so repeated builds stay
-reproducible.
+If network package acquisition is implemented later, `vba-devtool` should own
+package download, extraction, manifest validation, and source placement through
+an explicit future `common-module restore` command or an equivalent restore
+command. The VS Code extension should invoke that command instead of
+implementing ZIP download or CommonModules manifest interpretation itself.
+
+Normal build/test/publish commands should not perform implicit network access.
+If a CommonModules package is missing and a restore command exists, the
+extension should ask the user before invoking restore. User projects should pin
+the CommonModules package source and version if package acquisition becomes
+available so repeated builds stay reproducible.
 
 ## Release channels
 
@@ -169,6 +224,11 @@ The long-term release model has two channels:
   integration, and bundled or managed companion tooling;
 - GitHub Releases for standalone `vba-devtool` artifacts and release notes.
 
-The two channels must share version compatibility rules. The extension should
-verify the companion CLI version before invoking project operations that depend
-on a specific command contract.
+The Marketplace extension bundles the companion `vba-devtool.exe` by default,
+while GitHub Releases also publish the same CLI as a standalone artifact. The
+extension and CLI have separate release versions. The extension should declare
+the CLI contract it requires, bundle a CLI version tested against that contract,
+and verify the companion CLI contract before invoking project operations,
+including when a user or developer overrides the bundled CLI path. The CLI
+contract should be versioned separately from the CLI tool version so patch-level
+tool fixes do not imply command or output schema incompatibility.

@@ -35,6 +35,40 @@ A versioned release artifact produced by `xls-common-devtools`, normally as
 machine-readable CommonModules manifest consumed by `VbaDevTool`.
 _Avoid_: vendored source, submodule, built-in library
 
+## Workbook Projects
+
+**WorkbookBackedProject**:
+A VBA development project that keeps exported source files and one or more
+Office macro documents under a project manifest.
+_Avoid_: workspace folder, repository, source folder
+
+**ProjectManifest**:
+The project-local manifest, stored as `project.json`, that identifies a
+`WorkbookBackedProject` for VS Code commands and `VbaDevTool` operations.
+_Avoid_: package file, extension settings, workspace settings
+
+**DocumentSourceSet**:
+The exported VBA source files and source template document that belong to one
+Office macro document within a `WorkbookBackedProject`.
+_Avoid_: source folder, document, test suite
+
+## Testing
+
+**TestExplorerNode**:
+A VS Code Testing API item representing a runnable or discoverable testing scope
+for workbook-backed VBA tests.
+_Avoid_: test result row, source symbol, command
+
+**TestProcedure**:
+A VBA procedure that the workbook-backed test runner can execute and report as
+an individual test after a `DocumentSourceSet` or project test run.
+_Avoid_: macro, module, assertion
+
+**TestRunError**:
+A project-level or document-level failure that prevents a workbook-backed test
+run from completing as a normal set of `TestProcedure` outcomes.
+_Avoid_: failed assertion, failed test, diagnostic
+
 ## Language
 
 **VbaProject**:
@@ -161,6 +195,15 @@ _Avoid_: function block, top-level node, parse chunk
 
 Dev: "Should completion include a procedure from another folder?"
 Domain Expert: "No. In the MVP, the `VbaProject` is only the active file's folder, so sibling `.bas`, `.cls`, and `.frm` files are indexed."
+
+Dev: "Is the VS Code workspace folder always the `WorkbookBackedProject`?"
+Domain Expert: "No. The `ProjectManifest` identifies the `WorkbookBackedProject`; a workspace can contain none, one, or several workbook-backed projects."
+
+Dev: "Should Test Explorer show every `TestProcedure` before the first run?"
+Domain Expert: "No. It should show runnable `WorkbookBackedProject` and `DocumentSourceSet` nodes first, then add procedure-level nodes after test output identifies them."
+
+Dev: "Is a workbook lock a failed `TestProcedure`?"
+Domain Expert: "No. It is a `TestRunError` on the project or document scope because the test run could not reach individual test execution."
 
 Dev: "Should a form module participate in rename and go to definition?"
 Domain Expert: "Yes. A `.frm` file in the same folder is part of the same `VbaProject`."
