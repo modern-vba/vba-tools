@@ -1,37 +1,100 @@
 using System.Text;
+using System.Text.Json;
 using VbaDevTools.App.Cli;
 using VbaDevTools.App.Projects;
+using VbaDevTools.Domain;
 
 namespace VbaDevTools.App.CommonModules;
 
 public sealed class CommonModulesService
 {
-    private readonly CommonModulesManifestReader manifestReader;
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        WriteIndented = true
+    };
 
-    public CommonModulesService(CommonModulesManifestReader manifestReader)
+    private readonly CommonModulesManifestReader manifestReader;
+    private readonly IProjectManifestStore manifestStore;
+
+    public CommonModulesService(
+        CommonModulesManifestReader manifestReader,
+        IProjectManifestStore manifestStore)
     {
         this.manifestReader = manifestReader;
+        this.manifestStore = manifestStore;
     }
 
-    public CommandResult Add(ResolvedProjectContext context, IReadOnlyList<string> requestedModules)
+    public CommandResult Add(ResolvedProjectContext context, IReadOnlyList<string> requestedModules, bool force)
     {
-        if (requestedModules.Count == 0)
+        var normalizedRequestedModules = requestedModules
+            .Select(module => module.Trim())
+            .Where(module => !string.IsNullOrWhiteSpace(module))
+            .ToArray();
+        if (normalizedRequestedModules.Length == 0)
         {
-            return CommandResult.UsageError("add requires at least one CommonModules module name.");
+            return CommandResult.UsageError("common-module add requires at least one CommonModules module name.");
         }
 
         try
         {
             var repositoryPath = GetRepositoryPath(context);
             var entries = manifestReader.Load(repositoryPath);
-            var orderedEntries = ResolveRequestedEntries(entries, requestedModules);
-            var copied = CopyEntries(repositoryPath, context.DocumentSourceSetPath, orderedEntries, "Copied");
-            return CommandResult.Success(copied);
+            var orderedEntries = ResolveRequestedEntries(entries, normalizedRequestedModules);
+            var requestedNames = normalizedRequestedModules
+                .Select(GetCommonModuleName)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var document = GetDocument(context.Manifest, context.DocumentName);
+            var installedByName = document.CommonModules.ToDictionary(
+                module => module.Name,
+                StringComparer.OrdinalIgnoreCase);
+            var entriesToCopy = orderedEntries
+                .Where(entry => !installedByName.ContainsKey(GetCommonModuleName(entry.ModuleFile)))
+                .ToArray();
+
+            EnsureNoUntrackedConflicts(context.DocumentSourceSetPath, entriesToCopy, force);
+            var copied = CopyEntries(repositoryPath, context.DocumentSourceSetPath, entriesToCopy, "Copied", overwrite: force);
+            var changed = ApplyInstalledEntries(document, orderedEntries, requestedNames, installedByName);
+            if (changed)
+            {
+                manifestStore.Save(context.ProjectRoot, context.Manifest);
+            }
+
+            return copied.Length == 0
+                ? CommandResult.Success("No CommonModules changes." + Environment.NewLine)
+                : CommandResult.Success(copied);
         }
         catch (CommonModulesManifestException ex)
         {
             return CommandResult.UsageError(ex.Message);
         }
+    }
+
+    public CommandResult List(ResolvedProjectContext context, string format)
+    {
+        var document = GetDocument(context.Manifest, context.DocumentName);
+        if (format.Equals("json", StringComparison.OrdinalIgnoreCase))
+        {
+            var output = new CommonModuleListOutput(context.DocumentName, document.CommonModules);
+            return CommandResult.Success(JsonSerializer.Serialize(output, JsonOptions) + Environment.NewLine);
+        }
+
+        var builder = new StringBuilder();
+        builder.AppendLine($"Document: {context.DocumentName}");
+        builder.AppendLine("CommonModules:");
+        if (document.CommonModules.Count == 0)
+        {
+            builder.AppendLine("  (none)");
+        }
+        else
+        {
+            foreach (var module in document.CommonModules)
+            {
+                builder.AppendLine($"  {module.Name} (requested: {module.Requested.ToString().ToLowerInvariant()})");
+            }
+        }
+
+        return CommandResult.Success(builder.ToString());
     }
 
     public CommandResult Update(ResolvedProject project)
@@ -55,7 +118,7 @@ public sealed class CommonModulesService
                 }
 
                 var orderedEntries = ResolveRequestedEntries(entries, installedEntries);
-                output.Append(CopyEntries(repositoryPath, documentSourceSetPath, orderedEntries, "Updated", documentName));
+                output.Append(CopyEntries(repositoryPath, documentSourceSetPath, orderedEntries, "Updated", overwrite: true, documentName));
             }
 
             return output.Length == 0
@@ -138,6 +201,7 @@ public sealed class CommonModulesService
         string documentSourceSetPath,
         IReadOnlyList<CommonModuleManifestEntry> entries,
         string verb,
+        bool overwrite,
         string? documentName = null)
     {
         Directory.CreateDirectory(documentSourceSetPath);
@@ -150,13 +214,78 @@ public sealed class CommonModulesService
                 throw new CommonModulesManifestException($"CommonModules source file was not found: {sourcePath}");
             }
 
-            File.Copy(sourcePath, Path.Combine(documentSourceSetPath, entry.ModuleFile), overwrite: true);
+            File.Copy(sourcePath, Path.Combine(documentSourceSetPath, entry.ModuleFile), overwrite);
             var outputPath = documentName is null ? entry.ModuleFile : $"{documentName}/{entry.ModuleFile}";
             output.AppendLine($"{verb} {outputPath}");
         }
 
         return output.ToString();
     }
+
+    private static void EnsureNoUntrackedConflicts(
+        string documentSourceSetPath,
+        IReadOnlyList<CommonModuleManifestEntry> entries,
+        bool force)
+    {
+        if (force)
+        {
+            return;
+        }
+
+        foreach (var entry in entries)
+        {
+            var targetPath = Path.Combine(documentSourceSetPath, entry.ModuleFile);
+            if (File.Exists(targetPath))
+            {
+                throw new CommonModulesManifestException($"CommonModules target source file already exists: {targetPath}");
+            }
+        }
+    }
+
+    private static bool ApplyInstalledEntries(
+        ProjectDocument document,
+        IReadOnlyList<CommonModuleManifestEntry> orderedEntries,
+        IReadOnlySet<string> requestedNames,
+        IReadOnlyDictionary<string, InstalledCommonModule> installedByName)
+    {
+        var changed = false;
+        foreach (var entry in orderedEntries)
+        {
+            var name = GetCommonModuleName(entry.ModuleFile);
+            var requested = requestedNames.Contains(name);
+            if (installedByName.TryGetValue(name, out var installed))
+            {
+                if (requested && !installed.Requested)
+                {
+                    var index = document.CommonModules.FindIndex(module => module.Name.Equals(installed.Name, StringComparison.OrdinalIgnoreCase));
+                    document.CommonModules[index] = installed with { Requested = true };
+                    changed = true;
+                }
+
+                continue;
+            }
+
+            document.CommonModules.Add(new InstalledCommonModule(name, requested));
+            changed = true;
+        }
+
+        return changed;
+    }
+
+    private static ProjectDocument GetDocument(ProjectManifest manifest, string documentName)
+    {
+        if (manifest.Documents.TryGetValue(documentName, out var document))
+        {
+            return document;
+        }
+
+        return manifest.Documents
+            .First(item => item.Key.Equals(documentName, StringComparison.OrdinalIgnoreCase))
+            .Value;
+    }
+
+    private static string GetCommonModuleName(string moduleFile)
+        => Path.GetFileNameWithoutExtension(moduleFile);
 
     private static string GetRepositoryPath(ResolvedProjectContext context)
         => GetRepositoryPath(context.CommonModulesRepositoryPath);
@@ -178,4 +307,8 @@ public sealed class CommonModulesService
 
         return commonModulesRepositoryPath;
     }
+
+    private sealed record CommonModuleListOutput(
+        string Document,
+        IReadOnlyList<InstalledCommonModule> CommonModules);
 }

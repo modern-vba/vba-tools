@@ -27,7 +27,7 @@ public static class ToolingCompositionRoot
     {
         var manifestStore = new JsonProjectManifestStore();
         var commonModulesManifestReader = new CommonModulesManifestReader();
-        var commonModulesService = new CommonModulesService(commonModulesManifestReader);
+        var commonModulesService = new CommonModulesService(commonModulesManifestReader, manifestStore);
         var projectContextResolver = new ProjectContextResolver(manifestStore);
         var doctorCommand = new DoctorCommand(
             projectContextResolver,

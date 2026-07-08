@@ -126,7 +126,17 @@ public sealed class CommandLineApplication
 
         if (command.Name.Equals("common-module add", StringComparison.OrdinalIgnoreCase) && resolution.Context is not null)
         {
-            return commonModulesService.Add(resolution.Context, parsedArgs.Positionals);
+            return commonModulesService.Add(
+                resolution.Context,
+                parsedArgs.Positionals,
+                parsedArgs.Options.ContainsKey("--force"));
+        }
+
+        if (command.Name.Equals("common-module list", StringComparison.OrdinalIgnoreCase) && resolution.Context is not null)
+        {
+            return commonModulesService.List(
+                resolution.Context,
+                parsedArgs.Options.GetValueOrDefault("--format") ?? "text");
         }
 
         if (command.Name.Equals("build", StringComparison.OrdinalIgnoreCase) && resolution.Context is not null)
