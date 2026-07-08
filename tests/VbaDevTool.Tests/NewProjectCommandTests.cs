@@ -13,7 +13,9 @@ public sealed class NewProjectCommandTests
     public void NewCreatesProjectLayoutWorkbookAndUtf16Manifest()
     {
         using var temp = TempDirectory.Create();
-        var workbookCreator = new FakeInitialWorkbookCreator();
+        var workbookCreator = new FakeInitialWorkbookCreator(
+            "Visual Basic For Applications",
+            "Microsoft Excel 16.0 Object Library");
         var application = ToolingCompositionRoot.CreateCommandLineApplication(
             temp.Path,
             initialWorkbookCreator: workbookCreator);
@@ -38,20 +40,46 @@ public sealed class NewProjectCommandTests
         Assert.Equal("SampleProject", manifest.ProjectName);
         Assert.Equal("SampleProject", manifest.PrimaryDocument);
         Assert.Null(manifest.CommonModulesRepository);
+        Assert.Empty(manifest.Documents["SampleProject"].CommonModules);
+        Assert.Equal(
+            ["Visual Basic For Applications", "Microsoft Excel 16.0 Object Library"],
+            manifest.Documents["SampleProject"].References.Select(reference => reference.Name));
     }
 
     [Fact]
-    public void NewExcelRequiresNameOption()
+    public void NewExcelUsesOutputAsProjectRootAndDerivesNameWhenNameIsOmitted()
     {
         using var temp = TempDirectory.Create();
+        var output = Path.Combine(temp.Path, "OutputProject");
         var application = ToolingCompositionRoot.CreateCommandLineApplication(
             temp.Path,
             initialWorkbookCreator: new FakeInitialWorkbookCreator());
 
-        var result = application.Run(["new", "excel"]);
+        var result = application.Run(["new", "excel", "--output", output]);
 
-        Assert.Equal(1, result.ExitCode);
-        Assert.Contains("new requires a project name", result.StandardError, StringComparison.Ordinal);
+        Assert.Equal(0, result.ExitCode);
+        Assert.True(File.Exists(Path.Combine(output, "src", "OutputProject", "OutputProject.xlsm")));
+        var manifest = new JsonProjectManifestStore().Load(Path.Combine(output, ProjectManifest.ManifestFileName));
+        Assert.Equal("OutputProject", manifest.ProjectName);
+        Assert.Equal("OutputProject", manifest.PrimaryDocument);
+    }
+
+    [Fact]
+    public void NewExcelUsesNameForProjectAndDocumentWhenOutputIsSpecified()
+    {
+        using var temp = TempDirectory.Create();
+        var output = Path.Combine(temp.Path, "GeneratedProject");
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+            temp.Path,
+            initialWorkbookCreator: new FakeInitialWorkbookCreator());
+
+        var result = application.Run(["new", "excel", "--name", "WorkbookMain", "--output", output]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.True(File.Exists(Path.Combine(output, "src", "WorkbookMain", "WorkbookMain.xlsm")));
+        var manifest = new JsonProjectManifestStore().Load(Path.Combine(output, ProjectManifest.ManifestFileName));
+        Assert.Equal("WorkbookMain", manifest.ProjectName);
+        Assert.Equal("WorkbookMain", manifest.PrimaryDocument);
     }
 
     [Fact]
@@ -103,6 +131,7 @@ public sealed class NewProjectCommandTests
         var commonModulesRepository = Path.Combine(temp.Path, "common_modules_repo");
         Directory.CreateDirectory(commonModulesRepository);
         WriteCommonModulesManifest(commonModulesRepository);
+        File.WriteAllText(Path.Combine(commonModulesRepository, "Core.bas"), "core", new UTF8Encoding(false));
         File.WriteAllText(Path.Combine(commonModulesRepository, "Runtime.bas"), "runtime", new UTF8Encoding(false));
         File.WriteAllText(Path.Combine(commonModulesRepository, "UnitTest.bas"), "test", new UTF8Encoding(false));
         File.WriteAllText(Path.Combine(commonModulesRepository, "Optional.bas"), "optional", new UTF8Encoding(false));
@@ -114,11 +143,19 @@ public sealed class NewProjectCommandTests
 
         Assert.Equal(0, result.ExitCode);
         var sourceSet = Path.Combine(temp.Path, "SampleProject", "src", "SampleProject");
+        Assert.True(File.Exists(Path.Combine(sourceSet, "Core.bas")));
         Assert.True(File.Exists(Path.Combine(sourceSet, "Runtime.bas")));
         Assert.True(File.Exists(Path.Combine(sourceSet, "UnitTest.bas")));
         Assert.False(File.Exists(Path.Combine(sourceSet, "Optional.bas")));
         var manifest = new JsonProjectManifestStore().Load(Path.Combine(temp.Path, "SampleProject", ProjectManifest.ManifestFileName));
         Assert.Equal("../common_modules_repo", manifest.CommonModulesRepository);
+        Assert.Equal(
+            [
+                new InstalledCommonModule("Core", Requested: false),
+                new InstalledCommonModule("Runtime", Requested: true),
+                new InstalledCommonModule("UnitTest", Requested: true)
+            ],
+            manifest.Documents["SampleProject"].CommonModules);
     }
 
     private static void WriteCommonModulesManifest(string commonModulesRepository)
@@ -127,8 +164,9 @@ public sealed class NewProjectCommandTests
             "\n",
             "# test manifest",
             "ModuleFile\tCategories\tDependencies",
-            "Runtime.bas\truntime-baseline\t",
-            "UnitTest.bas\ttest-foundation\t",
+            "Core.bas\toptional\t",
+            "Runtime.bas\truntime-baseline\tCore.bas",
+            "UnitTest.bas\ttest-foundation\tRuntime.bas",
             "Optional.bas\toptional\t") + "\n";
         File.WriteAllText(Path.Combine(commonModulesRepository, "common-modules-manifest.tsv"), text, new UTF8Encoding(false));
     }
@@ -136,12 +174,20 @@ public sealed class NewProjectCommandTests
 
 internal sealed class FakeInitialWorkbookCreator : IInitialWorkbookCreator
 {
+    private readonly IReadOnlyList<string> referenceNames;
+
+    public FakeInitialWorkbookCreator(params string[] referenceNames)
+    {
+        this.referenceNames = referenceNames;
+    }
+
     public List<string> CreatedPaths { get; } = [];
 
-    public void CreateInitialWorkbook(string workbookPath)
+    public IReadOnlyList<string> CreateInitialWorkbook(string workbookPath)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(workbookPath)!);
         File.WriteAllText(workbookPath, "fake xlsm", new UTF8Encoding(false));
         CreatedPaths.Add(workbookPath);
+        return referenceNames;
     }
 }

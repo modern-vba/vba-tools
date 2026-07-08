@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Runtime.InteropServices;
 using VbaDevTools.App.Workbooks;
 
@@ -7,7 +8,7 @@ public sealed class ExcelComInitialWorkbookCreator : IInitialWorkbookCreator
 {
     private const int XlOpenXmlWorkbookMacroEnabled = 52;
 
-    public void CreateInitialWorkbook(string workbookPath)
+    public IReadOnlyList<string> CreateInitialWorkbook(string workbookPath)
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -29,15 +30,51 @@ public sealed class ExcelComInitialWorkbookCreator : IInitialWorkbookCreator
             excel.DisplayAlerts = false;
             workbookObject = excel.Workbooks.Add();
             dynamic workbook = workbookObject;
+            var referenceDescriptions = ReadReferenceDescriptions(workbookObject);
             workbook.SaveAs(workbookPath, XlOpenXmlWorkbookMacroEnabled);
             workbook.Close(false);
             excel.Quit();
+            return referenceDescriptions;
         }
         finally
         {
             ReleaseComObject(workbookObject);
             ReleaseComObject(excelObject);
         }
+    }
+
+    private static IReadOnlyList<string> ReadReferenceDescriptions(object workbookObject)
+    {
+        var referenceDescriptions = new List<string>();
+        object? referencesObject = null;
+
+        try
+        {
+            dynamic workbook = workbookObject;
+            referencesObject = workbook.VBProject.References;
+            foreach (var referenceObject in (IEnumerable)referencesObject)
+            {
+                try
+                {
+                    dynamic reference = referenceObject;
+                    var description = (string?)reference.Description;
+                    if (!string.IsNullOrWhiteSpace(description))
+                    {
+                        referenceDescriptions.Add(description.Trim());
+                    }
+                }
+                finally
+                {
+                    ReleaseComObject(referenceObject);
+                }
+            }
+        }
+        finally
+        {
+            ReleaseComObject(referencesObject);
+        }
+
+        return referenceDescriptions;
     }
 
     private static void ReleaseComObject(object? value)

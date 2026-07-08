@@ -100,6 +100,22 @@ public sealed class JsonProjectManifestStore : IProjectManifestStore
             {
                 throw new ProjectManifestException($"Document '{name}' must define sourcePath, templatePath, binPath, and publishPath: {manifestPath}");
             }
+
+            foreach (var commonModule in document.CommonModules)
+            {
+                if (string.IsNullOrWhiteSpace(commonModule.Name))
+                {
+                    throw new ProjectManifestException($"Document '{name}' contains an empty CommonModules name: {manifestPath}");
+                }
+            }
+
+            foreach (var reference in document.References)
+            {
+                if (string.IsNullOrWhiteSpace(reference.Name))
+                {
+                    throw new ProjectManifestException($"Document '{name}' contains an empty VBA project reference name: {manifestPath}");
+                }
+            }
         }
     }
 

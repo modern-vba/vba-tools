@@ -15,11 +15,13 @@ public sealed record ProjectManifest(
         string projectName,
         string documentName,
         string projectRoot,
-        string? commonModulesRepositoryPath)
+        string? commonModulesRepositoryPath,
+        IReadOnlyList<InstalledCommonModule>? commonModules = null,
+        IReadOnlyList<VbaProjectReference>? references = null)
     {
         var documents = new Dictionary<string, ProjectDocument>(StringComparer.OrdinalIgnoreCase)
         {
-            [documentName] = ProjectDocument.CreateExcel(documentName)
+            [documentName] = ProjectDocument.CreateExcel(documentName, commonModules, references)
         };
 
         return new ProjectManifest(

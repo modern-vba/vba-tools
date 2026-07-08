@@ -77,6 +77,7 @@ public sealed class CommandLineApplication
             return newProjectCommand.Run(new NewProjectCommandRequest(
                 parsedArgs.Options.GetValueOrDefault("--name"),
                 null,
+                parsedArgs.Options.GetValueOrDefault("--output"),
                 getWorkingDirectory()));
         }
 

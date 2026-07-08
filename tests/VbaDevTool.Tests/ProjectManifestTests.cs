@@ -17,7 +17,16 @@ public sealed class ProjectManifestTests
         using var temp = TempDirectory.Create();
         var projectRoot = temp.CreateDirectory("SampleProject");
         var commonModulesRepository = Path.GetFullPath(Path.Combine(projectRoot, "..", "common_modules_repo"));
-        var manifest = ProjectManifest.CreateDefault("SampleProject", "Book1", projectRoot, commonModulesRepository);
+        var manifest = ProjectManifest.CreateDefault(
+            "SampleProject",
+            "Book1",
+            projectRoot,
+            commonModulesRepository,
+            [
+                new InstalledCommonModule("Runtime", Requested: true),
+                new InstalledCommonModule("CommonDependency", Requested: false)
+            ],
+            [new VbaProjectReference("Microsoft Scripting Runtime")]);
         var store = new JsonProjectManifestStore();
 
         store.Save(projectRoot, manifest);
@@ -29,6 +38,13 @@ public sealed class ProjectManifestTests
 
         using var document = JsonDocument.Parse(Encoding.Unicode.GetString(bytes[2..]));
         Assert.Equal("../common_modules_repo", document.RootElement.GetProperty("commonModulesRepository").GetString());
+        var book = document.RootElement.GetProperty("documents").GetProperty("Book1");
+        var commonModules = book.GetProperty("commonModules");
+        Assert.Equal("Runtime", commonModules[0].GetProperty("name").GetString());
+        Assert.True(commonModules[0].GetProperty("requested").GetBoolean());
+        Assert.Equal("CommonDependency", commonModules[1].GetProperty("name").GetString());
+        Assert.False(commonModules[1].GetProperty("requested").GetBoolean());
+        Assert.Equal("Microsoft Scripting Runtime", book.GetProperty("references")[0].GetProperty("name").GetString());
     }
 
     [Fact]
@@ -47,6 +63,8 @@ public sealed class ProjectManifestTests
 
         Assert.Equal("SampleProject", utf16Manifest.ProjectName);
         Assert.Equal("Utf8Project", utf8Manifest.ProjectName);
+        Assert.Empty(utf8Manifest.Documents["Book1"].CommonModules);
+        Assert.Empty(utf8Manifest.Documents["Book1"].References);
     }
 
     [Fact]

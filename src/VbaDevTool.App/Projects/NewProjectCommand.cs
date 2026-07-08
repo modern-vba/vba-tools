@@ -11,28 +11,24 @@ public sealed class NewProjectCommand
     private readonly IProjectManifestStore manifestStore;
     private readonly IInitialWorkbookCreator initialWorkbookCreator;
     private readonly CommonModulesManifestReader commonModulesManifestReader;
+    private readonly CommonModulesService commonModulesService;
 
     public NewProjectCommand(
         IProjectManifestStore manifestStore,
         IInitialWorkbookCreator initialWorkbookCreator,
-        CommonModulesManifestReader commonModulesManifestReader)
+        CommonModulesManifestReader commonModulesManifestReader,
+        CommonModulesService commonModulesService)
     {
         this.manifestStore = manifestStore;
         this.initialWorkbookCreator = initialWorkbookCreator;
         this.commonModulesManifestReader = commonModulesManifestReader;
+        this.commonModulesService = commonModulesService;
     }
 
     public CommandResult Run(NewProjectCommandRequest request)
     {
-        if (string.IsNullOrWhiteSpace(request.ProjectName))
-        {
-            return CommandResult.UsageError("new requires a project name.");
-        }
-
-        var projectRoot = Path.GetFullPath(Path.IsPathRooted(request.ProjectName)
-            ? request.ProjectName
-            : Path.Combine(request.StartDirectory, request.ProjectName));
-        var projectName = Path.GetFileName(projectRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        var projectRoot = ResolveProjectRoot(request);
+        var projectName = ResolveProjectName(request, projectRoot);
         var documentName = string.IsNullOrWhiteSpace(request.DocumentName) ? projectName : request.DocumentName;
         var manifestPath = Path.Combine(projectRoot, ProjectManifest.ManifestFileName);
 
@@ -61,17 +57,16 @@ public sealed class NewProjectCommand
             warnings.AppendLine("CommonModulesRepository was not found; project creation continued without shared modules.");
         }
 
-        var manifest = ProjectManifest.CreateDefault(projectName, documentName, projectRoot, commonModulesRepository);
-        manifestStore.Save(projectRoot, manifest);
-
         var workbookPath = Path.Combine(sourceSetPath, $"{documentName}.xlsm");
-        initialWorkbookCreator.CreateInitialWorkbook(workbookPath);
+        var referenceNames = initialWorkbookCreator.CreateInitialWorkbook(workbookPath);
+        var references = CreateReferenceEntries(referenceNames);
+        var commonModules = Array.Empty<InstalledCommonModule>();
 
         if (commonModulesRepository is not null)
         {
             try
             {
-                CopyInitialCommonModules(commonModulesRepository, sourceSetPath);
+                commonModules = CopyInitialCommonModules(commonModulesRepository, sourceSetPath);
             }
             catch (CommonModulesManifestException ex)
             {
@@ -79,18 +74,31 @@ public sealed class NewProjectCommand
             }
         }
 
+        var manifest = ProjectManifest.CreateDefault(
+            projectName,
+            documentName,
+            projectRoot,
+            commonModulesRepository,
+            commonModules,
+            references);
+        manifestStore.Save(projectRoot, manifest);
+
         return new CommandResult(
             0,
             $"Created project '{projectName}' at {projectRoot}.{Environment.NewLine}",
             warnings.ToString());
     }
 
-    private void CopyInitialCommonModules(string commonModulesRepository, string sourceSetPath)
+    private InstalledCommonModule[] CopyInitialCommonModules(string commonModulesRepository, string sourceSetPath)
     {
         var entries = commonModulesManifestReader.Load(commonModulesRepository);
-        var selectedEntries = entries
+        var requestedEntries = entries
             .Where(entry => entry.HasCategory("runtime-baseline") || entry.HasCategory("test-foundation"))
             .OrderBy(entry => entry.ModuleFile, StringComparer.OrdinalIgnoreCase);
+        var requestedModuleFiles = requestedEntries
+            .Select(entry => entry.ModuleFile)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var selectedEntries = commonModulesService.ResolveRequestedEntries(entries, requestedModuleFiles.ToArray());
 
         foreach (var entry in selectedEntries)
         {
@@ -102,7 +110,49 @@ public sealed class NewProjectCommand
 
             File.Copy(sourcePath, Path.Combine(sourceSetPath, entry.ModuleFile), overwrite: true);
         }
+
+        return selectedEntries
+            .Select(entry => new InstalledCommonModule(
+                Path.GetFileNameWithoutExtension(entry.ModuleFile),
+                requestedModuleFiles.Contains(entry.ModuleFile)))
+            .ToArray();
     }
+
+    private static string ResolveProjectRoot(NewProjectCommandRequest request)
+    {
+        if (!string.IsNullOrWhiteSpace(request.OutputDirectory))
+        {
+            return Path.GetFullPath(Path.IsPathRooted(request.OutputDirectory)
+                ? request.OutputDirectory
+                : Path.Combine(request.StartDirectory, request.OutputDirectory));
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.ProjectName))
+        {
+            return Path.GetFullPath(Path.Combine(request.StartDirectory, request.ProjectName));
+        }
+
+        return Path.GetFullPath(request.StartDirectory);
+    }
+
+    private static string ResolveProjectName(NewProjectCommandRequest request, string projectRoot)
+    {
+        if (!string.IsNullOrWhiteSpace(request.ProjectName))
+        {
+            return request.ProjectName.Trim();
+        }
+
+        var trimmedRoot = projectRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return Path.GetFileName(trimmedRoot);
+    }
+
+    private static VbaProjectReference[] CreateReferenceEntries(IReadOnlyList<string> referenceNames)
+        => referenceNames
+            .Select(referenceName => referenceName.Trim())
+            .Where(referenceName => !string.IsNullOrWhiteSpace(referenceName))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(referenceName => new VbaProjectReference(referenceName))
+            .ToArray();
 
     private static string? DiscoverCommonModulesRepository(string projectRoot)
     {

@@ -35,7 +35,8 @@ public static class ToolingCompositionRoot
         var newProjectCommand = new NewProjectCommand(
             manifestStore,
             initialWorkbookCreator ?? new ExcelComInitialWorkbookCreator(),
-            commonModulesManifestReader);
+            commonModulesManifestReader,
+            commonModulesService);
         var sourcePlanner = new WorkbookSourcePlanner(
             commonModulesManifestReader,
             commonModulesService);
