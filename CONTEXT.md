@@ -1,7 +1,39 @@
-# VBA Language Server
+# VBA Tools
 
-VBA-LanguageServer provides editor intelligence for exported VBA source files.
-This glossary defines the domain terms used when discussing language-server behavior for VBA.
+VBA Tools provides Visual Studio Code tooling for exported VBA source files and
+workbook-backed VBA projects. This glossary defines the domain terms used when
+discussing language-server behavior, VS Code integration, and companion command
+tooling for VBA.
+
+## Product
+
+**VbaTools**:
+The repository-level product area for the VS Code extension, VBA language
+server, Test Explorer integration, and companion CLI used for modern VBA source
+workflows.
+_Avoid_: VBA-LanguageServer, vba-devtools, xls-common-devtools
+
+**VbaLanguageServer**:
+The language-server component that provides editor intelligence for exported VBA
+source files in VS Code.
+_Avoid_: extension, CLI, test adapter
+
+**VbaDevTool**:
+The C#/.NET companion CLI that performs workbook-backed project operations such
+as project creation, CommonModules management, reference management, build,
+test, publish, export, and environment diagnostics.
+_Avoid_: language server, VS Code command, CommonModules package
+
+**VscodeExtension**:
+The VS Code extension package that activates VBA language support, launches the
+language server, and invokes `VbaDevTool` for project-level workflows.
+_Avoid_: language server, command-line tool
+
+**CommonModulesPackage**:
+A versioned release artifact produced by `xls-common-devtools`, normally as
+`common_modules_repo.zip`, that provides shared VBA source files and a
+machine-readable CommonModules manifest consumed by `VbaDevTool`.
+_Avoid_: vendored source, submodule, built-in library
 
 ## Language
 

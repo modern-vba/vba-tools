@@ -1,7 +1,7 @@
 {
-  "name": "vba-language-server",
-  "displayName": "VBA Language Server",
-  "description": "Language server support for VBA in Visual Studio Code.",
+  "name": "vba-tools",
+  "displayName": "VBA Tools",
+  "description": "Visual Studio Code tooling for VBA projects.",
   "version": "0.0.1",
   "publisher": "tkmr-akhs",
   "engines": {
@@ -38,7 +38,7 @@
       }
     ],
     "configuration": {
-      "title": "VBA Language Server",
+      "title": "VBA Tools",
       "properties": {
         "vbaLanguageServer.trace.server": {
           "scope": "window",
@@ -83,7 +83,10 @@
   },
   "scripts": {
     "compile": "tsc -b",
-    "test": "npm run compile && node server/out/testRunner.js",
+    "test": "npm run test:extension && npm run test:devtool",
+    "test:extension": "npm run compile && node server/out/testRunner.js",
+    "test:devtool": "dotnet test tools/vba-devtool/tests/VbaDevTool.Tests/VbaDevTool.Tests.csproj -m:1 -p:UseSharedCompilation=false",
+    "build:devtool": "dotnet build tools/vba-devtool/src/VbaDevTool.Cli/VbaDevTool.Cli.csproj -m:1 -p:UseSharedCompilation=false",
     "watch": "tsc -b -w",
     "vscode:prepublish": "npm run compile",
     "package": "vsce package"
