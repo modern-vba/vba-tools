@@ -1,6 +1,6 @@
 # VBA Developer Tools
 
-vba-devtools is the working repository for C# / .NET Core console tooling that supports modern VBA source workflows. This glossary is intentionally small because the repository is newly initialized; expand it when concrete commands, libraries, or workflows are defined.
+vba-devtool is the C# / .NET Core console tooling area inside the vba-tools repository. It supports modern VBA source workflows for workbook-backed macro projects.
 
 ## Tooling
 
@@ -93,5 +93,5 @@ A project-local manifest that identifies a **WorkbookBackedProject** and carries
 _Avoid_: config-only file, metadata-only file
 
 **ModernVbaWorkspace**:
-The local multi-repository workspace that may contain `vba-devtools`, `VBA-LanguageServer`, `DoxyVB6`, and Excel macro repositories for integration work.
+The local multi-repository workspace that may contain `vba-tools`, archived `vba-devtools`, `DoxyVB6`, and Excel macro repositories for integration work.
 _Avoid_: monorepo, single repo
