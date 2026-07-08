@@ -40,6 +40,14 @@ _Avoid_: runtime baseline, project-specific tests
 A shared VBA source file that must accompany another CommonModules file for that file to work inside a **DocumentSourceSet**.
 _Avoid_: optional module, copied file list
 
+**CommonModuleName**:
+The stable extensionless module base name used to identify one CommonModules source entry across manifests and tooling.
+_Avoid_: file path, file name with extension, display label
+
+**InstalledCommonModule**:
+A CommonModules source entry that has been added to one **DocumentSourceSet** and is tracked as part of that document's desired shared-source set.
+_Avoid_: inferred module file, loose copy, reference
+
 **WorkbookBackedProject**:
 A macro project whose workflow may involve both exported text modules and a primary Office macro document. The initial supported document kind is an Excel `.xlsm` workbook.
 _Avoid_: source-only project, package
@@ -51,6 +59,14 @@ _Avoid_: arbitrary workbook, generated output, secondary document
 **DocumentSourceSet**:
 The exported VBA source files and source template document that belong to one Office macro document inside a **WorkbookBackedProject**.
 _Avoid_: project source root, loose modules folder
+
+**VbaProjectReference**:
+A library reference that one Office macro document's VBA project requires to compile or run. A **DocumentSourceSet** may require zero or more **VbaProjectReferences**, named by the human-visible library name shown to VBA developers.
+_Avoid_: Reference, .NET ProjectReference, CommonModuleDependency
+
+**ProtectedVbaProjectReference**:
+A **VbaProjectReference** that Office or VBIDE keeps as part of the workbook's VBA project and that tooling should not remove during generated workbook normalization.
+_Avoid_: built-in reference, default reference, undeletable reference
 
 **PublishableVbaSource**:
 An exported VBA source file from a **DocumentSourceSet** that should be imported into the distributed Office macro document.
