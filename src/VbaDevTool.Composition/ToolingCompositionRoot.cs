@@ -31,6 +31,7 @@ public static class ToolingCompositionRoot
         var projectContextResolver = new ProjectContextResolver(manifestStore);
         var doctorCommand = new DoctorCommand(
             projectContextResolver,
+            commonModulesManifestReader,
             environmentDiagnosticPort ?? new SkippedEnvironmentDiagnosticPort());
         var newProjectCommand = new NewProjectCommand(
             manifestStore,

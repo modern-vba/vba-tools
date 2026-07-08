@@ -243,15 +243,26 @@ public sealed class CommonModulesCommandTests
     {
         using var temp = TempDirectory.Create();
         var projectRoot = CreateProjectWithCommonModules(temp, "Project");
+        var store = new JsonProjectManifestStore();
+        var manifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
+        manifest.Documents["Book1"].CommonModules.AddRange(
+            [
+                new InstalledCommonModule("Base", Requested: false),
+                new InstalledCommonModule("Feature", Requested: true)
+            ]);
+        store.Save(projectRoot, manifest);
         var commonRepo = Path.Combine(temp.Path, "common_modules_repo");
         WriteManifest(
             commonRepo,
             ("Base.bas", "runtime-baseline", ""),
-            ("Feature.bas", "optional", "Base.bas"));
+            ("Feature.bas", "optional", "Base.bas"),
+            ("Unlisted.bas", "optional", ""));
         WriteModule(commonRepo, "Base.bas", "base v2");
         WriteModule(commonRepo, "Feature.bas", "feature v2");
+        WriteModule(commonRepo, "Unlisted.bas", "unlisted v2");
         var sourceSet = Path.Combine(projectRoot, "src", "Book1");
         WriteModule(sourceSet, "Feature.bas", "feature v1");
+        WriteModule(sourceSet, "Unlisted.bas", "unlisted v1");
         WriteModule(sourceSet, "Obsolete.bas", "obsolete");
         var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
 
@@ -260,7 +271,15 @@ public sealed class CommonModulesCommandTests
         Assert.Equal(0, result.ExitCode);
         Assert.Equal("base v2", File.ReadAllText(Path.Combine(sourceSet, "Base.bas")));
         Assert.Equal("feature v2", File.ReadAllText(Path.Combine(sourceSet, "Feature.bas")));
+        Assert.Equal("unlisted v1", File.ReadAllText(Path.Combine(sourceSet, "Unlisted.bas")));
         Assert.Equal("obsolete", File.ReadAllText(Path.Combine(sourceSet, "Obsolete.bas")));
+        var updatedManifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
+        Assert.Equal(
+            [
+                new InstalledCommonModule("Base", Requested: false),
+                new InstalledCommonModule("Feature", Requested: true)
+            ],
+            updatedManifest.Documents["Book1"].CommonModules);
         Assert.Contains("Updated Book1/Feature.bas", result.StandardOutput, StringComparison.Ordinal);
     }
 
@@ -272,10 +291,21 @@ public sealed class CommonModulesCommandTests
         var projectRoot = temp.CreateDirectory("Project");
         Directory.CreateDirectory(Path.Combine(projectRoot, "src", "Book1"));
         Directory.CreateDirectory(Path.Combine(projectRoot, "src", "SecondBook"));
-        new JsonProjectManifestStore().Save(projectRoot, ProjectManifestTestData.TwoDocumentManifest(projectRoot) with
+        var manifest = ProjectManifestTestData.TwoDocumentManifest(projectRoot) with
         {
             CommonModulesRepository = "../common_modules_repo"
-        });
+        };
+        manifest.Documents["Book1"].CommonModules.AddRange(
+            [
+                new InstalledCommonModule("Base", Requested: false),
+                new InstalledCommonModule("Feature", Requested: true)
+            ]);
+        manifest.Documents["SecondBook"].CommonModules.AddRange(
+            [
+                new InstalledCommonModule("Base", Requested: false),
+                new InstalledCommonModule("Feature", Requested: true)
+            ]);
+        new JsonProjectManifestStore().Save(projectRoot, manifest);
         WriteManifest(
             commonRepo,
             ("Base.bas", "runtime-baseline", ""),
@@ -297,6 +327,19 @@ public sealed class CommonModulesCommandTests
         Assert.Equal("feature v2", File.ReadAllText(Path.Combine(secondSourceSet, "Feature.bas")));
         Assert.Contains("Updated Book1/Feature.bas", result.StandardOutput, StringComparison.Ordinal);
         Assert.Contains("Updated SecondBook/Feature.bas", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void UpdateRejectsDocumentSelection()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = CreateProjectWithCommonModules(temp, "Project");
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+
+        var result = application.Run(["common-module", "update", "--document", "Book1"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("Unknown option '--document'", result.StandardError, StringComparison.Ordinal);
     }
 
     private static string CreateProjectWithCommonModules(TempDirectory temp, string projectName)

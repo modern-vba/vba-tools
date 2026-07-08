@@ -108,16 +108,17 @@ public sealed class CommonModulesService
             foreach (var (documentName, document) in project.Manifest.Documents.OrderBy(item => item.Key, StringComparer.OrdinalIgnoreCase))
             {
                 var documentSourceSetPath = project.ResolvePath(document.SourcePath);
-                var installedEntries = entries
-                    .Where(entry => File.Exists(Path.Combine(documentSourceSetPath, entry.ModuleFile)))
-                    .Select(entry => entry.ModuleFile)
+                var installedEntries = document.CommonModules
+                    .Select(module => module.Name)
                     .ToArray();
                 if (installedEntries.Length == 0)
                 {
                     continue;
                 }
 
-                var orderedEntries = ResolveRequestedEntries(entries, installedEntries);
+                var orderedEntries = installedEntries
+                    .Select(module => ResolveEntry(entries, module))
+                    .ToArray();
                 output.Append(CopyEntries(repositoryPath, documentSourceSetPath, orderedEntries, "Updated", overwrite: true, documentName));
             }
 
@@ -142,10 +143,26 @@ public sealed class CommonModulesService
 
         foreach (var requestedModule in requestedModules)
         {
-            Visit(ResolveRequestedEntry(entries, requestedModule), byFileName, ordered, visited, visiting);
+            Visit(ResolveEntry(entries, requestedModule), byFileName, ordered, visited, visiting);
         }
 
         return ordered;
+    }
+
+    public static CommonModuleManifestEntry ResolveEntry(
+        IReadOnlyList<CommonModuleManifestEntry> entries,
+        string requestedModule)
+    {
+        var matches = Path.HasExtension(requestedModule)
+            ? entries.Where(entry => entry.ModuleFile.Equals(requestedModule, StringComparison.OrdinalIgnoreCase)).ToArray()
+            : entries.Where(entry => Path.GetFileNameWithoutExtension(entry.ModuleFile).Equals(requestedModule, StringComparison.OrdinalIgnoreCase)).ToArray();
+
+        return matches.Length switch
+        {
+            0 => throw new CommonModulesManifestException($"CommonModules entry was not found: {requestedModule}"),
+            1 => matches[0],
+            _ => throw new CommonModulesManifestException($"CommonModules module name '{requestedModule}' is ambiguous: {string.Join(", ", matches.Select(match => match.ModuleFile))}")
+        };
     }
 
     private static void Visit(
@@ -178,22 +195,6 @@ public sealed class CommonModulesService
         visiting.Remove(entry.ModuleFile);
         visited.Add(entry.ModuleFile);
         ordered.Add(entry);
-    }
-
-    private static CommonModuleManifestEntry ResolveRequestedEntry(
-        IReadOnlyList<CommonModuleManifestEntry> entries,
-        string requestedModule)
-    {
-        var matches = Path.HasExtension(requestedModule)
-            ? entries.Where(entry => entry.ModuleFile.Equals(requestedModule, StringComparison.OrdinalIgnoreCase)).ToArray()
-            : entries.Where(entry => Path.GetFileNameWithoutExtension(entry.ModuleFile).Equals(requestedModule, StringComparison.OrdinalIgnoreCase)).ToArray();
-
-        return matches.Length switch
-        {
-            0 => throw new CommonModulesManifestException($"CommonModules entry was not found: {requestedModule}"),
-            1 => matches[0],
-            _ => throw new CommonModulesManifestException($"CommonModules module name '{requestedModule}' is ambiguous: {string.Join(", ", matches.Select(match => match.ModuleFile))}")
-        };
     }
 
     private static string CopyEntries(
