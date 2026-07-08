@@ -1,0 +1,42 @@
+# Build outputs
+bin/
+obj/
+artifacts/
+TestResults/
+coverage/
+*.trx
+*.coverage
+*.coveragexml
+
+# User and IDE state
+.vs/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# NuGet and local packages
+packages/
+*.nupkg
+*.snupkg
+project.lock.json
+project.assets.json
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+tmp/
+temp/
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Agent-local files backed up by the parent workspace
+/AGENTS.md
+/docs/agents/
