@@ -108,18 +108,35 @@ public sealed class CommonModulesService
             foreach (var (documentName, document) in project.Manifest.Documents.OrderBy(item => item.Key, StringComparer.OrdinalIgnoreCase))
             {
                 var documentSourceSetPath = project.ResolvePath(document.SourcePath);
-                var installedEntries = document.CommonModules
+                var installedModuleNames = document.CommonModules
                     .Select(module => module.Name)
                     .ToArray();
-                if (installedEntries.Length == 0)
+                if (installedModuleNames.Length == 0)
                 {
                     continue;
                 }
 
-                var orderedEntries = installedEntries
+                var requestedModuleNames = document.CommonModules
+                    .Where(module => module.Requested)
+                    .Select(module => module.Name)
+                    .ToArray();
+                var dependencyClosureEntries = requestedModuleNames.Length == 0
+                    ? []
+                    : ResolveRequestedEntries(entries, requestedModuleNames);
+                var installedEntries = installedModuleNames
                     .Select(module => ResolveEntry(entries, module))
                     .ToArray();
+                var orderedEntries = MergeEntries(dependencyClosureEntries, installedEntries);
+                var installedByName = document.CommonModules.ToDictionary(
+                    module => module.Name,
+                    StringComparer.OrdinalIgnoreCase);
+                var requestedNames = requestedModuleNames.ToHashSet(StringComparer.OrdinalIgnoreCase);
+
                 output.Append(CopyEntries(repositoryPath, documentSourceSetPath, orderedEntries, "Updated", overwrite: true, documentName));
+                if (ApplyInstalledEntries(document, dependencyClosureEntries, requestedNames, installedByName))
+                {
+                    manifestStore.Save(project.ProjectRoot, project.Manifest);
+                }
             }
 
             return output.Length == 0
@@ -195,6 +212,24 @@ public sealed class CommonModulesService
         visiting.Remove(entry.ModuleFile);
         visited.Add(entry.ModuleFile);
         ordered.Add(entry);
+    }
+
+    private static CommonModuleManifestEntry[] MergeEntries(params IReadOnlyList<CommonModuleManifestEntry>[] entryGroups)
+    {
+        var entries = new List<CommonModuleManifestEntry>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entryGroup in entryGroups)
+        {
+            foreach (var entry in entryGroup)
+            {
+                if (seen.Add(entry.ModuleFile))
+                {
+                    entries.Add(entry);
+                }
+            }
+        }
+
+        return entries.ToArray();
     }
 
     private static string CopyEntries(

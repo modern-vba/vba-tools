@@ -284,6 +284,155 @@ public sealed class CommonModulesCommandTests
     }
 
     [Fact]
+    public void UpdateInstallsNewDependenciesRequiredByRequestedRoots()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = CreateProjectWithCommonModules(temp, "Project");
+        var store = new JsonProjectManifestStore();
+        var manifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
+        manifest.Documents["Book1"].CommonModules.Add(new InstalledCommonModule("Feature", Requested: true));
+        store.Save(projectRoot, manifest);
+        var commonRepo = Path.Combine(temp.Path, "common_modules_repo");
+        WriteManifest(
+            commonRepo,
+            ("Base.bas", "runtime-baseline", ""),
+            ("Feature.bas", "optional", "Base.bas"));
+        WriteModule(commonRepo, "Base.bas", "base v2");
+        WriteModule(commonRepo, "Feature.bas", "feature v2");
+        var sourceSet = Path.Combine(projectRoot, "src", "Book1");
+        WriteModule(sourceSet, "Feature.bas", "feature v1");
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+
+        var result = application.Run(["common-module", "update"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal("base v2", File.ReadAllText(Path.Combine(sourceSet, "Base.bas")));
+        Assert.Equal("feature v2", File.ReadAllText(Path.Combine(sourceSet, "Feature.bas")));
+        var updatedManifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
+        Assert.Equal(
+            [
+                new InstalledCommonModule("Feature", Requested: true),
+                new InstalledCommonModule("Base", Requested: false)
+            ],
+            updatedManifest.Documents["Book1"].CommonModules);
+    }
+
+    [Fact]
+    public void UpdateInstallsNewDependenciesAcrossAllDocumentSourceSets()
+    {
+        using var temp = TempDirectory.Create();
+        var commonRepo = temp.CreateDirectory("common_modules_repo");
+        var projectRoot = temp.CreateDirectory("Project");
+        Directory.CreateDirectory(Path.Combine(projectRoot, "src", "Book1"));
+        Directory.CreateDirectory(Path.Combine(projectRoot, "src", "SecondBook"));
+        var manifest = ProjectManifestTestData.TwoDocumentManifest(projectRoot) with
+        {
+            CommonModulesRepository = "../common_modules_repo"
+        };
+        manifest.Documents["Book1"].CommonModules.Add(new InstalledCommonModule("Feature", Requested: true));
+        manifest.Documents["SecondBook"].CommonModules.Add(new InstalledCommonModule("Feature", Requested: true));
+        var store = new JsonProjectManifestStore();
+        store.Save(projectRoot, manifest);
+        WriteManifest(
+            commonRepo,
+            ("Base.bas", "runtime-baseline", ""),
+            ("Feature.bas", "optional", "Base.bas"));
+        WriteModule(commonRepo, "Base.bas", "base v2");
+        WriteModule(commonRepo, "Feature.bas", "feature v2");
+        var firstSourceSet = Path.Combine(projectRoot, "src", "Book1");
+        var secondSourceSet = Path.Combine(projectRoot, "src", "SecondBook");
+        WriteModule(firstSourceSet, "Feature.bas", "first feature v1");
+        WriteModule(secondSourceSet, "Feature.bas", "second feature v1");
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+
+        var result = application.Run(["common-module", "update"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal("base v2", File.ReadAllText(Path.Combine(firstSourceSet, "Base.bas")));
+        Assert.Equal("base v2", File.ReadAllText(Path.Combine(secondSourceSet, "Base.bas")));
+        var updatedManifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
+        Assert.Equal(
+            [
+                new InstalledCommonModule("Feature", Requested: true),
+                new InstalledCommonModule("Base", Requested: false)
+            ],
+            updatedManifest.Documents["Book1"].CommonModules);
+        Assert.Equal(
+            [
+                new InstalledCommonModule("Feature", Requested: true),
+                new InstalledCommonModule("Base", Requested: false)
+            ],
+            updatedManifest.Documents["SecondBook"].CommonModules);
+    }
+
+    [Fact]
+    public void UpdateIsIdempotentAfterInstallingNewDependencies()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = CreateProjectWithCommonModules(temp, "Project");
+        var store = new JsonProjectManifestStore();
+        var manifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
+        manifest.Documents["Book1"].CommonModules.Add(new InstalledCommonModule("Feature", Requested: true));
+        store.Save(projectRoot, manifest);
+        var commonRepo = Path.Combine(temp.Path, "common_modules_repo");
+        WriteManifest(
+            commonRepo,
+            ("Base.bas", "runtime-baseline", ""),
+            ("Feature.bas", "optional", "Base.bas"));
+        WriteModule(commonRepo, "Base.bas", "base v2");
+        WriteModule(commonRepo, "Feature.bas", "feature v2");
+        var sourceSet = Path.Combine(projectRoot, "src", "Book1");
+        WriteModule(sourceSet, "Feature.bas", "feature v1");
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+
+        Assert.Equal(0, application.Run(["common-module", "update"]).ExitCode);
+        var result = application.Run(["common-module", "update"]);
+
+        Assert.Equal(0, result.ExitCode);
+        var updatedManifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
+        Assert.Equal(
+            [
+                new InstalledCommonModule("Feature", Requested: true),
+                new InstalledCommonModule("Base", Requested: false)
+            ],
+            updatedManifest.Documents["Book1"].CommonModules);
+        Assert.Equal(1, updatedManifest.Documents["Book1"].CommonModules.Count(module => module.Name.Equals("Base", StringComparison.OrdinalIgnoreCase)));
+    }
+
+    [Fact]
+    public void UpdateRepairsDoctorMissingDependencyFailure()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = CreateProjectWithCommonModules(temp, "Project");
+        var sourceSet = Path.Combine(projectRoot, "src", "Book1");
+        File.WriteAllText(Path.Combine(sourceSet, "Book1.xlsm"), string.Empty, new UTF8Encoding(false));
+        var store = new JsonProjectManifestStore();
+        var manifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
+        manifest.Documents["Book1"].CommonModules.Add(new InstalledCommonModule("Feature", Requested: true));
+        store.Save(projectRoot, manifest);
+        var commonRepo = Path.Combine(temp.Path, "common_modules_repo");
+        WriteManifest(
+            commonRepo,
+            ("Base.bas", "runtime-baseline", ""),
+            ("Feature.bas", "optional", "Base.bas"));
+        WriteModule(commonRepo, "Base.bas", "base v2");
+        WriteModule(commonRepo, "Feature.bas", "feature v2");
+        WriteModule(sourceSet, "Feature.bas", "feature v1");
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot, new FakeEnvironmentDiagnosticPort());
+
+        var beforeUpdate = application.Run(["doctor"]);
+        Assert.Equal(1, beforeUpdate.ExitCode);
+        Assert.Contains("requires missing dependency 'Base'", beforeUpdate.StandardOutput, StringComparison.Ordinal);
+
+        var update = application.Run(["common-module", "update"]);
+        var afterUpdate = application.Run(["doctor"]);
+
+        Assert.Equal(0, update.ExitCode);
+        Assert.Equal(0, afterUpdate.ExitCode);
+        Assert.DoesNotContain("requires missing dependency 'Base'", afterUpdate.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void UpdateAppliesToInstalledModulesAcrossAllDocumentSourceSets()
     {
         using var temp = TempDirectory.Create();
