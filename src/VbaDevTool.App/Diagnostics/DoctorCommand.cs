@@ -2,6 +2,7 @@ using System.Text;
 using VbaDevTools.App.CommonModules;
 using VbaDevTools.App.Cli;
 using VbaDevTools.App.Projects;
+using VbaDevTools.App.Workbooks;
 using VbaDevTools.Domain;
 
 namespace VbaDevTools.App.Diagnostics;
@@ -10,15 +11,18 @@ public sealed class DoctorCommand
 {
     private readonly ProjectContextResolver projectContextResolver;
     private readonly CommonModulesManifestReader commonModulesManifestReader;
+    private readonly IVbaProjectReferenceResolver referenceResolver;
     private readonly IEnvironmentDiagnosticPort environmentDiagnosticPort;
 
     public DoctorCommand(
         ProjectContextResolver projectContextResolver,
         CommonModulesManifestReader commonModulesManifestReader,
+        IVbaProjectReferenceResolver referenceResolver,
         IEnvironmentDiagnosticPort environmentDiagnosticPort)
     {
         this.projectContextResolver = projectContextResolver;
         this.commonModulesManifestReader = commonModulesManifestReader;
+        this.referenceResolver = referenceResolver;
         this.environmentDiagnosticPort = environmentDiagnosticPort;
     }
 
@@ -110,6 +114,7 @@ public sealed class DoctorCommand
         }
 
         AddCommonModulesDiagnostics(results, project);
+        AddVbaProjectReferenceDiagnostics(results, project);
 
         try
         {
@@ -119,6 +124,35 @@ public sealed class DoctorCommand
         catch (ProjectManifestException ex)
         {
             results.Add(DiagnosticResult.Fail("Command defaults", ex.Message));
+        }
+    }
+
+    private void AddVbaProjectReferenceDiagnostics(List<DiagnosticResult> results, ResolvedProject project)
+    {
+        foreach (var (documentName, document) in project.Manifest.Documents.OrderBy(item => item.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            foreach (var reference in document.References)
+            {
+                var matches = referenceResolver.Resolve(reference.Name);
+                if (matches.Count == 0)
+                {
+                    results.Add(DiagnosticResult.Fail(
+                        $"VbaProjectReferences ({documentName}/{reference.Name})",
+                        $"Reference was not found: {reference.Name}."));
+                }
+                else if (matches.Count > 1)
+                {
+                    results.Add(DiagnosticResult.Fail(
+                        $"VbaProjectReferences ({documentName}/{reference.Name})",
+                        $"Reference is ambiguous: {reference.Name}."));
+                }
+                else
+                {
+                    results.Add(DiagnosticResult.Pass(
+                        $"VbaProjectReferences ({documentName}/{reference.Name})",
+                        "Reference resolved."));
+                }
+            }
         }
     }
 

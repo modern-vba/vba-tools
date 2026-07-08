@@ -1,21 +1,29 @@
 using VbaDevTools.App.Workbooks;
+using VbaDevTools.Domain;
 
 namespace VbaDevTools.App.Build;
 
 public sealed class WorkbookGenerationPipeline
 {
     private readonly IWorkbookBuildAutomation workbookBuildAutomation;
+    private readonly WorkbookReferenceNormalizer referenceNormalizer;
 
-    public WorkbookGenerationPipeline(IWorkbookBuildAutomation workbookBuildAutomation)
+    public WorkbookGenerationPipeline(
+        IWorkbookBuildAutomation workbookBuildAutomation,
+        WorkbookReferenceNormalizer referenceNormalizer)
     {
         this.workbookBuildAutomation = workbookBuildAutomation;
+        this.referenceNormalizer = referenceNormalizer;
     }
 
-    public void Generate(
+    public WorkbookGenerationResult Generate(
+        string documentName,
         string templateWorkbookPath,
         string targetWorkbookPath,
+        IReadOnlyList<VbaProjectReference> desiredReferences,
         IReadOnlyList<VbaSourceFile> sourceFiles)
     {
+        var resolvedReferences = referenceNormalizer.ResolveDesiredReferences(documentName, desiredReferences);
         var targetDirectory = Path.GetDirectoryName(targetWorkbookPath)
             ?? throw new BuildCommandException($"Target workbook path is invalid: {targetWorkbookPath}");
         Directory.CreateDirectory(targetDirectory);
@@ -27,8 +35,10 @@ public sealed class WorkbookGenerationPipeline
         try
         {
             File.Copy(templateWorkbookPath, tempWorkbookPath, overwrite: false);
+            IReadOnlyList<string> warnings;
             using (var session = workbookBuildAutomation.OpenWorkbook(tempWorkbookPath))
             {
+                warnings = referenceNormalizer.Normalize(session, documentName, resolvedReferences);
                 foreach (var component in session.GetModules().Where(component => component.Kind.IsImportable()))
                 {
                     session.RemoveModule(component.Name);
@@ -43,12 +53,15 @@ public sealed class WorkbookGenerationPipeline
             }
 
             ReplaceTarget(tempWorkbookPath, targetWorkbookPath);
+            return new WorkbookGenerationResult(warnings);
         }
         finally
         {
             DeleteIfExists(tempWorkbookPath);
         }
     }
+
+    public sealed record WorkbookGenerationResult(IReadOnlyList<string> Warnings);
 
     private static void ReplaceTarget(string tempWorkbookPath, string targetWorkbookPath)
     {

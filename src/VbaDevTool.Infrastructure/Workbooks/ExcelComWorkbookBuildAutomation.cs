@@ -73,6 +73,94 @@ public sealed class ExcelComWorkbookBuildAutomation : IWorkbookBuildAutomation
             return modules;
         }
 
+        public IReadOnlyList<WorkbookReference> GetReferences()
+        {
+            dynamic workbook = workbookObject;
+            dynamic references = workbook.VBProject.References;
+            var result = new List<WorkbookReference>();
+            foreach (var referenceObject in references)
+            {
+                try
+                {
+                    dynamic reference = referenceObject;
+                    var description = (string)reference.Description;
+                    var isBuiltIn = (bool)reference.BuiltIn;
+                    if (!string.IsNullOrWhiteSpace(description))
+                    {
+                        result.Add(new WorkbookReference(description.Trim(), IsRemovable: !isBuiltIn));
+                    }
+                }
+                finally
+                {
+                    ReleaseComObject(referenceObject);
+                }
+            }
+
+            ReleaseComObject(references);
+            return result;
+        }
+
+        public bool RemoveReference(string referenceName)
+        {
+            dynamic workbook = workbookObject;
+            dynamic references = workbook.VBProject.References;
+            object? referenceObject = null;
+            try
+            {
+                foreach (var candidateObject in references)
+                {
+                    try
+                    {
+                        dynamic candidate = candidateObject;
+                        var description = (string)candidate.Description;
+                        if (!referenceName.Equals(description, StringComparison.OrdinalIgnoreCase))
+                        {
+                            continue;
+                        }
+
+                        if ((bool)candidate.BuiltIn)
+                        {
+                            return false;
+                        }
+
+                        referenceObject = candidateObject;
+                        references.Remove(referenceObject);
+                        return true;
+                    }
+                    finally
+                    {
+                        if (!ReferenceEquals(referenceObject, candidateObject))
+                        {
+                            ReleaseComObject(candidateObject);
+                        }
+                    }
+                }
+
+                return false;
+            }
+            finally
+            {
+                ReleaseComObject(referenceObject);
+                ReleaseComObject(references);
+            }
+        }
+
+        public void AddReference(ResolvedVbaProjectReference reference)
+        {
+            dynamic workbook = workbookObject;
+            dynamic references = workbook.VBProject.References;
+            object? referenceObject = null;
+            try
+            {
+                referenceObject = references.AddFromGuid(reference.Guid, reference.Major, reference.Minor);
+            }
+            finally
+            {
+                ReleaseComObject(referenceObject);
+                ReleaseComObject(references);
+            }
+        }
+
         public void RemoveModule(string moduleName)
         {
             dynamic workbook = workbookObject;

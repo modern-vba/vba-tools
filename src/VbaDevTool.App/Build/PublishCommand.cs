@@ -29,14 +29,21 @@ public sealed class PublishCommand
             }
 
             var sourceFiles = sourcePlanner.ResolvePublishSourceFiles(context);
-            generationPipeline.Generate(
+            var generationResult = generationPipeline.Generate(
+                context.DocumentName,
                 context.TemplateDocumentPath,
                 context.PublishDocumentPath,
+                context.Document.References,
                 sourceFiles);
 
             var output = new StringBuilder();
             output.AppendLine($"Published {context.PublishDocumentPath}");
             output.AppendLine($"Imported {sourceFiles.Count} source files.");
+            foreach (var warning in generationResult.Warnings)
+            {
+                output.AppendLine(warning);
+            }
+
             return CommandResult.Success(output.ToString());
         }
         catch (BuildCommandException ex)

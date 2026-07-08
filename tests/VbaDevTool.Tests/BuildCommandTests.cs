@@ -125,6 +125,105 @@ public sealed class BuildCommandTests
     }
 
     [Fact]
+    public void BuildNormalizesReferencesBeforeFlushingAndImportingSource()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        manifest.Documents["Book1"].References.Add(new VbaProjectReference("Microsoft Scripting Runtime"));
+        new JsonProjectManifestStore().Save(root, manifest);
+        CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
+        var automation = new FakeWorkbookBuildAutomation(new WorkbookModule("Standard1", WorkbookModuleKind.StandardModule));
+        automation.References.Add(new WorkbookReference("Unlisted Library", IsRemovable: true));
+        var resolver = new FakeVbaProjectReferenceResolver(
+            new ResolvedVbaProjectReference("Microsoft Scripting Runtime", "{420B2830-E718-11CF-893D-00A0C9054228}", 1, 0));
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+            root,
+            workbookBuildAutomation: automation,
+            vbaProjectReferenceResolver: resolver);
+
+        var result = application.Run(["build"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(
+            [
+                "remove-ref:Unlisted Library",
+                "add-ref:Microsoft Scripting Runtime",
+                "remove:Standard1",
+                "import:Local.bas",
+                "save"
+            ],
+            automation.Events);
+    }
+
+    [Fact]
+    public void BuildFailsBeforeSourceImportWhenManifestReferenceIsMissing()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        manifest.Documents["Book1"].References.Add(new VbaProjectReference("Missing Library"));
+        new JsonProjectManifestStore().Save(root, manifest);
+        CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
+        var automation = new FakeWorkbookBuildAutomation();
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+            root,
+            workbookBuildAutomation: automation,
+            vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver());
+
+        var result = application.Run(["build"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("Book1", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("Missing Library", result.StandardError, StringComparison.Ordinal);
+        Assert.DoesNotContain("import:", automation.Events);
+    }
+
+    [Fact]
+    public void BuildFailsBeforeSourceImportWhenManifestReferenceIsAmbiguous()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        manifest.Documents["Book1"].References.Add(new VbaProjectReference("Ambiguous Library"));
+        new JsonProjectManifestStore().Save(root, manifest);
+        CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
+        var automation = new FakeWorkbookBuildAutomation();
+        var resolver = new FakeVbaProjectReferenceResolver(
+            new ResolvedVbaProjectReference("Ambiguous Library", "{11111111-1111-1111-1111-111111111111}", 1, 0),
+            new ResolvedVbaProjectReference("Ambiguous Library", "{22222222-2222-2222-2222-222222222222}", 1, 0));
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+            root,
+            workbookBuildAutomation: automation,
+            vbaProjectReferenceResolver: resolver);
+
+        var result = application.Run(["build"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("Ambiguous Library", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("ambiguous", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("import:", automation.Events);
+    }
+
+    [Fact]
+    public void BuildWarnsWhenUnlistedProtectedReferenceRemains()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
+        var automation = new FakeWorkbookBuildAutomation();
+        automation.References.Add(new WorkbookReference("Protected Library", IsRemovable: false));
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookBuildAutomation: automation);
+
+        var result = application.Run(["build"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("WARN", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("Book1/Protected Library", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void BuildReportsLockedTargetWithoutOpeningTargetWorkbook()
     {
         using var temp = TempDirectory.Create();
@@ -175,6 +274,8 @@ internal sealed class FakeWorkbookBuildAutomation : IWorkbookBuildAutomation
 
     public List<VbaSourceFile> ImportedSources { get; } = [];
 
+    public List<WorkbookReference> References { get; } = [];
+
     public IWorkbookBuildSession OpenWorkbook(string workbookPath)
     {
         OpenedWorkbooks.Add(workbookPath);
@@ -193,6 +294,27 @@ internal sealed class FakeWorkbookBuildAutomation : IWorkbookBuildAutomation
         }
 
         public IReadOnlyList<WorkbookModule> GetModules() => modules;
+
+        public IReadOnlyList<WorkbookReference> GetReferences() => owner.References;
+
+        public bool RemoveReference(string referenceName)
+        {
+            var reference = owner.References.FirstOrDefault(item => item.Name.Equals(referenceName, StringComparison.OrdinalIgnoreCase));
+            if (reference is null || !reference.IsRemovable)
+            {
+                return false;
+            }
+
+            owner.References.Remove(reference);
+            owner.Events.Add($"remove-ref:{reference.Name}");
+            return true;
+        }
+
+        public void AddReference(ResolvedVbaProjectReference reference)
+        {
+            owner.References.Add(new WorkbookReference(reference.Name, IsRemovable: true));
+            owner.Events.Add($"add-ref:{reference.Name}");
+        }
 
         public void RemoveModule(string moduleName)
         {

@@ -29,14 +29,21 @@ public sealed class BuildCommand
             }
 
             var sourceFiles = sourcePlanner.ResolveBuildSourceFiles(context);
-            generationPipeline.Generate(
+            var generationResult = generationPipeline.Generate(
+                context.DocumentName,
                 context.TemplateDocumentPath,
                 context.BinDocumentPath,
+                context.Document.References,
                 sourceFiles);
 
             var output = new StringBuilder();
             output.AppendLine($"Built {context.BinDocumentPath}");
             output.AppendLine($"Imported {sourceFiles.Count} source files.");
+            foreach (var warning in generationResult.Warnings)
+            {
+                output.AppendLine(warning);
+            }
+
             return CommandResult.Success(output.ToString());
         }
         catch (BuildCommandException ex)

@@ -1,4 +1,5 @@
 using VbaDevTools.App.Diagnostics;
+using VbaDevTools.App.Workbooks;
 using VbaDevTools.Composition;
 using VbaDevTools.Domain;
 using VbaDevTools.Infrastructure.Projects;
@@ -170,6 +171,33 @@ public sealed class DoctorCommandTests
         Assert.Equal(0, result.ExitCode);
         Assert.Contains("[WARN] CommonModules (Book1/Feature)", result.StandardOutput, StringComparison.Ordinal);
         Assert.Contains("differs from CommonModulesRepository", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DoctorValidatesManifestReferencesForEveryDocument()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        Directory.CreateDirectory(Path.Combine(root, "src", "Book1"));
+        Directory.CreateDirectory(Path.Combine(root, "src", "SecondBook"));
+        File.WriteAllText(Path.Combine(root, "src", "Book1", "Book1.xlsm"), string.Empty);
+        File.WriteAllText(Path.Combine(root, "src", "SecondBook", "SecondBook.xlsm"), string.Empty);
+        var manifest = ProjectManifestTestData.TwoDocumentManifest(root);
+        manifest.Documents["Book1"].References.Add(new VbaProjectReference("Microsoft Scripting Runtime"));
+        manifest.Documents["SecondBook"].References.Add(new VbaProjectReference("Missing Library"));
+        new JsonProjectManifestStore().Save(root, manifest);
+        var resolver = new FakeVbaProjectReferenceResolver(
+            new ResolvedVbaProjectReference("Microsoft Scripting Runtime", "{420B2830-E718-11CF-893D-00A0C9054228}", 1, 0));
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+            root,
+            new FakeEnvironmentDiagnosticPort(),
+            vbaProjectReferenceResolver: resolver);
+
+        var result = application.Run(["doctor"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("[PASS] VbaProjectReferences (Book1/Microsoft Scripting Runtime)", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("[FAIL] VbaProjectReferences (SecondBook/Missing Library)", result.StandardOutput, StringComparison.Ordinal);
     }
 
     private static (string Root, string CommonRepo) CreateDoctorProject(TempDirectory temp)

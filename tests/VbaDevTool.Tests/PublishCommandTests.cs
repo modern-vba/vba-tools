@@ -107,6 +107,38 @@ public sealed class PublishCommandTests
     }
 
     [Fact]
+    public void PublishNormalizesReferencesBeforeImportingSource()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        manifest.Documents["Book1"].References.Add(new VbaProjectReference("Microsoft Scripting Runtime"));
+        new JsonProjectManifestStore().Save(root, manifest);
+        CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
+        var automation = new FakeWorkbookBuildAutomation(new WorkbookModule("OldModule", WorkbookModuleKind.StandardModule));
+        automation.References.Add(new WorkbookReference("Unlisted Library", IsRemovable: true));
+        var resolver = new FakeVbaProjectReferenceResolver(
+            new ResolvedVbaProjectReference("Microsoft Scripting Runtime", "{420B2830-E718-11CF-893D-00A0C9054228}", 1, 0));
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+            root,
+            workbookBuildAutomation: automation,
+            vbaProjectReferenceResolver: resolver);
+
+        var result = application.Run(["publish"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(
+            [
+                "remove-ref:Unlisted Library",
+                "add-ref:Microsoft Scripting Runtime",
+                "remove:OldModule",
+                "import:Local.bas",
+                "save"
+            ],
+            automation.Events);
+    }
+
+    [Fact]
     public void PublishLeavesExistingOutputUntouchedWhenGenerationFails()
     {
         using var temp = TempDirectory.Create();

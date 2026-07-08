@@ -24,16 +24,19 @@ public static class ToolingCompositionRoot
         IInitialWorkbookCreator? initialWorkbookCreator = null,
         IWorkbookBuildAutomation? workbookBuildAutomation = null,
         IWorkbookTestRunner? workbookTestRunner = null,
-        IWorkbookModuleExporter? workbookModuleExporter = null)
+        IWorkbookModuleExporter? workbookModuleExporter = null,
+        IVbaProjectReferenceResolver? vbaProjectReferenceResolver = null)
     {
         var manifestStore = new JsonProjectManifestStore();
         var commonModulesManifestReader = new CommonModulesManifestReader();
         var commonModulesService = new CommonModulesService(commonModulesManifestReader, manifestStore);
         var referenceService = new VbaProjectReferenceService(manifestStore);
+        var referenceResolver = vbaProjectReferenceResolver ?? new RegistryVbaProjectReferenceResolver();
         var projectContextResolver = new ProjectContextResolver(manifestStore);
         var doctorCommand = new DoctorCommand(
             projectContextResolver,
             commonModulesManifestReader,
+            referenceResolver,
             environmentDiagnosticPort ?? new SkippedEnvironmentDiagnosticPort());
         var newProjectCommand = new NewProjectCommand(
             manifestStore,
@@ -44,7 +47,8 @@ public static class ToolingCompositionRoot
             commonModulesManifestReader,
             commonModulesService);
         var generationPipeline = new WorkbookGenerationPipeline(
-            workbookBuildAutomation ?? new ExcelComWorkbookBuildAutomation());
+            workbookBuildAutomation ?? new ExcelComWorkbookBuildAutomation(),
+            new WorkbookReferenceNormalizer(referenceResolver));
         var buildCommand = new BuildCommand(sourcePlanner, generationPipeline);
         var publishCommand = new PublishCommand(sourcePlanner, generationPipeline);
         var testCommand = new TestCommand(
