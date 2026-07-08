@@ -44,6 +44,10 @@ Run the full repository test set:
 npm test
 ```
 
+The planned path from VS Code extension commands through Test Explorer,
+distribution, and first-run setup is tracked in
+[`docs/roadmap/vscode-tooling-roadmap.md`](docs/roadmap/vscode-tooling-roadmap.md).
+
 ## CommonModules
 
 CommonModules source packages are not vendored into this repository.
