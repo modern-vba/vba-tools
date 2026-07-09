@@ -130,6 +130,7 @@ internal sealed class MinimalLanguageServer
         {
             documents[uri] = text;
             await PublishDiagnosticsAsync(uri, text, cancellationToken);
+            await PublishReferenceSelectionTraceAsync(uri, cancellationToken);
         }
     }
 
@@ -167,6 +168,49 @@ internal sealed class MinimalLanguageServer
                 diagnostics
             },
             cancellationToken);
+    }
+
+    private async Task PublishReferenceSelectionTraceAsync(string uri, CancellationToken cancellationToken)
+    {
+        VbaProjectResolution resolution;
+        try
+        {
+            resolution = VbaProjectResolver.Resolve(uri);
+        }
+        catch (ProjectManifestException ex)
+        {
+            await WriteLogMessageAsync(
+                2,
+                $"Project manifest could not be resolved for reference selection: {ex.Message}",
+                cancellationToken);
+            return;
+        }
+
+        if (resolution.Kind != VbaProjectResolutionKind.ManifestDocument
+            || string.IsNullOrEmpty(resolution.DocumentName)
+            || string.IsNullOrEmpty(resolution.DocumentKind))
+        {
+            return;
+        }
+
+        var selection = VbaProjectReferenceSelection.Create(
+            resolution.DocumentKind,
+            resolution.ReferenceEntries);
+        var references = selection.References.Count == 0
+            ? "<none>"
+            : string.Join(", ", selection.References.Select(reference => reference.Name));
+        await WriteLogMessageAsync(
+            3,
+            $"VbaProjectReferenceSelection document={resolution.DocumentName} references={references} main={selection.MainVbaProjectReference?.Name ?? "<none>"}",
+            cancellationToken);
+
+        if (selection.MissingExpectedMainReference is not null)
+        {
+            await WriteLogMessageAsync(
+                2,
+                $"Manifest/reference consistency warning: document '{resolution.DocumentName}' kind '{resolution.DocumentKind}' is missing expected main reference '{selection.MissingExpectedMainReference}'. Host definitions will not be activated implicitly.",
+                cancellationToken);
+        }
     }
 
     private static object CreateInitializeResult()
@@ -589,6 +633,18 @@ internal sealed class MinimalLanguageServer
             method,
             @params = parameters
         }, cancellationToken);
+    }
+
+    private Task WriteLogMessageAsync(int type, string message, CancellationToken cancellationToken)
+    {
+        return WriteNotificationAsync(
+            "window/logMessage",
+            new
+            {
+                type,
+                message
+            },
+            cancellationToken);
     }
 
     private async Task WriteMessageAsync(object message, CancellationToken cancellationToken)

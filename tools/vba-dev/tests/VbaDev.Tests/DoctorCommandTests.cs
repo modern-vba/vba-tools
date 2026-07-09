@@ -230,6 +230,51 @@ public sealed class DoctorCommandTests
         Assert.Empty(resolver.RequestedNames);
     }
 
+    [Fact]
+    public void DoctorWarnsWhenExcelDocumentOmitsMainVbaProjectReference()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        Directory.CreateDirectory(Path.Combine(root, "src", "Book1"));
+        File.WriteAllText(Path.Combine(root, "src", "Book1", "Book1.xlsm"), string.Empty);
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+            root,
+            new FakeEnvironmentDiagnosticPort());
+
+        var result = application.Run(["doctor"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("[WARN] VbaProjectReferences (Book1)", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("Microsoft Excel 16.0 Object Library", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("Host definitions will not be activated implicitly", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DoctorDoesNotWarnWhenExcelDocumentListsMainVbaProjectReference()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        Directory.CreateDirectory(Path.Combine(root, "src", "Book1"));
+        File.WriteAllText(Path.Combine(root, "src", "Book1", "Book1.xlsm"), string.Empty);
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        manifest.Documents["Book1"].References.Add(new VbaProjectReference("Microsoft Excel 16.0 Object Library"));
+        new JsonProjectManifestStore().Save(root, manifest);
+        var resolver = new FakeVbaProjectReferenceResolver(
+            new ResolvedVbaProjectReference("Microsoft Excel 16.0 Object Library", "{00020813-0000-0000-C000-000000000046}", 1, 9));
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+            root,
+            new FakeEnvironmentDiagnosticPort(),
+            workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+            vbaProjectReferenceResolver: resolver);
+
+        var result = application.Run(["doctor"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("[PASS] VbaProjectReferences (Book1/Microsoft Excel 16.0 Object Library)", result.StandardOutput, StringComparison.Ordinal);
+        Assert.DoesNotContain("missing expected main reference", result.StandardOutput, StringComparison.Ordinal);
+    }
+
     private static (string Root, string CommonRepo) CreateDoctorProject(TempDirectory temp)
     {
         var commonRepo = temp.CreateDirectory("common_modules_repo");

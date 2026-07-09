@@ -822,6 +822,205 @@ public sealed class LanguageServerProcessTests
     }
 
     [Fact]
+    public async Task Server_reports_manifest_reference_selection_and_missing_main_reference()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-references-").FullName;
+        try
+        {
+            File.WriteAllText(Path.Combine(projectRoot, "project.json"), ProjectManifestFixtureText("references.json"));
+            Directory.CreateDirectory(Path.Combine(projectRoot, "src", "Book1"));
+
+            var serverProjectPath = Path.GetFullPath(
+                Path.Combine(
+                    AppContext.BaseDirectory,
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "src",
+                    "VbaLanguageServer.Cli",
+                    "VbaLanguageServer.Cli.csproj"));
+
+            using var process = StartLanguageServer(serverProjectPath);
+            await using var stdin = process.StandardInput.BaseStream;
+            using var stdout = process.StandardOutput.BaseStream;
+
+            await InitializeAsync(stdin, stdout);
+            var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
+            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Public Sub Run()",
+                "End Sub"
+            ])));
+
+            var selection = await ReadLogMessageAsync(stdout, "VbaProjectReferenceSelection document=Book1");
+            var selectionMessage = selection.GetProperty("params").GetProperty("message").GetString();
+            Assert.Contains("Microsoft Scripting Runtime", selectionMessage, StringComparison.Ordinal);
+            Assert.Contains("OLE Automation", selectionMessage, StringComparison.Ordinal);
+            Assert.Contains("main=<none>", selectionMessage, StringComparison.Ordinal);
+
+            var warning = await ReadLogMessageAsync(stdout, "missing expected main reference 'Microsoft Excel 16.0 Object Library'");
+            Assert.Equal(2, warning.GetProperty("params").GetProperty("type").GetInt32());
+
+            await SendRequestAsync(stdin, stdout, 2, "shutdown", null);
+            await SendNotificationAsync(stdin, "exit", null);
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await process.WaitForExitAsync(cancellation.Token);
+            Assert.Equal(0, process.ExitCode);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_marks_main_reference_only_when_manifest_contains_it_per_document()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-main-reference-").FullName;
+        try
+        {
+            File.WriteAllText(Path.Combine(projectRoot, "project.json"), """
+                {
+                  "schemaVersion": 1,
+                  "projectName": "MainReferenceProject",
+                  "primaryDocument": "Book1",
+                  "documents": {
+                    "Book1": {
+                      "kind": "excel",
+                      "sourcePath": "src/Book1",
+                      "templatePath": "src/Book1/Book1.xlsm",
+                      "binPath": "bin/Book1/Book1.xlsm",
+                      "publishPath": "publish/Book1/Book1.xlsm",
+                      "references": [
+                        {
+                          "name": "Microsoft Excel 16.0 Object Library"
+                        },
+                        {
+                          "name": "Microsoft Scripting Runtime"
+                        }
+                      ]
+                    },
+                    "SecondBook": {
+                      "kind": "excel",
+                      "sourcePath": "src/SecondBook",
+                      "templatePath": "src/SecondBook/SecondBook.xlsm",
+                      "binPath": "bin/SecondBook/SecondBook.xlsm",
+                      "publishPath": "publish/SecondBook/SecondBook.xlsm",
+                      "references": [
+                        {
+                          "name": "Microsoft Scripting Runtime"
+                        }
+                      ]
+                    }
+                  }
+                }
+                """);
+            Directory.CreateDirectory(Path.Combine(projectRoot, "src", "Book1"));
+            Directory.CreateDirectory(Path.Combine(projectRoot, "src", "SecondBook"));
+
+            var serverProjectPath = Path.GetFullPath(
+                Path.Combine(
+                    AppContext.BaseDirectory,
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "src",
+                    "VbaLanguageServer.Cli",
+                    "VbaLanguageServer.Cli.csproj"));
+
+            using var process = StartLanguageServer(serverProjectPath);
+            await using var stdin = process.StandardInput.BaseStream;
+            using var stdout = process.StandardOutput.BaseStream;
+
+            await InitializeAsync(stdin, stdout);
+            var book1Uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
+            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(book1Uri, string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Public Sub Run()",
+                "End Sub"
+            ])));
+
+            var book1Selection = await ReadLogMessageAsync(stdout, "VbaProjectReferenceSelection document=Book1");
+            Assert.Contains(
+                "main=Microsoft Excel 16.0 Object Library",
+                book1Selection.GetProperty("params").GetProperty("message").GetString(),
+                StringComparison.Ordinal);
+
+            var secondBookUri = ToFileUri(Path.Combine(projectRoot, "src", "SecondBook", "Worker.bas"));
+            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(secondBookUri, string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Public Sub Run()",
+                "End Sub"
+            ])));
+
+            var secondBookSelection = await ReadLogMessageAsync(stdout, "VbaProjectReferenceSelection document=SecondBook");
+            var secondBookMessage = secondBookSelection.GetProperty("params").GetProperty("message").GetString();
+            Assert.Contains("Microsoft Scripting Runtime", secondBookMessage, StringComparison.Ordinal);
+            Assert.Contains("main=<none>", secondBookMessage, StringComparison.Ordinal);
+            await ReadLogMessageAsync(stdout, "document 'SecondBook' kind 'excel' is missing expected main reference");
+
+            await SendRequestAsync(stdin, stdout, 2, "shutdown", null);
+            await SendNotificationAsync(stdin, "exit", null);
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await process.WaitForExitAsync(cancellation.Token);
+            Assert.Equal(0, process.ExitCode);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_does_not_emit_reference_selection_for_ad_hoc_projects()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-adhoc-references-").FullName;
+        try
+        {
+            var serverProjectPath = Path.GetFullPath(
+                Path.Combine(
+                    AppContext.BaseDirectory,
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "src",
+                    "VbaLanguageServer.Cli",
+                    "VbaLanguageServer.Cli.csproj"));
+
+            using var process = StartLanguageServer(serverProjectPath);
+            await using var stdin = process.StandardInput.BaseStream;
+            using var stdout = process.StandardOutput.BaseStream;
+
+            await InitializeAsync(stdin, stdout);
+            var uri = ToFileUri(Path.Combine(projectRoot, "Worker.bas"));
+            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Public Sub Run()",
+                "End Sub"
+            ])));
+
+            var selection = await TryReadLogMessageAsync(stdout, "VbaProjectReferenceSelection", TimeSpan.FromMilliseconds(500));
+            Assert.Null(selection);
+
+            await SendRequestAsync(stdin, stdout, 2, "shutdown", null);
+            await SendNotificationAsync(stdin, "exit", null);
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await process.WaitForExitAsync(cancellation.Token);
+            Assert.Equal(0, process.ExitCode);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Server_keeps_source_templates_out_of_manifest_source_scope_and_preserves_ad_hoc_projects()
     {
         var projectRoot = Directory.CreateTempSubdirectory("vba-ls-template-").FullName;
@@ -1145,6 +1344,40 @@ public sealed class LanguageServerProcessTests
             {
                 return message;
             }
+        }
+    }
+
+    private static async Task<JsonElement> ReadLogMessageAsync(Stream stdout, string expectedMessageFragment)
+        => await TryReadLogMessageAsync(stdout, expectedMessageFragment, TimeSpan.FromSeconds(5))
+            ?? throw new TimeoutException($"Language server did not write a log message containing: {expectedMessageFragment}");
+
+    private static async Task<JsonElement?> TryReadLogMessageAsync(
+        Stream stdout,
+        string expectedMessageFragment,
+        TimeSpan timeout)
+    {
+        using var cancellation = new CancellationTokenSource(timeout);
+        try
+        {
+            while (true)
+            {
+                var message = await ReadMessageAsync(stdout, cancellation.Token);
+                if (!message.TryGetProperty("method", out var methodElement)
+                    || methodElement.GetString() != "window/logMessage")
+                {
+                    continue;
+                }
+
+                var logMessage = message.GetProperty("params").GetProperty("message").GetString();
+                if (logMessage?.Contains(expectedMessageFragment, StringComparison.Ordinal) == true)
+                {
+                    return message;
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            return null;
         }
     }
 

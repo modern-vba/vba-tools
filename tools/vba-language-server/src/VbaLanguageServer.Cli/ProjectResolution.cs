@@ -10,8 +10,12 @@ public sealed record VbaProjectResolution(
     VbaProjectResolutionKind Kind,
     string RootPath,
     string? ManifestPath = null,
-    string? DocumentName = null)
+    string? DocumentName = null,
+    string? DocumentKind = null,
+    IReadOnlyList<VbaProjectReference>? References = null)
 {
+    public IReadOnlyList<VbaProjectReference> ReferenceEntries => References ?? [];
+
     public bool ContainsUri(string uri)
     {
         var localPath = VbaProjectResolver.TryGetLocalPath(uri);
@@ -55,7 +59,9 @@ public static class VbaProjectResolver
                         VbaProjectResolutionKind.ManifestDocument,
                         sourceRoot,
                         manifestPath,
-                        documentName);
+                        documentName,
+                        document.Kind,
+                        document.References ?? []);
                 }
             }
 

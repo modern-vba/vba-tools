@@ -135,6 +135,7 @@ public sealed class DoctorCommand
     {
         foreach (var (documentName, document) in project.Manifest.Documents.OrderBy(item => item.Key, StringComparer.OrdinalIgnoreCase))
         {
+            AddManifestReferenceConsistencyDiagnostic(results, documentName, document);
             var templateReferences = GetTemplateReferenceNames(results, project, documentName, document);
             foreach (var reference in document.References)
             {
@@ -167,6 +168,22 @@ public sealed class DoctorCommand
                 }
             }
         }
+    }
+
+    private static void AddManifestReferenceConsistencyDiagnostic(
+        List<DiagnosticResult> results,
+        string documentName,
+        ProjectDocument document)
+    {
+        var selection = VbaProjectReferenceSelection.Create(document.Kind, document.References);
+        if (selection.MissingExpectedMainReference is null)
+        {
+            return;
+        }
+
+        results.Add(DiagnosticResult.Warn(
+            $"VbaProjectReferences ({documentName})",
+            $"Manifest/reference consistency warning: document kind '{document.Kind}' is missing expected main reference '{selection.MissingExpectedMainReference}'. Host definitions will not be activated implicitly."));
     }
 
     private IReadOnlySet<string> GetTemplateReferenceNames(
