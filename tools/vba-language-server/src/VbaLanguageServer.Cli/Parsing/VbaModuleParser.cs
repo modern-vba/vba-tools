@@ -27,13 +27,15 @@ public sealed record VbaCallableDeclaration(
     IReadOnlyList<VbaCallableParameterSyntax> Parameters,
     string? Documentation,
     VbaCallableSignature Signature,
+    VbaTypeReference? TypeReference,
     int LineIndex,
     string OriginalLine);
 
 public sealed record VbaCallableParameterSyntax(
     string Name,
     VbaRange Range,
-    string? Documentation);
+    string? Documentation,
+    VbaTypeReference? TypeReference);
 
 public sealed record VbaSourceDeclarationSyntax(
     string Name,
@@ -44,7 +46,9 @@ public sealed record VbaSourceDeclarationSyntax(
     string? Documentation = null,
     VbaCallableSignature? Signature = null,
     string? ParentProcedureName = null,
-    VbaRange? ParentProcedureRange = null);
+    VbaRange? ParentProcedureRange = null,
+    string? ParentTypeName = null,
+    VbaTypeReference? TypeReference = null);
 
 public static class VbaModuleParser
 {
@@ -177,7 +181,8 @@ public static class VbaModuleParser
                     GetVisibility(constMatch.Groups["visibility"].Value, defaultPublic: true),
                     lineIndex,
                     lines[lineIndex],
-                    documentation: documentation?.HoverText));
+                    documentation: documentation?.HoverText,
+                    typeReference: ParseTypeReference(lines[lineIndex])));
                 continue;
             }
 
@@ -220,7 +225,8 @@ public static class VbaModuleParser
                     VbaSourceDefinitionKind.Variable,
                     GetVisibility(variableMatch.Groups["visibility"].Value, defaultPublic: false),
                     lineIndex,
-                    lines[lineIndex]));
+                    lines[lineIndex],
+                    typeReference: ParseTypeReference(lines[lineIndex])));
             }
         }
 
@@ -268,6 +274,7 @@ public static class VbaModuleParser
         var documentation = ParseDocumentationComment(lines, lineIndex);
         var parameters = ParseCallableParameters(match, lineIndex, lines[lineIndex], documentation);
         var signature = CreateSignature(name, parameters, lines[lineIndex], documentation);
+        var typeReference = ParseReturnTypeReference(lines[lineIndex]);
         var kind = match.Groups["kind"].Success
             ? VbaSourceDefinitionKind.Procedure
             : VbaSourceDefinitionKind.Property;
@@ -285,6 +292,7 @@ public static class VbaModuleParser
             parameters,
             documentation?.HoverText,
             signature,
+            typeReference,
             lineIndex,
             lines[lineIndex]);
     }
@@ -297,7 +305,8 @@ public static class VbaModuleParser
             declaration.Range,
             declaration.LineIndex,
             Documentation: declaration.Documentation,
-            Signature: declaration.Signature);
+            Signature: declaration.Signature,
+            TypeReference: declaration.TypeReference);
 
     private static VbaSourceDeclarationSyntax CreateParameterDeclaration(
         VbaCallableParameterSyntax parameter,
@@ -312,7 +321,8 @@ public static class VbaModuleParser
             lineIndex,
             Documentation: parameter.Documentation,
             ParentProcedureName: parentProcedureName,
-            ParentProcedureRange: parentProcedureRange);
+            ParentProcedureRange: parentProcedureRange,
+            TypeReference: parameter.TypeReference);
 
     private static VbaSourceDeclarationSyntax CreateDeclaration(
         Match match,
@@ -324,7 +334,9 @@ public static class VbaModuleParser
         string? documentation = null,
         VbaCallableSignature? signature = null,
         string? parentProcedureName = null,
-        VbaRange? parentProcedureRange = null)
+        VbaRange? parentProcedureRange = null,
+        string? parentTypeName = null,
+        VbaTypeReference? typeReference = null)
     {
         var name = match.Groups[groupName].Value;
         return new VbaSourceDeclarationSyntax(
@@ -336,7 +348,9 @@ public static class VbaModuleParser
             Documentation: documentation,
             Signature: signature,
             ParentProcedureName: parentProcedureName,
-            ParentProcedureRange: parentProcedureRange);
+            ParentProcedureRange: parentProcedureRange,
+            ParentTypeName: parentTypeName,
+            TypeReference: typeReference);
     }
 
     private static void AddMemberDeclarations(
@@ -361,7 +375,8 @@ public static class VbaModuleParser
                 kind,
                 visibility,
                 CreateLineRange(lines[lineIndex], lineIndex, match.Value),
-                lineIndex));
+                lineIndex,
+                TypeReference: ParseTypeReference(lines[lineIndex])));
         }
     }
 
@@ -390,7 +405,8 @@ public static class VbaModuleParser
                 lineIndex,
                 lines[lineIndex],
                 parentProcedureName: parentProcedureName,
-                parentProcedureRange: parentProcedureRange));
+                parentProcedureRange: parentProcedureRange,
+                typeReference: ParseTypeReference(lines[lineIndex])));
         }
     }
 
@@ -435,7 +451,8 @@ public static class VbaModuleParser
                         new VbaPosition(lineIndex, start + name.Length)),
                     documentation?.ParameterDocs.TryGetValue(name, out var parameterDocumentation) == true
                         ? parameterDocumentation
-                        : null));
+                        : null,
+                    ParseTypeReference(segment)));
             }
 
             segmentStart += segment.Length + 1;
@@ -604,12 +621,37 @@ public static class VbaModuleParser
     }
 
     private static string? ParseReturnTypeName(string line)
+        => ParseReturnTypeReference(line)?.Name;
+
+    private static VbaTypeReference? ParseReturnTypeReference(string line)
     {
         var match = Regex.Match(
             line,
-            "\\)\\s+As\\s+(?<type>[A-Za-z_][A-Za-z0-9_.]*)\\b",
+            "\\)\\s+As\\s+(?:(?<qualifier>[A-Za-z_][A-Za-z0-9_]*)\\.)?(?<type>[A-Za-z_][A-Za-z0-9_]*)\\b",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-        return match.Success ? match.Groups["type"].Value : null;
+        return CreateTypeReference(match);
+    }
+
+    private static VbaTypeReference? ParseTypeReference(string text)
+    {
+        var match = Regex.Match(
+            text,
+            "\\bAs\\s+(?:(?<qualifier>[A-Za-z_][A-Za-z0-9_]*)\\.)?(?<type>[A-Za-z_][A-Za-z0-9_]*)\\b",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        return CreateTypeReference(match);
+    }
+
+    private static VbaTypeReference? CreateTypeReference(Match match)
+    {
+        if (!match.Success)
+        {
+            return null;
+        }
+
+        var qualifier = match.Groups["qualifier"].Success
+            ? match.Groups["qualifier"].Value
+            : null;
+        return new VbaTypeReference(match.Groups["type"].Value, qualifier);
     }
 
     private static int FindBlockEndLine(IReadOnlyList<string> lines, int startLine, string keyword)

@@ -8,7 +8,9 @@ public sealed record VbaProjectReferenceDefinition(
     string Name,
     VbaSourceDefinitionKind Kind,
     string? Documentation = null,
-    VbaCallableSignature? Signature = null);
+    VbaCallableSignature? Signature = null,
+    string? ParentTypeName = null,
+    VbaTypeReference? TypeReference = null);
 
 public sealed record VbaProjectReferenceCatalog(
     string ReferenceName,
@@ -67,6 +69,18 @@ public sealed class VbaProjectReferenceCatalogSet
                         "Represents the Microsoft Excel application."),
                     new VbaProjectReferenceDefinition(
                         "Microsoft Excel 16.0 Object Library",
+                        "Workbooks",
+                        VbaSourceDefinitionKind.Class,
+                        "Represents the collection of open Microsoft Excel workbooks."),
+                    new VbaProjectReferenceDefinition(
+                        "Microsoft Excel 16.0 Object Library",
+                        "Workbooks",
+                        VbaSourceDefinitionKind.Property,
+                        "Returns the open Microsoft Excel workbooks.",
+                        ParentTypeName: "Application",
+                        TypeReference: new VbaTypeReference("Workbooks", "Excel")),
+                    new VbaProjectReferenceDefinition(
+                        "Microsoft Excel 16.0 Object Library",
                         "Run",
                         VbaSourceDefinitionKind.Procedure,
                         "Runs a macro or calls a function.",
@@ -76,7 +90,32 @@ public sealed class VbaProjectReferenceCatalogSet
                                 new VbaCallableParameter("Macro", "The macro or function to run."),
                                 new VbaCallableParameter("Arg1", "The first argument passed to the macro.")
                             ],
-                            "Runs a macro or calls a function."))
+                            "Runs a macro or calls a function."),
+                        ParentTypeName: "Application"),
+                    new VbaProjectReferenceDefinition(
+                        "Microsoft Excel 16.0 Object Library",
+                        "Workbook",
+                        VbaSourceDefinitionKind.Class,
+                        "Represents a Microsoft Excel workbook."),
+                    new VbaProjectReferenceDefinition(
+                        "Microsoft Excel 16.0 Object Library",
+                        "Open",
+                        VbaSourceDefinitionKind.Procedure,
+                        "Opens a workbook.",
+                        new VbaCallableSignature(
+                            "Open(FileName)",
+                            [
+                                new VbaCallableParameter("FileName", "The workbook file name.")
+                            ],
+                            "Opens a workbook."),
+                        ParentTypeName: "Workbooks",
+                        TypeReference: new VbaTypeReference("Workbook", "Excel")),
+                    new VbaProjectReferenceDefinition(
+                        "Microsoft Excel 16.0 Object Library",
+                        "Name",
+                        VbaSourceDefinitionKind.Property,
+                        "Returns the workbook name.",
+                        ParentTypeName: "Workbook")
                 ]),
             new VbaProjectReferenceCatalog(
                 "Microsoft Scripting Runtime",
@@ -86,7 +125,20 @@ public sealed class VbaProjectReferenceCatalogSet
                         "Microsoft Scripting Runtime",
                         "Dictionary",
                         VbaSourceDefinitionKind.Class,
-                        "Represents a key/item collection provided by Microsoft Scripting Runtime.")
+                        "Represents a key/item collection provided by Microsoft Scripting Runtime."),
+                    new VbaProjectReferenceDefinition(
+                        "Microsoft Scripting Runtime",
+                        "Exists",
+                        VbaSourceDefinitionKind.Procedure,
+                        "Returns whether a key exists in the dictionary.",
+                        new VbaCallableSignature(
+                            "Exists(Key)",
+                            [
+                                new VbaCallableParameter("Key", "The key to find.")
+                            ],
+                            "Returns whether a key exists in the dictionary."),
+                        ParentTypeName: "Dictionary",
+                        TypeReference: new VbaTypeReference("Boolean"))
                 ]),
             new VbaProjectReferenceCatalog(
                 "Microsoft Office 16.0 Object Library",
@@ -192,7 +244,9 @@ public sealed class VbaProjectReferenceCatalogSet
             definition.ReferenceName,
             new VbaRange(new VbaPosition(0, 0), new VbaPosition(0, definition.Name.Length)),
             Documentation: definition.Documentation,
-            Signature: definition.Signature);
+            Signature: definition.Signature,
+            ParentTypeName: definition.ParentTypeName,
+            TypeReference: definition.TypeReference);
     }
 
     private sealed record ActiveReferenceCatalog(string ManifestReferenceName, VbaProjectReferenceCatalog Catalog);
