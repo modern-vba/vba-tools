@@ -1,0 +1,177 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+import {
+  assertBundledCliCapabilities,
+  assertCliPublishSettings,
+  assertVsixContents,
+  requiredBundledCliPath,
+  verifyVsixPackaging
+} from './vsixPackagingRules.mjs';
+
+test('VSIX content rules require the bundled CLI artifact and exclude source tree files', () => {
+  assert.doesNotThrow(() => assertVsixContents([
+    'README.md',
+    requiredBundledCliPath,
+    'client/out/extension.js'
+  ]));
+
+  assert.throws(
+    () => assertVsixContents([
+      'README.md',
+      'tools/vba-devtool/src/VbaDevTool.Cli/Program.cs',
+      requiredBundledCliPath
+    ]),
+    /tools\/vba-devtool/
+  );
+
+  assert.throws(
+    () => assertVsixContents([
+      'README.md',
+      'client/out/extension.js'
+    ]),
+    /bin\/vba-devtool\/win-x64\/vba-devtool\.exe/
+  );
+});
+
+test('CLI publish settings require a Windows x64 self-contained single-file executable', () => {
+  assert.doesNotThrow(() => assertCliPublishSettings(`
+<Project>
+  <PropertyGroup>
+    <AssemblyName>vba-devtool</AssemblyName>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+  </PropertyGroup>
+</Project>
+`));
+
+  assert.throws(
+    () => assertCliPublishSettings(`
+<Project>
+  <PropertyGroup>
+    <AssemblyName>vba-devtool</AssemblyName>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+  </PropertyGroup>
+</Project>
+`),
+    /SelfContained/
+  );
+});
+
+test('bundled CLI capabilities must satisfy the packaged extension contract surface', () => {
+  const commands = Object.fromEntries([
+    'build',
+    'common-module add',
+    'common-module list',
+    'common-module update',
+    'doctor',
+    'export',
+    'publish',
+    'reference add',
+    'reference list',
+    'reference remove',
+    'test'
+  ].map((commandName) => [commandName, { outputSchemaVersion: '1.0' }]));
+
+  assert.doesNotThrow(() => assertBundledCliCapabilities(JSON.stringify({
+    toolVersion: '0.1.0',
+    contractVersion: '1.0',
+    commands
+  })));
+
+  delete commands.doctor;
+  assert.throws(
+    () => assertBundledCliCapabilities(JSON.stringify({
+      toolVersion: '0.1.0',
+      contractVersion: '1.0',
+      commands
+    })),
+    /doctor/
+  );
+});
+
+test('packaging verification checks file contents publish settings and bundled CLI capabilities', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-packaging-'));
+  await fs.mkdir(path.join(root, 'bin', 'vba-devtool', 'win-x64'), { recursive: true });
+  await fs.writeFile(path.join(root, requiredBundledCliPath), '');
+  await fs.mkdir(path.join(root, 'tools', 'vba-devtool', 'src', 'VbaDevTool.Cli'), { recursive: true });
+  await fs.writeFile(
+    path.join(root, 'tools', 'vba-devtool', 'src', 'VbaDevTool.Cli', 'VbaDevTool.Cli.csproj'),
+    `
+<Project>
+  <PropertyGroup>
+    <AssemblyName>vba-devtool</AssemblyName>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+  </PropertyGroup>
+</Project>
+`
+  );
+
+  const commands = Object.fromEntries([
+    'build',
+    'common-module add',
+    'common-module list',
+    'common-module update',
+    'doctor',
+    'export',
+    'publish',
+    'reference add',
+    'reference list',
+    'reference remove',
+    'test'
+  ].map((commandName) => [commandName, { outputSchemaVersion: '1.0' }]));
+  const calls = [];
+
+  await verifyVsixPackaging({
+    root,
+    runCommand: async (file, args) => {
+      calls.push({ file: path.basename(file), args });
+      if (args.includes('ls')) {
+        return {
+          stdout: `${requiredBundledCliPath}\nREADME.md\n`,
+          stderr: ''
+        };
+      }
+
+      return {
+        stdout: JSON.stringify({
+          toolVersion: '0.1.0',
+          contractVersion: '1.0',
+          commands
+        }),
+        stderr: ''
+      };
+    }
+  });
+
+  assert.deepEqual(calls.map((call) => call.args.includes('ls') ? call.args.slice(-2) : call.args), [
+    ['ls', '--no-dependencies'],
+    ['capabilities', '--format', 'json']
+  ]);
+});
+
+test('package scripts publish the bundled CLI and verify VSIX contents before packaging', async () => {
+  const packageJson = JSON.parse(
+    await fs.readFile(new URL('../package.json', import.meta.url), 'utf8')
+  );
+
+  assert.match(packageJson.scripts['publish:devtool'], /dotnet publish/);
+  assert.match(packageJson.scripts['publish:devtool'], /-o bin\/vba-devtool\/win-x64/);
+  assert.equal(packageJson.scripts['verify:vsix'], 'node scripts/vsixPackagingRules.mjs');
+  assert.match(packageJson.scripts['package:verify'], /publish:devtool/);
+  assert.match(packageJson.scripts['package:verify'], /verify:vsix/);
+  assert.match(packageJson.scripts.package, /package:verify/);
+  assert.match(packageJson.scripts.test, /test:packaging/);
+  assert.deepEqual(packageJson.repository, {
+    type: 'git',
+    url: 'https://github.com/modern-vba/vba-tools.git'
+  });
+});

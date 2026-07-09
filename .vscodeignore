@@ -13,4 +13,5 @@ coverage/**
 test-results/**
 playwright-report/**
 tools/vba-devtool/**
+scripts/**
 *.vsix
