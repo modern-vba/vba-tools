@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "projectName": "SourceTemplateProject",
+  "primaryDocument": "Book1",
+  "documents": {
+    "Book1": {
+      "kind": "excel",
+      "sourcePath": "src/Book1",
+      "templatePath": "templates/BlankWorkbook.xlsm",
+      "binPath": "bin/Book1/Book1.xlsm",
+      "publishPath": "publish/Book1/Book1.xlsm"
+    }
+  }
+}

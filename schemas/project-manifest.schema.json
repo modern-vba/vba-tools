@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://modern-vba.github.io/vba-tools/schemas/project-manifest.schema.json",
+  "title": "VBA Tools Project Manifest",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "projectName",
+    "primaryDocument",
+    "documents"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "projectName": {
+      "type": "string",
+      "minLength": 1
+    },
+    "primaryDocument": {
+      "type": "string",
+      "minLength": 1
+    },
+    "documents": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "minLength": 1
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/document"
+      }
+    },
+    "commonModulesRepository": {
+      "type": "string",
+      "minLength": 1
+    },
+    "commandDefaults": {
+      "$ref": "#/$defs/commandDefaults"
+    }
+  },
+  "$defs": {
+    "document": {
+      "type": "object",
+      "required": [
+        "kind",
+        "sourcePath",
+        "templatePath",
+        "binPath",
+        "publishPath"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "excel"
+        },
+        "sourcePath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "templatePath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "binPath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "publishPath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "commonModules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/commonModule"
+          }
+        },
+        "references": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reference"
+          }
+        }
+      }
+    },
+    "commonModule": {
+      "type": "object",
+      "required": [
+        "name",
+        "requested"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "requested": {
+          "type": "boolean"
+        }
+      }
+    },
+    "reference": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "commandDefaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "test": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "format": {
+              "enum": [
+                "text",
+                "ndjson"
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}

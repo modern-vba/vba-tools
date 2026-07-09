@@ -16,4 +16,8 @@
     </PackageReference>
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\VbaLanguageServer.Cli\VbaLanguageServer.Cli.csproj" />
+  </ItemGroup>
+
 </Project>
