@@ -213,6 +213,14 @@ internal sealed class MinimalLanguageServer
                 $"Manifest/reference consistency warning: document '{resolution.DocumentName}' kind '{resolution.DocumentKind}' is missing expected main reference '{selection.MissingExpectedMainReference}'. Host definitions will not be activated implicitly.",
                 cancellationToken);
         }
+
+        foreach (var referenceName in ReferenceCatalogs.GetMissingCatalogReferenceNames(selection))
+        {
+            await WriteLogMessageAsync(
+                2,
+                $"Reference catalog availability warning: document '{resolution.DocumentName}' reference '{referenceName}' has no bundled or cached VbaProjectReferenceCatalog metadata. The reference remains active, but external definitions are unavailable.",
+                cancellationToken);
+        }
     }
 
     private static object CreateInitializeResult()

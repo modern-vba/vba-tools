@@ -867,6 +867,92 @@ public sealed class LanguageServerProcessTests
     }
 
     [Fact]
+    public async Task Server_reports_missing_catalog_availability_without_source_diagnostics()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-missing-catalog-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(
+                projectRoot,
+                "Microsoft Excel 16.0 Object Library",
+                "Uncataloged Reference Library");
+
+            var serverProjectPath = Path.GetFullPath(
+                Path.Combine(
+                    AppContext.BaseDirectory,
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "src",
+                    "VbaLanguageServer.Cli",
+                    "VbaLanguageServer.Cli.csproj"));
+
+            using var process = StartLanguageServer(serverProjectPath);
+            await using var stdin = process.StandardInput.BaseStream;
+            using var stdout = process.StandardOutput.BaseStream;
+
+            await InitializeAsync(stdin, stdout);
+            var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
+            var text = string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Option Explicit",
+                "",
+                "Public Sub Run()",
+                "    UncatalogedType",
+                "End Sub"
+            ]);
+            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, text));
+
+            var diagnostics = await ReadNotificationAsync(stdout, "textDocument/publishDiagnostics");
+            Assert.Empty(diagnostics.GetProperty("params").GetProperty("diagnostics").EnumerateArray());
+
+            var selection = await ReadLogMessageAsync(stdout, "VbaProjectReferenceSelection document=Book1");
+            Assert.Contains(
+                "Uncataloged Reference Library",
+                selection.GetProperty("params").GetProperty("message").GetString(),
+                StringComparison.Ordinal);
+            var availability = await ReadLogMessageAsync(stdout, "has no bundled or cached VbaProjectReferenceCatalog metadata");
+            Assert.Equal(2, availability.GetProperty("params").GetProperty("type").GetInt32());
+            Assert.Contains(
+                "Uncataloged Reference Library",
+                availability.GetProperty("params").GetProperty("message").GetString(),
+                StringComparison.Ordinal);
+
+            var hover = await SendPositionRequestAsync(stdin, stdout, 2, "textDocument/hover", uri, text, "UncatalogedType");
+            Assert.Equal(JsonValueKind.Null, hover.GetProperty("result").ValueKind);
+
+            var completion = await SendRequestAsync(
+                stdin,
+                stdout,
+                3,
+                "textDocument/completion",
+                new
+                {
+                    textDocument = new { uri },
+                    position = new { line = 4, character = 4 }
+                });
+            var completionLabels = completion
+                .GetProperty("result")
+                .EnumerateArray()
+                .Select(item => item.GetProperty("label").GetString())
+                .ToArray();
+            Assert.DoesNotContain("UncatalogedType", completionLabels);
+
+            await SendRequestAsync(stdin, stdout, 4, "shutdown", null);
+            await SendNotificationAsync(stdin, "exit", null);
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await process.WaitForExitAsync(cancellation.Token);
+            Assert.Equal(0, process.ExitCode);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Server_renames_source_targets_and_rejects_non_renameable_inputs()
     {
         var serverProjectPath = Path.GetFullPath(

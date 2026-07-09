@@ -275,6 +275,34 @@ public sealed class DoctorCommandTests
         Assert.DoesNotContain("missing expected main reference", result.StandardOutput, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void DoctorWarnsWhenReferenceCatalogMetadataIsUnavailable()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        Directory.CreateDirectory(Path.Combine(root, "src", "Book1"));
+        File.WriteAllText(Path.Combine(root, "src", "Book1", "Book1.xlsm"), string.Empty);
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        manifest.Documents["Book1"].References.Add(new VbaProjectReference("Microsoft Excel 16.0 Object Library"));
+        manifest.Documents["Book1"].References.Add(new VbaProjectReference("Uncataloged Reference Library"));
+        new JsonProjectManifestStore().Save(root, manifest);
+        var resolver = new FakeVbaProjectReferenceResolver(
+            new ResolvedVbaProjectReference("Microsoft Excel 16.0 Object Library", "{00020813-0000-0000-C000-000000000046}", 1, 9),
+            new ResolvedVbaProjectReference("Uncataloged Reference Library", "{AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA}", 1, 0));
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+            root,
+            new FakeEnvironmentDiagnosticPort(),
+            workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+            vbaProjectReferenceResolver: resolver);
+
+        var result = application.Run(["doctor"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("[WARN] VbaProjectReferenceCatalog (Book1/Uncataloged Reference Library)", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("No bundled or cached VbaProjectReferenceCatalog metadata is available", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("[PASS] VbaProjectReferences (Book1/Uncataloged Reference Library)", result.StandardOutput, StringComparison.Ordinal);
+    }
+
     private static (string Root, string CommonRepo) CreateDoctorProject(TempDirectory temp)
     {
         var commonRepo = temp.CreateDirectory("common_modules_repo");

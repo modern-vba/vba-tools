@@ -136,6 +136,7 @@ public sealed class DoctorCommand
         foreach (var (documentName, document) in project.Manifest.Documents.OrderBy(item => item.Key, StringComparer.OrdinalIgnoreCase))
         {
             AddManifestReferenceConsistencyDiagnostic(results, documentName, document);
+            AddReferenceCatalogAvailabilityDiagnostics(results, documentName, document);
             var templateReferences = GetTemplateReferenceNames(results, project, documentName, document);
             foreach (var reference in document.References)
             {
@@ -167,6 +168,21 @@ public sealed class DoctorCommand
                         "Reference resolved."));
                 }
             }
+        }
+    }
+
+    private static void AddReferenceCatalogAvailabilityDiagnostics(
+        List<DiagnosticResult> results,
+        string documentName,
+        ProjectDocument document)
+    {
+        foreach (var reference in document.References
+            .Where(reference => !VbaProjectReferenceCatalogAvailability.HasUsableCatalog(reference.Name))
+            .OrderBy(reference => reference.Name, StringComparer.OrdinalIgnoreCase))
+        {
+            results.Add(DiagnosticResult.Warn(
+                $"VbaProjectReferenceCatalog ({documentName}/{reference.Name})",
+                "No bundled or cached VbaProjectReferenceCatalog metadata is available. The reference remains active, but external editor definitions are unavailable."));
         }
     }
 

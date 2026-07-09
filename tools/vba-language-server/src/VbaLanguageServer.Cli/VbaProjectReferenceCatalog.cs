@@ -34,6 +34,29 @@ public sealed class VbaProjectReferenceCatalogSet
         var bundledCatalogs = new[]
         {
             new VbaProjectReferenceCatalog(
+                "Visual Basic For Applications",
+                ["VBA"],
+                [
+                    new VbaProjectReferenceDefinition(
+                        "Visual Basic For Applications",
+                        "Collection",
+                        VbaSourceDefinitionKind.Class,
+                        "Represents an ordered set of items."),
+                    new VbaProjectReferenceDefinition(
+                        "Visual Basic For Applications",
+                        "MsgBox",
+                        VbaSourceDefinitionKind.Procedure,
+                        "Displays a message in a dialog box.",
+                        new VbaCallableSignature(
+                            "MsgBox(Prompt, Buttons, Title)",
+                            [
+                                new VbaCallableParameter("Prompt", "The message to display."),
+                                new VbaCallableParameter("Buttons", "The buttons and icon style."),
+                                new VbaCallableParameter("Title", "The dialog box title.")
+                            ],
+                            "Displays a message in a dialog box."))
+                ]),
+            new VbaProjectReferenceCatalog(
                 "Microsoft Excel 16.0 Object Library",
                 ["Excel"],
                 [
@@ -104,6 +127,16 @@ public sealed class VbaProjectReferenceCatalogSet
             .Where(definition => definition is not null)
             .Select(definition => definition!)
             .OrderBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    public IReadOnlyList<string> GetMissingCatalogReferenceNames(VbaProjectReferenceSelection selection)
+    {
+        return selection.References
+            .Where(reference => !catalogs.ContainsKey(reference.Name))
+            .Select(reference => reference.Name)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
             .ToArray();
     }
 
