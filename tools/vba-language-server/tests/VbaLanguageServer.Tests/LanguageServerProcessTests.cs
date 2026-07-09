@@ -102,6 +102,114 @@ public sealed class LanguageServerProcessTests
         Assert.Equal(0, process.ExitCode);
     }
 
+    [Fact]
+    public async Task Server_publishes_diagnostics_after_open_and_change_notifications()
+    {
+        var serverProjectPath = Path.GetFullPath(
+            Path.Combine(
+                AppContext.BaseDirectory,
+                "..",
+                "..",
+                "..",
+                "..",
+                "..",
+                "src",
+                "VbaLanguageServer.Cli",
+                "VbaLanguageServer.Cli.csproj"));
+
+        using var process = StartLanguageServer(serverProjectPath);
+        await using var stdin = process.StandardInput.BaseStream;
+        using var stdout = process.StandardOutput.BaseStream;
+
+        await SendRequestAsync(
+            stdin,
+            stdout,
+            1,
+            "initialize",
+            new
+            {
+                processId = Environment.ProcessId,
+                rootUri = (string?)null,
+                capabilities = new { }
+            });
+        await SendNotificationAsync(stdin, "initialized", new { });
+
+        const string invalidLine = "        \"needle\", _ ' comment";
+        await SendNotificationAsync(
+            stdin,
+            "textDocument/didOpen",
+            new
+            {
+                textDocument = new
+                {
+                    uri = "file:///C:/work/Module1.bas",
+                    languageId = "vba",
+                    version = 1,
+                    text = string.Join('\n', [
+                        "Attribute VB_Name = \"Module1\"",
+                        "Option Explicit",
+                        "",
+                        "Public Sub Run()",
+                        "    ReadValue( _",
+                        invalidLine,
+                        "End Sub"
+                    ])
+                }
+            });
+
+        var invalidDiagnostics = await ReadNotificationAsync(stdout, "textDocument/publishDiagnostics");
+        var firstDiagnostic = invalidDiagnostics
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray()
+            .Single();
+        Assert.Equal("syntax.invalidTrailingCommentContinuation", firstDiagnostic.GetProperty("code").GetString());
+        Assert.Equal("Code line-continuation marker cannot be followed by a comment.", firstDiagnostic.GetProperty("message").GetString());
+        Assert.Equal("vba-language-server", firstDiagnostic.GetProperty("source").GetString());
+        Assert.Equal(1, firstDiagnostic.GetProperty("severity").GetInt32());
+        Assert.Equal(5, firstDiagnostic.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(invalidLine.IndexOf('_'), firstDiagnostic.GetProperty("range").GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(5, firstDiagnostic.GetProperty("range").GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(invalidLine.Length, firstDiagnostic.GetProperty("range").GetProperty("end").GetProperty("character").GetInt32());
+
+        await SendNotificationAsync(
+            stdin,
+            "textDocument/didChange",
+            new
+            {
+                textDocument = new
+                {
+                    uri = "file:///C:/work/Module1.bas",
+                    version = 2
+                },
+                contentChanges = new[]
+                {
+                    new
+                    {
+                        text = string.Join('\n', [
+                            "Attribute VB_Name = \"Module1\"",
+                            "Option Explicit",
+                            "",
+                            "Public Sub Run()",
+                            "    ReadValue( _",
+                            "        \"needle\")",
+                            "End Sub"
+                        ])
+                    }
+                }
+            });
+
+        var validDiagnostics = await ReadNotificationAsync(stdout, "textDocument/publishDiagnostics");
+        Assert.Empty(validDiagnostics.GetProperty("params").GetProperty("diagnostics").EnumerateArray());
+
+        await SendRequestAsync(stdin, stdout, 2, "shutdown", null);
+        await SendNotificationAsync(stdin, "exit", null);
+
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await process.WaitForExitAsync(cancellation.Token);
+        Assert.Equal(0, process.ExitCode);
+    }
+
     private static Process StartLanguageServer(string serverProjectPath)
     {
         var startInfo = new ProcessStartInfo
@@ -145,7 +253,17 @@ public sealed class LanguageServerProcessTests
             @params = parameters
         });
 
-        return await ReadMessageAsync(stdout);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        while (true)
+        {
+            var message = await ReadMessageAsync(stdout, cancellation.Token);
+            if (message.TryGetProperty("id", out var responseId)
+                && responseId.ValueKind == JsonValueKind.Number
+                && responseId.GetInt32() == id)
+            {
+                return message;
+            }
+        }
     }
 
     private static Task SendNotificationAsync(Stream stdin, string method, object? parameters)
@@ -173,18 +291,35 @@ public sealed class LanguageServerProcessTests
         await stream.FlushAsync();
     }
 
-    private static async Task<JsonElement> ReadMessageAsync(Stream stream)
+    private static async Task<JsonElement> ReadNotificationAsync(Stream stdout, string method)
+    {
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        while (true)
+        {
+            var message = await ReadMessageAsync(stdout, cancellation.Token);
+            if (message.TryGetProperty("method", out var methodElement)
+                && methodElement.GetString() == method)
+            {
+                return message;
+            }
+        }
+    }
+
+    private static async Task<JsonElement> ReadMessageAsync(
+        Stream stream,
+        CancellationToken cancellationToken = default)
     {
         var headerBytes = new List<byte>();
+        var singleByte = new byte[1];
         while (!EndsWithHeaderTerminator(headerBytes))
         {
-            var next = stream.ReadByte();
-            if (next < 0)
+            var read = await stream.ReadAsync(singleByte.AsMemory(0, 1), cancellationToken);
+            if (read == 0)
             {
                 throw new EndOfStreamException("Language server closed stdout before sending a response.");
             }
 
-            headerBytes.Add((byte)next);
+            headerBytes.Add(singleByte[0]);
         }
 
         var headers = Encoding.ASCII.GetString(headerBytes.ToArray());
@@ -200,7 +335,7 @@ public sealed class LanguageServerProcessTests
         var offset = 0;
         while (offset < content.Length)
         {
-            var read = await stream.ReadAsync(content.AsMemory(offset, content.Length - offset));
+            var read = await stream.ReadAsync(content.AsMemory(offset, content.Length - offset), cancellationToken);
             if (read == 0)
             {
                 throw new EndOfStreamException("Language server closed stdout mid-message.");

@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using VbaLanguageServer.Diagnostics;
 
 var server = new MinimalLanguageServer(Console.OpenStandardInput(), Console.OpenStandardOutput());
 await server.RunAsync();
@@ -54,7 +55,7 @@ internal sealed class MinimalLanguageServer
                 return;
             }
 
-            HandleNotification(method, message["params"]);
+            await HandleNotificationAsync(method, message["params"], cancellationToken);
         }
     }
 
@@ -82,22 +83,22 @@ internal sealed class MinimalLanguageServer
         }
     }
 
-    private void HandleNotification(string? method, JsonNode? parameters)
+    private async Task HandleNotificationAsync(string? method, JsonNode? parameters, CancellationToken cancellationToken)
     {
         switch (method)
         {
             case "textDocument/didOpen":
-                RecordOpenedDocument(parameters);
+                await RecordOpenedDocumentAsync(parameters, cancellationToken);
                 return;
             case "textDocument/didChange":
-                RecordChangedDocument(parameters);
+                await RecordChangedDocumentAsync(parameters, cancellationToken);
                 return;
             default:
                 return;
         }
     }
 
-    private void RecordOpenedDocument(JsonNode? parameters)
+    private async Task RecordOpenedDocumentAsync(JsonNode? parameters, CancellationToken cancellationToken)
     {
         var textDocument = parameters?["textDocument"];
         var uri = textDocument?["uri"]?.GetValue<string>();
@@ -105,10 +106,11 @@ internal sealed class MinimalLanguageServer
         if (!string.IsNullOrEmpty(uri) && text is not null)
         {
             documents[uri] = text;
+            await PublishDiagnosticsAsync(uri, text, cancellationToken);
         }
     }
 
-    private void RecordChangedDocument(JsonNode? parameters)
+    private async Task RecordChangedDocumentAsync(JsonNode? parameters, CancellationToken cancellationToken)
     {
         var textDocument = parameters?["textDocument"];
         var uri = textDocument?["uri"]?.GetValue<string>();
@@ -117,7 +119,31 @@ internal sealed class MinimalLanguageServer
         if (!string.IsNullOrEmpty(uri) && text is not null)
         {
             documents[uri] = text;
+            await PublishDiagnosticsAsync(uri, text, cancellationToken);
         }
+    }
+
+    private Task PublishDiagnosticsAsync(string uri, string text, CancellationToken cancellationToken)
+    {
+        var diagnostics = VbaSyntaxDiagnostics.Collect(text, uri)
+            .Select(diagnostic => new
+            {
+                code = diagnostic.Code,
+                message = diagnostic.Message,
+                range = diagnostic.Range,
+                severity = 1,
+                source = diagnostic.Source
+            })
+            .ToArray();
+
+        return WriteNotificationAsync(
+            "textDocument/publishDiagnostics",
+            new
+            {
+                uri,
+                diagnostics
+            },
+            cancellationToken);
     }
 
     private static object CreateInitializeResult()
@@ -251,6 +277,16 @@ internal sealed class MinimalLanguageServer
                 code,
                 message
             }
+        }, cancellationToken);
+    }
+
+    private Task WriteNotificationAsync(string method, object? parameters, CancellationToken cancellationToken)
+    {
+        return WriteMessageAsync(new
+        {
+            jsonrpc = "2.0",
+            method,
+            @params = parameters
         }, cancellationToken);
     }
 
