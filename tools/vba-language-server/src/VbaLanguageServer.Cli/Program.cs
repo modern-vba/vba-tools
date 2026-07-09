@@ -15,18 +15,29 @@ internal sealed class MinimalLanguageServer
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
-    private static readonly VbaProjectReferenceCatalogSet ReferenceCatalogs =
-        VbaProjectReferenceCatalogSet.CreateBundled();
 
     private readonly Stream input;
     private readonly Stream output;
     private readonly Dictionary<string, string> documents = new(StringComparer.OrdinalIgnoreCase);
+    private readonly SemaphoreSlim outputLock = new(1, 1);
+    private readonly VbaProjectReferenceCatalogCache referenceCatalogCache;
+    private readonly VbaProjectReferenceCatalogRefreshService catalogRefreshService;
     private bool shutdownRequested;
 
-    public MinimalLanguageServer(Stream input, Stream output)
+    public MinimalLanguageServer(
+        Stream input,
+        Stream output,
+        VbaProjectReferenceCatalogCache? referenceCatalogCache = null,
+        VbaProjectReferenceCatalogRefreshService? catalogRefreshService = null)
     {
         this.input = input;
         this.output = output;
+        this.referenceCatalogCache = referenceCatalogCache
+            ?? new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.CreateBundled());
+        this.catalogRefreshService = catalogRefreshService
+            ?? new VbaProjectReferenceCatalogRefreshService(
+                this.referenceCatalogCache,
+                new TypeLibReferenceCatalogDiscovery(new RegistryTypeLibRegistryReader()));
     }
 
     public async Task RunAsync(CancellationToken cancellationToken = default)
@@ -133,6 +144,7 @@ internal sealed class MinimalLanguageServer
             documents[uri] = text;
             await PublishDiagnosticsAsync(uri, text, cancellationToken);
             await PublishReferenceSelectionTraceAsync(uri, cancellationToken);
+            RefreshReferenceCatalogsInBackground(uri, text, cancellationToken);
         }
     }
 
@@ -146,6 +158,7 @@ internal sealed class MinimalLanguageServer
         {
             documents[uri] = text;
             await PublishDiagnosticsAsync(uri, text, cancellationToken);
+            RefreshReferenceCatalogsInBackground(uri, text, cancellationToken);
         }
     }
 
@@ -214,13 +227,149 @@ internal sealed class MinimalLanguageServer
                 cancellationToken);
         }
 
-        foreach (var referenceName in ReferenceCatalogs.GetMissingCatalogReferenceNames(selection))
+        foreach (var referenceName in referenceCatalogCache.Current.GetMissingCatalogReferenceNames(selection))
         {
             await WriteLogMessageAsync(
                 2,
                 $"Reference catalog availability warning: document '{resolution.DocumentName}' reference '{referenceName}' has no bundled or cached VbaProjectReferenceCatalog metadata. The reference remains active, but external definitions are unavailable.",
                 cancellationToken);
         }
+    }
+
+    private void RefreshReferenceCatalogsInBackground(string uri, string text, CancellationToken cancellationToken)
+    {
+        if (TryCreateReferenceSelections(uri, text, out var selections))
+        {
+            _ = RefreshReferenceCatalogsInBackgroundAsync(uri, selections, cancellationToken);
+        }
+    }
+
+    private async Task RefreshReferenceCatalogsInBackgroundAsync(
+        string uri,
+        IReadOnlyList<(string DocumentName, VbaProjectReferenceSelection Selection)> selections,
+        CancellationToken cancellationToken)
+    {
+        foreach (var (documentName, selection) in selections)
+        {
+            IReadOnlyList<VbaProjectReferenceCatalogRefreshResult> results;
+            try
+            {
+                results = await catalogRefreshService.RefreshAsync(selection, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+
+            foreach (var result in results)
+            {
+                await PublishCatalogRefreshResultAsync(uri, documentName, result, cancellationToken);
+            }
+        }
+    }
+
+    private async Task PublishCatalogRefreshResultAsync(
+        string uri,
+        string documentName,
+        VbaProjectReferenceCatalogRefreshResult result,
+        CancellationToken cancellationToken)
+    {
+        var discovery = result.DiscoveryResult;
+        if (discovery.IsFailure)
+        {
+            await WriteLogMessageAsync(
+                2,
+                $"Reference catalog discovery warning: document '{documentName}' reference '{result.ReferenceName}' could not be discovered for {uri}: {discovery.ErrorMessage}",
+                cancellationToken);
+            return;
+        }
+
+        if (discovery.IsAmbiguous)
+        {
+            await WriteLogMessageAsync(
+                2,
+                $"Reference catalog discovery warning: document '{documentName}' reference '{result.ReferenceName}' is ambiguous across {discovery.Identities.Count} TypeLib candidates; no catalog was cached.",
+                cancellationToken);
+            return;
+        }
+
+        var identity = discovery.Identities.SingleOrDefault();
+        if (identity is not null)
+        {
+            await WriteLogMessageAsync(
+                3,
+                $"Reference catalog discovery: document '{documentName}' reference '{result.ReferenceName}' resolved to TypeLib {identity.Guid} {identity.MajorVersion}.{identity.MinorVersion} LCID {identity.Lcid} at {identity.Path}.",
+                cancellationToken);
+        }
+
+        if (discovery.HasUsableCatalog)
+        {
+            await WriteLogMessageAsync(
+                3,
+                $"Reference catalog refresh: document '{documentName}' reference '{result.ReferenceName}' cached {discovery.Catalog!.Definitions.Count} external definitions.",
+                cancellationToken);
+        }
+    }
+
+    private static bool TryCreateReferenceSelections(
+        string uri,
+        string text,
+        out IReadOnlyList<(string DocumentName, VbaProjectReferenceSelection Selection)> selections)
+    {
+        selections = [];
+        if (IsProjectManifestUri(uri))
+        {
+            try
+            {
+                var manifest = ProjectManifestReader.Parse(text, uri);
+                selections = manifest.Documents
+                    .Select(document => (
+                        document.Key,
+                        VbaProjectReferenceSelection.Create(
+                            document.Value.Kind,
+                            document.Value.References ?? [])))
+                    .ToArray();
+                return selections.Count > 0;
+            }
+            catch (ProjectManifestException)
+            {
+                return false;
+            }
+        }
+
+        VbaProjectResolution resolution;
+        try
+        {
+            resolution = VbaProjectResolver.Resolve(uri);
+        }
+        catch (ProjectManifestException)
+        {
+            return false;
+        }
+
+        if (resolution.Kind != VbaProjectResolutionKind.ManifestDocument
+            || string.IsNullOrEmpty(resolution.DocumentName)
+            || string.IsNullOrEmpty(resolution.DocumentKind))
+        {
+            return false;
+        }
+
+        selections =
+        [
+            (
+                resolution.DocumentName,
+                VbaProjectReferenceSelection.Create(
+                    resolution.DocumentKind,
+                    resolution.ReferenceEntries))
+        ];
+        return true;
+    }
+
+    private static bool IsProjectManifestUri(string uri)
+    {
+        var localPath = VbaProjectResolver.TryGetLocalPath(uri);
+        return localPath is not null
+            && Path.GetFileName(localPath).Equals("project.json", StringComparison.OrdinalIgnoreCase);
     }
 
     private static object CreateInitializeResult()
@@ -512,7 +661,7 @@ internal sealed class MinimalLanguageServer
                     resolution.ReferenceEntries)
                 : null;
 
-        return VbaSourceIndex.Build(scopedDocuments, referenceSelection, ReferenceCatalogs);
+        return VbaSourceIndex.Build(scopedDocuments, referenceSelection, referenceCatalogCache.Current);
     }
 
     private static object? ToMarkup(string? value)
@@ -669,8 +818,16 @@ internal sealed class MinimalLanguageServer
     {
         var content = JsonSerializer.SerializeToUtf8Bytes(message, JsonOptions);
         var header = Encoding.ASCII.GetBytes($"Content-Length: {content.Length}\r\n\r\n");
-        await output.WriteAsync(header, cancellationToken);
-        await output.WriteAsync(content, cancellationToken);
-        await output.FlushAsync(cancellationToken);
+        await outputLock.WaitAsync(cancellationToken);
+        try
+        {
+            await output.WriteAsync(header, cancellationToken);
+            await output.WriteAsync(content, cancellationToken);
+            await output.FlushAsync(cancellationToken);
+        }
+        finally
+        {
+            outputLock.Release();
+        }
     }
 }

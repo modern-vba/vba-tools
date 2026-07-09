@@ -119,6 +119,18 @@ public sealed class VbaProjectReferenceCatalogSet
     public static bool IsExternalDefinition(VbaSourceDefinition definition)
         => definition.Uri.StartsWith(ExternalDefinitionUriPrefix, StringComparison.OrdinalIgnoreCase);
 
+    public VbaProjectReferenceCatalogSet WithCatalog(VbaProjectReferenceCatalog catalog)
+    {
+        var merged = new Dictionary<string, VbaProjectReferenceCatalog>(catalogs, StringComparer.OrdinalIgnoreCase)
+        {
+            [catalog.ReferenceName] = catalog
+        };
+        return new VbaProjectReferenceCatalogSet(merged);
+    }
+
+    public bool HasCatalog(string referenceName)
+        => catalogs.ContainsKey(referenceName);
+
     public IReadOnlyList<VbaSourceDefinition> GetCompletionDefinitions(VbaProjectReferenceSelection selection)
     {
         return GetActiveDefinitions(selection)
