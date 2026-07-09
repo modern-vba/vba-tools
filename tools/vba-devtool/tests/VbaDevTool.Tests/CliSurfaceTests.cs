@@ -104,6 +104,19 @@ public sealed class CliSurfaceTests
     }
 
     [Fact]
+    public void CapabilitiesCommandReturnsJsonContract()
+    {
+        var result = application.Run(["capabilities", "--format", "json"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("\"toolVersion\"", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("\"contractVersion\"", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("\"commands\"", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("\"build\"", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Empty(result.StandardError);
+    }
+
+    [Fact]
     public void UnknownCommandReturnsUsageError()
     {
         var result = application.Run(["missing"]);

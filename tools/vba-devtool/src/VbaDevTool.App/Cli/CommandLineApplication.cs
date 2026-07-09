@@ -1,4 +1,6 @@
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using VbaDevTools.App.Build;
 using VbaDevTools.App.CommonModules;
 using VbaDevTools.App.Diagnostics;
@@ -92,6 +94,11 @@ public sealed class CommandLineApplication
                 getWorkingDirectory()));
         }
 
+        if (command.Name.Equals("capabilities", StringComparison.OrdinalIgnoreCase))
+        {
+            return RenderCapabilities(parsedArgs.Options.GetValueOrDefault("--format") ?? "json");
+        }
+
         if (command.Name.Equals("common-module update", StringComparison.OrdinalIgnoreCase))
         {
             var projectResolution = ResolveProject(command, parsedArgs.Options);
@@ -181,6 +188,27 @@ public sealed class CommandLineApplication
         }
 
         return CommandResult.NotImplemented($"Command '{command.Name}' is not implemented yet.");
+    }
+
+    private CommandResult RenderCapabilities(string format)
+    {
+        if (!format.Equals("json", StringComparison.OrdinalIgnoreCase))
+        {
+            return CommandResult.UsageError($"Unsupported value '{format}' for --format.");
+        }
+
+        var capabilities = new ToolCapabilities(
+            ToolVersion: typeof(CommandLineApplication).Assembly.GetName().Version?.ToString() ?? "0.0.0",
+            ContractVersion: "1.0",
+            Commands: commands.Values
+                .Where(command => !command.Name.Equals("capabilities", StringComparison.OrdinalIgnoreCase))
+                .OrderBy(command => command.Name, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    command => command.Name,
+                    _ => new CommandCapability(OutputSchemaVersion: "1.0"),
+                    StringComparer.OrdinalIgnoreCase));
+
+        return CommandResult.Success(JsonSerializer.Serialize(capabilities, CapabilitiesJsonOptions) + Environment.NewLine);
     }
 
     private CommandMatch MatchCommand(IReadOnlyList<string> args)
@@ -348,6 +376,13 @@ public sealed class CommandLineApplication
 
     private sealed record CommandMatch(ToolingCommandDefinition? Command, int ConsumedArguments);
 
+    private sealed record ToolCapabilities(
+        string ToolVersion,
+        string ContractVersion,
+        IReadOnlyDictionary<string, CommandCapability> Commands);
+
+    private sealed record CommandCapability(string OutputSchemaVersion);
+
     private sealed record ProjectResolutionResult(ResolvedProjectContext? Context, string? Error)
     {
         public static ProjectResolutionResult Success(ResolvedProjectContext? context) => new(context, null);
@@ -407,4 +442,10 @@ public sealed class CommandLineApplication
     }
 
     private static bool IsHelp(string arg) => arg is "--help" or "-h" or "/?";
+
+    private static readonly JsonSerializerOptions CapabilitiesJsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+    };
 }

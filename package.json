@@ -77,6 +77,12 @@
           },
           "default": [],
           "description": "Controls additional Office host applications enabled alongside the main VBA host application."
+        },
+        "vbaTools.devtool.path": {
+          "scope": "machine-overridable",
+          "type": "string",
+          "default": "",
+          "description": "Overrides the bundled vba-devtool executable path for development or diagnostics."
         }
       }
     }
@@ -84,7 +90,7 @@
   "scripts": {
     "compile": "tsc -b",
     "test": "npm run test:extension && npm run test:devtool",
-    "test:extension": "npm run compile && node server/out/testRunner.js",
+    "test:extension": "npm run compile && node server/out/testRunner.js && node client/out/testRunner.js",
     "test:devtool": "dotnet test tools/vba-devtool/tests/VbaDevTool.Tests/VbaDevTool.Tests.csproj -m:1 -p:UseSharedCompilation=false",
     "build:devtool": "dotnet build tools/vba-devtool/src/VbaDevTool.Cli/VbaDevTool.Cli.csproj -m:1 -p:UseSharedCompilation=false",
     "watch": "tsc -b -w",

@@ -100,6 +100,33 @@ test('extension contributes additional HostApplications configuration', () => {
   });
 });
 
+test('extension contributes VbaDevTool path override configuration', () => {
+  const package_json = JSON.parse(
+    fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')
+  ) as {
+    contributes?: {
+      configuration?: {
+        properties?: Record<string, {
+          scope?: string;
+          type?: string;
+          default?: string;
+          description?: string;
+        }>;
+      };
+    };
+  };
+  const devtool_path_setting = package_json.contributes?.configuration?.properties?.[
+    'vbaTools.devtool.path'
+  ];
+
+  assert.deepEqual(devtool_path_setting, {
+    scope: 'machine-overridable',
+    type: 'string',
+    default: '',
+    description: 'Overrides the bundled vba-devtool executable path for development or diagnostics.'
+  });
+});
+
 test('README documents host signature help metadata dependency', () => {
   const readme = fs.readFileSync(path.join(process.cwd(), 'README.md'), 'utf8');
 
