@@ -9,6 +9,7 @@ public sealed record VbaModuleSyntaxTree(
     string Text,
     IReadOnlyList<string> Lines,
     VbaModuleIdentity Identity,
+    IReadOnlyList<VbaSourceDeclarationSyntax> Declarations,
     IReadOnlyList<VbaCallableDeclaration> CallableDeclarations,
     int CodeStartLine);
 
@@ -34,6 +35,17 @@ public sealed record VbaCallableParameterSyntax(
     VbaRange Range,
     string? Documentation);
 
+public sealed record VbaSourceDeclarationSyntax(
+    string Name,
+    VbaSourceDefinitionKind Kind,
+    VbaSourceDefinitionVisibility Visibility,
+    VbaRange Range,
+    int LineIndex,
+    string? Documentation = null,
+    VbaCallableSignature? Signature = null,
+    string? ParentProcedureName = null,
+    VbaRange? ParentProcedureRange = null);
+
 public static class VbaModuleParser
 {
     private static readonly Regex AttributeNamePattern = new(
@@ -42,6 +54,30 @@ public static class VbaModuleParser
 
     private static readonly Regex ProcedurePattern = new(
         "^\\s*(?:(?<visibility>Public|Private|Friend)\\s+)?(?:(?<kind>Sub|Function)|Property\\s+(?<propertyKind>Get|Let|Set))\\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\\s*(?:\\((?<parameters>[^)]*)\\))?",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static readonly Regex EventPattern = new(
+        "^\\s*(?:(?<visibility>Public|Private|Friend)\\s+)?Event\\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\\s*(?:\\((?<parameters>[^)]*)\\))?",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static readonly Regex EnumPattern = new(
+        "^\\s*(?:(?<visibility>Public|Private|Friend)\\s+)?Enum\\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static readonly Regex TypePattern = new(
+        "^\\s*(?:(?<visibility>Public|Private|Friend)\\s+)?Type\\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static readonly Regex ConstPattern = new(
+        "^\\s*(?:(?<visibility>Public|Private|Friend)\\s+)?Const\\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static readonly Regex ModuleVariablePattern = new(
+        "^\\s*(?:(?<visibility>Public|Private|Friend|Dim)\\s+)(?:WithEvents\\s+)?(?<name>[A-Za-z_][A-Za-z0-9_]*)\\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static readonly Regex LocalVariablePattern = new(
+        "^\\s*(?:Dim|Static)\\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\\b",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex IdentifierPattern = new(
@@ -53,6 +89,7 @@ public static class VbaModuleParser
         var lines = SplitLines(text);
         var identity = ParseModuleIdentity(uri, lines);
         var codeStartLine = GetCodeStartLine(uri, lines);
+        var declarations = new List<VbaSourceDeclarationSyntax>();
         var callableDeclarations = new List<VbaCallableDeclaration>();
 
         for (var lineIndex = codeStartLine; lineIndex < lines.Length; lineIndex++)
@@ -63,19 +100,128 @@ public static class VbaModuleParser
                 continue;
             }
 
-            var procedureMatch = ProcedurePattern.Match(codeLine);
-            if (!procedureMatch.Success)
+            var eventMatch = EventPattern.Match(codeLine);
+            if (eventMatch.Success)
             {
+                var documentation = ParseDocumentationComment(lines, lineIndex);
+                declarations.Add(CreateDeclaration(
+                    eventMatch,
+                    "name",
+                    VbaSourceDefinitionKind.Event,
+                    GetVisibility(eventMatch.Groups["visibility"].Value, defaultPublic: true),
+                    lineIndex,
+                    lines[lineIndex],
+                    documentation: documentation?.HoverText));
+                foreach (var parameter in ParseParameterSyntax(eventMatch, lineIndex, lines[lineIndex], documentation))
+                {
+                    declarations.Add(CreateParameterDeclaration(parameter, lineIndex));
+                }
+
                 continue;
             }
 
-            var declaration = CreateCallableDeclaration(
-                procedureMatch,
-                uri,
-                lines,
-                lineIndex);
-            callableDeclarations.Add(declaration);
-            lineIndex = declaration.BlockRange.End.Line;
+            var enumMatch = EnumPattern.Match(codeLine);
+            if (enumMatch.Success)
+            {
+                var visibility = GetVisibility(enumMatch.Groups["visibility"].Value, defaultPublic: true);
+                declarations.Add(CreateDeclaration(
+                    enumMatch,
+                    "name",
+                    VbaSourceDefinitionKind.Enum,
+                    visibility,
+                    lineIndex,
+                    lines[lineIndex]));
+                var endLine = FindBlockEndLine(lines, lineIndex + 1, "Enum");
+                AddMemberDeclarations(
+                    declarations,
+                    lines,
+                    lineIndex + 1,
+                    endLine,
+                    VbaSourceDefinitionKind.EnumMember,
+                    visibility);
+                lineIndex = endLine;
+                continue;
+            }
+
+            var typeMatch = TypePattern.Match(codeLine);
+            if (typeMatch.Success)
+            {
+                var visibility = GetVisibility(typeMatch.Groups["visibility"].Value, defaultPublic: true);
+                declarations.Add(CreateDeclaration(
+                    typeMatch,
+                    "name",
+                    VbaSourceDefinitionKind.Type,
+                    visibility,
+                    lineIndex,
+                    lines[lineIndex]));
+                var endLine = FindBlockEndLine(lines, lineIndex + 1, "Type");
+                AddMemberDeclarations(
+                    declarations,
+                    lines,
+                    lineIndex + 1,
+                    endLine,
+                    VbaSourceDefinitionKind.TypeMember,
+                    visibility);
+                lineIndex = endLine;
+                continue;
+            }
+
+            var constMatch = ConstPattern.Match(codeLine);
+            if (constMatch.Success)
+            {
+                var documentation = ParseDocumentationComment(lines, lineIndex);
+                declarations.Add(CreateDeclaration(
+                    constMatch,
+                    "name",
+                    VbaSourceDefinitionKind.Constant,
+                    GetVisibility(constMatch.Groups["visibility"].Value, defaultPublic: true),
+                    lineIndex,
+                    lines[lineIndex],
+                    documentation: documentation?.HoverText));
+                continue;
+            }
+
+            var procedureMatch = ProcedurePattern.Match(codeLine);
+            if (procedureMatch.Success)
+            {
+                var declaration = CreateCallableDeclaration(
+                    procedureMatch,
+                    uri,
+                    lines,
+                    lineIndex);
+                callableDeclarations.Add(declaration);
+                declarations.Add(CreateCallableSourceDeclaration(declaration));
+                foreach (var parameter in declaration.Parameters)
+                {
+                    declarations.Add(CreateParameterDeclaration(
+                        parameter,
+                        parameter.Range.Start.Line,
+                        declaration.Name,
+                        declaration.BlockRange));
+                }
+
+                AddLocalVariableDeclarations(
+                    declarations,
+                    lines,
+                    declaration.LineIndex + 1,
+                    declaration.BlockRange.End.Line,
+                    declaration.Name,
+                    declaration.BlockRange);
+                lineIndex = declaration.BlockRange.End.Line;
+                continue;
+            }
+
+            var variableMatch = ModuleVariablePattern.Match(codeLine);
+            if (variableMatch.Success && IsModuleVariableDeclaration(codeLine))
+            {
+                declarations.Add(CreateDeclaration(
+                    variableMatch,
+                    "name",
+                    VbaSourceDefinitionKind.Variable,
+                    GetVisibility(variableMatch.Groups["visibility"].Value, defaultPublic: false),
+                    lineIndex,
+                    lines[lineIndex]));
+            }
         }
 
         return new VbaModuleSyntaxTree(
@@ -83,6 +229,7 @@ public static class VbaModuleParser
             text,
             lines,
             identity,
+            declarations,
             callableDeclarations,
             codeStartLine);
     }
@@ -142,7 +289,119 @@ public static class VbaModuleParser
             lines[lineIndex]);
     }
 
+    private static VbaSourceDeclarationSyntax CreateCallableSourceDeclaration(VbaCallableDeclaration declaration)
+        => new(
+            declaration.Name,
+            declaration.Kind,
+            declaration.Visibility,
+            declaration.Range,
+            declaration.LineIndex,
+            Documentation: declaration.Documentation,
+            Signature: declaration.Signature);
+
+    private static VbaSourceDeclarationSyntax CreateParameterDeclaration(
+        VbaCallableParameterSyntax parameter,
+        int lineIndex,
+        string? parentProcedureName = null,
+        VbaRange? parentProcedureRange = null)
+        => new(
+            parameter.Name,
+            VbaSourceDefinitionKind.Parameter,
+            VbaSourceDefinitionVisibility.Local,
+            parameter.Range,
+            lineIndex,
+            Documentation: parameter.Documentation,
+            ParentProcedureName: parentProcedureName,
+            ParentProcedureRange: parentProcedureRange);
+
+    private static VbaSourceDeclarationSyntax CreateDeclaration(
+        Match match,
+        string groupName,
+        VbaSourceDefinitionKind kind,
+        VbaSourceDefinitionVisibility visibility,
+        int lineIndex,
+        string originalLine,
+        string? documentation = null,
+        VbaCallableSignature? signature = null,
+        string? parentProcedureName = null,
+        VbaRange? parentProcedureRange = null)
+    {
+        var name = match.Groups[groupName].Value;
+        return new VbaSourceDeclarationSyntax(
+            name,
+            kind,
+            visibility,
+            CreateRange(match, groupName, lineIndex, originalLine),
+            lineIndex,
+            Documentation: documentation,
+            Signature: signature,
+            ParentProcedureName: parentProcedureName,
+            ParentProcedureRange: parentProcedureRange);
+    }
+
+    private static void AddMemberDeclarations(
+        ICollection<VbaSourceDeclarationSyntax> declarations,
+        IReadOnlyList<string> lines,
+        int startLine,
+        int endLine,
+        VbaSourceDefinitionKind kind,
+        VbaSourceDefinitionVisibility visibility)
+    {
+        for (var lineIndex = startLine; lineIndex < endLine; lineIndex++)
+        {
+            var codeLine = StripApostropheComment(lines[lineIndex]);
+            var match = IdentifierPattern.Match(codeLine);
+            if (!match.Success)
+            {
+                continue;
+            }
+
+            declarations.Add(new VbaSourceDeclarationSyntax(
+                match.Value,
+                kind,
+                visibility,
+                CreateLineRange(lines[lineIndex], lineIndex, match.Value),
+                lineIndex));
+        }
+    }
+
+    private static void AddLocalVariableDeclarations(
+        ICollection<VbaSourceDeclarationSyntax> declarations,
+        IReadOnlyList<string> lines,
+        int startLine,
+        int endLine,
+        string parentProcedureName,
+        VbaRange parentProcedureRange)
+    {
+        for (var lineIndex = startLine; lineIndex < endLine; lineIndex++)
+        {
+            var codeLine = StripApostropheComment(lines[lineIndex]);
+            var match = LocalVariablePattern.Match(codeLine);
+            if (!match.Success)
+            {
+                continue;
+            }
+
+            declarations.Add(CreateDeclaration(
+                match,
+                "name",
+                VbaSourceDefinitionKind.Variable,
+                VbaSourceDefinitionVisibility.Local,
+                lineIndex,
+                lines[lineIndex],
+                parentProcedureName: parentProcedureName,
+                parentProcedureRange: parentProcedureRange));
+        }
+    }
+
     private static IReadOnlyList<VbaCallableParameterSyntax> ParseCallableParameters(
+        Match match,
+        int lineIndex,
+        string line,
+        DocumentationComment? documentation)
+        => ParseParameterSyntax(match, lineIndex, line, documentation);
+
+    private static IReadOnlyList<VbaCallableParameterSyntax> ParseParameterSyntax(
         Match match,
         int lineIndex,
         string line,
@@ -226,6 +485,19 @@ public static class VbaModuleParser
     {
         var name = match.Groups[groupName].Value;
         var start = originalLine.IndexOf(name, StringComparison.Ordinal);
+        if (start < 0)
+        {
+            start = match.Groups[groupName].Index;
+        }
+
+        return new VbaRange(
+            new VbaPosition(lineIndex, start),
+            new VbaPosition(lineIndex, start + name.Length));
+    }
+
+    private static VbaRange CreateLineRange(string line, int lineIndex, string name)
+    {
+        var start = line.IndexOf(name, StringComparison.Ordinal);
         return new VbaRange(
             new VbaPosition(lineIndex, start),
             new VbaPosition(lineIndex, start + name.Length));
@@ -363,10 +635,18 @@ public static class VbaModuleParser
             return VbaSourceDefinitionVisibility.Private;
         }
 
+        if (visibility.Equals("Dim", StringComparison.OrdinalIgnoreCase))
+        {
+            return VbaSourceDefinitionVisibility.Private;
+        }
+
         return defaultPublic
             ? VbaSourceDefinitionVisibility.Public
             : VbaSourceDefinitionVisibility.Private;
     }
+
+    private static bool IsModuleVariableDeclaration(string codeLine)
+        => Regex.IsMatch(codeLine, "\\bAs\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static VbaSourceDefinitionKind GetModuleKind(string uri)
     {

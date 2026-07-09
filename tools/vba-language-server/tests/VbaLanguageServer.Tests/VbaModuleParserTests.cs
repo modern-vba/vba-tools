@@ -132,4 +132,97 @@ public sealed class VbaModuleParserTests
         Assert.Equal(VbaSourceDefinitionVisibility.Private, formCallable.Visibility);
         Assert.Equal(6, formCallable.LineIndex);
     }
+
+    [Fact]
+    public void ParserRepresentsDeclarationsDocumentationAndLocalScopeInAstModel()
+    {
+        var module = VbaModuleParser.Parse(
+            "file:///C:/work/Worker.bas",
+            string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Option Explicit",
+                "'* Event documentation.",
+                "Public Event Saved(ByVal Name As String)",
+                "Public Enum Status",
+                "    StatusReady = 1",
+                "    StatusDone",
+                "End Enum",
+                "Public Type CustomerRecord",
+                "    Id As Long",
+                "    Name As String",
+                "End Type",
+                "'* Limit documentation.",
+                "Private Const MaxCount As Long = 10",
+                "Dim moduleValue As String",
+                "'* @brief Reads a value.",
+                "'* @param Key lookup key",
+                "'* @return selected value",
+                "Public Function ReadValue(ByVal Key As String) As String",
+                "    Dim localCount As Long",
+                "    ReadValue = Key",
+                "End Function"
+            ]));
+
+        var declarations = module.Declarations;
+        Assert.Contains(declarations, declaration =>
+            declaration.Name == "Saved"
+            && declaration.Kind == VbaSourceDefinitionKind.Event
+            && declaration.Documentation == "Event documentation.");
+        Assert.Contains(declarations, declaration =>
+            declaration.Name == "Name"
+            && declaration.Kind == VbaSourceDefinitionKind.Parameter
+            && declaration.Visibility == VbaSourceDefinitionVisibility.Local);
+        Assert.Contains(declarations, declaration =>
+            declaration.Name == "Status"
+            && declaration.Kind == VbaSourceDefinitionKind.Enum
+            && declaration.Visibility == VbaSourceDefinitionVisibility.Public);
+        Assert.Contains(declarations, declaration =>
+            declaration.Name == "StatusReady"
+            && declaration.Kind == VbaSourceDefinitionKind.EnumMember
+            && declaration.Visibility == VbaSourceDefinitionVisibility.Public);
+        Assert.Contains(declarations, declaration =>
+            declaration.Name == "CustomerRecord"
+            && declaration.Kind == VbaSourceDefinitionKind.Type);
+        Assert.Contains(declarations, declaration =>
+            declaration.Name == "Id"
+            && declaration.Kind == VbaSourceDefinitionKind.TypeMember);
+        Assert.Contains(declarations, declaration =>
+            declaration.Name == "MaxCount"
+            && declaration.Kind == VbaSourceDefinitionKind.Constant
+            && declaration.Visibility == VbaSourceDefinitionVisibility.Private
+            && declaration.Documentation == "Limit documentation.");
+        Assert.Contains(declarations, declaration =>
+            declaration.Name == "moduleValue"
+            && declaration.Kind == VbaSourceDefinitionKind.Variable
+            && declaration.Visibility == VbaSourceDefinitionVisibility.Private);
+        var readValue = Assert.Single(declarations, declaration => declaration.Name == "ReadValue");
+        Assert.Equal(VbaSourceDefinitionKind.Procedure, readValue.Kind);
+        Assert.Equal("Reads a value.\n\n@return selected value", readValue.Signature?.Documentation);
+        var key = Assert.Single(declarations, declaration => declaration.Name == "Key");
+        Assert.Equal("ReadValue", key.ParentProcedureName);
+        Assert.Equal("lookup key", key.Documentation);
+        var local = Assert.Single(declarations, declaration => declaration.Name == "localCount");
+        Assert.Equal("ReadValue", local.ParentProcedureName);
+        Assert.Equal(VbaSourceDefinitionVisibility.Local, local.Visibility);
+    }
+
+    [Fact]
+    public void ParserExcludesFormDesignerBlockFromAstDeclarations()
+    {
+        var module = VbaModuleParser.Parse(
+            "file:///C:/work/Dialog.frm",
+            string.Join('\n', [
+                "VERSION 5.00",
+                "Begin VB.Form Dialog",
+                "  Caption = \"Designer caption\"",
+                "End",
+                "Attribute VB_Name = \"Dialog\"",
+                "Option Explicit",
+                "Private Sub CommandButton1_Click()",
+                "End Sub"
+            ]));
+
+        Assert.Contains(module.Declarations, declaration => declaration.Name == "CommandButton1_Click");
+        Assert.DoesNotContain(module.Declarations, declaration => declaration.Name == "Caption");
+    }
 }

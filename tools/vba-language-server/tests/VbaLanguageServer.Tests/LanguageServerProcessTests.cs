@@ -425,10 +425,15 @@ public sealed class LanguageServerProcessTests
         var ambiguousResult = await SendDefinitionRequestAsync(stdin, stdout, 5, workerUri, workerText, "DuplicateValue()");
         Assert.Equal(JsonValueKind.Null, ambiguousResult.ValueKind);
 
+        var localDefinition = await RequestDefinitionAsync(stdin, stdout, 6, workerUri, workerText, "localValue = BuildValue()");
+        Assert.Equal(workerUri, localDefinition.GetProperty("uri").GetString());
+        Assert.Equal(2, localDefinition.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal("    Dim ".Length, localDefinition.GetProperty("range").GetProperty("start").GetProperty("character").GetInt32());
+
         var fallbackSymbols = await SendRequestAsync(
             stdin,
             stdout,
-            6,
+            7,
             "textDocument/documentSymbol",
             new
             {
@@ -436,7 +441,7 @@ public sealed class LanguageServerProcessTests
             });
         Assert.Equal("Worker", fallbackSymbols.GetProperty("result").EnumerateArray().First().GetProperty("name").GetString());
 
-        await SendRequestAsync(stdin, stdout, 7, "shutdown", null);
+        await SendRequestAsync(stdin, stdout, 8, "shutdown", null);
         await SendNotificationAsync(stdin, "exit", null);
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await process.WaitForExitAsync(cancellation.Token);
@@ -479,6 +484,7 @@ public sealed class LanguageServerProcessTests
             "Option Explicit",
             "",
             "Public Sub Run()",
+            "    Dim currentValue As String",
             "    ",
             "End Sub"
         ]);
@@ -493,7 +499,7 @@ public sealed class LanguageServerProcessTests
             new
             {
                 textDocument = new { uri = callerUri },
-                position = new { line = 4, character = 4 }
+                position = new { line = 5, character = 4 }
             });
         var labels = completion
             .GetProperty("result")
@@ -504,10 +510,28 @@ public sealed class LanguageServerProcessTests
         Assert.Contains("BuildValue", labels);
         Assert.Contains("RunMode", labels);
         Assert.Contains("Automatic", labels);
+        Assert.Contains("currentValue", labels);
         Assert.Contains("If", labels);
         Assert.Contains("String", labels);
 
-        await SendRequestAsync(stdin, stdout, 3, "shutdown", null);
+        var outsideProcedureCompletion = await SendRequestAsync(
+            stdin,
+            stdout,
+            3,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = callerUri },
+                position = new { line = 2, character = 0 }
+            });
+        var outsideLabels = outsideProcedureCompletion
+            .GetProperty("result")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("label").GetString())
+            .ToArray();
+        Assert.DoesNotContain("currentValue", outsideLabels);
+
+        await SendRequestAsync(stdin, stdout, 4, "shutdown", null);
         await SendNotificationAsync(stdin, "exit", null);
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await process.WaitForExitAsync(cancellation.Token);
