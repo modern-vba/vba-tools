@@ -115,7 +115,19 @@ public sealed class VbaProjectReferenceCatalogSet
                         "Name",
                         VbaSourceDefinitionKind.Property,
                         "Returns the workbook name.",
-                        ParentTypeName: "Workbook")
+                        ParentTypeName: "Workbook"),
+                    new VbaProjectReferenceDefinition(
+                        "Microsoft Excel 16.0 Object Library",
+                        "WorkbookOpen",
+                        VbaSourceDefinitionKind.Event,
+                        "Occurs when a workbook is opened.",
+                        new VbaCallableSignature(
+                            "WorkbookOpen(Wb)",
+                            [
+                                new VbaCallableParameter("Wb", "The opened workbook.")
+                            ],
+                            "Occurs when a workbook is opened."),
+                        ParentTypeName: "Application")
                 ]),
             new VbaProjectReferenceCatalog(
                 "Microsoft Scripting Runtime",

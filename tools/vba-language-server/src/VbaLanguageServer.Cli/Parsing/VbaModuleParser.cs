@@ -48,7 +48,8 @@ public sealed record VbaSourceDeclarationSyntax(
     string? ParentProcedureName = null,
     VbaRange? ParentProcedureRange = null,
     string? ParentTypeName = null,
-    VbaTypeReference? TypeReference = null);
+    VbaTypeReference? TypeReference = null,
+    bool IsWithEvents = false);
 
 public static class VbaModuleParser
 {
@@ -226,7 +227,8 @@ public static class VbaModuleParser
                     GetVisibility(variableMatch.Groups["visibility"].Value, defaultPublic: false),
                     lineIndex,
                     lines[lineIndex],
-                    typeReference: ParseTypeReference(lines[lineIndex])));
+                    typeReference: ParseTypeReference(lines[lineIndex]),
+                    isWithEvents: IsWithEventsVariableDeclaration(codeLine)));
             }
         }
 
@@ -336,7 +338,8 @@ public static class VbaModuleParser
         string? parentProcedureName = null,
         VbaRange? parentProcedureRange = null,
         string? parentTypeName = null,
-        VbaTypeReference? typeReference = null)
+        VbaTypeReference? typeReference = null,
+        bool isWithEvents = false)
     {
         var name = match.Groups[groupName].Value;
         return new VbaSourceDeclarationSyntax(
@@ -350,7 +353,8 @@ public static class VbaModuleParser
             ParentProcedureName: parentProcedureName,
             ParentProcedureRange: parentProcedureRange,
             ParentTypeName: parentTypeName,
-            TypeReference: typeReference);
+            TypeReference: typeReference,
+            IsWithEvents: isWithEvents);
     }
 
     private static void AddMemberDeclarations(
@@ -689,6 +693,9 @@ public static class VbaModuleParser
 
     private static bool IsModuleVariableDeclaration(string codeLine)
         => Regex.IsMatch(codeLine, "\\bAs\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static bool IsWithEventsVariableDeclaration(string codeLine)
+        => Regex.IsMatch(codeLine, "\\bWithEvents\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static VbaSourceDefinitionKind GetModuleKind(string uri)
     {

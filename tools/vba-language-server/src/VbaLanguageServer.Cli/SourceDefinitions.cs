@@ -43,7 +43,8 @@ public sealed record VbaSourceDefinition(
     string? Documentation = null,
     VbaCallableSignature? Signature = null,
     string? ParentTypeName = null,
-    VbaTypeReference? TypeReference = null);
+    VbaTypeReference? TypeReference = null,
+    bool IsWithEvents = false);
 
 public sealed record VbaCallableParameter(string Name, string? Documentation = null);
 
@@ -206,6 +207,11 @@ public sealed class VbaSourceIndex
         if (identifier is null)
         {
             return null;
+        }
+
+        if (TryResolveWithEventsHandler(currentDocument, identifier.Name, out var eventDefinition))
+        {
+            return eventDefinition;
         }
 
         if (TryResolveMemberDefinition(currentDocument, line, identifier.Start, identifier.Name, out var memberDefinition))
@@ -378,6 +384,36 @@ public sealed class VbaSourceIndex
 
         definition = ResolveMember(receiverType, memberName);
         return true;
+    }
+
+    private bool TryResolveWithEventsHandler(
+        VbaSourceDocument currentDocument,
+        string handlerName,
+        out VbaSourceDefinition? eventDefinition)
+    {
+        eventDefinition = null;
+        foreach (var variable in currentDocument.Definitions
+            .Where(definition => definition.IsWithEvents)
+            .Where(definition => definition.TypeReference is not null)
+            .OrderByDescending(definition => definition.Name.Length))
+        {
+            var prefix = $"{variable.Name}_";
+            if (!handlerName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var eventName = handlerName[prefix.Length..];
+            if (!TryResolveTypeReference(currentDocument, variable.TypeReference!, out var receiverType))
+            {
+                return true;
+            }
+
+            eventDefinition = ResolveEvent(receiverType, eventName);
+            return true;
+        }
+
+        return false;
     }
 
     private bool TryResolveCalleeDefinition(
@@ -632,6 +668,15 @@ public sealed class VbaSourceIndex
         return candidates.Length == 1 ? candidates[0] : null;
     }
 
+    private VbaSourceDefinition? ResolveEvent(ResolvedType resolvedType, string eventName)
+    {
+        var candidates = GetMemberCandidates(resolvedType)
+            .Where(definition => definition.Kind == VbaSourceDefinitionKind.Event)
+            .Where(definition => SameName(definition.Name, eventName))
+            .ToArray();
+        return candidates.Length == 1 ? candidates[0] : null;
+    }
+
     private IEnumerable<VbaSourceDefinition> GetMemberCandidates(ResolvedType resolvedType)
     {
         if (resolvedType.ReferenceName is not null)
@@ -865,7 +910,8 @@ public sealed class VbaSourceIndex
             declaration.Documentation,
             declaration.Signature,
             declaration.ParentTypeName,
-            declaration.TypeReference);
+            declaration.TypeReference,
+            declaration.IsWithEvents);
     }
 
     private static bool IsReferenceTarget(VbaSourceDefinition definition)
