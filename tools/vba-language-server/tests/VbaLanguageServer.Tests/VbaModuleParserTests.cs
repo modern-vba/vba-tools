@@ -8,6 +8,70 @@ namespace VbaLanguageServer.Tests;
 public sealed class VbaModuleParserTests
 {
     [Fact]
+    public void ParserReportsModuleMemberUpdateForSafeCallableBodyEdit()
+    {
+        var original = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Function BuildValue() As String",
+            "    BuildValue = \"old\"",
+            "End Function",
+            "",
+            "Public Sub Run()",
+            "    BuildValue",
+            "End Sub"
+        ]);
+        var updated = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Function BuildValue() As String",
+            "    BuildValue = \"new\"",
+            "End Function",
+            "",
+            "Public Sub Run()",
+            "    BuildValue",
+            "End Sub"
+        ]);
+        var previousSyntaxTree = VbaModuleParser.Parse("file:///C:/work/Worker.bas", original);
+
+        var result = VbaModuleParser.ParseOrUpdate("file:///C:/work/Worker.bas", updated, previousSyntaxTree);
+
+        Assert.Equal(VbaModuleParseUpdateKind.ModuleMember, result.UpdateKind);
+        Assert.Contains(result.SyntaxTree.CallableDeclarations, declaration => declaration.Name == "BuildValue");
+        Assert.Contains(result.SyntaxTree.CallableDeclarations, declaration => declaration.Name == "Run");
+    }
+
+    [Fact]
+    public void ParserFallsBackToFullModuleRebuildWhenMemberRecoveryIsRequired()
+    {
+        var original = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Function BuildValue() As String",
+            "    BuildValue = \"old\"",
+            "End Function",
+            "",
+            "Public Sub Run()",
+            "    BuildValue",
+            "End Sub"
+        ]);
+        var malformed = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Function () As String",
+            "    BuildValue = \"new\"",
+            "End Function",
+            "",
+            "Public Sub Run()",
+            "    BuildValue",
+            "End Sub"
+        ]);
+        var previousSyntaxTree = VbaModuleParser.Parse("file:///C:/work/Worker.bas", original);
+
+        var result = VbaModuleParser.ParseOrUpdate("file:///C:/work/Worker.bas", malformed, previousSyntaxTree);
+
+        Assert.Equal(VbaModuleParseUpdateKind.FullModule, result.UpdateKind);
+        Assert.DoesNotContain(result.SyntaxTree.CallableDeclarations, declaration => declaration.Name == "BuildValue");
+        Assert.Contains(result.SyntaxTree.CallableDeclarations, declaration => declaration.Name == "Run");
+    }
+
+    [Fact]
     public void ParserReadsModuleClassAndFormIdentityFromAttributeOrFileName()
     {
         var standardModule = VbaModuleParser.Parse(

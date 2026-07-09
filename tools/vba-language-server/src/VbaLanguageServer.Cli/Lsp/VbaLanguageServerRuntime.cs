@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.SourceModel;
 using VbaLanguageServer.Workspace;
 
@@ -96,64 +97,64 @@ internal sealed class VbaLanguageServerRuntime
             case "textDocument/completion":
                 await transport.WriteResponseAsync(
                     idNode,
-                    features.CreateCompletionItems(parameters),
+                    features.CreateCompletionItems(parameters, cancellationToken),
                     cancellationToken);
                 return;
             case "textDocument/documentSymbol":
                 await transport.WriteResponseAsync(
                     idNode,
-                    features.CreateDocumentSymbols(parameters),
+                    features.CreateDocumentSymbols(parameters, cancellationToken),
                     cancellationToken);
                 return;
             case "textDocument/definition":
                 await transport.WriteResponseAsync(
                     idNode,
-                    features.CreateDefinitionLocation(parameters),
+                    features.CreateDefinitionLocation(parameters, cancellationToken),
                     cancellationToken);
                 return;
             case "textDocument/references":
                 await transport.WriteResponseAsync(
                     idNode,
-                    features.CreateReferenceLocations(parameters),
+                    features.CreateReferenceLocations(parameters, cancellationToken),
                     cancellationToken);
                 return;
             case "workspace/symbol":
                 await transport.WriteResponseAsync(
                     idNode,
-                    features.CreateWorkspaceSymbols(parameters),
+                    features.CreateWorkspaceSymbols(parameters, cancellationToken),
                     cancellationToken);
                 return;
             case "textDocument/hover":
-                await transport.WriteResponseAsync(idNode, features.CreateHover(parameters), cancellationToken);
+                await transport.WriteResponseAsync(idNode, features.CreateHover(parameters, cancellationToken), cancellationToken);
                 return;
             case "textDocument/signatureHelp":
                 await transport.WriteResponseAsync(
                     idNode,
-                    features.CreateSignatureHelp(parameters),
+                    features.CreateSignatureHelp(parameters, cancellationToken),
                     cancellationToken);
                 return;
             case "textDocument/prepareRename":
                 await transport.WriteResponseAsync(
                     idNode,
-                    features.CreatePrepareRename(parameters),
+                    features.CreatePrepareRename(parameters, cancellationToken),
                     cancellationToken);
                 return;
             case "textDocument/rename":
                 await transport.WriteResponseAsync(
                     idNode,
-                    features.CreateRenameEdit(parameters),
+                    features.CreateRenameEdit(parameters, cancellationToken),
                     cancellationToken);
                 return;
             case "textDocument/formatting":
                 await transport.WriteResponseAsync(
                     idNode,
-                    features.CreateFormattingEdits(parameters),
+                    features.CreateFormattingEdits(parameters, cancellationToken),
                     cancellationToken);
                 return;
             case "textDocument/semanticTokens/full":
                 await transport.WriteResponseAsync(
                     idNode,
-                    features.CreateSemanticTokens(parameters),
+                    features.CreateSemanticTokens(parameters, cancellationToken),
                     cancellationToken);
                 return;
             default:
@@ -179,6 +180,12 @@ internal sealed class VbaLanguageServerRuntime
             case "textDocument/didChange":
                 await RecordChangedDocumentAsync(parameters, cancellationToken);
                 return;
+            case "textDocument/didClose":
+                await RecordClosedDocumentAsync(parameters, cancellationToken);
+                return;
+            case "workspace/didChangeWatchedFiles":
+                await RecordWatchedFilesChangedAsync(parameters, cancellationToken);
+                return;
             default:
                 return;
         }
@@ -191,9 +198,13 @@ internal sealed class VbaLanguageServerRuntime
         var text = textDocument?["text"]?.GetValue<string>();
         if (!string.IsNullOrEmpty(uri) && text is not null)
         {
-            workspace.UpdateDocument(uri, text);
-            await PublishDiagnosticsAsync(uri, text, cancellationToken);
-            await catalogRefresh.PublishReferenceSelectionTraceAsync(uri, cancellationToken);
+            if (IsVbaSourceUri(uri))
+            {
+                workspace.UpdateDocument(uri, text, cancellationToken);
+                await PublishDiagnosticsAsync(uri, text, cancellationToken);
+                await catalogRefresh.PublishReferenceSelectionTraceAsync(uri, cancellationToken);
+            }
+
             catalogRefresh.RefreshReferenceCatalogsInBackground(uri, text, cancellationToken);
         }
     }
@@ -206,9 +217,90 @@ internal sealed class VbaLanguageServerRuntime
         var text = changes?.LastOrDefault()?["text"]?.GetValue<string>();
         if (!string.IsNullOrEmpty(uri) && text is not null)
         {
-            workspace.UpdateDocument(uri, text);
-            await PublishDiagnosticsAsync(uri, text, cancellationToken);
+            if (IsVbaSourceUri(uri))
+            {
+                workspace.UpdateDocument(uri, text, cancellationToken);
+                await PublishDiagnosticsAsync(uri, text, cancellationToken);
+            }
+
             catalogRefresh.RefreshReferenceCatalogsInBackground(uri, text, cancellationToken);
+        }
+    }
+
+    private async Task RecordClosedDocumentAsync(JsonNode? parameters, CancellationToken cancellationToken)
+    {
+        var uri = parameters?["textDocument"]?["uri"]?.GetValue<string>();
+        if (string.IsNullOrEmpty(uri))
+        {
+            return;
+        }
+
+        if (workspace.RemoveDocument(uri, cancellationToken))
+        {
+            await PublishEmptyDiagnosticsAsync(uri, cancellationToken);
+        }
+    }
+
+    private async Task RecordWatchedFilesChangedAsync(JsonNode? parameters, CancellationToken cancellationToken)
+    {
+        var changes = parameters?["changes"]?.AsArray();
+        if (changes is null)
+        {
+            return;
+        }
+
+        foreach (var change in changes)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var uri = change?["uri"]?.GetValue<string>();
+            var type = change?["type"]?.GetValue<int>();
+            if (string.IsNullOrEmpty(uri) || type is null)
+            {
+                continue;
+            }
+
+            switch (type.Value)
+            {
+                case 1:
+                case 2:
+                    await ReloadChangedFileAsync(uri, cancellationToken);
+                    break;
+                case 3:
+                    if (workspace.RemoveDocument(uri, cancellationToken))
+                    {
+                        await PublishEmptyDiagnosticsAsync(uri, cancellationToken);
+                    }
+
+                    break;
+            }
+        }
+    }
+
+    private async Task ReloadChangedFileAsync(string uri, CancellationToken cancellationToken)
+    {
+        var localPath = VbaProjectResolver.TryGetLocalPath(uri);
+        if (localPath is null || !File.Exists(localPath))
+        {
+            return;
+        }
+
+        var text = await File.ReadAllTextAsync(localPath, cancellationToken);
+        if (IsVbaSourcePath(localPath))
+        {
+            workspace.UpdateDocument(uri, text, cancellationToken);
+            await PublishDiagnosticsAsync(uri, text, cancellationToken);
+            await catalogRefresh.PublishReferenceSelectionTraceAsync(uri, cancellationToken);
+            catalogRefresh.RefreshReferenceCatalogsInBackground(uri, text, cancellationToken);
+            return;
+        }
+
+        if (IsProjectManifestPath(localPath))
+        {
+            catalogRefresh.RefreshReferenceCatalogsInBackground(uri, text, cancellationToken);
+            foreach (var documentUri in workspace.GetDocumentUris(cancellationToken))
+            {
+                await catalogRefresh.PublishReferenceSelectionTraceAsync(documentUri, cancellationToken);
+            }
         }
     }
 
@@ -223,4 +315,30 @@ internal sealed class VbaLanguageServerRuntime
             },
             cancellationToken);
     }
+
+    private Task PublishEmptyDiagnosticsAsync(string uri, CancellationToken cancellationToken)
+    {
+        return transport.WriteNotificationAsync(
+            "textDocument/publishDiagnostics",
+            new
+            {
+                uri,
+                diagnostics = Array.Empty<object>()
+            },
+            cancellationToken);
+    }
+
+    private static bool IsVbaSourceUri(string uri)
+    {
+        var localPath = VbaProjectResolver.TryGetLocalPath(uri);
+        return localPath is not null && IsVbaSourcePath(localPath);
+    }
+
+    private static bool IsVbaSourcePath(string path)
+        => path.EndsWith(".bas", StringComparison.OrdinalIgnoreCase)
+            || path.EndsWith(".cls", StringComparison.OrdinalIgnoreCase)
+            || path.EndsWith(".frm", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsProjectManifestPath(string path)
+        => Path.GetFileName(path).Equals("project.json", StringComparison.OrdinalIgnoreCase);
 }

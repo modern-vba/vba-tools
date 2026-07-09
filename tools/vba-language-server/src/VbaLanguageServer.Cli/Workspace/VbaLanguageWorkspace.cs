@@ -1,4 +1,5 @@
 using VbaLanguageServer.ProjectModel;
+using VbaLanguageServer.Parsing;
 using VbaLanguageServer.SourceModel;
 
 namespace VbaLanguageServer.Workspace;
@@ -13,9 +14,16 @@ public sealed record VbaProjectSnapshot(
     VbaProjectReferenceSelection? ReferenceSelection,
     VbaSourceIndex SourceIndex);
 
+public sealed record VbaTrackedDocument(
+    string Uri,
+    string Text,
+    VbaModuleSyntaxTree SyntaxTree,
+    VbaModuleParseUpdateKind LastParseUpdateKind);
+
 public sealed class VbaLanguageWorkspace
 {
-    private readonly Dictionary<string, string> documents = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object gate = new();
+    private readonly Dictionary<string, VbaTrackedDocument> documents = new(StringComparer.OrdinalIgnoreCase);
     private readonly VbaProjectReferenceCatalogCache referenceCatalogCache;
 
     public VbaLanguageWorkspace(VbaProjectReferenceCatalogCache referenceCatalogCache)
@@ -23,23 +31,64 @@ public sealed class VbaLanguageWorkspace
         this.referenceCatalogCache = referenceCatalogCache;
     }
 
-    public void UpdateDocument(string uri, string text)
+    public VbaModuleParseUpdateKind UpdateDocument(
+        string uri,
+        string text,
+        CancellationToken cancellationToken = default)
     {
-        documents[uri] = text;
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (gate)
+        {
+            documents.TryGetValue(uri, out var previousDocument);
+            var parseResult = VbaModuleParser.ParseOrUpdate(uri, text, previousDocument?.SyntaxTree);
+            documents[uri] = new VbaTrackedDocument(
+                uri,
+                text,
+                parseResult.SyntaxTree,
+                parseResult.UpdateKind);
+            return parseResult.UpdateKind;
+        }
     }
 
-    public VbaProjectSnapshot CreateProjectSnapshot(string activeUri)
+    public bool RemoveDocument(string uri, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (gate)
+        {
+            return documents.Remove(uri);
+        }
+    }
+
+    public IReadOnlyList<string> GetDocumentUris(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (gate)
+        {
+            return documents.Keys.ToArray();
+        }
+    }
+
+    public VbaProjectSnapshot CreateProjectSnapshot(
+        string activeUri,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
         var resolution = VbaProjectResolver.Resolve(activeUri);
-        var scopedDocuments = documents
+        var documentSnapshot = CopyDocuments();
+        var scopedTrackedDocuments = documentSnapshot
             .Where(pair => resolution.ContainsUri(pair.Key))
             .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
 
-        if (!scopedDocuments.ContainsKey(activeUri) && documents.TryGetValue(activeUri, out var activeText))
+        if (!scopedTrackedDocuments.ContainsKey(activeUri)
+            && documentSnapshot.TryGetValue(activeUri, out var activeDocument))
         {
-            scopedDocuments[activeUri] = activeText;
+            scopedTrackedDocuments[activeUri] = activeDocument;
         }
 
+        var scopedDocuments = scopedTrackedDocuments
+            .ToDictionary(pair => pair.Key, pair => pair.Value.Text, StringComparer.OrdinalIgnoreCase);
+        var scopedSyntaxTrees = scopedTrackedDocuments
+            .ToDictionary(pair => pair.Key, pair => pair.Value.SyntaxTree, StringComparer.OrdinalIgnoreCase);
         var referenceSelection =
             resolution.Kind == VbaProjectResolutionKind.ManifestDocument
             && !string.IsNullOrEmpty(resolution.DocumentKind)
@@ -47,8 +96,8 @@ public sealed class VbaLanguageWorkspace
                     resolution.DocumentKind,
                     resolution.ReferenceEntries)
                 : null;
-        var sourceIndex = VbaSourceIndex.Build(
-            scopedDocuments,
+        var sourceIndex = VbaSourceIndex.BuildFromSyntaxTrees(
+            scopedSyntaxTrees,
             referenceSelection,
             referenceCatalogCache.Current);
 
@@ -59,13 +108,14 @@ public sealed class VbaLanguageWorkspace
             sourceIndex);
     }
 
-    public IReadOnlyList<VbaProjectSnapshot> CreateProjectSnapshots()
+    public IReadOnlyList<VbaProjectSnapshot> CreateProjectSnapshots(CancellationToken cancellationToken = default)
     {
         var snapshots = new List<VbaProjectSnapshot>();
         var seenScopes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var uri in documents.Keys)
+        foreach (var uri in GetDocumentUris(cancellationToken))
         {
-            var snapshot = CreateProjectSnapshot(uri);
+            cancellationToken.ThrowIfCancellationRequested();
+            var snapshot = CreateProjectSnapshot(uri, cancellationToken);
             var scopeKey = string.Join(
                 "|",
                 snapshot.SourceDocuments.Keys.OrderBy(key => key, StringComparer.OrdinalIgnoreCase));
@@ -76,6 +126,14 @@ public sealed class VbaLanguageWorkspace
         }
 
         return snapshots;
+    }
+
+    private IReadOnlyDictionary<string, VbaTrackedDocument> CopyDocuments()
+    {
+        lock (gate)
+        {
+            return new Dictionary<string, VbaTrackedDocument>(documents, StringComparer.OrdinalIgnoreCase);
+        }
     }
 
     public static bool TryCreateReferenceSelections(

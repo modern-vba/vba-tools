@@ -1649,6 +1649,94 @@ public sealed class LanguageServerProcessTests
         }
     }
 
+    [Fact]
+    public async Task Server_invalidates_source_files_from_workspace_watched_file_events()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-file-events-").FullName;
+        try
+        {
+            var callerPath = Path.Combine(projectRoot, "Caller.bas");
+            var helperPath = Path.Combine(projectRoot, "Helper.bas");
+            var renamedHelperPath = Path.Combine(projectRoot, "RenamedHelper.bas");
+            var callerUri = ToFileUri(callerPath);
+            var helperUri = ToFileUri(helperPath);
+            var renamedHelperUri = ToFileUri(renamedHelperPath);
+            var callerText = string.Join('\n', [
+                "Attribute VB_Name = \"Caller\"",
+                "Public Sub Run()",
+                "    BuildValue",
+                "End Sub"
+            ]);
+            var helperText = string.Join('\n', [
+                "Attribute VB_Name = \"Helper\"",
+                "Public Function BuildValue() As String",
+                "End Function"
+            ]);
+            File.WriteAllText(callerPath, callerText);
+            File.WriteAllText(helperPath, helperText);
+
+            var serverProjectPath = Path.GetFullPath(
+                Path.Combine(
+                    AppContext.BaseDirectory,
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "src",
+                    "VbaLanguageServer.Cli",
+                    "VbaLanguageServer.Cli.csproj"));
+
+            using var process = StartLanguageServer(serverProjectPath);
+            await using var stdin = process.StandardInput.BaseStream;
+            using var stdout = process.StandardOutput.BaseStream;
+
+            await InitializeAsync(stdin, stdout);
+            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(callerUri, callerText));
+            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(helperUri, helperText));
+
+            var initialDefinition = await RequestDefinitionAsync(stdin, stdout, 2, callerUri, callerText, "BuildValue");
+            Assert.Equal(helperUri, initialDefinition.GetProperty("uri").GetString());
+
+            await SendNotificationAsync(
+                stdin,
+                "workspace/didChangeWatchedFiles",
+                new
+                {
+                    changes = new[]
+                    {
+                        new { uri = helperUri, type = 3 }
+                    }
+                });
+            var removedDefinition = await SendDefinitionRequestAsync(stdin, stdout, 3, callerUri, callerText, "BuildValue");
+            Assert.Equal(JsonValueKind.Null, removedDefinition.ValueKind);
+
+            File.WriteAllText(renamedHelperPath, helperText);
+            await SendNotificationAsync(
+                stdin,
+                "workspace/didChangeWatchedFiles",
+                new
+                {
+                    changes = new[]
+                    {
+                        new { uri = renamedHelperUri, type = 1 }
+                    }
+                });
+            var renamedDefinition = await RequestDefinitionAsync(stdin, stdout, 4, callerUri, callerText, "BuildValue");
+            Assert.Equal(renamedHelperUri, renamedDefinition.GetProperty("uri").GetString());
+
+            await SendRequestAsync(stdin, stdout, 5, "shutdown", null);
+            await SendNotificationAsync(stdin, "exit", null);
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await process.WaitForExitAsync(cancellation.Token);
+            Assert.Equal(0, process.ExitCode);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
     private static Process StartLanguageServer(string serverProjectPath)
     {
         var startInfo = new ProcessStartInfo

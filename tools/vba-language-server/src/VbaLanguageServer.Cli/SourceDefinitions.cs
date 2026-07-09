@@ -211,6 +211,20 @@ public sealed class VbaSourceIndex
             referenceCatalogs ?? VbaProjectReferenceCatalogSet.Empty);
     }
 
+    public static VbaSourceIndex BuildFromSyntaxTrees(
+        IReadOnlyDictionary<string, VbaModuleSyntaxTree> sourceDocuments,
+        VbaProjectReferenceSelection? referenceSelection = null,
+        VbaProjectReferenceCatalogSet? referenceCatalogs = null)
+    {
+        var parsedDocuments = sourceDocuments
+            .Select(entry => CreateDocument(entry.Key, entry.Value))
+            .ToArray();
+        return new VbaSourceIndex(
+            parsedDocuments,
+            referenceSelection,
+            referenceCatalogs ?? VbaProjectReferenceCatalogSet.Empty);
+    }
+
     public IReadOnlyList<VbaSourceDefinition> GetDocumentDefinitions(string uri)
         => documents
             .FirstOrDefault(document => SameUri(document.Uri, uri))
@@ -1159,13 +1173,18 @@ public sealed class VbaSourceIndex
     private static VbaSourceDocument ParseDocument(string uri, string text)
     {
         var syntaxTree = VbaModuleParser.Parse(uri, text);
+        return CreateDocument(uri, syntaxTree);
+    }
+
+    private static VbaSourceDocument CreateDocument(string uri, VbaModuleSyntaxTree syntaxTree)
+    {
         var definitions = new List<VbaSourceDefinition>();
         var moduleDefinition = CreateModuleDefinition(uri, syntaxTree.Identity);
         definitions.Add(moduleDefinition);
         definitions.AddRange(syntaxTree.Declarations.Select(declaration =>
             CreateSourceDefinition(uri, moduleDefinition.Name, declaration)));
 
-        return new VbaSourceDocument(uri, text, moduleDefinition.Name, definitions);
+        return new VbaSourceDocument(uri, syntaxTree.Text, moduleDefinition.Name, definitions);
     }
 
     private static VbaSourceDefinition CreateModuleDefinition(string uri, VbaModuleIdentity identity)

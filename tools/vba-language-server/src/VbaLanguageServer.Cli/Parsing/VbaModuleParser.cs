@@ -9,6 +9,7 @@ public sealed record VbaModuleSyntaxTree(
     string Text,
     IReadOnlyList<string> Lines,
     VbaModuleIdentity Identity,
+    IReadOnlyList<VbaModuleMember> Members,
     IReadOnlyList<VbaSourceDeclarationSyntax> Declarations,
     IReadOnlyList<VbaCallableDeclaration> CallableDeclarations,
     int CodeStartLine);
@@ -17,6 +18,21 @@ public sealed record VbaModuleIdentity(
     string Name,
     VbaSourceDefinitionKind Kind,
     VbaRange Range);
+
+public sealed record VbaModuleMember(
+    string Name,
+    VbaSourceDefinitionKind Kind,
+    VbaRange BlockRange);
+
+public enum VbaModuleParseUpdateKind
+{
+    FullModule,
+    ModuleMember
+}
+
+public sealed record VbaModuleParseResult(
+    VbaModuleSyntaxTree SyntaxTree,
+    VbaModuleParseUpdateKind UpdateKind);
 
 public sealed record VbaCallableDeclaration(
     string Name,
@@ -94,6 +110,7 @@ public static class VbaModuleParser
         var lines = SplitLines(text);
         var identity = ParseModuleIdentity(uri, lines);
         var codeStartLine = GetCodeStartLine(uri, lines);
+        var members = new List<VbaModuleMember>();
         var declarations = new List<VbaSourceDeclarationSyntax>();
         var callableDeclarations = new List<VbaCallableDeclaration>();
 
@@ -109,6 +126,12 @@ public static class VbaModuleParser
             if (eventMatch.Success)
             {
                 var documentation = ParseDocumentationComment(lines, lineIndex);
+                members.Add(CreateSingleLineMember(
+                    eventMatch,
+                    "name",
+                    VbaSourceDefinitionKind.Event,
+                    lineIndex,
+                    lines[lineIndex]));
                 declarations.Add(CreateDeclaration(
                     eventMatch,
                     "name",
@@ -144,6 +167,10 @@ public static class VbaModuleParser
                     endLine,
                     VbaSourceDefinitionKind.EnumMember,
                     visibility);
+                members.Add(new VbaModuleMember(
+                    enumMatch.Groups["name"].Value,
+                    VbaSourceDefinitionKind.Enum,
+                    CreateBlockRange(lines, lineIndex, endLine)));
                 lineIndex = endLine;
                 continue;
             }
@@ -167,6 +194,10 @@ public static class VbaModuleParser
                     endLine,
                     VbaSourceDefinitionKind.TypeMember,
                     visibility);
+                members.Add(new VbaModuleMember(
+                    typeMatch.Groups["name"].Value,
+                    VbaSourceDefinitionKind.Type,
+                    CreateBlockRange(lines, lineIndex, endLine)));
                 lineIndex = endLine;
                 continue;
             }
@@ -175,6 +206,12 @@ public static class VbaModuleParser
             if (constMatch.Success)
             {
                 var documentation = ParseDocumentationComment(lines, lineIndex);
+                members.Add(CreateSingleLineMember(
+                    constMatch,
+                    "name",
+                    VbaSourceDefinitionKind.Constant,
+                    lineIndex,
+                    lines[lineIndex]));
                 declarations.Add(CreateDeclaration(
                     constMatch,
                     "name",
@@ -195,6 +232,10 @@ public static class VbaModuleParser
                     uri,
                     lines,
                     lineIndex);
+                members.Add(new VbaModuleMember(
+                    declaration.Name,
+                    declaration.Kind,
+                    declaration.BlockRange));
                 callableDeclarations.Add(declaration);
                 declarations.Add(CreateCallableSourceDeclaration(declaration));
                 foreach (var parameter in declaration.Parameters)
@@ -220,6 +261,12 @@ public static class VbaModuleParser
             var variableMatch = ModuleVariablePattern.Match(codeLine);
             if (variableMatch.Success && IsModuleVariableDeclaration(codeLine))
             {
+                members.Add(CreateSingleLineMember(
+                    variableMatch,
+                    "name",
+                    VbaSourceDefinitionKind.Variable,
+                    lineIndex,
+                    lines[lineIndex]));
                 declarations.Add(CreateDeclaration(
                     variableMatch,
                     "name",
@@ -237,9 +284,22 @@ public static class VbaModuleParser
             text,
             lines,
             identity,
+            members,
             declarations,
             callableDeclarations,
             codeStartLine);
+    }
+
+    public static VbaModuleParseResult ParseOrUpdate(
+        string uri,
+        string text,
+        VbaModuleSyntaxTree? previousSyntaxTree)
+    {
+        var syntaxTree = Parse(uri, text);
+        var updateKind = CanUpdateSingleModuleMember(previousSyntaxTree, syntaxTree)
+            ? VbaModuleParseUpdateKind.ModuleMember
+            : VbaModuleParseUpdateKind.FullModule;
+        return new VbaModuleParseResult(syntaxTree, updateKind);
     }
 
     private static VbaModuleIdentity ParseModuleIdentity(string uri, IReadOnlyList<string> lines)
@@ -356,6 +416,24 @@ public static class VbaModuleParser
             TypeReference: typeReference,
             IsWithEvents: isWithEvents);
     }
+
+    private static VbaModuleMember CreateSingleLineMember(
+        Match match,
+        string groupName,
+        VbaSourceDefinitionKind kind,
+        int lineIndex,
+        string line)
+        => new(
+            match.Groups[groupName].Value,
+            kind,
+            new VbaRange(
+                new VbaPosition(lineIndex, 0),
+                new VbaPosition(lineIndex, line.Length)));
+
+    private static VbaRange CreateBlockRange(IReadOnlyList<string> lines, int startLine, int endLine)
+        => new(
+            new VbaPosition(startLine, 0),
+            new VbaPosition(endLine, lines[endLine].Length));
 
     private static void AddMemberDeclarations(
         ICollection<VbaSourceDeclarationSyntax> declarations,
@@ -734,6 +812,100 @@ public static class VbaModuleParser
         => source.Replace("\r\n", "\n", StringComparison.Ordinal)
             .Replace('\r', '\n')
             .Split('\n');
+
+    private static bool CanUpdateSingleModuleMember(
+        VbaModuleSyntaxTree? previousSyntaxTree,
+        VbaModuleSyntaxTree nextSyntaxTree)
+    {
+        if (previousSyntaxTree is null)
+        {
+            return false;
+        }
+
+        if (!previousSyntaxTree.Identity.Name.Equals(nextSyntaxTree.Identity.Name, StringComparison.OrdinalIgnoreCase)
+            || previousSyntaxTree.Identity.Kind != nextSyntaxTree.Identity.Kind
+            || previousSyntaxTree.CodeStartLine != nextSyntaxTree.CodeStartLine)
+        {
+            return false;
+        }
+
+        if (!TryFindChangedLineRange(
+            previousSyntaxTree.Lines,
+            nextSyntaxTree.Lines,
+            out var oldStartLine,
+            out var oldEndLine,
+            out var newStartLine,
+            out var newEndLine))
+        {
+            return true;
+        }
+
+        var oldMember = FindSingleContainingMember(previousSyntaxTree.Members, oldStartLine, oldEndLine);
+        var newMember = FindSingleContainingMember(nextSyntaxTree.Members, newStartLine, newEndLine);
+        if (oldMember is null
+            || newMember is null
+            || oldMember.Kind != newMember.Kind
+            || !oldMember.Name.Equals(newMember.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return !TouchesMemberBoundary(oldMember, oldStartLine, oldEndLine)
+            && !TouchesMemberBoundary(newMember, newStartLine, newEndLine);
+    }
+
+    private static bool TryFindChangedLineRange(
+        IReadOnlyList<string> oldLines,
+        IReadOnlyList<string> newLines,
+        out int oldStartLine,
+        out int oldEndLine,
+        out int newStartLine,
+        out int newEndLine)
+    {
+        var prefix = 0;
+        while (prefix < oldLines.Count
+            && prefix < newLines.Count
+            && oldLines[prefix].Equals(newLines[prefix], StringComparison.Ordinal))
+        {
+            prefix++;
+        }
+
+        if (prefix == oldLines.Count && prefix == newLines.Count)
+        {
+            oldStartLine = oldEndLine = newStartLine = newEndLine = 0;
+            return false;
+        }
+
+        var oldSuffix = oldLines.Count - 1;
+        var newSuffix = newLines.Count - 1;
+        while (oldSuffix >= prefix
+            && newSuffix >= prefix
+            && oldLines[oldSuffix].Equals(newLines[newSuffix], StringComparison.Ordinal))
+        {
+            oldSuffix--;
+            newSuffix--;
+        }
+
+        oldStartLine = prefix;
+        oldEndLine = Math.Max(prefix, oldSuffix);
+        newStartLine = prefix;
+        newEndLine = Math.Max(prefix, newSuffix);
+        return true;
+    }
+
+    private static VbaModuleMember? FindSingleContainingMember(
+        IReadOnlyList<VbaModuleMember> members,
+        int startLine,
+        int endLine)
+    {
+        var containingMembers = members
+            .Where(member => member.BlockRange.Start.Line <= startLine && member.BlockRange.End.Line >= endLine)
+            .ToArray();
+        return containingMembers.Length == 1 ? containingMembers[0] : null;
+    }
+
+    private static bool TouchesMemberBoundary(VbaModuleMember member, int startLine, int endLine)
+        => startLine <= member.BlockRange.Start.Line || endLine >= member.BlockRange.End.Line;
 
     private static string StripApostropheComment(string line)
     {
