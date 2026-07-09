@@ -11,7 +11,8 @@
     "Programming Languages"
   ],
   "activationEvents": [
-    "onLanguage:vba"
+    "onLanguage:vba",
+    "onCommand:vbaTools.doctor"
   ],
   "main": "./client/out/extension.js",
   "contributes": {
@@ -35,6 +36,12 @@
         "language": "vba",
         "scopeName": "source.vba",
         "path": "./syntaxes/vba.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "vbaTools.doctor",
+        "title": "VBA Tools: Doctor"
       }
     ],
     "configuration": {

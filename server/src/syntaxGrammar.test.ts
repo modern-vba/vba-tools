@@ -127,6 +127,26 @@ test('extension contributes VbaDevTool path override configuration', () => {
   });
 });
 
+test('extension contributes the Doctor command', () => {
+  const package_json = JSON.parse(
+    fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')
+  ) as {
+    activationEvents?: string[];
+    contributes?: {
+      commands?: Array<{
+        command?: string;
+        title?: string;
+      }>;
+    };
+  };
+
+  assert.deepEqual(package_json.contributes?.commands?.find((command) => command.command === 'vbaTools.doctor'), {
+    command: 'vbaTools.doctor',
+    title: 'VBA Tools: Doctor'
+  });
+  assert.ok(package_json.activationEvents?.includes('onCommand:vbaTools.doctor'));
+});
+
 test('README documents host signature help metadata dependency', () => {
   const readme = fs.readFileSync(path.join(process.cwd(), 'README.md'), 'utf8');
 
