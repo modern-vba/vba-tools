@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/VbaLanguageServer.Cli/VbaLanguageServer.Cli.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/VbaLanguageServer.Tests/VbaLanguageServer.Tests.csproj" />
+  </Folder>
+</Solution>
