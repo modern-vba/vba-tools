@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using VbaLanguageServer.Diagnostics;
+using VbaLanguageServer.SourceModel;
 
 var server = new MinimalLanguageServer(Console.OpenStandardInput(), Console.OpenStandardOutput());
 await server.RunAsync();
@@ -76,6 +77,12 @@ internal sealed class MinimalLanguageServer
                 return;
             case "textDocument/completion":
                 await WriteResponseAsync(idNode, CreateCompletionItems(), cancellationToken);
+                return;
+            case "textDocument/documentSymbol":
+                await WriteResponseAsync(idNode, CreateDocumentSymbols(parameters), cancellationToken);
+                return;
+            case "textDocument/definition":
+                await WriteResponseAsync(idNode, CreateDefinitionLocation(parameters), cancellationToken);
                 return;
             default:
                 await WriteErrorResponseAsync(idNode, -32601, $"Method not found: {method}", cancellationToken);
@@ -153,6 +160,8 @@ internal sealed class MinimalLanguageServer
             capabilities = new
             {
                 textDocumentSync = 2,
+                definitionProvider = true,
+                documentSymbolProvider = true,
                 completionProvider = new
                 {
                     triggerCharacters = new[] { ".", " " }
@@ -165,6 +174,68 @@ internal sealed class MinimalLanguageServer
             }
         };
     }
+
+    private object[] CreateDocumentSymbols(JsonNode? parameters)
+    {
+        var uri = parameters?["textDocument"]?["uri"]?.GetValue<string>();
+        if (string.IsNullOrEmpty(uri))
+        {
+            return Array.Empty<object>();
+        }
+
+        var sourceIndex = VbaSourceIndex.Build(documents);
+        return sourceIndex
+            .GetDocumentDefinitions(uri)
+            .Select(definition => new
+            {
+                name = definition.Name,
+                kind = GetSymbolKind(definition.Kind),
+                range = definition.Range,
+                selectionRange = definition.Range
+            })
+            .ToArray<object>();
+    }
+
+    private object? CreateDefinitionLocation(JsonNode? parameters)
+    {
+        var uri = parameters?["textDocument"]?["uri"]?.GetValue<string>();
+        var position = parameters?["position"];
+        var line = position?["line"]?.GetValue<int>();
+        var character = position?["character"]?.GetValue<int>();
+        if (string.IsNullOrEmpty(uri) || line is null || character is null)
+        {
+            return null;
+        }
+
+        var sourceIndex = VbaSourceIndex.Build(documents);
+        var definition = sourceIndex.ResolveDefinition(uri, line.Value, character.Value);
+        return definition is null
+            ? null
+            : new
+            {
+                uri = definition.Uri,
+                range = definition.Range
+            };
+    }
+
+    private static int GetSymbolKind(VbaSourceDefinitionKind kind)
+        => kind switch
+        {
+            VbaSourceDefinitionKind.Module => 2,
+            VbaSourceDefinitionKind.Class => 5,
+            VbaSourceDefinitionKind.Form => 5,
+            VbaSourceDefinitionKind.Procedure => 12,
+            VbaSourceDefinitionKind.Property => 7,
+            VbaSourceDefinitionKind.Constant => 14,
+            VbaSourceDefinitionKind.Variable => 13,
+            VbaSourceDefinitionKind.Parameter => 13,
+            VbaSourceDefinitionKind.Enum => 10,
+            VbaSourceDefinitionKind.EnumMember => 22,
+            VbaSourceDefinitionKind.Type => 23,
+            VbaSourceDefinitionKind.TypeMember => 8,
+            VbaSourceDefinitionKind.Event => 24,
+            _ => 13
+        };
 
     private static object[] CreateCompletionItems()
     {

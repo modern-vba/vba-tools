@@ -210,6 +210,238 @@ public sealed class LanguageServerProcessTests
         Assert.Equal(0, process.ExitCode);
     }
 
+    [Fact]
+    public async Task Server_returns_document_symbols_for_representative_source_definitions()
+    {
+        var serverProjectPath = Path.GetFullPath(
+            Path.Combine(
+                AppContext.BaseDirectory,
+                "..",
+                "..",
+                "..",
+                "..",
+                "..",
+                "src",
+                "VbaLanguageServer.Cli",
+                "VbaLanguageServer.Cli.csproj"));
+
+        using var process = StartLanguageServer(serverProjectPath);
+        await using var stdin = process.StandardInput.BaseStream;
+        using var stdout = process.StandardOutput.BaseStream;
+
+        await InitializeAsync(stdin, stdout);
+        await SendNotificationAsync(
+            stdin,
+            "textDocument/didOpen",
+            new
+            {
+                textDocument = new
+                {
+                    uri = "file:///C:/work/Worker.bas",
+                    languageId = "vba",
+                    version = 1,
+                    text = string.Join('\n', [
+                        "Attribute VB_Name = \"WorkerModule\"",
+                        "Option Explicit",
+                        "Public Const PublicLimit As Long = 1",
+                        "Private moduleValue As String",
+                        "Public Event Saved(ByVal name As String)",
+                        "Public Enum Status",
+                        "    StatusReady = 1",
+                        "    StatusDone",
+                        "End Enum",
+                        "Public Type CustomerRecord",
+                        "    Id As Long",
+                        "    Name As String",
+                        "End Type",
+                        "Public Function BuildValue(ByVal inputText As String) As String",
+                        "    Dim localCount As Long",
+                        "    BuildValue = inputText",
+                        "End Function",
+                        "Public Property Get DisplayName() As String",
+                        "End Property"
+                    ])
+                }
+            });
+
+        var response = await SendRequestAsync(
+            stdin,
+            stdout,
+            2,
+            "textDocument/documentSymbol",
+            new
+            {
+                textDocument = new { uri = "file:///C:/work/Worker.bas" }
+            });
+
+        var symbolNames = response
+            .GetProperty("result")
+            .EnumerateArray()
+            .Select(symbol => symbol.GetProperty("name").GetString())
+            .ToArray();
+        Assert.Contains("WorkerModule", symbolNames);
+        Assert.Contains("PublicLimit", symbolNames);
+        Assert.Contains("moduleValue", symbolNames);
+        Assert.Contains("Saved", symbolNames);
+        Assert.Contains("Status", symbolNames);
+        Assert.Contains("StatusReady", symbolNames);
+        Assert.Contains("CustomerRecord", symbolNames);
+        Assert.Contains("Id", symbolNames);
+        Assert.Contains("BuildValue", symbolNames);
+        Assert.Contains("inputText", symbolNames);
+        Assert.Contains("localCount", symbolNames);
+        Assert.Contains("DisplayName", symbolNames);
+
+        const string classUri = "file:///C:/work/Customer.cls";
+        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(classUri, string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Customer\"",
+            "Option Explicit",
+            "Public Event Changed()",
+            "Public Property Get DisplayName() As String",
+            "End Property"
+        ])));
+        var classSymbols = await SendRequestAsync(
+            stdin,
+            stdout,
+            3,
+            "textDocument/documentSymbol",
+            new
+            {
+                textDocument = new { uri = classUri }
+            });
+        var classSymbolNames = classSymbols
+            .GetProperty("result")
+            .EnumerateArray()
+            .Select(symbol => symbol.GetProperty("name").GetString())
+            .ToArray();
+        Assert.Contains("Customer", classSymbolNames);
+        Assert.Contains("Changed", classSymbolNames);
+        Assert.Contains("DisplayName", classSymbolNames);
+
+        const string formUri = "file:///C:/work/Dialog.frm";
+        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(formUri, string.Join('\n', [
+            "VERSION 5.00",
+            "Begin VB.Form Dialog",
+            "  Caption = \"Designer caption\"",
+            "End",
+            "Attribute VB_Name = \"Dialog\"",
+            "Option Explicit",
+            "Private Sub CommandButton1_Click()",
+            "End Sub"
+        ])));
+        var formSymbols = await SendRequestAsync(
+            stdin,
+            stdout,
+            4,
+            "textDocument/documentSymbol",
+            new
+            {
+                textDocument = new { uri = formUri }
+            });
+        var formSymbolNames = formSymbols
+            .GetProperty("result")
+            .EnumerateArray()
+            .Select(symbol => symbol.GetProperty("name").GetString())
+            .ToArray();
+        Assert.Contains("Dialog", formSymbolNames);
+        Assert.Contains("CommandButton1_Click", formSymbolNames);
+        Assert.DoesNotContain("Caption", formSymbolNames);
+
+        await SendRequestAsync(stdin, stdout, 5, "shutdown", null);
+        await SendNotificationAsync(stdin, "exit", null);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await process.WaitForExitAsync(cancellation.Token);
+        Assert.Equal(0, process.ExitCode);
+    }
+
+    [Fact]
+    public async Task Server_resolves_representative_source_definitions_and_ambiguity()
+    {
+        var serverProjectPath = Path.GetFullPath(
+            Path.Combine(
+                AppContext.BaseDirectory,
+                "..",
+                "..",
+                "..",
+                "..",
+                "..",
+                "src",
+                "VbaLanguageServer.Cli",
+                "VbaLanguageServer.Cli.csproj"));
+
+        using var process = StartLanguageServer(serverProjectPath);
+        await using var stdin = process.StandardInput.BaseStream;
+        using var stdout = process.StandardOutput.BaseStream;
+
+        await InitializeAsync(stdin, stdout);
+        const string helperUri = "file:///C:/work/Helpers.bas";
+        const string workerUri = "file:///C:/work/Worker.bas";
+        const string duplicateAUri = "file:///C:/work/DuplicateA.bas";
+        const string duplicateBUri = "file:///C:/work/DuplicateB.bas";
+        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(helperUri, string.Join('\n', [
+            "Attribute VB_Name = \"Helpers\"",
+            "Option Explicit",
+            "",
+            "Public Function BuildValue() As String",
+            "End Function",
+            "Private Function HiddenValue() As String",
+            "End Function"
+        ])));
+        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(duplicateAUri, string.Join('\n', [
+            "Attribute VB_Name = \"DuplicateA\"",
+            "Public Function DuplicateValue() As String",
+            "End Function"
+        ])));
+        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(duplicateBUri, string.Join('\n', [
+            "Attribute VB_Name = \"DuplicateB\"",
+            "Public Function DuplicateValue() As String",
+            "End Function"
+        ])));
+        var workerText = string.Join('\n', [
+            "Option Explicit",
+            "Public Sub Run()",
+            "    Dim localValue As String",
+            "    localValue = BuildValue()",
+            "    localValue = Helpers.BuildValue()",
+            "    localValue = HiddenValue()",
+            "    localValue = DuplicateValue()",
+            "End Sub"
+        ]);
+        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(workerUri, workerText));
+
+        var unqualified = await RequestDefinitionAsync(stdin, stdout, 2, workerUri, workerText, "BuildValue()");
+        Assert.Equal(helperUri, unqualified.GetProperty("uri").GetString());
+        Assert.Equal(3, unqualified.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal("Public Function ".Length, unqualified.GetProperty("range").GetProperty("start").GetProperty("character").GetInt32());
+
+        var qualified = await RequestDefinitionAsync(stdin, stdout, 3, workerUri, workerText, "Helpers.BuildValue()", "Helpers.".Length);
+        Assert.Equal(helperUri, qualified.GetProperty("uri").GetString());
+
+        var privateResult = await SendDefinitionRequestAsync(stdin, stdout, 4, workerUri, workerText, "HiddenValue()");
+        Assert.Equal(JsonValueKind.Null, privateResult.ValueKind);
+
+        var ambiguousResult = await SendDefinitionRequestAsync(stdin, stdout, 5, workerUri, workerText, "DuplicateValue()");
+        Assert.Equal(JsonValueKind.Null, ambiguousResult.ValueKind);
+
+        var fallbackSymbols = await SendRequestAsync(
+            stdin,
+            stdout,
+            6,
+            "textDocument/documentSymbol",
+            new
+            {
+                textDocument = new { uri = workerUri }
+            });
+        Assert.Equal("Worker", fallbackSymbols.GetProperty("result").EnumerateArray().First().GetProperty("name").GetString());
+
+        await SendRequestAsync(stdin, stdout, 7, "shutdown", null);
+        await SendNotificationAsync(stdin, "exit", null);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await process.WaitForExitAsync(cancellation.Token);
+        Assert.Equal(0, process.ExitCode);
+    }
+
     private static Process StartLanguageServer(string serverProjectPath)
     {
         var startInfo = new ProcessStartInfo
@@ -236,6 +468,22 @@ public sealed class LanguageServerProcessTests
         };
         process.BeginErrorReadLine();
         return process;
+    }
+
+    private static async Task InitializeAsync(Stream stdin, Stream stdout)
+    {
+        await SendRequestAsync(
+            stdin,
+            stdout,
+            1,
+            "initialize",
+            new
+            {
+                processId = Environment.ProcessId,
+                rootUri = (string?)null,
+                capabilities = new { }
+            });
+        await SendNotificationAsync(stdin, "initialized", new { });
     }
 
     private static async Task<JsonElement> SendRequestAsync(
@@ -274,6 +522,63 @@ public sealed class LanguageServerProcessTests
             method,
             @params = parameters
         });
+    }
+
+    private static object CreateOpenDocument(string uri, string text)
+    {
+        return new
+        {
+            textDocument = new
+            {
+                uri,
+                languageId = "vba",
+                version = 1,
+                text
+            }
+        };
+    }
+
+    private static async Task<JsonElement> RequestDefinitionAsync(
+        Stream stdin,
+        Stream stdout,
+        int id,
+        string uri,
+        string text,
+        string needle,
+        int offset = 0)
+    {
+        var result = await SendDefinitionRequestAsync(stdin, stdout, id, uri, text, needle, offset);
+        Assert.Equal(JsonValueKind.Object, result.ValueKind);
+        return result;
+    }
+
+    private static async Task<JsonElement> SendDefinitionRequestAsync(
+        Stream stdin,
+        Stream stdout,
+        int id,
+        string uri,
+        string text,
+        string needle,
+        int offset = 0)
+    {
+        var characterOffset = text.IndexOf(needle, StringComparison.Ordinal) + offset;
+        Assert.True(characterOffset >= offset);
+        var prefix = text[..characterOffset];
+        var line = prefix.Count(character => character == '\n');
+        var lineStart = prefix.LastIndexOf('\n');
+        var character = lineStart < 0 ? characterOffset : characterOffset - lineStart - 1;
+
+        var response = await SendRequestAsync(
+            stdin,
+            stdout,
+            id,
+            "textDocument/definition",
+            new
+            {
+                textDocument = new { uri },
+                position = new { line, character }
+            });
+        return response.GetProperty("result");
     }
 
     private static async Task WriteMessageAsync(Stream stream, object message)
