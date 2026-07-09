@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using VbaLanguageServer.Diagnostics;
+using VbaLanguageServer.ProjectModel;
 
 namespace VbaLanguageServer.SourceModel;
 
@@ -161,18 +162,31 @@ public sealed class VbaSourceIndex
     ];
 
     private readonly IReadOnlyList<VbaSourceDocument> documents;
+    private readonly VbaProjectReferenceSelection? referenceSelection;
+    private readonly VbaProjectReferenceCatalogSet referenceCatalogs;
 
-    private VbaSourceIndex(IReadOnlyList<VbaSourceDocument> documents)
+    private VbaSourceIndex(
+        IReadOnlyList<VbaSourceDocument> documents,
+        VbaProjectReferenceSelection? referenceSelection,
+        VbaProjectReferenceCatalogSet referenceCatalogs)
     {
         this.documents = documents;
+        this.referenceSelection = referenceSelection;
+        this.referenceCatalogs = referenceCatalogs;
     }
 
-    public static VbaSourceIndex Build(IReadOnlyDictionary<string, string> sourceDocuments)
+    public static VbaSourceIndex Build(
+        IReadOnlyDictionary<string, string> sourceDocuments,
+        VbaProjectReferenceSelection? referenceSelection = null,
+        VbaProjectReferenceCatalogSet? referenceCatalogs = null)
     {
         var parsedDocuments = sourceDocuments
             .Select(entry => ParseDocument(entry.Key, entry.Value))
             .ToArray();
-        return new VbaSourceIndex(parsedDocuments);
+        return new VbaSourceIndex(
+            parsedDocuments,
+            referenceSelection,
+            referenceCatalogs ?? VbaProjectReferenceCatalogSet.Empty);
     }
 
     public IReadOnlyList<VbaSourceDefinition> GetDocumentDefinitions(string uri)
@@ -190,7 +204,7 @@ public sealed class VbaSourceIndex
         }
 
         var position = new VbaPosition(line, character);
-        var definitions = currentDocument.Definitions
+        var sourceDefinitions = currentDocument.Definitions
             .Where(definition =>
                 IsReferenceTarget(definition)
                 || (definition.Visibility == VbaSourceDefinitionVisibility.Local && ContainsPosition(definition, position)))
@@ -201,9 +215,16 @@ public sealed class VbaSourceIndex
                 .Where(definition => definition.Visibility == VbaSourceDefinitionVisibility.Public))
             .GroupBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.First())
+            .ToArray();
+        var referenceDefinitions = referenceSelection is null
+            ? Array.Empty<VbaSourceDefinition>()
+            : referenceCatalogs.GetCompletionDefinitions(referenceSelection);
+        return sourceDefinitions
+            .Concat(referenceDefinitions)
+            .GroupBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
             .OrderBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
             .ToArray();
-        return definitions;
     }
 
     public VbaDefinitionLocation? ResolveDefinition(string uri, int line, int character)
@@ -238,11 +259,18 @@ public sealed class VbaSourceIndex
         }
 
         var qualifier = GetQualifierBefore(lines[line], identifier.Start);
-        var definition = qualifier is null
+        var sourceDefinition = qualifier is null
             ? ResolveUnqualified(currentDocument, new VbaPosition(line, character), identifier.Name)
             : ResolveQualified(currentDocument, qualifier, identifier.Name);
 
-        return definition;
+        if (sourceDefinition is not null || referenceSelection is null)
+        {
+            return sourceDefinition;
+        }
+
+        return qualifier is null
+            ? referenceCatalogs.ResolveUnqualified(referenceSelection, identifier.Name)
+            : referenceCatalogs.ResolveQualified(referenceSelection, qualifier, identifier.Name);
     }
 
     public VbaSignatureHelp? GetSignatureHelp(string uri, int line, int character)
@@ -801,7 +829,8 @@ public sealed class VbaSourceIndex
             && definition.Kind != VbaSourceDefinitionKind.Form;
 
     private static bool IsRenameTarget(VbaSourceDefinition definition)
-        => definition.Visibility == VbaSourceDefinitionVisibility.Local || IsReferenceTarget(definition);
+        => !VbaProjectReferenceCatalogSet.IsExternalDefinition(definition)
+            && (definition.Visibility == VbaSourceDefinitionVisibility.Local || IsReferenceTarget(definition));
 
     private static bool SameDefinition(VbaSourceDefinition left, VbaSourceDefinition right)
         => SameUri(left.Uri, right.Uri)

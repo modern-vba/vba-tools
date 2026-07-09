@@ -580,6 +580,293 @@ public sealed class LanguageServerProcessTests
     }
 
     [Fact]
+    public async Task Server_uses_active_reference_catalog_for_completion_hover_and_signature_help()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-catalog-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(
+                projectRoot,
+                "Microsoft Excel 16.0 Object Library",
+                "Microsoft Scripting Runtime");
+
+            var serverProjectPath = Path.GetFullPath(
+                Path.Combine(
+                    AppContext.BaseDirectory,
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "src",
+                    "VbaLanguageServer.Cli",
+                    "VbaLanguageServer.Cli.csproj"));
+
+            using var process = StartLanguageServer(serverProjectPath);
+            await using var stdin = process.StandardInput.BaseStream;
+            using var stdout = process.StandardOutput.BaseStream;
+
+            await InitializeAsync(stdin, stdout);
+            var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
+            var text = string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Option Explicit",
+                "",
+                "Public Sub Run()",
+                "    ",
+                "    Excel.Application",
+                "    Scripting.Dictionary",
+                "    Excel.Run(",
+                "End Sub"
+            ]);
+            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, text));
+
+            var completion = await SendRequestAsync(
+                stdin,
+                stdout,
+                2,
+                "textDocument/completion",
+                new
+                {
+                    textDocument = new { uri },
+                    position = new { line = 4, character = 4 }
+                });
+            var completionLabels = completion
+                .GetProperty("result")
+                .EnumerateArray()
+                .Select(item => item.GetProperty("label").GetString())
+                .ToArray();
+            Assert.Contains("Application", completionLabels);
+            Assert.Contains("Dictionary", completionLabels);
+
+            var applicationHover = await SendPositionRequestAsync(stdin, stdout, 3, "textDocument/hover", uri, text, "Application");
+            Assert.Contains(
+                "Microsoft Excel application",
+                applicationHover.GetProperty("result").GetProperty("contents").GetProperty("value").GetString(),
+                StringComparison.Ordinal);
+
+            var dictionaryHover = await SendPositionRequestAsync(stdin, stdout, 4, "textDocument/hover", uri, text, "Dictionary");
+            Assert.Contains(
+                "Microsoft Scripting Runtime",
+                dictionaryHover.GetProperty("result").GetProperty("contents").GetProperty("value").GetString(),
+                StringComparison.Ordinal);
+
+            var signature = await SendPositionRequestAsync(stdin, stdout, 5, "textDocument/signatureHelp", uri, text, "Excel.Run(", "Excel.Run(".Length);
+            var firstSignature = signature
+                .GetProperty("result")
+                .GetProperty("signatures")
+                .EnumerateArray()
+                .Single();
+            Assert.Equal("Run(Macro, Arg1)", firstSignature.GetProperty("label").GetString());
+            Assert.Contains(
+                "The macro or function to run.",
+                firstSignature.GetProperty("parameters").EnumerateArray().First().GetProperty("documentation").GetProperty("value").GetString(),
+                StringComparison.Ordinal);
+
+            await SendRequestAsync(stdin, stdout, 6, "shutdown", null);
+            await SendNotificationAsync(stdin, "exit", null);
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await process.WaitForExitAsync(cancellation.Token);
+            Assert.Equal(0, process.ExitCode);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_prefers_source_definitions_over_reference_catalogs()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-source-precedence-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(projectRoot, "Microsoft Scripting Runtime");
+
+            var serverProjectPath = Path.GetFullPath(
+                Path.Combine(
+                    AppContext.BaseDirectory,
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "src",
+                    "VbaLanguageServer.Cli",
+                    "VbaLanguageServer.Cli.csproj"));
+
+            using var process = StartLanguageServer(serverProjectPath);
+            await using var stdin = process.StandardInput.BaseStream;
+            using var stdout = process.StandardOutput.BaseStream;
+
+            await InitializeAsync(stdin, stdout);
+            var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
+            var text = string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Option Explicit",
+                "",
+                "'* @brief Source dictionary wins.",
+                "Public Function Dictionary() As String",
+                "End Function",
+                "",
+                "Public Sub Run()",
+                "    Dictionary",
+                "End Sub"
+            ]);
+            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, text));
+
+            var callOffset = text.LastIndexOf("Dictionary", StringComparison.Ordinal)
+                - text.IndexOf("Dictionary", StringComparison.Ordinal);
+            var hover = await SendPositionRequestAsync(stdin, stdout, 2, "textDocument/hover", uri, text, "Dictionary", callOffset);
+            var hoverValue = hover.GetProperty("result").GetProperty("contents").GetProperty("value").GetString();
+            Assert.Contains("Source dictionary wins.", hoverValue, StringComparison.Ordinal);
+            Assert.DoesNotContain("Microsoft Scripting Runtime", hoverValue, StringComparison.Ordinal);
+
+            await SendRequestAsync(stdin, stdout, 3, "shutdown", null);
+            await SendNotificationAsync(stdin, "exit", null);
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await process.WaitForExitAsync(cancellation.Token);
+            Assert.Equal(0, process.ExitCode);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_prefers_main_reference_over_other_reference_matches_for_unqualified_names()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-main-catalog-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(
+                projectRoot,
+                "Microsoft Excel 16.0 Object Library",
+                "Microsoft Office 16.0 Object Library");
+
+            var serverProjectPath = Path.GetFullPath(
+                Path.Combine(
+                    AppContext.BaseDirectory,
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "src",
+                    "VbaLanguageServer.Cli",
+                    "VbaLanguageServer.Cli.csproj"));
+
+            using var process = StartLanguageServer(serverProjectPath);
+            await using var stdin = process.StandardInput.BaseStream;
+            using var stdout = process.StandardOutput.BaseStream;
+
+            await InitializeAsync(stdin, stdout);
+            var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
+            var text = string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Option Explicit",
+                "",
+                "Public Sub Run()",
+                "    Application",
+                "End Sub"
+            ]);
+            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, text));
+
+            var hover = await SendPositionRequestAsync(stdin, stdout, 2, "textDocument/hover", uri, text, "Application");
+            var hoverValue = hover.GetProperty("result").GetProperty("contents").GetProperty("value").GetString();
+            Assert.Contains("Microsoft Excel application", hoverValue, StringComparison.Ordinal);
+            Assert.DoesNotContain("Microsoft Office application", hoverValue, StringComparison.Ordinal);
+
+            await SendRequestAsync(stdin, stdout, 3, "shutdown", null);
+            await SendNotificationAsync(stdin, "exit", null);
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await process.WaitForExitAsync(cancellation.Token);
+            Assert.Equal(0, process.ExitCode);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_keeps_equal_rank_reference_matches_ambiguous_and_ignores_inactive_references()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-catalog-ambiguity-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(
+                projectRoot,
+                "Microsoft Office 16.0 Object Library",
+                "Microsoft Outlook 16.0 Object Library");
+
+            var serverProjectPath = Path.GetFullPath(
+                Path.Combine(
+                    AppContext.BaseDirectory,
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "src",
+                    "VbaLanguageServer.Cli",
+                    "VbaLanguageServer.Cli.csproj"));
+
+            using var process = StartLanguageServer(serverProjectPath);
+            await using var stdin = process.StandardInput.BaseStream;
+            using var stdout = process.StandardOutput.BaseStream;
+
+            await InitializeAsync(stdin, stdout);
+            var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
+            var text = string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Option Explicit",
+                "",
+                "Public Sub Run()",
+                "    Application",
+                "    Scripting.Dictionary",
+                "End Sub"
+            ]);
+            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, text));
+
+            var ambiguousHover = await SendPositionRequestAsync(stdin, stdout, 2, "textDocument/hover", uri, text, "Application");
+            Assert.Equal(JsonValueKind.Null, ambiguousHover.GetProperty("result").ValueKind);
+
+            var inactiveHover = await SendPositionRequestAsync(stdin, stdout, 3, "textDocument/hover", uri, text, "Dictionary");
+            Assert.Equal(JsonValueKind.Null, inactiveHover.GetProperty("result").ValueKind);
+
+            var completion = await SendRequestAsync(
+                stdin,
+                stdout,
+                4,
+                "textDocument/completion",
+                new
+                {
+                    textDocument = new { uri },
+                    position = new { line = 4, character = 4 }
+                });
+            var completionLabels = completion
+                .GetProperty("result")
+                .EnumerateArray()
+                .Select(item => item.GetProperty("label").GetString())
+                .ToArray();
+            Assert.DoesNotContain("Application", completionLabels);
+            Assert.DoesNotContain("Dictionary", completionLabels);
+
+            await SendRequestAsync(stdin, stdout, 5, "shutdown", null);
+            await SendNotificationAsync(stdin, "exit", null);
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await process.WaitForExitAsync(cancellation.Token);
+            Assert.Equal(0, process.ExitCode);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Server_renames_source_targets_and_rejects_non_renameable_inputs()
     {
         var serverProjectPath = Path.GetFullPath(
@@ -1317,6 +1604,40 @@ public sealed class LanguageServerProcessTests
             "fixtures",
             "project-manifest",
             fixtureName)));
+
+    private static void WriteReferenceCatalogProjectManifest(string projectRoot, params string[] referenceNames)
+    {
+        Directory.CreateDirectory(Path.Combine(projectRoot, "src", "Book1"));
+        var references = referenceNames
+            .Select(referenceName => new { name = referenceName })
+            .ToArray();
+        var manifest = new
+        {
+            schemaVersion = 1,
+            projectName = "ReferenceCatalogProject",
+            primaryDocument = "Book1",
+            documents = new Dictionary<string, object>
+            {
+                ["Book1"] = new
+                {
+                    kind = "excel",
+                    sourcePath = "src/Book1",
+                    templatePath = "src/Book1/Book1.xlsm",
+                    binPath = "bin/Book1/Book1.xlsm",
+                    publishPath = "publish/Book1/Book1.xlsm",
+                    references
+                }
+            }
+        };
+        File.WriteAllText(
+            Path.Combine(projectRoot, "project.json"),
+            JsonSerializer.Serialize(
+                manifest,
+                new JsonSerializerOptions
+                {
+                    WriteIndented = true
+                }));
+    }
 
     private static async Task WriteMessageAsync(Stream stream, object message)
     {

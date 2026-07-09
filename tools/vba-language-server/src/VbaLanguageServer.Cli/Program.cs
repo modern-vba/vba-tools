@@ -15,6 +15,8 @@ internal sealed class MinimalLanguageServer
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
+    private static readonly VbaProjectReferenceCatalogSet ReferenceCatalogs =
+        VbaProjectReferenceCatalogSet.CreateBundled();
 
     private readonly Stream input;
     private readonly Stream output;
@@ -494,7 +496,15 @@ internal sealed class MinimalLanguageServer
             scopedDocuments[activeUri] = activeText;
         }
 
-        return VbaSourceIndex.Build(scopedDocuments);
+        var referenceSelection =
+            resolution.Kind == VbaProjectResolutionKind.ManifestDocument
+            && !string.IsNullOrEmpty(resolution.DocumentKind)
+                ? VbaProjectReferenceSelection.Create(
+                    resolution.DocumentKind,
+                    resolution.ReferenceEntries)
+                : null;
+
+        return VbaSourceIndex.Build(scopedDocuments, referenceSelection, ReferenceCatalogs);
     }
 
     private static object? ToMarkup(string? value)
