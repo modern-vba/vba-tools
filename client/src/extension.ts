@@ -3,11 +3,15 @@ import { promises as fs } from 'node:fs';
 
 import {
   CancellationToken,
+  Diagnostic,
+  DiagnosticCollection,
+  DiagnosticSeverity,
   ExtensionContext,
   Location,
   OutputChannel,
   Position,
   ProgressLocation,
+  Range,
   TestController,
   TestItem,
   TestMessage,
@@ -16,6 +20,7 @@ import {
   TestRunRequest,
   Uri,
   commands,
+  languages,
   tests,
   window,
   workspace
@@ -58,9 +63,15 @@ import {
   TestRunRequestLike,
   createWorkbookBackedTestExplorer
 } from './testExplorer';
+import {
+  VbaDevToolDiagnostic,
+  VbaDevToolDiagnosticCollection,
+  VbaDevToolDiagnosticReporter
+} from './toolDiagnostics';
 
 let client: LanguageClient | undefined;
 let outputChannel: OutputChannel | undefined;
+let toolDiagnosticReporter: VbaDevToolDiagnosticReporter | undefined;
 
 export async function activate(context: ExtensionContext): Promise<void> {
   const serverModule = context.asAbsolutePath(path.join('server', 'out', 'server.js'));
@@ -98,6 +109,11 @@ export async function activate(context: ExtensionContext): Promise<void> {
   context.subscriptions.push(client);
   outputChannel = window.createOutputChannel('VBA Tools');
   context.subscriptions.push(outputChannel);
+  const toolDiagnosticCollection = languages.createDiagnosticCollection('vba-devtool');
+  context.subscriptions.push(toolDiagnosticCollection);
+  toolDiagnosticReporter = new VbaDevToolDiagnosticReporter(
+    createVscodeDiagnosticCollectionAdapter(toolDiagnosticCollection)
+  );
   const testController = tests.createTestController(
     'vbaTools.workbookBackedProjects',
     'VBA Workbook Tests'
@@ -172,6 +188,7 @@ export async function deactivate(): Promise<void> {
   await client?.stop();
   client = undefined;
   outputChannel = undefined;
+  toolDiagnosticReporter = undefined;
 }
 
 async function promptForActiveWorkbookBackedProject(context: ExtensionContext): Promise<void> {
@@ -214,6 +231,7 @@ async function runDoctorWithProgress(context: ExtensionContext): Promise<void> {
         findProjectManifests,
         chooseProject,
         outputChannel: channel,
+        diagnosticReporter: toolDiagnosticReporter,
         showErrorMessage: (message) => window.showErrorMessage(message),
         cancellationToken: token
       });
@@ -247,6 +265,7 @@ async function runWorkbookBackedProjectCommandWithProgress(
         findProjectManifests,
         chooseProject,
         outputChannel: channel,
+        diagnosticReporter: toolDiagnosticReporter,
         showErrorMessage: (message) => window.showErrorMessage(message),
         cancellationToken: token
       });
@@ -284,6 +303,7 @@ async function runCommonModulesCommandWithProgress(
         findProjectManifests,
         chooseProject,
         outputChannel: channel,
+        diagnosticReporter: toolDiagnosticReporter,
         showErrorMessage: (message: string) => window.showErrorMessage(message),
         cancellationToken: token
       };
@@ -346,6 +366,7 @@ async function runReferenceCommandWithProgress(
         findProjectManifests,
         chooseProject,
         outputChannel: channel,
+        diagnosticReporter: toolDiagnosticReporter,
         showErrorMessage: (message: string) => window.showErrorMessage(message),
         cancellationToken: token
       };
@@ -430,6 +451,52 @@ function createVscodeTestControllerAdapter(controller: TestController): TestCont
     },
     createTestRun: (request) => toTestRunLike(controller.createTestRun(request as TestRunRequest))
   };
+}
+
+function createVscodeDiagnosticCollectionAdapter(collection: DiagnosticCollection): VbaDevToolDiagnosticCollection {
+  return {
+    set: (uriPath, diagnostics) => {
+      collection.set(
+        Uri.file(uriPath),
+        diagnostics.map((diagnostic) => toVscodeDiagnostic(diagnostic))
+      );
+    },
+    delete: (uriPath) => {
+      collection.delete(Uri.file(uriPath));
+    }
+  };
+}
+
+function toVscodeDiagnostic(diagnostic: VbaDevToolDiagnostic): Diagnostic {
+  const vscodeDiagnostic = new Diagnostic(
+    new Range(
+      diagnostic.range.start.line,
+      diagnostic.range.start.character,
+      diagnostic.range.end.line,
+      diagnostic.range.end.character
+    ),
+    diagnostic.message,
+    toVscodeDiagnosticSeverity(diagnostic.severity)
+  );
+  vscodeDiagnostic.source = diagnostic.owner;
+  vscodeDiagnostic.code = diagnostic.code;
+  return vscodeDiagnostic;
+}
+
+function toVscodeDiagnosticSeverity(severity: VbaDevToolDiagnostic['severity']): DiagnosticSeverity {
+  if (severity === 'error') {
+    return DiagnosticSeverity.Error;
+  }
+
+  if (severity === 'warning') {
+    return DiagnosticSeverity.Warning;
+  }
+
+  if (severity === 'information') {
+    return DiagnosticSeverity.Information;
+  }
+
+  return DiagnosticSeverity.Hint;
 }
 
 function toTestRunLike(run: TestRun): TestRunLike {

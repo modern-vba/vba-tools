@@ -104,6 +104,40 @@ test('CommonModules list command uses selected project arguments and output chan
   assert.match(output.join(''), /\(none\)/);
 });
 
+test('CommonModules command refreshes project diagnostics from failed command output', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const diagnosticRefreshes: Array<{ scopeKey: string; output: string }> = [];
+  const stderr = JSON.stringify({
+    type: 'diagnostic',
+    owner: 'vba-devtool',
+    severity: 'error',
+    uri: path.join(projectRoot, 'project.json'),
+    range: {
+      start: { line: 0, character: 0 },
+      end: { line: 0, character: 1 }
+    },
+    message: 'CommonModuleName is unknown.',
+    code: 'VBACOMMON001'
+  });
+
+  await runCommonModulesUpdateCommand(createOptions({
+    projectRoot,
+    calls: [],
+    output: [],
+    startStdout: () => '',
+    startStderr: () => stderr,
+    startExitCode: () => 2,
+    diagnosticRefreshes
+  }));
+
+  assert.deepEqual(diagnosticRefreshes, [
+    {
+      scopeKey: `project:${projectRoot}`,
+      output: stderr
+    }
+  ]);
+});
+
 test('CommonModules display formats requested roots separately from dependencies', () => {
   const output: string[] = [];
   const list = parseCommonModulesList(JSON.stringify({
@@ -130,6 +164,9 @@ function createOptions(
     calls: Array<{ file: string; args: readonly string[] }>;
     output: string[];
     startStdout: (args: readonly string[]) => string;
+    startStderr?: (args: readonly string[]) => string;
+    startExitCode?: (args: readonly string[]) => number;
+    diagnosticRefreshes?: Array<{ scopeKey: string; output: string }>;
   }
 ): CommonModulesCommandOptions {
   return {
@@ -159,8 +196,8 @@ function createOptions(
       options.calls.push({ file, args });
       return {
         onStdout: (listener) => listener(options.startStdout(args)),
-        onStderr: (listener) => listener(''),
-        onExit: (listener) => listener(0, null),
+        onStderr: (listener) => listener(options.startStderr?.(args) ?? ''),
+        onExit: (listener) => listener(options.startExitCode?.(args) ?? 0, null),
         kill: () => undefined
       };
     },
@@ -169,6 +206,14 @@ function createOptions(
       appendLine: (value) => options.output.push(`${value}\n`),
       show: () => undefined
     },
+    diagnosticReporter: options.diagnosticRefreshes
+      ? {
+        refresh: (scopeKey, value) => {
+          options.diagnosticRefreshes?.push({ scopeKey, output: value });
+          return [];
+        }
+      }
+      : undefined,
     showErrorMessage: async () => undefined,
     requiredContract: {
       contractVersion: '1.0',

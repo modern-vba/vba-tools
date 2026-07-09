@@ -113,7 +113,9 @@ test('Reference commands report a missing input name before invoking CLI', async
 
 test('Reference commands surface ambiguous or missing CLI resolution errors', async () => {
   const errors: string[] = [];
+  const diagnosticRefreshes: Array<{ scopeKey: string; output: string }> = [];
   const projectRoot = path.join('C:', 'work', 'BookProject');
+  const stderr = "VbaProjectReference 'Ambiguous Library' is ambiguous.\n";
 
   await runReferenceAddCommand(
     createOptions({
@@ -122,13 +124,20 @@ test('Reference commands surface ambiguous or missing CLI resolution errors', as
       output: [],
       startExitCode: () => 2,
       startStdout: () => '',
-      startStderr: () => "VbaProjectReference 'Ambiguous Library' is ambiguous.\n"
+      startStderr: () => stderr,
+      diagnosticRefreshes
     }, errors),
     'Ambiguous Library'
   );
 
   assert.deepEqual(errors, [
     'Reference command failed. See the VBA Tools output for details.'
+  ]);
+  assert.deepEqual(diagnosticRefreshes, [
+    {
+      scopeKey: `project:${projectRoot}`,
+      output: stderr
+    }
   ]);
 });
 
@@ -159,6 +168,7 @@ function createOptions(
     startStdout: (args: readonly string[]) => string;
     startStderr?: (args: readonly string[]) => string;
     startExitCode?: (args: readonly string[]) => number;
+    diagnosticRefreshes?: Array<{ scopeKey: string; output: string }>;
   },
   errors: string[] = []
 ): ReferenceCommandOptions {
@@ -199,6 +209,14 @@ function createOptions(
       appendLine: (value) => options.output.push(`${value}\n`),
       show: () => undefined
     },
+    diagnosticReporter: options.diagnosticRefreshes
+      ? {
+        refresh: (scopeKey, value) => {
+          options.diagnosticRefreshes?.push({ scopeKey, output: value });
+          return [];
+        }
+      }
+      : undefined,
     showErrorMessage: async (message) => {
       errors.push(message);
       return undefined;

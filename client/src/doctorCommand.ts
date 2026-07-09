@@ -13,6 +13,11 @@ import {
   WorkbookBackedProjectCandidate,
   discoverWorkbookBackedProject
 } from './projectDiscovery';
+import {
+  VbaDevToolDiagnosticReporterLike,
+  combineVbaDevToolDiagnosticOutput,
+  projectDiagnosticScope
+} from './toolDiagnostics';
 
 export const FirstRunDoctorPromptState = {
   Prompted: 'vbaTools.doctor.firstRunPrompted',
@@ -37,6 +42,7 @@ export interface DoctorCommandOptions {
   capabilitiesProcess?: ProcessRunner | undefined;
   startProcess?: StartVbaDevToolProcess | undefined;
   outputChannel: VbaToolsOutputChannel;
+  diagnosticReporter?: VbaDevToolDiagnosticReporterLike | undefined;
   showErrorMessage: (message: string) => Thenable<unknown> | Promise<unknown>;
   cancellationToken?: CommandCancellationToken | undefined;
   requiredContract?: RequiredVbaDevToolContract | undefined;
@@ -78,6 +84,10 @@ export async function runDoctorCommand(options: DoctorCommandOptions): Promise<D
     cancellationToken: options.cancellationToken,
     startProcess: options.startProcess
   });
+  options.diagnosticReporter?.refresh(
+    projectDiagnosticScope(project.projectRoot),
+    combineVbaDevToolDiagnosticOutput(result.stdout, result.stderr)
+  );
 
   if (!result.cancelled && hasBlockingDoctorFinding(result.exitCode, result.stdout, result.stderr)) {
     await options.showErrorMessage('VBA Tools: Doctor found blocking issues. See the VBA Tools output for details.');

@@ -13,6 +13,11 @@ import {
   WorkbookBackedProjectCandidate,
   discoverWorkbookBackedProject
 } from './projectDiscovery';
+import {
+  VbaDevToolDiagnosticReporterLike,
+  combineVbaDevToolDiagnosticOutput,
+  projectDiagnosticScope
+} from './toolDiagnostics';
 
 export interface ReferenceCommandOptions {
   extensionRoot: string;
@@ -27,6 +32,7 @@ export interface ReferenceCommandOptions {
   capabilitiesProcess?: ProcessRunner | undefined;
   startProcess?: StartVbaDevToolProcess | undefined;
   outputChannel: VbaToolsOutputChannel;
+  diagnosticReporter?: VbaDevToolDiagnosticReporterLike | undefined;
   showErrorMessage: (message: string) => Thenable<unknown> | Promise<unknown>;
   cancellationToken?: CommandCancellationToken | undefined;
   requiredContract?: RequiredVbaDevToolContract | undefined;
@@ -144,6 +150,10 @@ async function runReferenceMutatingCommand(
     cancellationToken: options.cancellationToken,
     startProcess: options.startProcess
   });
+  options.diagnosticReporter?.refresh(
+    projectDiagnosticScope(project.projectRoot),
+    combineVbaDevToolDiagnosticOutput(result.stdout, result.stderr)
+  );
 
   if (!result.cancelled && result.exitCode !== 0) {
     await options.showErrorMessage('Reference command failed. See the VBA Tools output for details.');
@@ -169,6 +179,10 @@ async function runReferenceListForProject(
     cancellationToken: options.cancellationToken,
     startProcess: options.startProcess
   });
+  options.diagnosticReporter?.refresh(
+    projectDiagnosticScope(project.projectRoot),
+    combineVbaDevToolDiagnosticOutput(result.stdout, result.stderr)
+  );
 
   let referenceList: ReferenceList | undefined;
   if (!result.cancelled && result.exitCode === 0) {

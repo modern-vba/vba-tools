@@ -13,6 +13,11 @@ import {
   WorkbookBackedProjectCandidate,
   discoverWorkbookBackedProject
 } from './projectDiscovery';
+import {
+  VbaDevToolDiagnosticReporterLike,
+  combineVbaDevToolDiagnosticOutput,
+  projectDiagnosticScope
+} from './toolDiagnostics';
 
 export type WorkbookBackedProjectToolCommand = 'build' | 'test' | 'publish' | 'export';
 
@@ -31,6 +36,7 @@ export interface WorkbookBackedProjectCommandOptions {
   capabilitiesProcess?: ProcessRunner | undefined;
   startProcess?: StartVbaDevToolProcess | undefined;
   outputChannel: VbaToolsOutputChannel;
+  diagnosticReporter?: VbaDevToolDiagnosticReporterLike | undefined;
   showErrorMessage: (message: string) => Thenable<unknown> | Promise<unknown>;
   cancellationToken?: CommandCancellationToken | undefined;
   requiredContract?: RequiredVbaDevToolContract | undefined;
@@ -65,6 +71,10 @@ export async function runWorkbookBackedProjectCommand(
     cancellationToken: options.cancellationToken,
     startProcess: options.startProcess
   });
+  options.diagnosticReporter?.refresh(
+    projectDiagnosticScope(project.projectRoot),
+    combineVbaDevToolDiagnosticOutput(result.stdout, result.stderr)
+  );
 
   if (!result.cancelled && result.exitCode !== 0) {
     await options.showErrorMessage(`${options.title.replace('VBA Tools: ', '')} failed. See the VBA Tools output for details.`);

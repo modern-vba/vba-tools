@@ -9,6 +9,7 @@ for (const commandName of ['build', 'test', 'publish', 'export'] as const) {
     const projectRoot = path.join('C:', 'work', 'BookProject');
     const calls: Array<{ file: string; args: readonly string[] }> = [];
     const output: string[] = [];
+    const diagnosticRefreshes: Array<{ scopeKey: string; output: string }> = [];
 
     const result = await runWorkbookBackedProjectCommand({
       toolCommandName: commandName,
@@ -47,6 +48,12 @@ for (const commandName of ['build', 'test', 'publish', 'export'] as const) {
         appendLine: (value) => output.push(`${value}\n`),
         show: () => undefined
       },
+      diagnosticReporter: {
+        refresh: (scopeKey, value) => {
+          diagnosticRefreshes.push({ scopeKey, output: value });
+          return [];
+        }
+      },
       showErrorMessage: async () => undefined,
       requiredContract: {
         contractVersion: '1.0',
@@ -64,6 +71,12 @@ for (const commandName of ['build', 'test', 'publish', 'export'] as const) {
     ]);
     assert.equal(calls.some((call) => call.args.includes('common-module') || call.args.includes('restore')), false);
     assert.match(output.join(''), new RegExp(`${commandName} output`));
+    assert.deepEqual(diagnosticRefreshes, [
+      {
+        scopeKey: `project:${projectRoot}`,
+        output: `${commandName} output\n`
+      }
+    ]);
   });
 }
 

@@ -13,6 +13,7 @@ test('Doctor command validates the CLI and invokes doctor with an explicit proje
   const calls: Array<{ file: string; args: readonly string[] }> = [];
   const output: string[] = [];
   const notifications: string[] = [];
+  const diagnosticRefreshes: Array<{ scopeKey: string; output: string }> = [];
 
   const result = await runDoctorCommand({
     extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
@@ -49,6 +50,12 @@ test('Doctor command validates the CLI and invokes doctor with an explicit proje
       appendLine: (value) => output.push(`${value}\n`),
       show: () => undefined
     },
+    diagnosticReporter: {
+      refresh: (scopeKey, value) => {
+        diagnosticRefreshes.push({ scopeKey, output: value });
+        return [];
+      }
+    },
     showErrorMessage: async (message) => {
       notifications.push(message);
       return undefined;
@@ -69,6 +76,12 @@ test('Doctor command validates the CLI and invokes doctor with an explicit proje
   ]);
   assert.match(output.join(''), /\[FAIL\] Project manifest/);
   assert.match(notifications[0], /Doctor found blocking issues/);
+  assert.deepEqual(diagnosticRefreshes, [
+    {
+      scopeKey: `project:${projectRoot}`,
+      output: '[FAIL] Project manifest: missing\n'
+    }
+  ]);
 });
 
 test('First-run doctor prompt can run doctor once for the workspace', async () => {

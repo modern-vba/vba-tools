@@ -6,3 +6,4 @@ import './projectCommand.test';
 import './commonModulesCommand.test';
 import './referenceCommand.test';
 import './testExplorer.test';
+import './toolDiagnostics.test';
