@@ -65,8 +65,54 @@ public sealed record VbaDefinitionLocation(string Uri, VbaRange Range);
 
 public sealed record VbaTextEdit(VbaRange Range, string NewText);
 
+public sealed record VbaSemanticToken(
+    VbaRange Range,
+    string Text,
+    string TokenType,
+    IReadOnlyList<string> TokenModifiers);
+
 public sealed class VbaSourceIndex
 {
+    public static readonly IReadOnlyList<string> SemanticTokenTypes = [
+        "namespace",
+        "type",
+        "class",
+        "enum",
+        "interface",
+        "struct",
+        "typeParameter",
+        "parameter",
+        "variable",
+        "property",
+        "enumMember",
+        "event",
+        "function",
+        "method"
+    ];
+
+    public static readonly IReadOnlyList<string> SemanticTokenModifiers = [
+        "declaration",
+        "definition",
+        "readonly",
+        "static",
+        "deprecated",
+        "abstract",
+        "async",
+        "modification",
+        "documentation",
+        "defaultLibrary"
+    ];
+
+    private static readonly IReadOnlyDictionary<string, int> SemanticTokenTypeIndexes =
+        SemanticTokenTypes
+            .Select((tokenType, index) => new { tokenType, index })
+            .ToDictionary(item => item.tokenType, item => item.index, StringComparer.Ordinal);
+
+    private static readonly IReadOnlyDictionary<string, int> SemanticTokenModifierIndexes =
+        SemanticTokenModifiers
+            .Select((modifier, index) => new { modifier, index })
+            .ToDictionary(item => item.modifier, item => item.index, StringComparer.Ordinal);
+
     private static readonly IReadOnlyDictionary<string, string> LanguageKeywords =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -164,6 +210,88 @@ public sealed class VbaSourceIndex
             .FirstOrDefault(document => SameUri(document.Uri, uri))
             ?.Definitions
             ?? Array.Empty<VbaSourceDefinition>();
+
+    public IReadOnlyList<VbaSemanticToken> GetSemanticTokens(string uri)
+    {
+        var currentDocument = documents.FirstOrDefault(document => SameUri(document.Uri, uri));
+        if (currentDocument is null)
+        {
+            return [];
+        }
+
+        var lines = SplitLines(currentDocument.Text);
+        var tokens = new List<VbaSemanticToken>();
+        var declarationRanges = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var definition in currentDocument.Definitions)
+        {
+            if (!TryCreateSemanticToken(lines, definition, isDeclaration: true, out var token))
+            {
+                continue;
+            }
+
+            tokens.Add(token);
+            declarationRanges.Add(GetRangeKey(token.Range));
+        }
+
+        for (var lineIndex = 0; lineIndex < lines.Length; lineIndex++)
+        {
+            foreach (var occurrence in FindIdentifierOccurrences(lines[lineIndex]))
+            {
+                var occurrenceRange = new VbaRange(
+                    new VbaPosition(lineIndex, occurrence.Start),
+                    new VbaPosition(lineIndex, occurrence.End));
+                if (declarationRanges.Contains(GetRangeKey(occurrenceRange)))
+                {
+                    continue;
+                }
+
+                var definition = ResolveSourceDefinition(uri, lineIndex, occurrence.Start);
+                if (definition is null
+                    || !TryCreateSemanticToken(
+                        lines,
+                        definition,
+                        isDeclaration: false,
+                        out var referenceToken,
+                        occurrenceRange,
+                        occurrence.Name))
+                {
+                    continue;
+                }
+
+                tokens.Add(referenceToken);
+            }
+        }
+
+        return tokens
+            .GroupBy(token => $"{GetRangeKey(token.Range)}:{token.TokenType}:{string.Join(",", token.TokenModifiers)}", StringComparer.Ordinal)
+            .Select(group => group.First())
+            .OrderBy(token => token.Range.Start.Line)
+            .ThenBy(token => token.Range.Start.Character)
+            .ToArray();
+    }
+
+    public IReadOnlyList<int> GetSemanticTokenData(string uri)
+    {
+        var data = new List<int>();
+        var previousLine = 0;
+        var previousStart = 0;
+        foreach (var token in GetSemanticTokens(uri))
+        {
+            var line = token.Range.Start.Line;
+            var start = token.Range.Start.Character;
+            var deltaLine = line - previousLine;
+            var deltaStart = deltaLine == 0 ? start - previousStart : start;
+            data.Add(deltaLine);
+            data.Add(deltaStart);
+            data.Add(token.Range.End.Character - token.Range.Start.Character);
+            data.Add(SemanticTokenTypeIndexes[token.TokenType]);
+            data.Add(GetSemanticTokenModifierBits(token.TokenModifiers));
+            previousLine = line;
+            previousStart = start;
+        }
+
+        return data;
+    }
 
     public IReadOnlyList<VbaSourceDefinition> GetCompletionDefinitions(string uri, int line, int character)
     {
@@ -869,6 +997,99 @@ public sealed class VbaSourceIndex
             VbaProjectReferenceCatalogSet.IsExternalDefinition(definition)
                 ? definition.ModuleName
                 : null);
+
+    private static bool TryCreateSemanticToken(
+        string[] lines,
+        VbaSourceDefinition definition,
+        bool isDeclaration,
+        out VbaSemanticToken token,
+        VbaRange? overrideRange = null,
+        string? overrideText = null)
+    {
+        token = default!;
+        var tokenType = GetSemanticTokenType(definition);
+        if (tokenType is null)
+        {
+            return false;
+        }
+
+        var range = overrideRange ?? definition.Range;
+        if (range.Start.Line < 0
+            || range.Start.Line >= lines.Length
+            || range.End.Line != range.Start.Line
+            || range.Start.Character < 0
+            || range.End.Character > lines[range.Start.Line].Length
+            || range.End.Character <= range.Start.Character)
+        {
+            return false;
+        }
+
+        var text = overrideText ?? lines[range.Start.Line][range.Start.Character..range.End.Character];
+        token = new VbaSemanticToken(
+            range,
+            text,
+            tokenType,
+            GetSemanticTokenModifiers(definition, isDeclaration));
+        return true;
+    }
+
+    private static string? GetSemanticTokenType(VbaSourceDefinition definition)
+        => definition.Kind switch
+        {
+            VbaSourceDefinitionKind.Class => "class",
+            VbaSourceDefinitionKind.Form => "class",
+            VbaSourceDefinitionKind.Type => "struct",
+            VbaSourceDefinitionKind.Enum => "enum",
+            VbaSourceDefinitionKind.EnumMember => "enumMember",
+            VbaSourceDefinitionKind.Procedure => definition.ParentTypeName is null ? "function" : "method",
+            VbaSourceDefinitionKind.Property => "property",
+            VbaSourceDefinitionKind.TypeMember => "property",
+            VbaSourceDefinitionKind.Event => "event",
+            VbaSourceDefinitionKind.Constant => "variable",
+            VbaSourceDefinitionKind.Variable => "variable",
+            VbaSourceDefinitionKind.Parameter => "parameter",
+            _ => null
+        };
+
+    private static IReadOnlyList<string> GetSemanticTokenModifiers(
+        VbaSourceDefinition definition,
+        bool isDeclaration)
+    {
+        var modifiers = new List<string>();
+        if (isDeclaration)
+        {
+            modifiers.Add("declaration");
+        }
+
+        if (definition.Kind == VbaSourceDefinitionKind.Constant)
+        {
+            modifiers.Add("readonly");
+        }
+
+        if (VbaProjectReferenceCatalogSet.IsExternalDefinition(definition))
+        {
+            modifiers.Add("defaultLibrary");
+        }
+
+        return modifiers;
+    }
+
+    private static int GetSemanticTokenModifierBits(IReadOnlyList<string> modifiers)
+    {
+        var bits = 0;
+        foreach (var modifier in modifiers)
+        {
+            if (SemanticTokenModifierIndexes.TryGetValue(modifier, out var index))
+            {
+                bits |= 1 << index;
+            }
+        }
+
+        return bits;
+    }
+
+    private static string GetRangeKey(VbaRange range)
+        => $"{range.Start.Line}:{range.Start.Character}:{range.End.Line}:{range.End.Character}";
 
     private static VbaSourceDocument ParseDocument(string uri, string text)
     {

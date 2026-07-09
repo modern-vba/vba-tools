@@ -104,6 +104,110 @@ public sealed class LanguageServerProcessTests
     }
 
     [Fact]
+    public async Task Server_advertises_semantic_tokens_and_updates_after_document_change()
+    {
+        var serverProjectPath = Path.GetFullPath(
+            Path.Combine(
+                AppContext.BaseDirectory,
+                "..",
+                "..",
+                "..",
+                "..",
+                "..",
+                "src",
+                "VbaLanguageServer.Cli",
+                "VbaLanguageServer.Cli.csproj"));
+
+        using var process = StartLanguageServer(serverProjectPath);
+        await using var stdin = process.StandardInput.BaseStream;
+        using var stdout = process.StandardOutput.BaseStream;
+
+        var initialize = await SendRequestAsync(
+            stdin,
+            stdout,
+            1,
+            "initialize",
+            new
+            {
+                processId = Environment.ProcessId,
+                rootUri = (string?)null,
+                capabilities = new { }
+            });
+        var semanticProvider = initialize
+            .GetProperty("result")
+            .GetProperty("capabilities")
+            .GetProperty("semanticTokensProvider");
+        Assert.True(semanticProvider.GetProperty("full").GetBoolean());
+        Assert.Contains(
+            "function",
+            semanticProvider.GetProperty("legend").GetProperty("tokenTypes").EnumerateArray().Select(item => item.GetString()));
+
+        await SendNotificationAsync(stdin, "initialized", new { });
+        const string uri = "file:///C:/work/Module1.bas";
+        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, string.Join('\n', [
+            "Attribute VB_Name = \"Module1\"",
+            "Option Explicit",
+            "Public Sub Run()",
+            "End Sub"
+        ])));
+        var before = await SendRequestAsync(
+            stdin,
+            stdout,
+            2,
+            "textDocument/semanticTokens/full",
+            new
+            {
+                textDocument = new { uri }
+            });
+        var beforeLength = before.GetProperty("result").GetProperty("data").GetArrayLength();
+
+        await SendNotificationAsync(
+            stdin,
+            "textDocument/didChange",
+            new
+            {
+                textDocument = new
+                {
+                    uri,
+                    version = 2
+                },
+                contentChanges = new[]
+                {
+                    new
+                    {
+                        text = string.Join('\n', [
+                            "Attribute VB_Name = \"Module1\"",
+                            "Option Explicit",
+                            "Public Function BuildValue() As String",
+                            "End Function",
+                            "Public Sub Run()",
+                            "    BuildValue",
+                            "End Sub"
+                        ])
+                    }
+                }
+            });
+        await ReadNotificationAsync(stdout, "textDocument/publishDiagnostics");
+        var after = await SendRequestAsync(
+            stdin,
+            stdout,
+            3,
+            "textDocument/semanticTokens/full",
+            new
+            {
+                textDocument = new { uri }
+            });
+        var afterLength = after.GetProperty("result").GetProperty("data").GetArrayLength();
+        Assert.True(afterLength > beforeLength);
+
+        await SendRequestAsync(stdin, stdout, 4, "shutdown", null);
+        await SendNotificationAsync(stdin, "exit", null);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await process.WaitForExitAsync(cancellation.Token);
+        Assert.Equal(0, process.ExitCode);
+    }
+
+    [Fact]
     public async Task Server_publishes_diagnostics_after_open_and_change_notifications()
     {
         var serverProjectPath = Path.GetFullPath(

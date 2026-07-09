@@ -138,6 +138,12 @@ internal sealed class VbaLanguageServerRuntime
                     features.CreateFormattingEdits(parameters),
                     cancellationToken);
                 return;
+            case "textDocument/semanticTokens/full":
+                await transport.WriteResponseAsync(
+                    idNode,
+                    features.CreateSemanticTokens(parameters),
+                    cancellationToken);
+                return;
             default:
                 await transport.WriteErrorResponseAsync(
                     idNode,

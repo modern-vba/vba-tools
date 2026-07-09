@@ -36,6 +36,16 @@ internal sealed class VbaLanguageFeatureService
                 completionProvider = new
                 {
                     triggerCharacters = new[] { ".", " " }
+                },
+                semanticTokensProvider = new
+                {
+                    legend = new
+                    {
+                        tokenTypes = VbaSourceIndex.SemanticTokenTypes,
+                        tokenModifiers = VbaSourceIndex.SemanticTokenModifiers
+                    },
+                    full = true,
+                    range = false
                 }
             },
             serverInfo = new
@@ -264,6 +274,24 @@ internal sealed class VbaLanguageFeatureService
                 newText = edit.NewText
             }
         ];
+    }
+
+    public object CreateSemanticTokens(JsonNode? parameters)
+    {
+        var uri = parameters?["textDocument"]?["uri"]?.GetValue<string>();
+        if (string.IsNullOrEmpty(uri))
+        {
+            return new
+            {
+                data = Array.Empty<int>()
+            };
+        }
+
+        var snapshot = workspace.CreateProjectSnapshot(uri);
+        return new
+        {
+            data = snapshot.SourceIndex.GetSemanticTokenData(uri)
+        };
     }
 
     private static bool TryGetTextDocumentPosition(
