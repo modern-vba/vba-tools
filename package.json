@@ -112,33 +112,6 @@
           "default": "off",
           "description": "Controls LSP trace output for the VBA language server."
         },
-        "vbaLanguageServer.mainHostApplication": {
-          "scope": "resource",
-          "type": "string",
-          "enum": [
-            "excel",
-            "word",
-            "powerpoint",
-            "access"
-          ],
-          "default": "excel",
-          "description": "Controls the primary Office host application for unqualified VBA host object model references."
-        },
-        "vbaLanguageServer.additionalHostApplications": {
-          "scope": "resource",
-          "type": "array",
-          "items": {
-            "type": "string",
-            "enum": [
-              "excel",
-              "word",
-              "powerpoint",
-              "access"
-            ]
-          },
-          "default": [],
-          "description": "Controls additional Office host applications enabled alongside the main VBA host application."
-        },
         "vbaTools.devtool.path": {
           "scope": "machine-overridable",
           "type": "string",
@@ -151,7 +124,7 @@
   "scripts": {
     "compile": "tsc -b",
     "test": "npm run test:extension && npm run test:devtool && npm run test:language-server && npm run test:packaging",
-    "test:extension": "npm run compile && node server/out/testRunner.js && node client/out/testRunner.js",
+    "test:extension": "npm run compile && node client/out/testRunner.js",
     "test:devtool": "dotnet test tools/vba-dev/tests/VbaDev.Tests/VbaDev.Tests.csproj -m:1 -p:UseSharedCompilation=false",
     "test:language-server": "dotnet test tools/vba-language-server/tests/VbaLanguageServer.Tests/VbaLanguageServer.Tests.csproj -m:1 -p:UseSharedCompilation=false",
     "test:packaging": "node --test scripts/*.test.mjs",
@@ -165,9 +138,7 @@
     "package": "npm run package:verify && vsce package"
   },
   "dependencies": {
-    "vscode-languageclient": "^9.0.1",
-    "vscode-languageserver": "^9.0.1",
-    "vscode-languageserver-textdocument": "^1.0.12"
+    "vscode-languageclient": "^9.0.1"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

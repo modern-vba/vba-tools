@@ -17,15 +17,16 @@ project actions such as `build`, `test`, `publish`, `export`, and `doctor`.
 
 ```text
 client/              VS Code extension client
-server/              VBA language server
 syntaxes/            TextMate grammar and language assets
-tools/vba-dev/   C#/.NET companion CLI
+tools/vba-dev/       C#/.NET companion CLI
+tools/vba-language-server/
+                     C#/.NET VBA language server
 docs/adr/            Architecture decision records
 ```
 
 ## Development
 
-Build and test the extension and language server:
+Build and test the VS Code extension:
 
 ```text
 npm run test:extension
@@ -56,21 +57,6 @@ CommonModules source packages are not vendored into this repository.
 package through explicit restore/update flows so projects can pin the
 CommonModules version they use.
 
-## Host Object Model
-
-The language server includes bundled host catalog metadata for Excel, Word,
-PowerPoint, and Access. On Windows, when the selected Office application is
-installed, the server can refresh host catalog metadata from COM and Type
-Library information. Bundled metadata remains the portable fallback when that
-refresh is unavailable.
-
-Detailed host method signature help depends on available host catalog metadata.
-When a method has `CallableSignature` metadata and the receiver type is known,
-for example `Dim rng As Range` followed by `rng.Find(`, signature help shows the
-known parameters and documentation. When a host method has no signature
-metadata, the server leaves signature help empty instead of showing guessed
-placeholders.
-
 ## Formatting
 
 The extension provides `Format Document` for `.bas`, `.cls`, and `.frm` files.
@@ -90,6 +76,6 @@ formatter and enable `editor.formatOnSave`:
 ```
 
 Formatting normalizes VBA keyword and intrinsic word casing, normalizes resolved
-reference casing to the matching `VbaDefinition` or `HostDefinition`, and rewrites
-leading whitespace according to VBA block depth. It does not rename declarations,
-edit sibling files, or rewrite comments and strings.
+source reference casing to the matching `VbaDefinition`, and rewrites leading
+whitespace according to VBA block depth. It does not rename declarations, edit
+sibling files, or rewrite comments and strings.

@@ -17,9 +17,7 @@ interface TextMateGrammar {
 }
 
 test('extension contributes a VBA TextMate grammar for the vba language', () => {
-  const package_json = JSON.parse(
-    fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')
-  ) as {
+  const packageJson = readPackageJson<{
     contributes?: {
       grammars?: Array<{
         language?: string;
@@ -27,9 +25,9 @@ test('extension contributes a VBA TextMate grammar for the vba language', () => 
         path?: string;
       }>;
     };
-  };
+  }>();
 
-  assert.deepEqual(package_json.contributes?.grammars, [
+  assert.deepEqual(packageJson.contributes?.grammars, [
     {
       language: 'vba',
       scopeName: 'source.vba',
@@ -38,72 +36,22 @@ test('extension contributes a VBA TextMate grammar for the vba language', () => 
   ]);
 });
 
-test('extension contributes main HostApplication configuration', () => {
-  const package_json = JSON.parse(
-    fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')
-  ) as {
+test('extension does not contribute obsolete HostApplication settings', () => {
+  const packageJson = readPackageJson<{
     contributes?: {
       configuration?: {
-        properties?: Record<string, {
-          scope?: string;
-          type?: string;
-          enum?: string[];
-          default?: string;
-        }>;
+        properties?: Record<string, unknown>;
       };
     };
-  };
-  const main_host_setting = package_json.contributes?.configuration?.properties?.[
-    'vbaLanguageServer.mainHostApplication'
-  ];
+  }>();
+  const properties = packageJson.contributes?.configuration?.properties ?? {};
 
-  assert.deepEqual(main_host_setting, {
-    scope: 'resource',
-    type: 'string',
-    enum: ['excel', 'word', 'powerpoint', 'access'],
-    default: 'excel',
-    description: 'Controls the primary Office host application for unqualified VBA host object model references.'
-  });
-});
-
-test('extension contributes additional HostApplications configuration', () => {
-  const package_json = JSON.parse(
-    fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')
-  ) as {
-    contributes?: {
-      configuration?: {
-        properties?: Record<string, {
-          scope?: string;
-          type?: string;
-          items?: {
-            type?: string;
-            enum?: string[];
-          };
-          default?: string[];
-        }>;
-      };
-    };
-  };
-  const additional_hosts_setting = package_json.contributes?.configuration?.properties?.[
-    'vbaLanguageServer.additionalHostApplications'
-  ];
-
-  assert.deepEqual(additional_hosts_setting, {
-    scope: 'resource',
-    type: 'array',
-    items: {
-      type: 'string',
-      enum: ['excel', 'word', 'powerpoint', 'access']
-    },
-    default: [],
-    description: 'Controls additional Office host applications enabled alongside the main VBA host application.'
-  });
+  assert.equal(Object.hasOwn(properties, 'vbaLanguageServer.mainHostApplication'), false);
+  assert.equal(Object.hasOwn(properties, 'vbaLanguageServer.additionalHostApplications'), false);
 });
 
 test('extension contributes VbaDev path override configuration', () => {
-  const package_json = JSON.parse(
-    fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')
-  ) as {
+  const packageJson = readPackageJson<{
     contributes?: {
       configuration?: {
         properties?: Record<string, {
@@ -114,12 +62,12 @@ test('extension contributes VbaDev path override configuration', () => {
         }>;
       };
     };
-  };
-  const devtool_path_setting = package_json.contributes?.configuration?.properties?.[
+  }>();
+  const devtoolPathSetting = packageJson.contributes?.configuration?.properties?.[
     'vbaTools.devtool.path'
   ];
 
-  assert.deepEqual(devtool_path_setting, {
+  assert.deepEqual(devtoolPathSetting, {
     scope: 'machine-overridable',
     type: 'string',
     default: '',
@@ -128,9 +76,7 @@ test('extension contributes VbaDev path override configuration', () => {
 });
 
 test('extension contributes the Doctor command', () => {
-  const package_json = JSON.parse(
-    fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')
-  ) as {
+  const packageJson = readPackageJson<{
     activationEvents?: string[];
     contributes?: {
       commands?: Array<{
@@ -138,19 +84,17 @@ test('extension contributes the Doctor command', () => {
         title?: string;
       }>;
     };
-  };
+  }>();
 
-  assert.deepEqual(package_json.contributes?.commands?.find((command) => command.command === 'vbaTools.doctor'), {
+  assert.deepEqual(packageJson.contributes?.commands?.find((command) => command.command === 'vbaTools.doctor'), {
     command: 'vbaTools.doctor',
     title: 'VBA Tools: Doctor'
   });
-  assert.ok(package_json.activationEvents?.includes('onCommand:vbaTools.doctor'));
+  assert.ok(packageJson.activationEvents?.includes('onCommand:vbaTools.doctor'));
 });
 
 test('extension contributes daily WorkbookBackedProject commands only', () => {
-  const package_json = JSON.parse(
-    fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')
-  ) as {
+  const packageJson = readPackageJson<{
     activationEvents?: string[];
     contributes?: {
       commands?: Array<{
@@ -158,8 +102,8 @@ test('extension contributes daily WorkbookBackedProject commands only', () => {
         title?: string;
       }>;
     };
-  };
-  const commands = package_json.contributes?.commands ?? [];
+  }>();
+  const commands = packageJson.contributes?.commands ?? [];
 
   for (const expected of [
     ['vbaTools.build', 'VBA Tools: Build'],
@@ -171,7 +115,7 @@ test('extension contributes daily WorkbookBackedProject commands only', () => {
       command: expected[0],
       title: expected[1]
     });
-    assert.ok(package_json.activationEvents?.includes(`onCommand:${expected[0]}`));
+    assert.ok(packageJson.activationEvents?.includes(`onCommand:${expected[0]}`));
   }
 
   assert.equal(commands.some((command) => command.command === 'vbaTools.newExcel'), false);
@@ -180,9 +124,7 @@ test('extension contributes daily WorkbookBackedProject commands only', () => {
 });
 
 test('extension contributes CommonModules commands', () => {
-  const package_json = JSON.parse(
-    fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')
-  ) as {
+  const packageJson = readPackageJson<{
     activationEvents?: string[];
     contributes?: {
       commands?: Array<{
@@ -190,8 +132,8 @@ test('extension contributes CommonModules commands', () => {
         title?: string;
       }>;
     };
-  };
-  const commands = package_json.contributes?.commands ?? [];
+  }>();
+  const commands = packageJson.contributes?.commands ?? [];
 
   for (const expected of [
     ['vbaTools.commonModules.add', 'VBA Tools: Add Common Module'],
@@ -202,14 +144,12 @@ test('extension contributes CommonModules commands', () => {
       command: expected[0],
       title: expected[1]
     });
-    assert.ok(package_json.activationEvents?.includes(`onCommand:${expected[0]}`));
+    assert.ok(packageJson.activationEvents?.includes(`onCommand:${expected[0]}`));
   }
 });
 
 test('extension contributes VbaProjectReference commands', () => {
-  const package_json = JSON.parse(
-    fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')
-  ) as {
+  const packageJson = readPackageJson<{
     activationEvents?: string[];
     contributes?: {
       commands?: Array<{
@@ -217,8 +157,8 @@ test('extension contributes VbaProjectReference commands', () => {
         title?: string;
       }>;
     };
-  };
-  const commands = package_json.contributes?.commands ?? [];
+  }>();
+  const commands = packageJson.contributes?.commands ?? [];
 
   for (const expected of [
     ['vbaTools.references.list', 'VBA Tools: List References'],
@@ -229,21 +169,8 @@ test('extension contributes VbaProjectReference commands', () => {
       command: expected[0],
       title: expected[1]
     });
-    assert.ok(package_json.activationEvents?.includes(`onCommand:${expected[0]}`));
+    assert.ok(packageJson.activationEvents?.includes(`onCommand:${expected[0]}`));
   }
-});
-
-test('README documents host signature help metadata dependency', () => {
-  const readme = fs.readFileSync(path.join(process.cwd(), 'README.md'), 'utf8');
-
-  assert.match(
-    readme,
-    /Detailed host method signature help depends on available host catalog metadata\./
-  );
-  assert.match(
-    readme,
-    /When a host method has no signature\s+metadata, the server leaves signature help empty/
-  );
 });
 
 test('VBA TextMate grammar has lexical scopes for representative VBA fixtures', () => {
@@ -261,6 +188,12 @@ test('VBA TextMate grammar has lexical scopes for representative VBA fixtures', 
   assertPatternMatches(patterns, 'keyword.operator.vba', 'If left_value <> right_value Then');
   assertPatternMatches(patterns, 'meta.attribute.vba', 'Attribute VB_Name = "Module1"');
 });
+
+function readPackageJson<T>(): T {
+  return JSON.parse(
+    fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')
+  ) as T;
+}
 
 function readGrammar(): TextMateGrammar {
   return JSON.parse(

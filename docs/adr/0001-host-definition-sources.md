@@ -1,7 +1,15 @@
+---
+status: superseded
+superseded_by: 0008-migrate-language-server-to-csharp-before-reference-catalogs
+---
+
 # Host definition sources
 
-The language server provides Office object model intelligence from `HostDefinition`s supplied by configured `HostApplication`s. Each supported host application ships with bundled catalog data for immediate and portable behavior, centered on high-frequency root object types and enriched with available `CallableSignature` metadata. It also uses a per-host user cache under `~/.vba-language-server/host-catalogs/` when available.
+This ADR described the removed TypeScript language-server host-application
+configuration model. It is retained only as historical context.
 
-Host catalog refresh and `HostSignatureDiscovery` are separate concerns. Basic host catalog refresh uses Office application automation and representative objects on Windows when a `HostApplication` is installed and selected; this refresh is suited to discovering available root and member names for the user's installed Office version. Detailed host method signature help uses `HostSignatureDiscovery`, which may read COM type library metadata to collect `CallableSignature`, parameter, and return type information. Type library-derived signature data can also be checked into the bundled catalog snapshot so non-Windows or non-Office environments still have useful fallback metadata.
-
-Discovered definitions take precedence because they match the user's installed Office version, while bundled definitions remain the fallback so startup and tests do not depend on Office or COM availability. COM and type-library discovery failures do not produce user-facing warning popups when fallback catalog data is available. External reference libraries such as DAO and ADO are separate from host application object models and are not enabled by Access host support.
+The current C# language server does not expose host-application settings and
+does not use the removed TypeScript host-catalog runtime. Future
+reference-aware behavior is expected to come from `ProjectManifest`
+`VbaProjectReferenceSelection` and reference catalogs, as described by the
+C# migration plan.

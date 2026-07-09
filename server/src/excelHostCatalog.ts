@@ -1,1 +1,0 @@
-export { getBundledExcelHostDefinitions } from './officeHostCatalog';

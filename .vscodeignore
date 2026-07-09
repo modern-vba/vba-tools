@@ -3,7 +3,7 @@
 .vscode-test-web/**
 .vscode-test-insiders/**
 client/src/**
-server/src/**
+server/**
 **/*.ts
 **/tsconfig.json
 **/*.tsbuildinfo
