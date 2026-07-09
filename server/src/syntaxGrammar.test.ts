@@ -147,6 +147,38 @@ test('extension contributes the Doctor command', () => {
   assert.ok(package_json.activationEvents?.includes('onCommand:vbaTools.doctor'));
 });
 
+test('extension contributes daily WorkbookBackedProject commands only', () => {
+  const package_json = JSON.parse(
+    fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')
+  ) as {
+    activationEvents?: string[];
+    contributes?: {
+      commands?: Array<{
+        command?: string;
+        title?: string;
+      }>;
+    };
+  };
+  const commands = package_json.contributes?.commands ?? [];
+
+  for (const expected of [
+    ['vbaTools.build', 'VBA Tools: Build'],
+    ['vbaTools.test', 'VBA Tools: Test'],
+    ['vbaTools.publish', 'VBA Tools: Publish'],
+    ['vbaTools.export', 'VBA Tools: Export']
+  ]) {
+    assert.deepEqual(commands.find((command) => command.command === expected[0]), {
+      command: expected[0],
+      title: expected[1]
+    });
+    assert.ok(package_json.activationEvents?.includes(`onCommand:${expected[0]}`));
+  }
+
+  assert.equal(commands.some((command) => command.command === 'vbaTools.newExcel'), false);
+  assert.equal(commands.some((command) => command.command === 'vbaTools.capabilities'), false);
+  assert.equal(commands.some((command) => command.command === 'vbaTools.testNoBuild'), false);
+});
+
 test('README documents host signature help metadata dependency', () => {
   const readme = fs.readFileSync(path.join(process.cwd(), 'README.md'), 'utf8');
 

@@ -12,7 +12,11 @@
   ],
   "activationEvents": [
     "onLanguage:vba",
-    "onCommand:vbaTools.doctor"
+    "onCommand:vbaTools.doctor",
+    "onCommand:vbaTools.build",
+    "onCommand:vbaTools.test",
+    "onCommand:vbaTools.publish",
+    "onCommand:vbaTools.export"
   ],
   "main": "./client/out/extension.js",
   "contributes": {
@@ -42,6 +46,22 @@
       {
         "command": "vbaTools.doctor",
         "title": "VBA Tools: Doctor"
+      },
+      {
+        "command": "vbaTools.build",
+        "title": "VBA Tools: Build"
+      },
+      {
+        "command": "vbaTools.test",
+        "title": "VBA Tools: Test"
+      },
+      {
+        "command": "vbaTools.publish",
+        "title": "VBA Tools: Publish"
+      },
+      {
+        "command": "vbaTools.export",
+        "title": "VBA Tools: Export"
       }
     ],
     "configuration": {

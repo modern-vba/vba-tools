@@ -23,6 +23,10 @@ import {
   WorkbookBackedProjectCandidate,
   findNearestProjectManifest
 } from './projectDiscovery';
+import {
+  WorkbookBackedProjectToolCommand,
+  runWorkbookBackedProjectCommand
+} from './projectCommand';
 
 let client: LanguageClient | undefined;
 let outputChannel: OutputChannel | undefined;
@@ -66,10 +70,26 @@ export async function activate(context: ExtensionContext): Promise<void> {
   context.subscriptions.push(commands.registerCommand('vbaTools.doctor', async () => {
     await runDoctorWithProgress(context);
   }));
+  for (const command of WorkbookBackedProjectCommands) {
+    context.subscriptions.push(commands.registerCommand(command.commandId, async () => {
+      await runWorkbookBackedProjectCommandWithProgress(context, command.toolCommandName, command.title);
+    }));
+  }
 
   await client.start();
   await promptForActiveWorkbookBackedProject(context);
 }
+
+const WorkbookBackedProjectCommands: ReadonlyArray<{
+  commandId: string;
+  toolCommandName: WorkbookBackedProjectToolCommand;
+  title: string;
+}> = [
+  { commandId: 'vbaTools.build', toolCommandName: 'build', title: 'VBA Tools: Build' },
+  { commandId: 'vbaTools.test', toolCommandName: 'test', title: 'VBA Tools: Test' },
+  { commandId: 'vbaTools.publish', toolCommandName: 'publish', title: 'VBA Tools: Publish' },
+  { commandId: 'vbaTools.export', toolCommandName: 'export', title: 'VBA Tools: Export' }
+];
 
 export async function deactivate(): Promise<void> {
   await client?.stop();
@@ -109,6 +129,39 @@ async function runDoctorWithProgress(context: ExtensionContext): Promise<void> {
     },
     async (_progress, token) => {
       await runDoctorCommand({
+        extensionRoot: context.extensionPath,
+        configuredDevToolPath: getConfiguredDevToolPath(),
+        activeFilePath: getActiveFilePath(),
+        workspaceRoots: workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [],
+        fileExists,
+        findProjectManifests,
+        chooseProject,
+        outputChannel: channel,
+        showErrorMessage: (message) => window.showErrorMessage(message),
+        cancellationToken: token
+      });
+    }
+  );
+}
+
+async function runWorkbookBackedProjectCommandWithProgress(
+  context: ExtensionContext,
+  toolCommandName: WorkbookBackedProjectToolCommand,
+  title: string
+): Promise<void> {
+  const channel = outputChannel ?? window.createOutputChannel('VBA Tools');
+  outputChannel = channel;
+
+  await window.withProgress(
+    {
+      location: ProgressLocation.Notification,
+      title,
+      cancellable: true
+    },
+    async (_progress, token) => {
+      await runWorkbookBackedProjectCommand({
+        toolCommandName,
+        title,
         extensionRoot: context.extensionPath,
         configuredDevToolPath: getConfiguredDevToolPath(),
         activeFilePath: getActiveFilePath(),
