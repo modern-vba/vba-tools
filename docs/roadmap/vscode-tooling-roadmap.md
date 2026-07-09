@@ -43,6 +43,9 @@ Expected capabilities:
 - avoid implicit `PATH` discovery for the companion CLI;
 - register VS Code commands for `doctor`, `build`, `test`, `publish`, `export`,
   CommonModules actions, and reference actions;
+- keep Excel COM, VBIDE, workbook import/export, workbook save, and
+  workbook-backed test execution inside `vba-devtool`; the extension must not
+  automate Excel directly;
 - activate on VBA files, workbook-backed project manifests, and explicit
   `vbaTools.*` commands rather than using always-on activation;
 - run project discovery during command execution so limited activation does not
@@ -55,8 +58,15 @@ Expected capabilities:
 - show command output in a dedicated Output Channel;
 - surface clear errors when Excel, VBIDE trust access, workbook locks, or
   project manifest problems block automation.
+- wire VS Code command and Test Run cancellation to the spawned `vba-devtool`
+  process, and rely on CLI-side cleanup for workbooks, Excel instances, and
+  temporary outputs;
 - for initial `doctor` command integration, show full output in the dedicated
   Output Channel and use a notification only when blocking issues are found.
+- after detecting a `WorkbookBackedProject` for the first time in a workspace,
+  prompt the user to run `doctor` instead of running it automatically;
+- remember a workspace-level "do not ask again" choice for the first-run doctor
+  prompt.
 
 ## Phase 2: Test Explorer integration
 
@@ -83,6 +93,8 @@ Expected capabilities:
   workbook locks, manifest errors, reference-resolution failures, and abnormal
   CLI exits as project-level or document-level test run errors rather than
   individual test failures;
+- report user cancellation as a cancelled run scope, not as skipped tests or
+  failed assertions;
 - map failures back to source locations when the test output provides enough
   identity;
 - avoid showing standalone VBA files that do not belong to a `ProjectManifest`

@@ -22,6 +22,16 @@ will use it for workbook-backed project operations such as `build`, `test`,
 `publish`, `export`, `doctor`, CommonModules management, and VBA project
 reference management.
 
+Excel COM, VBIDE, workbook import/export, workbook save, and workbook-backed
+test execution stay inside `vba-devtool`. The VS Code extension invokes the CLI
+and maps its output into VS Code UI surfaces; the language server stays focused
+on source parsing and editor intelligence.
+
+Long-running workbook operations are cancelled by terminating the `vba-devtool`
+process from the extension. `vba-devtool` owns cleanup for opened workbooks,
+Excel instances, and temporary outputs so cancellation does not leave workbook
+locks or orphaned automation state behind.
+
 Repository-level verification must include both stacks:
 
 - TypeScript compilation and language-server tests for the VS Code extension.
