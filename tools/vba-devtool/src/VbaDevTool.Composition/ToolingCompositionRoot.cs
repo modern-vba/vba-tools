@@ -30,8 +30,8 @@ public static class ToolingCompositionRoot
         var manifestStore = new JsonProjectManifestStore();
         var commonModulesManifestReader = new CommonModulesManifestReader();
         var commonModulesService = new CommonModulesService(commonModulesManifestReader, manifestStore);
-        var referenceService = new VbaProjectReferenceService(manifestStore);
         var referenceResolver = vbaProjectReferenceResolver ?? new RegistryVbaProjectReferenceResolver();
+        var referenceService = new VbaProjectReferenceService(manifestStore, referenceResolver);
         var projectContextResolver = new ProjectContextResolver(manifestStore);
         var doctorCommand = new DoctorCommand(
             projectContextResolver,

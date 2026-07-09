@@ -33,6 +33,12 @@ import {
   WorkbookBackedProjectToolCommand,
   runWorkbookBackedProjectCommand
 } from './projectCommand';
+import {
+  ReferenceToolCommand,
+  runReferenceAddCommand,
+  runReferenceListCommand,
+  runReferenceRemoveCommand
+} from './referenceCommand';
 
 let client: LanguageClient | undefined;
 let outputChannel: OutputChannel | undefined;
@@ -86,6 +92,11 @@ export async function activate(context: ExtensionContext): Promise<void> {
       await runCommonModulesCommandWithProgress(context, command.toolCommandName, command.title);
     }));
   }
+  for (const command of ReferenceCommands) {
+    context.subscriptions.push(commands.registerCommand(command.commandId, async () => {
+      await runReferenceCommandWithProgress(context, command.toolCommandName, command.title);
+    }));
+  }
 
   await client.start();
   await promptForActiveWorkbookBackedProject(context);
@@ -110,6 +121,16 @@ const CommonModulesCommands: ReadonlyArray<{
   { commandId: 'vbaTools.commonModules.add', toolCommandName: 'add', title: 'VBA Tools: Add Common Module' },
   { commandId: 'vbaTools.commonModules.list', toolCommandName: 'list', title: 'VBA Tools: List Common Modules' },
   { commandId: 'vbaTools.commonModules.update', toolCommandName: 'update', title: 'VBA Tools: Update Common Modules' }
+];
+
+const ReferenceCommands: ReadonlyArray<{
+  commandId: string;
+  toolCommandName: ReferenceToolCommand;
+  title: string;
+}> = [
+  { commandId: 'vbaTools.references.list', toolCommandName: 'list', title: 'VBA Tools: List References' },
+  { commandId: 'vbaTools.references.add', toolCommandName: 'add', title: 'VBA Tools: Add Reference' },
+  { commandId: 'vbaTools.references.remove', toolCommandName: 'remove', title: 'VBA Tools: Remove Reference' }
 ];
 
 export async function deactivate(): Promise<void> {
@@ -258,6 +279,63 @@ async function promptForCommonModuleNames(): Promise<readonly string[] | undefin
     .filter((moduleName) => moduleName.length > 0);
 
   return moduleNames.length > 0 ? moduleNames : undefined;
+}
+
+async function runReferenceCommandWithProgress(
+  context: ExtensionContext,
+  toolCommandName: ReferenceToolCommand,
+  title: string
+): Promise<void> {
+  const channel = outputChannel ?? window.createOutputChannel('VBA Tools');
+  outputChannel = channel;
+  const referenceName = toolCommandName === 'list'
+    ? undefined
+    : await promptForReferenceName(title);
+  if (toolCommandName !== 'list' && referenceName === undefined) {
+    return;
+  }
+
+  await window.withProgress(
+    {
+      location: ProgressLocation.Notification,
+      title,
+      cancellable: true
+    },
+    async (_progress, token) => {
+      const options = {
+        extensionRoot: context.extensionPath,
+        configuredDevToolPath: getConfiguredDevToolPath(),
+        activeFilePath: getActiveFilePath(),
+        workspaceRoots: workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [],
+        fileExists,
+        findProjectManifests,
+        chooseProject,
+        outputChannel: channel,
+        showErrorMessage: (message: string) => window.showErrorMessage(message),
+        cancellationToken: token
+      };
+
+      if (toolCommandName === 'add') {
+        await runReferenceAddCommand(options, referenceName ?? '');
+      } else if (toolCommandName === 'remove') {
+        await runReferenceRemoveCommand(options, referenceName ?? '');
+      } else {
+        await runReferenceListCommand(options);
+      }
+    }
+  );
+}
+
+async function promptForReferenceName(title: string): Promise<string | undefined> {
+  const value = await window.showInputBox({
+    title,
+    prompt: 'Enter the exact Reference.Description name.'
+  });
+  if (value === undefined) {
+    return undefined;
+  }
+
+  return value.trim();
 }
 
 function getConfiguredDevToolPath(): string | undefined {

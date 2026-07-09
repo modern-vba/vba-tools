@@ -206,6 +206,33 @@ test('extension contributes CommonModules commands', () => {
   }
 });
 
+test('extension contributes VbaProjectReference commands', () => {
+  const package_json = JSON.parse(
+    fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')
+  ) as {
+    activationEvents?: string[];
+    contributes?: {
+      commands?: Array<{
+        command?: string;
+        title?: string;
+      }>;
+    };
+  };
+  const commands = package_json.contributes?.commands ?? [];
+
+  for (const expected of [
+    ['vbaTools.references.list', 'VBA Tools: List References'],
+    ['vbaTools.references.add', 'VBA Tools: Add Reference'],
+    ['vbaTools.references.remove', 'VBA Tools: Remove Reference']
+  ]) {
+    assert.deepEqual(commands.find((command) => command.command === expected[0]), {
+      command: expected[0],
+      title: expected[1]
+    });
+    assert.ok(package_json.activationEvents?.includes(`onCommand:${expected[0]}`));
+  }
+});
+
 test('README documents host signature help metadata dependency', () => {
   const readme = fs.readFileSync(path.join(process.cwd(), 'README.md'), 'utf8');
 

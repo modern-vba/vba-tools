@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using VbaDevTools.App.Workbooks;
 using VbaDevTools.Composition;
 using VbaDevTools.Domain;
 using VbaDevTools.Infrastructure.Projects;
@@ -14,7 +15,11 @@ public sealed class ReferenceCommandTests
     {
         using var temp = TempDirectory.Create();
         var root = CreateProject(temp);
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root);
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+            root,
+            vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
+                new ResolvedVbaProjectReference("Microsoft Scripting Runtime", "{420B2830-E718-11CF-893D-00A0C9054228}", 1, 0),
+                new ResolvedVbaProjectReference("Microsoft VBScript Regular Expressions 5.5", "{3F4DACA7-160D-11D2-A8E9-00104B365C9F}", 5, 5)));
 
         var first = application.Run(["reference", "add", " Microsoft Scripting Runtime ", "Microsoft VBScript Regular Expressions 5.5"]);
         var second = application.Run(["reference", "add", "microsoft scripting runtime"]);
@@ -52,7 +57,11 @@ public sealed class ReferenceCommandTests
         Directory.CreateDirectory(Path.Combine(root, "src", "Book1"));
         Directory.CreateDirectory(Path.Combine(root, "src", "SecondBook"));
         new JsonProjectManifestStore().Save(root, ProjectManifestTestData.TwoDocumentManifest(root));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root);
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+            root,
+            vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
+                new ResolvedVbaProjectReference("Microsoft Scripting Runtime", "{420B2830-E718-11CF-893D-00A0C9054228}", 1, 0),
+                new ResolvedVbaProjectReference("Microsoft Forms 2.0 Object Library", "{0D452EE1-E08F-101A-852E-02608C4D0BB4}", 2, 0)));
 
         Assert.Equal(0, application.Run(["reference", "add", "Microsoft Scripting Runtime"]).ExitCode);
         Assert.Equal(0, application.Run(["reference", "add", "Microsoft Forms 2.0 Object Library", "--document", "SecondBook"]).ExitCode);
@@ -70,7 +79,10 @@ public sealed class ReferenceCommandTests
             temp,
             new VbaProjectReference("Microsoft Scripting Runtime"),
             new VbaProjectReference("Microsoft Forms 2.0 Object Library"));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root);
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+            root,
+            vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
+                new ResolvedVbaProjectReference("Microsoft Scripting Runtime", "{420B2830-E718-11CF-893D-00A0C9054228}", 1, 0)));
 
         var text = application.Run(["reference", "list"]);
         var json = application.Run(["reference", "list", "--format", "json"]);
@@ -106,6 +118,42 @@ public sealed class ReferenceCommandTests
 
         Assert.Equal("template workbook", File.ReadAllText(templatePath, Encoding.UTF8));
         Assert.Equal("bin workbook", File.ReadAllText(binPath, Encoding.UTF8));
+    }
+
+    [Fact]
+    public void AddFailsForMissingResolvedReferenceWithoutMutatingManifest()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+            root,
+            vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver());
+
+        var result = application.Run(["reference", "add", "Missing Library"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("not found", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        var manifest = new JsonProjectManifestStore().Load(Path.Combine(root, ProjectManifest.ManifestFileName));
+        Assert.Empty(manifest.Documents["Book1"].References);
+    }
+
+    [Fact]
+    public void AddFailsForAmbiguousResolvedReferenceWithoutMutatingManifest()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+            root,
+            vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
+                new ResolvedVbaProjectReference("Ambiguous Library", "{AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA}", 1, 0),
+                new ResolvedVbaProjectReference("Ambiguous Library", "{BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB}", 1, 0)));
+
+        var result = application.Run(["reference", "add", "Ambiguous Library"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("ambiguous", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        var manifest = new JsonProjectManifestStore().Load(Path.Combine(root, ProjectManifest.ManifestFileName));
+        Assert.Empty(manifest.Documents["Book1"].References);
     }
 
     private static string CreateProject(TempDirectory temp, params VbaProjectReference[] references)

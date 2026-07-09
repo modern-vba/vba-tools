@@ -19,7 +19,10 @@
     "onCommand:vbaTools.export",
     "onCommand:vbaTools.commonModules.add",
     "onCommand:vbaTools.commonModules.list",
-    "onCommand:vbaTools.commonModules.update"
+    "onCommand:vbaTools.commonModules.update",
+    "onCommand:vbaTools.references.list",
+    "onCommand:vbaTools.references.add",
+    "onCommand:vbaTools.references.remove"
   ],
   "main": "./client/out/extension.js",
   "contributes": {
@@ -77,6 +80,18 @@
       {
         "command": "vbaTools.commonModules.update",
         "title": "VBA Tools: Update Common Modules"
+      },
+      {
+        "command": "vbaTools.references.list",
+        "title": "VBA Tools: List References"
+      },
+      {
+        "command": "vbaTools.references.add",
+        "title": "VBA Tools: Add Reference"
+      },
+      {
+        "command": "vbaTools.references.remove",
+        "title": "VBA Tools: Remove Reference"
       }
     ],
     "configuration": {

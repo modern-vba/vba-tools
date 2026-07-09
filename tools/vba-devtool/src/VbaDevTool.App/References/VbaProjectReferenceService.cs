@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using VbaDevTools.App.Cli;
 using VbaDevTools.App.Projects;
+using VbaDevTools.App.Workbooks;
 using VbaDevTools.Domain;
 
 namespace VbaDevTools.App.References;
@@ -15,10 +16,14 @@ public sealed class VbaProjectReferenceService
     };
 
     private readonly IProjectManifestStore manifestStore;
+    private readonly IVbaProjectReferenceResolver referenceResolver;
 
-    public VbaProjectReferenceService(IProjectManifestStore manifestStore)
+    public VbaProjectReferenceService(
+        IProjectManifestStore manifestStore,
+        IVbaProjectReferenceResolver referenceResolver)
     {
         this.manifestStore = manifestStore;
+        this.referenceResolver = referenceResolver;
     }
 
     public CommandResult Add(ResolvedProjectContext context, IReadOnlyList<string> referenceNames)
@@ -29,18 +34,38 @@ public sealed class VbaProjectReferenceService
             return CommandResult.UsageError("reference add requires at least one reference name.");
         }
 
+        var resolvedReferences = new List<ResolvedVbaProjectReference>();
+        foreach (var referenceName in normalizedNames)
+        {
+            var matches = referenceResolver.Resolve(referenceName);
+            if (matches.Count == 0)
+            {
+                return CommandResult.UsageError($"VbaProjectReference '{referenceName}' was not found.");
+            }
+
+            if (matches.Count > 1)
+            {
+                var candidates = string.Join(
+                    ", ",
+                    matches.Select(match => $"{match.Name} ({match.Guid} {match.Major}.{match.Minor})"));
+                return CommandResult.UsageError($"VbaProjectReference '{referenceName}' is ambiguous: {candidates}.");
+            }
+
+            resolvedReferences.Add(matches[0]);
+        }
+
         var document = GetDocument(context.Manifest, context.DocumentName);
         var output = new StringBuilder();
         var changed = false;
-        foreach (var referenceName in normalizedNames)
+        foreach (var reference in resolvedReferences)
         {
-            if (document.References.Any(reference => reference.Name.Equals(referenceName, StringComparison.OrdinalIgnoreCase)))
+            if (document.References.Any(existingReference => existingReference.Name.Equals(reference.Name, StringComparison.OrdinalIgnoreCase)))
             {
                 continue;
             }
 
-            document.References.Add(new VbaProjectReference(referenceName));
-            output.AppendLine($"Added {context.DocumentName}/{referenceName}");
+            document.References.Add(new VbaProjectReference(reference.Name));
+            output.AppendLine($"Added {context.DocumentName}/{reference.Name}");
             changed = true;
         }
 
