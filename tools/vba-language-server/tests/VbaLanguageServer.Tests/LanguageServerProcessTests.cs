@@ -731,6 +731,199 @@ public sealed class LanguageServerProcessTests
         Assert.Equal(0, process.ExitCode);
     }
 
+    [Fact]
+    public async Task Server_scopes_source_definitions_to_the_manifest_document_source_set()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-manifest-").FullName;
+        try
+        {
+            File.WriteAllText(Path.Combine(projectRoot, "project.json"), ProjectManifestFixtureText("multi-document.json"));
+            Directory.CreateDirectory(Path.Combine(projectRoot, "src", "Book1"));
+            Directory.CreateDirectory(Path.Combine(projectRoot, "src", "SecondBook"));
+
+            var serverProjectPath = Path.GetFullPath(
+                Path.Combine(
+                    AppContext.BaseDirectory,
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "src",
+                    "VbaLanguageServer.Cli",
+                    "VbaLanguageServer.Cli.csproj"));
+
+            using var process = StartLanguageServer(serverProjectPath);
+            await using var stdin = process.StandardInput.BaseStream;
+            using var stdout = process.StandardOutput.BaseStream;
+
+            await InitializeAsync(stdin, stdout);
+            var book1CallerUri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Caller.bas"));
+            var book1HelperUri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Helper.bas"));
+            var secondCallerUri = ToFileUri(Path.Combine(projectRoot, "src", "SecondBook", "Caller.bas"));
+            var secondHelperUri = ToFileUri(Path.Combine(projectRoot, "src", "SecondBook", "Helper.bas"));
+            var book1CallerText = string.Join('\n', [
+                "Attribute VB_Name = \"Caller\"",
+                "Public Sub Run()",
+                "    BuildValue",
+                "End Sub"
+            ]);
+            var secondCallerText = book1CallerText;
+
+            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(book1HelperUri, string.Join('\n', [
+                "Attribute VB_Name = \"Book1Helper\"",
+                "Public Function BuildValue() As String",
+                "End Function"
+            ])));
+            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(secondHelperUri, string.Join('\n', [
+                "Attribute VB_Name = \"SecondHelper\"",
+                "Public Function BuildValue() As String",
+                "End Function",
+                "Public Function SecondOnly() As String",
+                "End Function"
+            ])));
+            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(book1CallerUri, book1CallerText));
+            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(secondCallerUri, secondCallerText));
+
+            var book1Definition = await RequestDefinitionAsync(stdin, stdout, 2, book1CallerUri, book1CallerText, "BuildValue");
+            Assert.Equal(book1HelperUri, book1Definition.GetProperty("uri").GetString());
+
+            var secondDefinition = await RequestDefinitionAsync(stdin, stdout, 3, secondCallerUri, secondCallerText, "BuildValue");
+            Assert.Equal(secondHelperUri, secondDefinition.GetProperty("uri").GetString());
+
+            var book1Completion = await SendRequestAsync(
+                stdin,
+                stdout,
+                4,
+                "textDocument/completion",
+                new
+                {
+                    textDocument = new { uri = book1CallerUri },
+                    position = new { line = 2, character = 4 }
+                });
+            var book1Labels = book1Completion
+                .GetProperty("result")
+                .EnumerateArray()
+                .Select(item => item.GetProperty("label").GetString())
+                .ToArray();
+            Assert.Contains("BuildValue", book1Labels);
+            Assert.DoesNotContain("SecondOnly", book1Labels);
+
+            await SendRequestAsync(stdin, stdout, 5, "shutdown", null);
+            await SendNotificationAsync(stdin, "exit", null);
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await process.WaitForExitAsync(cancellation.Token);
+            Assert.Equal(0, process.ExitCode);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_keeps_source_templates_out_of_manifest_source_scope_and_preserves_ad_hoc_projects()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-template-").FullName;
+        var looseRoot = Directory.CreateTempSubdirectory("vba-ls-adhoc-").FullName;
+        try
+        {
+            File.WriteAllText(Path.Combine(projectRoot, "project.json"), ProjectManifestFixtureText("source-template.json"));
+            Directory.CreateDirectory(Path.Combine(projectRoot, "src", "Book1"));
+            Directory.CreateDirectory(Path.Combine(projectRoot, "templates"));
+            Directory.CreateDirectory(Path.Combine(looseRoot, "same"));
+            Directory.CreateDirectory(Path.Combine(looseRoot, "other"));
+
+            var serverProjectPath = Path.GetFullPath(
+                Path.Combine(
+                    AppContext.BaseDirectory,
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "src",
+                    "VbaLanguageServer.Cli",
+                    "VbaLanguageServer.Cli.csproj"));
+
+            using var process = StartLanguageServer(serverProjectPath);
+            await using var stdin = process.StandardInput.BaseStream;
+            using var stdout = process.StandardOutput.BaseStream;
+
+            await InitializeAsync(stdin, stdout);
+            var manifestHelperUri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Helper.bas"));
+            var templateCallerUri = ToFileUri(Path.Combine(projectRoot, "templates", "TemplateModule.bas"));
+            var templateCallerText = string.Join('\n', [
+                "Attribute VB_Name = \"TemplateModule\"",
+                "Public Sub Run()",
+                "    BuildValue",
+                "End Sub"
+            ]);
+            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(manifestHelperUri, string.Join('\n', [
+                "Attribute VB_Name = \"ManifestHelper\"",
+                "Public Function BuildValue() As String",
+                "End Function"
+            ])));
+            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(templateCallerUri, templateCallerText));
+
+            var templateDefinition = await SendDefinitionRequestAsync(stdin, stdout, 2, templateCallerUri, templateCallerText, "BuildValue");
+            Assert.Equal(JsonValueKind.Null, templateDefinition.ValueKind);
+
+            var looseCallerUri = ToFileUri(Path.Combine(looseRoot, "same", "Caller.bas"));
+            var looseHelperUri = ToFileUri(Path.Combine(looseRoot, "same", "Helper.bas"));
+            var otherHelperUri = ToFileUri(Path.Combine(looseRoot, "other", "Helper.bas"));
+            var looseCallerText = string.Join('\n', [
+                "Attribute VB_Name = \"Caller\"",
+                "Public Sub Run()",
+                "    BuildValue",
+                "End Sub"
+            ]);
+            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(looseHelperUri, string.Join('\n', [
+                "Attribute VB_Name = \"LooseHelper\"",
+                "Public Function BuildValue() As String",
+                "End Function"
+            ])));
+            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(otherHelperUri, string.Join('\n', [
+                "Attribute VB_Name = \"OtherHelper\"",
+                "Public Function BuildValue() As String",
+                "End Function"
+            ])));
+            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(looseCallerUri, looseCallerText));
+
+            var looseDefinition = await RequestDefinitionAsync(stdin, stdout, 3, looseCallerUri, looseCallerText, "BuildValue");
+            Assert.Equal(looseHelperUri, looseDefinition.GetProperty("uri").GetString());
+
+            var looseCompletion = await SendRequestAsync(
+                stdin,
+                stdout,
+                4,
+                "textDocument/completion",
+                new
+                {
+                    textDocument = new { uri = looseCallerUri },
+                    position = new { line = 2, character = 4 }
+                });
+            var looseLabels = looseCompletion
+                .GetProperty("result")
+                .EnumerateArray()
+                .Select(item => item.GetProperty("label").GetString())
+                .ToArray();
+            Assert.Contains("BuildValue", looseLabels);
+            Assert.Contains("String", looseLabels);
+
+            await SendRequestAsync(stdin, stdout, 5, "shutdown", null);
+            await SendNotificationAsync(stdin, "exit", null);
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await process.WaitForExitAsync(cancellation.Token);
+            Assert.Equal(0, process.ExitCode);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+            Directory.Delete(looseRoot, recursive: true);
+        }
+    }
+
     private static Process StartLanguageServer(string serverProjectPath)
     {
         var startInfo = new ProcessStartInfo
@@ -908,6 +1101,23 @@ public sealed class LanguageServerProcessTests
         var character = lineStart < 0 ? characterOffset : characterOffset - lineStart - 1;
         return (line, character);
     }
+
+    private static string ToFileUri(string path)
+        => new Uri(path).AbsoluteUri;
+
+    private static string ProjectManifestFixtureText(string fixtureName)
+        => File.ReadAllText(Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory,
+            "..",
+            "..",
+            "..",
+            "..",
+            "..",
+            "..",
+            "..",
+            "fixtures",
+            "project-manifest",
+            fixtureName)));
 
     private static async Task WriteMessageAsync(Stream stream, object message)
     {

@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using VbaLanguageServer.Diagnostics;
+using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.SourceModel;
 
 var server = new MinimalLanguageServer(Console.OpenStandardInput(), Console.OpenStandardOutput());
@@ -208,7 +209,7 @@ internal sealed class MinimalLanguageServer
             return Array.Empty<object>();
         }
 
-        var sourceIndex = VbaSourceIndex.Build(documents);
+        var sourceIndex = CreateSourceIndex(uri);
         return sourceIndex
             .GetDocumentDefinitions(uri)
             .Select(definition => new
@@ -232,7 +233,7 @@ internal sealed class MinimalLanguageServer
             return null;
         }
 
-        var sourceIndex = VbaSourceIndex.Build(documents);
+        var sourceIndex = CreateSourceIndex(uri);
         var definition = sourceIndex.ResolveDefinition(uri, line.Value, character.Value);
         return definition is null
             ? null
@@ -269,7 +270,7 @@ internal sealed class MinimalLanguageServer
             return Array.Empty<object>();
         }
 
-        var sourceIndex = VbaSourceIndex.Build(documents);
+        var sourceIndex = CreateSourceIndex(uri);
         var sourceItems = sourceIndex
             .GetCompletionDefinitions(uri, line, character)
             .Select(definition => new
@@ -298,7 +299,7 @@ internal sealed class MinimalLanguageServer
             return null;
         }
 
-        var sourceIndex = VbaSourceIndex.Build(documents);
+        var sourceIndex = CreateSourceIndex(uri);
         var definition = sourceIndex.ResolveSourceDefinition(uri, line, character);
         if (definition is null)
         {
@@ -327,7 +328,7 @@ internal sealed class MinimalLanguageServer
             return null;
         }
 
-        var sourceIndex = VbaSourceIndex.Build(documents);
+        var sourceIndex = CreateSourceIndex(uri);
         var signatureHelp = sourceIndex.GetSignatureHelp(uri, line, character);
         if (signatureHelp is null)
         {
@@ -361,7 +362,7 @@ internal sealed class MinimalLanguageServer
             return null;
         }
 
-        var sourceIndex = VbaSourceIndex.Build(documents);
+        var sourceIndex = CreateSourceIndex(uri);
         var definition = sourceIndex.ResolveSourceDefinition(uri, line, character);
         return definition is null ? null : definition.Range;
     }
@@ -379,7 +380,7 @@ internal sealed class MinimalLanguageServer
             return null;
         }
 
-        var sourceIndex = VbaSourceIndex.Build(documents);
+        var sourceIndex = CreateSourceIndex(uri);
         var changes = sourceIndex.CreateRenameChanges(uri, line, character, newName);
         if (changes is null)
         {
@@ -408,7 +409,7 @@ internal sealed class MinimalLanguageServer
         }
 
         var tabSize = parameters?["options"]?["tabSize"]?.GetValue<int>() ?? 4;
-        var sourceIndex = VbaSourceIndex.Build(documents);
+        var sourceIndex = CreateSourceIndex(uri);
         var edit = sourceIndex.FormatDocument(uri, tabSize);
         if (edit is null)
         {
@@ -435,6 +436,21 @@ internal sealed class MinimalLanguageServer
         line = parameters?["position"]?["line"]?.GetValue<int>() ?? -1;
         character = parameters?["position"]?["character"]?.GetValue<int>() ?? -1;
         return !string.IsNullOrEmpty(uri) && line >= 0 && character >= 0;
+    }
+
+    private VbaSourceIndex CreateSourceIndex(string activeUri)
+    {
+        var resolution = VbaProjectResolver.Resolve(activeUri);
+        var scopedDocuments = documents
+            .Where(pair => resolution.ContainsUri(pair.Key))
+            .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
+
+        if (!scopedDocuments.ContainsKey(activeUri) && documents.TryGetValue(activeUri, out var activeText))
+        {
+            scopedDocuments[activeUri] = activeText;
+        }
+
+        return VbaSourceIndex.Build(scopedDocuments);
     }
 
     private static object? ToMarkup(string? value)
