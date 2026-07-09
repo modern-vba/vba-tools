@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using VbaLanguageServer.Diagnostics;
+using VbaLanguageServer.Parsing;
 using VbaLanguageServer.ProjectModel;
 
 namespace VbaLanguageServer.SourceModel;
@@ -61,14 +62,6 @@ public sealed record VbaTextEdit(VbaRange Range, string NewText);
 
 public sealed class VbaSourceIndex
 {
-    private static readonly Regex AttributeNamePattern = new(
-        "^\\s*Attribute\\s+VB_Name\\s*=\\s*\"(?<name>[^\"]+)\"",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-
-    private static readonly Regex ProcedurePattern = new(
-        "^\\s*(?:(?<visibility>Public|Private|Friend)\\s+)?(?:(?<kind>Sub|Function)|Property\\s+(?<propertyKind>Get|Let|Set))\\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\\s*(?:\\((?<parameters>[^)]*)\\))?",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-
     private static readonly Regex EventPattern = new(
         "^\\s*(?:(?<visibility>Public|Private|Friend)\\s+)?Event\\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\\s*(?:\\((?<parameters>[^)]*)\\))?",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
@@ -457,12 +450,15 @@ public sealed class VbaSourceIndex
 
     private static VbaSourceDocument ParseDocument(string uri, string text)
     {
-        var lines = SplitLines(text);
+        var syntaxTree = VbaModuleParser.Parse(uri, text);
+        var lines = syntaxTree.Lines.ToArray();
         var definitions = new List<VbaSourceDefinition>();
-        var moduleDefinition = ParseModuleDefinition(uri, lines);
+        var moduleDefinition = CreateModuleDefinition(uri, syntaxTree.Identity);
         definitions.Add(moduleDefinition);
+        var callableDeclarations = syntaxTree.CallableDeclarations.ToDictionary(
+            declaration => declaration.LineIndex);
 
-        var startLine = GetCodeStartLine(uri, lines);
+        var startLine = syntaxTree.CodeStartLine;
         for (var lineIndex = startLine; lineIndex < lines.Length; lineIndex++)
         {
             var codeLine = StripApostropheComment(lines[lineIndex]);
@@ -546,56 +542,29 @@ public sealed class VbaSourceIndex
                 continue;
             }
 
-            var procedureMatch = ProcedurePattern.Match(codeLine);
-            if (procedureMatch.Success)
+            if (callableDeclarations.TryGetValue(lineIndex, out var callableDeclaration))
             {
-                var documentation = ParseDocumentationComment(lines, lineIndex);
-                var signature = CreateSignature(
-                    procedureMatch.Groups["name"].Value,
-                    ParseCallableParameters(procedureMatch, documentation),
-                    lines[lineIndex],
-                    documentation);
-                var procedureKind = procedureMatch.Groups["kind"].Success
-                    ? VbaSourceDefinitionKind.Procedure
-                    : VbaSourceDefinitionKind.Property;
-                var procedureDefinition = CreateDefinition(
-                    procedureMatch,
-                    "name",
+                var procedureDefinition = CreateCallableDefinition(
                     uri,
                     moduleDefinition.Name,
-                    procedureKind,
-                    GetVisibility(procedureMatch.Groups["visibility"].Value, defaultPublic: true),
-                    lineIndex,
-                    lines[lineIndex],
-                    documentation: documentation?.HoverText,
-                    signature: signature);
+                    callableDeclaration);
                 definitions.Add(procedureDefinition);
-                var endKeyword = procedureKind == VbaSourceDefinitionKind.Property
-                    ? "Property"
-                    : procedureMatch.Groups["kind"].Value;
-                var endLine = FindBlockEndLine(lines, lineIndex + 1, endKeyword);
-                var procedureRange = new VbaRange(
-                    new VbaPosition(lineIndex, 0),
-                    new VbaPosition(endLine, lines[endLine].Length));
-                AddParameters(
+                AddCallableParameters(
                     definitions,
-                    procedureMatch,
+                    callableDeclaration,
                     uri,
                     moduleDefinition.Name,
-                    lineIndex,
-                    lines[lineIndex],
-                    procedureDefinition.Name,
-                    procedureRange);
+                    procedureDefinition.Name);
                 AddProcedureLocals(
                     definitions,
                     uri,
                     moduleDefinition.Name,
                     procedureDefinition.Name,
-                    procedureRange,
+                    callableDeclaration.BlockRange,
                     lines,
-                    lineIndex + 1,
-                    endLine);
-                lineIndex = endLine;
+                    callableDeclaration.LineIndex + 1,
+                    callableDeclaration.BlockRange.End.Line);
+                lineIndex = callableDeclaration.BlockRange.End.Line;
                 continue;
             }
 
@@ -617,35 +586,31 @@ public sealed class VbaSourceIndex
         return new VbaSourceDocument(uri, text, moduleDefinition.Name, definitions);
     }
 
-    private static VbaSourceDefinition ParseModuleDefinition(string uri, string[] lines)
+    private static VbaSourceDefinition CreateModuleDefinition(string uri, VbaModuleIdentity identity)
     {
-        for (var lineIndex = 0; lineIndex < lines.Length; lineIndex++)
-        {
-            var match = AttributeNamePattern.Match(lines[lineIndex]);
-            if (!match.Success)
-            {
-                continue;
-            }
-
-            return CreateDefinition(
-                match,
-                "name",
-                uri,
-                match.Groups["name"].Value,
-                GetModuleKind(uri),
-                VbaSourceDefinitionVisibility.Public,
-                lineIndex,
-                lines[lineIndex]);
-        }
-
-        var fallbackName = GetFileBaseName(uri);
         return new VbaSourceDefinition(
-            fallbackName,
-            GetModuleKind(uri),
+            identity.Name,
+            identity.Kind,
             VbaSourceDefinitionVisibility.Public,
             uri,
-            fallbackName,
-            new VbaRange(new VbaPosition(0, 0), new VbaPosition(0, fallbackName.Length)));
+            identity.Name,
+            identity.Range);
+    }
+
+    private static VbaSourceDefinition CreateCallableDefinition(
+        string uri,
+        string moduleName,
+        VbaCallableDeclaration declaration)
+    {
+        return new VbaSourceDefinition(
+            declaration.Name,
+            declaration.Kind,
+            declaration.Visibility,
+            uri,
+            moduleName,
+            declaration.Range,
+            Documentation: declaration.Documentation,
+            Signature: declaration.Signature);
     }
 
     private static VbaSourceDefinition CreateDefinition(
@@ -722,6 +687,27 @@ public sealed class VbaSourceIndex
                 new VbaRange(new VbaPosition(lineIndex, start), new VbaPosition(lineIndex, start + parameterName.Length)),
                 procedureName,
                 procedureRange));
+        }
+    }
+
+    private static void AddCallableParameters(
+        ICollection<VbaSourceDefinition> definitions,
+        VbaCallableDeclaration declaration,
+        string uri,
+        string moduleName,
+        string procedureName)
+    {
+        foreach (var parameter in declaration.Parameters)
+        {
+            definitions.Add(new VbaSourceDefinition(
+                parameter.Name,
+                VbaSourceDefinitionKind.Parameter,
+                VbaSourceDefinitionVisibility.Local,
+                uri,
+                moduleName,
+                parameter.Range,
+                procedureName,
+                declaration.BlockRange));
         }
     }
 
@@ -927,72 +913,6 @@ public sealed class VbaSourceIndex
             returnDocumentation);
     }
 
-    private static IReadOnlyList<VbaCallableParameter> ParseCallableParameters(
-        Match match,
-        DocumentationComment? documentation)
-    {
-        var parametersGroup = match.Groups["parameters"];
-        if (!parametersGroup.Success || string.IsNullOrWhiteSpace(parametersGroup.Value))
-        {
-            return Array.Empty<VbaCallableParameter>();
-        }
-
-        return parametersGroup.Value
-            .Split(',')
-            .Select(ParseParameterName)
-            .Where(name => name is not null)
-            .Select(name => new VbaCallableParameter(
-                name!,
-                documentation?.ParameterDocs.TryGetValue(name!, out var parameterDocumentation) == true
-                    ? parameterDocumentation
-                    : null))
-            .ToArray();
-    }
-
-    private static VbaCallableSignature CreateSignature(
-        string name,
-        IReadOnlyList<VbaCallableParameter> parameters,
-        string line,
-        DocumentationComment? documentation)
-    {
-        var returnTypeName = ParseReturnTypeName(line);
-        var label = $"{name}({string.Join(", ", parameters.Select(parameter => parameter.Name))})";
-        if (!string.IsNullOrWhiteSpace(returnTypeName))
-        {
-            label = $"{label} As {returnTypeName}";
-        }
-
-        var documentationLines = new List<string>();
-        if (!string.IsNullOrWhiteSpace(documentation?.Summary))
-        {
-            documentationLines.Add(documentation.Summary);
-        }
-
-        if (!string.IsNullOrWhiteSpace(documentation?.ReturnDocumentation))
-        {
-            if (documentationLines.Count > 0)
-            {
-                documentationLines.Add("");
-            }
-
-            documentationLines.Add($"@return {documentation.ReturnDocumentation}");
-        }
-
-        return new VbaCallableSignature(
-            label,
-            parameters,
-            documentationLines.Count == 0 ? null : string.Join('\n', documentationLines));
-    }
-
-    private static string? ParseReturnTypeName(string line)
-    {
-        var match = Regex.Match(
-            line,
-            "\\)\\s+As\\s+(?<type>[A-Za-z_][A-Za-z0-9_.]*)\\b",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-        return match.Success ? match.Groups["type"].Value : null;
-    }
-
     private static string? ParseParameterName(string parameter)
     {
         var normalized = Regex.Replace(
@@ -1039,33 +959,6 @@ public sealed class VbaSourceIndex
 
     private static bool IsModuleVariableDeclaration(string codeLine)
         => Regex.IsMatch(codeLine, "\\bAs\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-
-    private static VbaSourceDefinitionKind GetModuleKind(string uri)
-    {
-        if (uri.EndsWith(".cls", StringComparison.OrdinalIgnoreCase))
-        {
-            return VbaSourceDefinitionKind.Class;
-        }
-
-        if (uri.EndsWith(".frm", StringComparison.OrdinalIgnoreCase))
-        {
-            return VbaSourceDefinitionKind.Form;
-        }
-
-        return VbaSourceDefinitionKind.Module;
-    }
-
-    private static int GetCodeStartLine(string uri, string[] lines)
-    {
-        if (!uri.EndsWith(".frm", StringComparison.OrdinalIgnoreCase))
-        {
-            return 0;
-        }
-
-        var attributeIndex = Array.FindIndex(lines, line =>
-            line.TrimStart().StartsWith("Attribute VB_Name", StringComparison.OrdinalIgnoreCase));
-        return attributeIndex < 0 ? 0 : attributeIndex;
-    }
 
     private static string[] SplitLines(string source)
         => source.Replace("\r\n", "\n", StringComparison.Ordinal)
@@ -1362,21 +1255,6 @@ public sealed class VbaSourceIndex
             value,
             "^[A-Za-z_][A-Za-z0-9_]*$",
             RegexOptions.CultureInvariant);
-
-    private static string GetFileBaseName(string uri)
-    {
-        try
-        {
-            return Path.GetFileNameWithoutExtension(new Uri(uri).LocalPath);
-        }
-        catch (UriFormatException)
-        {
-            var separator = Math.Max(uri.LastIndexOf('/'), uri.LastIndexOf('\\'));
-            var fileName = separator < 0 ? uri : uri[(separator + 1)..];
-            var extension = fileName.LastIndexOf('.');
-            return extension <= 0 ? fileName : fileName[..extension];
-        }
-    }
 
     private static bool SameUri(string left, string right)
         => string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
