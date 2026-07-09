@@ -196,7 +196,7 @@ public sealed class CommonModulesService
 
         if (!visiting.Add(entry.ModuleFile))
         {
-            throw new CommonModulesManifestException($"CommonModules dependency cycle includes '{entry.ModuleFile}'.");
+            return;
         }
 
         foreach (var dependency in entry.Dependencies)

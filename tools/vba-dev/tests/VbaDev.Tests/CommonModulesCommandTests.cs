@@ -71,6 +71,41 @@ public sealed class CommonModulesCommandTests
     }
 
     [Fact]
+    public void AddCopiesCyclicDependenciesOnceAndKeepsRequestedIntent()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = CreateProjectWithCommonModules(temp, "Project");
+        var commonRepo = Path.Combine(temp.Path, "common_modules_repo");
+        WriteManifest(
+            commonRepo,
+            ("Root.bas", "optional", "ObjectList.cls"),
+            ("ObjectList.cls", "optional", "ObjectSet.cls"),
+            ("ObjectSet.cls", "optional", "ObjectList.cls"));
+        WriteModule(commonRepo, "Root.bas", "root");
+        WriteModule(commonRepo, "ObjectList.cls", "list");
+        WriteModule(commonRepo, "ObjectSet.cls", "set");
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+
+        var result = application.Run(["common-module", "add", "Root"]);
+
+        Assert.Equal(0, result.ExitCode);
+        var sourceSet = Path.Combine(projectRoot, "src", "Book1");
+        Assert.Equal("root", File.ReadAllText(Path.Combine(sourceSet, "Root.bas")));
+        Assert.Equal("list", File.ReadAllText(Path.Combine(sourceSet, "ObjectList.cls")));
+        Assert.Equal("set", File.ReadAllText(Path.Combine(sourceSet, "ObjectSet.cls")));
+        var manifest = new JsonProjectManifestStore().Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
+        Assert.Equal(
+            [
+                new InstalledCommonModule("ObjectSet", Requested: false),
+                new InstalledCommonModule("ObjectList", Requested: false),
+                new InstalledCommonModule("Root", Requested: true)
+            ],
+            manifest.Documents["Book1"].CommonModules);
+        Assert.Equal(1, manifest.Documents["Book1"].CommonModules.Count(module => module.Name.Equals("ObjectList", StringComparison.OrdinalIgnoreCase)));
+        Assert.Equal(1, manifest.Documents["Book1"].CommonModules.Count(module => module.Name.Equals("ObjectSet", StringComparison.OrdinalIgnoreCase)));
+    }
+
+    [Fact]
     public void AddUpgradesInstalledDependencyToRequestedWithoutRecopying()
     {
         using var temp = TempDirectory.Create();
