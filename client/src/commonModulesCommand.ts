@@ -1,21 +1,21 @@
 import {
   ProcessRunner,
-  RequiredVbaDevToolContract,
-  resolveCompatibleVbaDevTool
+  RequiredVbaDevContract,
+  resolveCompatibleVbaDev
 } from './devtool';
 import {
   CommandCancellationToken,
-  StartVbaDevToolProcess,
+  StartVbaDevProcess,
   VbaToolsOutputChannel,
-  runVbaDevToolCommand
+  runVbaDevCommand
 } from './devtoolCommand';
 import {
   WorkbookBackedProjectCandidate,
   discoverWorkbookBackedProject
 } from './projectDiscovery';
 import {
-  VbaDevToolDiagnosticReporterLike,
-  combineVbaDevToolDiagnosticOutput,
+  VbaDevDiagnosticReporterLike,
+  combineVbaDevDiagnosticOutput,
   projectDiagnosticScope
 } from './toolDiagnostics';
 
@@ -30,12 +30,12 @@ export interface CommonModulesCommandOptions {
     candidates: readonly WorkbookBackedProjectCandidate[]
   ) => Promise<WorkbookBackedProjectCandidate | undefined>;
   capabilitiesProcess?: ProcessRunner | undefined;
-  startProcess?: StartVbaDevToolProcess | undefined;
+  startProcess?: StartVbaDevProcess | undefined;
   outputChannel: VbaToolsOutputChannel;
-  diagnosticReporter?: VbaDevToolDiagnosticReporterLike | undefined;
+  diagnosticReporter?: VbaDevDiagnosticReporterLike | undefined;
   showErrorMessage: (message: string) => Thenable<unknown> | Promise<unknown>;
   cancellationToken?: CommandCancellationToken | undefined;
-  requiredContract?: RequiredVbaDevToolContract | undefined;
+  requiredContract?: RequiredVbaDevContract | undefined;
 }
 
 export type CommonModulesToolCommand = 'add' | 'list' | 'update';
@@ -90,7 +90,7 @@ export async function runCommonModulesListCommand(
     return undefined;
   }
 
-  const devtool = await resolveCompatibleVbaDevTool({
+  const devtool = await resolveCompatibleVbaDev({
     extensionRoot: options.extensionRoot,
     configuredPath: options.configuredDevToolPath,
     runProcess: options.capabilitiesProcess,
@@ -135,7 +135,7 @@ async function runCommonModulesListForProject(
   project: WorkbookBackedProjectCandidate,
   executablePath: string
 ): Promise<CommonModulesCommandResult> {
-  const result = await runVbaDevToolCommand({
+  const result = await runVbaDevCommand({
     executablePath,
     args: ['common-module', 'list', '--project', project.projectRoot, '--format', 'json'],
     outputChannel: options.outputChannel,
@@ -144,7 +144,7 @@ async function runCommonModulesListForProject(
   });
   options.diagnosticReporter?.refresh(
     projectDiagnosticScope(project.projectRoot),
-    combineVbaDevToolDiagnosticOutput(result.stdout, result.stderr)
+    combineVbaDevDiagnosticOutput(result.stdout, result.stderr)
   );
 
   let commonModulesList: CommonModulesList | undefined;
@@ -177,14 +177,14 @@ async function runCommonModulesMutatingCommand(
     return undefined;
   }
 
-  const devtool = await resolveCompatibleVbaDevTool({
+  const devtool = await resolveCompatibleVbaDev({
     extensionRoot: options.extensionRoot,
     configuredPath: options.configuredDevToolPath,
     runProcess: options.capabilitiesProcess,
     requiredContract: options.requiredContract
   });
 
-  const result = await runVbaDevToolCommand({
+  const result = await runVbaDevCommand({
     executablePath: devtool.executablePath,
     args: [...toolArgs, '--project', project.projectRoot],
     outputChannel: options.outputChannel,
@@ -193,7 +193,7 @@ async function runCommonModulesMutatingCommand(
   });
   options.diagnosticReporter?.refresh(
     projectDiagnosticScope(project.projectRoot),
-    combineVbaDevToolDiagnosticOutput(result.stdout, result.stderr)
+    combineVbaDevDiagnosticOutput(result.stdout, result.stderr)
   );
 
   if (!result.cancelled && result.exitCode !== 0) {

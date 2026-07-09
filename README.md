@@ -7,9 +7,9 @@ This repository is the home for:
 
 - the VS Code extension and VBA language server;
 - future VS Code Test Explorer integration;
-- the `vba-devtool` companion CLI under `tools/vba-devtool`.
+- the `vba-dev` companion CLI under `tools/vba-dev`.
 
-`vba-devtool` remains usable as a standalone command-line tool, but it is also
+`vba-dev` remains usable as a standalone command-line tool, but it is also
 the command layer that the VS Code extension will use for workbook-backed
 project actions such as `build`, `test`, `publish`, `export`, and `doctor`.
 
@@ -19,7 +19,7 @@ project actions such as `build`, `test`, `publish`, `export`, and `doctor`.
 client/              VS Code extension client
 server/              VBA language server
 syntaxes/            TextMate grammar and language assets
-tools/vba-devtool/   C#/.NET companion CLI
+tools/vba-dev/   C#/.NET companion CLI
 docs/adr/            Architecture decision records
 ```
 
@@ -52,7 +52,7 @@ distribution, and first-run setup is tracked in
 
 CommonModules source packages are not vendored into this repository.
 `xls-common-devtools` remains the upstream provider and should publish
-`common_modules_repo.zip` from GitHub Releases. `vba-devtool` consumes that
+`common_modules_repo.zip` from GitHub Releases. `vba-dev` consumes that
 package through explicit restore/update flows so projects can pin the
 CommonModules version they use.
 

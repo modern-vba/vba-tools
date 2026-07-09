@@ -13,11 +13,11 @@ several components:
 - the VS Code extension;
 - the VBA language server;
 - VS Code Test Explorer integration;
-- the `vba-devtool` companion CLI;
+- the `vba-dev` companion CLI;
 - CommonModules package restore/update flows backed by `xls-common-devtools`
   GitHub Releases.
 
-The extension is the primary user-facing surface. `vba-devtool` remains usable
+The extension is the primary user-facing surface. `vba-dev` remains usable
 as a standalone command, but the extension treats it as the command layer for
 workbook-backed project operations.
 
@@ -27,8 +27,8 @@ The first implementation batch should complete the Phase 1 command bridge before
 starting Test Explorer work. Test Explorer integration depends on a shared,
 validated command runner and project selection flow.
 
-1. Resolve the bundled or configured `vba-devtool` executable and validate
-   `vba-devtool capabilities --format json`.
+1. Resolve the bundled or configured `vba-dev` executable and validate
+   `vba-dev capabilities --format json`.
 2. Discover `ProjectManifest` candidates from the active file or workspace and
    pass the selected project root to the CLI explicitly.
 3. Build the shared command runner with Output Channel logging, error handling,
@@ -41,27 +41,27 @@ validated command runner and project selection flow.
 ## Phase 1: Extension command bridge
 
 Build the VS Code-side command layer that detects a workbook-backed project and
-invokes `vba-devtool`.
+invokes `vba-dev`.
 
 Expected capabilities:
 
 - detect `project.json` by walking upward from the active VBA, manifest, or
   workbook-related file;
 - use the manifest directory as the `WorkbookBackedProject` root and pass it to
-  `vba-devtool` explicitly as `--project`;
+  `vba-dev` explicitly as `--project`;
 - choose from workspace `project.json` candidates when no active file determines
   one project unambiguously;
-- resolve the bundled `vba-devtool` executable by default, or an explicit
+- resolve the bundled `vba-dev` executable by default, or an explicit
   `vbaTools.devtool.path` override when configured;
 - check the companion CLI command contract expected by the extension and reject
   incompatible explicit CLI path overrides;
 - obtain CLI `toolVersion`, `contractVersion`, and per-command schema versions
-  from `vba-devtool capabilities --format json`;
+  from `vba-dev capabilities --format json`;
 - avoid implicit `PATH` discovery for the companion CLI;
 - register VS Code commands for `doctor`, `build`, `test`, `publish`, `export`,
   CommonModules actions, and reference actions;
 - keep Excel COM, VBIDE, workbook import/export, workbook save, and
-  workbook-backed test execution inside `vba-devtool`; the extension must not
+  workbook-backed test execution inside `vba-dev`; the extension must not
   automate Excel directly;
 - activate on VBA files, workbook-backed project manifests, and explicit
   `vbaTools.*` commands rather than using always-on activation;
@@ -75,7 +75,7 @@ Expected capabilities:
 - show command output in a dedicated Output Channel;
 - surface clear errors when Excel, VBIDE trust access, workbook locks, or
   project manifest problems block automation.
-- wire VS Code command and Test Run cancellation to the spawned `vba-devtool`
+- wire VS Code command and Test Run cancellation to the spawned `vba-dev`
   process, and rely on CLI-side cleanup for workbooks, Excel instances, and
   temporary outputs;
 - for initial `doctor` command integration, show full output in the dedicated
@@ -87,7 +87,7 @@ Expected capabilities:
 
 ## Phase 2: Test Explorer integration
 
-Connect `vba-devtool test --format ndjson` to the VS Code Testing API.
+Connect `vba-dev test --format ndjson` to the VS Code Testing API.
 
 Expected capabilities:
 
@@ -99,7 +99,7 @@ Expected capabilities:
   tests;
 - run all tests, one document's tests, one known module's tests, or one known
   test procedure;
-- invoke `vba-devtool test` directly for the default run profile, leaving
+- invoke `vba-dev test` directly for the default run profile, leaving
   build-before-test behavior inside the CLI command contract;
 - stream `runStarted`, `testStarted`, `testFinished`, and `runFinished`
   `ndjson` events into VS Code test states;
@@ -126,7 +126,7 @@ Turn command and language-server feedback into actionable VS Code diagnostics.
 Expected capabilities:
 
 - keep language-server syntax and semantic diagnostics in Problems;
-- map `vba-devtool doctor` failures and warnings into project-level diagnostics;
+- map `vba-dev doctor` failures and warnings into project-level diagnostics;
 - promote `doctor` output to Problems only after a stable machine-readable
   output format can provide diagnostic owner, severity, URI, and range mapping;
 - map build, reference-resolution, and CommonModules dependency failures into
@@ -200,11 +200,11 @@ Prepare the Marketplace and GitHub Releases distribution path.
 Expected capabilities:
 
 - package the VS Code extension for Marketplace publication;
-- bundle a self-contained Windows `vba-devtool.exe` in the Marketplace
-  extension by default under `bin/vba-devtool/win-x64/vba-devtool.exe`;
-- exclude the `tools/vba-devtool` source tree from VSIX packaging while
+- bundle a self-contained Windows `vba-dev.exe` in the Marketplace
+  extension by default under `bin/vba-dev/win-x64/vba-dev.exe`;
+- exclude the `tools/vba-dev` source tree from VSIX packaging while
   including only the published CLI artifact path;
-- publish standalone `vba-devtool.exe` artifacts from GitHub Releases;
+- publish standalone `vba-dev.exe` artifacts from GitHub Releases;
 - support a user or developer override for the companion CLI path;
 - verify the resolved CLI command contract before project operations;
 - verify the CLI works on Windows 11 without requiring a separately installed
@@ -233,7 +233,7 @@ common_modules_repo.zip
   *.frx
 ```
 
-If network package acquisition is implemented later, `vba-devtool` should own
+If network package acquisition is implemented later, `vba-dev` should own
 package download, extraction, manifest validation, and source placement through
 an explicit future `common-module restore` command or an equivalent restore
 command. The VS Code extension should invoke that command instead of
@@ -251,9 +251,9 @@ The long-term release model has two channels:
 
 - VS Code Marketplace for the extension, language server, Test Explorer
   integration, and bundled or managed companion tooling;
-- GitHub Releases for standalone `vba-devtool` artifacts and release notes.
+- GitHub Releases for standalone `vba-dev` artifacts and release notes.
 
-The Marketplace extension bundles the companion `vba-devtool.exe` by default,
+The Marketplace extension bundles the companion `vba-dev.exe` by default,
 while GitHub Releases also publish the same CLI as a standalone artifact. The
 extension and CLI have separate release versions. The extension should declare
 the CLI contract it requires, bundle a CLI version tested against that contract,

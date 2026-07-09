@@ -100,7 +100,7 @@ test('extension contributes additional HostApplications configuration', () => {
   });
 });
 
-test('extension contributes VbaDevTool path override configuration', () => {
+test('extension contributes VbaDev path override configuration', () => {
   const package_json = JSON.parse(
     fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')
   ) as {
@@ -123,7 +123,7 @@ test('extension contributes VbaDevTool path override configuration', () => {
     scope: 'machine-overridable',
     type: 'string',
     default: '',
-    description: 'Overrides the bundled vba-devtool executable path for development or diagnostics.'
+    description: 'Overrides the bundled vba-dev executable path for development or diagnostics.'
   });
 });
 

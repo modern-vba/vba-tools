@@ -1,40 +1,40 @@
 import { fileURLToPath } from 'node:url';
 
-export type VbaDevToolDiagnosticSeverity = 'error' | 'warning' | 'information' | 'hint';
+export type VbaDevDiagnosticSeverity = 'error' | 'warning' | 'information' | 'hint';
 
-export interface VbaDevToolDiagnosticRange {
-  start: VbaDevToolDiagnosticPosition;
-  end: VbaDevToolDiagnosticPosition;
+export interface VbaDevDiagnosticRange {
+  start: VbaDevDiagnosticPosition;
+  end: VbaDevDiagnosticPosition;
 }
 
-export interface VbaDevToolDiagnosticPosition {
+export interface VbaDevDiagnosticPosition {
   line: number;
   character: number;
 }
 
-export interface VbaDevToolDiagnostic {
+export interface VbaDevDiagnostic {
   owner: string;
-  severity: VbaDevToolDiagnosticSeverity;
+  severity: VbaDevDiagnosticSeverity;
   uriPath: string;
-  range: VbaDevToolDiagnosticRange;
+  range: VbaDevDiagnosticRange;
   message: string;
   code: string;
 }
 
-export interface VbaDevToolDiagnosticCollection {
-  set(uriPath: string, diagnostics: readonly VbaDevToolDiagnostic[]): void;
+export interface VbaDevDiagnosticCollection {
+  set(uriPath: string, diagnostics: readonly VbaDevDiagnostic[]): void;
   delete(uriPath: string): void;
 }
 
-export interface VbaDevToolDiagnosticReporterLike {
-  refresh(scopeKey: string, output: string): readonly VbaDevToolDiagnostic[];
+export interface VbaDevDiagnosticReporterLike {
+  refresh(scopeKey: string, output: string): readonly VbaDevDiagnostic[];
 }
 
 export function projectDiagnosticScope(projectRoot: string): string {
   return `project:${projectRoot}`;
 }
 
-export function combineVbaDevToolDiagnosticOutput(stdout: string, stderr: string): string {
+export function combineVbaDevDiagnosticOutput(stdout: string, stderr: string): string {
   if (stdout.length > 0 && stderr.length > 0) {
     return `${stdout}\n${stderr}`;
   }
@@ -42,8 +42,8 @@ export function combineVbaDevToolDiagnosticOutput(stdout: string, stderr: string
   return stdout.length > 0 ? stdout : stderr;
 }
 
-export function parseVbaDevToolDiagnostics(output: string): VbaDevToolDiagnostic[] {
-  const diagnostics: VbaDevToolDiagnostic[] = [];
+export function parseVbaDevDiagnostics(output: string): VbaDevDiagnostic[] {
+  const diagnostics: VbaDevDiagnostic[] = [];
   for (const value of parseJsonRecords(output)) {
     if (isRecord(value) && Array.isArray(value.diagnostics)) {
       for (const diagnostic of value.diagnostics) {
@@ -64,13 +64,13 @@ export function parseVbaDevToolDiagnostics(output: string): VbaDevToolDiagnostic
   return diagnostics;
 }
 
-export class VbaDevToolDiagnosticReporter implements VbaDevToolDiagnosticReporterLike {
+export class VbaDevDiagnosticReporter implements VbaDevDiagnosticReporterLike {
   private readonly uriPathsByScope = new Map<string, Set<string>>();
 
-  public constructor(private readonly collection: VbaDevToolDiagnosticCollection) {
+  public constructor(private readonly collection: VbaDevDiagnosticCollection) {
   }
 
-  public refresh(scopeKey: string, output: string): VbaDevToolDiagnostic[] {
+  public refresh(scopeKey: string, output: string): VbaDevDiagnostic[] {
     const previous = this.uriPathsByScope.get(scopeKey);
     if (previous) {
       for (const uriPath of previous) {
@@ -78,7 +78,7 @@ export class VbaDevToolDiagnosticReporter implements VbaDevToolDiagnosticReporte
       }
     }
 
-    const diagnostics = parseVbaDevToolDiagnostics(output);
+    const diagnostics = parseVbaDevDiagnostics(output);
     const diagnosticsByUri = groupByUriPath(diagnostics);
     const next = new Set<string>();
     for (const [uriPath, items] of diagnosticsByUri) {
@@ -113,7 +113,7 @@ function parseJsonRecords(output: string): unknown[] {
   return records;
 }
 
-function toDiagnostic(value: unknown): VbaDevToolDiagnostic | undefined {
+function toDiagnostic(value: unknown): VbaDevDiagnostic | undefined {
   if (!isRecord(value) || value.type !== 'diagnostic') {
     return undefined;
   }
@@ -138,7 +138,7 @@ function toDiagnostic(value: unknown): VbaDevToolDiagnostic | undefined {
   };
 }
 
-function toRange(value: unknown): VbaDevToolDiagnosticRange | undefined {
+function toRange(value: unknown): VbaDevDiagnosticRange | undefined {
   if (!isRecord(value)) {
     return undefined;
   }
@@ -152,7 +152,7 @@ function toRange(value: unknown): VbaDevToolDiagnosticRange | undefined {
   return { start, end };
 }
 
-function toPosition(value: unknown): VbaDevToolDiagnosticPosition | undefined {
+function toPosition(value: unknown): VbaDevDiagnosticPosition | undefined {
   if (!isRecord(value)) {
     return undefined;
   }
@@ -166,7 +166,7 @@ function toPosition(value: unknown): VbaDevToolDiagnosticPosition | undefined {
   return { line, character };
 }
 
-function toSeverity(value: unknown): VbaDevToolDiagnosticSeverity | undefined {
+function toSeverity(value: unknown): VbaDevDiagnosticSeverity | undefined {
   if (typeof value !== 'string') {
     return undefined;
   }
@@ -195,8 +195,8 @@ function toUriPath(value: string | undefined): string | undefined {
   return value;
 }
 
-function groupByUriPath(diagnostics: readonly VbaDevToolDiagnostic[]): Map<string, VbaDevToolDiagnostic[]> {
-  const result = new Map<string, VbaDevToolDiagnostic[]>();
+function groupByUriPath(diagnostics: readonly VbaDevDiagnostic[]): Map<string, VbaDevDiagnostic[]> {
+  const result = new Map<string, VbaDevDiagnostic[]>();
   for (const diagnostic of diagnostics) {
     const group = result.get(diagnostic.uriPath) ?? [];
     group.push(diagnostic);

@@ -64,14 +64,14 @@ import {
   createWorkbookBackedTestExplorer
 } from './testExplorer';
 import {
-  VbaDevToolDiagnostic,
-  VbaDevToolDiagnosticCollection,
-  VbaDevToolDiagnosticReporter
+  VbaDevDiagnostic,
+  VbaDevDiagnosticCollection,
+  VbaDevDiagnosticReporter
 } from './toolDiagnostics';
 
 let client: LanguageClient | undefined;
 let outputChannel: OutputChannel | undefined;
-let toolDiagnosticReporter: VbaDevToolDiagnosticReporter | undefined;
+let toolDiagnosticReporter: VbaDevDiagnosticReporter | undefined;
 
 export async function activate(context: ExtensionContext): Promise<void> {
   const serverModule = context.asAbsolutePath(path.join('server', 'out', 'server.js'));
@@ -109,9 +109,9 @@ export async function activate(context: ExtensionContext): Promise<void> {
   context.subscriptions.push(client);
   outputChannel = window.createOutputChannel('VBA Tools');
   context.subscriptions.push(outputChannel);
-  const toolDiagnosticCollection = languages.createDiagnosticCollection('vba-devtool');
+  const toolDiagnosticCollection = languages.createDiagnosticCollection('vba-dev');
   context.subscriptions.push(toolDiagnosticCollection);
-  toolDiagnosticReporter = new VbaDevToolDiagnosticReporter(
+  toolDiagnosticReporter = new VbaDevDiagnosticReporter(
     createVscodeDiagnosticCollectionAdapter(toolDiagnosticCollection)
   );
   const testController = tests.createTestController(
@@ -453,7 +453,7 @@ function createVscodeTestControllerAdapter(controller: TestController): TestCont
   };
 }
 
-function createVscodeDiagnosticCollectionAdapter(collection: DiagnosticCollection): VbaDevToolDiagnosticCollection {
+function createVscodeDiagnosticCollectionAdapter(collection: DiagnosticCollection): VbaDevDiagnosticCollection {
   return {
     set: (uriPath, diagnostics) => {
       collection.set(
@@ -467,7 +467,7 @@ function createVscodeDiagnosticCollectionAdapter(collection: DiagnosticCollectio
   };
 }
 
-function toVscodeDiagnostic(diagnostic: VbaDevToolDiagnostic): Diagnostic {
+function toVscodeDiagnostic(diagnostic: VbaDevDiagnostic): Diagnostic {
   const vscodeDiagnostic = new Diagnostic(
     new Range(
       diagnostic.range.start.line,
@@ -483,7 +483,7 @@ function toVscodeDiagnostic(diagnostic: VbaDevToolDiagnostic): Diagnostic {
   return vscodeDiagnostic;
 }
 
-function toVscodeDiagnosticSeverity(severity: VbaDevToolDiagnostic['severity']): DiagnosticSeverity {
+function toVscodeDiagnosticSeverity(severity: VbaDevDiagnostic['severity']): DiagnosticSeverity {
   if (severity === 'error') {
     return DiagnosticSeverity.Error;
   }

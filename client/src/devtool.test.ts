@@ -3,35 +3,35 @@ import assert from 'node:assert/strict';
 import * as path from 'node:path';
 
 import {
-  VbaDevToolCompatibilityError,
-  resolveCompatibleVbaDevTool,
-  resolveVbaDevToolPath
+  VbaDevCompatibilityError,
+  resolveCompatibleVbaDev,
+  resolveVbaDevPath
 } from './devtool';
 
-test('VbaDevTool resolution uses the bundled Windows executable by default', () => {
+test('VbaDev resolution uses the bundled Windows executable by default', () => {
   const extensionRoot = path.join('C:', 'extensions', 'vba-tools');
 
   assert.equal(
-    resolveVbaDevToolPath({ extensionRoot }),
-    path.join(extensionRoot, 'bin', 'vba-devtool', 'win-x64', 'vba-devtool.exe')
+    resolveVbaDevPath({ extensionRoot }),
+    path.join(extensionRoot, 'bin', 'vba-dev', 'win-x64', 'vba-dev.exe')
   );
 });
 
-test('VbaDevTool resolution uses an explicit configured path override', () => {
+test('VbaDev resolution uses an explicit configured path override', () => {
   assert.equal(
-    resolveVbaDevToolPath({
+    resolveVbaDevPath({
       extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
-      configuredPath: path.join('D:', 'tools', 'vba-devtool.exe')
+      configuredPath: path.join('D:', 'tools', 'vba-dev.exe')
     }),
-    path.join('D:', 'tools', 'vba-devtool.exe')
+    path.join('D:', 'tools', 'vba-dev.exe')
   );
 });
 
-test('VbaDevTool compatibility invokes capabilities JSON and returns parsed versions', async () => {
+test('VbaDev compatibility invokes capabilities JSON and returns parsed versions', async () => {
   const calls: Array<{ file: string; args: readonly string[] }> = [];
-  const executablePath = path.join('D:', 'tools', 'vba-devtool.exe');
+  const executablePath = path.join('D:', 'tools', 'vba-dev.exe');
 
-  const resolved = await resolveCompatibleVbaDevTool({
+  const resolved = await resolveCompatibleVbaDev({
     extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
     configuredPath: executablePath,
     runProcess: async (file, args) => {
@@ -69,11 +69,11 @@ test('VbaDevTool compatibility invokes capabilities JSON and returns parsed vers
   assert.equal(resolved.capabilities.commands.build.outputSchemaVersion, '1.0');
 });
 
-test('VbaDevTool compatibility never falls back to PATH discovery', async () => {
+test('VbaDev compatibility never falls back to PATH discovery', async () => {
   const calls: Array<{ file: string; args: readonly string[] }> = [];
   const extensionRoot = path.join('C:', 'extensions', 'vba-tools');
 
-  await resolveCompatibleVbaDevTool({
+  await resolveCompatibleVbaDev({
     extensionRoot,
     runProcess: async (file, args) => {
       calls.push({ file, args });
@@ -98,17 +98,17 @@ test('VbaDevTool compatibility never falls back to PATH discovery', async () => 
 
   assert.equal(
     calls[0]?.file,
-    path.join(extensionRoot, 'bin', 'vba-devtool', 'win-x64', 'vba-devtool.exe')
+    path.join(extensionRoot, 'bin', 'vba-dev', 'win-x64', 'vba-dev.exe')
   );
-  assert.notEqual(calls[0]?.file, 'vba-devtool');
+  assert.notEqual(calls[0]?.file, 'vba-dev');
 });
 
-test('VbaDevTool compatibility rejects an incompatible contract before command use', async () => {
-  const executablePath = path.join('D:', 'tools', 'old-vba-devtool.exe');
+test('VbaDev compatibility rejects an incompatible contract before command use', async () => {
+  const executablePath = path.join('D:', 'tools', 'old-vba-dev.exe');
 
   await assert.rejects(
     () =>
-      resolveCompatibleVbaDevTool({
+      resolveCompatibleVbaDev({
         extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
         configuredPath: executablePath,
         runProcess: async () => ({
@@ -129,8 +129,8 @@ test('VbaDevTool compatibility rejects an incompatible contract before command u
         }
       }),
     (error) => {
-      assert.ok(error instanceof VbaDevToolCompatibilityError);
-      assert.match(error.message, /old-vba-devtool\.exe/);
+      assert.ok(error instanceof VbaDevCompatibilityError);
+      assert.match(error.message, /old-vba-dev\.exe/);
       assert.match(error.message, /contractVersion 0\.9/);
       assert.match(error.message, /requires 1\.0/);
       return true;

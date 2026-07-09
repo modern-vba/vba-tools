@@ -36,7 +36,7 @@ test('Test Explorer excludes standalone VBA files outside project manifests', as
   assert.deepEqual(controller.items, []);
 });
 
-test('Running a project node invokes vba-devtool test ndjson with explicit project root', async () => {
+test('Running a project node invokes vba-dev test ndjson with explicit project root', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const calls: Array<{ file: string; args: readonly string[] }> = [];
   const output: string[] = [];
@@ -64,7 +64,7 @@ test('Running a project node invokes vba-devtool test ndjson with explicit proje
   assert.match(output.join(''), /"type":"summary"/);
 });
 
-test('Running a document node invokes vba-devtool test ndjson with explicit project and document', async () => {
+test('Running a document node invokes vba-dev test ndjson with explicit project and document', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const calls: Array<{ file: string; args: readonly string[] }> = [];
   const controller = new FakeTestController();
@@ -324,7 +324,7 @@ function createExplorer(
   return createWorkbookBackedTestExplorer({
     controller,
     extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
-    configuredDevToolPath: path.join('D:', 'tools', 'vba-devtool.exe'),
+    configuredDevToolPath: path.join('D:', 'tools', 'vba-dev.exe'),
     workspaceRoots: [path.join('C:', 'work')],
     findProjectManifests: async () => [...options.manifests.keys()],
     readTextFile: async (filePath) => {

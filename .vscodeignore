@@ -12,6 +12,6 @@ node_modules/typescript/**
 coverage/**
 test-results/**
 playwright-report/**
-tools/vba-devtool/**
+tools/vba-dev/**
 scripts/**
 *.vsix

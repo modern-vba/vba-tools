@@ -2,14 +2,14 @@ import * as path from 'node:path';
 
 import {
   ProcessRunner,
-  RequiredVbaDevToolContract,
-  resolveCompatibleVbaDevTool
+  RequiredVbaDevContract,
+  resolveCompatibleVbaDev
 } from './devtool';
 import {
   CommandCancellationToken,
-  StartVbaDevToolProcess,
+  StartVbaDevProcess,
   VbaToolsOutputChannel,
-  runVbaDevToolCommand
+  runVbaDevCommand
 } from './devtoolCommand';
 
 export interface TestExplorerItem {
@@ -60,10 +60,10 @@ export interface WorkbookBackedTestExplorerOptions {
   findProjectManifests: (workspaceRoots: readonly string[]) => Promise<readonly string[]>;
   readTextFile: (filePath: string) => Promise<string>;
   capabilitiesProcess?: ProcessRunner | undefined;
-  startProcess?: StartVbaDevToolProcess | undefined;
+  startProcess?: StartVbaDevProcess | undefined;
   outputChannel: VbaToolsOutputChannel;
   showErrorMessage: (message: string) => Thenable<unknown> | Promise<unknown>;
-  requiredContract?: RequiredVbaDevToolContract | undefined;
+  requiredContract?: RequiredVbaDevContract | undefined;
 }
 
 export interface WorkbookBackedTestExplorer {
@@ -91,7 +91,7 @@ interface TestItemMetadata {
   procedureName?: string | undefined;
 }
 
-const RequiredTestContract: RequiredVbaDevToolContract = {
+const RequiredTestContract: RequiredVbaDevContract = {
   contractVersion: '1.0',
   commandSchemaVersions: {
     test: '1.0'
@@ -244,7 +244,7 @@ async function runTestItem(
   }
 
   testRun.started(item);
-  const devtool = await resolveCompatibleVbaDevTool({
+  const devtool = await resolveCompatibleVbaDev({
     extensionRoot: options.extensionRoot,
     configuredPath: options.configuredDevToolPath,
     runProcess: options.capabilitiesProcess,
@@ -262,7 +262,7 @@ async function runTestItem(
     'ndjson'
   ];
 
-  const result = await runVbaDevToolCommand({
+  const result = await runVbaDevCommand({
     executablePath: devtool.executablePath,
     args,
     outputChannel: options.outputChannel,
@@ -287,7 +287,7 @@ async function runTestItem(
   } else if (eventState.hasAssertionFailure) {
     testRun.failed(item, 'One or more VBA tests failed.');
   } else {
-    const errorMessage = firstNonEmptyLine(result.stderr, result.stdout) ?? 'vba-devtool test failed. See the VBA Tools output for details.';
+    const errorMessage = firstNonEmptyLine(result.stderr, result.stdout) ?? 'vba-dev test failed. See the VBA Tools output for details.';
     testRun.errored(eventState.errorItem ?? item, errorMessage);
     await options.showErrorMessage('VBA Tools: Test failed. See the VBA Tools output for details.');
   }
@@ -343,7 +343,7 @@ function applyNdjsonTestEvents(
       if (outcome === 'failed' || outcome === 'error') {
         errorItem = resolveEventItem(options, metadataById, itemsById, runMetadata, record, false);
         if (errorItem) {
-          testRun.errored(errorItem, getString(record.message) ?? 'vba-devtool test failed.', getLocation(record));
+          testRun.errored(errorItem, getString(record.message) ?? 'vba-dev test failed.', getLocation(record));
         }
       }
     }

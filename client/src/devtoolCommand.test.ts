@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { runVbaDevToolCommand } from './devtoolCommand';
+import { runVbaDevCommand } from './devtoolCommand';
 
-test('VbaDevTool command output streams to the provided output channel', async () => {
+test('VbaDev command output streams to the provided output channel', async () => {
   const lines: string[] = [];
-  const result = await runVbaDevToolCommand({
-    executablePath: 'vba-devtool.exe',
+  const result = await runVbaDevCommand({
+    executablePath: 'vba-dev.exe',
     args: ['doctor', '--project', 'C:\\Project'],
     outputChannel: {
       append: (value) => lines.push(value),
@@ -26,12 +26,12 @@ test('VbaDevTool command output streams to the provided output channel', async (
   assert.match(lines.join(''), /doctor output/);
 });
 
-test('VbaDevTool command cancellation kills the spawned process and reports cancellation', async () => {
+test('VbaDev command cancellation kills the spawned process and reports cancellation', async () => {
   let killed = false;
   let cancelListener: (() => void) | undefined;
 
-  const resultPromise = runVbaDevToolCommand({
-    executablePath: 'vba-devtool.exe',
+  const resultPromise = runVbaDevCommand({
+    executablePath: 'vba-dev.exe',
     args: ['doctor'],
     outputChannel: {
       append: () => undefined,

@@ -4,16 +4,16 @@ import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import {
-  VbaDevToolDiagnosticReporter,
-  parseVbaDevToolDiagnostics
+  VbaDevDiagnosticReporter,
+  parseVbaDevDiagnostics
 } from './toolDiagnostics';
 
 test('tool diagnostics map machine-readable records with severity uri range message and code', () => {
   const filePath = path.join('C:', 'work', 'BookProject', 'src', 'Book1', 'Module1.bas');
 
-  const diagnostics = parseVbaDevToolDiagnostics(JSON.stringify({
+  const diagnostics = parseVbaDevDiagnostics(JSON.stringify({
     type: 'diagnostic',
-    owner: 'vba-devtool',
+    owner: 'vba-dev',
     severity: 'warning',
     uri: filePath,
     range: {
@@ -26,7 +26,7 @@ test('tool diagnostics map machine-readable records with severity uri range mess
 
   assert.deepEqual(diagnostics, [
     {
-      owner: 'vba-devtool',
+      owner: 'vba-dev',
       severity: 'warning',
       uriPath: filePath,
       range: {
@@ -42,11 +42,11 @@ test('tool diagnostics map machine-readable records with severity uri range mess
 test('tool diagnostics map diagnostic arrays with source aliases and file URIs', () => {
   const filePath = path.join('C:', 'work', 'BookProject', 'project.json');
 
-  const diagnostics = parseVbaDevToolDiagnostics(JSON.stringify({
+  const diagnostics = parseVbaDevDiagnostics(JSON.stringify({
     diagnostics: [
       {
         type: 'diagnostic',
-        source: 'vba-devtool',
+        source: 'vba-dev',
         severity: 'error',
         file: pathToFileURL(filePath).toString(),
         range: {
@@ -61,7 +61,7 @@ test('tool diagnostics map diagnostic arrays with source aliases and file URIs',
 
   assert.deepEqual(diagnostics, [
     {
-      owner: 'vba-devtool',
+      owner: 'vba-dev',
       severity: 'error',
       uriPath: filePath,
       range: {
@@ -75,11 +75,11 @@ test('tool diagnostics map diagnostic arrays with source aliases and file URIs',
 });
 
 test('tool diagnostics omit plain text and records missing required mapping fields', () => {
-  const diagnostics = parseVbaDevToolDiagnostics([
+  const diagnostics = parseVbaDevDiagnostics([
     '[FAIL] CommonModules (Book1/Missing): Unknown CommonModuleName',
     JSON.stringify({
       type: 'diagnostic',
-      owner: 'vba-devtool',
+      owner: 'vba-dev',
       severity: 'error',
       message: 'Missing URI and range.',
       code: 'VBACOMMON001'
@@ -91,7 +91,7 @@ test('tool diagnostics omit plain text and records missing required mapping fiel
 
 test('tool diagnostics map severity aliases', () => {
   const filePath = path.join('C:', 'work', 'BookProject', 'project.json');
-  const diagnostics = parseVbaDevToolDiagnostics([
+  const diagnostics = parseVbaDevDiagnostics([
     diagnosticJson(filePath, 'error', 'E001'),
     diagnosticJson(filePath, 'warning', 'W001'),
     diagnosticJson(filePath, 'information', 'I001'),
@@ -110,7 +110,7 @@ test('tool diagnostic reporter clears stale diagnostics when a scope is refreshe
   const firstPath = path.join('C:', 'work', 'BookProject', 'src', 'Book1', 'First.bas');
   const secondPath = path.join('C:', 'work', 'BookProject', 'src', 'Book1', 'Second.bas');
   const collection = new FakeDiagnosticCollection();
-  const reporter = new VbaDevToolDiagnosticReporter(collection);
+  const reporter = new VbaDevDiagnosticReporter(collection);
 
   reporter.refresh('project:C:/work/BookProject', diagnosticJson(firstPath, 'error', 'E001'));
   reporter.refresh('project:C:/work/BookProject', diagnosticJson(secondPath, 'warning', 'W001'));
@@ -123,7 +123,7 @@ test('tool diagnostic reporter clears stale diagnostics when a scope is refreshe
 function diagnosticJson(uriPath: string, severity: string, code: string): string {
   return JSON.stringify({
     type: 'diagnostic',
-    owner: 'vba-devtool',
+    owner: 'vba-dev',
     severity,
     uri: uriPath,
     range: {

@@ -22,10 +22,10 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
   assert.throws(
     () => assertVsixContents([
       'README.md',
-      'tools/vba-devtool/src/VbaDevTool.Cli/Program.cs',
+      'tools/vba-dev/src/VbaDev.Cli/Program.cs',
       requiredBundledCliPath
     ]),
-    /tools\/vba-devtool/
+    /tools\/vba-dev/
   );
 
   assert.throws(
@@ -33,7 +33,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
       'README.md',
       'client/out/extension.js'
     ]),
-    /bin\/vba-devtool\/win-x64\/vba-devtool\.exe/
+    /bin\/vba-dev\/win-x64\/vba-dev\.exe/
   );
 });
 
@@ -41,7 +41,7 @@ test('CLI publish settings require a Windows x64 self-contained single-file exec
   assert.doesNotThrow(() => assertCliPublishSettings(`
 <Project>
   <PropertyGroup>
-    <AssemblyName>vba-devtool</AssemblyName>
+    <AssemblyName>vba-dev</AssemblyName>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
@@ -53,7 +53,7 @@ test('CLI publish settings require a Windows x64 self-contained single-file exec
     () => assertCliPublishSettings(`
 <Project>
   <PropertyGroup>
-    <AssemblyName>vba-devtool</AssemblyName>
+    <AssemblyName>vba-dev</AssemblyName>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>false</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
@@ -98,15 +98,15 @@ test('bundled CLI capabilities must satisfy the packaged extension contract surf
 
 test('packaging verification checks file contents publish settings and bundled CLI capabilities', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-packaging-'));
-  await fs.mkdir(path.join(root, 'bin', 'vba-devtool', 'win-x64'), { recursive: true });
+  await fs.mkdir(path.join(root, 'bin', 'vba-dev', 'win-x64'), { recursive: true });
   await fs.writeFile(path.join(root, requiredBundledCliPath), '');
-  await fs.mkdir(path.join(root, 'tools', 'vba-devtool', 'src', 'VbaDevTool.Cli'), { recursive: true });
+  await fs.mkdir(path.join(root, 'tools', 'vba-dev', 'src', 'VbaDev.Cli'), { recursive: true });
   await fs.writeFile(
-    path.join(root, 'tools', 'vba-devtool', 'src', 'VbaDevTool.Cli', 'VbaDevTool.Cli.csproj'),
+    path.join(root, 'tools', 'vba-dev', 'src', 'VbaDev.Cli', 'VbaDev.Cli.csproj'),
     `
 <Project>
   <PropertyGroup>
-    <AssemblyName>vba-devtool</AssemblyName>
+    <AssemblyName>vba-dev</AssemblyName>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
@@ -164,7 +164,7 @@ test('package scripts publish the bundled CLI and verify VSIX contents before pa
   );
 
   assert.match(packageJson.scripts['publish:devtool'], /dotnet publish/);
-  assert.match(packageJson.scripts['publish:devtool'], /-o bin\/vba-devtool\/win-x64/);
+  assert.match(packageJson.scripts['publish:devtool'], /-o bin\/vba-dev\/win-x64/);
   assert.equal(packageJson.scripts['verify:vsix'], 'node scripts/vsixPackagingRules.mjs');
   assert.match(packageJson.scripts['package:verify'], /publish:devtool/);
   assert.match(packageJson.scripts['package:verify'], /verify:vsix/);

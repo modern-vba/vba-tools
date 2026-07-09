@@ -3,10 +3,10 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export const requiredBundledCliPath = 'bin/vba-devtool/win-x64/vba-devtool.exe';
+export const requiredBundledCliPath = 'bin/vba-dev/win-x64/vba-dev.exe';
 
-const excludedDevToolSourcePrefix = 'tools/vba-devtool/';
-const cliProjectPath = 'tools/vba-devtool/src/VbaDevTool.Cli/VbaDevTool.Cli.csproj';
+const excludedDevToolSourcePrefix = 'tools/vba-dev/';
+const cliProjectPath = 'tools/vba-dev/src/VbaDev.Cli/VbaDev.Cli.csproj';
 const requiredCommandSchemaVersions = {
   build: '1.0',
   'common-module add': '1.0',
@@ -54,15 +54,15 @@ export function assertVsixContents(files) {
   }
 
   const sourceFiles = normalized.filter((file) => (
-    file === 'tools/vba-devtool' || file.startsWith(excludedDevToolSourcePrefix)
+    file === 'tools/vba-dev' || file.startsWith(excludedDevToolSourcePrefix)
   ));
   if (sourceFiles.length > 0) {
-    throw new Error(`VSIX file list must exclude tools/vba-devtool source files: ${sourceFiles.join(', ')}`);
+    throw new Error(`VSIX file list must exclude tools/vba-dev source files: ${sourceFiles.join(', ')}`);
   }
 }
 
 export function assertCliPublishSettings(csprojText) {
-  assertProjectProperty(csprojText, 'AssemblyName', 'vba-devtool');
+  assertProjectProperty(csprojText, 'AssemblyName', 'vba-dev');
   assertProjectProperty(csprojText, 'RuntimeIdentifier', 'win-x64');
   assertProjectProperty(csprojText, 'SelfContained', 'true');
   assertProjectProperty(csprojText, 'PublishSingleFile', 'true');
@@ -73,17 +73,17 @@ export function assertBundledCliCapabilities(stdout) {
   try {
     parsed = JSON.parse(stdout);
   } catch (error) {
-    throw new Error(`Bundled vba-devtool capabilities output must be JSON: ${String(error)}`);
+    throw new Error(`Bundled vba-dev capabilities output must be JSON: ${String(error)}`);
   }
 
   if (!isRecord(parsed) || parsed.contractVersion !== '1.0' || !isRecord(parsed.commands)) {
-    throw new Error('Bundled vba-devtool capabilities must report contractVersion 1.0 and commands.');
+    throw new Error('Bundled vba-dev capabilities must report contractVersion 1.0 and commands.');
   }
 
   for (const [commandName, schemaVersion] of Object.entries(requiredCommandSchemaVersions)) {
     const command = parsed.commands[commandName];
     if (!isRecord(command) || command.outputSchemaVersion !== schemaVersion) {
-      throw new Error(`Bundled vba-devtool capabilities must report ${commandName} outputSchemaVersion ${schemaVersion}.`);
+      throw new Error(`Bundled vba-dev capabilities must report ${commandName} outputSchemaVersion ${schemaVersion}.`);
     }
   }
 }
@@ -91,7 +91,7 @@ export function assertBundledCliCapabilities(stdout) {
 function assertProjectProperty(csprojText, propertyName, expectedValue) {
   const pattern = new RegExp(`<${propertyName}>\\s*${escapeRegExp(expectedValue)}\\s*</${propertyName}>`, 'i');
   if (!pattern.test(csprojText)) {
-    throw new Error(`VbaDevTool.Cli.csproj must set ${propertyName} to ${expectedValue}.`);
+    throw new Error(`VbaDev.Cli.csproj must set ${propertyName} to ${expectedValue}.`);
   }
 }
 

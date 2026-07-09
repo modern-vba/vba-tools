@@ -17,7 +17,7 @@ test('Doctor command validates the CLI and invokes doctor with an explicit proje
 
   const result = await runDoctorCommand({
     extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
-    configuredDevToolPath: path.join('D:', 'tools', 'vba-devtool.exe'),
+    configuredDevToolPath: path.join('D:', 'tools', 'vba-dev.exe'),
     activeFilePath: path.join(projectRoot, 'src', 'Book1', 'Module1.bas'),
     workspaceRoots: [path.dirname(projectRoot)],
     fileExists: async (candidate) => candidate === path.join(projectRoot, 'project.json'),

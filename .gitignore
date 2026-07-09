@@ -6,7 +6,7 @@ out/
 dist/
 build/
 lib/
-/bin/vba-devtool/
+/bin/vba-dev/
 *.tsbuildinfo
 
 # Test and coverage outputs

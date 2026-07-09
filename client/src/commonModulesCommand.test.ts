@@ -109,7 +109,7 @@ test('CommonModules command refreshes project diagnostics from failed command ou
   const diagnosticRefreshes: Array<{ scopeKey: string; output: string }> = [];
   const stderr = JSON.stringify({
     type: 'diagnostic',
-    owner: 'vba-devtool',
+    owner: 'vba-dev',
     severity: 'error',
     uri: path.join(projectRoot, 'project.json'),
     range: {
@@ -171,7 +171,7 @@ function createOptions(
 ): CommonModulesCommandOptions {
   return {
     extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
-    configuredDevToolPath: path.join('D:', 'tools', 'vba-devtool.exe'),
+    configuredDevToolPath: path.join('D:', 'tools', 'vba-dev.exe'),
     activeFilePath: path.join(options.projectRoot, 'src', 'Book1', 'Module1.bas'),
     workspaceRoots: [path.dirname(options.projectRoot)],
     fileExists: async (candidate) => candidate === path.join(options.projectRoot, 'project.json'),

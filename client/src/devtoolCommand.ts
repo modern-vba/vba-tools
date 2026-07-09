@@ -15,27 +15,27 @@ export interface CommandCancellationToken {
   onCancellationRequested(listener: () => void): CancellationDisposable;
 }
 
-export interface StartedVbaDevToolProcess {
+export interface StartedVbaDevProcess {
   onStdout(listener: (value: string) => void): void;
   onStderr(listener: (value: string) => void): void;
   onExit(listener: (exitCode: number | null, signal: string | null) => void): void;
   kill(): void;
 }
 
-export type StartVbaDevToolProcess = (
+export type StartVbaDevProcess = (
   executablePath: string,
   args: readonly string[]
-) => StartedVbaDevToolProcess;
+) => StartedVbaDevProcess;
 
-export interface VbaDevToolCommandRunOptions {
+export interface VbaDevCommandRunOptions {
   executablePath: string;
   args: readonly string[];
   outputChannel: VbaToolsOutputChannel;
   cancellationToken?: CommandCancellationToken | undefined;
-  startProcess?: StartVbaDevToolProcess | undefined;
+  startProcess?: StartVbaDevProcess | undefined;
 }
 
-export interface VbaDevToolCommandRunResult {
+export interface VbaDevCommandRunResult {
   exitCode: number;
   stdout: string;
   stderr: string;
@@ -43,9 +43,9 @@ export interface VbaDevToolCommandRunResult {
   message: string;
 }
 
-export function runVbaDevToolCommand(
-  options: VbaDevToolCommandRunOptions
-): Promise<VbaDevToolCommandRunResult> {
+export function runVbaDevCommand(
+  options: VbaDevCommandRunOptions
+): Promise<VbaDevCommandRunResult> {
   const startProcess = options.startProcess ?? startNodeProcess;
   const child = startProcess(options.executablePath, options.args);
   let stdout = '';
@@ -66,7 +66,7 @@ export function runVbaDevToolCommand(
 
   const cancellationSubscription = options.cancellationToken?.onCancellationRequested(() => {
     cancelled = true;
-    options.outputChannel.appendLine('VbaDevTool command cancelled.');
+    options.outputChannel.appendLine('VbaDev command cancelled.');
     child.kill();
   });
 
@@ -84,14 +84,14 @@ export function runVbaDevToolCommand(
         stderr,
         cancelled: commandWasCancelled,
         message: commandWasCancelled
-          ? 'VbaDevTool command was cancelled.'
-          : `VbaDevTool exited with code ${exitCode ?? 0}.`
+          ? 'VbaDev command was cancelled.'
+          : `VbaDev exited with code ${exitCode ?? 0}.`
       });
     });
   });
 }
 
-function startNodeProcess(executablePath: string, args: readonly string[]): StartedVbaDevToolProcess {
+function startNodeProcess(executablePath: string, args: readonly string[]): StartedVbaDevProcess {
   const child = spawn(executablePath, [...args], { windowsHide: true });
 
   return {
