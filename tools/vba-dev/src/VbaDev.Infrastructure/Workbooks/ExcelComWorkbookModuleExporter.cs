@@ -1,4 +1,3 @@
-using System.Runtime.InteropServices;
 using VbaDev.App.Export;
 
 namespace VbaDev.Infrastructure.Workbooks;
@@ -19,6 +18,7 @@ public sealed class ExcelComWorkbookModuleExporter : IWorkbookModuleExporter
         var excelType = Type.GetTypeFromProgID("Excel.Application")
             ?? throw new InvalidOperationException("Excel COM automation is not available.");
         object? excelObject = null;
+        object? workbooksObject = null;
         object? workbookObject = null;
 
         try
@@ -28,11 +28,14 @@ public sealed class ExcelComWorkbookModuleExporter : IWorkbookModuleExporter
             dynamic excel = excelObject;
             excel.Visible = false;
             excel.DisplayAlerts = false;
-            workbookObject = excel.Workbooks.Open(workbookPath, 0, false);
+            workbooksObject = excel.Workbooks;
+            dynamic workbooks = workbooksObject;
+            workbookObject = workbooks.Open(workbookPath, 0, false);
             ExportImportableComponents(workbookObject, destinationDirectory);
         }
         finally
         {
+            ComObjectReleaser.Release(workbooksObject);
             if (workbookObject is not null)
             {
                 try
@@ -42,7 +45,7 @@ public sealed class ExcelComWorkbookModuleExporter : IWorkbookModuleExporter
                 }
                 finally
                 {
-                    ReleaseComObject(workbookObject);
+                    ComObjectReleaser.Release(workbookObject);
                 }
             }
 
@@ -55,22 +58,32 @@ public sealed class ExcelComWorkbookModuleExporter : IWorkbookModuleExporter
                 }
                 finally
                 {
-                    ReleaseComObject(excelObject);
+                    ComObjectReleaser.Release(excelObject);
                 }
             }
+
+            ComObjectReleaser.CollectReleasedComObjects();
         }
     }
 
     private static void ExportImportableComponents(object workbookObject, string destinationDirectory)
     {
         dynamic workbook = workbookObject;
-        dynamic components = workbook.VBProject.VBComponents;
+        object? vbProjectObject = null;
+        object? componentsObject = null;
         try
         {
-            foreach (var componentObject in components)
+            vbProjectObject = workbook.VBProject;
+            dynamic vbProject = vbProjectObject;
+            componentsObject = vbProject.VBComponents;
+            dynamic components = componentsObject;
+            var componentCount = (int)components.Count;
+            for (var index = 1; index <= componentCount; index++)
             {
+                object? componentObject = null;
                 try
                 {
+                    componentObject = components.Item(index);
                     dynamic component = componentObject;
                     var exportPath = GetExportPath(destinationDirectory, (string)component.Name, (int)component.Type);
                     if (exportPath is not null)
@@ -80,13 +93,14 @@ public sealed class ExcelComWorkbookModuleExporter : IWorkbookModuleExporter
                 }
                 finally
                 {
-                    ReleaseComObject(componentObject);
+                    ComObjectReleaser.Release(componentObject);
                 }
             }
         }
         finally
         {
-            ReleaseComObject(components);
+            ComObjectReleaser.Release(componentsObject);
+            ComObjectReleaser.Release(vbProjectObject);
         }
     }
 
@@ -99,16 +113,4 @@ public sealed class ExcelComWorkbookModuleExporter : IWorkbookModuleExporter
             _ => null
         };
 
-    private static void ReleaseComObject(object? value)
-    {
-        if (!OperatingSystem.IsWindows())
-        {
-            return;
-        }
-
-        if (value is not null && Marshal.IsComObject(value))
-        {
-            Marshal.FinalReleaseComObject(value);
-        }
-    }
 }

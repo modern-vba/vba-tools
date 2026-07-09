@@ -1,5 +1,3 @@
-using System.Collections;
-using System.Runtime.InteropServices;
 using VbaDev.App.Workbooks;
 
 namespace VbaDev.Infrastructure.Workbooks;
@@ -19,6 +17,7 @@ public sealed class ExcelComInitialWorkbookCreator : IInitialWorkbookCreator
         var excelType = Type.GetTypeFromProgID("Excel.Application")
             ?? throw new InvalidOperationException("Excel COM automation is not available.");
         object? excelObject = null;
+        object? workbooksObject = null;
         object? workbookObject = null;
 
         try
@@ -28,18 +27,44 @@ public sealed class ExcelComInitialWorkbookCreator : IInitialWorkbookCreator
             dynamic excel = excelObject;
             excel.Visible = false;
             excel.DisplayAlerts = false;
-            workbookObject = excel.Workbooks.Add();
+            workbooksObject = excel.Workbooks;
+            dynamic workbooks = workbooksObject;
+            workbookObject = workbooks.Add();
             dynamic workbook = workbookObject;
             var referenceDescriptions = ReadReferenceDescriptions(workbookObject);
             workbook.SaveAs(workbookPath, XlOpenXmlWorkbookMacroEnabled);
-            workbook.Close(false);
-            excel.Quit();
             return referenceDescriptions;
         }
         finally
         {
-            ReleaseComObject(workbookObject);
-            ReleaseComObject(excelObject);
+            if (workbookObject is not null)
+            {
+                try
+                {
+                    dynamic workbook = workbookObject;
+                    workbook.Close(false);
+                }
+                finally
+                {
+                    ComObjectReleaser.Release(workbookObject);
+                }
+            }
+
+            ComObjectReleaser.Release(workbooksObject);
+            if (excelObject is not null)
+            {
+                try
+                {
+                    dynamic excel = excelObject;
+                    excel.Quit();
+                }
+                finally
+                {
+                    ComObjectReleaser.Release(excelObject);
+                }
+            }
+
+            ComObjectReleaser.CollectReleasedComObjects();
         }
     }
 
@@ -47,15 +72,22 @@ public sealed class ExcelComInitialWorkbookCreator : IInitialWorkbookCreator
     {
         var referenceDescriptions = new List<string>();
         object? referencesObject = null;
+        object? vbProjectObject = null;
 
         try
         {
             dynamic workbook = workbookObject;
-            referencesObject = workbook.VBProject.References;
-            foreach (var referenceObject in (IEnumerable)referencesObject)
+            vbProjectObject = workbook.VBProject;
+            dynamic vbProject = vbProjectObject;
+            referencesObject = vbProject.References;
+            dynamic references = referencesObject;
+            var referenceCount = (int)references.Count;
+            for (var index = 1; index <= referenceCount; index++)
             {
+                object? referenceObject = null;
                 try
                 {
+                    referenceObject = references.Item(index);
                     dynamic reference = referenceObject;
                     var description = (string?)reference.Description;
                     if (!string.IsNullOrWhiteSpace(description))
@@ -65,28 +97,16 @@ public sealed class ExcelComInitialWorkbookCreator : IInitialWorkbookCreator
                 }
                 finally
                 {
-                    ReleaseComObject(referenceObject);
+                    ComObjectReleaser.Release(referenceObject);
                 }
             }
         }
         finally
         {
-            ReleaseComObject(referencesObject);
+            ComObjectReleaser.Release(referencesObject);
+            ComObjectReleaser.Release(vbProjectObject);
         }
 
         return referenceDescriptions;
-    }
-
-    private static void ReleaseComObject(object? value)
-    {
-        if (!OperatingSystem.IsWindows())
-        {
-            return;
-        }
-
-        if (value is not null && Marshal.IsComObject(value))
-        {
-            Marshal.FinalReleaseComObject(value);
-        }
     }
 }

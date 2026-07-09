@@ -5,6 +5,7 @@ namespace VbaDev.Infrastructure.Workbooks;
 
 public sealed class ExcelComWorkbookTestRunner : IWorkbookTestRunner
 {
+    private const int MsoAutomationSecurityLow = 1;
     private const int XlUp = -4162;
     private const string UnitTestEntryPoint = "UnitTestMain";
     private const string UnitTestSheetName = "UNIT_TEST_SHEET";
@@ -19,7 +20,9 @@ public sealed class ExcelComWorkbookTestRunner : IWorkbookTestRunner
         var excelType = Type.GetTypeFromProgID("Excel.Application")
             ?? throw new InvalidOperationException("Excel COM automation is not available.");
         object? excelObject = null;
+        object? workbooksObject = null;
         object? workbookObject = null;
+        object? worksheetsObject = null;
         object? sheetObject = null;
 
         try
@@ -29,15 +32,26 @@ public sealed class ExcelComWorkbookTestRunner : IWorkbookTestRunner
             dynamic excel = excelObject;
             excel.Visible = false;
             excel.DisplayAlerts = false;
-            workbookObject = excel.Workbooks.Open(workbookPath, 0, false);
+            excel.AutomationSecurity = MsoAutomationSecurityLow;
+            workbooksObject = excel.Workbooks;
+            dynamic workbooks = workbooksObject;
+            workbookObject = workbooks.Open(workbookPath, 0, false);
             dynamic workbook = workbookObject;
             excel.Run($"'{workbook.Name}'!{UnitTestEntryPoint}");
-            sheetObject = workbook.Worksheets(UnitTestSheetName);
+            worksheetsObject = workbook.Worksheets;
+            dynamic worksheets = worksheetsObject;
+            sheetObject = worksheets(UnitTestSheetName);
             return ReadResultRows(sheetObject);
+        }
+        catch (COMException ex)
+        {
+            throw new InvalidOperationException(ex.Message, ex);
         }
         finally
         {
-            ReleaseComObject(sheetObject);
+            ComObjectReleaser.Release(sheetObject);
+            ComObjectReleaser.Release(worksheetsObject);
+            ComObjectReleaser.Release(workbooksObject);
             if (workbookObject is not null)
             {
                 try
@@ -47,7 +61,7 @@ public sealed class ExcelComWorkbookTestRunner : IWorkbookTestRunner
                 }
                 finally
                 {
-                    ReleaseComObject(workbookObject);
+                    ComObjectReleaser.Release(workbookObject);
                 }
             }
 
@@ -60,23 +74,24 @@ public sealed class ExcelComWorkbookTestRunner : IWorkbookTestRunner
                 }
                 finally
                 {
-                    ReleaseComObject(excelObject);
+                    ComObjectReleaser.Release(excelObject);
                 }
             }
+
+            ComObjectReleaser.CollectReleasedComObjects();
         }
     }
 
     private static IReadOnlyList<WorkbookTestResultRow> ReadResultRows(object sheetObject)
     {
-        dynamic sheet = sheetObject;
-        var lastRow = (int)sheet.Cells(sheet.Rows.Count, 1).End(XlUp).Row;
+        var lastRow = GetLastResultRow(sheetObject);
         var results = new List<WorkbookTestResultRow>();
         for (var row = 2; row <= lastRow; row++)
         {
-            var category = Convert.ToString(sheet.Cells(row, 1).Value2) ?? string.Empty;
-            var testName = Convert.ToString(sheet.Cells(row, 2).Value2) ?? string.Empty;
-            var result = Convert.ToString(sheet.Cells(row, 3).Value2) ?? string.Empty;
-            var message = Convert.ToString(sheet.Cells(row, 4).Value2) ?? string.Empty;
+            var category = GetCellText(sheetObject, row, 1);
+            var testName = GetCellText(sheetObject, row, 2);
+            var result = GetCellText(sheetObject, row, 3);
+            var message = GetCellText(sheetObject, row, 4);
             if (string.IsNullOrWhiteSpace(category) && string.IsNullOrWhiteSpace(testName))
             {
                 continue;
@@ -88,16 +103,51 @@ public sealed class ExcelComWorkbookTestRunner : IWorkbookTestRunner
         return results;
     }
 
-    private static void ReleaseComObject(object? value)
+    private static int GetLastResultRow(object sheetObject)
     {
-        if (!OperatingSystem.IsWindows())
+        dynamic sheet = sheetObject;
+        object? rowsObject = null;
+        object? cellsObject = null;
+        object? lastCellObject = null;
+        object? endCellObject = null;
+        try
         {
-            return;
+            rowsObject = sheet.Rows;
+            cellsObject = sheet.Cells;
+            dynamic rows = rowsObject;
+            dynamic cells = cellsObject;
+            lastCellObject = cells(rows.Count, 1);
+            dynamic lastCell = lastCellObject;
+            endCellObject = lastCell.End(XlUp);
+            dynamic endCell = endCellObject;
+            return (int)endCell.Row;
         }
-
-        if (value is not null && Marshal.IsComObject(value))
+        finally
         {
-            Marshal.FinalReleaseComObject(value);
+            ComObjectReleaser.Release(endCellObject);
+            ComObjectReleaser.Release(lastCellObject);
+            ComObjectReleaser.Release(cellsObject);
+            ComObjectReleaser.Release(rowsObject);
+        }
+    }
+
+    private static string GetCellText(object sheetObject, int row, int column)
+    {
+        dynamic sheet = sheetObject;
+        object? cellsObject = null;
+        object? cellObject = null;
+        try
+        {
+            cellsObject = sheet.Cells;
+            dynamic cells = cellsObject;
+            cellObject = cells(row, column);
+            dynamic cell = cellObject;
+            return Convert.ToString(cell.Value2) ?? string.Empty;
+        }
+        finally
+        {
+            ComObjectReleaser.Release(cellObject);
+            ComObjectReleaser.Release(cellsObject);
         }
     }
 }

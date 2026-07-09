@@ -1,4 +1,3 @@
-using System.Runtime.InteropServices;
 using VbaDev.App.Workbooks;
 
 namespace VbaDev.Infrastructure.Workbooks;
@@ -20,6 +19,7 @@ public sealed class ExcelComWorkbookBuildAutomation : IWorkbookBuildAutomation
         var excelType = Type.GetTypeFromProgID("Excel.Application")
             ?? throw new InvalidOperationException("Excel COM automation is not available.");
         object? excelObject = null;
+        object? workbooksObject = null;
         object? workbookObject = null;
 
         try
@@ -29,14 +29,32 @@ public sealed class ExcelComWorkbookBuildAutomation : IWorkbookBuildAutomation
             dynamic excel = excelObject;
             excel.Visible = false;
             excel.DisplayAlerts = false;
-            workbookObject = excel.Workbooks.Open(workbookPath, 0, false);
+            workbooksObject = excel.Workbooks;
+            dynamic workbooks = workbooksObject;
+            workbookObject = workbooks.Open(workbookPath, 0, false);
             return new ExcelComWorkbookBuildSession(excelObject, workbookObject);
         }
         catch
         {
-            ReleaseComObject(workbookObject);
-            ReleaseComObject(excelObject);
+            try
+            {
+                CloseWorkbook(workbookObject);
+                QuitExcel(excelObject);
+            }
+            finally
+            {
+                ComObjectReleaser.CollectReleasedComObjects();
+            }
+
             throw;
+        }
+        finally
+        {
+            ComObjectReleaser.Release(workbooksObject);
+            if (workbookObject is null || excelObject is null)
+            {
+                ComObjectReleaser.CollectReleasedComObjects();
+            }
         }
     }
 
@@ -54,85 +72,118 @@ public sealed class ExcelComWorkbookBuildAutomation : IWorkbookBuildAutomation
         public IReadOnlyList<WorkbookModule> GetModules()
         {
             dynamic workbook = workbookObject;
-            dynamic components = workbook.VBProject.VBComponents;
+            object? vbProjectObject = null;
+            object? componentsObject = null;
             var modules = new List<WorkbookModule>();
-            foreach (var componentObject in components)
+            try
             {
-                try
+                vbProjectObject = workbook.VBProject;
+                dynamic vbProject = vbProjectObject;
+                componentsObject = vbProject.VBComponents;
+                dynamic components = componentsObject;
+                var componentCount = (int)components.Count;
+                for (var index = 1; index <= componentCount; index++)
                 {
-                    dynamic component = componentObject;
-                    modules.Add(new WorkbookModule((string)component.Name, MapComponentType((int)component.Type)));
-                }
-                finally
-                {
-                    ReleaseComObject(componentObject);
+                    object? componentObject = null;
+                    try
+                    {
+                        componentObject = components.Item(index);
+                        dynamic component = componentObject;
+                        modules.Add(new WorkbookModule((string)component.Name, MapComponentType((int)component.Type)));
+                    }
+                    finally
+                    {
+                        ComObjectReleaser.Release(componentObject);
+                    }
                 }
             }
+            finally
+            {
+                ComObjectReleaser.Release(componentsObject);
+                ComObjectReleaser.Release(vbProjectObject);
+            }
 
-            ReleaseComObject(components);
             return modules;
         }
 
         public IReadOnlyList<WorkbookReference> GetReferences()
         {
             dynamic workbook = workbookObject;
-            dynamic references = workbook.VBProject.References;
+            object? vbProjectObject = null;
+            object? referencesObject = null;
             var result = new List<WorkbookReference>();
-            foreach (var referenceObject in references)
+            try
             {
-                try
+                vbProjectObject = workbook.VBProject;
+                dynamic vbProject = vbProjectObject;
+                referencesObject = vbProject.References;
+                dynamic references = referencesObject;
+                var referenceCount = (int)references.Count;
+                for (var index = 1; index <= referenceCount; index++)
                 {
-                    dynamic reference = referenceObject;
-                    var description = (string)reference.Description;
-                    var isBuiltIn = (bool)reference.BuiltIn;
-                    if (!string.IsNullOrWhiteSpace(description))
+                    object? referenceObject = null;
+                    try
                     {
-                        result.Add(new WorkbookReference(description.Trim(), IsRemovable: !isBuiltIn));
+                        referenceObject = references.Item(index);
+                        dynamic reference = referenceObject;
+                        var description = (string)reference.Description;
+                        var isBuiltIn = (bool)reference.BuiltIn;
+                        if (!string.IsNullOrWhiteSpace(description))
+                        {
+                            result.Add(new WorkbookReference(description.Trim(), IsRemovable: !isBuiltIn));
+                        }
+                    }
+                    finally
+                    {
+                        ComObjectReleaser.Release(referenceObject);
                     }
                 }
-                finally
-                {
-                    ReleaseComObject(referenceObject);
-                }
+            }
+            finally
+            {
+                ComObjectReleaser.Release(referencesObject);
+                ComObjectReleaser.Release(vbProjectObject);
             }
 
-            ReleaseComObject(references);
             return result;
         }
 
         public bool RemoveReference(string referenceName)
         {
             dynamic workbook = workbookObject;
-            dynamic references = workbook.VBProject.References;
-            object? referenceObject = null;
+            object? vbProjectObject = null;
+            object? referencesObject = null;
             try
             {
-                foreach (var candidateObject in references)
+                vbProjectObject = workbook.VBProject;
+                dynamic vbProject = vbProjectObject;
+                referencesObject = vbProject.References;
+                dynamic references = referencesObject;
+                var referenceCount = (int)references.Count;
+                for (var index = 1; index <= referenceCount; index++)
                 {
+                    object? referenceObject = null;
                     try
                     {
-                        dynamic candidate = candidateObject;
-                        var description = (string)candidate.Description;
+                        referenceObject = references.Item(index);
+                        dynamic reference = referenceObject;
+                        var description = (string)reference.Description;
                         if (!referenceName.Equals(description, StringComparison.OrdinalIgnoreCase))
                         {
                             continue;
                         }
 
-                        if ((bool)candidate.BuiltIn)
+                        if ((bool)reference.BuiltIn)
                         {
                             return false;
                         }
 
-                        referenceObject = candidateObject;
                         references.Remove(referenceObject);
                         return true;
                     }
                     finally
                     {
-                        if (!ReferenceEquals(referenceObject, candidateObject))
-                        {
-                            ReleaseComObject(candidateObject);
-                        }
+                        ComObjectReleaser.Release(referenceObject);
                     }
                 }
 
@@ -140,57 +191,75 @@ public sealed class ExcelComWorkbookBuildAutomation : IWorkbookBuildAutomation
             }
             finally
             {
-                ReleaseComObject(referenceObject);
-                ReleaseComObject(references);
+                ComObjectReleaser.Release(referencesObject);
+                ComObjectReleaser.Release(vbProjectObject);
             }
         }
 
         public void AddReference(ResolvedVbaProjectReference reference)
         {
             dynamic workbook = workbookObject;
-            dynamic references = workbook.VBProject.References;
+            object? vbProjectObject = null;
+            object? referencesObject = null;
             object? referenceObject = null;
             try
             {
+                vbProjectObject = workbook.VBProject;
+                dynamic vbProject = vbProjectObject;
+                referencesObject = vbProject.References;
+                dynamic references = referencesObject;
                 referenceObject = references.AddFromGuid(reference.Guid, reference.Major, reference.Minor);
             }
             finally
             {
-                ReleaseComObject(referenceObject);
-                ReleaseComObject(references);
+                ComObjectReleaser.Release(referenceObject);
+                ComObjectReleaser.Release(referencesObject);
+                ComObjectReleaser.Release(vbProjectObject);
             }
         }
 
         public void RemoveModule(string moduleName)
         {
             dynamic workbook = workbookObject;
-            dynamic components = workbook.VBProject.VBComponents;
+            object? vbProjectObject = null;
+            object? componentsObject = null;
             object? componentObject = null;
             try
             {
+                vbProjectObject = workbook.VBProject;
+                dynamic vbProject = vbProjectObject;
+                componentsObject = vbProject.VBComponents;
+                dynamic components = componentsObject;
                 componentObject = components.Item(moduleName);
                 components.Remove(componentObject);
             }
             finally
             {
-                ReleaseComObject(componentObject);
-                ReleaseComObject(components);
+                ComObjectReleaser.Release(componentObject);
+                ComObjectReleaser.Release(componentsObject);
+                ComObjectReleaser.Release(vbProjectObject);
             }
         }
 
         public void ImportModule(VbaSourceFile sourceFile)
         {
             dynamic workbook = workbookObject;
-            dynamic components = workbook.VBProject.VBComponents;
+            object? vbProjectObject = null;
+            object? componentsObject = null;
             object? importedComponent = null;
             try
             {
+                vbProjectObject = workbook.VBProject;
+                dynamic vbProject = vbProjectObject;
+                componentsObject = vbProject.VBComponents;
+                dynamic components = componentsObject;
                 importedComponent = components.Import(sourceFile.SourcePath);
             }
             finally
             {
-                ReleaseComObject(importedComponent);
-                ReleaseComObject(components);
+                ComObjectReleaser.Release(importedComponent);
+                ComObjectReleaser.Release(componentsObject);
+                ComObjectReleaser.Release(vbProjectObject);
             }
         }
 
@@ -204,20 +273,17 @@ public sealed class ExcelComWorkbookBuildAutomation : IWorkbookBuildAutomation
         {
             try
             {
-                dynamic workbook = workbookObject;
-                workbook.Close(false);
+                CloseWorkbook(workbookObject);
             }
             finally
             {
                 try
                 {
-                    dynamic excel = excelObject;
-                    excel.Quit();
+                    QuitExcel(excelObject);
                 }
                 finally
                 {
-                    ReleaseComObject(workbookObject);
-                    ReleaseComObject(excelObject);
+                    ComObjectReleaser.CollectReleasedComObjects();
                 }
             }
         }
@@ -233,16 +299,39 @@ public sealed class ExcelComWorkbookBuildAutomation : IWorkbookBuildAutomation
             };
     }
 
-    private static void ReleaseComObject(object? value)
+    private static void CloseWorkbook(object? workbookObject)
     {
-        if (!OperatingSystem.IsWindows())
+        if (workbookObject is null)
         {
             return;
         }
 
-        if (value is not null && Marshal.IsComObject(value))
+        try
         {
-            Marshal.FinalReleaseComObject(value);
+            dynamic workbook = workbookObject;
+            workbook.Close(false);
+        }
+        finally
+        {
+            ComObjectReleaser.Release(workbookObject);
+        }
+    }
+
+    private static void QuitExcel(object? excelObject)
+    {
+        if (excelObject is null)
+        {
+            return;
+        }
+
+        try
+        {
+            dynamic excel = excelObject;
+            excel.Quit();
+        }
+        finally
+        {
+            ComObjectReleaser.Release(excelObject);
         }
     }
 }
