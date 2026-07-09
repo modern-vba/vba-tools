@@ -179,6 +179,33 @@ test('extension contributes daily WorkbookBackedProject commands only', () => {
   assert.equal(commands.some((command) => command.command === 'vbaTools.testNoBuild'), false);
 });
 
+test('extension contributes CommonModules commands', () => {
+  const package_json = JSON.parse(
+    fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')
+  ) as {
+    activationEvents?: string[];
+    contributes?: {
+      commands?: Array<{
+        command?: string;
+        title?: string;
+      }>;
+    };
+  };
+  const commands = package_json.contributes?.commands ?? [];
+
+  for (const expected of [
+    ['vbaTools.commonModules.add', 'VBA Tools: Add Common Module'],
+    ['vbaTools.commonModules.list', 'VBA Tools: List Common Modules'],
+    ['vbaTools.commonModules.update', 'VBA Tools: Update Common Modules']
+  ]) {
+    assert.deepEqual(commands.find((command) => command.command === expected[0]), {
+      command: expected[0],
+      title: expected[1]
+    });
+    assert.ok(package_json.activationEvents?.includes(`onCommand:${expected[0]}`));
+  }
+});
+
 test('README documents host signature help metadata dependency', () => {
   const readme = fs.readFileSync(path.join(process.cwd(), 'README.md'), 'utf8');
 

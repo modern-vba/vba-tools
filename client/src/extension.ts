@@ -20,6 +20,12 @@ import {
   runDoctorCommand
 } from './doctorCommand';
 import {
+  CommonModulesToolCommand,
+  runCommonModulesAddCommand,
+  runCommonModulesListCommand,
+  runCommonModulesUpdateCommand
+} from './commonModulesCommand';
+import {
   WorkbookBackedProjectCandidate,
   findNearestProjectManifest
 } from './projectDiscovery';
@@ -75,6 +81,11 @@ export async function activate(context: ExtensionContext): Promise<void> {
       await runWorkbookBackedProjectCommandWithProgress(context, command.toolCommandName, command.title);
     }));
   }
+  for (const command of CommonModulesCommands) {
+    context.subscriptions.push(commands.registerCommand(command.commandId, async () => {
+      await runCommonModulesCommandWithProgress(context, command.toolCommandName, command.title);
+    }));
+  }
 
   await client.start();
   await promptForActiveWorkbookBackedProject(context);
@@ -89,6 +100,16 @@ const WorkbookBackedProjectCommands: ReadonlyArray<{
   { commandId: 'vbaTools.test', toolCommandName: 'test', title: 'VBA Tools: Test' },
   { commandId: 'vbaTools.publish', toolCommandName: 'publish', title: 'VBA Tools: Publish' },
   { commandId: 'vbaTools.export', toolCommandName: 'export', title: 'VBA Tools: Export' }
+];
+
+const CommonModulesCommands: ReadonlyArray<{
+  commandId: string;
+  toolCommandName: CommonModulesToolCommand;
+  title: string;
+}> = [
+  { commandId: 'vbaTools.commonModules.add', toolCommandName: 'add', title: 'VBA Tools: Add Common Module' },
+  { commandId: 'vbaTools.commonModules.list', toolCommandName: 'list', title: 'VBA Tools: List Common Modules' },
+  { commandId: 'vbaTools.commonModules.update', toolCommandName: 'update', title: 'VBA Tools: Update Common Modules' }
 ];
 
 export async function deactivate(): Promise<void> {
@@ -175,6 +196,68 @@ async function runWorkbookBackedProjectCommandWithProgress(
       });
     }
   );
+}
+
+async function runCommonModulesCommandWithProgress(
+  context: ExtensionContext,
+  toolCommandName: CommonModulesToolCommand,
+  title: string
+): Promise<void> {
+  const channel = outputChannel ?? window.createOutputChannel('VBA Tools');
+  outputChannel = channel;
+  const moduleNames = toolCommandName === 'add'
+    ? await promptForCommonModuleNames()
+    : undefined;
+  if (toolCommandName === 'add' && moduleNames === undefined) {
+    return;
+  }
+
+  await window.withProgress(
+    {
+      location: ProgressLocation.Notification,
+      title,
+      cancellable: true
+    },
+    async (_progress, token) => {
+      const options = {
+        extensionRoot: context.extensionPath,
+        configuredDevToolPath: getConfiguredDevToolPath(),
+        activeFilePath: getActiveFilePath(),
+        workspaceRoots: workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [],
+        fileExists,
+        findProjectManifests,
+        chooseProject,
+        outputChannel: channel,
+        showErrorMessage: (message: string) => window.showErrorMessage(message),
+        cancellationToken: token
+      };
+
+      if (toolCommandName === 'add') {
+        await runCommonModulesAddCommand(options, moduleNames ?? []);
+      } else if (toolCommandName === 'update') {
+        await runCommonModulesUpdateCommand(options);
+      } else {
+        await runCommonModulesListCommand(options);
+      }
+    }
+  );
+}
+
+async function promptForCommonModuleNames(): Promise<readonly string[] | undefined> {
+  const value = await window.showInputBox({
+    title: 'Add Common Module',
+    prompt: 'Enter one or more CommonModuleName values separated by spaces.'
+  });
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const moduleNames = value
+    .split(/\s+/)
+    .map((moduleName) => moduleName.trim())
+    .filter((moduleName) => moduleName.length > 0);
+
+  return moduleNames.length > 0 ? moduleNames : undefined;
 }
 
 function getConfiguredDevToolPath(): string | undefined {

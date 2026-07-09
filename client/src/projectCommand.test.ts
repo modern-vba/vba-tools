@@ -62,6 +62,7 @@ for (const commandName of ['build', 'test', 'publish', 'export'] as const) {
       ['capabilities', '--format', 'json'],
       [commandName, '--project', projectRoot]
     ]);
+    assert.equal(calls.some((call) => call.args.includes('common-module') || call.args.includes('restore')), false);
     assert.match(output.join(''), new RegExp(`${commandName} output`));
   });
 }

@@ -16,7 +16,10 @@
     "onCommand:vbaTools.build",
     "onCommand:vbaTools.test",
     "onCommand:vbaTools.publish",
-    "onCommand:vbaTools.export"
+    "onCommand:vbaTools.export",
+    "onCommand:vbaTools.commonModules.add",
+    "onCommand:vbaTools.commonModules.list",
+    "onCommand:vbaTools.commonModules.update"
   ],
   "main": "./client/out/extension.js",
   "contributes": {
@@ -62,6 +65,18 @@
       {
         "command": "vbaTools.export",
         "title": "VBA Tools: Export"
+      },
+      {
+        "command": "vbaTools.commonModules.add",
+        "title": "VBA Tools: Add Common Module"
+      },
+      {
+        "command": "vbaTools.commonModules.list",
+        "title": "VBA Tools: List Common Modules"
+      },
+      {
+        "command": "vbaTools.commonModules.update",
+        "title": "VBA Tools: Update Common Modules"
       }
     ],
     "configuration": {
