@@ -22,7 +22,9 @@ internal sealed class VbaLanguageFeatureService
             {
                 textDocumentSync = 2,
                 definitionProvider = true,
+                referencesProvider = true,
                 documentSymbolProvider = true,
+                workspaceSymbolProvider = true,
                 hoverProvider = true,
                 documentFormattingProvider = true,
                 renameProvider = new
@@ -111,6 +113,44 @@ internal sealed class VbaLanguageFeatureService
                 uri = definition.Uri,
                 range = definition.Range
             };
+    }
+
+    public object[] CreateReferenceLocations(JsonNode? parameters)
+    {
+        if (!TryGetTextDocumentPosition(parameters, out var uri, out var line, out var character))
+        {
+            return [];
+        }
+
+        var snapshot = workspace.CreateProjectSnapshot(uri);
+        return snapshot.SourceIndex
+            .FindReferences(uri, line, character)
+            .Select(reference => new
+            {
+                uri = reference.Uri,
+                range = reference.Range
+            })
+            .ToArray<object>();
+    }
+
+    public object[] CreateWorkspaceSymbols(JsonNode? parameters)
+    {
+        var query = parameters?["query"]?.GetValue<string>() ?? "";
+        return workspace.CreateProjectSnapshots()
+            .SelectMany(snapshot => snapshot.SourceIndex.GetWorkspaceSymbols(query))
+            .GroupBy(symbol => $"{symbol.Uri}:{symbol.Range.Start.Line}:{symbol.Range.Start.Character}:{symbol.Name}", StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .Select(symbol => new
+            {
+                name = symbol.Name,
+                kind = GetSymbolKind(symbol.Kind),
+                location = new
+                {
+                    uri = symbol.Uri,
+                    range = symbol.Range
+                }
+            })
+            .ToArray<object>();
     }
 
     public object[] CreateCompletionItems(JsonNode? parameters)

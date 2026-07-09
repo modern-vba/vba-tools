@@ -65,6 +65,12 @@ public sealed record VbaDefinitionLocation(string Uri, VbaRange Range);
 
 public sealed record VbaTextEdit(VbaRange Range, string NewText);
 
+public sealed record VbaWorkspaceSymbol(
+    string Name,
+    VbaSourceDefinitionKind Kind,
+    string Uri,
+    VbaRange Range);
+
 public sealed record VbaSemanticToken(
     VbaRange Range,
     string Text,
@@ -210,6 +216,65 @@ public sealed class VbaSourceIndex
             .FirstOrDefault(document => SameUri(document.Uri, uri))
             ?.Definitions
             ?? Array.Empty<VbaSourceDefinition>();
+
+    public IReadOnlyList<VbaWorkspaceSymbol> GetWorkspaceSymbols(string query)
+    {
+        var normalizedQuery = query ?? "";
+        return documents
+            .SelectMany(document => document.Definitions)
+            .Where(definition => definition.Visibility != VbaSourceDefinitionVisibility.Local)
+            .Where(definition => !VbaProjectReferenceCatalogSet.IsExternalDefinition(definition))
+            .Where(definition => string.IsNullOrWhiteSpace(normalizedQuery)
+                || definition.Name.Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase))
+            .Select(definition => new VbaWorkspaceSymbol(
+                definition.Name,
+                definition.Kind,
+                definition.Uri,
+                definition.Range))
+            .OrderBy(symbol => symbol.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(symbol => symbol.Uri, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    public IReadOnlyList<VbaDefinitionLocation> FindReferences(string uri, int line, int character)
+    {
+        var target = ResolveSourceDefinition(uri, line, character);
+        if (target is null)
+        {
+            return [];
+        }
+
+        var references = new List<VbaDefinitionLocation>();
+        foreach (var document in documents)
+        {
+            var lines = SplitLines(document.Text);
+            for (var lineIndex = 0; lineIndex < lines.Length; lineIndex++)
+            {
+                foreach (var occurrence in FindIdentifierOccurrences(lines[lineIndex]))
+                {
+                    var resolved = ResolveSourceDefinition(document.Uri, lineIndex, occurrence.Start);
+                    if (resolved is null || !SameDefinition(resolved, target))
+                    {
+                        continue;
+                    }
+
+                    references.Add(new VbaDefinitionLocation(
+                        document.Uri,
+                        new VbaRange(
+                            new VbaPosition(lineIndex, occurrence.Start),
+                            new VbaPosition(lineIndex, occurrence.End))));
+                }
+            }
+        }
+
+        return references
+            .GroupBy(reference => $"{reference.Uri}:{GetRangeKey(reference.Range)}", StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .OrderBy(reference => reference.Uri, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(reference => reference.Range.Start.Line)
+            .ThenBy(reference => reference.Range.Start.Character)
+            .ToArray();
+    }
 
     public IReadOnlyList<VbaSemanticToken> GetSemanticTokens(string uri)
     {

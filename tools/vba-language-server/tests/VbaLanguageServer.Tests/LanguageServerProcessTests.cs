@@ -44,6 +44,8 @@ public sealed class LanguageServerProcessTests
             .GetProperty("capabilities");
         Assert.Equal(2, capabilities.GetProperty("textDocumentSync").GetInt32());
         Assert.True(capabilities.TryGetProperty("completionProvider", out _));
+        Assert.True(capabilities.GetProperty("referencesProvider").GetBoolean());
+        Assert.True(capabilities.GetProperty("workspaceSymbolProvider").GetBoolean());
 
         await SendNotificationAsync(stdin, "initialized", new { });
         await SendNotificationAsync(
@@ -94,7 +96,30 @@ public sealed class LanguageServerProcessTests
         Assert.Contains("Hello", completionLabels);
         Assert.Contains("Sub", completionLabels);
 
-        var shutdown = await SendRequestAsync(stdin, stdout, 3, "shutdown", null);
+        var workspaceSymbols = await SendRequestAsync(
+            stdin,
+            stdout,
+            3,
+            "workspace/symbol",
+            new
+            {
+                query = "hello"
+            });
+        var workspaceSymbol = Assert.Single(workspaceSymbols.GetProperty("result").EnumerateArray());
+        Assert.Equal("Hello", workspaceSymbol.GetProperty("name").GetString());
+
+        var references = await SendPositionRequestAsync(
+            stdin,
+            stdout,
+            4,
+            "textDocument/references",
+            "file:///C:/work/Module1.bas",
+            "Public Sub Hello()\nDebug.Print \"hi\"\nEnd Sub\n",
+            "Hello");
+        var reference = Assert.Single(references.GetProperty("result").EnumerateArray());
+        Assert.Equal("file:///C:/work/Module1.bas", reference.GetProperty("uri").GetString());
+
+        var shutdown = await SendRequestAsync(stdin, stdout, 5, "shutdown", null);
         Assert.Equal(JsonValueKind.Null, shutdown.GetProperty("result").ValueKind);
         await SendNotificationAsync(stdin, "exit", null);
 

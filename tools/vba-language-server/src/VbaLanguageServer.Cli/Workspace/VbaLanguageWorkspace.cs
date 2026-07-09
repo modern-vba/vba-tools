@@ -59,6 +59,25 @@ public sealed class VbaLanguageWorkspace
             sourceIndex);
     }
 
+    public IReadOnlyList<VbaProjectSnapshot> CreateProjectSnapshots()
+    {
+        var snapshots = new List<VbaProjectSnapshot>();
+        var seenScopes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var uri in documents.Keys)
+        {
+            var snapshot = CreateProjectSnapshot(uri);
+            var scopeKey = string.Join(
+                "|",
+                snapshot.SourceDocuments.Keys.OrderBy(key => key, StringComparer.OrdinalIgnoreCase));
+            if (seenScopes.Add(scopeKey))
+            {
+                snapshots.Add(snapshot);
+            }
+        }
+
+        return snapshots;
+    }
+
     public static bool TryCreateReferenceSelections(
         string uri,
         string text,

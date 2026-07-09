@@ -111,6 +111,18 @@ internal sealed class VbaLanguageServerRuntime
                     features.CreateDefinitionLocation(parameters),
                     cancellationToken);
                 return;
+            case "textDocument/references":
+                await transport.WriteResponseAsync(
+                    idNode,
+                    features.CreateReferenceLocations(parameters),
+                    cancellationToken);
+                return;
+            case "workspace/symbol":
+                await transport.WriteResponseAsync(
+                    idNode,
+                    features.CreateWorkspaceSymbols(parameters),
+                    cancellationToken);
+                return;
             case "textDocument/hover":
                 await transport.WriteResponseAsync(idNode, features.CreateHover(parameters), cancellationToken);
                 return;
