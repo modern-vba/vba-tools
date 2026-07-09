@@ -21,6 +21,23 @@ The extension is the primary user-facing surface. `vba-devtool` remains usable
 as a standalone command, but the extension treats it as the command layer for
 workbook-backed project operations.
 
+## Initial implementation sequence
+
+The first implementation batch should complete the Phase 1 command bridge before
+starting Test Explorer work. Test Explorer integration depends on a shared,
+validated command runner and project selection flow.
+
+1. Resolve the bundled or configured `vba-devtool` executable and validate
+   `vba-devtool capabilities --format json`.
+2. Discover `ProjectManifest` candidates from the active file or workspace and
+   pass the selected project root to the CLI explicitly.
+3. Build the shared command runner with Output Channel logging, error handling,
+   and cancellation handling.
+4. Implement `VBA Tools: Doctor` and the first-run "Run Doctor?" prompt.
+5. Implement `Build`, `Test`, `Publish`, and `Export` Command Palette entries
+   through the shared runner.
+6. Implement CommonModules and reference command bridge entries.
+
 ## Phase 1: Extension command bridge
 
 Build the VS Code-side command layer that detects a workbook-backed project and
