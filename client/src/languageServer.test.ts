@@ -21,7 +21,7 @@ test('VbaLanguageServer launch options use stdio command transport', () => {
   const executablePath = resolveVbaLanguageServerPath({ extensionRoot });
 
   assert.deepEqual(
-    createVbaLanguageServerOptions({ extensionRoot }),
+    createVbaLanguageServerOptions({ extensionRoot, platform: 'win32' }),
     {
       run: {
         command: executablePath,
@@ -32,5 +32,15 @@ test('VbaLanguageServer launch options use stdio command transport', () => {
         transport: 0
       }
     }
+  );
+});
+
+test('VbaLanguageServer launch options reject non-Windows platforms with a clear message', () => {
+  assert.throws(
+    () => createVbaLanguageServerOptions({
+      extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
+      platform: 'linux'
+    }),
+    /Windows/
   );
 });

@@ -4,9 +4,12 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export const requiredBundledCliPath = 'bin/vba-dev/win-x64/vba-dev.exe';
+export const requiredBundledLanguageServerPath = 'bin/vba-language-server/win-x64/vba-language-server.exe';
 
 const excludedDevToolSourcePrefix = 'tools/vba-dev/';
+const excludedLanguageServerSourcePrefix = 'tools/vba-language-server/';
 const cliProjectPath = 'tools/vba-dev/src/VbaDev.Cli/VbaDev.Cli.csproj';
+const languageServerProjectPath = 'tools/vba-language-server/src/VbaLanguageServer.Cli/VbaLanguageServer.Cli.csproj';
 const requiredCommandSchemaVersions = {
   build: '1.0',
   'common-module add': '1.0',
@@ -25,9 +28,12 @@ export async function verifyVsixPackaging(options = {}) {
   const root = options.root ?? process.cwd();
   const runCommand = options.runCommand ?? runCommandWithSpawn;
   const bundledCliPath = path.join(root, requiredBundledCliPath);
+  const bundledLanguageServerPath = path.join(root, requiredBundledLanguageServerPath);
 
   await fs.access(bundledCliPath);
+  await fs.access(bundledLanguageServerPath);
   assertCliPublishSettings(await fs.readFile(path.join(root, cliProjectPath), 'utf8'));
+  assertLanguageServerPublishSettings(await fs.readFile(path.join(root, languageServerProjectPath), 'utf8'));
 
   const fileListResult = await runCommand(process.execPath, [
     path.join(root, 'node_modules', '@vscode', 'vsce', 'vsce'),
@@ -49,23 +55,33 @@ export function parseVsceFileList(stdout) {
 
 export function assertVsixContents(files) {
   const normalized = files.map((file) => file.replaceAll('\\', '/').replace(/^\.\//, ''));
-  if (!normalized.includes(requiredBundledCliPath)) {
-    throw new Error(`VSIX file list must include ${requiredBundledCliPath}.`);
+  for (const requiredPath of [requiredBundledCliPath, requiredBundledLanguageServerPath]) {
+    if (!normalized.includes(requiredPath)) {
+      throw new Error(`VSIX file list must include ${requiredPath}.`);
+    }
   }
 
   const sourceFiles = normalized.filter((file) => (
     file === 'tools/vba-dev' || file.startsWith(excludedDevToolSourcePrefix)
+    || file === 'tools/vba-language-server' || file.startsWith(excludedLanguageServerSourcePrefix)
   ));
   if (sourceFiles.length > 0) {
-    throw new Error(`VSIX file list must exclude tools/vba-dev source files: ${sourceFiles.join(', ')}`);
+    throw new Error(`VSIX file list must exclude tool source files: ${sourceFiles.join(', ')}`);
   }
 }
 
 export function assertCliPublishSettings(csprojText) {
-  assertProjectProperty(csprojText, 'AssemblyName', 'vba-dev');
-  assertProjectProperty(csprojText, 'RuntimeIdentifier', 'win-x64');
-  assertProjectProperty(csprojText, 'SelfContained', 'true');
-  assertProjectProperty(csprojText, 'PublishSingleFile', 'true');
+  assertProjectProperty(csprojText, 'AssemblyName', 'vba-dev', 'VbaDev.Cli.csproj');
+  assertProjectProperty(csprojText, 'RuntimeIdentifier', 'win-x64', 'VbaDev.Cli.csproj');
+  assertProjectProperty(csprojText, 'SelfContained', 'true', 'VbaDev.Cli.csproj');
+  assertProjectProperty(csprojText, 'PublishSingleFile', 'true', 'VbaDev.Cli.csproj');
+}
+
+export function assertLanguageServerPublishSettings(csprojText) {
+  assertProjectProperty(csprojText, 'AssemblyName', 'vba-language-server', 'VbaLanguageServer.Cli.csproj');
+  assertProjectProperty(csprojText, 'RuntimeIdentifier', 'win-x64', 'VbaLanguageServer.Cli.csproj');
+  assertProjectProperty(csprojText, 'SelfContained', 'true', 'VbaLanguageServer.Cli.csproj');
+  assertProjectProperty(csprojText, 'PublishSingleFile', 'true', 'VbaLanguageServer.Cli.csproj');
 }
 
 export function assertBundledCliCapabilities(stdout) {
@@ -88,10 +104,10 @@ export function assertBundledCliCapabilities(stdout) {
   }
 }
 
-function assertProjectProperty(csprojText, propertyName, expectedValue) {
+function assertProjectProperty(csprojText, propertyName, expectedValue, projectFileName) {
   const pattern = new RegExp(`<${propertyName}>\\s*${escapeRegExp(expectedValue)}\\s*</${propertyName}>`, 'i');
   if (!pattern.test(csprojText)) {
-    throw new Error(`VbaDev.Cli.csproj must set ${propertyName} to ${expectedValue}.`);
+    throw new Error(`${projectFileName} must set ${propertyName} to ${expectedValue}.`);
   }
 }
 

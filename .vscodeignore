@@ -13,5 +13,6 @@ coverage/**
 test-results/**
 playwright-report/**
 tools/vba-dev/**
+tools/vba-language-server/**
 scripts/**
 *.vsix

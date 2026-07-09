@@ -50,6 +50,7 @@ internal sealed class MinimalLanguageServer
 
             if (method == "exit")
             {
+                Environment.ExitCode = shutdownRequested ? 0 : 1;
                 return;
             }
 

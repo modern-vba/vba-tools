@@ -7,8 +7,10 @@ import path from 'node:path';
 import {
   assertBundledCliCapabilities,
   assertCliPublishSettings,
+  assertLanguageServerPublishSettings,
   assertVsixContents,
   requiredBundledCliPath,
+  requiredBundledLanguageServerPath,
   verifyVsixPackaging
 } from './vsixPackagingRules.mjs';
 
@@ -16,6 +18,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
   assert.doesNotThrow(() => assertVsixContents([
     'README.md',
     requiredBundledCliPath,
+    requiredBundledLanguageServerPath,
     'client/out/extension.js'
   ]));
 
@@ -23,7 +26,8 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
     () => assertVsixContents([
       'README.md',
       'tools/vba-dev/src/VbaDev.Cli/Program.cs',
-      requiredBundledCliPath
+      requiredBundledCliPath,
+      requiredBundledLanguageServerPath
     ]),
     /tools\/vba-dev/
   );
@@ -31,9 +35,20 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
   assert.throws(
     () => assertVsixContents([
       'README.md',
+      'tools/vba-language-server/src/VbaLanguageServer.Cli/Program.cs',
+      requiredBundledCliPath,
+      requiredBundledLanguageServerPath
+    ]),
+    /tools\/vba-language-server/
+  );
+
+  assert.throws(
+    () => assertVsixContents([
+      'README.md',
+      requiredBundledCliPath,
       'client/out/extension.js'
     ]),
-    /bin\/vba-dev\/win-x64\/vba-dev\.exe/
+    /bin\/vba-language-server\/win-x64\/vba-language-server\.exe/
   );
 });
 
@@ -61,6 +76,32 @@ test('CLI publish settings require a Windows x64 self-contained single-file exec
 </Project>
 `),
     /SelfContained/
+  );
+});
+
+test('language server publish settings require a Windows x64 self-contained single-file executable', () => {
+  assert.doesNotThrow(() => assertLanguageServerPublishSettings(`
+<Project>
+  <PropertyGroup>
+    <AssemblyName>vba-language-server</AssemblyName>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+  </PropertyGroup>
+</Project>
+`));
+
+  assert.throws(
+    () => assertLanguageServerPublishSettings(`
+<Project>
+  <PropertyGroup>
+    <AssemblyName>vba-language-server</AssemblyName>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+  </PropertyGroup>
+</Project>
+`),
+    /PublishSingleFile/
   );
 });
 
@@ -100,6 +141,8 @@ test('packaging verification checks file contents publish settings and bundled C
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-packaging-'));
   await fs.mkdir(path.join(root, 'bin', 'vba-dev', 'win-x64'), { recursive: true });
   await fs.writeFile(path.join(root, requiredBundledCliPath), '');
+  await fs.mkdir(path.join(root, 'bin', 'vba-language-server', 'win-x64'), { recursive: true });
+  await fs.writeFile(path.join(root, requiredBundledLanguageServerPath), '');
   await fs.mkdir(path.join(root, 'tools', 'vba-dev', 'src', 'VbaDev.Cli'), { recursive: true });
   await fs.writeFile(
     path.join(root, 'tools', 'vba-dev', 'src', 'VbaDev.Cli', 'VbaDev.Cli.csproj'),
@@ -107,6 +150,20 @@ test('packaging verification checks file contents publish settings and bundled C
 <Project>
   <PropertyGroup>
     <AssemblyName>vba-dev</AssemblyName>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+  </PropertyGroup>
+</Project>
+`
+  );
+  await fs.mkdir(path.join(root, 'tools', 'vba-language-server', 'src', 'VbaLanguageServer.Cli'), { recursive: true });
+  await fs.writeFile(
+    path.join(root, 'tools', 'vba-language-server', 'src', 'VbaLanguageServer.Cli', 'VbaLanguageServer.Cli.csproj'),
+    `
+<Project>
+  <PropertyGroup>
+    <AssemblyName>vba-language-server</AssemblyName>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
@@ -136,7 +193,7 @@ test('packaging verification checks file contents publish settings and bundled C
       calls.push({ file: path.basename(file), args });
       if (args.includes('ls')) {
         return {
-          stdout: `${requiredBundledCliPath}\nREADME.md\n`,
+          stdout: `${requiredBundledCliPath}\n${requiredBundledLanguageServerPath}\nREADME.md\n`,
           stderr: ''
         };
       }
@@ -165,8 +222,11 @@ test('package scripts publish the bundled CLI and verify VSIX contents before pa
 
   assert.match(packageJson.scripts['publish:devtool'], /dotnet publish/);
   assert.match(packageJson.scripts['publish:devtool'], /-o bin\/vba-dev\/win-x64/);
+  assert.match(packageJson.scripts['publish:language-server'], /dotnet publish/);
+  assert.match(packageJson.scripts['publish:language-server'], /-o bin\/vba-language-server\/win-x64/);
   assert.equal(packageJson.scripts['verify:vsix'], 'node scripts/vsixPackagingRules.mjs');
   assert.match(packageJson.scripts['package:verify'], /publish:devtool/);
+  assert.match(packageJson.scripts['package:verify'], /publish:language-server/);
   assert.match(packageJson.scripts['package:verify'], /verify:vsix/);
   assert.match(packageJson.scripts.package, /package:verify/);
   assert.match(packageJson.scripts.test, /test:packaging/);

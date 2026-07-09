@@ -73,30 +73,35 @@ let outputChannel: OutputChannel | undefined;
 let toolDiagnosticReporter: VbaDevDiagnosticReporter | undefined;
 
 export async function activate(context: ExtensionContext): Promise<void> {
-  const serverOptions = createVbaLanguageServerOptions({
-    extensionRoot: context.extensionPath
-  });
-
-  const clientOptions: LanguageClientOptions = {
-    documentSelector: [
-      { language: 'vba', scheme: 'file' },
-      { language: 'vba', scheme: 'untitled' }
-    ],
-    synchronize: {
-      fileEvents: workspace.createFileSystemWatcher('**/*.{bas,cls,frm}')
-    }
-  };
-
-  client = new LanguageClient(
-    'vbaLanguageServer',
-    'VBA Language Server',
-    serverOptions,
-    clientOptions
-  );
-
-  context.subscriptions.push(client);
   outputChannel = window.createOutputChannel('VBA Tools');
   context.subscriptions.push(outputChannel);
+  try {
+    const serverOptions = createVbaLanguageServerOptions({
+      extensionRoot: context.extensionPath
+    });
+
+    const clientOptions: LanguageClientOptions = {
+      documentSelector: [
+        { language: 'vba', scheme: 'file' },
+        { language: 'vba', scheme: 'untitled' }
+      ],
+      synchronize: {
+        fileEvents: workspace.createFileSystemWatcher('**/*.{bas,cls,frm}')
+      }
+    };
+
+    client = new LanguageClient(
+      'vbaLanguageServer',
+      'VBA Language Server',
+      serverOptions,
+      clientOptions
+    );
+
+    context.subscriptions.push(client);
+  } catch (error) {
+    void window.showWarningMessage(error instanceof Error ? error.message : String(error));
+  }
+
   const toolDiagnosticCollection = languages.createDiagnosticCollection('vba-dev');
   context.subscriptions.push(toolDiagnosticCollection);
   toolDiagnosticReporter = new VbaDevDiagnosticReporter(
@@ -136,7 +141,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
     }));
   }
 
-  await client.start();
+  await client?.start();
   await workbookBackedTestExplorer.refresh();
   await promptForActiveWorkbookBackedProject(context);
 }
