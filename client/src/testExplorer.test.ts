@@ -94,6 +94,177 @@ test('Test Explorer creates only the default run profile', () => {
   ]);
 });
 
+test('testFinished events discover module and TestProcedure nodes and mark passed outcomes', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([
+      [path.join(projectRoot, 'project.json'), manifestJson('BookProject', ['Book1'])]
+    ]),
+    stdout: ndjson({
+      type: 'testFinished',
+      document: 'Book1',
+      module: 'Test_Module',
+      procedure: 'Test_Passes',
+      outcome: 'passed',
+      message: ''
+    })
+  });
+  await explorer.refresh();
+  const documentItem = controller.items[0].children.items[0];
+
+  await explorer.run({ include: [documentItem] }, { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) });
+
+  const moduleItem = documentItem.children.items[0];
+  const procedureItem = moduleItem.children.items[0];
+  assert.equal(moduleItem.label, 'Test_Module');
+  assert.equal(procedureItem.label, 'Test_Passes');
+  assert.ok(controller.runs[0].events.includes(`passed:${procedureItem.id}`));
+});
+
+test('current result records are treated as TestProcedure completion events', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([
+      [path.join(projectRoot, 'project.json'), manifestJson('BookProject', ['Book1'])]
+    ]),
+    stdout: ndjson({
+      type: 'result',
+      document: 'Book1',
+      category: 'Test_Module',
+      testName: 'Test_Passes',
+      outcome: 'passed',
+      message: ''
+    })
+  });
+  await explorer.refresh();
+  const documentItem = controller.items[0].children.items[0];
+
+  await explorer.run({ include: [documentItem] }, { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) });
+
+  const moduleItem = documentItem.children.items[0];
+  const procedureItem = moduleItem.children.items[0];
+  assert.equal(moduleItem.label, 'Test_Module');
+  assert.equal(procedureItem.label, 'Test_Passes');
+  assert.ok(controller.runs[0].events.includes(`passed:${procedureItem.id}`));
+});
+
+test('testStarted events update known TestProcedure running state', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const controller = new FakeTestController();
+  let runIndex = 0;
+  const explorer = createExplorer(controller, {
+    manifests: new Map([
+      [path.join(projectRoot, 'project.json'), manifestJson('BookProject', ['Book1'])]
+    ]),
+    startProcess: () => {
+      const stdout = runIndex++ === 0
+        ? ndjson({
+          type: 'testFinished',
+          document: 'Book1',
+          module: 'Test_Module',
+          procedure: 'Test_Passes',
+          outcome: 'passed',
+          message: ''
+        })
+        : ndjson(
+          {
+            type: 'testStarted',
+            document: 'Book1',
+            module: 'Test_Module',
+            procedure: 'Test_Passes'
+          },
+          {
+            type: 'testFinished',
+            document: 'Book1',
+            module: 'Test_Module',
+            procedure: 'Test_Passes',
+            outcome: 'passed',
+            message: ''
+          }
+        );
+
+      return {
+        onStdout: (listener) => listener(stdout),
+        onStderr: (listener) => listener(''),
+        onExit: (listener) => listener(0, null),
+        kill: () => undefined
+      };
+    }
+  });
+  await explorer.refresh();
+  const documentItem = controller.items[0].children.items[0];
+  await explorer.run({ include: [documentItem] }, { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) });
+
+  controller.runs.splice(0, controller.runs.length);
+  await explorer.run({ include: [documentItem] }, { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) });
+
+  const procedureItem = documentItem.children.items[0].children.items[0];
+  assert.ok(controller.runs[0].events.includes(`started:${procedureItem.id}`));
+});
+
+test('failed testFinished outcomes mark TestProcedure failed with message and source location', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const sourcePath = path.join(projectRoot, 'src', 'Book1', 'Test_Module.bas');
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([
+      [path.join(projectRoot, 'project.json'), manifestJson('BookProject', ['Book1'])]
+    ]),
+    stdout: ndjson({
+      type: 'testFinished',
+      document: 'Book1',
+      module: 'Test_Module',
+      procedure: 'Test_Fails',
+      outcome: 'failed',
+      message: 'Expected 1 but was 2',
+      location: {
+        file: sourcePath,
+        line: 12,
+        character: 4
+      }
+    }),
+    exitCode: 1
+  });
+  await explorer.refresh();
+  const documentItem = controller.items[0].children.items[0];
+
+  await explorer.run({ include: [documentItem] }, { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) });
+
+  const procedureItem = documentItem.children.items[0].children.items[0];
+  assert.ok(controller.runs[0].events.includes(`failed:${procedureItem.id}:Expected 1 but was 2:${sourcePath}:12:4`));
+});
+
+test('CLI command failures are reported as project-level or document-level TestRunError', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const projectController = new FakeTestController();
+  const projectExplorer = createExplorer(projectController, {
+    manifests: new Map([
+      [path.join(projectRoot, 'project.json'), manifestJson('BookProject', ['Book1'])]
+    ]),
+    stderr: 'Build failed\n',
+    exitCode: 1
+  });
+  await projectExplorer.refresh();
+  await projectExplorer.run({ include: [projectController.items[0]] }, { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) });
+
+  const documentController = new FakeTestController();
+  const documentExplorer = createExplorer(documentController, {
+    manifests: new Map([
+      [path.join(projectRoot, 'project.json'), manifestJson('BookProject', ['Book1'])]
+    ]),
+    stderr: 'Reference was not found\n',
+    exitCode: 1
+  });
+  await documentExplorer.refresh();
+  const documentItem = documentController.items[0].children.items[0];
+  await documentExplorer.run({ include: [documentItem] }, { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) });
+
+  assert.ok(projectController.runs[0].events.includes(`errored:${projectController.items[0].id}:Build failed`));
+  assert.ok(documentController.runs[0].events.includes(`errored:${documentItem.id}:Reference was not found`));
+});
+
 test('Cancelled VS Code test runs terminate the spawned CLI process', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const controller = new FakeTestController();
@@ -131,7 +302,7 @@ test('Cancelled VS Code test runs terminate the spawned CLI process', async () =
   assert.equal(killed, true);
   assert.deepEqual(controller.runs[0].events, [
     `started:${controller.items[0].id}`,
-    `skipped:${controller.items[0].id}`,
+    `cancelled:${controller.items[0].id}`,
     'end'
   ]);
 });
@@ -142,6 +313,9 @@ function createExplorer(
     manifests: Map<string, string>;
     calls?: Array<{ file: string; args: readonly string[] }>;
     output?: string[];
+    stdout?: string;
+    stderr?: string;
+    exitCode?: number;
     startProcess?: TestControllerStartProcess;
   }
 ) {
@@ -177,9 +351,9 @@ function createExplorer(
     startProcess: options.startProcess ?? ((file, args) => {
       calls.push({ file, args });
       return {
-        onStdout: (listener) => listener('{"type":"summary","document":"Book1","total":1,"passed":1,"failed":0,"errors":0}\n'),
-        onStderr: (listener) => listener(''),
-        onExit: (listener) => listener(0, null),
+        onStdout: (listener) => listener(options.stdout ?? '{"type":"summary","document":"Book1","total":1,"passed":1,"failed":0,"errors":0}\n'),
+        onStderr: (listener) => listener(options.stderr ?? ''),
+        onExit: (listener) => listener(options.exitCode ?? 0, null),
         kill: () => undefined
       };
     }),
@@ -190,6 +364,10 @@ function createExplorer(
     },
     showErrorMessage: async () => undefined
   });
+}
+
+function ndjson(...records: readonly Record<string, unknown>[]): string {
+  return records.map((record) => JSON.stringify(record)).join('\n') + '\n';
 }
 
 function manifestJson(projectName: string, documentNames: readonly string[]): string {
@@ -273,12 +451,25 @@ class FakeTestRun {
     this.events.push(`passed:${item.id}`);
   }
 
-  public failed(item: TestExplorerItem): void {
-    this.events.push(`failed:${item.id}`);
+  public failed(
+    item: TestExplorerItem,
+    message = '',
+    location?: { uriPath: string; line: number; character: number } | undefined
+  ): void {
+    if (location) {
+      this.events.push(`failed:${item.id}:${message}:${location.uriPath}:${location.line}:${location.character}`);
+      return;
+    }
+
+    this.events.push(message.length > 0 ? `failed:${item.id}:${message}` : `failed:${item.id}`);
   }
 
-  public skipped(item: TestExplorerItem): void {
-    this.events.push(`skipped:${item.id}`);
+  public errored(item: TestExplorerItem, message: string): void {
+    this.events.push(`errored:${item.id}:${message.trim()}`);
+  }
+
+  public cancelled(item: TestExplorerItem): void {
+    this.events.push(`cancelled:${item.id}`);
   }
 
   public appendOutput(): void {

@@ -4,7 +4,9 @@ import { promises as fs } from 'node:fs';
 import {
   CancellationToken,
   ExtensionContext,
+  Location,
   OutputChannel,
+  Position,
   ProgressLocation,
   TestController,
   TestItem,
@@ -51,6 +53,7 @@ import {
 import {
   TestControllerAdapter,
   TestExplorerItem,
+  TestMessageLocation,
   TestRunLike,
   TestRunRequestLike,
   createWorkbookBackedTestExplorer
@@ -433,8 +436,15 @@ function toTestRunLike(run: TestRun): TestRunLike {
   return {
     started: (item: TestExplorerItem) => run.started(item as TestItem),
     passed: (item: TestExplorerItem) => run.passed(item as TestItem),
-    failed: (item: TestExplorerItem, message: string) => run.failed(item as TestItem, new TestMessage(message)),
-    skipped: (item: TestExplorerItem) => run.skipped(item as TestItem),
+    failed: (item: TestExplorerItem, message: string, location?: TestMessageLocation | undefined) => {
+      run.failed(item as TestItem, toTestMessage(message, location));
+    },
+    errored: (item: TestExplorerItem, message: string, location?: TestMessageLocation | undefined) => {
+      run.errored(item as TestItem, toTestMessage(message, location));
+    },
+    cancelled: (_item: TestExplorerItem) => {
+      run.appendOutput('Test run cancelled.\r\n');
+    },
     appendOutput: (output: string) => {
       if (output.length > 0) {
         run.appendOutput(output.replace(/\n/g, '\r\n'));
@@ -442,6 +452,18 @@ function toTestRunLike(run: TestRun): TestRunLike {
     },
     end: () => run.end()
   };
+}
+
+function toTestMessage(message: string, location?: TestMessageLocation | undefined): TestMessage {
+  const testMessage = new TestMessage(message);
+  if (location) {
+    testMessage.location = new Location(
+      Uri.file(location.uriPath),
+      new Position(location.line, location.character)
+    );
+  }
+
+  return testMessage;
 }
 
 async function chooseProject(
