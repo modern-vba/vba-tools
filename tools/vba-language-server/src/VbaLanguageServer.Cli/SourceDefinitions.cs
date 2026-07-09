@@ -35,7 +35,18 @@ public sealed record VbaSourceDefinition(
     string ModuleName,
     VbaRange Range,
     string? ParentProcedureName = null,
-    VbaRange? ParentProcedureRange = null);
+    VbaRange? ParentProcedureRange = null,
+    string? Documentation = null,
+    VbaCallableSignature? Signature = null);
+
+public sealed record VbaCallableParameter(string Name, string? Documentation = null);
+
+public sealed record VbaCallableSignature(
+    string Label,
+    IReadOnlyList<VbaCallableParameter> Parameters,
+    string? Documentation = null);
+
+public sealed record VbaSignatureHelp(VbaCallableSignature Signature, int ActiveParameter);
 
 public sealed record VbaSourceDocument(
     string Uri,
@@ -44,6 +55,8 @@ public sealed record VbaSourceDocument(
     IReadOnlyList<VbaSourceDefinition> Definitions);
 
 public sealed record VbaDefinitionLocation(string Uri, VbaRange Range);
+
+public sealed record VbaTextEdit(VbaRange Range, string NewText);
 
 public sealed class VbaSourceIndex
 {
@@ -83,6 +96,70 @@ public sealed class VbaSourceIndex
         "[A-Za-z_][A-Za-z0-9_]*",
         RegexOptions.CultureInvariant);
 
+    private static readonly IReadOnlyDictionary<string, string> LanguageKeywords =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["as"] = "As",
+            ["byref"] = "ByRef",
+            ["byval"] = "ByVal",
+            ["const"] = "Const",
+            ["dim"] = "Dim",
+            ["else"] = "Else",
+            ["elseif"] = "ElseIf",
+            ["end"] = "End",
+            ["enum"] = "Enum",
+            ["explicit"] = "Explicit",
+            ["false"] = "False",
+            ["for"] = "For",
+            ["function"] = "Function",
+            ["if"] = "If",
+            ["next"] = "Next",
+            ["nothing"] = "Nothing",
+            ["option"] = "Option",
+            ["private"] = "Private",
+            ["property"] = "Property",
+            ["public"] = "Public",
+            ["set"] = "Set",
+            ["string"] = "String",
+            ["sub"] = "Sub",
+            ["then"] = "Then",
+            ["true"] = "True",
+            ["type"] = "Type",
+            ["while"] = "While",
+            ["with"] = "With"
+        };
+
+    public static readonly IReadOnlyList<string> LanguageVocabulary = [
+        "As",
+        "ByRef",
+        "ByVal",
+        "Const",
+        "Dim",
+        "Else",
+        "ElseIf",
+        "End",
+        "Enum",
+        "Explicit",
+        "False",
+        "For",
+        "Function",
+        "If",
+        "Next",
+        "Nothing",
+        "Option",
+        "Private",
+        "Property",
+        "Public",
+        "Set",
+        "String",
+        "Sub",
+        "Then",
+        "True",
+        "Type",
+        "While",
+        "With"
+    ];
+
     private readonly IReadOnlyList<VbaSourceDocument> documents;
 
     private VbaSourceIndex(IReadOnlyList<VbaSourceDocument> documents)
@@ -104,7 +181,38 @@ public sealed class VbaSourceIndex
             ?.Definitions
             ?? Array.Empty<VbaSourceDefinition>();
 
+    public IReadOnlyList<VbaSourceDefinition> GetCompletionDefinitions(string uri, int line, int character)
+    {
+        var currentDocument = documents.FirstOrDefault(document => SameUri(document.Uri, uri));
+        if (currentDocument is null)
+        {
+            return Array.Empty<VbaSourceDefinition>();
+        }
+
+        var position = new VbaPosition(line, character);
+        var definitions = currentDocument.Definitions
+            .Where(definition =>
+                IsReferenceTarget(definition)
+                || (definition.Visibility == VbaSourceDefinitionVisibility.Local && ContainsPosition(definition, position)))
+            .Concat(documents
+                .Where(document => !SameUri(document.Uri, currentDocument.Uri))
+                .SelectMany(document => document.Definitions)
+                .Where(IsReferenceTarget)
+                .Where(definition => definition.Visibility == VbaSourceDefinitionVisibility.Public))
+            .GroupBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .OrderBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        return definitions;
+    }
+
     public VbaDefinitionLocation? ResolveDefinition(string uri, int line, int character)
+    {
+        var definition = ResolveSourceDefinition(uri, line, character);
+        return definition is null ? null : new VbaDefinitionLocation(definition.Uri, definition.Range);
+    }
+
+    public VbaSourceDefinition? ResolveSourceDefinition(string uri, int line, int character)
     {
         var currentDocument = documents.FirstOrDefault(document => SameUri(document.Uri, uri));
         if (currentDocument is null)
@@ -114,6 +222,11 @@ public sealed class VbaSourceIndex
 
         var lines = SplitLines(currentDocument.Text);
         if (line < 0 || line >= lines.Length)
+        {
+            return null;
+        }
+
+        if (!IsCodePosition(lines[line], character))
         {
             return null;
         }
@@ -129,7 +242,120 @@ public sealed class VbaSourceIndex
             ? ResolveUnqualified(currentDocument, new VbaPosition(line, character), identifier.Name)
             : ResolveQualified(currentDocument, qualifier, identifier.Name);
 
-        return definition is null ? null : new VbaDefinitionLocation(definition.Uri, definition.Range);
+        return definition;
+    }
+
+    public VbaSignatureHelp? GetSignatureHelp(string uri, int line, int character)
+    {
+        var currentDocument = documents.FirstOrDefault(document => SameUri(document.Uri, uri));
+        if (currentDocument is null)
+        {
+            return null;
+        }
+
+        var lines = SplitLines(currentDocument.Text);
+        if (line < 0 || line >= lines.Length)
+        {
+            return null;
+        }
+
+        var prefix = lines[line][..Math.Clamp(character, 0, lines[line].Length)];
+        var callMatch = Regex.Matches(
+                prefix,
+                "(?<name>[A-Za-z_][A-Za-z0-9_]*)\\s*\\((?<arguments>[^()]*)$",
+                RegexOptions.CultureInvariant)
+            .Cast<Match>()
+            .LastOrDefault();
+        if (callMatch is null)
+        {
+            return null;
+        }
+
+        var namePosition = callMatch.Groups["name"].Index;
+        var definition = ResolveSourceDefinition(uri, line, namePosition);
+        if (definition?.Signature is null)
+        {
+            return null;
+        }
+
+        var activeParameter = Math.Min(
+            callMatch.Groups["arguments"].Value.Count(characterValue => characterValue == ','),
+            Math.Max(0, definition.Signature.Parameters.Count - 1));
+        return new VbaSignatureHelp(definition.Signature, activeParameter);
+    }
+
+    public IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>>? CreateRenameChanges(
+        string uri,
+        int line,
+        int character,
+        string newName)
+    {
+        if (!IsIdentifierName(newName))
+        {
+            return null;
+        }
+
+        var target = ResolveSourceDefinition(uri, line, character);
+        if (target is null || !IsRenameTarget(target))
+        {
+            return null;
+        }
+
+        var changes = new Dictionary<string, IReadOnlyList<VbaTextEdit>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var document in documents)
+        {
+            var edits = new List<VbaTextEdit>();
+            var lines = SplitLines(document.Text);
+            for (var lineIndex = 0; lineIndex < lines.Length; lineIndex++)
+            {
+                foreach (var occurrence in FindIdentifierOccurrences(lines[lineIndex]))
+                {
+                    if (!SameName(occurrence.Name, target.Name))
+                    {
+                        continue;
+                    }
+
+                    var resolved = ResolveSourceDefinition(document.Uri, lineIndex, occurrence.Start);
+                    if (resolved is not null && SameDefinition(resolved, target))
+                    {
+                        edits.Add(new VbaTextEdit(
+                            new VbaRange(
+                                new VbaPosition(lineIndex, occurrence.Start),
+                                new VbaPosition(lineIndex, occurrence.End)),
+                            newName));
+                    }
+                }
+            }
+
+            if (edits.Count > 0)
+            {
+                changes[document.Uri] = edits;
+            }
+        }
+
+        return changes.Count == 0 ? null : changes;
+    }
+
+    public VbaTextEdit? FormatDocument(string uri, int tabSize)
+    {
+        var document = documents.FirstOrDefault(candidate => SameUri(candidate.Uri, uri));
+        if (document is null)
+        {
+            return null;
+        }
+
+        var formattedText = FormatText(document, Math.Max(1, tabSize));
+        if (string.Equals(formattedText, document.Text, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        var lines = SplitLines(document.Text);
+        return new VbaTextEdit(
+            new VbaRange(
+                new VbaPosition(0, 0),
+                new VbaPosition(Math.Max(0, lines.Length - 1), lines.Length == 0 ? 0 : lines[^1].Length)),
+            formattedText);
     }
 
     private VbaSourceDefinition? ResolveUnqualified(
@@ -220,6 +446,7 @@ public sealed class VbaSourceIndex
             var eventMatch = EventPattern.Match(codeLine);
             if (eventMatch.Success)
             {
+                var documentation = ParseDocumentationComment(lines, lineIndex);
                 definitions.Add(CreateDefinition(
                     eventMatch,
                     "name",
@@ -228,7 +455,8 @@ public sealed class VbaSourceIndex
                     VbaSourceDefinitionKind.Event,
                     GetVisibility(eventMatch.Groups["visibility"].Value, defaultPublic: true),
                     lineIndex,
-                    lines[lineIndex]));
+                    lines[lineIndex],
+                    documentation: documentation?.HoverText));
                 AddParameters(definitions, eventMatch, uri, moduleDefinition.Name, lineIndex, lines[lineIndex], null);
                 continue;
             }
@@ -276,6 +504,7 @@ public sealed class VbaSourceIndex
             var constMatch = ConstPattern.Match(codeLine);
             if (constMatch.Success)
             {
+                var documentation = ParseDocumentationComment(lines, lineIndex);
                 definitions.Add(CreateDefinition(
                     constMatch,
                     "name",
@@ -284,13 +513,20 @@ public sealed class VbaSourceIndex
                     VbaSourceDefinitionKind.Constant,
                     GetVisibility(constMatch.Groups["visibility"].Value, defaultPublic: true),
                     lineIndex,
-                    lines[lineIndex]));
+                    lines[lineIndex],
+                    documentation: documentation?.HoverText));
                 continue;
             }
 
             var procedureMatch = ProcedurePattern.Match(codeLine);
             if (procedureMatch.Success)
             {
+                var documentation = ParseDocumentationComment(lines, lineIndex);
+                var signature = CreateSignature(
+                    procedureMatch.Groups["name"].Value,
+                    ParseCallableParameters(procedureMatch, documentation),
+                    lines[lineIndex],
+                    documentation);
                 var procedureKind = procedureMatch.Groups["kind"].Success
                     ? VbaSourceDefinitionKind.Procedure
                     : VbaSourceDefinitionKind.Property;
@@ -302,7 +538,9 @@ public sealed class VbaSourceIndex
                     procedureKind,
                     GetVisibility(procedureMatch.Groups["visibility"].Value, defaultPublic: true),
                     lineIndex,
-                    lines[lineIndex]);
+                    lines[lineIndex],
+                    documentation: documentation?.HoverText,
+                    signature: signature);
                 definitions.Add(procedureDefinition);
                 var endKeyword = procedureKind == VbaSourceDefinitionKind.Property
                     ? "Property"
@@ -392,7 +630,9 @@ public sealed class VbaSourceIndex
         int line,
         string originalLine,
         string? parentProcedureName = null,
-        VbaRange? parentProcedureRange = null)
+        VbaRange? parentProcedureRange = null,
+        string? documentation = null,
+        VbaCallableSignature? signature = null)
     {
         var name = match.Groups[groupName].Value;
         var start = originalLine.IndexOf(name, StringComparison.Ordinal);
@@ -409,7 +649,9 @@ public sealed class VbaSourceIndex
             moduleName,
             new VbaRange(new VbaPosition(line, start), new VbaPosition(line, start + name.Length)),
             parentProcedureName,
-            parentProcedureRange);
+            parentProcedureRange,
+            documentation,
+            signature);
     }
 
     private static void AddParameters(
@@ -558,6 +800,170 @@ public sealed class VbaSourceIndex
             && definition.Kind != VbaSourceDefinitionKind.Class
             && definition.Kind != VbaSourceDefinitionKind.Form;
 
+    private static bool IsRenameTarget(VbaSourceDefinition definition)
+        => definition.Visibility == VbaSourceDefinitionVisibility.Local || IsReferenceTarget(definition);
+
+    private static bool SameDefinition(VbaSourceDefinition left, VbaSourceDefinition right)
+        => SameUri(left.Uri, right.Uri)
+            && SameName(left.Name, right.Name)
+            && ComparePosition(left.Range.Start, right.Range.Start) == 0
+            && ComparePosition(left.Range.End, right.Range.End) == 0;
+
+    private static DocumentationComment? ParseDocumentationComment(string[] lines, int declarationLine)
+    {
+        var rawLines = new Stack<string>();
+        for (var lineIndex = declarationLine - 1; lineIndex >= 0; lineIndex--)
+        {
+            var trimmed = lines[lineIndex].TrimStart();
+            if (!trimmed.StartsWith("'*", StringComparison.Ordinal))
+            {
+                break;
+            }
+
+            rawLines.Push(trimmed[2..].TrimStart());
+        }
+
+        if (rawLines.Count == 0)
+        {
+            return null;
+        }
+
+        var bodyLines = new List<string>();
+        var parameterDocs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        string? returnDocumentation = null;
+        foreach (var rawLine in rawLines)
+        {
+            if (rawLine.StartsWith("@brief ", StringComparison.OrdinalIgnoreCase))
+            {
+                bodyLines.Add(rawLine["@brief ".Length..].Trim());
+                continue;
+            }
+
+            if (rawLine.StartsWith("@details ", StringComparison.OrdinalIgnoreCase))
+            {
+                if (bodyLines.Count > 0 && bodyLines[^1].Length != 0)
+                {
+                    bodyLines.Add("");
+                }
+
+                bodyLines.Add(rawLine["@details ".Length..].Trim());
+                continue;
+            }
+
+            if (rawLine.StartsWith("@param ", StringComparison.OrdinalIgnoreCase))
+            {
+                var parts = rawLine["@param ".Length..].Trim().Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length == 2)
+                {
+                    parameterDocs[parts[0]] = parts[1].Trim();
+                }
+
+                continue;
+            }
+
+            if (rawLine.StartsWith("@return ", StringComparison.OrdinalIgnoreCase))
+            {
+                returnDocumentation = rawLine["@return ".Length..].Trim();
+                continue;
+            }
+
+            bodyLines.Add(rawLine.Trim());
+        }
+
+        var hoverLines = new List<string>(bodyLines);
+        foreach (var parameter in parameterDocs)
+        {
+            if (hoverLines.Count > 0 && hoverLines[^1].Length != 0)
+            {
+                hoverLines.Add("");
+            }
+
+            hoverLines.Add($"@param {parameter.Key} {parameter.Value}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(returnDocumentation))
+        {
+            if (hoverLines.Count > 0 && hoverLines[^1].Length != 0)
+            {
+                hoverLines.Add("");
+            }
+
+            hoverLines.Add($"@return {returnDocumentation}");
+        }
+
+        return new DocumentationComment(
+            string.Join('\n', hoverLines).TrimEnd(),
+            bodyLines.Count == 0 ? null : string.Join('\n', bodyLines).TrimEnd(),
+            parameterDocs,
+            returnDocumentation);
+    }
+
+    private static IReadOnlyList<VbaCallableParameter> ParseCallableParameters(
+        Match match,
+        DocumentationComment? documentation)
+    {
+        var parametersGroup = match.Groups["parameters"];
+        if (!parametersGroup.Success || string.IsNullOrWhiteSpace(parametersGroup.Value))
+        {
+            return Array.Empty<VbaCallableParameter>();
+        }
+
+        return parametersGroup.Value
+            .Split(',')
+            .Select(ParseParameterName)
+            .Where(name => name is not null)
+            .Select(name => new VbaCallableParameter(
+                name!,
+                documentation?.ParameterDocs.TryGetValue(name!, out var parameterDocumentation) == true
+                    ? parameterDocumentation
+                    : null))
+            .ToArray();
+    }
+
+    private static VbaCallableSignature CreateSignature(
+        string name,
+        IReadOnlyList<VbaCallableParameter> parameters,
+        string line,
+        DocumentationComment? documentation)
+    {
+        var returnTypeName = ParseReturnTypeName(line);
+        var label = $"{name}({string.Join(", ", parameters.Select(parameter => parameter.Name))})";
+        if (!string.IsNullOrWhiteSpace(returnTypeName))
+        {
+            label = $"{label} As {returnTypeName}";
+        }
+
+        var documentationLines = new List<string>();
+        if (!string.IsNullOrWhiteSpace(documentation?.Summary))
+        {
+            documentationLines.Add(documentation.Summary);
+        }
+
+        if (!string.IsNullOrWhiteSpace(documentation?.ReturnDocumentation))
+        {
+            if (documentationLines.Count > 0)
+            {
+                documentationLines.Add("");
+            }
+
+            documentationLines.Add($"@return {documentation.ReturnDocumentation}");
+        }
+
+        return new VbaCallableSignature(
+            label,
+            parameters,
+            documentationLines.Count == 0 ? null : string.Join('\n', documentationLines));
+    }
+
+    private static string? ParseReturnTypeName(string line)
+    {
+        var match = Regex.Match(
+            line,
+            "\\)\\s+As\\s+(?<type>[A-Za-z_][A-Za-z0-9_.]*)\\b",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        return match.Success ? match.Groups["type"].Value : null;
+    }
+
     private static string? ParseParameterName(string parameter)
     {
         var normalized = Regex.Replace(
@@ -664,6 +1070,159 @@ public sealed class VbaSourceIndex
         return line;
     }
 
+    private string FormatText(VbaSourceDocument document, int tabSize)
+    {
+        var canonicalNames = documents
+            .SelectMany(sourceDocument => sourceDocument.Definitions)
+            .Where(IsReferenceTarget)
+            .GroupBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First().Name, StringComparer.OrdinalIgnoreCase);
+        var lines = SplitLines(document.Text);
+        var formattedLines = new List<string>(lines.Length);
+        var depth = 0;
+        var indent = new string(' ', tabSize);
+
+        foreach (var line in lines)
+        {
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                formattedLines.Add("");
+                continue;
+            }
+
+            var casedLine = FormatLineCasing(line, canonicalNames);
+            var trimmed = casedLine.TrimStart();
+            if (ShouldDedentBefore(trimmed))
+            {
+                depth = Math.Max(0, depth - 1);
+            }
+
+            formattedLines.Add($"{string.Concat(Enumerable.Repeat(indent, depth))}{trimmed}");
+
+            if (ShouldIndentAfter(trimmed))
+            {
+                depth++;
+            }
+        }
+
+        return string.Join('\n', formattedLines);
+    }
+
+    private static string FormatLineCasing(string line, IReadOnlyDictionary<string, string> canonicalNames)
+    {
+        var commentStart = FindApostropheCommentStart(line);
+        var codePart = commentStart < 0 ? line : line[..commentStart];
+        var commentPart = commentStart < 0 ? "" : line[commentStart..];
+
+        codePart = Regex.Replace(
+            codePart,
+            "^\\s*Attribute\\s+VB_Name",
+            match => match.Value[..^"Attribute VB_Name".Length] + "Attribute VB_Name",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+        foreach (var keyword in LanguageKeywords)
+        {
+            codePart = Regex.Replace(
+                codePart,
+                $"\\b{Regex.Escape(keyword.Key)}\\b",
+                keyword.Value,
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        }
+
+        foreach (var canonicalName in canonicalNames)
+        {
+            codePart = Regex.Replace(
+                codePart,
+                $"\\b{Regex.Escape(canonicalName.Key)}\\b",
+                canonicalName.Value,
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        }
+
+        return codePart + commentPart;
+    }
+
+    private static bool ShouldDedentBefore(string trimmedLine)
+        => Regex.IsMatch(
+            trimmedLine,
+            "^(End\\s+(Sub|Function|Property|If|Select|With|Enum|Type)|Else\\b|ElseIf\\b|Case\\b|Loop\\b|Wend\\b|Next\\b)",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static bool ShouldIndentAfter(string trimmedLine)
+        => Regex.IsMatch(
+            trimmedLine,
+            "^((Public|Private|Friend)\\s+)?(Sub|Function|Property)\\b",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)
+            || Regex.IsMatch(trimmedLine, "^If\\b.*\\bThen\\s*$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)
+            || Regex.IsMatch(trimmedLine, "^(Else\\b|ElseIf\\b|Case\\b)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)
+            || Regex.IsMatch(trimmedLine, "^(For\\b|Do\\b|While\\b|With\\b|Select\\s+Case\\b|Enum\\b|Type\\b)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static IEnumerable<IdentifierAtPosition> FindIdentifierOccurrences(string line)
+    {
+        var inString = false;
+        for (var index = 0; index < line.Length; index++)
+        {
+            var current = line[index];
+            if (current == '"' && inString && index + 1 < line.Length && line[index + 1] == '"')
+            {
+                index++;
+                continue;
+            }
+
+            if (current == '"')
+            {
+                inString = !inString;
+                continue;
+            }
+
+            if (!inString && current == '\'')
+            {
+                yield break;
+            }
+
+            if (inString || !IsIdentifierStart(current))
+            {
+                continue;
+            }
+
+            var start = index;
+            index++;
+            while (index < line.Length && IsIdentifierCharacter(line[index]))
+            {
+                index++;
+            }
+
+            yield return new IdentifierAtPosition(line[start..index], start, index);
+            index--;
+        }
+    }
+
+    private static int FindApostropheCommentStart(string line)
+    {
+        var inString = false;
+        for (var index = 0; index < line.Length; index++)
+        {
+            var current = line[index];
+            if (current == '"' && inString && index + 1 < line.Length && line[index + 1] == '"')
+            {
+                index++;
+                continue;
+            }
+
+            if (current == '"')
+            {
+                inString = !inString;
+                continue;
+            }
+
+            if (!inString && current == '\'')
+            {
+                return index;
+            }
+        }
+
+        return -1;
+    }
+
     private static IdentifierAtPosition? GetIdentifierAt(string line, int character)
     {
         if (line.Length == 0)
@@ -695,6 +1254,39 @@ public sealed class VbaSourceIndex
         }
 
         return new IdentifierAtPosition(line[start..end], start, end);
+    }
+
+    private static bool IsCodePosition(string line, int character)
+    {
+        var inString = false;
+        var clamped = Math.Clamp(character, 0, Math.Max(0, line.Length - 1));
+        for (var index = 0; index <= clamped && index < line.Length; index++)
+        {
+            var current = line[index];
+            if (current == '"' && inString && index + 1 < line.Length && line[index + 1] == '"')
+            {
+                index++;
+                continue;
+            }
+
+            if (current == '"')
+            {
+                inString = !inString;
+                if (index == clamped)
+                {
+                    return false;
+                }
+
+                continue;
+            }
+
+            if (!inString && current == '\'')
+            {
+                return false;
+            }
+        }
+
+        return !inString;
     }
 
     private static string? GetQualifierBefore(string line, int identifierStart)
@@ -730,8 +1322,17 @@ public sealed class VbaSourceIndex
         return line[qualifierStart..(qualifierEnd + 1)];
     }
 
+    private static bool IsIdentifierStart(char value)
+        => char.IsAsciiLetter(value) || value == '_';
+
     private static bool IsIdentifierCharacter(char value)
         => char.IsAsciiLetterOrDigit(value) || value == '_';
+
+    private static bool IsIdentifierName(string value)
+        => Regex.IsMatch(
+            value,
+            "^[A-Za-z_][A-Za-z0-9_]*$",
+            RegexOptions.CultureInvariant);
 
     private static string GetFileBaseName(string uri)
     {
@@ -759,6 +1360,12 @@ public sealed class VbaSourceIndex
         var lineComparison = left.Line.CompareTo(right.Line);
         return lineComparison != 0 ? lineComparison : left.Character.CompareTo(right.Character);
     }
+
+    private sealed record DocumentationComment(
+        string HoverText,
+        string? Summary,
+        IReadOnlyDictionary<string, string> ParameterDocs,
+        string? ReturnDocumentation);
 
     private sealed record IdentifierAtPosition(string Name, int Start, int End);
 }

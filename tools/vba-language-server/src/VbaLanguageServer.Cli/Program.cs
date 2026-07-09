@@ -76,13 +76,28 @@ internal sealed class MinimalLanguageServer
                 await WriteResponseAsync(idNode, null, cancellationToken);
                 return;
             case "textDocument/completion":
-                await WriteResponseAsync(idNode, CreateCompletionItems(), cancellationToken);
+                await WriteResponseAsync(idNode, CreateCompletionItems(parameters), cancellationToken);
                 return;
             case "textDocument/documentSymbol":
                 await WriteResponseAsync(idNode, CreateDocumentSymbols(parameters), cancellationToken);
                 return;
             case "textDocument/definition":
                 await WriteResponseAsync(idNode, CreateDefinitionLocation(parameters), cancellationToken);
+                return;
+            case "textDocument/hover":
+                await WriteResponseAsync(idNode, CreateHover(parameters), cancellationToken);
+                return;
+            case "textDocument/signatureHelp":
+                await WriteResponseAsync(idNode, CreateSignatureHelp(parameters), cancellationToken);
+                return;
+            case "textDocument/prepareRename":
+                await WriteResponseAsync(idNode, CreatePrepareRename(parameters), cancellationToken);
+                return;
+            case "textDocument/rename":
+                await WriteResponseAsync(idNode, CreateRenameEdit(parameters), cancellationToken);
+                return;
+            case "textDocument/formatting":
+                await WriteResponseAsync(idNode, CreateFormattingEdits(parameters), cancellationToken);
                 return;
             default:
                 await WriteErrorResponseAsync(idNode, -32601, $"Method not found: {method}", cancellationToken);
@@ -162,6 +177,16 @@ internal sealed class MinimalLanguageServer
                 textDocumentSync = 2,
                 definitionProvider = true,
                 documentSymbolProvider = true,
+                hoverProvider = true,
+                documentFormattingProvider = true,
+                renameProvider = new
+                {
+                    prepareProvider = true
+                },
+                signatureHelpProvider = new
+                {
+                    triggerCharacters = new[] { "(", "," }
+                },
                 completionProvider = new
                 {
                     triggerCharacters = new[] { ".", " " }
@@ -237,18 +262,207 @@ internal sealed class MinimalLanguageServer
             _ => 13
         };
 
-    private static object[] CreateCompletionItems()
+    private object[] CreateCompletionItems(JsonNode? parameters)
     {
+        if (!TryGetTextDocumentPosition(parameters, out var uri, out var line, out var character))
+        {
+            return Array.Empty<object>();
+        }
+
+        var sourceIndex = VbaSourceIndex.Build(documents);
+        var sourceItems = sourceIndex
+            .GetCompletionDefinitions(uri, line, character)
+            .Select(definition => new
+            {
+                label = definition.Name,
+                kind = GetCompletionKind(definition.Kind)
+            });
+        var vocabularyItems = VbaSourceIndex.LanguageVocabulary.Select(label => new
+        {
+            label,
+            kind = 14
+        });
+
+        return sourceItems
+            .Concat(vocabularyItems)
+            .GroupBy(item => item.label, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .OrderBy(item => item.label, StringComparer.OrdinalIgnoreCase)
+            .ToArray<object>();
+    }
+
+    private object? CreateHover(JsonNode? parameters)
+    {
+        if (!TryGetTextDocumentPosition(parameters, out var uri, out var line, out var character))
+        {
+            return null;
+        }
+
+        var sourceIndex = VbaSourceIndex.Build(documents);
+        var definition = sourceIndex.ResolveSourceDefinition(uri, line, character);
+        if (definition is null)
+        {
+            return null;
+        }
+
+        var declaration = definition.Signature?.Label ?? definition.Name;
+        var value = string.IsNullOrWhiteSpace(definition.Documentation)
+            ? declaration
+            : $"{definition.Documentation}\n\n{declaration}";
+        return new
+        {
+            contents = new
+            {
+                kind = "markdown",
+                value
+            },
+            range = definition.Range
+        };
+    }
+
+    private object? CreateSignatureHelp(JsonNode? parameters)
+    {
+        if (!TryGetTextDocumentPosition(parameters, out var uri, out var line, out var character))
+        {
+            return null;
+        }
+
+        var sourceIndex = VbaSourceIndex.Build(documents);
+        var signatureHelp = sourceIndex.GetSignatureHelp(uri, line, character);
+        if (signatureHelp is null)
+        {
+            return null;
+        }
+
+        return new
+        {
+            signatures = new[]
+            {
+                new
+                {
+                    label = signatureHelp.Signature.Label,
+                    documentation = ToMarkup(signatureHelp.Signature.Documentation),
+                    parameters = signatureHelp.Signature.Parameters.Select(parameter => new
+                    {
+                        label = parameter.Name,
+                        documentation = ToMarkup(parameter.Documentation)
+                    }).ToArray()
+                }
+            },
+            activeSignature = 0,
+            activeParameter = signatureHelp.ActiveParameter
+        };
+    }
+
+    private object? CreatePrepareRename(JsonNode? parameters)
+    {
+        if (!TryGetTextDocumentPosition(parameters, out var uri, out var line, out var character))
+        {
+            return null;
+        }
+
+        var sourceIndex = VbaSourceIndex.Build(documents);
+        var definition = sourceIndex.ResolveSourceDefinition(uri, line, character);
+        return definition is null ? null : definition.Range;
+    }
+
+    private object? CreateRenameEdit(JsonNode? parameters)
+    {
+        if (!TryGetTextDocumentPosition(parameters, out var uri, out var line, out var character))
+        {
+            return null;
+        }
+
+        var newName = parameters?["newName"]?.GetValue<string>();
+        if (string.IsNullOrWhiteSpace(newName))
+        {
+            return null;
+        }
+
+        var sourceIndex = VbaSourceIndex.Build(documents);
+        var changes = sourceIndex.CreateRenameChanges(uri, line, character, newName);
+        if (changes is null)
+        {
+            return null;
+        }
+
+        return new
+        {
+            changes = changes.ToDictionary(
+                pair => pair.Key,
+                pair => pair.Value.Select(edit => new
+                {
+                    range = edit.Range,
+                    newText = edit.NewText
+                }).ToArray(),
+                StringComparer.OrdinalIgnoreCase)
+        };
+    }
+
+    private object[] CreateFormattingEdits(JsonNode? parameters)
+    {
+        var uri = parameters?["textDocument"]?["uri"]?.GetValue<string>();
+        if (string.IsNullOrEmpty(uri))
+        {
+            return Array.Empty<object>();
+        }
+
+        var tabSize = parameters?["options"]?["tabSize"]?.GetValue<int>() ?? 4;
+        var sourceIndex = VbaSourceIndex.Build(documents);
+        var edit = sourceIndex.FormatDocument(uri, tabSize);
+        if (edit is null)
+        {
+            return Array.Empty<object>();
+        }
+
         return new object[]
         {
             new
             {
-                label = "CSharpLspTracerBullet",
-                kind = 1,
-                detail = "C# language server tracer bullet"
+                range = edit.Range,
+                newText = edit.NewText
             }
         };
     }
+
+    private static bool TryGetTextDocumentPosition(
+        JsonNode? parameters,
+        out string uri,
+        out int line,
+        out int character)
+    {
+        uri = parameters?["textDocument"]?["uri"]?.GetValue<string>() ?? "";
+        line = parameters?["position"]?["line"]?.GetValue<int>() ?? -1;
+        character = parameters?["position"]?["character"]?.GetValue<int>() ?? -1;
+        return !string.IsNullOrEmpty(uri) && line >= 0 && character >= 0;
+    }
+
+    private static object? ToMarkup(string? value)
+        => string.IsNullOrWhiteSpace(value)
+            ? null
+            : new
+            {
+                kind = "markdown",
+                value
+            };
+
+    private static int GetCompletionKind(VbaSourceDefinitionKind kind)
+        => kind switch
+        {
+            VbaSourceDefinitionKind.Class => 7,
+            VbaSourceDefinitionKind.Form => 7,
+            VbaSourceDefinitionKind.Procedure => 3,
+            VbaSourceDefinitionKind.Property => 10,
+            VbaSourceDefinitionKind.Constant => 21,
+            VbaSourceDefinitionKind.Variable => 6,
+            VbaSourceDefinitionKind.Parameter => 6,
+            VbaSourceDefinitionKind.Enum => 13,
+            VbaSourceDefinitionKind.EnumMember => 20,
+            VbaSourceDefinitionKind.Type => 22,
+            VbaSourceDefinitionKind.TypeMember => 5,
+            VbaSourceDefinitionKind.Event => 23,
+            _ => 1
+        };
 
     private async Task<JsonObject?> ReadMessageAsync(CancellationToken cancellationToken)
     {

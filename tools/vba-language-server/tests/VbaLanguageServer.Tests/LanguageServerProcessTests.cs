@@ -90,8 +90,9 @@ public sealed class LanguageServerProcessTests
             });
 
         var completionItems = completion.GetProperty("result").EnumerateArray().ToArray();
-        Assert.Single(completionItems);
-        Assert.Equal("CSharpLspTracerBullet", completionItems[0].GetProperty("label").GetString());
+        var completionLabels = completionItems.Select(item => item.GetProperty("label").GetString()).ToArray();
+        Assert.Contains("Hello", completionLabels);
+        Assert.Contains("Sub", completionLabels);
 
         var shutdown = await SendRequestAsync(stdin, stdout, 3, "shutdown", null);
         Assert.Equal(JsonValueKind.Null, shutdown.GetProperty("result").ValueKind);
@@ -442,6 +443,294 @@ public sealed class LanguageServerProcessTests
         Assert.Equal(0, process.ExitCode);
     }
 
+    [Fact]
+    public async Task Server_returns_source_completion_items_and_language_vocabulary()
+    {
+        var serverProjectPath = Path.GetFullPath(
+            Path.Combine(
+                AppContext.BaseDirectory,
+                "..",
+                "..",
+                "..",
+                "..",
+                "..",
+                "src",
+                "VbaLanguageServer.Cli",
+                "VbaLanguageServer.Cli.csproj"));
+
+        using var process = StartLanguageServer(serverProjectPath);
+        await using var stdin = process.StandardInput.BaseStream;
+        using var stdout = process.StandardOutput.BaseStream;
+
+        await InitializeAsync(stdin, stdout);
+        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument("file:///C:/work/Builder.bas", string.Join('\n', [
+            "Attribute VB_Name = \"Builder\"",
+            "Option Explicit",
+            "",
+            "Public Function BuildValue() As String",
+            "End Function",
+            "",
+            "Public Enum RunMode",
+            "    Automatic = 0",
+            "End Enum"
+        ])));
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"Caller\"",
+            "Option Explicit",
+            "",
+            "Public Sub Run()",
+            "    ",
+            "End Sub"
+        ]);
+        const string callerUri = "file:///C:/work/Caller.bas";
+        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(callerUri, callerText));
+
+        var completion = await SendRequestAsync(
+            stdin,
+            stdout,
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = callerUri },
+                position = new { line = 4, character = 4 }
+            });
+        var labels = completion
+            .GetProperty("result")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("label").GetString())
+            .ToArray();
+
+        Assert.Contains("BuildValue", labels);
+        Assert.Contains("RunMode", labels);
+        Assert.Contains("Automatic", labels);
+        Assert.Contains("If", labels);
+        Assert.Contains("String", labels);
+
+        await SendRequestAsync(stdin, stdout, 3, "shutdown", null);
+        await SendNotificationAsync(stdin, "exit", null);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await process.WaitForExitAsync(cancellation.Token);
+        Assert.Equal(0, process.ExitCode);
+    }
+
+    [Fact]
+    public async Task Server_returns_hover_and_signature_help_for_source_callables()
+    {
+        var serverProjectPath = Path.GetFullPath(
+            Path.Combine(
+                AppContext.BaseDirectory,
+                "..",
+                "..",
+                "..",
+                "..",
+                "..",
+                "src",
+                "VbaLanguageServer.Cli",
+                "VbaLanguageServer.Cli.csproj"));
+
+        using var process = StartLanguageServer(serverProjectPath);
+        await using var stdin = process.StandardInput.BaseStream;
+        using var stdout = process.StandardOutput.BaseStream;
+
+        await InitializeAsync(stdin, stdout);
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Option Explicit",
+            "",
+            "'* @brief Reads a value.",
+            "'* @param Key Key to read.",
+            "'* @param Fallback Value used when the key is missing.",
+            "'* @return The configured value.",
+            "Public Function ReadValue(ByVal Key As String, ByVal Fallback As String) As String",
+            "End Function",
+            "",
+            "Public Sub Run()",
+            "    ReadValue(\"id\", ",
+            "End Sub"
+        ]);
+        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, text));
+
+        var hover = await SendPositionRequestAsync(stdin, stdout, 2, "textDocument/hover", uri, text, "ReadValue(\"id\"");
+        var hoverValue = hover
+            .GetProperty("result")
+            .GetProperty("contents")
+            .GetProperty("value")
+            .GetString();
+        Assert.Contains("Reads a value.", hoverValue);
+        Assert.Contains("ReadValue(Key, Fallback) As String", hoverValue);
+
+        var signature = await SendPositionRequestAsync(stdin, stdout, 3, "textDocument/signatureHelp", uri, text, "ReadValue(\"id\", ", "ReadValue(\"id\", ".Length);
+        var result = signature.GetProperty("result");
+        Assert.Equal(1, result.GetProperty("activeParameter").GetInt32());
+        var firstSignature = result.GetProperty("signatures").EnumerateArray().Single();
+        Assert.Equal("ReadValue(Key, Fallback) As String", firstSignature.GetProperty("label").GetString());
+        var parameters = firstSignature.GetProperty("parameters").EnumerateArray().ToArray();
+        Assert.Equal("Key", parameters[0].GetProperty("label").GetString());
+        Assert.Contains("Key to read.", parameters[0].GetProperty("documentation").GetProperty("value").GetString());
+        Assert.Equal("Fallback", parameters[1].GetProperty("label").GetString());
+        Assert.Contains("Value used when the key is missing.", parameters[1].GetProperty("documentation").GetProperty("value").GetString());
+
+        await SendRequestAsync(stdin, stdout, 4, "shutdown", null);
+        await SendNotificationAsync(stdin, "exit", null);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await process.WaitForExitAsync(cancellation.Token);
+        Assert.Equal(0, process.ExitCode);
+    }
+
+    [Fact]
+    public async Task Server_renames_source_targets_and_rejects_non_renameable_inputs()
+    {
+        var serverProjectPath = Path.GetFullPath(
+            Path.Combine(
+                AppContext.BaseDirectory,
+                "..",
+                "..",
+                "..",
+                "..",
+                "..",
+                "src",
+                "VbaLanguageServer.Cli",
+                "VbaLanguageServer.Cli.csproj"));
+
+        using var process = StartLanguageServer(serverProjectPath);
+        await using var stdin = process.StandardInput.BaseStream;
+        using var stdout = process.StandardOutput.BaseStream;
+
+        await InitializeAsync(stdin, stdout);
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Option Explicit",
+            "",
+            "Public Function BuildValue() As String",
+            "End Function",
+            "",
+            "Public Sub Run()",
+            "    BuildValue",
+            "    Debug.Print \"BuildValue\"",
+            "' BuildValue remains a comment.",
+            "End Sub"
+        ]);
+        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, text));
+
+        var rename = await SendPositionRequestAsync(
+            stdin,
+            stdout,
+            2,
+            "textDocument/rename",
+            uri,
+            text,
+            "BuildValue",
+            0,
+            new { newName = "CreateValue" });
+        var edits = rename
+            .GetProperty("result")
+            .GetProperty("changes")
+            .GetProperty(uri)
+            .EnumerateArray()
+            .ToArray();
+        Assert.Equal(2, edits.Length);
+        Assert.All(edits, edit => Assert.Equal("CreateValue", edit.GetProperty("newText").GetString()));
+        Assert.Contains(edits, edit => edit.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32() == 3);
+        Assert.Contains(edits, edit => edit.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32() == 7);
+
+        var stringRename = await SendPositionRequestAsync(
+            stdin,
+            stdout,
+            3,
+            "textDocument/rename",
+            uri,
+            text,
+            "\"BuildValue\"",
+            1,
+            new { newName = "IgnoredValue" });
+        Assert.Equal(JsonValueKind.Null, stringRename.GetProperty("result").ValueKind);
+
+        await SendRequestAsync(stdin, stdout, 4, "shutdown", null);
+        await SendNotificationAsync(stdin, "exit", null);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await process.WaitForExitAsync(cancellation.Token);
+        Assert.Equal(0, process.ExitCode);
+    }
+
+    [Fact]
+    public async Task Server_formats_source_casing_and_indentation()
+    {
+        var serverProjectPath = Path.GetFullPath(
+            Path.Combine(
+                AppContext.BaseDirectory,
+                "..",
+                "..",
+                "..",
+                "..",
+                "..",
+                "src",
+                "VbaLanguageServer.Cli",
+                "VbaLanguageServer.Cli.csproj"));
+
+        using var process = StartLanguageServer(serverProjectPath);
+        await using var stdin = process.StandardInput.BaseStream;
+        using var stdout = process.StandardOutput.BaseStream;
+
+        await InitializeAsync(stdin, stdout);
+        const string builderUri = "file:///C:/work/Builder.bas";
+        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(builderUri, string.Join('\n', [
+            "Attribute VB_Name = \"Builder\"",
+            "Option Explicit",
+            "",
+            "Public Function BuildValue() As String",
+            "End Function"
+        ])));
+        const string callerUri = "file:///C:/work/Caller.bas";
+        var text = string.Join('\n', [
+            "Attribute vb_name = \"Caller\"",
+            "option explicit",
+            "",
+            "public sub Run()",
+            "buildvalue",
+            "if true then",
+            "'* @brief buildvalue remains prose.",
+            "else",
+            "' buildvalue remains an ordinary comment.",
+            "end if",
+            "End Sub"
+        ]);
+        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(callerUri, text));
+
+        var formatting = await SendRequestAsync(
+            stdin,
+            stdout,
+            2,
+            "textDocument/formatting",
+            new
+            {
+                textDocument = new { uri = callerUri },
+                options = new { tabSize = 4, insertSpaces = true }
+            });
+        var edit = formatting.GetProperty("result").EnumerateArray().Single();
+        Assert.Equal(string.Join('\n', [
+            "Attribute VB_Name = \"Caller\"",
+            "Option Explicit",
+            "",
+            "Public Sub Run()",
+            "    BuildValue",
+            "    If True Then",
+            "        '* @brief buildvalue remains prose.",
+            "    Else",
+            "        ' buildvalue remains an ordinary comment.",
+            "    End If",
+            "End Sub"
+        ]), edit.GetProperty("newText").GetString());
+
+        await SendRequestAsync(stdin, stdout, 3, "shutdown", null);
+        await SendNotificationAsync(stdin, "exit", null);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await process.WaitForExitAsync(cancellation.Token);
+        Assert.Equal(0, process.ExitCode);
+    }
+
     private static Process StartLanguageServer(string serverProjectPath)
     {
         var startInfo = new ProcessStartInfo
@@ -579,6 +868,45 @@ public sealed class LanguageServerProcessTests
                 position = new { line, character }
             });
         return response.GetProperty("result");
+    }
+
+    private static Task<JsonElement> SendPositionRequestAsync(
+        Stream stdin,
+        Stream stdout,
+        int id,
+        string method,
+        string uri,
+        string text,
+        string needle,
+        int offset = 0,
+        object? additionalParameters = null)
+    {
+        var position = FindPosition(text, needle, offset);
+        var parameters = MergePositionParameters(uri, position.Line, position.Character, additionalParameters);
+        return SendRequestAsync(stdin, stdout, id, method, parameters);
+    }
+
+    private static object MergePositionParameters(
+        string uri,
+        int line,
+        int character,
+        object? additionalParameters)
+    {
+        var json = JsonSerializer.SerializeToNode(additionalParameters ?? new { })!.AsObject();
+        json["textDocument"] = JsonSerializer.SerializeToNode(new { uri });
+        json["position"] = JsonSerializer.SerializeToNode(new { line, character });
+        return json;
+    }
+
+    private static (int Line, int Character) FindPosition(string text, string needle, int offset = 0)
+    {
+        var characterOffset = text.IndexOf(needle, StringComparison.Ordinal) + offset;
+        Assert.True(characterOffset >= offset);
+        var prefix = text[..characterOffset];
+        var line = prefix.Count(character => character == '\n');
+        var lineStart = prefix.LastIndexOf('\n');
+        var character = lineStart < 0 ? characterOffset : characterOffset - lineStart - 1;
+        return (line, character);
     }
 
     private static async Task WriteMessageAsync(Stream stream, object message)
