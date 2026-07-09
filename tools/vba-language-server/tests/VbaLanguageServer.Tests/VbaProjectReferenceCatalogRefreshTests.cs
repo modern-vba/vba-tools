@@ -153,6 +153,26 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
         Assert.Contains("BuildValue", definitions);
     }
 
+    [Fact]
+    public async Task CatalogRefreshHonorsCancellationWithoutCachingCatalogMetadata()
+    {
+        var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
+        var service = new VbaProjectReferenceCatalogRefreshService(
+            cache,
+            new CancellationAwareCatalogDiscovery());
+        var selection = VbaProjectReferenceSelection.Create(
+            ProjectDocument.ExcelKind,
+            [new VbaProjectReference("Cancelable Library")]);
+        using var cancellation = new CancellationTokenSource();
+        await cancellation.CancelAsync();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            () => service.RefreshAsync(selection, cancellation.Token));
+
+        Assert.Empty(cache.Identities);
+        Assert.False(cache.Current.HasCatalog("Cancelable Library"));
+    }
+
     private sealed class FakeTypeLibRegistryReader : ITypeLibRegistryReader
     {
         private readonly IReadOnlyList<TypeLibRegistryEntry> entries;
@@ -202,5 +222,18 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
             string referenceName,
             CancellationToken cancellationToken = default)
             => Task.FromResult(VbaProjectReferenceCatalogDiscoveryResult.Failure(referenceName, message));
+    }
+
+    private sealed class CancellationAwareCatalogDiscovery : IVbaProjectReferenceCatalogDiscovery
+    {
+        public Task<VbaProjectReferenceCatalogDiscoveryResult> DiscoverAsync(
+            string referenceName,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(VbaProjectReferenceCatalogDiscoveryResult.Failure(
+                referenceName,
+                "Cancellation was not observed."));
+        }
     }
 }
