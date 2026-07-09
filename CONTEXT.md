@@ -11,7 +11,7 @@ tooling for VBA.
 The repository-level product area for the VS Code extension, VBA language
 server, Test Explorer integration, and companion CLI used for modern VBA source
 workflows.
-_Avoid_: VBA-LanguageServer, vba-devtools, xls-common-devtools
+_Avoid_: VBA-LanguageServer, vba-devtools, VbaDevTools, xls-common-devtools
 
 **VbaLanguageServer**:
 The language-server component that provides editor intelligence for exported VBA
@@ -29,28 +29,115 @@ The VS Code extension package that activates VBA language support, launches the
 language server, and invokes `VbaDevTool` for project-level workflows.
 _Avoid_: language server, command-line tool
 
+**ToolingCommand**:
+A user-facing or automation-facing `VbaDevTool` command. It should have explicit
+inputs, outputs, side effects, and verification behavior.
+_Avoid_: script, helper, task
+
+**ConsoleEntryPoint**:
+The C# entry point that parses command-line arguments, invokes a
+`ToolingCommand`, and returns a meaningful process exit code.
+_Avoid_: UI, macro, language-server endpoint
+
+**DotNetProject**:
+A .NET project that builds `VbaDevTool`, its tests, or shared implementation
+code in this repository.
+_Avoid_: workbook project, npm package
+
 **CommonModulesPackage**:
 A versioned release artifact produced by `xls-common-devtools`, normally as
 `common_modules_repo.zip`, that provides shared VBA source files and a
 machine-readable CommonModules manifest consumed by `VbaDevTool`.
 _Avoid_: vendored source, submodule, built-in library
 
+## CommonModules
+
+**CommonModulesRepository**:
+A directory named `common_modules_repo` that provides shared VBA source files
+for a `WorkbookBackedProject`.
+_Avoid_: common-modules-repo, common modules folder, package cache
+
+**CommonModulesRuntimeBaseline**:
+The shared VBA source files required for ordinary runtime use of CommonModules
+inside a `DocumentSourceSet`.
+_Avoid_: all common modules, test modules
+
+**CommonModulesTestFoundation**:
+The shared VBA source files required to author and run VBA unit tests inside a
+`DocumentSourceSet`.
+_Avoid_: runtime baseline, project-specific tests
+
+**CommonModuleDependency**:
+A shared VBA source file that must accompany another CommonModules file for that
+file to work inside a `DocumentSourceSet`.
+_Avoid_: optional module, copied file list
+
+**CommonModuleName**:
+The stable extensionless module base name used to identify one CommonModules
+source entry across manifests and tooling.
+_Avoid_: file path, file name with extension, display label
+
+**InstalledCommonModule**:
+A CommonModules source entry that has been added to one `DocumentSourceSet` and
+is tracked as part of that document's desired shared-source set.
+_Avoid_: inferred module file, loose copy, reference
+
 ## Workbook Projects
 
 **WorkbookBackedProject**:
 A VBA development project that keeps exported source files and one or more
-Office macro documents under a project manifest.
+Office macro documents under a project manifest. The initial supported document
+kind for workbook-backed automation is an Excel `.xlsm` workbook.
 _Avoid_: workspace folder, repository, source folder
 
 **ProjectManifest**:
 The project-local manifest, stored as `project.json`, that identifies a
-`WorkbookBackedProject` for VS Code commands and `VbaDevTool` operations.
+`WorkbookBackedProject` and carries default values for VS Code commands and
+`VbaDevTool` operations.
 _Avoid_: package file, extension settings, workspace settings
+
+**ExportedVbaSource**:
+A `.bas`, `.cls`, or `.frm` text file exported from a VBA project and edited or
+analyzed outside the VBE.
+_Avoid_: workbook, code blob
+
+**PrimaryOfficeDocument**:
+The single Office macro document that a `WorkbookBackedProject` treats as the
+subject of project lifecycle commands.
+_Avoid_: arbitrary workbook, generated output, secondary document
 
 **DocumentSourceSet**:
 The exported VBA source files and source template document that belong to one
 Office macro document within a `WorkbookBackedProject`.
 _Avoid_: source folder, document, test suite
+
+**VbaProjectReference**:
+A library reference that one Office macro document's VBA project requires to
+compile or run. A `DocumentSourceSet` may require zero or more
+`VbaProjectReference`s, named by the human-visible library name shown to VBA
+developers.
+_Avoid_: Reference, .NET ProjectReference, CommonModuleDependency
+
+**ProtectedVbaProjectReference**:
+A `VbaProjectReference` that Office or VBIDE keeps as part of the workbook's VBA
+project and that tooling should not remove during generated workbook
+normalization.
+_Avoid_: built-in reference, default reference, undeletable reference
+
+**PublishableVbaSource**:
+An exported VBA source file from a `DocumentSourceSet` that should be imported
+into the distributed Office macro document.
+_Avoid_: test-only source, build-only source
+
+**TestOnlyVbaSource**:
+An exported VBA source file used for authoring or running VBA unit tests and
+excluded from published Office macro documents by default.
+_Avoid_: runtime source, publishable source
+
+**PublishExclusionMarker**:
+The `'#ExcludePublish` source comment marker that declares a project-local
+exported VBA source file as `TestOnlyVbaSource` or otherwise not publishable.
+_Avoid_: filename-only test detection, implicit publish exclusion
 
 ## Testing
 
@@ -68,6 +155,17 @@ _Avoid_: macro, module, assertion
 A project-level or document-level failure that prevents a workbook-backed test
 run from completing as a normal set of `TestProcedure` outcomes.
 _Avoid_: failed assertion, failed test, diagnostic
+
+**TestResultOutput**:
+The command-line report emitted by a `ToolingCommand` after running VBA unit
+tests for a `PrimaryOfficeDocument`.
+_Avoid_: worksheet result sheet, internal test state
+
+**EnvironmentDiagnostic**:
+A read/check-oriented `ToolingCommand` that reports whether the local Windows,
+Excel, COM, VBIDE, and project prerequisites can support workbook-backed
+automation.
+_Avoid_: build, test run, repair command
 
 ## Language
 
@@ -190,6 +288,13 @@ _Avoid_: form code, form module, generated code
 **ModuleMember**:
 A top-level parsed member inside a VBA module, such as a procedure, property, enum, user-defined type, event, constant, variable, or declaration block. Incremental AST updates use `ModuleMember` ranges as their replacement unit.
 _Avoid_: function block, top-level node, parse chunk
+
+## Workspace Context
+
+**ModernVbaWorkspace**:
+The local multi-repository workspace that may contain `vba-tools`, archived
+`vba-devtools`, `DoxyVB6`, and Excel macro repositories for integration work.
+_Avoid_: monorepo, single repo
 
 ## Example Dialogue
 
