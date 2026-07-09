@@ -139,6 +139,44 @@ public sealed class PublishCommandTests
     }
 
     [Fact]
+    public void PublishTreatsExistingDesiredWorkbookReferencesAsSatisfiedBeforeRegistryResolution()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        manifest.Documents["Book1"].References.Add(new VbaProjectReference("OLE Automation"));
+        manifest.Documents["Book1"].References.Add(new VbaProjectReference("Microsoft Scripting Runtime"));
+        new JsonProjectManifestStore().Save(root, manifest);
+        CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
+        var automation = new FakeWorkbookBuildAutomation(new WorkbookModule("OldModule", WorkbookModuleKind.StandardModule));
+        automation.References.Add(new WorkbookReference("OLE Automation", IsRemovable: false));
+        automation.References.Add(new WorkbookReference("Unlisted Library", IsRemovable: true));
+        var resolver = new FakeVbaProjectReferenceResolver(
+            new ResolvedVbaProjectReference("OLE Automation", "{00020430-0000-0000-C000-000000000046}", 1, 0),
+            new ResolvedVbaProjectReference("OLE Automation", "{00020430-0000-0000-C000-000000000046}", 2, 0),
+            new ResolvedVbaProjectReference("Microsoft Scripting Runtime", "{420B2830-E718-11CF-893D-00A0C9054228}", 1, 0));
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+            root,
+            workbookBuildAutomation: automation,
+            vbaProjectReferenceResolver: resolver);
+
+        var result = application.Run(["publish"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.DoesNotContain("OLE Automation", resolver.RequestedNames);
+        Assert.Contains("Microsoft Scripting Runtime", resolver.RequestedNames);
+        Assert.Equal(
+            [
+                "remove-ref:Unlisted Library",
+                "add-ref:Microsoft Scripting Runtime",
+                "remove:OldModule",
+                "import:Local.bas",
+                "save"
+            ],
+            automation.Events);
+    }
+
+    [Fact]
     public void PublishLeavesExistingOutputUntouchedWhenGenerationFails()
     {
         using var temp = TempDirectory.Create();

@@ -23,7 +23,6 @@ public sealed class WorkbookGenerationPipeline
         IReadOnlyList<VbaProjectReference> desiredReferences,
         IReadOnlyList<VbaSourceFile> sourceFiles)
     {
-        var resolvedReferences = referenceNormalizer.ResolveDesiredReferences(documentName, desiredReferences);
         var targetDirectory = Path.GetDirectoryName(targetWorkbookPath)
             ?? throw new BuildCommandException($"Target workbook path is invalid: {targetWorkbookPath}");
         Directory.CreateDirectory(targetDirectory);
@@ -38,7 +37,7 @@ public sealed class WorkbookGenerationPipeline
             IReadOnlyList<string> warnings;
             using (var session = workbookBuildAutomation.OpenWorkbook(tempWorkbookPath))
             {
-                warnings = referenceNormalizer.Normalize(session, documentName, resolvedReferences);
+                warnings = referenceNormalizer.Normalize(session, documentName, desiredReferences);
                 foreach (var component in session.GetModules().Where(component => component.Kind.IsImportable()))
                 {
                     session.RemoveModule(component.Name);

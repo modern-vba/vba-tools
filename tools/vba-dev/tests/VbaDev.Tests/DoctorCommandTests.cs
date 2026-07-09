@@ -191,6 +191,7 @@ public sealed class DoctorCommandTests
         var application = ToolingCompositionRoot.CreateCommandLineApplication(
             root,
             new FakeEnvironmentDiagnosticPort(),
+            workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
             vbaProjectReferenceResolver: resolver);
 
         var result = application.Run(["doctor"]);
@@ -198,6 +199,35 @@ public sealed class DoctorCommandTests
         Assert.Equal(1, result.ExitCode);
         Assert.Contains("[PASS] VbaProjectReferences (Book1/Microsoft Scripting Runtime)", result.StandardOutput, StringComparison.Ordinal);
         Assert.Contains("[FAIL] VbaProjectReferences (SecondBook/Missing Library)", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DoctorTreatsTemplateWorkbookReferencesAsResolvedBeforeRegistryValidation()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        Directory.CreateDirectory(Path.Combine(root, "src", "Book1"));
+        File.WriteAllText(Path.Combine(root, "src", "Book1", "Book1.xlsm"), string.Empty);
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        manifest.Documents["Book1"].References.Add(new VbaProjectReference("OLE Automation"));
+        new JsonProjectManifestStore().Save(root, manifest);
+        var automation = new FakeWorkbookBuildAutomation();
+        automation.References.Add(new WorkbookReference("OLE Automation", IsRemovable: false));
+        var resolver = new FakeVbaProjectReferenceResolver(
+            new ResolvedVbaProjectReference("OLE Automation", "{00020430-0000-0000-C000-000000000046}", 1, 0),
+            new ResolvedVbaProjectReference("OLE Automation", "{00020430-0000-0000-C000-000000000046}", 2, 0));
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+            root,
+            new FakeEnvironmentDiagnosticPort(),
+            workbookBuildAutomation: automation,
+            vbaProjectReferenceResolver: resolver);
+
+        var result = application.Run(["doctor"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("[PASS] VbaProjectReferences (Book1/OLE Automation)", result.StandardOutput, StringComparison.Ordinal);
+        Assert.DoesNotContain("ambiguous", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(resolver.RequestedNames);
     }
 
     private static (string Root, string CommonRepo) CreateDoctorProject(TempDirectory temp)

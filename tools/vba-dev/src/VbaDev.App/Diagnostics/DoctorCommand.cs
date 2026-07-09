@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Text;
 using VbaDev.App.CommonModules;
 using VbaDev.App.Cli;
@@ -12,17 +13,20 @@ public sealed class DoctorCommand
     private readonly ProjectContextResolver projectContextResolver;
     private readonly CommonModulesManifestReader commonModulesManifestReader;
     private readonly IVbaProjectReferenceResolver referenceResolver;
+    private readonly IWorkbookBuildAutomation workbookBuildAutomation;
     private readonly IEnvironmentDiagnosticPort environmentDiagnosticPort;
 
     public DoctorCommand(
         ProjectContextResolver projectContextResolver,
         CommonModulesManifestReader commonModulesManifestReader,
         IVbaProjectReferenceResolver referenceResolver,
+        IWorkbookBuildAutomation workbookBuildAutomation,
         IEnvironmentDiagnosticPort environmentDiagnosticPort)
     {
         this.projectContextResolver = projectContextResolver;
         this.commonModulesManifestReader = commonModulesManifestReader;
         this.referenceResolver = referenceResolver;
+        this.workbookBuildAutomation = workbookBuildAutomation;
         this.environmentDiagnosticPort = environmentDiagnosticPort;
     }
 
@@ -131,8 +135,17 @@ public sealed class DoctorCommand
     {
         foreach (var (documentName, document) in project.Manifest.Documents.OrderBy(item => item.Key, StringComparer.OrdinalIgnoreCase))
         {
+            var templateReferences = GetTemplateReferenceNames(results, project, documentName, document);
             foreach (var reference in document.References)
             {
+                if (templateReferences.Contains(reference.Name))
+                {
+                    results.Add(DiagnosticResult.Pass(
+                        $"VbaProjectReferences ({documentName}/{reference.Name})",
+                        "Reference is already present in the source template."));
+                    continue;
+                }
+
                 var matches = referenceResolver.Resolve(reference.Name);
                 if (matches.Count == 0)
                 {
@@ -154,6 +167,60 @@ public sealed class DoctorCommand
                 }
             }
         }
+    }
+
+    private IReadOnlySet<string> GetTemplateReferenceNames(
+        List<DiagnosticResult> results,
+        ResolvedProject project,
+        string documentName,
+        ProjectDocument document)
+    {
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (document.References.Count == 0)
+        {
+            return names;
+        }
+
+        var templatePath = project.ResolvePath(document.TemplatePath);
+        if (!File.Exists(templatePath))
+        {
+            return names;
+        }
+
+        try
+        {
+            using var session = workbookBuildAutomation.OpenWorkbook(templatePath);
+            foreach (var reference in session.GetReferences())
+            {
+                names.Add(reference.Name);
+            }
+        }
+        catch (COMException ex)
+        {
+            results.Add(DiagnosticResult.Warn(
+                $"VbaProjectReferences ({documentName})",
+                $"Could not inspect source template references: {ex.Message}"));
+        }
+        catch (InvalidOperationException ex)
+        {
+            results.Add(DiagnosticResult.Warn(
+                $"VbaProjectReferences ({documentName})",
+                $"Could not inspect source template references: {ex.Message}"));
+        }
+        catch (IOException ex)
+        {
+            results.Add(DiagnosticResult.Warn(
+                $"VbaProjectReferences ({documentName})",
+                $"Could not inspect source template references: {ex.Message}"));
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            results.Add(DiagnosticResult.Warn(
+                $"VbaProjectReferences ({documentName})",
+                $"Could not inspect source template references: {ex.Message}"));
+        }
+
+        return names;
     }
 
     private void AddCommonModulesDiagnostics(List<DiagnosticResult> results, ResolvedProject project)

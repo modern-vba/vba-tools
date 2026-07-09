@@ -11,8 +11,13 @@ internal sealed class FakeVbaProjectReferenceResolver : IVbaProjectReferenceReso
         this.references = references;
     }
 
+    public List<string> RequestedNames { get; } = [];
+
     public IReadOnlyList<ResolvedVbaProjectReference> Resolve(string referenceName)
-        => references
+    {
+        RequestedNames.Add(referenceName);
+        return references
             .Where(reference => reference.Name.Equals(referenceName, StringComparison.OrdinalIgnoreCase))
             .ToArray();
+    }
 }

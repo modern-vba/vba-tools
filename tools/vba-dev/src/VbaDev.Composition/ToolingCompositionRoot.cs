@@ -33,10 +33,12 @@ public static class ToolingCompositionRoot
         var referenceResolver = vbaProjectReferenceResolver ?? new RegistryVbaProjectReferenceResolver();
         var referenceService = new VbaProjectReferenceService(manifestStore, referenceResolver);
         var projectContextResolver = new ProjectContextResolver(manifestStore);
+        var buildAutomation = workbookBuildAutomation ?? new ExcelComWorkbookBuildAutomation();
         var doctorCommand = new DoctorCommand(
             projectContextResolver,
             commonModulesManifestReader,
             referenceResolver,
+            buildAutomation,
             environmentDiagnosticPort ?? new SkippedEnvironmentDiagnosticPort());
         var newProjectCommand = new NewProjectCommand(
             manifestStore,
@@ -47,7 +49,7 @@ public static class ToolingCompositionRoot
             commonModulesManifestReader,
             commonModulesService);
         var generationPipeline = new WorkbookGenerationPipeline(
-            workbookBuildAutomation ?? new ExcelComWorkbookBuildAutomation(),
+            buildAutomation,
             new WorkbookReferenceNormalizer(referenceResolver));
         var buildCommand = new BuildCommand(sourcePlanner, generationPipeline);
         var publishCommand = new PublishCommand(sourcePlanner, generationPipeline);

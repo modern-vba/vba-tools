@@ -12,37 +12,10 @@ public sealed class WorkbookReferenceNormalizer
         this.referenceResolver = referenceResolver;
     }
 
-    public IReadOnlyList<ResolvedVbaProjectReference> ResolveDesiredReferences(
-        string documentName,
-        IReadOnlyList<VbaProjectReference> manifestReferences)
-    {
-        var resolved = new List<ResolvedVbaProjectReference>();
-        foreach (var reference in manifestReferences)
-        {
-            var matches = referenceResolver.Resolve(reference.Name);
-            if (matches.Count == 0)
-            {
-                throw new BuildCommandException($"VbaProjectReference '{reference.Name}' for document '{documentName}' was not found.");
-            }
-
-            if (matches.Count > 1)
-            {
-                var candidates = string.Join(
-                    ", ",
-                    matches.Select(match => $"{match.Guid} {match.Major}.{match.Minor}"));
-                throw new BuildCommandException($"VbaProjectReference '{reference.Name}' for document '{documentName}' is ambiguous: {candidates}.");
-            }
-
-            resolved.Add(matches[0]);
-        }
-
-        return resolved;
-    }
-
     public IReadOnlyList<string> Normalize(
         IWorkbookBuildSession session,
         string documentName,
-        IReadOnlyList<ResolvedVbaProjectReference> desiredReferences)
+        IReadOnlyList<VbaProjectReference> desiredReferences)
     {
         var warnings = new List<string>();
         var desiredNames = desiredReferences
@@ -69,10 +42,29 @@ public sealed class WorkbookReferenceNormalizer
         {
             if (!currentNames.Contains(reference.Name))
             {
-                session.AddReference(reference);
+                session.AddReference(ResolveDesiredReference(documentName, reference.Name));
             }
         }
 
         return warnings;
+    }
+
+    private ResolvedVbaProjectReference ResolveDesiredReference(string documentName, string referenceName)
+    {
+        var matches = referenceResolver.Resolve(referenceName);
+        if (matches.Count == 0)
+        {
+            throw new BuildCommandException($"VbaProjectReference '{referenceName}' for document '{documentName}' was not found.");
+        }
+
+        if (matches.Count > 1)
+        {
+            var candidates = string.Join(
+                ", ",
+                matches.Select(match => $"{match.Guid} {match.Major}.{match.Minor}"));
+            throw new BuildCommandException($"VbaProjectReference '{referenceName}' for document '{documentName}' is ambiguous: {candidates}.");
+        }
+
+        return matches[0];
     }
 }
