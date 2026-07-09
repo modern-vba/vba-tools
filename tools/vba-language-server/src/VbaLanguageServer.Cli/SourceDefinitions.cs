@@ -161,36 +161,8 @@ public sealed class VbaSourceIndex
             ?? Array.Empty<VbaSourceDefinition>();
 
     public IReadOnlyList<VbaSourceDefinition> GetCompletionDefinitions(string uri, int line, int character)
-    {
-        var currentDocument = documents.FirstOrDefault(document => SameUri(document.Uri, uri));
-        if (currentDocument is null)
-        {
-            return Array.Empty<VbaSourceDefinition>();
-        }
-
-        var position = new VbaPosition(line, character);
-        var sourceDefinitions = currentDocument.Definitions
-            .Where(definition =>
-                IsReferenceTarget(definition)
-                || (definition.Visibility == VbaSourceDefinitionVisibility.Local && ContainsPosition(definition, position)))
-            .Concat(documents
-                .Where(document => !SameUri(document.Uri, currentDocument.Uri))
-                .SelectMany(document => document.Definitions)
-                .Where(IsReferenceTarget)
-                .Where(definition => definition.Visibility == VbaSourceDefinitionVisibility.Public))
-            .GroupBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
-            .Select(group => group.First())
-            .ToArray();
-        var referenceDefinitions = referenceSelection is null
-            ? Array.Empty<VbaSourceDefinition>()
-            : referenceCatalogs.GetCompletionDefinitions(referenceSelection);
-        return sourceDefinitions
-            .Concat(referenceDefinitions)
-            .GroupBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
-            .Select(group => group.First())
-            .OrderBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-    }
+        => CreateNameResolutionService()
+            .GetCompletionDefinitions(uri, new VbaPosition(line, character));
 
     public VbaDefinitionLocation? ResolveDefinition(string uri, int line, int character)
     {
@@ -224,18 +196,8 @@ public sealed class VbaSourceIndex
         }
 
         var qualifier = GetQualifierBefore(lines[line], identifier.Start);
-        var sourceDefinition = qualifier is null
-            ? ResolveUnqualified(currentDocument, new VbaPosition(line, character), identifier.Name)
-            : ResolveQualified(currentDocument, qualifier, identifier.Name);
-
-        if (sourceDefinition is not null || referenceSelection is null)
-        {
-            return sourceDefinition;
-        }
-
-        return qualifier is null
-            ? referenceCatalogs.ResolveUnqualified(referenceSelection, identifier.Name)
-            : referenceCatalogs.ResolveQualified(referenceSelection, qualifier, identifier.Name);
+        return CreateNameResolutionService()
+            .Resolve(uri, new VbaPosition(line, character), qualifier, identifier.Name);
     }
 
     public VbaSignatureHelp? GetSignatureHelp(string uri, int line, int character)
@@ -351,75 +313,6 @@ public sealed class VbaSourceIndex
             formattedText);
     }
 
-    private VbaSourceDefinition? ResolveUnqualified(
-        VbaSourceDocument currentDocument,
-        VbaPosition position,
-        string identifier)
-    {
-        var localDefinition = currentDocument.Definitions
-            .Where(definition => definition.Visibility == VbaSourceDefinitionVisibility.Local)
-            .Where(definition => ContainsPosition(definition, position))
-            .FirstOrDefault(definition => SameName(definition.Name, identifier));
-        if (localDefinition is not null)
-        {
-            return localDefinition;
-        }
-
-        var currentModuleMatches = currentDocument.Definitions
-            .Where(IsReferenceTarget)
-            .Where(definition => SameName(definition.Name, identifier))
-            .ToArray();
-        if (currentModuleMatches.Length == 1)
-        {
-            return currentModuleMatches[0];
-        }
-
-        if (currentModuleMatches.Length > 1)
-        {
-            return null;
-        }
-
-        var projectMatches = documents
-            .Where(document => !SameUri(document.Uri, currentDocument.Uri))
-            .SelectMany(document => document.Definitions)
-            .Where(IsReferenceTarget)
-            .Where(definition => definition.Visibility == VbaSourceDefinitionVisibility.Public)
-            .Where(definition => SameName(definition.Name, identifier))
-            .ToArray();
-        return projectMatches.Length == 1 ? projectMatches[0] : null;
-    }
-
-    private VbaSourceDefinition? ResolveQualified(
-        VbaSourceDocument currentDocument,
-        string qualifier,
-        string memberName)
-    {
-        var qualifiedDocument = documents.FirstOrDefault(document => SameName(document.ModuleName, qualifier));
-        if (qualifiedDocument is null)
-        {
-            return null;
-        }
-
-        var allowPrivate = SameUri(currentDocument.Uri, qualifiedDocument.Uri);
-        var matches = qualifiedDocument.Definitions
-            .Where(IsReferenceTarget)
-            .Where(definition => allowPrivate || definition.Visibility == VbaSourceDefinitionVisibility.Public)
-            .Where(definition => SameName(definition.Name, memberName))
-            .ToArray();
-        return matches.Length == 1 ? matches[0] : null;
-    }
-
-    private static bool ContainsPosition(VbaSourceDefinition definition, VbaPosition position)
-    {
-        if (definition.ParentProcedureRange is null)
-        {
-            return false;
-        }
-
-        return ComparePosition(definition.ParentProcedureRange.Start, position) <= 0
-            && ComparePosition(position, definition.ParentProcedureRange.End) <= 0;
-    }
-
     private static VbaSourceDocument ParseDocument(string uri, string text)
     {
         var syntaxTree = VbaModuleParser.Parse(uri, text);
@@ -484,11 +377,9 @@ public sealed class VbaSourceIndex
 
     private string FormatText(VbaSourceDocument document, int tabSize)
     {
-        var canonicalNames = documents
-            .SelectMany(sourceDocument => sourceDocument.Definitions)
-            .Where(IsReferenceTarget)
-            .GroupBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(group => group.Key, group => group.First().Name, StringComparer.OrdinalIgnoreCase);
+        var canonicalNames = CreateNameResolutionService()
+            .GetFormattingDefinitions(document.Uri)
+            .ToDictionary(definition => definition.Name, definition => definition.Name, StringComparer.OrdinalIgnoreCase);
         var lines = SplitLines(document.Text);
         var formattedLines = new List<string>(lines.Length);
         var depth = 0;
@@ -757,6 +648,9 @@ public sealed class VbaSourceIndex
         var lineComparison = left.Line.CompareTo(right.Line);
         return lineComparison != 0 ? lineComparison : left.Character.CompareTo(right.Character);
     }
+
+    private VbaNameResolutionService CreateNameResolutionService()
+        => new(documents, referenceSelection, referenceCatalogs);
 
     private sealed record IdentifierAtPosition(string Name, int Start, int End);
 }

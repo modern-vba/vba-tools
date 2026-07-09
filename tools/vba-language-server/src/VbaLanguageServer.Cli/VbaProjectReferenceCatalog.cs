@@ -131,16 +131,10 @@ public sealed class VbaProjectReferenceCatalogSet
     public bool HasCatalog(string referenceName)
         => catalogs.ContainsKey(referenceName);
 
-    public IReadOnlyList<VbaSourceDefinition> GetCompletionDefinitions(VbaProjectReferenceSelection selection)
-    {
-        return GetActiveDefinitions(selection)
-            .GroupBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
-            .Select(group => ResolveCandidates(selection, group.ToArray()))
-            .Where(definition => definition is not null)
-            .Select(definition => definition!)
-            .OrderBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
+    public IReadOnlyList<VbaSourceDefinition> GetActiveDefinitions(VbaProjectReferenceSelection selection)
+        => GetActiveReferenceDefinitions(selection)
+            .Select(ToSourceDefinition)
             .ToArray();
-    }
 
     public IReadOnlyList<string> GetMissingCatalogReferenceNames(VbaProjectReferenceSelection selection)
     {
@@ -152,59 +146,29 @@ public sealed class VbaProjectReferenceCatalogSet
             .ToArray();
     }
 
-    public VbaSourceDefinition? ResolveUnqualified(VbaProjectReferenceSelection selection, string identifier)
-    {
-        var candidates = GetActiveDefinitions(selection)
-            .Where(definition => definition.Name.Equals(identifier, StringComparison.OrdinalIgnoreCase))
-            .ToArray();
-        return ResolveCandidates(selection, candidates);
-    }
-
-    public VbaSourceDefinition? ResolveQualified(
+    public IReadOnlyList<VbaSourceDefinition> GetQualifiedDefinitions(
         VbaProjectReferenceSelection selection,
         string qualifier,
         string memberName)
     {
-        var candidates = GetActiveCatalogs(selection)
+        return GetQualifiedDefinitions(selection, qualifier)
+            .Where(definition => definition.Name.Equals(memberName, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+    }
+
+    public IReadOnlyList<VbaSourceDefinition> GetQualifiedDefinitions(
+        VbaProjectReferenceSelection selection,
+        string qualifier)
+    {
+        return GetActiveCatalogs(selection)
             .Where(catalog => catalog.Catalog.QualifierAliases.Any(alias =>
                 alias.Equals(qualifier, StringComparison.OrdinalIgnoreCase)))
             .SelectMany(catalog => catalog.Catalog.Definitions)
-            .Where(definition => definition.Name.Equals(memberName, StringComparison.OrdinalIgnoreCase))
+            .Select(ToSourceDefinition)
             .ToArray();
-        return ResolveCandidates(selection, candidates);
     }
 
-    private VbaSourceDefinition? ResolveCandidates(
-        VbaProjectReferenceSelection selection,
-        IReadOnlyList<VbaProjectReferenceDefinition> candidates)
-    {
-        if (candidates.Count == 0)
-        {
-            return null;
-        }
-
-        if (candidates.Count == 1)
-        {
-            return ToSourceDefinition(candidates[0]);
-        }
-
-        if (selection.MainVbaProjectReference is not null)
-        {
-            var mainCandidates = candidates
-                .Where(definition => definition.ReferenceName.Equals(
-                    selection.MainVbaProjectReference.Name,
-                    StringComparison.OrdinalIgnoreCase))
-                .ToArray();
-            if (mainCandidates.Length == 1)
-            {
-                return ToSourceDefinition(mainCandidates[0]);
-            }
-        }
-
-        return null;
-    }
-
-    private IEnumerable<VbaProjectReferenceDefinition> GetActiveDefinitions(VbaProjectReferenceSelection selection)
+    private IEnumerable<VbaProjectReferenceDefinition> GetActiveReferenceDefinitions(VbaProjectReferenceSelection selection)
         => GetActiveCatalogs(selection).SelectMany(catalog => catalog.Catalog.Definitions);
 
     private IEnumerable<ActiveReferenceCatalog> GetActiveCatalogs(VbaProjectReferenceSelection selection)
