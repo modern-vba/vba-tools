@@ -27,9 +27,7 @@ import {
 } from 'vscode';
 import {
   LanguageClient,
-  LanguageClientOptions,
-  ServerOptions,
-  TransportKind
+  LanguageClientOptions
 } from 'vscode-languageclient/node';
 import {
   promptForFirstRunDoctor,
@@ -68,26 +66,16 @@ import {
   VbaDevDiagnosticCollection,
   VbaDevDiagnosticReporter
 } from './toolDiagnostics';
+import { createVbaLanguageServerOptions } from './languageServer';
 
 let client: LanguageClient | undefined;
 let outputChannel: OutputChannel | undefined;
 let toolDiagnosticReporter: VbaDevDiagnosticReporter | undefined;
 
 export async function activate(context: ExtensionContext): Promise<void> {
-  const serverModule = context.asAbsolutePath(path.join('server', 'out', 'server.js'));
-  const debugOptions = { execArgv: ['--nolazy', '--inspect=6009'] };
-
-  const serverOptions: ServerOptions = {
-    run: {
-      module: serverModule,
-      transport: TransportKind.ipc
-    },
-    debug: {
-      module: serverModule,
-      options: debugOptions,
-      transport: TransportKind.ipc
-    }
-  };
+  const serverOptions = createVbaLanguageServerOptions({
+    extensionRoot: context.extensionPath
+  });
 
   const clientOptions: LanguageClientOptions = {
     documentSelector: [

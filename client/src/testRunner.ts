@@ -1,4 +1,5 @@
 import './devtool.test';
+import './languageServer.test';
 import './projectDiscovery.test';
 import './devtoolCommand.test';
 import './doctorCommand.test';

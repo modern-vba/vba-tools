@@ -150,9 +150,10 @@
   },
   "scripts": {
     "compile": "tsc -b",
-    "test": "npm run test:extension && npm run test:devtool && npm run test:packaging",
+    "test": "npm run test:extension && npm run test:devtool && npm run test:language-server && npm run test:packaging",
     "test:extension": "npm run compile && node server/out/testRunner.js && node client/out/testRunner.js",
     "test:devtool": "dotnet test tools/vba-dev/tests/VbaDev.Tests/VbaDev.Tests.csproj -m:1 -p:UseSharedCompilation=false",
+    "test:language-server": "dotnet test tools/vba-language-server/tests/VbaLanguageServer.Tests/VbaLanguageServer.Tests.csproj -m:1 -p:UseSharedCompilation=false",
     "test:packaging": "node --test scripts/*.test.mjs",
     "build:devtool": "dotnet build tools/vba-dev/src/VbaDev.Cli/VbaDev.Cli.csproj -m:1 -p:UseSharedCompilation=false",
     "publish:devtool": "dotnet publish tools/vba-dev/src/VbaDev.Cli/VbaDev.Cli.csproj -c Release -o bin/vba-dev/win-x64 -m:1 -p:UseSharedCompilation=false",
