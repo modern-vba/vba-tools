@@ -9,6 +9,11 @@ This repository is the home for:
 - future VS Code Test Explorer integration;
 - the `vba-dev` companion CLI under `tools/vba-dev`.
 
+The first VS Code extension release is Windows-only. It launches the bundled
+C#/.NET `VbaLanguageServer` executable from
+`bin/vba-language-server/win-x64/vba-language-server.exe`; there is no
+TypeScript language-server fallback path.
+
 `vba-dev` remains usable as a standalone command-line tool, but it is also
 the command layer that the VS Code extension will use for workbook-backed
 project actions such as `build`, `test`, `publish`, `export`, and `doctor`.

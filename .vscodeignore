@@ -15,4 +15,8 @@ playwright-report/**
 tools/vba-dev/**
 tools/vba-language-server/**
 scripts/**
+bin/**/*.deps.json
+bin/**/*.dll
+bin/**/*.pdb
+bin/**/*.runtimeconfig.json
 *.vsix

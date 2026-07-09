@@ -5,9 +5,18 @@ import { pathToFileURL } from 'node:url';
 
 export const requiredBundledCliPath = 'bin/vba-dev/win-x64/vba-dev.exe';
 export const requiredBundledLanguageServerPath = 'bin/vba-language-server/win-x64/vba-language-server.exe';
+export const bundledLanguageServerVersionPrefix = 'vba-language-server ';
 
 const excludedDevToolSourcePrefix = 'tools/vba-dev/';
 const excludedLanguageServerSourcePrefix = 'tools/vba-language-server/';
+const excludedClientSourcePrefix = 'client/src/';
+const excludedTypeScriptServerFallbackPrefix = 'server/';
+const forbiddenBundledRuntimeSuffixes = [
+  '.deps.json',
+  '.dll',
+  '.pdb',
+  '.runtimeconfig.json'
+];
 const cliProjectPath = 'tools/vba-dev/src/VbaDev.Cli/VbaDev.Cli.csproj';
 const languageServerProjectPath = 'tools/vba-language-server/src/VbaLanguageServer.Cli/VbaLanguageServer.Cli.csproj';
 const requiredCommandSchemaVersions = {
@@ -44,6 +53,8 @@ export async function verifyVsixPackaging(options = {}) {
 
   const capabilitiesResult = await runCommand(bundledCliPath, ['capabilities', '--format', 'json'], root);
   assertBundledCliCapabilities(capabilitiesResult.stdout);
+  const languageServerVersionResult = await runCommand(bundledLanguageServerPath, ['--version'], root);
+  assertBundledLanguageServerVersion(languageServerVersionResult.stdout);
 }
 
 export function parseVsceFileList(stdout) {
@@ -60,10 +71,14 @@ export function assertVsixContents(files) {
       throw new Error(`VSIX file list must include ${requiredPath}.`);
     }
   }
+  assertBundledRuntimeShape(normalized, requiredBundledCliPath, 'vba-dev');
+  assertBundledRuntimeShape(normalized, requiredBundledLanguageServerPath, 'VbaLanguageServer');
 
   const sourceFiles = normalized.filter((file) => (
     file === 'tools/vba-dev' || file.startsWith(excludedDevToolSourcePrefix)
     || file === 'tools/vba-language-server' || file.startsWith(excludedLanguageServerSourcePrefix)
+    || file === 'client/src' || file.startsWith(excludedClientSourcePrefix)
+    || file === 'server' || file.startsWith(excludedTypeScriptServerFallbackPrefix)
   ));
   if (sourceFiles.length > 0) {
     throw new Error(`VSIX file list must exclude tool source files: ${sourceFiles.join(', ')}`);
@@ -101,6 +116,22 @@ export function assertBundledCliCapabilities(stdout) {
     if (!isRecord(command) || command.outputSchemaVersion !== schemaVersion) {
       throw new Error(`Bundled vba-dev capabilities must report ${commandName} outputSchemaVersion ${schemaVersion}.`);
     }
+  }
+}
+
+export function assertBundledLanguageServerVersion(stdout) {
+  if (!stdout.trim().startsWith(bundledLanguageServerVersionPrefix)) {
+    throw new Error(`Bundled VbaLanguageServer must run directly and print a ${bundledLanguageServerVersionPrefix.trim()} version.`);
+  }
+}
+
+function assertBundledRuntimeShape(files, executablePath, label) {
+  const directory = path.posix.dirname(executablePath);
+  const forbiddenSidecars = files
+    .filter((file) => file.startsWith(`${directory}/`) && file !== executablePath)
+    .filter((file) => forbiddenBundledRuntimeSuffixes.some((suffix) => file.endsWith(suffix)));
+  if (forbiddenSidecars.length > 0) {
+    throw new Error(`${label} must be packaged as a self-contained single executable without runtime sidecars: ${forbiddenSidecars.join(', ')}`);
   }
 }
 

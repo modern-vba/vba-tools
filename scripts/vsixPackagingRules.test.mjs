@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
+  assertBundledLanguageServerVersion,
   assertBundledCliCapabilities,
   assertCliPublishSettings,
   assertLanguageServerPublishSettings,
@@ -49,6 +50,46 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
       'client/out/extension.js'
     ]),
     /bin\/vba-language-server\/win-x64\/vba-language-server\.exe/
+  );
+
+  assert.throws(
+    () => assertVsixContents([
+      'README.md',
+      requiredBundledCliPath,
+      requiredBundledLanguageServerPath,
+      'bin/vba-language-server/win-x64/vba-language-server.dll'
+    ]),
+    /self-contained single executable/
+  );
+
+  assert.throws(
+    () => assertVsixContents([
+      'README.md',
+      requiredBundledCliPath,
+      requiredBundledLanguageServerPath,
+      'bin/vba-language-server/win-x64/vba-language-server.runtimeconfig.json'
+    ]),
+    /runtimeconfig/
+  );
+
+  assert.throws(
+    () => assertVsixContents([
+      'README.md',
+      requiredBundledCliPath,
+      requiredBundledLanguageServerPath,
+      'bin/vba-language-server/win-x64/vba-language-server.pdb'
+    ]),
+    /vba-language-server\.pdb/
+  );
+
+  assert.throws(
+    () => assertVsixContents([
+      'README.md',
+      requiredBundledCliPath,
+      requiredBundledLanguageServerPath,
+      'server/out/server.js'
+    ]),
+    /server\/out\/server\.js/
   );
 });
 
@@ -137,6 +178,14 @@ test('bundled CLI capabilities must satisfy the packaged extension contract surf
   );
 });
 
+test('bundled language server smoke must prove the C# executable runs directly', () => {
+  assert.doesNotThrow(() => assertBundledLanguageServerVersion('vba-language-server 0.1.0\n'));
+  assert.throws(
+    () => assertBundledLanguageServerVersion('typescript-language-server 0.1.0\n'),
+    /vba-language-server/
+  );
+});
+
 test('packaging verification checks file contents publish settings and bundled CLI capabilities', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-packaging-'));
   await fs.mkdir(path.join(root, 'bin', 'vba-dev', 'win-x64'), { recursive: true });
@@ -198,6 +247,13 @@ test('packaging verification checks file contents publish settings and bundled C
         };
       }
 
+      if (args.includes('--version')) {
+        return {
+          stdout: 'vba-language-server 0.1.0\n',
+          stderr: ''
+        };
+      }
+
       return {
         stdout: JSON.stringify({
           toolVersion: '0.1.0',
@@ -211,7 +267,8 @@ test('packaging verification checks file contents publish settings and bundled C
 
   assert.deepEqual(calls.map((call) => call.args.includes('ls') ? call.args.slice(-2) : call.args), [
     ['ls', '--no-dependencies'],
-    ['capabilities', '--format', 'json']
+    ['capabilities', '--format', 'json'],
+    ['--version']
   ]);
 });
 
