@@ -5,3 +5,4 @@ import './doctorCommand.test';
 import './projectCommand.test';
 import './commonModulesCommand.test';
 import './referenceCommand.test';
+import './testExplorer.test';

@@ -2,10 +2,19 @@ import * as path from 'node:path';
 import { promises as fs } from 'node:fs';
 
 import {
+  CancellationToken,
   ExtensionContext,
   OutputChannel,
   ProgressLocation,
+  TestController,
+  TestItem,
+  TestMessage,
+  TestRun,
+  TestRunProfileKind,
+  TestRunRequest,
+  Uri,
   commands,
+  tests,
   window,
   workspace
 } from 'vscode';
@@ -39,6 +48,13 @@ import {
   runReferenceListCommand,
   runReferenceRemoveCommand
 } from './referenceCommand';
+import {
+  TestControllerAdapter,
+  TestExplorerItem,
+  TestRunLike,
+  TestRunRequestLike,
+  createWorkbookBackedTestExplorer
+} from './testExplorer';
 
 let client: LanguageClient | undefined;
 let outputChannel: OutputChannel | undefined;
@@ -79,6 +95,21 @@ export async function activate(context: ExtensionContext): Promise<void> {
   context.subscriptions.push(client);
   outputChannel = window.createOutputChannel('VBA Tools');
   context.subscriptions.push(outputChannel);
+  const testController = tests.createTestController(
+    'vbaTools.workbookBackedProjects',
+    'VBA Workbook Tests'
+  );
+  context.subscriptions.push(testController);
+  const workbookBackedTestExplorer = createWorkbookBackedTestExplorer({
+    controller: createVscodeTestControllerAdapter(testController),
+    extensionRoot: context.extensionPath,
+    configuredDevToolPath: getConfiguredDevToolPath(),
+    workspaceRoots: workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [],
+    findProjectManifests,
+    readTextFile,
+    outputChannel,
+    showErrorMessage: (message: string) => window.showErrorMessage(message)
+  });
   context.subscriptions.push(commands.registerCommand('vbaTools.doctor', async () => {
     await runDoctorWithProgress(context);
   }));
@@ -99,6 +130,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
   }
 
   await client.start();
+  await workbookBackedTestExplorer.refresh();
   await promptForActiveWorkbookBackedProject(context);
 }
 
@@ -357,9 +389,59 @@ async function fileExists(filePath: string): Promise<boolean> {
   }
 }
 
+async function readTextFile(filePath: string): Promise<string> {
+  const buffer = await fs.readFile(filePath);
+  if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) {
+    return buffer.subarray(2).toString('utf16le');
+  }
+
+  if (buffer.length >= 3 && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf) {
+    return buffer.subarray(3).toString('utf8');
+  }
+
+  return buffer.toString('utf8');
+}
+
 async function findProjectManifests(): Promise<readonly string[]> {
   const uris = await workspace.findFiles('**/project.json', '**/{node_modules,.git}/**');
   return uris.map((uri) => uri.fsPath);
+}
+
+function createVscodeTestControllerAdapter(controller: TestController): TestControllerAdapter {
+  return {
+    createTestItem: (id, label, uriPath) => controller.createTestItem(
+      id,
+      label,
+      uriPath ? Uri.file(uriPath) : undefined
+    ),
+    replaceItems: (items) => controller.items.replace(items as TestItem[]),
+    createRunProfile: (label, runHandler, isDefault) => {
+      controller.createRunProfile(
+        label,
+        TestRunProfileKind.Run,
+        async (request: TestRunRequest, token: CancellationToken) => {
+          await runHandler(request as TestRunRequestLike, token);
+        },
+        isDefault
+      );
+    },
+    createTestRun: (request) => toTestRunLike(controller.createTestRun(request as TestRunRequest))
+  };
+}
+
+function toTestRunLike(run: TestRun): TestRunLike {
+  return {
+    started: (item: TestExplorerItem) => run.started(item as TestItem),
+    passed: (item: TestExplorerItem) => run.passed(item as TestItem),
+    failed: (item: TestExplorerItem, message: string) => run.failed(item as TestItem, new TestMessage(message)),
+    skipped: (item: TestExplorerItem) => run.skipped(item as TestItem),
+    appendOutput: (output: string) => {
+      if (output.length > 0) {
+        run.appendOutput(output.replace(/\n/g, '\r\n'));
+      }
+    },
+    end: () => run.end()
+  };
 }
 
 async function chooseProject(
