@@ -1,3 +1,4 @@
+using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.SourceModel;
 using Xunit;
 
@@ -316,4 +317,108 @@ public sealed class SourceFormattingTests
         Assert.NotNull(edit);
         Assert.Equal(expected, edit.NewText);
     }
+
+    [Fact]
+    public void FormatDocumentNormalizesActiveReferenceRootsAliasesAndMembers()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var source = string.Join('\n', [
+            "attribute vb_name = \"Worker\"",
+            "option explicit",
+            "public sub Run()",
+            "application.run",
+            "excel.application",
+            "dim app as excel.application",
+            "app.workbooks.open",
+            "end sub"
+        ]);
+        var expected = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Option Explicit",
+            "Public Sub Run()",
+            "    Application.Run",
+            "    Excel.Application",
+            "    Dim app As Excel.Application",
+            "    app.Workbooks.Open",
+            "End Sub"
+        ]);
+        var index = BuildExcelReferenceIndex(new Dictionary<string, string> { [uri] = source });
+
+        var edit = index.FormatDocument(uri, tabSize: 4);
+
+        Assert.NotNull(edit);
+        Assert.Equal(expected, edit.NewText);
+    }
+
+    [Fact]
+    public void FormatDocumentLeavesReferenceNamesUnchangedWhenCatalogIsMissing()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var source = string.Join('\n', [
+            "attribute vb_name = \"Worker\"",
+            "public sub Run()",
+            "application.run",
+            "excel.application",
+            "end sub"
+        ]);
+        var expected = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    application.run",
+            "    excel.application",
+            "End Sub"
+        ]);
+        var index = BuildExcelReferenceIndex(
+            new Dictionary<string, string> { [uri] = source },
+            VbaProjectReferenceCatalogSet.Empty);
+
+        var edit = index.FormatDocument(uri, tabSize: 4);
+
+        Assert.NotNull(edit);
+        Assert.Equal(expected, edit.NewText);
+    }
+
+    [Fact]
+    public void FormatDocumentStopsReferenceMemberChainCasingWhenResolutionFails()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var source = string.Join('\n', [
+            "attribute vb_name = \"Worker\"",
+            "public sub Run()",
+            "dim app as excel.application",
+            "app.unknown.open",
+            "dim unknown as MissingType",
+            "unknown.run",
+            "end sub"
+        ]);
+        var expected = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    Dim app As Excel.Application",
+            "    app.unknown.open",
+            "    Dim unknown As MissingType",
+            "    unknown.run",
+            "End Sub"
+        ]);
+        var index = BuildExcelReferenceIndex(new Dictionary<string, string> { [uri] = source });
+
+        var edit = index.FormatDocument(uri, tabSize: 4);
+
+        Assert.NotNull(edit);
+        Assert.Equal(expected, edit.NewText);
+    }
+
+    private static VbaSourceIndex BuildExcelReferenceIndex(
+        IReadOnlyDictionary<string, string> sourceDocuments,
+        VbaProjectReferenceCatalogSet? referenceCatalogs = null)
+        => VbaSourceIndex.Build(
+            sourceDocuments,
+            VbaProjectReferenceSelection.Create(
+                ProjectDocument.ExcelKind,
+                [
+                    new VbaProjectReference("Microsoft Excel 16.0 Object Library"),
+                    new VbaProjectReference("Microsoft Office 16.0 Object Library"),
+                    new VbaProjectReference("Microsoft Scripting Runtime")
+                ]),
+            referenceCatalogs ?? VbaProjectReferenceCatalogSet.CreateBundled());
 }

@@ -1285,7 +1285,7 @@ public sealed class VbaSourceIndex
                 continue;
             }
 
-            var casedLine = FormatLineCasing(line, nameResolution, document.Uri, lineIndex, declarationRanges);
+            var casedLine = FormatLineCasing(line, nameResolution, document, lineIndex, declarationRanges);
             var trimmed = casedLine.TrimStart();
             if (ShouldDedentBefore(trimmed))
             {
@@ -1310,10 +1310,10 @@ public sealed class VbaSourceIndex
         return edits.Apply(document.Text);
     }
 
-    private static string FormatLineCasing(
+    private string FormatLineCasing(
         string line,
         VbaNameResolutionService nameResolution,
-        string uri,
+        VbaSourceDocument document,
         int lineIndex,
         IReadOnlySet<string> declarationRanges)
     {
@@ -1334,7 +1334,7 @@ public sealed class VbaSourceIndex
                 codePart,
                 occurrence,
                 nameResolution,
-                uri,
+                document,
                 lineIndex,
                 declarationRanges);
             if (canonicalName is not null
@@ -1347,11 +1347,11 @@ public sealed class VbaSourceIndex
         return edits.Apply(codePart) + commentPart;
     }
 
-    private static string? GetCanonicalFormattingName(
+    private string? GetCanonicalFormattingName(
         string codePart,
         IdentifierAtPosition occurrence,
         VbaNameResolutionService nameResolution,
-        string uri,
+        VbaSourceDocument document,
         int lineIndex,
         IReadOnlySet<string> declarationRanges)
     {
@@ -1360,11 +1360,30 @@ public sealed class VbaSourceIndex
             return keyword;
         }
 
-        if (TryGetQualifiedSourceCanonicalName(
+        var occurrenceRange = new VbaRange(
+            new VbaPosition(lineIndex, occurrence.Start),
+            new VbaPosition(lineIndex, occurrence.End));
+        if (declarationRanges.Contains(GetRangeKey(occurrenceRange)))
+        {
+            return null;
+        }
+
+        if (TryGetMemberChainCanonicalName(
             codePart,
             occurrence,
             nameResolution,
-            uri,
+            document,
+            lineIndex,
+            out var memberChainCanonicalName))
+        {
+            return memberChainCanonicalName;
+        }
+
+        if (TryGetQualifiedCanonicalName(
+            codePart,
+            occurrence,
+            nameResolution,
+            document.Uri,
             lineIndex,
             out var qualifiedCanonicalName))
         {
@@ -1376,20 +1395,12 @@ public sealed class VbaSourceIndex
             return null;
         }
 
-        var occurrenceRange = new VbaRange(
-            new VbaPosition(lineIndex, occurrence.Start),
-            new VbaPosition(lineIndex, occurrence.End));
-        if (declarationRanges.Contains(GetRangeKey(occurrenceRange)))
-        {
-            return null;
-        }
-
         var definition = nameResolution.Resolve(
-            uri,
+            document.Uri,
             new VbaPosition(lineIndex, occurrence.Start),
             qualifier: null,
             occurrence.Name);
-        if (definition is null || VbaProjectReferenceCatalogSet.IsExternalDefinition(definition))
+        if (definition is null)
         {
             return null;
         }
@@ -1397,7 +1408,42 @@ public sealed class VbaSourceIndex
         return definition.Name;
     }
 
-    private static bool TryGetQualifiedSourceCanonicalName(
+    private bool TryGetMemberChainCanonicalName(
+        string codePart,
+        IdentifierAtPosition occurrence,
+        VbaNameResolutionService nameResolution,
+        VbaSourceDocument document,
+        int lineIndex,
+        out string? canonicalName)
+    {
+        canonicalName = null;
+        if (TryGetPreviousMemberReceiverExpression(codePart, occurrence, out var receiverExpression))
+        {
+            if (!TryResolveExpressionType(document, lineIndex, occurrence.Start, receiverExpression, out var receiverType))
+            {
+                return false;
+            }
+
+            var member = ResolveMember(receiverType, occurrence.Name);
+            canonicalName = member?.Name;
+            return canonicalName is not null;
+        }
+
+        if (!TryGetNextMember(codePart, occurrence, out _))
+        {
+            return false;
+        }
+
+        var definition = nameResolution.Resolve(
+            document.Uri,
+            new VbaPosition(lineIndex, occurrence.Start),
+            qualifier: null,
+            occurrence.Name);
+        canonicalName = definition?.Name;
+        return canonicalName is not null;
+    }
+
+    private bool TryGetQualifiedCanonicalName(
         string codePart,
         IdentifierAtPosition occurrence,
         VbaNameResolutionService nameResolution,
@@ -1408,7 +1454,7 @@ public sealed class VbaSourceIndex
         canonicalName = null;
         if (TryGetPreviousQualifier(codePart, occurrence, out var qualifier))
         {
-            var definition = ResolveQualifiedSourceDefinition(
+            var definition = ResolveQualifiedDefinition(
                 nameResolution,
                 uri,
                 lineIndex,
@@ -1420,20 +1466,22 @@ public sealed class VbaSourceIndex
 
         if (TryGetNextMember(codePart, occurrence, out var member))
         {
-            var definition = ResolveQualifiedSourceDefinition(
+            var definition = ResolveQualifiedDefinition(
                 nameResolution,
                 uri,
                 lineIndex,
                 occurrence.Name,
                 member.Name);
-            canonicalName = definition?.ModuleName;
+            canonicalName = definition is null
+                ? null
+                : GetCanonicalQualifierName(definition, occurrence.Name);
             return canonicalName is not null;
         }
 
         return false;
     }
 
-    private static VbaSourceDefinition? ResolveQualifiedSourceDefinition(
+    private static VbaSourceDefinition? ResolveQualifiedDefinition(
         VbaNameResolutionService nameResolution,
         string uri,
         int lineIndex,
@@ -1445,9 +1493,40 @@ public sealed class VbaSourceIndex
             new VbaPosition(lineIndex, 0),
             qualifier,
             identifier);
-        return definition is not null && !VbaProjectReferenceCatalogSet.IsExternalDefinition(definition)
-            ? definition
-            : null;
+        return definition;
+    }
+
+    private string? GetCanonicalQualifierName(VbaSourceDefinition definition, string qualifier)
+    {
+        if (!VbaProjectReferenceCatalogSet.IsExternalDefinition(definition))
+        {
+            return definition.ModuleName;
+        }
+
+        return referenceSelection is null
+            ? null
+            : referenceCatalogs.GetActiveCanonicalQualifierAlias(referenceSelection, definition.ModuleName, qualifier);
+    }
+
+    private static bool TryGetPreviousMemberReceiverExpression(
+        string codePart,
+        IdentifierAtPosition occurrence,
+        out string receiverExpression)
+    {
+        receiverExpression = "";
+        var dotIndex = occurrence.Start - 1;
+        while (dotIndex >= 0 && char.IsWhiteSpace(codePart[dotIndex]))
+        {
+            dotIndex--;
+        }
+
+        if (dotIndex < 0 || codePart[dotIndex] != '.')
+        {
+            return false;
+        }
+
+        receiverExpression = codePart[..dotIndex].Trim();
+        return !string.IsNullOrWhiteSpace(receiverExpression);
     }
 
     private static bool IsQualifiedIdentifierOccurrence(string codePart, IdentifierAtPosition occurrence)

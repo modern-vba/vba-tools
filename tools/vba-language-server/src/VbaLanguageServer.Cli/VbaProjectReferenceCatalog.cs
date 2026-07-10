@@ -232,6 +232,17 @@ public sealed class VbaProjectReferenceCatalogSet
             .ToArray();
     }
 
+    public string? GetActiveCanonicalQualifierAlias(
+        VbaProjectReferenceSelection selection,
+        string referenceName,
+        string qualifier)
+    {
+        return GetActiveCatalogs(selection)
+            .Where(catalog => catalog.Catalog.ReferenceName.Equals(referenceName, StringComparison.OrdinalIgnoreCase))
+            .SelectMany(catalog => catalog.Catalog.QualifierAliases)
+            .FirstOrDefault(alias => alias.Equals(qualifier, StringComparison.OrdinalIgnoreCase));
+    }
+
     private IEnumerable<VbaProjectReferenceDefinition> GetActiveReferenceDefinitions(VbaProjectReferenceSelection selection)
         => GetActiveCatalogs(selection).SelectMany(catalog => catalog.Catalog.Definitions);
 
