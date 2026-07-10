@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using VbaDev.App.Build;
 using VbaDev.App.Cli;
 using VbaDev.App.Projects;
@@ -59,6 +60,10 @@ public sealed class TestCommand
         catch (UnauthorizedAccessException ex)
         {
             return CommandResult.UsageError(ex.Message);
+        }
+        catch (COMException ex)
+        {
+            return CommandResult.UsageError(CommandErrorMessages.ExcelComAutomationFailed("test", ex));
         }
     }
 }

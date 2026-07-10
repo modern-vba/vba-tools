@@ -1,4 +1,5 @@
 using System.Text;
+using System.Runtime.InteropServices;
 using VbaDev.App.Workbooks;
 using VbaDev.Composition;
 using VbaDev.Domain;
@@ -218,6 +219,28 @@ public sealed class BuildCommandTests
     }
 
     [Fact]
+    public void BuildReportsComReferenceErrorsAsUsageErrors()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
+        var automation = new FakeWorkbookBuildAutomation
+        {
+            ReferenceError = new COMException("0x800A801C", unchecked((int)0x800A801C))
+        };
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookBuildAutomation: automation);
+
+        var result = application.Run(["build"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("Excel COM build automation failed", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("coding agent", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("outside the sandbox", result.StandardError, StringComparison.Ordinal);
+        Assert.DoesNotContain("import:", automation.Events);
+    }
+
+    [Fact]
     public void BuildFailsBeforeSourceImportWhenManifestReferenceIsAmbiguous()
     {
         using var temp = TempDirectory.Create();
@@ -306,6 +329,8 @@ internal sealed class FakeWorkbookBuildAutomation : IWorkbookBuildAutomation
 
     public bool ThrowOnImport { get; init; }
 
+    public COMException? ReferenceError { get; init; }
+
     public List<string> OpenedWorkbooks { get; } = [];
 
     public List<string> Events { get; } = [];
@@ -333,7 +358,15 @@ internal sealed class FakeWorkbookBuildAutomation : IWorkbookBuildAutomation
 
         public IReadOnlyList<WorkbookModule> GetModules() => modules;
 
-        public IReadOnlyList<WorkbookReference> GetReferences() => owner.References;
+        public IReadOnlyList<WorkbookReference> GetReferences()
+        {
+            if (owner.ReferenceError is not null)
+            {
+                throw owner.ReferenceError;
+            }
+
+            return owner.References;
+        }
 
         public bool RemoveReference(string referenceName)
         {

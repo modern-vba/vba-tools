@@ -1,4 +1,5 @@
 using System.Text;
+using System.Runtime.InteropServices;
 using VbaDev.App.Testing;
 using VbaDev.App.Workbooks;
 using VbaDev.Composition;
@@ -143,6 +144,29 @@ public sealed class TestCommandTests
     }
 
     [Fact]
+    public void TestReportsComRunnerErrorsAsUsageErrors()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        var binPath = Path.Combine(root, "bin", "Book1", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
+        File.WriteAllText(binPath, "bin", Encoding.UTF8);
+        var runner = new FakeWorkbookTestRunner
+        {
+            Error = new COMException("0x800A801C", unchecked((int)0x800A801C))
+        };
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
+
+        var result = application.Run(["test", "--no-build"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("Excel COM test automation failed", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("coding agent", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("outside the sandbox", result.StandardError, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TestBuildsBeforeRunningTestsByDefault()
     {
         using var temp = TempDirectory.Create();
@@ -264,7 +288,7 @@ internal sealed class FakeWorkbookTestRunner : IWorkbookTestRunner
 
     public List<string> Workbooks { get; } = [];
     public List<WorkbookTestSelector> Selectors { get; } = [];
-    public InvalidOperationException? Error { get; init; }
+    public Exception? Error { get; init; }
 
     public IReadOnlyList<WorkbookTestResultRow> RunTests(string workbookPath, WorkbookTestSelector selector)
     {

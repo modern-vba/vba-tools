@@ -1,4 +1,5 @@
 using System.Text;
+using System.Runtime.InteropServices;
 using VbaDev.App.Cli;
 using VbaDev.App.CommonModules;
 using VbaDev.App.Projects;
@@ -65,6 +66,10 @@ public sealed class PublishCommand
         catch (UnauthorizedAccessException ex)
         {
             return CommandResult.UsageError(ex.Message);
+        }
+        catch (COMException ex)
+        {
+            return CommandResult.UsageError(CommandErrorMessages.ExcelComAutomationFailed("publish", ex));
         }
     }
 }
