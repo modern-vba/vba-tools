@@ -131,7 +131,8 @@ in issue #120.
   copying Rubberduck grammar or implementation.
 - Documentation explains how a future DoxyVB6 adapter can consume
   `VbaLanguageServer.Syntax` without making DoxyVB6 integration part of this
-  PRD.
+  PRD. The dependency boundary is recorded in
+  `docs/parser-core-doxyvb6-reuse.md`.
 
 ## Implementation Plan
 
@@ -155,5 +156,7 @@ in issue #120.
 - ADR 0009 keeps editor-intelligence behavior in the C# VbaLanguageServer.
 - ADR 0003 keeps incremental parsing at the `ModuleMember` replacement boundary.
 - ADR 0010 records the hand-written reusable C# parser-core decision.
+- `docs/parser-core-doxyvb6-reuse.md` records the future DoxyVB6 adapter reuse
+  boundary for the `ReusableVbaParserCore`.
 - Issue #120 tracks semantic and compiler-compatibility diagnostics that are
   intentionally outside this PRD.
