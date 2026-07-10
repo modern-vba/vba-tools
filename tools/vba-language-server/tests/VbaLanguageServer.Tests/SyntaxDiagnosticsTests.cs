@@ -85,6 +85,73 @@ public sealed class SyntaxDiagnosticsTests
     }
 
     [Fact]
+    public void Diagnostics_reject_parenthesis_free_raise_event_arguments()
+    {
+        const string invalidLine = "    RaiseEvent Saved \"ok\"";
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Event Saved(ByVal message As String)",
+            "Public Sub Run()",
+            invalidLine,
+            "End Sub"
+        ]);
+
+        var diagnostic = Assert.Single(VbaSyntaxDiagnostics.Collect(source, "Worker.bas"));
+
+        Assert.Equal("syntax.raiseEventArgumentListRequiresParentheses", diagnostic.Code);
+        Assert.Equal("RaiseEvent arguments must be enclosed in parentheses.", diagnostic.Message);
+        Assert.Equal("error", diagnostic.Severity);
+        Assert.Equal("vba-language-server", diagnostic.Source);
+        Assert.Equal(
+            new VbaRange(
+                new VbaPosition(3, invalidLine.IndexOf("\"ok\"", StringComparison.Ordinal)),
+                new VbaPosition(3, invalidLine.Length)),
+            diagnostic.Range);
+    }
+
+    [Fact]
+    public void Diagnostics_reject_parenthesis_free_raise_event_multiple_arguments()
+    {
+        const string invalidLine = "    RaiseEvent Saved \"ok\", 1";
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Event Saved(ByVal message As String, ByVal count As Long)",
+            "Public Sub Run()",
+            invalidLine,
+            "End Sub"
+        ]);
+
+        var diagnostic = Assert.Single(VbaSyntaxDiagnostics.Collect(source, "Worker.bas"));
+
+        Assert.Equal("syntax.raiseEventArgumentListRequiresParentheses", diagnostic.Code);
+        Assert.Equal(
+            new VbaRange(
+                new VbaPosition(3, invalidLine.IndexOf("\"ok\", 1", StringComparison.Ordinal)),
+                new VbaPosition(3, invalidLine.Length)),
+            diagnostic.Range);
+    }
+
+    [Theory]
+    [InlineData("    RaiseEvent Saved")]
+    [InlineData("    RaiseEvent Saved()")]
+    [InlineData("    RaiseEvent Saved(\"ok\")")]
+    [InlineData("    Example \"ok\", 1")]
+    public void Diagnostics_do_not_reject_valid_raise_event_or_ordinary_call_shapes(string statementLine)
+    {
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Event Saved(ByVal message As String)",
+            "Public Sub Run()",
+            statementLine,
+            "End Sub"
+        ]);
+
+        Assert.DoesNotContain(
+            VbaSyntaxDiagnostics.Collect(source, "Worker.bas"),
+            diagnostic => diagnostic.Code == "syntax.raiseEventArgumentListRequiresParentheses");
+    }
+
+    [Fact]
     public void Valid_representative_sources_return_no_syntax_diagnostics()
     {
         var basSource = string.Join('\n', [

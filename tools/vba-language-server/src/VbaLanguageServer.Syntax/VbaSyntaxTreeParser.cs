@@ -888,6 +888,7 @@ internal static class VbaSyntaxTreeParser
             var line = sourceText.Lines[lineIndex];
             diagnostics.AddRange(CollectLineContinuationDiagnostics(line));
             diagnostics.AddRange(CollectStringDiagnostics(line));
+            diagnostics.AddRange(CollectRaiseEventDiagnostics(line));
 
             var codeLine = StripApostropheComment(line.Text);
             if (string.IsNullOrWhiteSpace(codeLine)
@@ -957,6 +958,43 @@ internal static class VbaSyntaxTreeParser
         }
 
         return new ParsedStatements(statements, diagnostics);
+    }
+
+    private static IEnumerable<VbaSyntaxDiagnostic> CollectRaiseEventDiagnostics(SourceLine line)
+    {
+        var codeLine = StripApostropheComment(line.Text);
+        var index = SkipWhitespace(codeLine, 0);
+        const string keyword = "RaiseEvent";
+        if (!StartsWithKeyword(codeLine, index, keyword))
+        {
+            yield break;
+        }
+
+        index += keyword.Length;
+        var afterKeyword = SkipWhitespace(codeLine, index);
+        if (afterKeyword == index)
+        {
+            yield break;
+        }
+
+        var eventNameEnd = ReadIdentifierEnd(codeLine, afterKeyword);
+        if (eventNameEnd == afterKeyword)
+        {
+            yield break;
+        }
+
+        var argumentStart = SkipWhitespace(codeLine, eventNameEnd);
+        if (argumentStart >= codeLine.Length || codeLine[argumentStart] == '(')
+        {
+            yield break;
+        }
+
+        yield return new VbaSyntaxDiagnostic(
+            "syntax.raiseEventArgumentListRequiresParentheses",
+            "RaiseEvent arguments must be enclosed in parentheses.",
+            new VbaSyntaxRange(
+                new VbaSyntaxPosition(line.LineNumber, argumentStart, line.StartOffset + argumentStart),
+                new VbaSyntaxPosition(line.LineNumber, codeLine.Length, line.StartOffset + codeLine.Length)));
     }
 
     private static IEnumerable<VbaSyntaxDiagnostic> CollectLineContinuationDiagnostics(SourceLine line)
@@ -1701,6 +1739,50 @@ internal static class VbaSyntaxTreeParser
 
     private static bool IsIdentifierCharacter(char value)
         => char.IsAsciiLetterOrDigit(value) || value == '_';
+
+    private static int SkipWhitespace(string text, int startIndex)
+    {
+        var index = startIndex;
+        while (index < text.Length && char.IsWhiteSpace(text[index]))
+        {
+            index++;
+        }
+
+        return index;
+    }
+
+    private static int ReadIdentifierEnd(string text, int startIndex)
+    {
+        var index = startIndex;
+        if (index >= text.Length || !IsIdentifierStartCharacter(text[index]))
+        {
+            return startIndex;
+        }
+
+        index++;
+        while (index < text.Length && IsIdentifierCharacter(text[index]))
+        {
+            index++;
+        }
+
+        return index;
+    }
+
+    private static bool IsIdentifierStartCharacter(char value)
+        => char.IsAsciiLetter(value) || value == '_';
+
+    private static bool StartsWithKeyword(string text, int startIndex, string keyword)
+    {
+        if (!text.AsSpan(startIndex).StartsWith(keyword, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var beforeIsBoundary = startIndex == 0 || !IsIdentifierCharacter(text[startIndex - 1]);
+        var afterIndex = startIndex + keyword.Length;
+        var afterIsBoundary = afterIndex >= text.Length || !IsIdentifierCharacter(text[afterIndex]);
+        return beforeIsBoundary && afterIsBoundary;
+    }
 
     private static VbaSyntaxRange CreateRange(SourceText sourceText, Match match, string groupName, SourceLine line)
     {
