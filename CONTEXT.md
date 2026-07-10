@@ -277,6 +277,17 @@ _Avoid_: color theme, formatting
 An editor diagnostic that reports malformed VBA source syntax in a `VbaProject`. A `SyntaxDiagnostic` is about grammar and source structure, not semantic checks such as unresolved `VbaDefinition`s, missing `VbaProjectReferenceDefinition`s, type mismatch, or ambiguous `NameResolution`.
 _Avoid_: compile error, semantic diagnostic, runtime error
 
+**VbaValidationDiagnostic**:
+An editor diagnostic produced after a source file has been parsed into
+`VbaSyntaxTree`, when VBA validity rules can be checked without treating the
+source as parser recovery. Duplicate callable parameter names, duplicate
+call-site named arguments, and positional arguments after named arguments are
+`VbaValidationDiagnostic`s, even when they are published as LSP errors. Some
+`VbaValidationDiagnostic`s are document-local, while others require project
+state such as `NameResolution`, `TypeResolution`, `VbaProjectReferenceSelection`,
+or available `VbaProjectReferenceCatalog`s.
+_Avoid_: SyntaxDiagnostic, parser recovery diagnostic, raw compiler error
+
 **VbaSyntaxTree**:
 The parsed VBA source structure needed for `SyntaxHighlighting`,
 `SyntaxDiagnostic`s, and completion candidate discovery while preserving the
@@ -331,6 +342,27 @@ _Avoid_: comment, note, description
 **CallableSignature**:
 The structured call shape for a callable `VbaDefinition` or `VbaProjectReferenceDefinition`. It includes the displayed signature label, ordered parameters, optional parameter metadata, parameter passing metadata, parameter type names, default values, return type names, and parameter documentation when that documentation is available from source comments or reference catalog metadata.
 _Avoid_: parameter list, call text, method shape
+
+**CallableParameter**:
+A declared input slot on a callable definition, such as `Arg1` in `Sub Example(ByVal Arg1 As String)`. It is matched by name or position from a `CallArgument`.
+_Avoid_: argument, call argument, local variable
+
+**CallArgument**:
+A value slot supplied at a call site, such as `"x"` or `Arg1:="x"` in `Example("x")` or `Example Arg1:="x"`. `CallArgument`s are distinct from `CallableParameter`s and may be positional, named, or omitted.
+_Avoid_: parameter, callable parameter, argument text
+
+**NamedCallArgument**:
+A `CallArgument` that explicitly names the target `CallableParameter`, such as `Arg1:="x"`.
+_Avoid_: named parameter, named callable parameter
+
+**PositionalCallArgument**:
+A `CallArgument` matched to a `CallableParameter` by ordinal position rather than by name.
+_Avoid_: unnamed parameter, indexed parameter
+
+**OmittedCallArgument**:
+An empty positional `CallArgument` slot in VBA call syntax, such as the first slot in `Example(, Arg2:="x")`.
+It is still positional for named-argument ordering: `Example(Arg2:="x", )` has an omitted positional slot after a named argument.
+_Avoid_: missing parameter, blank parameter
 
 **ReferenceSignatureDiscovery**:
 The process of collecting `CallableSignature` and type metadata for `VbaProjectReferenceDefinition`s from an available referenced-library catalog source. It enriches reference metadata so editor features can show accurate signature help without guessing signatures from member names alone.
@@ -446,6 +478,9 @@ Domain Expert: "No. `SyntaxHighlighting` includes lexical VBA coloring and `Sema
 
 Dev: "Is an unresolved identifier a `SyntaxDiagnostic`?"
 Domain Expert: "No. `SyntaxDiagnostic`s report malformed VBA grammar and source structure. Unknown names and ambiguous `NameResolution` are semantic concerns."
+
+Dev: "Is `RaiseEvent Completed ""ok""` a `VbaValidationDiagnostic`?"
+Domain Expert: "No. Parenthesis-free `RaiseEvent` arguments are malformed statement syntax, so that is a `SyntaxDiagnostic`. Duplicate parameter names and invalid named-argument ordering are `VbaValidationDiagnostic`s."
 
 Dev: "If an active reference has no usable catalog, should the editor mark source lines?"
 Domain Expert: "No. The reference stays active but contributes no external definitions. Report `VbaProjectReferenceCatalogAvailability` through language-server output, status, or trace and through `EnvironmentDiagnostic`, not through source diagnostics."
