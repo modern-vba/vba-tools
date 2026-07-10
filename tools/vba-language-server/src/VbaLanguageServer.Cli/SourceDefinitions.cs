@@ -1360,6 +1360,17 @@ public sealed class VbaSourceIndex
             return keyword;
         }
 
+        if (TryGetQualifiedSourceCanonicalName(
+            codePart,
+            occurrence,
+            nameResolution,
+            uri,
+            lineIndex,
+            out var qualifiedCanonicalName))
+        {
+            return qualifiedCanonicalName;
+        }
+
         if (IsQualifiedIdentifierOccurrence(codePart, occurrence))
         {
             return null;
@@ -1386,34 +1397,142 @@ public sealed class VbaSourceIndex
         return definition.Name;
     }
 
-    private static bool IsQualifiedIdentifierOccurrence(string codePart, IdentifierAtPosition occurrence)
+    private static bool TryGetQualifiedSourceCanonicalName(
+        string codePart,
+        IdentifierAtPosition occurrence,
+        VbaNameResolutionService nameResolution,
+        string uri,
+        int lineIndex,
+        out string? canonicalName)
     {
-        for (var index = occurrence.Start - 1; index >= 0; index--)
+        canonicalName = null;
+        if (TryGetPreviousQualifier(codePart, occurrence, out var qualifier))
         {
-            if (char.IsWhiteSpace(codePart[index]))
-            {
-                continue;
-            }
-
-            if (codePart[index] == '.')
-            {
-                return true;
-            }
-
-            break;
+            var definition = ResolveQualifiedSourceDefinition(
+                nameResolution,
+                uri,
+                lineIndex,
+                qualifier.Name,
+                occurrence.Name);
+            canonicalName = definition?.Name;
+            return canonicalName is not null;
         }
 
-        for (var index = occurrence.End; index < codePart.Length; index++)
+        if (TryGetNextMember(codePart, occurrence, out var member))
         {
-            if (char.IsWhiteSpace(codePart[index]))
-            {
-                continue;
-            }
-
-            return codePart[index] == '.';
+            var definition = ResolveQualifiedSourceDefinition(
+                nameResolution,
+                uri,
+                lineIndex,
+                occurrence.Name,
+                member.Name);
+            canonicalName = definition?.ModuleName;
+            return canonicalName is not null;
         }
 
         return false;
+    }
+
+    private static VbaSourceDefinition? ResolveQualifiedSourceDefinition(
+        VbaNameResolutionService nameResolution,
+        string uri,
+        int lineIndex,
+        string qualifier,
+        string identifier)
+    {
+        var definition = nameResolution.Resolve(
+            uri,
+            new VbaPosition(lineIndex, 0),
+            qualifier,
+            identifier);
+        return definition is not null && !VbaProjectReferenceCatalogSet.IsExternalDefinition(definition)
+            ? definition
+            : null;
+    }
+
+    private static bool IsQualifiedIdentifierOccurrence(string codePart, IdentifierAtPosition occurrence)
+    {
+        return TryGetPreviousQualifier(codePart, occurrence, out _)
+            || TryGetNextMember(codePart, occurrence, out _);
+    }
+
+    private static bool TryGetPreviousQualifier(
+        string codePart,
+        IdentifierAtPosition occurrence,
+        out IdentifierAtPosition qualifier)
+    {
+        qualifier = new IdentifierAtPosition("", 0, 0);
+        var dotIndex = occurrence.Start - 1;
+        while (dotIndex >= 0 && char.IsWhiteSpace(codePart[dotIndex]))
+        {
+            dotIndex--;
+        }
+
+        if (dotIndex < 0 || codePart[dotIndex] != '.')
+        {
+            return false;
+        }
+
+        var qualifierEnd = dotIndex - 1;
+        while (qualifierEnd >= 0 && char.IsWhiteSpace(codePart[qualifierEnd]))
+        {
+            qualifierEnd--;
+        }
+
+        if (qualifierEnd < 0 || !IsIdentifierCharacter(codePart[qualifierEnd]))
+        {
+            return false;
+        }
+
+        var qualifierStart = qualifierEnd;
+        while (qualifierStart > 0 && IsIdentifierCharacter(codePart[qualifierStart - 1]))
+        {
+            qualifierStart--;
+        }
+
+        qualifier = new IdentifierAtPosition(
+            codePart[qualifierStart..(qualifierEnd + 1)],
+            qualifierStart,
+            qualifierEnd + 1);
+        return true;
+    }
+
+    private static bool TryGetNextMember(
+        string codePart,
+        IdentifierAtPosition occurrence,
+        out IdentifierAtPosition member)
+    {
+        member = new IdentifierAtPosition("", 0, 0);
+        var dotIndex = occurrence.End;
+        while (dotIndex < codePart.Length && char.IsWhiteSpace(codePart[dotIndex]))
+        {
+            dotIndex++;
+        }
+
+        if (dotIndex >= codePart.Length || codePart[dotIndex] != '.')
+        {
+            return false;
+        }
+
+        var memberStart = dotIndex + 1;
+        while (memberStart < codePart.Length && char.IsWhiteSpace(codePart[memberStart]))
+        {
+            memberStart++;
+        }
+
+        if (memberStart >= codePart.Length || !IsIdentifierStart(codePart[memberStart]))
+        {
+            return false;
+        }
+
+        var memberEnd = memberStart + 1;
+        while (memberEnd < codePart.Length && IsIdentifierCharacter(codePart[memberEnd]))
+        {
+            memberEnd++;
+        }
+
+        member = new IdentifierAtPosition(codePart[memberStart..memberEnd], memberStart, memberEnd);
+        return true;
     }
 
     private static bool ShouldDedentBefore(string trimmedLine)

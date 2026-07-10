@@ -219,4 +219,101 @@ public sealed class SourceFormattingTests
         Assert.NotNull(edit);
         Assert.Equal(expected, edit.NewText);
     }
+
+    [Fact]
+    public void FormatDocumentNormalizesResolvedQualifiedSourceReferences()
+    {
+        const string builderUri = "file:///C:/work/Builder.bas";
+        var builderSource = string.Join('\n', [
+            "Attribute VB_Name = \"Builder\"",
+            "Public Sub SharedAction()",
+            "End Sub"
+        ]);
+        const string widgetUri = "file:///C:/work/Widget.cls";
+        var widgetSource = string.Join('\n', [
+            "Attribute VB_Name = \"Widget\"",
+            "Public Sub CreateValue()",
+            "End Sub"
+        ]);
+        const string workerUri = "file:///C:/work/Worker.bas";
+        var workerSource = string.Join('\n', [
+            "attribute vb_name = \"Worker\"",
+            "public sub Run()",
+            "builder.sharedaction",
+            "widget . createvalue",
+            "end sub"
+        ]);
+        var expected = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    Builder.SharedAction",
+            "    Widget . CreateValue",
+            "End Sub"
+        ]);
+        var index = VbaSourceIndex.Build(new Dictionary<string, string>
+        {
+            [builderUri] = builderSource,
+            [widgetUri] = widgetSource,
+            [workerUri] = workerSource
+        });
+
+        var edit = index.FormatDocument(workerUri, tabSize: 4);
+
+        Assert.NotNull(edit);
+        Assert.Equal(expected, edit.NewText);
+    }
+
+    [Fact]
+    public void FormatDocumentLeavesUnresolvedAmbiguousAndPrivateQualifiedSourceReferencesClosed()
+    {
+        const string builderUri = "file:///C:/work/Builder.bas";
+        var builderSource = string.Join('\n', [
+            "Attribute VB_Name = \"Builder\"",
+            "Private Sub HiddenAction()",
+            "End Sub"
+        ]);
+        const string firstUri = "file:///C:/work/First.bas";
+        var firstSource = string.Join('\n', [
+            "Attribute VB_Name = \"DuplicateModule\"",
+            "Public Sub SameName()",
+            "End Sub"
+        ]);
+        const string secondUri = "file:///C:/work/Second.bas";
+        var secondSource = string.Join('\n', [
+            "Attribute VB_Name = \"DuplicateModule\"",
+            "Public Sub SameName()",
+            "End Sub"
+        ]);
+        const string workerUri = "file:///C:/work/Worker.bas";
+        var workerSource = string.Join('\n', [
+            "attribute vb_name = \"Worker\"",
+            "public sub Run()",
+            "missing.sharedaction",
+            "builder.missingaction",
+            "builder.hiddenaction",
+            "duplicatemodule.samename",
+            "end sub"
+        ]);
+        var expected = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    missing.sharedaction",
+            "    builder.missingaction",
+            "    builder.hiddenaction",
+            "    duplicatemodule.samename",
+            "End Sub"
+        ]);
+        var index = VbaSourceIndex.Build(new Dictionary<string, string>
+        {
+            [builderUri] = builderSource,
+            [firstUri] = firstSource,
+            [secondUri] = secondSource,
+            [workerUri] = workerSource
+        });
+
+        var edit = index.FormatDocument(workerUri, tabSize: 4);
+
+        Assert.NotNull(edit);
+        Assert.Equal(expected, edit.NewText);
+    }
 }
