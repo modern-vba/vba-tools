@@ -289,4 +289,45 @@ public sealed class VbaModuleParserTests
         Assert.Contains(module.Declarations, declaration => declaration.Name == "CommandButton1_Click");
         Assert.DoesNotContain(module.Declarations, declaration => declaration.Name == "Caption");
     }
+
+    [Fact]
+    public void ParserDerivesSourceDefinitionsAndSignaturesFromVbaSyntaxTreeDeclarations()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Option Explicit",
+            "Public Declare PtrSafe Function GetTickCount Lib \"kernel32\" () As Long",
+            "Private Const MaxCount As Long = 10, DefaultName = \"fallback\"",
+            "Dim firstValue As New Collection, implicitValue",
+            "Public Static Function Build(ByVal Key As String) As String",
+            "    Dim localCount As Long, implicitLocal",
+            "End Function"
+        ]);
+
+        var module = VbaModuleParser.Parse(uri, source);
+        var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = source });
+
+        Assert.Contains(module.Members, member => member.Name == "GetTickCount");
+        Assert.Contains(module.Declarations, declaration =>
+            declaration.Name == "DefaultName"
+            && declaration.Kind == VbaSourceDefinitionKind.Constant
+            && declaration.TypeReference is null);
+        Assert.Contains(module.Declarations, declaration =>
+            declaration.Name == "firstValue"
+            && declaration.Kind == VbaSourceDefinitionKind.Variable
+            && declaration.TypeReference?.Name == "Collection");
+        Assert.Contains(module.Declarations, declaration =>
+            declaration.Name == "implicitValue"
+            && declaration.Kind == VbaSourceDefinitionKind.Variable
+            && declaration.TypeReference is null);
+        Assert.Contains(module.Declarations, declaration =>
+            declaration.Name == "implicitLocal"
+            && declaration.Visibility == VbaSourceDefinitionVisibility.Local
+            && declaration.ParentProcedureName == "Build");
+
+        var buildDefinition = Assert.Single(index.GetDocumentDefinitions(uri), definition => definition.Name == "Build");
+        Assert.Equal("Build(Key) As String", buildDefinition.Signature?.Label);
+        Assert.Contains(index.GetDocumentDefinitions(uri), definition => definition.Name == "GetTickCount");
+    }
 }

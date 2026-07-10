@@ -13,4 +13,8 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\VbaLanguageServer.Syntax\VbaLanguageServer.Syntax.csproj" />
+  </ItemGroup>
+
 </Project>

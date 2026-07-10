@@ -5,7 +5,11 @@ public sealed record VbaModuleSyntax(
     VbaModuleIdentitySyntax Identity,
     IReadOnlyList<VbaModuleAttributeSyntax> Attributes,
     IReadOnlyList<VbaModuleOptionSyntax> Options,
+    IReadOnlyList<VbaModuleMemberSyntax> Members,
+    IReadOnlyList<VbaDeclarationSyntax> Declarations,
+    IReadOnlyList<VbaCallableDeclarationSyntax> CallableDeclarations,
     VbaFormDesignerBlock? FormDesignerBlock,
+    int CodeStartLine,
     VbaSyntaxRange Range);
 
 public sealed record VbaModuleIdentitySyntax(

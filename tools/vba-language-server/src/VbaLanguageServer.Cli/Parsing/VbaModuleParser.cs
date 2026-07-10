@@ -107,188 +107,105 @@ public static class VbaModuleParser
 
     public static VbaModuleSyntaxTree Parse(string uri, string text)
     {
-        var lines = SplitLines(text);
-        var identity = ParseModuleIdentity(uri, lines);
-        var codeStartLine = GetCodeStartLine(uri, lines);
-        var members = new List<VbaModuleMember>();
-        var declarations = new List<VbaSourceDeclarationSyntax>();
-        var callableDeclarations = new List<VbaCallableDeclaration>();
-
-        for (var lineIndex = codeStartLine; lineIndex < lines.Length; lineIndex++)
-        {
-            var codeLine = StripApostropheComment(lines[lineIndex]);
-            if (string.IsNullOrWhiteSpace(codeLine))
-            {
-                continue;
-            }
-
-            var eventMatch = EventPattern.Match(codeLine);
-            if (eventMatch.Success)
-            {
-                var documentation = ParseDocumentationComment(lines, lineIndex);
-                members.Add(CreateSingleLineMember(
-                    eventMatch,
-                    "name",
-                    VbaSourceDefinitionKind.Event,
-                    lineIndex,
-                    lines[lineIndex]));
-                declarations.Add(CreateDeclaration(
-                    eventMatch,
-                    "name",
-                    VbaSourceDefinitionKind.Event,
-                    GetVisibility(eventMatch.Groups["visibility"].Value, defaultPublic: true),
-                    lineIndex,
-                    lines[lineIndex],
-                    documentation: documentation?.HoverText));
-                foreach (var parameter in ParseParameterSyntax(eventMatch, lineIndex, lines[lineIndex], documentation))
-                {
-                    declarations.Add(CreateParameterDeclaration(parameter, lineIndex));
-                }
-
-                continue;
-            }
-
-            var enumMatch = EnumPattern.Match(codeLine);
-            if (enumMatch.Success)
-            {
-                var visibility = GetVisibility(enumMatch.Groups["visibility"].Value, defaultPublic: true);
-                declarations.Add(CreateDeclaration(
-                    enumMatch,
-                    "name",
-                    VbaSourceDefinitionKind.Enum,
-                    visibility,
-                    lineIndex,
-                    lines[lineIndex]));
-                var endLine = FindBlockEndLine(lines, lineIndex + 1, "Enum");
-                AddMemberDeclarations(
-                    declarations,
-                    lines,
-                    lineIndex + 1,
-                    endLine,
-                    VbaSourceDefinitionKind.EnumMember,
-                    visibility);
-                members.Add(new VbaModuleMember(
-                    enumMatch.Groups["name"].Value,
-                    VbaSourceDefinitionKind.Enum,
-                    CreateBlockRange(lines, lineIndex, endLine)));
-                lineIndex = endLine;
-                continue;
-            }
-
-            var typeMatch = TypePattern.Match(codeLine);
-            if (typeMatch.Success)
-            {
-                var visibility = GetVisibility(typeMatch.Groups["visibility"].Value, defaultPublic: true);
-                declarations.Add(CreateDeclaration(
-                    typeMatch,
-                    "name",
-                    VbaSourceDefinitionKind.Type,
-                    visibility,
-                    lineIndex,
-                    lines[lineIndex]));
-                var endLine = FindBlockEndLine(lines, lineIndex + 1, "Type");
-                AddMemberDeclarations(
-                    declarations,
-                    lines,
-                    lineIndex + 1,
-                    endLine,
-                    VbaSourceDefinitionKind.TypeMember,
-                    visibility);
-                members.Add(new VbaModuleMember(
-                    typeMatch.Groups["name"].Value,
-                    VbaSourceDefinitionKind.Type,
-                    CreateBlockRange(lines, lineIndex, endLine)));
-                lineIndex = endLine;
-                continue;
-            }
-
-            var constMatch = ConstPattern.Match(codeLine);
-            if (constMatch.Success)
-            {
-                var documentation = ParseDocumentationComment(lines, lineIndex);
-                members.Add(CreateSingleLineMember(
-                    constMatch,
-                    "name",
-                    VbaSourceDefinitionKind.Constant,
-                    lineIndex,
-                    lines[lineIndex]));
-                declarations.Add(CreateDeclaration(
-                    constMatch,
-                    "name",
-                    VbaSourceDefinitionKind.Constant,
-                    GetVisibility(constMatch.Groups["visibility"].Value, defaultPublic: true),
-                    lineIndex,
-                    lines[lineIndex],
-                    documentation: documentation?.HoverText,
-                    typeReference: ParseTypeReference(lines[lineIndex])));
-                continue;
-            }
-
-            var procedureMatch = ProcedurePattern.Match(codeLine);
-            if (procedureMatch.Success)
-            {
-                var declaration = CreateCallableDeclaration(
-                    procedureMatch,
-                    uri,
-                    lines,
-                    lineIndex);
-                members.Add(new VbaModuleMember(
-                    declaration.Name,
-                    declaration.Kind,
-                    declaration.BlockRange));
-                callableDeclarations.Add(declaration);
-                declarations.Add(CreateCallableSourceDeclaration(declaration));
-                foreach (var parameter in declaration.Parameters)
-                {
-                    declarations.Add(CreateParameterDeclaration(
-                        parameter,
-                        parameter.Range.Start.Line,
-                        declaration.Name,
-                        declaration.BlockRange));
-                }
-
-                AddLocalVariableDeclarations(
-                    declarations,
-                    lines,
-                    declaration.LineIndex + 1,
-                    declaration.BlockRange.End.Line,
-                    declaration.Name,
-                    declaration.BlockRange);
-                lineIndex = declaration.BlockRange.End.Line;
-                continue;
-            }
-
-            var variableMatch = ModuleVariablePattern.Match(codeLine);
-            if (variableMatch.Success && IsModuleVariableDeclaration(codeLine))
-            {
-                members.Add(CreateSingleLineMember(
-                    variableMatch,
-                    "name",
-                    VbaSourceDefinitionKind.Variable,
-                    lineIndex,
-                    lines[lineIndex]));
-                declarations.Add(CreateDeclaration(
-                    variableMatch,
-                    "name",
-                    VbaSourceDefinitionKind.Variable,
-                    GetVisibility(variableMatch.Groups["visibility"].Value, defaultPublic: false),
-                    lineIndex,
-                    lines[lineIndex],
-                    typeReference: ParseTypeReference(lines[lineIndex]),
-                    isWithEvents: IsWithEventsVariableDeclaration(codeLine)));
-            }
-        }
-
+        var syntaxTree = VbaLanguageServer.Syntax.VbaSyntaxTree.ParseModule(uri, text);
         return new VbaModuleSyntaxTree(
             uri,
             text,
-            lines,
-            identity,
-            members,
-            declarations,
-            callableDeclarations,
-            codeStartLine);
+            SplitLines(text),
+            new VbaModuleIdentity(
+                syntaxTree.Module.Identity.Name,
+                MapModuleKind(syntaxTree.Module.Kind),
+                MapRange(syntaxTree.Module.Identity.Range)),
+            syntaxTree.Module.Members.Select(MapMember).ToArray(),
+            syntaxTree.Module.Declarations.Select(MapDeclaration).ToArray(),
+            syntaxTree.Module.CallableDeclarations.Select(MapCallableDeclaration).ToArray(),
+            syntaxTree.Module.CodeStartLine);
     }
+
+    private static VbaModuleMember MapMember(VbaLanguageServer.Syntax.VbaModuleMemberSyntax member)
+        => new(
+            member.Name,
+            MapDeclarationKind(member.Kind),
+            MapRange(member.BlockRange));
+
+    private static VbaSourceDeclarationSyntax MapDeclaration(VbaLanguageServer.Syntax.VbaDeclarationSyntax declaration)
+        => new(
+            declaration.Name,
+            MapDeclarationKind(declaration.Kind),
+            MapVisibility(declaration.Visibility),
+            MapRange(declaration.Range),
+            declaration.LineIndex,
+            Documentation: declaration.Documentation,
+            Signature: declaration.Signature is null ? null : MapSignature(declaration.Signature),
+            ParentProcedureName: declaration.ParentProcedureName,
+            ParentProcedureRange: declaration.ParentProcedureRange is null ? null : MapRange(declaration.ParentProcedureRange),
+            ParentTypeName: declaration.ParentTypeName,
+            TypeReference: declaration.TypeReference is null ? null : MapTypeReference(declaration.TypeReference),
+            IsWithEvents: declaration.IsWithEvents);
+
+    private static VbaCallableDeclaration MapCallableDeclaration(VbaLanguageServer.Syntax.VbaCallableDeclarationSyntax declaration)
+        => new(
+            declaration.Name,
+            MapDeclarationKind(declaration.Kind),
+            MapVisibility(declaration.Visibility),
+            MapRange(declaration.Range),
+            MapRange(declaration.BlockRange),
+            declaration.Parameters.Select(parameter => new VbaCallableParameterSyntax(
+                parameter.Name,
+                MapRange(parameter.Range),
+                parameter.Documentation,
+                parameter.TypeReference is null ? null : MapTypeReference(parameter.TypeReference))).ToArray(),
+            declaration.Documentation,
+            MapSignature(declaration.Signature),
+            declaration.TypeReference is null ? null : MapTypeReference(declaration.TypeReference),
+            declaration.LineIndex,
+            declaration.OriginalLine);
+
+    private static VbaSourceDefinitionKind MapModuleKind(VbaLanguageServer.Syntax.VbaModuleKind kind)
+        => kind switch
+        {
+            VbaLanguageServer.Syntax.VbaModuleKind.ClassModule => VbaSourceDefinitionKind.Class,
+            VbaLanguageServer.Syntax.VbaModuleKind.FormModule => VbaSourceDefinitionKind.Form,
+            _ => VbaSourceDefinitionKind.Module
+        };
+
+    private static VbaSourceDefinitionKind MapDeclarationKind(VbaLanguageServer.Syntax.VbaDeclarationKind kind)
+        => kind switch
+        {
+            VbaLanguageServer.Syntax.VbaDeclarationKind.Procedure => VbaSourceDefinitionKind.Procedure,
+            VbaLanguageServer.Syntax.VbaDeclarationKind.Property => VbaSourceDefinitionKind.Property,
+            VbaLanguageServer.Syntax.VbaDeclarationKind.Constant => VbaSourceDefinitionKind.Constant,
+            VbaLanguageServer.Syntax.VbaDeclarationKind.Variable => VbaSourceDefinitionKind.Variable,
+            VbaLanguageServer.Syntax.VbaDeclarationKind.Parameter => VbaSourceDefinitionKind.Parameter,
+            VbaLanguageServer.Syntax.VbaDeclarationKind.Enum => VbaSourceDefinitionKind.Enum,
+            VbaLanguageServer.Syntax.VbaDeclarationKind.EnumMember => VbaSourceDefinitionKind.EnumMember,
+            VbaLanguageServer.Syntax.VbaDeclarationKind.Type => VbaSourceDefinitionKind.Type,
+            VbaLanguageServer.Syntax.VbaDeclarationKind.TypeMember => VbaSourceDefinitionKind.TypeMember,
+            VbaLanguageServer.Syntax.VbaDeclarationKind.Event => VbaSourceDefinitionKind.Event,
+            _ => VbaSourceDefinitionKind.Variable
+        };
+
+    private static VbaSourceDefinitionVisibility MapVisibility(VbaLanguageServer.Syntax.VbaDeclarationVisibility visibility)
+        => visibility switch
+        {
+            VbaLanguageServer.Syntax.VbaDeclarationVisibility.Public => VbaSourceDefinitionVisibility.Public,
+            VbaLanguageServer.Syntax.VbaDeclarationVisibility.Local => VbaSourceDefinitionVisibility.Local,
+            _ => VbaSourceDefinitionVisibility.Private
+        };
+
+    private static VbaRange MapRange(VbaLanguageServer.Syntax.VbaSyntaxRange range)
+        => new(
+            new VbaPosition(range.Start.Line, range.Start.Character),
+            new VbaPosition(range.End.Line, range.End.Character));
+
+    private static VbaCallableSignature MapSignature(VbaLanguageServer.Syntax.VbaCallableSignatureSyntax signature)
+        => new(
+            signature.Label,
+            signature.Parameters.Select(parameter => new VbaCallableParameter(parameter.Name, parameter.Documentation)).ToArray(),
+            signature.Documentation);
+
+    private static VbaTypeReference MapTypeReference(VbaLanguageServer.Syntax.VbaTypeReferenceSyntax typeReference)
+        => new(typeReference.Name, typeReference.Qualifier);
 
     public static VbaModuleParseResult ParseOrUpdate(
         string uri,
