@@ -330,4 +330,48 @@ public sealed class VbaModuleParserTests
         Assert.Equal("Build(Key) As String", buildDefinition.Signature?.Label);
         Assert.Contains(index.GetDocumentDefinitions(uri), definition => definition.Name == "GetTickCount");
     }
+
+    [Fact]
+    public void ParserKeepsRepresentativeVbaDeclarationsOnTheVbaSyntaxTreePath()
+    {
+        const string uri = "file:///C:/work/Compat.bas";
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Compat\"",
+            "Option Explicit",
+            "global const BufferSize As Long = 260",
+            "global SharedName As String",
+            "Private Declare PtrSafe Function GetTickCount Lib \"kernel32\" Alias \"GetTickCount\" () As Long",
+            "Public Static Function BuildValue(Optional ByVal Prefix As String = \"x\") As String",
+            "    BuildValue = Prefix & SharedName",
+            "End Function"
+        ]);
+
+        var module = VbaModuleParser.Parse(uri, source);
+        var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = source });
+
+        Assert.Contains(module.Declarations, declaration =>
+            declaration.Name == "BufferSize"
+            && declaration.Kind == VbaSourceDefinitionKind.Constant
+            && declaration.Visibility == VbaSourceDefinitionVisibility.Public
+            && declaration.TypeReference?.Name == "Long");
+        Assert.Contains(module.Declarations, declaration =>
+            declaration.Name == "SharedName"
+            && declaration.Kind == VbaSourceDefinitionKind.Variable
+            && declaration.Visibility == VbaSourceDefinitionVisibility.Public
+            && declaration.TypeReference?.Name == "String");
+        Assert.Contains(module.Declarations, declaration =>
+            declaration.Name == "GetTickCount"
+            && declaration.Kind == VbaSourceDefinitionKind.Procedure
+            && declaration.Visibility == VbaSourceDefinitionVisibility.Private);
+
+        var buildValue = Assert.Single(index.GetDocumentDefinitions(uri), definition => definition.Name == "BuildValue");
+        Assert.Equal("BuildValue(Prefix) As String", buildValue.Signature?.Label);
+        Assert.Contains(index.GetWorkspaceSymbols("shared"), symbol => symbol.Name == "SharedName");
+        Assert.Contains(index.GetSemanticTokens(uri), token =>
+            token.Text == "SharedName"
+            && token.TokenType == "variable"
+            && token.TokenModifiers.Contains("declaration"));
+        Assert.Contains("Global Const BufferSize As Long = 260", index.FormatDocument(uri, tabSize: 4)?.NewText);
+        Assert.Contains("Global SharedName As String", index.FormatDocument(uri, tabSize: 4)?.NewText);
+    }
 }

@@ -33,11 +33,11 @@ internal static class VbaSyntaxTreeParser
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex ConstPattern = new(
-        "^\\s*(?:(?<visibility>Public|Private|Friend)\\s+)?Const\\s+(?<declarations>.+)$",
+        "^\\s*(?:(?<visibility>Public|Private|Friend|Global)\\s+)?Const\\s+(?<declarations>.+)$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex ModuleVariablePattern = new(
-        "^\\s*(?<visibility>Public|Private|Friend|Dim)\\s+(?<declarations>.+)$",
+        "^\\s*(?<visibility>Public|Private|Friend|Global|Dim)\\s+(?<declarations>.+)$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex LocalVariablePattern = new(
@@ -1673,6 +1673,11 @@ internal static class VbaSyntaxTreeParser
             return VbaDeclarationVisibility.Private;
         }
 
+        if (visibility.Equals("Global", StringComparison.OrdinalIgnoreCase))
+        {
+            return VbaDeclarationVisibility.Public;
+        }
+
         return defaultPublic
             ? VbaDeclarationVisibility.Public
             : VbaDeclarationVisibility.Private;
@@ -1682,7 +1687,7 @@ internal static class VbaSyntaxTreeParser
     {
         var afterVisibility = Regex.Replace(
             codeLine.TrimStart(),
-            "^(Public|Private|Friend|Dim)\\s+",
+            "^(Public|Private|Friend|Global|Dim)\\s+",
             "",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         return !Regex.IsMatch(
