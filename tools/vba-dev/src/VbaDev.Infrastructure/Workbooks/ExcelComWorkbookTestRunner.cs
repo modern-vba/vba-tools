@@ -10,7 +10,7 @@ public sealed class ExcelComWorkbookTestRunner : IWorkbookTestRunner
     private const string UnitTestEntryPoint = "UnitTestMain";
     private const string UnitTestSheetName = "UNIT_TEST_SHEET";
 
-    public IReadOnlyList<WorkbookTestResultRow> RunTests(string workbookPath)
+    public IReadOnlyList<WorkbookTestResultRow> RunTests(string workbookPath, WorkbookTestSelector selector)
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -37,7 +37,20 @@ public sealed class ExcelComWorkbookTestRunner : IWorkbookTestRunner
             dynamic workbooks = workbooksObject;
             workbookObject = workbooks.Open(workbookPath, 0, false);
             dynamic workbook = workbookObject;
-            excel.Run($"'{workbook.Name}'!{UnitTestEntryPoint}");
+            var entryPoint = $"'{workbook.Name}'!{UnitTestEntryPoint}";
+            if (!string.IsNullOrWhiteSpace(selector.ProcedureName))
+            {
+                excel.Run(entryPoint, selector.ModuleName, selector.ProcedureName);
+            }
+            else if (!string.IsNullOrWhiteSpace(selector.ModuleName))
+            {
+                excel.Run(entryPoint, selector.ModuleName);
+            }
+            else
+            {
+                excel.Run(entryPoint);
+            }
+
             worksheetsObject = workbook.Worksheets;
             dynamic worksheets = worksheetsObject;
             sheetObject = worksheets(UnitTestSheetName);

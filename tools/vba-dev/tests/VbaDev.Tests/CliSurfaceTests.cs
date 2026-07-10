@@ -90,6 +90,8 @@ public sealed class CliSurfaceTests
         Assert.Contains("--format <text|ndjson>", result.StandardOutput, StringComparison.Ordinal);
         Assert.Contains("-f", result.StandardOutput, StringComparison.Ordinal);
         Assert.Contains("--no-build", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("--module <name>", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("--procedure <name>", result.StandardOutput, StringComparison.Ordinal);
         Assert.DoesNotContain("--build", result.StandardOutput, StringComparison.Ordinal);
     }
 
@@ -113,6 +115,7 @@ public sealed class CliSurfaceTests
         Assert.Contains("\"contractVersion\"", result.StandardOutput, StringComparison.Ordinal);
         Assert.Contains("\"commands\"", result.StandardOutput, StringComparison.Ordinal);
         Assert.Contains("\"build\"", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("\"test\":{\"outputSchemaVersion\":\"1.1\"}", result.StandardOutput, StringComparison.Ordinal);
         Assert.Empty(result.StandardError);
     }
 

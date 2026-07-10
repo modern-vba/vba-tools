@@ -39,7 +39,7 @@ public sealed class TestCommand
             }
 
             var results = workbookTestRunner
-                .RunTests(context.BinDocumentPath)
+                .RunTests(context.BinDocumentPath, request.Selector)
                 .Select(row => TestResultRecord.FromWorkbookRow(context.DocumentName, row))
                 .ToArray();
             var output = outputFormatter.Format(request.Format, results);

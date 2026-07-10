@@ -51,7 +51,7 @@ export const defaultRequiredVbaDevContract: RequiredVbaDevContract = {
     'reference add': '1.0',
     'reference list': '1.0',
     'reference remove': '1.0',
-    test: '1.0'
+    test: '1.1'
   }
 };
 

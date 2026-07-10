@@ -195,6 +195,8 @@ Options:
   --document <name>, -d <name>   Document name from the project manifest.
   --format <text|ndjson>, -f <text|ndjson> Test output format.
   --no-build                     Skip building before running tests.
+  --module <name>                Run tests from one test module.
+  --procedure <name>             Run one test procedure. Requires --module.
 ```
 
 `test` builds before running tests by default. The default output format is `text`. Use `--no-build` to run against the existing bin workbook, and use `--format ndjson` for machine-readable newline-delimited JSON.

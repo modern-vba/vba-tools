@@ -150,6 +150,73 @@ test('current result records are treated as TestProcedure completion events', as
   assert.ok(controller.runs[0].events.includes(`passed:${procedureItem.id}`));
 });
 
+test('Running a discovered module node invokes vba-dev test with module selector', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const calls: Array<{ file: string; args: readonly string[] }> = [];
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    calls,
+    manifests: new Map([
+      [path.join(projectRoot, 'project.json'), manifestJson('BookProject', ['Book1'])]
+    ]),
+    stdout: ndjson({
+      type: 'testFinished',
+      document: 'Book1',
+      module: 'Test_Module',
+      procedure: 'Test_Passes',
+      outcome: 'passed',
+      message: ''
+    })
+  });
+  await explorer.refresh();
+  const documentItem = controller.items[0].children.items[0];
+  await explorer.run({ include: [documentItem] }, { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) });
+  const moduleItem = documentItem.children.items[0];
+  calls.splice(0, calls.length);
+  controller.runs.splice(0, controller.runs.length);
+
+  await explorer.run({ include: [moduleItem] }, { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) });
+
+  assert.deepEqual(calls.map((call) => call.args), [
+    ['capabilities', '--format', 'json'],
+    ['test', '--project', projectRoot, '--document', 'Book1', '--module', 'Test_Module', '--format', 'ndjson']
+  ]);
+});
+
+test('Running a discovered procedure node invokes vba-dev test with module and procedure selectors', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const calls: Array<{ file: string; args: readonly string[] }> = [];
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    calls,
+    manifests: new Map([
+      [path.join(projectRoot, 'project.json'), manifestJson('BookProject', ['Book1'])]
+    ]),
+    stdout: ndjson({
+      type: 'testFinished',
+      document: 'Book1',
+      module: 'Test_Module',
+      procedure: 'Test_Passes',
+      outcome: 'passed',
+      message: ''
+    })
+  });
+  await explorer.refresh();
+  const documentItem = controller.items[0].children.items[0];
+  await explorer.run({ include: [documentItem] }, { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) });
+  const moduleItem = documentItem.children.items[0];
+  const procedureItem = moduleItem.children.items[0];
+  calls.splice(0, calls.length);
+  controller.runs.splice(0, controller.runs.length);
+
+  await explorer.run({ include: [procedureItem] }, { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) });
+
+  assert.deepEqual(calls.map((call) => call.args), [
+    ['capabilities', '--format', 'json'],
+    ['test', '--project', projectRoot, '--document', 'Book1', '--module', 'Test_Module', '--procedure', 'Test_Passes', '--format', 'ndjson']
+  ]);
+});
+
 test('testStarted events update known TestProcedure running state', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const controller = new FakeTestController();
@@ -342,7 +409,7 @@ function createExplorer(
           toolVersion: '0.1.0',
           contractVersion: '1.0',
           commands: {
-            test: { outputSchemaVersion: '1.0' }
+            test: { outputSchemaVersion: '1.1' }
           }
         }),
         stderr: ''

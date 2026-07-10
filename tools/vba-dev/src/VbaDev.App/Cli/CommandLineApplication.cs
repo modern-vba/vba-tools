@@ -120,6 +120,13 @@ public sealed class CommandLineApplication
         {
             try
             {
+                var moduleName = parsedArgs.Options.GetValueOrDefault("--module");
+                var procedureName = parsedArgs.Options.GetValueOrDefault("--procedure");
+                if (!string.IsNullOrWhiteSpace(procedureName) && string.IsNullOrWhiteSpace(moduleName))
+                {
+                    return CommandResult.UsageError("--procedure requires --module.");
+                }
+
                 var format = CommandDefaultResolver.ResolveTestFormat(
                     resolution.Context.Manifest,
                     parsedArgs.Options.GetValueOrDefault("--format"));
@@ -127,7 +134,10 @@ public sealed class CommandLineApplication
                     resolution.Context,
                     new TestCommandRequest(
                         format,
-                        !parsedArgs.Options.ContainsKey("--no-build")));
+                        !parsedArgs.Options.ContainsKey("--no-build"),
+                        new WorkbookTestSelector(
+                            string.IsNullOrWhiteSpace(moduleName) ? null : moduleName,
+                            string.IsNullOrWhiteSpace(procedureName) ? null : procedureName)));
             }
             catch (ProjectManifestException ex)
             {
@@ -205,11 +215,14 @@ public sealed class CommandLineApplication
                 .OrderBy(command => command.Name, StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(
                     command => command.Name,
-                    _ => new CommandCapability(OutputSchemaVersion: "1.0"),
+                    command => new CommandCapability(OutputSchemaVersion: GetCommandOutputSchemaVersion(command.Name)),
                     StringComparer.OrdinalIgnoreCase));
 
         return CommandResult.Success(JsonSerializer.Serialize(capabilities, CapabilitiesJsonOptions) + Environment.NewLine);
     }
+
+    private static string GetCommandOutputSchemaVersion(string commandName)
+        => commandName.Equals("test", StringComparison.OrdinalIgnoreCase) ? "1.1" : "1.0";
 
     private CommandMatch MatchCommand(IReadOnlyList<string> args)
     {

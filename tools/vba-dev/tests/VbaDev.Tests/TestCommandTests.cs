@@ -66,6 +66,83 @@ public sealed class TestCommandTests
     }
 
     [Fact]
+    public void TestForwardsModuleAndProcedureSelectorsWhenBuildIsDisabled()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        var binPath = Path.Combine(root, "bin", "Book1", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
+        File.WriteAllText(binPath, "bin", Encoding.UTF8);
+        var runner = new FakeWorkbookTestRunner(new WorkbookTestResultRow("Test_Foo", "Test_Bar", "OK", ""));
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
+
+        var result = application.Run(["test", "--no-build", "--module", "Test_Foo", "--procedure", "Test_Bar", "--format", "ndjson"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal([new WorkbookTestSelector("Test_Foo", "Test_Bar")], runner.Selectors);
+        Assert.Contains("\"category\":\"Test_Foo\"", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("\"testName\":\"Test_Bar\"", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TestForwardsModuleSelectorThroughDefaultBuildFlow()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
+        var runner = new FakeWorkbookTestRunner(new WorkbookTestResultRow("Test_Foo", "Test_Bar", "OK", ""));
+        var buildAutomation = new FakeWorkbookBuildAutomation();
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+            root,
+            workbookBuildAutomation: buildAutomation,
+            workbookTestRunner: runner);
+
+        var result = application.Run(["test", "--module", "Test_Foo", "--format", "text"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.NotEmpty(buildAutomation.OpenedWorkbooks);
+        Assert.Equal([new WorkbookTestSelector("Test_Foo", null)], runner.Selectors);
+    }
+
+    [Fact]
+    public void TestRejectsProcedureSelectorWithoutModuleSelector()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
+
+        var result = ToolingCompositionRoot
+            .CreateCommandLineApplication(root, workbookTestRunner: new FakeWorkbookTestRunner())
+            .Run(["test", "--procedure", "Test_Bar"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("--procedure requires --module.", result.StandardError, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TestReportsSelectorRunnerErrorsAsUsageErrors()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        var binPath = Path.Combine(root, "bin", "Book1", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
+        File.WriteAllText(binPath, "bin", Encoding.UTF8);
+        var runner = new FakeWorkbookTestRunner
+        {
+            Error = new InvalidOperationException("Test module was not found: MissingModule")
+        };
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
+
+        var result = application.Run(["test", "--no-build", "--module", "MissingModule"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("Test module was not found: MissingModule", result.StandardError, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TestBuildsBeforeRunningTestsByDefault()
     {
         using var temp = TempDirectory.Create();
@@ -186,10 +263,18 @@ internal sealed class FakeWorkbookTestRunner : IWorkbookTestRunner
     }
 
     public List<string> Workbooks { get; } = [];
+    public List<WorkbookTestSelector> Selectors { get; } = [];
+    public InvalidOperationException? Error { get; init; }
 
-    public IReadOnlyList<WorkbookTestResultRow> RunTests(string workbookPath)
+    public IReadOnlyList<WorkbookTestResultRow> RunTests(string workbookPath, WorkbookTestSelector selector)
     {
+        if (Error is not null)
+        {
+            throw Error;
+        }
+
         Workbooks.Add(workbookPath);
+        Selectors.Add(selector);
         return results;
     }
 }

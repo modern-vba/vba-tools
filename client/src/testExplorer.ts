@@ -94,7 +94,7 @@ interface TestItemMetadata {
 const RequiredTestContract: RequiredVbaDevContract = {
   contractVersion: '1.0',
   commandSchemaVersions: {
-    test: '1.0'
+    test: '1.1'
   }
 };
 
@@ -255,8 +255,14 @@ async function runTestItem(
     'test',
     '--project',
     metadata.projectRoot,
-    ...(metadata.kind === 'document' && metadata.documentName
+    ...(metadata.documentName
       ? ['--document', metadata.documentName]
+      : []),
+    ...(metadata.moduleName
+      ? ['--module', metadata.moduleName]
+      : []),
+    ...(metadata.procedureName
+      ? ['--procedure', metadata.procedureName]
       : []),
     '--format',
     'ndjson'
