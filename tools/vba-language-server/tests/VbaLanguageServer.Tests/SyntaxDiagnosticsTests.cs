@@ -1,4 +1,5 @@
 using VbaLanguageServer.Diagnostics;
+using VbaLanguageServer.Syntax;
 using Xunit;
 
 namespace VbaLanguageServer.Tests;
@@ -48,6 +49,39 @@ public sealed class SyntaxDiagnosticsTests
         Assert.Equal("error", diagnostic.Severity);
         Assert.Equal("vba-language-server", diagnostic.Source);
         Assert.Equal(new VbaRange(new VbaPosition(4, invalidLine.IndexOf('"')), new VbaPosition(4, invalidLine.Length)), diagnostic.Range);
+    }
+
+    [Fact]
+    public void Document_diagnostics_publish_existing_syntax_diagnostics_after_collector_split()
+    {
+        const string invalidLine = "    value = \"unterminated";
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            invalidLine,
+            "End Sub"
+        ]);
+
+        var diagnostic = Assert.Single(VbaDocumentDiagnostics.Collect(source, "Worker.bas"));
+
+        Assert.Equal("syntax.unterminatedStringLiteral", diagnostic.Code);
+        Assert.Equal("String literal is missing a closing double quote.", diagnostic.Message);
+        Assert.Equal("error", diagnostic.Severity);
+        Assert.Equal("vba-language-server", diagnostic.Source);
+        Assert.Equal(new VbaRange(new VbaPosition(2, invalidLine.IndexOf('"')), new VbaPosition(2, invalidLine.Length)), diagnostic.Range);
+    }
+
+    [Fact]
+    public void Document_validation_collector_accepts_syntax_tree_and_document_uri()
+    {
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "End Sub"
+        ]);
+        var tree = VbaSyntaxTree.ParseModule("Worker.bas", source);
+
+        Assert.Empty(VbaDocumentValidationDiagnosticCollector.Collect(tree, "Worker.bas"));
     }
 
     [Fact]

@@ -60,7 +60,7 @@ internal sealed class VbaLanguageFeatureService
 
     public static object[] CreateDiagnostics(string uri, string text)
     {
-        return VbaSyntaxDiagnostics.Collect(text, uri)
+        return VbaDocumentDiagnostics.Collect(text, uri)
             .Select(diagnostic => new
             {
                 code = diagnostic.Code,

@@ -1,10 +1,26 @@
+using VbaLanguageServer.Syntax;
+
 namespace VbaLanguageServer.Diagnostics;
 
 public sealed record VbaPosition(int Line, int Character);
 
 public sealed record VbaRange(VbaPosition Start, VbaPosition End);
 
+public sealed record VbaDiagnostic(
+    string Code,
+    string Message,
+    VbaRange Range,
+    string Severity = "error",
+    string Source = "vba-language-server");
+
 public sealed record VbaSyntaxDiagnostic(
+    string Code,
+    string Message,
+    VbaRange Range,
+    string Severity = "error",
+    string Source = "vba-language-server");
+
+public sealed record VbaValidationDiagnostic(
     string Code,
     string Message,
     VbaRange Range,
@@ -14,8 +30,34 @@ public sealed record VbaSyntaxDiagnostic(
 public static class VbaSyntaxDiagnostics
 {
     public static IReadOnlyList<VbaSyntaxDiagnostic> Collect(string source, string fileName)
-        => VbaLanguageServer.Syntax.VbaSyntaxTree.ParseModule(fileName, source)
-            .Diagnostics
+    {
+        var tree = VbaSyntaxTree.ParseModule(fileName, source);
+        return VbaSyntaxDiagnosticCollector.Collect(tree, fileName);
+    }
+}
+
+public static class VbaDocumentDiagnostics
+{
+    public static IReadOnlyList<VbaDiagnostic> Collect(string source, string uri)
+    {
+        var tree = VbaSyntaxTree.ParseModule(uri, source);
+        return VbaSyntaxDiagnosticCollector.Collect(tree, uri)
+            .Select(ToDocumentDiagnostic)
+            .Concat(VbaDocumentValidationDiagnosticCollector.Collect(tree, uri).Select(ToDocumentDiagnostic))
+            .ToArray();
+    }
+
+    private static VbaDiagnostic ToDocumentDiagnostic(VbaSyntaxDiagnostic diagnostic)
+        => new(diagnostic.Code, diagnostic.Message, diagnostic.Range, diagnostic.Severity, diagnostic.Source);
+
+    private static VbaDiagnostic ToDocumentDiagnostic(VbaValidationDiagnostic diagnostic)
+        => new(diagnostic.Code, diagnostic.Message, diagnostic.Range, diagnostic.Severity, diagnostic.Source);
+}
+
+public static class VbaSyntaxDiagnosticCollector
+{
+    public static IReadOnlyList<VbaSyntaxDiagnostic> Collect(VbaSyntaxTree tree, string uri)
+        => tree.Diagnostics
             .Select(diagnostic => new VbaSyntaxDiagnostic(
                 diagnostic.Code,
                 diagnostic.Message,
@@ -25,122 +67,10 @@ public static class VbaSyntaxDiagnostics
                 diagnostic.Severity,
                 diagnostic.Source))
             .ToArray();
+}
 
-    private static string[] SplitLines(string source)
-        => source.Replace("\r\n", "\n", StringComparison.Ordinal)
-            .Replace('\r', '\n')
-            .Split('\n');
-
-    private static int GetCodeStartLine(string[] lines, string fileName)
-    {
-        if (!fileName.EndsWith(".frm", StringComparison.OrdinalIgnoreCase))
-        {
-            return 0;
-        }
-
-        var attributeIndex = Array.FindIndex(lines, line =>
-            line.TrimStart().StartsWith("Attribute VB_Name", StringComparison.OrdinalIgnoreCase));
-        return attributeIndex < 0 ? 0 : attributeIndex;
-    }
-
-    private static IEnumerable<VbaSyntaxDiagnostic> CollectLineContinuationDiagnostics(string line, int lineIndex)
-    {
-        var commentStart = FindApostropheCommentStart(line);
-        if (commentStart < 0)
-        {
-            yield break;
-        }
-
-        var codePart = line[..commentStart];
-        var underscoreIndex = codePart.LastIndexOf('_');
-        if (underscoreIndex >= 0 && codePart.TrimEnd().EndsWith('_'))
-        {
-            yield return new VbaSyntaxDiagnostic(
-                "syntax.invalidTrailingCommentContinuation",
-                "Code line-continuation marker cannot be followed by a comment.",
-                new VbaRange(
-                    new VbaPosition(lineIndex, underscoreIndex),
-                    new VbaPosition(lineIndex, line.Length)));
-        }
-    }
-
-    private static IEnumerable<VbaSyntaxDiagnostic> CollectStringDiagnostics(string line, int lineIndex)
-    {
-        if (IsRemCommentLine(line))
-        {
-            yield break;
-        }
-
-        var inString = false;
-        var stringStart = -1;
-        for (var index = 0; index < line.Length; index++)
-        {
-            var current = line[index];
-            if (!inString && current == '\'')
-            {
-                break;
-            }
-
-            if (current != '"')
-            {
-                continue;
-            }
-
-            if (inString && index + 1 < line.Length && line[index + 1] == '"')
-            {
-                index++;
-                continue;
-            }
-
-            inString = !inString;
-            if (inString)
-            {
-                stringStart = index;
-            }
-        }
-
-        if (inString)
-        {
-            yield return new VbaSyntaxDiagnostic(
-                "syntax.unterminatedStringLiteral",
-                "String literal is missing a closing double quote.",
-                new VbaRange(
-                    new VbaPosition(lineIndex, stringStart),
-                    new VbaPosition(lineIndex, line.Length)));
-        }
-    }
-
-    private static int FindApostropheCommentStart(string line)
-    {
-        var inString = false;
-        for (var index = 0; index < line.Length; index++)
-        {
-            var current = line[index];
-            if (current == '"' && inString && index + 1 < line.Length && line[index + 1] == '"')
-            {
-                index++;
-                continue;
-            }
-
-            if (current == '"')
-            {
-                inString = !inString;
-                continue;
-            }
-
-            if (!inString && current == '\'')
-            {
-                return index;
-            }
-        }
-
-        return -1;
-    }
-
-    private static bool IsRemCommentLine(string line)
-    {
-        var trimmed = line.TrimStart();
-        return trimmed.Equals("Rem", StringComparison.OrdinalIgnoreCase)
-            || trimmed.StartsWith("Rem ", StringComparison.OrdinalIgnoreCase);
-    }
+public static class VbaDocumentValidationDiagnosticCollector
+{
+    public static IReadOnlyList<VbaValidationDiagnostic> Collect(VbaSyntaxTree tree, string uri)
+        => [];
 }
