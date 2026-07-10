@@ -12,6 +12,8 @@ public sealed record VbaModuleSyntax(
     IReadOnlyList<VbaExpressionSyntax> Expressions,
     IReadOnlyList<VbaArgumentListSyntax> ArgumentLists,
     IReadOnlyList<VbaCompletionContextSyntax> CompletionContexts,
+    IReadOnlyList<VbaPreprocessorDirectiveSyntax> PreprocessorDirectives,
+    IReadOnlyList<VbaPreprocessorBlockSyntax> PreprocessorBlocks,
     VbaFormDesignerBlock? FormDesignerBlock,
     int CodeStartLine,
     VbaSyntaxRange Range);
