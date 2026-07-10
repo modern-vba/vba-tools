@@ -1267,23 +1267,25 @@ public sealed class VbaSourceIndex
 
     private string FormatText(VbaSourceDocument document, int tabSize)
     {
-        var canonicalNames = CreateNameResolutionService()
-            .GetFormattingDefinitions(document.Uri)
-            .ToDictionary(definition => definition.Name, definition => definition.Name, StringComparer.OrdinalIgnoreCase);
+        var nameResolution = CreateNameResolutionService();
+        var declarationRanges = document.Definitions
+            .Select(definition => GetRangeKey(definition.Range))
+            .ToHashSet(StringComparer.Ordinal);
         var lines = SourceFormatting.SplitLogicalLines(document.Text);
         var formattedLines = new List<string>(lines.Count);
         var depth = 0;
         var indent = new string(' ', tabSize);
 
-        foreach (var line in lines)
+        for (var lineIndex = 0; lineIndex < lines.Count; lineIndex++)
         {
+            var line = lines[lineIndex];
             if (string.IsNullOrWhiteSpace(line))
             {
                 formattedLines.Add("");
                 continue;
             }
 
-            var casedLine = FormatLineCasing(line, canonicalNames);
+            var casedLine = FormatLineCasing(line, nameResolution, document.Uri, lineIndex, declarationRanges);
             var trimmed = casedLine.TrimStart();
             if (ShouldDedentBefore(trimmed))
             {
@@ -1308,7 +1310,12 @@ public sealed class VbaSourceIndex
         return edits.Apply(document.Text);
     }
 
-    private static string FormatLineCasing(string line, IReadOnlyDictionary<string, string> canonicalNames)
+    private static string FormatLineCasing(
+        string line,
+        VbaNameResolutionService nameResolution,
+        string uri,
+        int lineIndex,
+        IReadOnlySet<string> declarationRanges)
     {
         var commentStart = FindApostropheCommentStart(line);
         var codePart = commentStart < 0 ? line : line[..commentStart];
@@ -1323,16 +1330,13 @@ public sealed class VbaSourceIndex
         var edits = new SourceFormattingEditCollector();
         foreach (var occurrence in FindIdentifierOccurrences(codePart))
         {
-            string? canonicalName = null;
-            if (LanguageKeywords.TryGetValue(occurrence.Name, out var keyword))
-            {
-                canonicalName = keyword;
-            }
-            else if (canonicalNames.TryGetValue(occurrence.Name, out var sourceName))
-            {
-                canonicalName = sourceName;
-            }
-
+            var canonicalName = GetCanonicalFormattingName(
+                codePart,
+                occurrence,
+                nameResolution,
+                uri,
+                lineIndex,
+                declarationRanges);
             if (canonicalName is not null
                 && !string.Equals(occurrence.Name, canonicalName, StringComparison.Ordinal))
             {
@@ -1341,6 +1345,75 @@ public sealed class VbaSourceIndex
         }
 
         return edits.Apply(codePart) + commentPart;
+    }
+
+    private static string? GetCanonicalFormattingName(
+        string codePart,
+        IdentifierAtPosition occurrence,
+        VbaNameResolutionService nameResolution,
+        string uri,
+        int lineIndex,
+        IReadOnlySet<string> declarationRanges)
+    {
+        if (LanguageKeywords.TryGetValue(occurrence.Name, out var keyword))
+        {
+            return keyword;
+        }
+
+        if (IsQualifiedIdentifierOccurrence(codePart, occurrence))
+        {
+            return null;
+        }
+
+        var occurrenceRange = new VbaRange(
+            new VbaPosition(lineIndex, occurrence.Start),
+            new VbaPosition(lineIndex, occurrence.End));
+        if (declarationRanges.Contains(GetRangeKey(occurrenceRange)))
+        {
+            return null;
+        }
+
+        var definition = nameResolution.Resolve(
+            uri,
+            new VbaPosition(lineIndex, occurrence.Start),
+            qualifier: null,
+            occurrence.Name);
+        if (definition is null || VbaProjectReferenceCatalogSet.IsExternalDefinition(definition))
+        {
+            return null;
+        }
+
+        return definition.Name;
+    }
+
+    private static bool IsQualifiedIdentifierOccurrence(string codePart, IdentifierAtPosition occurrence)
+    {
+        for (var index = occurrence.Start - 1; index >= 0; index--)
+        {
+            if (char.IsWhiteSpace(codePart[index]))
+            {
+                continue;
+            }
+
+            if (codePart[index] == '.')
+            {
+                return true;
+            }
+
+            break;
+        }
+
+        for (var index = occurrence.End; index < codePart.Length; index++)
+        {
+            if (char.IsWhiteSpace(codePart[index]))
+            {
+                continue;
+            }
+
+            return codePart[index] == '.';
+        }
+
+        return false;
     }
 
     private static bool ShouldDedentBefore(string trimmedLine)

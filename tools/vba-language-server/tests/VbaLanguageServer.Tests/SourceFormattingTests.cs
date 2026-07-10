@@ -133,4 +133,90 @@ public sealed class SourceFormattingTests
         Assert.NotNull(edit);
         Assert.Equal(expected, edit.NewText);
     }
+
+    [Fact]
+    public void FormatDocumentNormalizesResolvedCurrentModuleLocalAndParameterReferences()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var source = string.Join('\n', [
+            "attribute vb_name = \"Worker\"",
+            "public sub buildValue(ByVal inputValue as string)",
+            "dim localValue as string",
+            "localvalue = inputvalue",
+            "buildvalue localvalue",
+            "unresolvedname = localvalue",
+            "end sub"
+        ]);
+        var expected = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub buildValue(ByVal inputValue As String)",
+            "    Dim localValue As String",
+            "    localValue = inputValue",
+            "    buildValue localValue",
+            "    unresolvedname = localValue",
+            "End Sub"
+        ]);
+        var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = source });
+
+        var edit = index.FormatDocument(uri, tabSize: 4);
+
+        Assert.NotNull(edit);
+        Assert.Equal(expected, edit.NewText);
+    }
+
+    [Fact]
+    public void FormatDocumentNormalizesSiblingReferencesAndLeavesAmbiguousOrShadowedReferencesClosed()
+    {
+        const string builderUri = "file:///C:/work/Builder.bas";
+        var builderSource = string.Join('\n', [
+            "Attribute VB_Name = \"Builder\"",
+            "Public Sub SharedAction()",
+            "End Sub",
+            "Public Sub SharedThing()",
+            "End Sub"
+        ]);
+        const string firstUri = "file:///C:/work/First.bas";
+        var firstSource = string.Join('\n', [
+            "Attribute VB_Name = \"First\"",
+            "Public Sub DuplicateValue()",
+            "End Sub"
+        ]);
+        const string secondUri = "file:///C:/work/Second.bas";
+        var secondSource = string.Join('\n', [
+            "Attribute VB_Name = \"Second\"",
+            "Public Sub DuplicateValue()",
+            "End Sub"
+        ]);
+        const string workerUri = "file:///C:/work/Worker.bas";
+        var workerSource = string.Join('\n', [
+            "attribute vb_name = \"Worker\"",
+            "public sub Run()",
+            "dim sharedThing as string",
+            "sharedaction",
+            "duplicATEvalue",
+            "SHAREDTHING = \"x\"",
+            "end sub"
+        ]);
+        var expected = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    Dim sharedThing As String",
+            "    SharedAction",
+            "    duplicATEvalue",
+            "    sharedThing = \"x\"",
+            "End Sub"
+        ]);
+        var index = VbaSourceIndex.Build(new Dictionary<string, string>
+        {
+            [builderUri] = builderSource,
+            [firstUri] = firstSource,
+            [secondUri] = secondSource,
+            [workerUri] = workerSource
+        });
+
+        var edit = index.FormatDocument(workerUri, tabSize: 4);
+
+        Assert.NotNull(edit);
+        Assert.Equal(expected, edit.NewText);
+    }
 }
