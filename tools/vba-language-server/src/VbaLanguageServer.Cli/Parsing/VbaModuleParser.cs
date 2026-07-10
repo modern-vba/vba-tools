@@ -12,7 +12,8 @@ public sealed record VbaModuleSyntaxTree(
     IReadOnlyList<VbaModuleMember> Members,
     IReadOnlyList<VbaSourceDeclarationSyntax> Declarations,
     IReadOnlyList<VbaCallableDeclaration> CallableDeclarations,
-    int CodeStartLine);
+    int CodeStartLine,
+    VbaLanguageServer.Syntax.VbaSyntaxTree CoreSyntaxTree);
 
 public sealed record VbaModuleIdentity(
     string Name,
@@ -108,6 +109,14 @@ public static class VbaModuleParser
     public static VbaModuleSyntaxTree Parse(string uri, string text)
     {
         var syntaxTree = VbaLanguageServer.Syntax.VbaSyntaxTree.ParseModule(uri, text);
+        return MapSyntaxTree(uri, text, syntaxTree);
+    }
+
+    private static VbaModuleSyntaxTree MapSyntaxTree(
+        string uri,
+        string text,
+        VbaLanguageServer.Syntax.VbaSyntaxTree syntaxTree)
+    {
         return new VbaModuleSyntaxTree(
             uri,
             text,
@@ -119,7 +128,8 @@ public static class VbaModuleParser
             syntaxTree.Module.Members.Select(MapMember).ToArray(),
             syntaxTree.Module.Declarations.Select(MapDeclaration).ToArray(),
             syntaxTree.Module.CallableDeclarations.Select(MapCallableDeclaration).ToArray(),
-            syntaxTree.Module.CodeStartLine);
+            syntaxTree.Module.CodeStartLine,
+            syntaxTree);
     }
 
     private static VbaModuleMember MapMember(VbaLanguageServer.Syntax.VbaModuleMemberSyntax member)
@@ -212,8 +222,12 @@ public static class VbaModuleParser
         string text,
         VbaModuleSyntaxTree? previousSyntaxTree)
     {
-        var syntaxTree = Parse(uri, text);
-        var updateKind = CanUpdateSingleModuleMember(previousSyntaxTree, syntaxTree)
+        var parseResult = VbaLanguageServer.Syntax.VbaSyntaxTree.ParseOrUpdate(
+            uri,
+            text,
+            previousSyntaxTree?.CoreSyntaxTree);
+        var syntaxTree = MapSyntaxTree(uri, text, parseResult.SyntaxTree);
+        var updateKind = parseResult.UpdateKind == VbaLanguageServer.Syntax.VbaSyntaxTreeParseUpdateKind.ModuleMember
             ? VbaModuleParseUpdateKind.ModuleMember
             : VbaModuleParseUpdateKind.FullModule;
         return new VbaModuleParseResult(syntaxTree, updateKind);
@@ -729,100 +743,6 @@ public static class VbaModuleParser
         => source.Replace("\r\n", "\n", StringComparison.Ordinal)
             .Replace('\r', '\n')
             .Split('\n');
-
-    private static bool CanUpdateSingleModuleMember(
-        VbaModuleSyntaxTree? previousSyntaxTree,
-        VbaModuleSyntaxTree nextSyntaxTree)
-    {
-        if (previousSyntaxTree is null)
-        {
-            return false;
-        }
-
-        if (!previousSyntaxTree.Identity.Name.Equals(nextSyntaxTree.Identity.Name, StringComparison.OrdinalIgnoreCase)
-            || previousSyntaxTree.Identity.Kind != nextSyntaxTree.Identity.Kind
-            || previousSyntaxTree.CodeStartLine != nextSyntaxTree.CodeStartLine)
-        {
-            return false;
-        }
-
-        if (!TryFindChangedLineRange(
-            previousSyntaxTree.Lines,
-            nextSyntaxTree.Lines,
-            out var oldStartLine,
-            out var oldEndLine,
-            out var newStartLine,
-            out var newEndLine))
-        {
-            return true;
-        }
-
-        var oldMember = FindSingleContainingMember(previousSyntaxTree.Members, oldStartLine, oldEndLine);
-        var newMember = FindSingleContainingMember(nextSyntaxTree.Members, newStartLine, newEndLine);
-        if (oldMember is null
-            || newMember is null
-            || oldMember.Kind != newMember.Kind
-            || !oldMember.Name.Equals(newMember.Name, StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        return !TouchesMemberBoundary(oldMember, oldStartLine, oldEndLine)
-            && !TouchesMemberBoundary(newMember, newStartLine, newEndLine);
-    }
-
-    private static bool TryFindChangedLineRange(
-        IReadOnlyList<string> oldLines,
-        IReadOnlyList<string> newLines,
-        out int oldStartLine,
-        out int oldEndLine,
-        out int newStartLine,
-        out int newEndLine)
-    {
-        var prefix = 0;
-        while (prefix < oldLines.Count
-            && prefix < newLines.Count
-            && oldLines[prefix].Equals(newLines[prefix], StringComparison.Ordinal))
-        {
-            prefix++;
-        }
-
-        if (prefix == oldLines.Count && prefix == newLines.Count)
-        {
-            oldStartLine = oldEndLine = newStartLine = newEndLine = 0;
-            return false;
-        }
-
-        var oldSuffix = oldLines.Count - 1;
-        var newSuffix = newLines.Count - 1;
-        while (oldSuffix >= prefix
-            && newSuffix >= prefix
-            && oldLines[oldSuffix].Equals(newLines[newSuffix], StringComparison.Ordinal))
-        {
-            oldSuffix--;
-            newSuffix--;
-        }
-
-        oldStartLine = prefix;
-        oldEndLine = Math.Max(prefix, oldSuffix);
-        newStartLine = prefix;
-        newEndLine = Math.Max(prefix, newSuffix);
-        return true;
-    }
-
-    private static VbaModuleMember? FindSingleContainingMember(
-        IReadOnlyList<VbaModuleMember> members,
-        int startLine,
-        int endLine)
-    {
-        var containingMembers = members
-            .Where(member => member.BlockRange.Start.Line <= startLine && member.BlockRange.End.Line >= endLine)
-            .ToArray();
-        return containingMembers.Length == 1 ? containingMembers[0] : null;
-    }
-
-    private static bool TouchesMemberBoundary(VbaModuleMember member, int startLine, int endLine)
-        => startLine <= member.BlockRange.Start.Line || endLine >= member.BlockRange.End.Line;
 
     private static string StripApostropheComment(string line)
     {
