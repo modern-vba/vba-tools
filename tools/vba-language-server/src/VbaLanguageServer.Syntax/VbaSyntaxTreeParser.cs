@@ -84,6 +84,7 @@ internal static class VbaSyntaxTreeParser
         var identity = CreateIdentity(uri, sourceText, kind, attributes);
         var parsedMembers = ParseMembersAndDeclarations(sourceText, codeStartLine);
         var parsedStatements = ParseStatementsAndDiagnostics(sourceText, codeStartLine);
+        var parsedExpressions = ParseExpressionsAndCompletionContexts(sourceText, codeStartLine);
         diagnostics.AddRange(parsedStatements.Diagnostics);
         var module = new VbaModuleSyntax(
             kind,
@@ -94,6 +95,9 @@ internal static class VbaSyntaxTreeParser
             parsedMembers.Declarations,
             parsedMembers.CallableDeclarations,
             parsedStatements.Statements,
+            parsedExpressions.Expressions,
+            parsedExpressions.ArgumentLists,
+            parsedExpressions.CompletionContexts,
             designerBlock,
             codeStartLine,
             sourceText.FullRange);
@@ -149,6 +153,389 @@ internal static class VbaSyntaxTreeParser
         }
 
         return options;
+    }
+
+    private static ParsedExpressions ParseExpressionsAndCompletionContexts(SourceText sourceText, int codeStartLine)
+    {
+        var expressions = new List<VbaExpressionSyntax>();
+        var argumentLists = new List<VbaArgumentListSyntax>();
+        var completionContexts = new List<VbaCompletionContextSyntax>();
+
+        foreach (var statement in CreateLogicalStatements(sourceText, codeStartLine))
+        {
+            var trimmed = statement.Text.TrimStart();
+            if (string.IsNullOrWhiteSpace(trimmed)
+                || AttributePattern.IsMatch(trimmed)
+                || OptionPattern.IsMatch(trimmed)
+                || trimmed.StartsWith("#", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            completionContexts.Add(new VbaCompletionContextSyntax(
+                VbaCompletionContextKind.Statement,
+                statement.Text,
+                statement.Range,
+                statement.IsContinued));
+
+            if (trimmed.StartsWith("With ", StringComparison.OrdinalIgnoreCase))
+            {
+                expressions.Add(new VbaExpressionSyntax(
+                    VbaExpressionKind.WithReceiver,
+                    trimmed["With ".Length..].Trim(),
+                    statement.Range,
+                    statement.IsContinued));
+                completionContexts.Add(new VbaCompletionContextSyntax(
+                    VbaCompletionContextKind.WithReceiver,
+                    trimmed,
+                    statement.Range,
+                    statement.IsContinued));
+            }
+
+            if (statement.Text.Contains('.', StringComparison.Ordinal))
+            {
+                expressions.Add(new VbaExpressionSyntax(
+                    VbaExpressionKind.MemberAccess,
+                    statement.Text,
+                    statement.Range,
+                    statement.IsContinued));
+                completionContexts.Add(new VbaCompletionContextSyntax(
+                    VbaCompletionContextKind.MemberAccess,
+                    statement.Text,
+                    statement.Range,
+                    statement.IsContinued));
+            }
+
+            if (statement.Text.Contains('=', StringComparison.Ordinal))
+            {
+                expressions.Add(new VbaExpressionSyntax(
+                    VbaExpressionKind.AssignmentExpression,
+                    statement.Text,
+                    statement.Range,
+                    statement.IsContinued));
+                completionContexts.Add(new VbaCompletionContextSyntax(
+                    VbaCompletionContextKind.Expression,
+                    statement.Text,
+                    statement.Range,
+                    statement.IsContinued));
+            }
+
+            foreach (var argumentList in ParseArgumentLists(statement))
+            {
+                argumentLists.Add(argumentList);
+                expressions.Add(new VbaExpressionSyntax(
+                    VbaExpressionKind.ArgumentList,
+                    statement.Text,
+                    argumentList.Range,
+                    argumentList.IsContinued));
+                completionContexts.Add(new VbaCompletionContextSyntax(
+                    VbaCompletionContextKind.ArgumentList,
+                    statement.Text,
+                    argumentList.Range,
+                    argumentList.IsContinued));
+            }
+        }
+
+        return new ParsedExpressions(expressions, argumentLists, completionContexts);
+    }
+
+    private static IReadOnlyList<LogicalStatement> CreateLogicalStatements(SourceText sourceText, int codeStartLine)
+    {
+        var statements = new List<LogicalStatement>();
+        for (var lineIndex = codeStartLine; lineIndex < sourceText.Lines.Count; lineIndex++)
+        {
+            var startLine = sourceText.Lines[lineIndex];
+            var logicalText = new List<char>();
+            var sourcePositions = new List<VbaSyntaxPosition?>();
+            var endLine = startLine;
+            var isContinued = false;
+
+            while (lineIndex < sourceText.Lines.Count)
+            {
+                var line = sourceText.Lines[lineIndex];
+                endLine = line;
+                var codeText = StripApostropheComment(line.Text);
+                var hasContinuation = HasLineContinuation(codeText);
+                var part = hasContinuation ? RemoveLineContinuation(codeText) : codeText;
+                for (var character = 0; character < part.Length; character++)
+                {
+                    logicalText.Add(part[character]);
+                    sourcePositions.Add(new VbaSyntaxPosition(line.LineNumber, character, line.StartOffset + character));
+                }
+
+                if (!hasContinuation)
+                {
+                    break;
+                }
+
+                isContinued = true;
+                logicalText.Add(' ');
+                sourcePositions.Add(null);
+                lineIndex++;
+            }
+
+            statements.Add(new LogicalStatement(
+                new string(logicalText.ToArray()),
+                sourcePositions,
+                new VbaSyntaxRange(
+                    new VbaSyntaxPosition(startLine.LineNumber, 0, startLine.StartOffset),
+                    new VbaSyntaxPosition(endLine.LineNumber, endLine.Text.Length, endLine.EndOffset)),
+                isContinued));
+        }
+
+        return statements;
+    }
+
+    private static IReadOnlyList<VbaArgumentListSyntax> ParseArgumentLists(LogicalStatement statement)
+    {
+        var argumentLists = new List<VbaArgumentListSyntax>();
+        for (var index = 0; index < statement.Text.Length; index++)
+        {
+            if (statement.Text[index] != '(')
+            {
+                continue;
+            }
+
+            var closeIndex = FindMatchingParenthesis(statement.Text, index);
+            if (closeIndex < 0)
+            {
+                continue;
+            }
+
+            var callee = GetCalleeBeforeParenthesis(statement.Text, index);
+            if (string.IsNullOrWhiteSpace(callee))
+            {
+                continue;
+            }
+
+            var arguments = ParseArguments(statement, index + 1, closeIndex);
+            argumentLists.Add(new VbaArgumentListSyntax(
+                callee,
+                arguments,
+                RangeFromLogicalSpan(statement, index, closeIndex + 1),
+                statement.IsContinued));
+        }
+
+        return argumentLists;
+    }
+
+    private static IReadOnlyList<VbaArgumentSyntax> ParseArguments(
+        LogicalStatement statement,
+        int startIndex,
+        int endIndex)
+    {
+        if (startIndex >= endIndex)
+        {
+            return [];
+        }
+
+        var arguments = new List<VbaArgumentSyntax>();
+        var segmentStart = startIndex;
+        var inString = false;
+        var depth = 0;
+        for (var index = startIndex; index < endIndex; index++)
+        {
+            var current = statement.Text[index];
+            if (current == '"' && inString && index + 1 < endIndex && statement.Text[index + 1] == '"')
+            {
+                index++;
+                continue;
+            }
+
+            if (current == '"')
+            {
+                inString = !inString;
+                continue;
+            }
+
+            if (inString)
+            {
+                continue;
+            }
+
+            if (current == '(')
+            {
+                depth++;
+                continue;
+            }
+
+            if (current == ')' && depth > 0)
+            {
+                depth--;
+                continue;
+            }
+
+            if (current != ',' || depth != 0)
+            {
+                continue;
+            }
+
+            AddArgument(statement, arguments, segmentStart, index);
+            segmentStart = index + 1;
+        }
+
+        AddArgument(statement, arguments, segmentStart, endIndex);
+        return arguments;
+    }
+
+    private static void AddArgument(
+        LogicalStatement statement,
+        ICollection<VbaArgumentSyntax> arguments,
+        int startIndex,
+        int endIndex)
+    {
+        var trimmedStart = startIndex;
+        while (trimmedStart < endIndex && char.IsWhiteSpace(statement.Text[trimmedStart]))
+        {
+            trimmedStart++;
+        }
+
+        var trimmedEnd = endIndex;
+        while (trimmedEnd > trimmedStart && char.IsWhiteSpace(statement.Text[trimmedEnd - 1]))
+        {
+            trimmedEnd--;
+        }
+
+        if (trimmedStart >= trimmedEnd)
+        {
+            return;
+        }
+
+        arguments.Add(new VbaArgumentSyntax(
+            statement.Text[trimmedStart..trimmedEnd],
+            RangeFromLogicalSpan(statement, trimmedStart, trimmedEnd)));
+    }
+
+    private static int FindMatchingParenthesis(string text, int openIndex)
+    {
+        var inString = false;
+        var depth = 0;
+        for (var index = openIndex; index < text.Length; index++)
+        {
+            var current = text[index];
+            if (current == '"' && inString && index + 1 < text.Length && text[index + 1] == '"')
+            {
+                index++;
+                continue;
+            }
+
+            if (current == '"')
+            {
+                inString = !inString;
+                continue;
+            }
+
+            if (inString)
+            {
+                continue;
+            }
+
+            if (current == '(')
+            {
+                depth++;
+                continue;
+            }
+
+            if (current != ')')
+            {
+                continue;
+            }
+
+            depth--;
+            if (depth == 0)
+            {
+                return index;
+            }
+        }
+
+        return -1;
+    }
+
+    private static string GetCalleeBeforeParenthesis(string text, int parenthesisIndex)
+    {
+        var end = parenthesisIndex - 1;
+        while (end >= 0 && char.IsWhiteSpace(text[end]))
+        {
+            end--;
+        }
+
+        if (end < 0 || !IsIdentifierCharacter(text[end]))
+        {
+            return "";
+        }
+
+        var start = end;
+        while (start >= 0 && IsIdentifierCharacter(text[start]))
+        {
+            start--;
+        }
+
+        if (start >= 0 && text[start] == '.')
+        {
+            start--;
+            while (start >= 0 && char.IsWhiteSpace(text[start]))
+            {
+                start--;
+            }
+
+            while (start >= 0 && (IsIdentifierCharacter(text[start]) || text[start] == '.'))
+            {
+                start--;
+            }
+        }
+
+        return text[(start + 1)..(end + 1)].Replace(" ", "", StringComparison.Ordinal);
+    }
+
+    private static VbaSyntaxRange RangeFromLogicalSpan(LogicalStatement statement, int startIndex, int endIndex)
+    {
+        var startPosition = FindMappedPosition(statement, startIndex, searchForward: true)
+            ?? statement.Range.Start;
+        var endPosition = FindMappedPosition(statement, Math.Max(startIndex, endIndex - 1), searchForward: false);
+        if (endPosition is null)
+        {
+            return new VbaSyntaxRange(startPosition, startPosition);
+        }
+
+        return new VbaSyntaxRange(
+            startPosition,
+            new VbaSyntaxPosition(endPosition.Line, endPosition.Character + 1, endPosition.Offset + 1));
+    }
+
+    private static VbaSyntaxPosition? FindMappedPosition(
+        LogicalStatement statement,
+        int index,
+        bool searchForward)
+    {
+        if (statement.SourcePositions.Count == 0)
+        {
+            return null;
+        }
+
+        var current = Math.Clamp(index, 0, statement.SourcePositions.Count - 1);
+        while (current >= 0 && current < statement.SourcePositions.Count)
+        {
+            var position = statement.SourcePositions[current];
+            if (position is not null)
+            {
+                return position;
+            }
+
+            current += searchForward ? 1 : -1;
+        }
+
+        return null;
+    }
+
+    private static bool HasLineContinuation(string line)
+        => line.TrimEnd().EndsWith("_", StringComparison.Ordinal);
+
+    private static string RemoveLineContinuation(string line)
+    {
+        var trimmed = line.TrimEnd();
+        return trimmed.EndsWith("_", StringComparison.Ordinal)
+            ? trimmed[..^1]
+            : line;
     }
 
     private static ParsedMembers ParseMembersAndDeclarations(SourceText sourceText, int codeStartLine)
@@ -1164,6 +1551,9 @@ internal static class VbaSyntaxTreeParser
     private static bool IsWithEventsVariableDeclaration(string codeLine)
         => Regex.IsMatch(codeLine, "\\bWithEvents\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
+    private static bool IsIdentifierCharacter(char value)
+        => char.IsAsciiLetterOrDigit(value) || value == '_';
+
     private static VbaSyntaxRange CreateRange(SourceText sourceText, Match match, string groupName, SourceLine line)
     {
         var group = match.Groups[groupName];
@@ -1404,6 +1794,17 @@ internal sealed record ParsedMembers(
 internal sealed record ParsedStatements(
     IReadOnlyList<VbaStatementSyntax> Statements,
     IReadOnlyList<VbaSyntaxDiagnostic> Diagnostics);
+
+internal sealed record ParsedExpressions(
+    IReadOnlyList<VbaExpressionSyntax> Expressions,
+    IReadOnlyList<VbaArgumentListSyntax> ArgumentLists,
+    IReadOnlyList<VbaCompletionContextSyntax> CompletionContexts);
+
+internal sealed record LogicalStatement(
+    string Text,
+    IReadOnlyList<VbaSyntaxPosition?> SourcePositions,
+    VbaSyntaxRange Range,
+    bool IsContinued);
 
 internal sealed record BlockFrame(
     VbaStatementKind Kind,
