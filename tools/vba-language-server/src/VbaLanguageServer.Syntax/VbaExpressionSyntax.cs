@@ -30,9 +30,21 @@ public sealed record VbaCompletionContextSyntax(
     VbaSyntaxRange Range,
     bool IsContinued = false);
 
+public enum VbaArgumentKind
+{
+    Positional,
+    Named,
+    Omitted
+}
+
 public sealed record VbaArgumentSyntax(
+    VbaArgumentKind Kind,
     string Text,
-    VbaSyntaxRange Range);
+    VbaSyntaxRange Range,
+    string? Name = null,
+    VbaSyntaxRange? NameRange = null,
+    string? ValueText = null,
+    VbaSyntaxRange? ValueRange = null);
 
 public sealed record VbaArgumentListSyntax(
     string Callee,

@@ -43,6 +43,69 @@ public sealed class VbaSyntaxTreeExpressionTests
         Assert.DoesNotContain(tree.Diagnostics, diagnostic => diagnostic.Code.Contains("unresolved", StringComparison.OrdinalIgnoreCase));
     }
 
+    [Fact]
+    public void ParserModelsCallArgumentKinds()
+    {
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    Example(1, Arg2:=\"x\", , Arg4:=Nested(5, Name:=6),)",
+            "End Sub"
+        ]);
+
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.bas", source);
+
+        var exampleCall = Assert.Single(tree.Module.ArgumentLists, argumentList => argumentList.Callee == "Example");
+        Assert.Collection(
+            exampleCall.Arguments,
+            argument =>
+            {
+                Assert.Equal(VbaArgumentKind.Positional, argument.Kind);
+                Assert.Equal("1", argument.Text);
+                Assert.Null(argument.Name);
+                Assert.Equal("1", argument.ValueText);
+                Assert.Equal(argument.Range, argument.ValueRange);
+            },
+            argument =>
+            {
+                Assert.Equal(VbaArgumentKind.Named, argument.Kind);
+                Assert.Equal("Arg2:=\"x\"", argument.Text);
+                Assert.Equal("Arg2", argument.Name);
+                Assert.Equal("\"x\"", argument.ValueText);
+                Assert.NotNull(argument.NameRange);
+                Assert.NotNull(argument.ValueRange);
+            },
+            argument =>
+            {
+                Assert.Equal(VbaArgumentKind.Omitted, argument.Kind);
+                Assert.Equal("", argument.Text);
+                Assert.Null(argument.Name);
+                Assert.Null(argument.ValueText);
+                Assert.True(argument.Range.End.Offset > argument.Range.Start.Offset);
+            },
+            argument =>
+            {
+                Assert.Equal(VbaArgumentKind.Named, argument.Kind);
+                Assert.Equal("Arg4", argument.Name);
+                Assert.Equal("Nested(5, Name:=6)", argument.ValueText);
+            },
+            argument =>
+            {
+                Assert.Equal(VbaArgumentKind.Omitted, argument.Kind);
+                Assert.True(argument.Range.End.Offset > argument.Range.Start.Offset);
+            });
+
+        var nestedCall = Assert.Single(tree.Module.ArgumentLists, argumentList => argumentList.Callee == "Nested");
+        Assert.Collection(
+            nestedCall.Arguments,
+            argument => Assert.Equal(VbaArgumentKind.Positional, argument.Kind),
+            argument =>
+            {
+                Assert.Equal(VbaArgumentKind.Named, argument.Kind);
+                Assert.Equal("Name", argument.Name);
+            });
+    }
+
     private static int PositionOffset(string source, int line, int character)
     {
         var currentLine = 0;

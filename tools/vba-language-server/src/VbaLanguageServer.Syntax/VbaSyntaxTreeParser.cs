@@ -541,12 +541,110 @@ internal static class VbaSyntaxTreeParser
 
         if (trimmedStart >= trimmedEnd)
         {
+            arguments.Add(new VbaArgumentSyntax(
+                VbaArgumentKind.Omitted,
+                "",
+                CreateOmittedArgumentRange(statement, startIndex, endIndex)));
             return;
         }
 
+        var text = statement.Text[trimmedStart..trimmedEnd];
+        var range = RangeFromLogicalSpan(statement, trimmedStart, trimmedEnd);
+        var separatorIndex = FindNamedArgumentSeparator(statement.Text, trimmedStart, trimmedEnd);
+        if (separatorIndex >= 0)
+        {
+            var nameStart = trimmedStart;
+            var nameEnd = separatorIndex;
+            while (nameEnd > nameStart && char.IsWhiteSpace(statement.Text[nameEnd - 1]))
+            {
+                nameEnd--;
+            }
+
+            if (ReadIdentifierEnd(statement.Text, nameStart) == nameEnd)
+            {
+                var valueStart = separatorIndex + 2;
+                while (valueStart < trimmedEnd && char.IsWhiteSpace(statement.Text[valueStart]))
+                {
+                    valueStart++;
+                }
+
+                var valueEnd = trimmedEnd;
+                var valueText = statement.Text[valueStart..valueEnd];
+                arguments.Add(new VbaArgumentSyntax(
+                    VbaArgumentKind.Named,
+                    text,
+                    range,
+                    statement.Text[nameStart..nameEnd],
+                    RangeFromLogicalSpan(statement, nameStart, nameEnd),
+                    valueText,
+                    valueStart < valueEnd ? RangeFromLogicalSpan(statement, valueStart, valueEnd) : null));
+                return;
+            }
+        }
+
         arguments.Add(new VbaArgumentSyntax(
-            statement.Text[trimmedStart..trimmedEnd],
-            RangeFromLogicalSpan(statement, trimmedStart, trimmedEnd)));
+            VbaArgumentKind.Positional,
+            text,
+            range,
+            ValueText: text,
+            ValueRange: range));
+    }
+
+    private static VbaSyntaxRange CreateOmittedArgumentRange(
+        LogicalStatement statement,
+        int startIndex,
+        int endIndex)
+    {
+        var markerIndex =
+            endIndex < statement.Text.Length && statement.Text[endIndex] == ','
+                ? endIndex
+                : Math.Max(0, startIndex - 1);
+        return RangeFromLogicalSpan(statement, markerIndex, Math.Min(markerIndex + 1, statement.Text.Length));
+    }
+
+    private static int FindNamedArgumentSeparator(string text, int startIndex, int endIndex)
+    {
+        var inString = false;
+        var depth = 0;
+        for (var index = startIndex; index < endIndex - 1; index++)
+        {
+            var current = text[index];
+            if (current == '"' && inString && index + 1 < endIndex && text[index + 1] == '"')
+            {
+                index++;
+                continue;
+            }
+
+            if (current == '"')
+            {
+                inString = !inString;
+                continue;
+            }
+
+            if (inString)
+            {
+                continue;
+            }
+
+            if (current == '(')
+            {
+                depth++;
+                continue;
+            }
+
+            if (current == ')' && depth > 0)
+            {
+                depth--;
+                continue;
+            }
+
+            if (depth == 0 && current == ':' && text[index + 1] == '=')
+            {
+                return index;
+            }
+        }
+
+        return -1;
     }
 
     private static int FindMatchingParenthesis(string text, int openIndex)
