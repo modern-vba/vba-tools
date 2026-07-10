@@ -72,6 +72,8 @@ Attribute VB_Name = "SmokeTestMain"
 Option Explicit
 
 Public Sub UnitTestMain()
+    Call ExerciseWorkbookHeavyAutomation
+
     Dim resultSheet As Worksheet
 
     On Error Resume Next
@@ -93,6 +95,35 @@ Public Sub UnitTestMain()
     resultSheet.Cells(2, 2).Value = "Test_ProcessCleanup"
     resultSheet.Cells(2, 3).Value = "OK"
     resultSheet.Cells(2, 4).Value = ""
+End Sub
+
+Private Sub ExerciseWorkbookHeavyAutomation()
+    Dim index As Long
+    For index = 1 To 20
+        Dim targetBook As Workbook
+        Set targetBook = Workbooks.Add
+        Do While targetBook.Worksheets.Count < 2
+            Call targetBook.Worksheets.Add(After:=targetBook.Worksheets(targetBook.Worksheets.Count))
+        Loop
+        targetBook.Worksheets(1).Name = "target_start"
+        targetBook.Worksheets(2).Name = "target_activate"
+        Call targetBook.Worksheets("target_start").Activate
+
+        Dim controlBook As Workbook
+        Set controlBook = Workbooks.Add
+        controlBook.Worksheets(1).Name = "control_active"
+        Call controlBook.Worksheets("control_active").Activate
+
+        targetBook.Worksheets("target_activate").Range("C3").Value = index
+        Call targetBook.Activate
+        Call targetBook.Worksheets("target_activate").Activate
+        Call targetBook.Worksheets("target_activate").Range("C3").Activate
+        Call controlBook.Activate
+        Call controlBook.Worksheets("control_active").Activate
+
+        Call targetBook.Close(SaveChanges:=False)
+        Call controlBook.Close(SaveChanges:=False)
+    Next index
 End Sub
 '@ | Set-Content -LiteralPath (Join-Path $sourceSet 'SmokeTestMain.bas') -Encoding ASCII
 
