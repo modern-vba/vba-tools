@@ -85,6 +85,91 @@ public sealed class SyntaxDiagnosticsTests
     }
 
     [Fact]
+    public void Document_diagnostics_report_duplicate_callable_parameter_names()
+    {
+        const string declarationLine = "Public Sub Run(ByVal name As String, ByVal name As Long)";
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            declarationLine,
+            "End Sub"
+        ]);
+
+        var diagnostic = Assert.Single(VbaDocumentDiagnostics.Collect(source, "Worker.bas"));
+
+        Assert.Equal("validation.duplicateCallableParameterName", diagnostic.Code);
+        Assert.Equal("Duplicate callable parameter name 'name'.", diagnostic.Message);
+        Assert.Equal("error", diagnostic.Severity);
+        Assert.Equal("vba-language-server", diagnostic.Source);
+        Assert.Equal(
+            new VbaRange(
+                new VbaPosition(1, declarationLine.LastIndexOf("name", StringComparison.Ordinal)),
+                new VbaPosition(1, declarationLine.LastIndexOf("name", StringComparison.Ordinal) + "name".Length)),
+            diagnostic.Range);
+    }
+
+    [Theory]
+    [InlineData("Public Function Build(ByVal value As String, ByVal VALUE As Long) As String", "End Function")]
+    [InlineData("Public Property Get DisplayName(ByVal value As String, ByVal VALUE As Long) As String", "End Property")]
+    [InlineData("Public Property Let DisplayName(ByVal value As String, ByVal VALUE As Long)", "End Property")]
+    [InlineData("Public Property Set DisplayName(ByVal value As Object, ByVal VALUE As Object)", "End Property")]
+    [InlineData("Public Event Saved(ByVal value As String, ByVal VALUE As Long)", null)]
+    [InlineData("Public Declare PtrSafe Function GetTickCount Lib \"kernel32\" (ByVal value As String, ByVal VALUE As Long) As Long", null)]
+    public void Document_diagnostics_report_case_insensitive_duplicate_callable_parameter_names(
+        string declarationLine,
+        string? terminatorLine)
+    {
+        var sourceLines = new List<string>
+        {
+            "Attribute VB_Name = \"Worker\"",
+            declarationLine
+        };
+        if (terminatorLine is not null)
+        {
+            sourceLines.Add(terminatorLine);
+        }
+
+        var diagnostic = Assert.Single(VbaDocumentDiagnostics.Collect(string.Join('\n', sourceLines), "Worker.bas"));
+
+        Assert.Equal("validation.duplicateCallableParameterName", diagnostic.Code);
+        Assert.Equal(
+            new VbaRange(
+                new VbaPosition(1, declarationLine.LastIndexOf("VALUE", StringComparison.Ordinal)),
+                new VbaPosition(1, declarationLine.LastIndexOf("VALUE", StringComparison.Ordinal) + "VALUE".Length)),
+            diagnostic.Range);
+    }
+
+    [Fact]
+    public void Document_diagnostics_do_not_report_unique_callable_parameter_names()
+    {
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run(ByVal name As String, ByVal count As Long)",
+            "End Sub"
+        ]);
+
+        Assert.DoesNotContain(
+            VbaDocumentDiagnostics.Collect(source, "Worker.bas"),
+            diagnostic => diagnostic.Code == "validation.duplicateCallableParameterName");
+    }
+
+    [Fact]
+    public void Document_diagnostics_publish_validation_diagnostics_with_syntax_diagnostics()
+    {
+        const string invalidLine = "    value = \"unterminated";
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run(ByVal name As String, ByVal name As Long)",
+            invalidLine,
+            "End Sub"
+        ]);
+
+        var diagnostics = VbaDocumentDiagnostics.Collect(source, "Worker.bas");
+
+        Assert.Contains(diagnostics, diagnostic => diagnostic.Code == "validation.duplicateCallableParameterName");
+        Assert.Contains(diagnostics, diagnostic => diagnostic.Code == "syntax.unterminatedStringLiteral");
+    }
+
+    [Fact]
     public void Diagnostics_cover_cls_and_frm_code_while_ignoring_frm_designer_text()
     {
         const string classInvalidLine = "    value = \"unterminated";

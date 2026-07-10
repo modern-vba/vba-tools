@@ -72,5 +72,52 @@ public static class VbaSyntaxDiagnosticCollector
 public static class VbaDocumentValidationDiagnosticCollector
 {
     public static IReadOnlyList<VbaValidationDiagnostic> Collect(VbaSyntaxTree tree, string uri)
-        => [];
+    {
+        var diagnostics = new List<VbaValidationDiagnostic>();
+        foreach (var declaration in tree.Module.CallableDeclarations)
+        {
+            AddDuplicateCallableParameterDiagnostics(
+                diagnostics,
+                declaration.Parameters.Select(parameter => new CallableParameter(parameter.Name, parameter.Range)));
+        }
+
+        foreach (var declaration in tree.Module.Declarations.Where(declaration => declaration.Kind == VbaDeclarationKind.Event))
+        {
+            AddDuplicateCallableParameterDiagnostics(
+                diagnostics,
+                tree.Module.Declarations
+                    .Where(parameter => parameter.Kind == VbaDeclarationKind.Parameter
+                        && parameter.ParentProcedureName is null
+                        && parameter.LineIndex == declaration.LineIndex)
+                    .Select(parameter => new CallableParameter(parameter.Name, parameter.Range)));
+        }
+
+        return diagnostics;
+    }
+
+    private static void AddDuplicateCallableParameterDiagnostics(
+        ICollection<VbaValidationDiagnostic> diagnostics,
+        IEnumerable<CallableParameter> parameters)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var parameter in parameters)
+        {
+            if (seen.Add(parameter.Name))
+            {
+                continue;
+            }
+
+            diagnostics.Add(new VbaValidationDiagnostic(
+                "validation.duplicateCallableParameterName",
+                $"Duplicate callable parameter name '{parameter.Name}'.",
+                ToDiagnosticRange(parameter.Range)));
+        }
+    }
+
+    private static VbaRange ToDiagnosticRange(VbaSyntaxRange range)
+        => new(
+            new VbaPosition(range.Start.Line, range.Start.Character),
+            new VbaPosition(range.End.Line, range.End.Character));
+
+    private sealed record CallableParameter(string Name, VbaSyntaxRange Range);
 }
