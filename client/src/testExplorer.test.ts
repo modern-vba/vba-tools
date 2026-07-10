@@ -85,12 +85,34 @@ test('Running a document node invokes vba-dev test ndjson with explicit project 
   ]);
 });
 
-test('Test Explorer creates only the default run profile', () => {
+test('Test Explorer creates default and no-build run profiles', () => {
   const controller = new FakeTestController();
   createExplorer(controller, { manifests: new Map() });
 
-  assert.deepEqual(controller.runProfiles, [
-    { label: 'Run Tests', isDefault: true }
+  assert.deepEqual(controller.runProfiles.map(({ label, isDefault }) => ({ label, isDefault })), [
+    { label: 'Run Tests', isDefault: true },
+    { label: 'Run Tests Without Build', isDefault: false }
+  ]);
+});
+
+test('No-build Test Explorer profile invokes vba-dev test without building', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const calls: Array<{ file: string; args: readonly string[] }> = [];
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    calls,
+    manifests: new Map([
+      [path.join(projectRoot, 'project.json'), manifestJson('BookProject', ['Book1'])]
+    ])
+  });
+  await explorer.refresh();
+  const documentItem = controller.items[0].children.items[0];
+
+  await controller.runProfiles[1].runHandler({ include: [documentItem] }, { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) });
+
+  assert.deepEqual(calls.map((call) => call.args), [
+    ['capabilities', '--format', 'json'],
+    ['test', '--project', projectRoot, '--document', 'Book1', '--no-build', '--format', 'ndjson']
   ]);
 });
 
@@ -217,6 +239,39 @@ test('Running a discovered procedure node invokes vba-dev test with module and p
   ]);
 });
 
+test('No-build Test Explorer profile preserves module and procedure selectors', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const calls: Array<{ file: string; args: readonly string[] }> = [];
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    calls,
+    manifests: new Map([
+      [path.join(projectRoot, 'project.json'), manifestJson('BookProject', ['Book1'])]
+    ]),
+    stdout: ndjson({
+      type: 'testFinished',
+      document: 'Book1',
+      module: 'Test_Module',
+      procedure: 'Test_Passes',
+      outcome: 'passed',
+      message: ''
+    })
+  });
+  await explorer.refresh();
+  const documentItem = controller.items[0].children.items[0];
+  await explorer.run({ include: [documentItem] }, { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) });
+  const procedureItem = documentItem.children.items[0].children.items[0];
+  calls.splice(0, calls.length);
+  controller.runs.splice(0, controller.runs.length);
+
+  await controller.runProfiles[1].runHandler({ include: [procedureItem] }, { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) });
+
+  assert.deepEqual(calls.map((call) => call.args), [
+    ['capabilities', '--format', 'json'],
+    ['test', '--project', projectRoot, '--document', 'Book1', '--module', 'Test_Module', '--procedure', 'Test_Passes', '--no-build', '--format', 'ndjson']
+  ]);
+});
+
 test('testStarted events update known TestProcedure running state', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const controller = new FakeTestController();
@@ -330,6 +385,72 @@ test('CLI command failures are reported as project-level or document-level TestR
 
   assert.ok(projectController.runs[0].events.includes(`errored:${projectController.items[0].id}:Build failed`));
   assert.ok(documentController.runs[0].events.includes(`errored:${documentItem.id}:Reference was not found`));
+});
+
+test('No-build Test Explorer profile reports unusable generated output as TestRunError', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const calls: Array<{ file: string; args: readonly string[] }> = [];
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    calls,
+    manifests: new Map([
+      [path.join(projectRoot, 'project.json'), manifestJson('BookProject', ['Book1'])]
+    ]),
+    stderr: 'Bin workbook was not found\n',
+    exitCode: 1
+  });
+  await explorer.refresh();
+  const documentItem = controller.items[0].children.items[0];
+
+  await controller.runProfiles[1].runHandler({ include: [documentItem] }, { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) });
+
+  assert.deepEqual(calls.map((call) => call.args), [
+    ['capabilities', '--format', 'json'],
+    ['test', '--project', projectRoot, '--document', 'Book1', '--no-build', '--format', 'ndjson']
+  ]);
+  assert.ok(controller.runs[0].events.includes(`errored:${documentItem.id}:Bin workbook was not found`));
+});
+
+test('Cancelled no-build Test Explorer runs terminate the spawned CLI process', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const controller = new FakeTestController();
+  let killed = false;
+  let cancelListener: (() => void) | undefined;
+  const explorer = createExplorer(controller, {
+    manifests: new Map([
+      [path.join(projectRoot, 'project.json'), manifestJson('BookProject', ['Book1'])]
+    ]),
+    startProcess: () => ({
+      onStdout: () => undefined,
+      onStderr: () => undefined,
+      onExit: (listener) => setTimeout(() => listener(null, 'SIGTERM'), 10),
+      kill: () => {
+        killed = true;
+      }
+    })
+  });
+  await explorer.refresh();
+
+  const runPromise = controller.runProfiles[1].runHandler(
+    { include: [controller.items[0]] },
+    {
+      isCancellationRequested: false,
+      onCancellationRequested: (listener) => {
+        cancelListener = listener;
+        return { dispose: () => undefined };
+      }
+    }
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  cancelListener?.();
+  await runPromise;
+
+  assert.equal(killed, true);
+  assert.deepEqual(controller.runs[0].events, [
+    `started:${controller.items[0].id}`,
+    `cancelled:${controller.items[0].id}`,
+    'end'
+  ]);
 });
 
 test('Cancelled VS Code test runs terminate the spawned CLI process', async () => {
@@ -461,7 +582,11 @@ type TestControllerStartProcess = Parameters<typeof createWorkbookBackedTestExpl
 
 class FakeTestController implements TestControllerAdapter {
   public readonly items: FakeTestItem[] = [];
-  public readonly runProfiles: Array<{ label: string; isDefault: boolean }> = [];
+  public readonly runProfiles: Array<{
+    label: string;
+    runHandler: (request: TestRunRequestLike, token: CommandCancellationToken) => Promise<void>;
+    isDefault: boolean;
+  }> = [];
   public readonly runs: FakeTestRun[] = [];
 
   public createTestItem(id: string, label: string, uriPath?: string | undefined): TestExplorerItem {
@@ -477,8 +602,7 @@ class FakeTestController implements TestControllerAdapter {
     runHandler: (request: TestRunRequestLike, token: CommandCancellationToken) => Promise<void>,
     isDefault: boolean
   ): void {
-    void runHandler;
-    this.runProfiles.push({ label, isDefault });
+    this.runProfiles.push({ label, runHandler, isDefault });
   }
 
   public createTestRun(): FakeTestRun {

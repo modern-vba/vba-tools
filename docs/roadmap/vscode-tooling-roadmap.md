@@ -101,6 +101,9 @@ Expected capabilities:
   test procedure;
 - invoke `vba-dev test` directly for the default run profile, leaving
   build-before-test behavior inside the CLI command contract;
+- expose a separate non-default `Run Tests Without Build` profile that invokes
+  `vba-dev test --no-build --format ndjson` for explicit fast reruns against
+  existing generated output;
 - stream `runStarted`, `testStarted`, `testFinished`, and `runFinished`
   `ndjson` events into VS Code test states;
 - use `testFinished` project, document, module, and procedure identity to add
@@ -116,8 +119,8 @@ Expected capabilities:
   identity;
 - avoid showing standalone VBA files that do not belong to a `ProjectManifest`
   in Test Explorer;
-- track explicit no-build test reruns as a later separate run profile rather
-  than part of the initial default profile.
+- keep missing or unusable no-build generated output as a command error instead
+  of implicitly building.
 
 ## Phase 3: Diagnostics and Problems integration
 

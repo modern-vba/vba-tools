@@ -6,7 +6,7 @@ workbook-backed VBA projects.
 This repository is the home for:
 
 - the VS Code extension and VBA language server;
-- future VS Code Test Explorer integration;
+- VS Code Test Explorer integration;
 - the `vba-dev` companion CLI under `tools/vba-dev`.
 
 The first VS Code extension release is Windows-only. It launches the bundled
@@ -17,6 +17,18 @@ TypeScript language-server fallback path.
 `vba-dev` remains usable as a standalone command-line tool, but it is also
 the command layer that the VS Code extension will use for workbook-backed
 project actions such as `build`, `test`, `publish`, `export`, and `doctor`.
+
+## Test Explorer
+
+Workbook-backed projects appear in VS Code Test Explorer when the workspace
+contains a `project.json` manifest. The default `Run Tests` profile invokes
+`vba-dev test --format ndjson`, so it keeps the CLI's build-before-test
+behavior.
+
+The separate `Run Tests Without Build` profile invokes
+`vba-dev test --no-build --format ndjson`. Use it only as an explicit fast rerun
+path against existing generated output; missing or unusable generated output is
+reported as a test run error rather than triggering an implicit build.
 
 ## Repository Layout
 

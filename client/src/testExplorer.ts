@@ -71,6 +71,10 @@ export interface WorkbookBackedTestExplorer {
   run(request: TestRunRequestLike, token: CommandCancellationToken): Promise<void>;
 }
 
+interface TestRunOptions {
+  noBuild: boolean;
+}
+
 interface WorkbookBackedProject {
   projectRoot: string;
   manifestPath: string;
@@ -145,11 +149,18 @@ export function createWorkbookBackedTestExplorer(
       options.controller.replaceItems(rootItems);
     },
     run: async (request, token) => {
-      await runTests(options, metadataById, itemsById, rootItems, request, token);
+      await runTests(options, metadataById, itemsById, rootItems, request, token, { noBuild: false });
     }
   };
 
   options.controller.createRunProfile('Run Tests', explorer.run, true);
+  options.controller.createRunProfile(
+    'Run Tests Without Build',
+    async (request, token) => {
+      await runTests(options, metadataById, itemsById, rootItems, request, token, { noBuild: true });
+    },
+    false
+  );
   return explorer;
 }
 
@@ -206,13 +217,14 @@ async function runTests(
   itemsById: Map<string, TestExplorerItem>,
   rootItems: readonly TestExplorerItem[],
   request: TestRunRequestLike,
-  token: CommandCancellationToken
+  token: CommandCancellationToken,
+  runOptions: TestRunOptions
 ): Promise<void> {
   const run = options.controller.createTestRun(request);
   try {
     const items = selectedRunnableItems(request, rootItems, metadataById);
     for (const item of items) {
-      await runTestItem(options, metadataById, itemsById, run, item, token);
+      await runTestItem(options, metadataById, itemsById, run, item, token, runOptions);
     }
   } finally {
     run.end();
@@ -236,7 +248,8 @@ async function runTestItem(
   itemsById: Map<string, TestExplorerItem>,
   testRun: TestRunLike,
   item: TestExplorerItem,
-  token: CommandCancellationToken
+  token: CommandCancellationToken,
+  runOptions: TestRunOptions
 ): Promise<void> {
   const metadata = metadataById.get(item.id);
   if (!metadata) {
@@ -263,6 +276,9 @@ async function runTestItem(
       : []),
     ...(metadata.procedureName
       ? ['--procedure', metadata.procedureName]
+      : []),
+    ...(runOptions.noBuild
+      ? ['--no-build']
       : []),
     '--format',
     'ndjson'
