@@ -1270,8 +1270,8 @@ public sealed class VbaSourceIndex
         var canonicalNames = CreateNameResolutionService()
             .GetFormattingDefinitions(document.Uri)
             .ToDictionary(definition => definition.Name, definition => definition.Name, StringComparer.OrdinalIgnoreCase);
-        var lines = SplitLines(document.Text);
-        var formattedLines = new List<string>(lines.Length);
+        var lines = SourceFormatting.SplitLogicalLines(document.Text);
+        var formattedLines = new List<string>(lines.Count);
         var depth = 0;
         var indent = new string(' ', tabSize);
 
@@ -1298,7 +1298,14 @@ public sealed class VbaSourceIndex
             }
         }
 
-        return string.Join('\n', formattedLines);
+        var formattedText = string.Join(SourceFormatting.DetectDominantLineEnding(document.Text), formattedLines);
+        var edits = new SourceFormattingEditCollector();
+        if (!string.Equals(formattedText, document.Text, StringComparison.Ordinal))
+        {
+            edits.Replace(0, document.Text.Length, formattedText);
+        }
+
+        return edits.Apply(document.Text);
     }
 
     private static string FormatLineCasing(string line, IReadOnlyDictionary<string, string> canonicalNames)
