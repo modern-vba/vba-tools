@@ -277,6 +277,29 @@ _Avoid_: color theme, formatting
 An editor diagnostic that reports malformed VBA source syntax in a `VbaProject`. A `SyntaxDiagnostic` is about grammar and source structure, not semantic checks such as unresolved `VbaDefinition`s, missing `VbaProjectReferenceDefinition`s, type mismatch, or ambiguous `NameResolution`.
 _Avoid_: compile error, semantic diagnostic, runtime error
 
+**VbaSyntaxTree**:
+The parsed VBA source structure needed for `SyntaxHighlighting`,
+`SyntaxDiagnostic`s, and completion candidate discovery while preserving the
+syntax structure those editor features depend on. It does not include
+compile-time type inference or unresolved-name diagnostics in the current
+scope.
+_Avoid_: regex scan result, semantic model, compiler
+
+**VbaTokenStream**:
+The source-range-preserving lexical token sequence produced before
+`VbaSyntaxTree` parsing. It classifies VBA keywords, identifiers, literals,
+operators, punctuation, comments, whitespace, newlines, line continuations, and
+preprocessor directives so lexical `SyntaxHighlighting` and parser recovery can
+continue even when the full syntax tree is incomplete.
+_Avoid_: text split, regex match list, semantic token
+
+**ReusableVbaParserCore**:
+The parser and syntax model layer that can serve `VbaLanguageServer` editor
+features and may later be shared with documentation tooling such as DoxyVB6
+without depending on LSP, VS Code, workbook automation, or `VbaDev` command
+behavior.
+_Avoid_: language-server feature code, DoxyVB6 adapter, workbook parser
+
 **SemanticToken**:
 A meaning-aware classification of a source range, derived from parsed `VbaProject` information. `SemanticToken`s refine `SyntaxHighlighting` for declarations and references, using standard editor token categories whenever a VBA meaning can be represented by one.
 _Avoid_: syntax token, text token
