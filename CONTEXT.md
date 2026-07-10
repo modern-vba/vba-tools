@@ -316,11 +316,32 @@ A meaning-aware classification of a source range, derived from parsed `VbaProjec
 _Avoid_: syntax token, text token
 
 **SourceFormatting**:
-Editor-initiated rewriting of VBA source text to match the language server's source style. It includes casing normalization and indentation formatting, while preserving source meaning.
+Editor-initiated rewriting of VBA source text to match the language server's
+source style. It includes casing normalization and indentation formatting,
+while preserving source meaning. Source formatting is fail-closed: incomplete
+or malformed source may still receive safe lexical or structural formatting, but
+formatting does not guess unresolved names, ambiguous names, or malformed block
+relationships.
 _Avoid_: syntax highlighting, refactoring
 
 **CasingNormalization**:
-A `SourceFormatting` operation that rewrites VBA keywords and resolvable identifiers to their canonical casing.
+A `SourceFormatting` operation that rewrites VBA keywords and identifier
+references to their canonical casing. For source-defined names, the declaration
+spelling is the canonical casing; formatting normalizes references to that
+spelling but does not change the declaration name itself. Identifier reference
+casing is normalized only when `NameResolution` resolves the reference to one
+definition unambiguously; unresolved or ambiguous names keep their original
+casing. Procedure-local `VbaDefinition`s such as local variables and
+`CallableParameter`s participate in casing normalization within their visible
+procedure scope. `VbaProjectReferenceDefinition`s also participate when their
+`VbaProjectReference` is active, a usable `VbaProjectReferenceCatalog` supplies
+the definition, and `NameResolution` resolves the reference unambiguously. In a
+`QualifiedReference` or `MemberChainResolution` expression, each segment is
+normalized only while the corresponding definition can be resolved; once a
+segment is unresolved or ambiguous, formatting does not guess casing for that
+segment or later segments in the chain. String literals, ordinary comments, and
+`DocumentationComment` prose are not casing-normalized even when they contain
+text that looks like an identifier.
 _Avoid_: rename, spelling correction
 
 **LanguageVocabulary**:
@@ -328,7 +349,12 @@ The fixed VBA words whose casing is defined by the language server rather than b
 _Avoid_: host definition, project definition
 
 **IndentationFormatting**:
-A `SourceFormatting` operation that rewrites leading whitespace according to VBA block structure.
+A `SourceFormatting` operation that rewrites leading whitespace according to
+VBA block structure. It depends on source ranges, tokens, and syntax block
+structure rather than `NameResolution`; identifier meaning does not affect
+indent depth. When block structure is incomplete or malformed, indentation uses
+only recognized structure and does not infer repairs for missing block
+boundaries.
 _Avoid_: alignment, line wrapping
 
 **EndStatementCompletion**:
