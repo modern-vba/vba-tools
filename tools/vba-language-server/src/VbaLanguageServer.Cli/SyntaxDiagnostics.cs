@@ -14,19 +14,17 @@ public sealed record VbaSyntaxDiagnostic(
 public static class VbaSyntaxDiagnostics
 {
     public static IReadOnlyList<VbaSyntaxDiagnostic> Collect(string source, string fileName)
-    {
-        var lines = SplitLines(source);
-        var startLine = GetCodeStartLine(lines, fileName);
-        var diagnostics = new List<VbaSyntaxDiagnostic>();
-
-        for (var index = startLine; index < lines.Length; index++)
-        {
-            diagnostics.AddRange(CollectLineContinuationDiagnostics(lines[index], index));
-            diagnostics.AddRange(CollectStringDiagnostics(lines[index], index));
-        }
-
-        return diagnostics;
-    }
+        => VbaLanguageServer.Syntax.VbaSyntaxTree.ParseModule(fileName, source)
+            .Diagnostics
+            .Select(diagnostic => new VbaSyntaxDiagnostic(
+                diagnostic.Code,
+                diagnostic.Message,
+                new VbaRange(
+                    new VbaPosition(diagnostic.Range.Start.Line, diagnostic.Range.Start.Character),
+                    new VbaPosition(diagnostic.Range.End.Line, diagnostic.Range.End.Character)),
+                diagnostic.Severity,
+                diagnostic.Source))
+            .ToArray();
 
     private static string[] SplitLines(string source)
         => source.Replace("\r\n", "\n", StringComparison.Ordinal)

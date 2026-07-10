@@ -8,6 +8,7 @@ public sealed record VbaModuleSyntax(
     IReadOnlyList<VbaModuleMemberSyntax> Members,
     IReadOnlyList<VbaDeclarationSyntax> Declarations,
     IReadOnlyList<VbaCallableDeclarationSyntax> CallableDeclarations,
+    IReadOnlyList<VbaStatementSyntax> Statements,
     VbaFormDesignerBlock? FormDesignerBlock,
     int CodeStartLine,
     VbaSyntaxRange Range);

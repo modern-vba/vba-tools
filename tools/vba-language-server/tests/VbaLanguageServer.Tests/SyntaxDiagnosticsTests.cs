@@ -124,4 +124,33 @@ public sealed class SyntaxDiagnosticsTests
         Assert.Empty(VbaSyntaxDiagnostics.Collect(clsSource, "Worker.cls"));
         Assert.Empty(VbaSyntaxDiagnostics.Collect(frmSource, "Dialog.frm"));
     }
+
+    [Fact]
+    public void Diagnostics_include_parser_recovery_without_semantic_name_checks()
+    {
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Function () As String",
+            "    value = \"unterminated",
+            "    ReadValue _ ' bad continuation",
+            "    @",
+            "Public Sub Run()",
+            "    If ready Then",
+            "        MissingIdentifier"
+        ]);
+
+        var diagnostics = VbaSyntaxDiagnostics.Collect(source, "Worker.bas");
+
+        Assert.Contains(diagnostics, diagnostic => diagnostic.Code == "syntax.malformedDeclarationHeader");
+        Assert.Contains(diagnostics, diagnostic => diagnostic.Code == "syntax.unterminatedStringLiteral");
+        Assert.Contains(diagnostics, diagnostic => diagnostic.Code == "syntax.invalidTrailingCommentContinuation");
+        Assert.Contains(diagnostics, diagnostic => diagnostic.Code == "syntax.unexpectedStatementBoundaryToken");
+        Assert.Contains(diagnostics, diagnostic =>
+            diagnostic.Code == "syntax.missingBlockTerminator"
+            && diagnostic.Message.Contains("End If", StringComparison.Ordinal));
+        Assert.Contains(diagnostics, diagnostic =>
+            diagnostic.Code == "syntax.missingBlockTerminator"
+            && diagnostic.Message.Contains("End Sub", StringComparison.Ordinal));
+        Assert.DoesNotContain(diagnostics, diagnostic => diagnostic.Code.Contains("unresolved", StringComparison.OrdinalIgnoreCase));
+    }
 }

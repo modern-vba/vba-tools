@@ -83,6 +83,8 @@ internal static class VbaSyntaxTreeParser
         var options = ParseOptions(sourceText, codeStartLine);
         var identity = CreateIdentity(uri, sourceText, kind, attributes);
         var parsedMembers = ParseMembersAndDeclarations(sourceText, codeStartLine);
+        var parsedStatements = ParseStatementsAndDiagnostics(sourceText, codeStartLine);
+        diagnostics.AddRange(parsedStatements.Diagnostics);
         var module = new VbaModuleSyntax(
             kind,
             identity,
@@ -91,6 +93,7 @@ internal static class VbaSyntaxTreeParser
             parsedMembers.Members,
             parsedMembers.Declarations,
             parsedMembers.CallableDeclarations,
+            parsedStatements.Statements,
             designerBlock,
             codeStartLine,
             sourceText.FullRange);
@@ -342,6 +345,303 @@ internal static class VbaSyntaxTreeParser
         }
 
         return new ParsedMembers(members, declarations, callableDeclarations);
+    }
+
+    private static ParsedStatements ParseStatementsAndDiagnostics(SourceText sourceText, int codeStartLine)
+    {
+        var statements = new List<VbaStatementSyntax>();
+        var diagnostics = new List<VbaSyntaxDiagnostic>();
+        var blockStack = new Stack<BlockFrame>();
+
+        for (var lineIndex = codeStartLine; lineIndex < sourceText.Lines.Count; lineIndex++)
+        {
+            var line = sourceText.Lines[lineIndex];
+            diagnostics.AddRange(CollectLineContinuationDiagnostics(line));
+            diagnostics.AddRange(CollectStringDiagnostics(line));
+
+            var codeLine = StripApostropheComment(line.Text);
+            if (string.IsNullOrWhiteSpace(codeLine)
+                || AttributePattern.IsMatch(codeLine)
+                || OptionPattern.IsMatch(codeLine)
+                || codeLine.TrimStart().StartsWith("#", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var trimmed = codeLine.TrimStart();
+            if (IsMalformedDeclarationHeader(trimmed))
+            {
+                var range = CreateLineRange(line);
+                diagnostics.Add(new VbaSyntaxDiagnostic(
+                    "syntax.malformedDeclarationHeader",
+                    "Declaration header is malformed.",
+                    range));
+                statements.Add(new VbaStatementSyntax(VbaStatementKind.Malformed, line.Text, range, IsMalformed: true));
+                continue;
+            }
+
+            if (TryCloseBlock(trimmed, blockStack, out var unexpectedClose))
+            {
+                if (unexpectedClose is not null)
+                {
+                    diagnostics.Add(new VbaSyntaxDiagnostic(
+                        "syntax.unexpectedStatementBoundaryToken",
+                        $"Unexpected statement-boundary token '{unexpectedClose}'.",
+                        CreateLineRange(line)));
+                    statements.Add(new VbaStatementSyntax(VbaStatementKind.Malformed, line.Text, CreateLineRange(line), IsMalformed: true));
+                }
+
+                continue;
+            }
+
+            var statementKind = ClassifyStatement(trimmed);
+            var rangeForLine = CreateLineRange(line);
+            statements.Add(new VbaStatementSyntax(
+                statementKind,
+                line.Text,
+                rangeForLine,
+                IsMalformed: statementKind == VbaStatementKind.Malformed));
+
+            if (statementKind == VbaStatementKind.Malformed)
+            {
+                diagnostics.Add(new VbaSyntaxDiagnostic(
+                    "syntax.unexpectedStatementBoundaryToken",
+                    "Unexpected token at statement boundary.",
+                    rangeForLine));
+                continue;
+            }
+
+            var expectedTerminator = GetExpectedBlockTerminator(trimmed, statementKind);
+            if (expectedTerminator is not null)
+            {
+                blockStack.Push(new BlockFrame(statementKind, expectedTerminator, rangeForLine));
+            }
+        }
+
+        foreach (var block in blockStack)
+        {
+            diagnostics.Add(new VbaSyntaxDiagnostic(
+                "syntax.missingBlockTerminator",
+                $"Block is missing '{block.ExpectedTerminator}'.",
+                block.Range));
+        }
+
+        return new ParsedStatements(statements, diagnostics);
+    }
+
+    private static IEnumerable<VbaSyntaxDiagnostic> CollectLineContinuationDiagnostics(SourceLine line)
+    {
+        var commentStart = FindApostropheCommentStart(line.Text);
+        if (commentStart < 0)
+        {
+            yield break;
+        }
+
+        var codePart = line.Text[..commentStart];
+        var underscoreIndex = codePart.LastIndexOf('_');
+        if (underscoreIndex >= 0 && codePart.TrimEnd().EndsWith('_'))
+        {
+            yield return new VbaSyntaxDiagnostic(
+                "syntax.invalidTrailingCommentContinuation",
+                "Code line-continuation marker cannot be followed by a comment.",
+                new VbaSyntaxRange(
+                    new VbaSyntaxPosition(line.LineNumber, underscoreIndex, line.StartOffset + underscoreIndex),
+                    new VbaSyntaxPosition(line.LineNumber, line.Text.Length, line.EndOffset)));
+        }
+    }
+
+    private static IEnumerable<VbaSyntaxDiagnostic> CollectStringDiagnostics(SourceLine line)
+    {
+        if (IsRemCommentLine(line.Text))
+        {
+            yield break;
+        }
+
+        var inString = false;
+        var stringStart = -1;
+        for (var index = 0; index < line.Text.Length; index++)
+        {
+            var current = line.Text[index];
+            if (!inString && current == '\'')
+            {
+                break;
+            }
+
+            if (current != '"')
+            {
+                continue;
+            }
+
+            if (inString && index + 1 < line.Text.Length && line.Text[index + 1] == '"')
+            {
+                index++;
+                continue;
+            }
+
+            inString = !inString;
+            if (inString)
+            {
+                stringStart = index;
+            }
+        }
+
+        if (inString)
+        {
+            yield return new VbaSyntaxDiagnostic(
+                "syntax.unterminatedStringLiteral",
+                "String literal is missing a closing double quote.",
+                new VbaSyntaxRange(
+                    new VbaSyntaxPosition(line.LineNumber, stringStart, line.StartOffset + stringStart),
+                    new VbaSyntaxPosition(line.LineNumber, line.Text.Length, line.EndOffset)));
+        }
+    }
+
+    private static bool TryCloseBlock(string trimmedLine, Stack<BlockFrame> blockStack, out string? unexpectedClose)
+    {
+        unexpectedClose = null;
+        var closeTerminator = GetCloseTerminator(trimmedLine);
+        if (closeTerminator is null)
+        {
+            return false;
+        }
+
+        if (blockStack.Count == 0)
+        {
+            unexpectedClose = closeTerminator;
+            return true;
+        }
+
+        if (!blockStack.Peek().ExpectedTerminator.Equals(closeTerminator, StringComparison.OrdinalIgnoreCase))
+        {
+            unexpectedClose = closeTerminator;
+            return true;
+        }
+
+        blockStack.Pop();
+        return true;
+    }
+
+    private static VbaStatementKind ClassifyStatement(string trimmedLine)
+    {
+        if (ProcedurePattern.IsMatch(trimmedLine))
+        {
+            return VbaStatementKind.ProcedureBody;
+        }
+
+        if (Regex.IsMatch(trimmedLine, "^If\\b.*\\bThen\\s*$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+        {
+            return VbaStatementKind.IfBlock;
+        }
+
+        if (Regex.IsMatch(trimmedLine, "^With\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+        {
+            return VbaStatementKind.WithBlock;
+        }
+
+        if (Regex.IsMatch(trimmedLine, "^Select\\s+Case\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+        {
+            return VbaStatementKind.SelectBlock;
+        }
+
+        if (Regex.IsMatch(trimmedLine, "^For\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+        {
+            return VbaStatementKind.ForBlock;
+        }
+
+        if (Regex.IsMatch(trimmedLine, "^Do\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+        {
+            return VbaStatementKind.DoLoopBlock;
+        }
+
+        if (trimmedLine.StartsWith("@", StringComparison.Ordinal))
+        {
+            return VbaStatementKind.Malformed;
+        }
+
+        if (Regex.IsMatch(trimmedLine, "^[A-Za-z_][A-Za-z0-9_]*\\s*=", RegexOptions.CultureInvariant))
+        {
+            return VbaStatementKind.Assignment;
+        }
+
+        if (Regex.IsMatch(trimmedLine, "^(Call\\s+)?[A-Za-z_][A-Za-z0-9_]*(?:\\.|\\b)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)
+            || trimmedLine.StartsWith(".", StringComparison.Ordinal))
+        {
+            return VbaStatementKind.Call;
+        }
+
+        return VbaStatementKind.Unknown;
+    }
+
+    private static string? GetExpectedBlockTerminator(string trimmedLine, VbaStatementKind statementKind)
+        => statementKind switch
+        {
+            VbaStatementKind.ProcedureBody when Regex.IsMatch(trimmedLine, "\\bSub\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant) => "End Sub",
+            VbaStatementKind.ProcedureBody when Regex.IsMatch(trimmedLine, "\\bFunction\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant) => "End Function",
+            VbaStatementKind.ProcedureBody when Regex.IsMatch(trimmedLine, "\\bProperty\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant) => "End Property",
+            VbaStatementKind.IfBlock => "End If",
+            VbaStatementKind.WithBlock => "End With",
+            VbaStatementKind.SelectBlock => "End Select",
+            VbaStatementKind.ForBlock => "Next",
+            VbaStatementKind.DoLoopBlock => "Loop",
+            _ => null
+        };
+
+    private static string? GetCloseTerminator(string trimmedLine)
+    {
+        if (Regex.IsMatch(trimmedLine, "^End\\s+Sub\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+        {
+            return "End Sub";
+        }
+
+        if (Regex.IsMatch(trimmedLine, "^End\\s+Function\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+        {
+            return "End Function";
+        }
+
+        if (Regex.IsMatch(trimmedLine, "^End\\s+Property\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+        {
+            return "End Property";
+        }
+
+        if (Regex.IsMatch(trimmedLine, "^End\\s+If\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+        {
+            return "End If";
+        }
+
+        if (Regex.IsMatch(trimmedLine, "^End\\s+With\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+        {
+            return "End With";
+        }
+
+        if (Regex.IsMatch(trimmedLine, "^End\\s+Select\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+        {
+            return "End Select";
+        }
+
+        if (Regex.IsMatch(trimmedLine, "^Next\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+        {
+            return "Next";
+        }
+
+        if (Regex.IsMatch(trimmedLine, "^Loop\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+        {
+            return "Loop";
+        }
+
+        return null;
+    }
+
+    private static bool IsMalformedDeclarationHeader(string trimmedLine)
+    {
+        if (!Regex.IsMatch(
+            trimmedLine,
+            "^(Public\\s+|Private\\s+|Friend\\s+)?(Static\\s+)?(Sub|Function|Property)\\b",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+        {
+            return false;
+        }
+
+        return !ProcedurePattern.IsMatch(trimmedLine);
     }
 
     private static VbaCallableDeclarationSyntax CreateCallableDeclaration(
@@ -880,6 +1180,40 @@ internal static class VbaSyntaxTreeParser
             new VbaSyntaxPosition(startLine, 0, lines[startLine].StartOffset),
             new VbaSyntaxPosition(endLine, lines[endLine].Text.Length, lines[endLine].EndOffset));
 
+    private static int FindApostropheCommentStart(string line)
+    {
+        var inString = false;
+        for (var index = 0; index < line.Length; index++)
+        {
+            var current = line[index];
+            if (current == '"' && inString && index + 1 < line.Length && line[index + 1] == '"')
+            {
+                index++;
+                continue;
+            }
+
+            if (current == '"')
+            {
+                inString = !inString;
+                continue;
+            }
+
+            if (!inString && current == '\'')
+            {
+                return index;
+            }
+        }
+
+        return -1;
+    }
+
+    private static bool IsRemCommentLine(string line)
+    {
+        var trimmed = line.TrimStart();
+        return trimmed.Equals("Rem", StringComparison.OrdinalIgnoreCase)
+            || trimmed.StartsWith("Rem ", StringComparison.OrdinalIgnoreCase);
+    }
+
     private static string StripApostropheComment(string line)
     {
         var inString = false;
@@ -1066,6 +1400,15 @@ internal sealed record ParsedMembers(
     IReadOnlyList<VbaModuleMemberSyntax> Members,
     IReadOnlyList<VbaDeclarationSyntax> Declarations,
     IReadOnlyList<VbaCallableDeclarationSyntax> CallableDeclarations);
+
+internal sealed record ParsedStatements(
+    IReadOnlyList<VbaStatementSyntax> Statements,
+    IReadOnlyList<VbaSyntaxDiagnostic> Diagnostics);
+
+internal sealed record BlockFrame(
+    VbaStatementKind Kind,
+    string ExpectedTerminator,
+    VbaSyntaxRange Range);
 
 internal sealed record DeclarationSegment(int Start, string Text);
 
