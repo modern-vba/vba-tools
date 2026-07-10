@@ -123,6 +123,26 @@ public sealed class VbaSemanticResolutionTests
         Assert.Equal("Open(FileName)", index.GetSignatureHelp(uri, 16, "        .Open(".Length)?.Signature.Label);
     }
 
+    [Fact]
+    public void SignatureHelpUsesActiveNamedArgumentWhenParameterNameMatches()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Function ReadValue(ByVal Key As String, ByVal Fallback As String) As String",
+            "End Function",
+            "Public Sub Run()",
+            "    ReadValue(Fallback:=",
+            "End Sub"
+        ]);
+        var index = BuildIndex(uri, text);
+
+        var signatureHelp = index.GetSignatureHelp(uri, 4, "    ReadValue(Fallback:=".Length);
+
+        Assert.Equal("ReadValue(Key, Fallback) As String", signatureHelp?.Signature.Label);
+        Assert.Equal(1, signatureHelp?.ActiveParameter);
+    }
+
     private static VbaSourceIndex BuildIndex(string uri, string text)
         => BuildIndex(new Dictionary<string, string> { [uri] = text });
 

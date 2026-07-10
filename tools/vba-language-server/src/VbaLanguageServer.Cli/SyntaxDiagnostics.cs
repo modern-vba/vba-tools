@@ -78,7 +78,7 @@ public static class VbaDocumentValidationDiagnosticCollector
         {
             AddDuplicateCallableParameterDiagnostics(
                 diagnostics,
-                declaration.Parameters.Select(parameter => new CallableParameter(parameter.Name, parameter.Range)));
+                declaration.Parameters.Select(parameter => new NamedSyntax(parameter.Name, parameter.Range)));
         }
 
         foreach (var declaration in tree.Module.Declarations.Where(declaration => declaration.Kind == VbaDeclarationKind.Event))
@@ -89,7 +89,16 @@ public static class VbaDocumentValidationDiagnosticCollector
                     .Where(parameter => parameter.Kind == VbaDeclarationKind.Parameter
                         && parameter.ParentProcedureName is null
                         && parameter.LineIndex == declaration.LineIndex)
-                    .Select(parameter => new CallableParameter(parameter.Name, parameter.Range)));
+                    .Select(parameter => new NamedSyntax(parameter.Name, parameter.Range)));
+        }
+
+        foreach (var argumentList in tree.Module.ArgumentLists)
+        {
+            AddDuplicateNamedCallArgumentDiagnostics(
+                diagnostics,
+                argumentList.Arguments
+                    .Where(argument => argument.Kind == VbaArgumentKind.Named && argument.Name is not null)
+                    .Select(argument => new NamedSyntax(argument.Name!, argument.NameRange ?? argument.Range)));
         }
 
         return diagnostics;
@@ -97,7 +106,7 @@ public static class VbaDocumentValidationDiagnosticCollector
 
     private static void AddDuplicateCallableParameterDiagnostics(
         ICollection<VbaValidationDiagnostic> diagnostics,
-        IEnumerable<CallableParameter> parameters)
+        IEnumerable<NamedSyntax> parameters)
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var parameter in parameters)
@@ -114,10 +123,29 @@ public static class VbaDocumentValidationDiagnosticCollector
         }
     }
 
+    private static void AddDuplicateNamedCallArgumentDiagnostics(
+        ICollection<VbaValidationDiagnostic> diagnostics,
+        IEnumerable<NamedSyntax> arguments)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var argument in arguments)
+        {
+            if (seen.Add(argument.Name))
+            {
+                continue;
+            }
+
+            diagnostics.Add(new VbaValidationDiagnostic(
+                "validation.duplicateNamedCallArgument",
+                $"Duplicate named call argument '{argument.Name}'.",
+                ToDiagnosticRange(argument.Range)));
+        }
+    }
+
     private static VbaRange ToDiagnosticRange(VbaSyntaxRange range)
         => new(
             new VbaPosition(range.Start.Line, range.Start.Character),
             new VbaPosition(range.End.Line, range.End.Character));
 
-    private sealed record CallableParameter(string Name, VbaSyntaxRange Range);
+    private sealed record NamedSyntax(string Name, VbaSyntaxRange Range);
 }

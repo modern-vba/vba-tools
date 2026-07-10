@@ -458,10 +458,33 @@ public sealed class VbaSourceIndex
             return null;
         }
 
-        var activeParameter = Math.Min(
-            arguments.Count(characterValue => characterValue == ','),
-            Math.Max(0, definition.Signature.Parameters.Count - 1));
+        var activeParameter = GetActiveSignatureParameter(definition.Signature, arguments);
         return new VbaSignatureHelp(definition.Signature, activeParameter);
+    }
+
+    private static int GetActiveSignatureParameter(VbaCallableSignature signature, string arguments)
+    {
+        var fallbackParameter = Math.Min(
+            arguments.Count(characterValue => characterValue == ','),
+            Math.Max(0, signature.Parameters.Count - 1));
+        var currentArgumentStart = arguments.LastIndexOf(',') + 1;
+        var currentArgument = arguments[currentArgumentStart..];
+        var namedArgumentMatch = Regex.Match(
+            currentArgument,
+            "^\\s*(?<name>[A-Za-z_][A-Za-z0-9_]*)\\s*:=",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (!namedArgumentMatch.Success)
+        {
+            return fallbackParameter;
+        }
+
+        var parameterIndex = signature.Parameters
+            .Select((parameter, index) => new { parameter, index })
+            .FirstOrDefault(item => item.parameter.Name.Equals(
+                namedArgumentMatch.Groups["name"].Value,
+                StringComparison.OrdinalIgnoreCase))
+            ?.index;
+        return parameterIndex ?? fallbackParameter;
     }
 
     public IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>>? CreateRenameChanges(

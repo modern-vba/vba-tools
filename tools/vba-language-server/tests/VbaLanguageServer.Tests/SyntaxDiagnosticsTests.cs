@@ -170,6 +170,80 @@ public sealed class SyntaxDiagnosticsTests
     }
 
     [Fact]
+    public void Document_diagnostics_report_duplicate_named_call_arguments()
+    {
+        const string callLine = "    Example(Arg1:=1, ARG1:=2)";
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            callLine,
+            "End Sub"
+        ]);
+
+        var diagnostic = Assert.Single(VbaDocumentDiagnostics.Collect(source, "Worker.bas"));
+
+        Assert.Equal("validation.duplicateNamedCallArgument", diagnostic.Code);
+        Assert.Equal("Duplicate named call argument 'ARG1'.", diagnostic.Message);
+        Assert.Equal("error", diagnostic.Severity);
+        Assert.Equal("vba-language-server", diagnostic.Source);
+        Assert.Equal(
+            new VbaRange(
+                new VbaPosition(2, callLine.IndexOf("ARG1", StringComparison.Ordinal)),
+                new VbaPosition(2, callLine.IndexOf("ARG1", StringComparison.Ordinal) + "ARG1".Length)),
+            diagnostic.Range);
+    }
+
+    [Fact]
+    public void Document_diagnostics_validate_nested_named_call_argument_lists_independently()
+    {
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    Example(Arg1:=Nested(Arg1:=1, ARG1:=2), Arg2:=3)",
+            "End Sub"
+        ]);
+
+        var diagnostic = Assert.Single(
+            VbaDocumentDiagnostics.Collect(source, "Worker.bas"),
+            diagnostic => diagnostic.Code == "validation.duplicateNamedCallArgument");
+
+        Assert.Equal("ARG1", SourceTextAtRange(source, diagnostic.Range));
+    }
+
+    [Fact]
+    public void Document_diagnostics_do_not_report_unique_named_call_arguments()
+    {
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    Example(Arg1:=1, Arg2:=Nested(Arg1:=2, Arg2:=3))",
+            "End Sub"
+        ]);
+
+        Assert.DoesNotContain(
+            VbaDocumentDiagnostics.Collect(source, "Worker.bas"),
+            diagnostic => diagnostic.Code == "validation.duplicateNamedCallArgument");
+    }
+
+    [Fact]
+    public void Document_diagnostics_publish_duplicate_named_call_argument_with_syntax_diagnostics()
+    {
+        const string invalidLine = "    value = \"unterminated";
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    Example(Arg1:=1, ARG1:=2)",
+            invalidLine,
+            "End Sub"
+        ]);
+
+        var diagnostics = VbaDocumentDiagnostics.Collect(source, "Worker.bas");
+
+        Assert.Contains(diagnostics, diagnostic => diagnostic.Code == "validation.duplicateNamedCallArgument");
+        Assert.Contains(diagnostics, diagnostic => diagnostic.Code == "syntax.unterminatedStringLiteral");
+    }
+
+    [Fact]
     public void Diagnostics_cover_cls_and_frm_code_while_ignoring_frm_designer_text()
     {
         const string classInvalidLine = "    value = \"unterminated";
@@ -338,5 +412,13 @@ public sealed class SyntaxDiagnosticsTests
             diagnostic.Code == "syntax.missingBlockTerminator"
             && diagnostic.Message.Contains("End Sub", StringComparison.Ordinal));
         Assert.DoesNotContain(diagnostics, diagnostic => diagnostic.Code.Contains("unresolved", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string SourceTextAtRange(string source, VbaRange range)
+    {
+        var line = source.Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n')
+            .Split('\n')[range.Start.Line];
+        return line[range.Start.Character..range.End.Character];
     }
 }
