@@ -244,6 +244,103 @@ public sealed class SyntaxDiagnosticsTests
     }
 
     [Fact]
+    public void Document_diagnostics_report_positional_call_argument_after_named_argument()
+    {
+        const string callLine = "    Example(Arg1:=1, 2)";
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            callLine,
+            "End Sub"
+        ]);
+
+        var diagnostic = Assert.Single(VbaDocumentDiagnostics.Collect(source, "Worker.bas"));
+
+        Assert.Equal("validation.positionalCallArgumentAfterNamed", diagnostic.Code);
+        Assert.Equal("Positional call argument cannot appear after a named argument.", diagnostic.Message);
+        Assert.Equal("error", diagnostic.Severity);
+        Assert.Equal("vba-language-server", diagnostic.Source);
+        Assert.Equal(
+            new VbaRange(
+                new VbaPosition(2, callLine.IndexOf("2", StringComparison.Ordinal)),
+                new VbaPosition(2, callLine.IndexOf("2", StringComparison.Ordinal) + "2".Length)),
+            diagnostic.Range);
+    }
+
+    [Fact]
+    public void Document_diagnostics_report_omitted_call_argument_after_named_argument()
+    {
+        const string callLine = "    Example(1, Arg2:=2,)";
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            callLine,
+            "End Sub"
+        ]);
+
+        var diagnostic = Assert.Single(VbaDocumentDiagnostics.Collect(source, "Worker.bas"));
+
+        Assert.Equal("validation.positionalCallArgumentAfterNamed", diagnostic.Code);
+        Assert.Equal(2, diagnostic.Range.Start.Line);
+        Assert.Equal(callLine.LastIndexOf(','), diagnostic.Range.Start.Character);
+        Assert.True(diagnostic.Range.End.Character > diagnostic.Range.Start.Character);
+    }
+
+    [Fact]
+    public void Document_diagnostics_validate_nested_argument_order_independently()
+    {
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    Example(Arg1:=Nested(Arg1:=1, 2), Arg2:=3)",
+            "End Sub"
+        ]);
+
+        var diagnostic = Assert.Single(
+            VbaDocumentDiagnostics.Collect(source, "Worker.bas"),
+            diagnostic => diagnostic.Code == "validation.positionalCallArgumentAfterNamed");
+
+        Assert.Equal("2", SourceTextAtRange(source, diagnostic.Range));
+    }
+
+    [Theory]
+    [InlineData("    Example(1, 2, 3)")]
+    [InlineData("    Example(Arg1:=1, Arg2:=2)")]
+    [InlineData("    Example(1, Arg2:=2)")]
+    [InlineData("    Example(, Arg2:=2)")]
+    public void Document_diagnostics_do_not_report_valid_named_argument_order(string callLine)
+    {
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            callLine,
+            "End Sub"
+        ]);
+
+        Assert.DoesNotContain(
+            VbaDocumentDiagnostics.Collect(source, "Worker.bas"),
+            diagnostic => diagnostic.Code == "validation.positionalCallArgumentAfterNamed");
+    }
+
+    [Fact]
+    public void Document_diagnostics_publish_positional_after_named_with_syntax_diagnostics()
+    {
+        const string invalidLine = "    value = \"unterminated";
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    Example(Arg1:=1, 2)",
+            invalidLine,
+            "End Sub"
+        ]);
+
+        var diagnostics = VbaDocumentDiagnostics.Collect(source, "Worker.bas");
+
+        Assert.Contains(diagnostics, diagnostic => diagnostic.Code == "validation.positionalCallArgumentAfterNamed");
+        Assert.Contains(diagnostics, diagnostic => diagnostic.Code == "syntax.unterminatedStringLiteral");
+    }
+
+    [Fact]
     public void Diagnostics_cover_cls_and_frm_code_while_ignoring_frm_designer_text()
     {
         const string classInvalidLine = "    value = \"unterminated";

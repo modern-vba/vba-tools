@@ -99,6 +99,7 @@ public static class VbaDocumentValidationDiagnosticCollector
                 argumentList.Arguments
                     .Where(argument => argument.Kind == VbaArgumentKind.Named && argument.Name is not null)
                     .Select(argument => new NamedSyntax(argument.Name!, argument.NameRange ?? argument.Range)));
+            AddPositionalAfterNamedCallArgumentDiagnostics(diagnostics, argumentList.Arguments);
         }
 
         return diagnostics;
@@ -139,6 +140,31 @@ public static class VbaDocumentValidationDiagnosticCollector
                 "validation.duplicateNamedCallArgument",
                 $"Duplicate named call argument '{argument.Name}'.",
                 ToDiagnosticRange(argument.Range)));
+        }
+    }
+
+    private static void AddPositionalAfterNamedCallArgumentDiagnostics(
+        ICollection<VbaValidationDiagnostic> diagnostics,
+        IEnumerable<VbaArgumentSyntax> arguments)
+    {
+        var hasNamedArgument = false;
+        foreach (var argument in arguments)
+        {
+            if (argument.Kind == VbaArgumentKind.Named)
+            {
+                hasNamedArgument = true;
+                continue;
+            }
+
+            if (!hasNamedArgument)
+            {
+                continue;
+            }
+
+            diagnostics.Add(new VbaValidationDiagnostic(
+                "validation.positionalCallArgumentAfterNamed",
+                "Positional call argument cannot appear after a named argument.",
+                ToDiagnosticRange(argument.ValueRange ?? argument.Range)));
         }
     }
 
