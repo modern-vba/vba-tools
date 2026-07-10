@@ -1320,25 +1320,27 @@ public sealed class VbaSourceIndex
             match => match.Value[..^"Attribute VB_Name".Length] + "Attribute VB_Name",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
-        foreach (var keyword in LanguageKeywords)
+        var edits = new SourceFormattingEditCollector();
+        foreach (var occurrence in FindIdentifierOccurrences(codePart))
         {
-            codePart = Regex.Replace(
-                codePart,
-                $"\\b{Regex.Escape(keyword.Key)}\\b",
-                keyword.Value,
-                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            string? canonicalName = null;
+            if (LanguageKeywords.TryGetValue(occurrence.Name, out var keyword))
+            {
+                canonicalName = keyword;
+            }
+            else if (canonicalNames.TryGetValue(occurrence.Name, out var sourceName))
+            {
+                canonicalName = sourceName;
+            }
+
+            if (canonicalName is not null
+                && !string.Equals(occurrence.Name, canonicalName, StringComparison.Ordinal))
+            {
+                edits.Replace(occurrence.Start, occurrence.End, canonicalName);
+            }
         }
 
-        foreach (var canonicalName in canonicalNames)
-        {
-            codePart = Regex.Replace(
-                codePart,
-                $"\\b{Regex.Escape(canonicalName.Key)}\\b",
-                canonicalName.Value,
-                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-        }
-
-        return codePart + commentPart;
+        return edits.Apply(codePart) + commentPart;
     }
 
     private static bool ShouldDedentBefore(string trimmedLine)
