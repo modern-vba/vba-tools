@@ -46,6 +46,9 @@ public sealed class LanguageServerProcessTests
         Assert.True(capabilities.TryGetProperty("completionProvider", out _));
         Assert.True(capabilities.GetProperty("referencesProvider").GetBoolean());
         Assert.True(capabilities.GetProperty("workspaceSymbolProvider").GetBoolean());
+        Assert.True(capabilities.GetProperty("documentFormattingProvider").GetBoolean());
+        Assert.False(capabilities.TryGetProperty("documentRangeFormattingProvider", out _));
+        Assert.False(capabilities.TryGetProperty("documentOnTypeFormattingProvider", out _));
 
         await SendNotificationAsync(stdin, "initialized", new { });
         await SendNotificationAsync(
@@ -1209,20 +1212,36 @@ public sealed class LanguageServerProcessTests
             "Public Function BuildValue() As String",
             "End Function"
         ])));
+        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument("file:///C:/work/First.bas", string.Join('\n', [
+            "Attribute VB_Name = \"First\"",
+            "Public Sub DuplicateValue()",
+            "End Sub"
+        ])));
+        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument("file:///C:/work/Second.bas", string.Join('\n', [
+            "Attribute VB_Name = \"Second\"",
+            "Public Sub DuplicateValue()",
+            "End Sub"
+        ])));
         const string callerUri = "file:///C:/work/Caller.bas";
-        var text = string.Join('\n', [
+        const string lineEnding = "\r\n";
+        string[] callerLines = [
             "Attribute vb_name = \"Caller\"",
             "option explicit",
             "",
             "public sub Run()",
-            "buildvalue",
+            "dim localValue as string",
+            "localvalue = buildvalue",
+            "duplicatevalue",
+            "unresolvedname",
+            "text = \"buildvalue public sub\"",
             "if true then",
             "'* @brief buildvalue remains prose.",
             "else",
             "' buildvalue remains an ordinary comment.",
             "end if",
             "End Sub"
-        ]);
+        ];
+        var text = string.Join(lineEnding, callerLines);
         await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(callerUri, text));
 
         var formatting = await SendRequestAsync(
@@ -1236,12 +1255,21 @@ public sealed class LanguageServerProcessTests
                 options = new { tabSize = 4, insertSpaces = true }
             });
         var edit = formatting.GetProperty("result").EnumerateArray().Single();
-        Assert.Equal(string.Join('\n', [
+        var range = edit.GetProperty("range");
+        Assert.Equal(0, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(0, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(callerLines.Length - 1, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(callerLines[^1].Length, range.GetProperty("end").GetProperty("character").GetInt32());
+        Assert.Equal(string.Join(lineEnding, [
             "Attribute VB_Name = \"Caller\"",
             "Option Explicit",
             "",
             "Public Sub Run()",
-            "    BuildValue",
+            "    Dim localValue As String",
+            "    localValue = BuildValue",
+            "    duplicatevalue",
+            "    unresolvedname",
+            "    text = \"buildvalue public sub\"",
             "    If True Then",
             "        '* @brief buildvalue remains prose.",
             "    Else",
@@ -1250,7 +1278,29 @@ public sealed class LanguageServerProcessTests
             "End Sub"
         ]), edit.GetProperty("newText").GetString());
 
-        await SendRequestAsync(stdin, stdout, 3, "shutdown", null);
+        const string formattedUri = "file:///C:/work/Formatted.bas";
+        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(formattedUri, string.Join(lineEnding, [
+            "Attribute VB_Name = \"Formatted\"",
+            "Option Explicit",
+            "",
+            "Public Sub Run()",
+            "    If True Then",
+            "    End If",
+            "End Sub"
+        ])));
+        var noFormatting = await SendRequestAsync(
+            stdin,
+            stdout,
+            3,
+            "textDocument/formatting",
+            new
+            {
+                textDocument = new { uri = formattedUri },
+                options = new { tabSize = 4, insertSpaces = true }
+            });
+        Assert.Empty(noFormatting.GetProperty("result").EnumerateArray());
+
+        await SendRequestAsync(stdin, stdout, 4, "shutdown", null);
         await SendNotificationAsync(stdin, "exit", null);
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await process.WaitForExitAsync(cancellation.Token);
