@@ -408,6 +408,144 @@ public sealed class SourceFormattingTests
         Assert.Equal(expected, edit.NewText);
     }
 
+    [Fact]
+    public void FormatDocumentIndentsRecognizedBlocksAndLineContinuations()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var source = string.Join('\n', [
+            "attribute vb_name = \"Worker\"",
+            "Public Enum RunMode",
+            "Automatic = 0",
+            "End Enum",
+            "Private Type WorkerState",
+            "Name As String",
+            "End Type",
+            "public sub Run()",
+            "if true then",
+            "Select Case value",
+            "Case 1",
+            "With Application",
+            "for i = 1 To 2",
+            "Do",
+            "While false",
+            "value = BuildValue( _",
+            "1, _",
+            "2)",
+            "Wend",
+            "Loop",
+            "next",
+            "End With",
+            "Case Else",
+            "value = 0",
+            "End Select",
+            "else",
+            "value = 3",
+            "end if",
+            "if true then value = 1",
+            "end sub"
+        ]);
+        var expected = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Enum RunMode",
+            "    Automatic = 0",
+            "End Enum",
+            "Private Type WorkerState",
+            "    Name As String",
+            "End Type",
+            "Public Sub Run()",
+            "    If True Then",
+            "        Select Case value",
+            "        Case 1",
+            "            With Application",
+            "                For i = 1 To 2",
+            "                    Do",
+            "                        While False",
+            "                            value = BuildValue( _",
+            "                                1, _",
+            "                                2)",
+            "                        Wend",
+            "                    Loop",
+            "                Next",
+            "            End With",
+            "        Case Else",
+            "            value = 0",
+            "        End Select",
+            "    Else",
+            "        value = 3",
+            "    End If",
+            "    If True Then value = 1",
+            "End Sub"
+        ]);
+        var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = source });
+
+        var edit = index.FormatDocument(uri, tabSize: 4);
+
+        Assert.NotNull(edit);
+        Assert.Equal(expected, edit.NewText);
+    }
+
+    [Fact]
+    public void FormatDocumentLeavesIncompleteBlockIndentationFailClosed()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var source = string.Join('\n', [
+            "attribute vb_name = \"Worker\"",
+            "public sub Run()",
+            "if true then",
+            "value = 1",
+            "end sub"
+        ]);
+        var expected = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "If True Then",
+            "value = 1",
+            "End Sub"
+        ]);
+        var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = source });
+
+        var edit = index.FormatDocument(uri, tabSize: 4);
+
+        Assert.NotNull(edit);
+        Assert.Equal(expected, edit.NewText);
+    }
+
+    [Fact]
+    public void FormatDocumentPreservesFormDesignerBlockText()
+    {
+        const string uri = "file:///C:/work/UserForm1.frm";
+        var source = string.Join('\n', [
+            "VERSION 5.00",
+            "Begin VB.Form UserForm1",
+            "   Caption         =   \"if true string\"",
+            "   ClientHeight    =   3000",
+            "End",
+            "attribute vb_name = \"UserForm1\"",
+            "option explicit",
+            "private sub UserForm_Initialize()",
+            "caption = \"ok\"",
+            "end sub"
+        ]);
+        var expected = string.Join('\n', [
+            "VERSION 5.00",
+            "Begin VB.Form UserForm1",
+            "   Caption         =   \"if true string\"",
+            "   ClientHeight    =   3000",
+            "End",
+            "Attribute VB_Name = \"UserForm1\"",
+            "Option Explicit",
+            "Private Sub UserForm_Initialize()",
+            "    caption = \"ok\"",
+            "End Sub"
+        ]);
+        var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = source });
+
+        var edit = index.FormatDocument(uri, tabSize: 4);
+
+        Assert.NotNull(edit);
+        Assert.Equal(expected, edit.NewText);
+    }
+
     private static VbaSourceIndex BuildExcelReferenceIndex(
         IReadOnlyDictionary<string, string> sourceDocuments,
         VbaProjectReferenceCatalogSet? referenceCatalogs = null)
