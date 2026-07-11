@@ -200,10 +200,10 @@ public sealed class VbaSourceIndex
         var references = new List<VbaDefinitionLocation>();
         foreach (var document in documents)
         {
-            var lines = SplitLines(document.Text);
+            var lines = SourceTextOccurrences.SplitLines(document.Text);
             for (var lineIndex = 0; lineIndex < lines.Length; lineIndex++)
             {
-                foreach (var occurrence in FindIdentifierOccurrences(lines[lineIndex]))
+                foreach (var occurrence in SourceTextOccurrences.FindIdentifierOccurrences(lines[lineIndex]))
                 {
                     var resolved = ResolveSourceDefinition(document.Uri, lineIndex, occurrence.Start);
                     if (resolved is null || !SameDefinition(resolved, target))
@@ -265,18 +265,18 @@ public sealed class VbaSourceIndex
             return null;
         }
 
-        var lines = SplitLines(currentDocument.Text);
+        var lines = SourceTextOccurrences.SplitLines(currentDocument.Text);
         if (line < 0 || line >= lines.Length)
         {
             return null;
         }
 
-        if (!IsCodePosition(lines[line], character))
+        if (!SourceTextOccurrences.IsCodePosition(lines[line], character))
         {
             return null;
         }
 
-        var identifier = GetIdentifierAt(lines[line], character);
+        var identifier = SourceTextOccurrences.GetIdentifierAt(lines[line], character);
         if (identifier is null)
         {
             return null;
@@ -305,7 +305,7 @@ public sealed class VbaSourceIndex
             return null;
         }
 
-        var lines = SplitLines(currentDocument.Text);
+        var lines = SourceTextOccurrences.SplitLines(currentDocument.Text);
         if (line < 0 || line >= lines.Length)
         {
             return null;
@@ -372,10 +372,10 @@ public sealed class VbaSourceIndex
         foreach (var document in documents)
         {
             var edits = new List<VbaTextEdit>();
-            var lines = SplitLines(document.Text);
+            var lines = SourceTextOccurrences.SplitLines(document.Text);
             for (var lineIndex = 0; lineIndex < lines.Length; lineIndex++)
             {
-                foreach (var occurrence in FindIdentifierOccurrences(lines[lineIndex]))
+                foreach (var occurrence in SourceTextOccurrences.FindIdentifierOccurrences(lines[lineIndex]))
                 {
                     if (!SameName(occurrence.Name, target.Name))
                     {
@@ -417,7 +417,7 @@ public sealed class VbaSourceIndex
             return null;
         }
 
-        var lines = SplitLines(document.Text);
+        var lines = SourceTextOccurrences.SplitLines(document.Text);
         return new VbaTextEdit(
             new VbaRange(
                 new VbaPosition(0, 0),
@@ -432,7 +432,7 @@ public sealed class VbaSourceIndex
         out IReadOnlyList<VbaSourceDefinition> definitions)
     {
         definitions = [];
-        var lines = SplitLines(currentDocument.Text);
+        var lines = SourceTextOccurrences.SplitLines(currentDocument.Text);
         if (line < 0 || line >= lines.Length)
         {
             return false;
@@ -461,7 +461,7 @@ public sealed class VbaSourceIndex
         out VbaSourceDefinition? definition)
     {
         definition = null;
-        var lines = SplitLines(currentDocument.Text);
+        var lines = SourceTextOccurrences.SplitLines(currentDocument.Text);
         if (line < 0 || line >= lines.Length)
         {
             return false;
@@ -698,7 +698,7 @@ public sealed class VbaSourceIndex
         out ResolvedType resolvedType)
     {
         resolvedType = default!;
-        var lines = SplitLines(currentDocument.Text);
+        var lines = SourceTextOccurrences.SplitLines(currentDocument.Text);
         var stack = new List<ResolvedType>();
         for (var lineIndex = 0; lineIndex < targetLine && lineIndex < lines.Length; lineIndex++)
         {
@@ -1124,11 +1124,6 @@ public sealed class VbaSourceIndex
             && ComparePosition(left.Range.Start, right.Range.Start) == 0
             && ComparePosition(left.Range.End, right.Range.End) == 0;
 
-    private static string[] SplitLines(string source)
-        => source.Replace("\r\n", "\n", StringComparison.Ordinal)
-            .Replace('\r', '\n')
-            .Split('\n');
-
     private string FormatText(VbaSourceDocument document, int tabSize)
     {
         var nameResolution = CreateNameResolutionService();
@@ -1184,7 +1179,7 @@ public sealed class VbaSourceIndex
         int lineIndex,
         IReadOnlySet<string> declarationRanges)
     {
-        var commentStart = FindApostropheCommentStart(line);
+        var commentStart = SourceTextOccurrences.FindApostropheCommentStart(line);
         var codePart = commentStart < 0 ? line : line[..commentStart];
         var commentPart = commentStart < 0 ? "" : line[commentStart..];
 
@@ -1195,7 +1190,7 @@ public sealed class VbaSourceIndex
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
         var edits = new SourceFormattingEditCollector();
-        foreach (var occurrence in FindIdentifierOccurrences(codePart))
+        foreach (var occurrence in SourceTextOccurrences.FindIdentifierOccurrences(codePart))
         {
             var canonicalName = GetCanonicalFormattingName(
                 codePart,
@@ -1425,13 +1420,13 @@ public sealed class VbaSourceIndex
             qualifierEnd--;
         }
 
-        if (qualifierEnd < 0 || !IsIdentifierCharacter(codePart[qualifierEnd]))
+        if (qualifierEnd < 0 || !SourceTextOccurrences.IsIdentifierCharacter(codePart[qualifierEnd]))
         {
             return false;
         }
 
         var qualifierStart = qualifierEnd;
-        while (qualifierStart > 0 && IsIdentifierCharacter(codePart[qualifierStart - 1]))
+        while (qualifierStart > 0 && SourceTextOccurrences.IsIdentifierCharacter(codePart[qualifierStart - 1]))
         {
             qualifierStart--;
         }
@@ -1466,13 +1461,13 @@ public sealed class VbaSourceIndex
             memberStart++;
         }
 
-        if (memberStart >= codePart.Length || !IsIdentifierStart(codePart[memberStart]))
+        if (memberStart >= codePart.Length || !SourceTextOccurrences.IsIdentifierStart(codePart[memberStart]))
         {
             return false;
         }
 
         var memberEnd = memberStart + 1;
-        while (memberEnd < codePart.Length && IsIdentifierCharacter(codePart[memberEnd]))
+        while (memberEnd < codePart.Length && SourceTextOccurrences.IsIdentifierCharacter(codePart[memberEnd]))
         {
             memberEnd++;
         }
@@ -1497,7 +1492,7 @@ public sealed class VbaSourceIndex
                 continue;
             }
 
-            var codePart = StripApostropheComment(lines[lineIndex]);
+            var codePart = SourceTextOccurrences.StripApostropheComment(lines[lineIndex]);
             var trimmed = codePart.TrimStart();
             if (string.IsNullOrWhiteSpace(trimmed)
                 || IsFormattingIgnoredCodeLine(trimmed))
@@ -1563,12 +1558,6 @@ public sealed class VbaSourceIndex
             && line >= range.Start.Line
             && line <= range.End.Line
             && (line != range.End.Line || range.End.Character > 0);
-
-    private static string StripApostropheComment(string line)
-    {
-        var commentStart = FindApostropheCommentStart(line);
-        return commentStart < 0 ? line : line[..commentStart];
-    }
 
     private static bool IsFormattingIgnoredCodeLine(string trimmedLine)
         => Regex.IsMatch(trimmedLine, "^Attribute\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)
@@ -1721,139 +1710,6 @@ public sealed class VbaSourceIndex
         return null;
     }
 
-    private static IEnumerable<IdentifierAtPosition> FindIdentifierOccurrences(string line)
-    {
-        var inString = false;
-        for (var index = 0; index < line.Length; index++)
-        {
-            var current = line[index];
-            if (current == '"' && inString && index + 1 < line.Length && line[index + 1] == '"')
-            {
-                index++;
-                continue;
-            }
-
-            if (current == '"')
-            {
-                inString = !inString;
-                continue;
-            }
-
-            if (!inString && current == '\'')
-            {
-                yield break;
-            }
-
-            if (inString || !IsIdentifierStart(current))
-            {
-                continue;
-            }
-
-            var start = index;
-            index++;
-            while (index < line.Length && IsIdentifierCharacter(line[index]))
-            {
-                index++;
-            }
-
-            yield return new IdentifierAtPosition(line[start..index], start, index);
-            index--;
-        }
-    }
-
-    private static int FindApostropheCommentStart(string line)
-    {
-        var inString = false;
-        for (var index = 0; index < line.Length; index++)
-        {
-            var current = line[index];
-            if (current == '"' && inString && index + 1 < line.Length && line[index + 1] == '"')
-            {
-                index++;
-                continue;
-            }
-
-            if (current == '"')
-            {
-                inString = !inString;
-                continue;
-            }
-
-            if (!inString && current == '\'')
-            {
-                return index;
-            }
-        }
-
-        return -1;
-    }
-
-    private static IdentifierAtPosition? GetIdentifierAt(string line, int character)
-    {
-        if (line.Length == 0)
-        {
-            return null;
-        }
-
-        var clamped = Math.Clamp(character, 0, line.Length - 1);
-        if (!IsIdentifierCharacter(line[clamped]) && clamped > 0 && IsIdentifierCharacter(line[clamped - 1]))
-        {
-            clamped--;
-        }
-
-        if (!IsIdentifierCharacter(line[clamped]))
-        {
-            return null;
-        }
-
-        var start = clamped;
-        while (start > 0 && IsIdentifierCharacter(line[start - 1]))
-        {
-            start--;
-        }
-
-        var end = clamped + 1;
-        while (end < line.Length && IsIdentifierCharacter(line[end]))
-        {
-            end++;
-        }
-
-        return new IdentifierAtPosition(line[start..end], start, end);
-    }
-
-    private static bool IsCodePosition(string line, int character)
-    {
-        var inString = false;
-        var clamped = Math.Clamp(character, 0, Math.Max(0, line.Length - 1));
-        for (var index = 0; index <= clamped && index < line.Length; index++)
-        {
-            var current = line[index];
-            if (current == '"' && inString && index + 1 < line.Length && line[index + 1] == '"')
-            {
-                index++;
-                continue;
-            }
-
-            if (current == '"')
-            {
-                inString = !inString;
-                if (index == clamped)
-                {
-                    return false;
-                }
-
-                continue;
-            }
-
-            if (!inString && current == '\'')
-            {
-                return false;
-            }
-        }
-
-        return !inString;
-    }
-
     private static string? GetQualifierBefore(string line, int identifierStart)
     {
         var dotIndex = identifierStart - 1;
@@ -1873,25 +1729,19 @@ public sealed class VbaSourceIndex
             qualifierEnd--;
         }
 
-        if (qualifierEnd < 0 || !IsIdentifierCharacter(line[qualifierEnd]))
+        if (qualifierEnd < 0 || !SourceTextOccurrences.IsIdentifierCharacter(line[qualifierEnd]))
         {
             return null;
         }
 
         var qualifierStart = qualifierEnd;
-        while (qualifierStart > 0 && IsIdentifierCharacter(line[qualifierStart - 1]))
+        while (qualifierStart > 0 && SourceTextOccurrences.IsIdentifierCharacter(line[qualifierStart - 1]))
         {
             qualifierStart--;
         }
 
         return line[qualifierStart..(qualifierEnd + 1)];
     }
-
-    private static bool IsIdentifierStart(char value)
-        => char.IsAsciiLetter(value) || value == '_';
-
-    private static bool IsIdentifierCharacter(char value)
-        => char.IsAsciiLetterOrDigit(value) || value == '_';
 
     private static bool IsIdentifierName(string value)
         => Regex.IsMatch(
@@ -1916,5 +1766,4 @@ public sealed class VbaSourceIndex
 
     private sealed record ResolvedType(string Name, string? ReferenceName);
 
-    private sealed record IdentifierAtPosition(string Name, int Start, int End);
 }

@@ -5,6 +5,11 @@ import {
   resolveVbaDevProjectCommandContext,
   runResolvedVbaDevProjectCommand
 } from './devtoolRuntime';
+import {
+  CommonModuleListItem,
+  CommonModulesList,
+  parseCommonModulesListOutput
+} from './vbaDevOutputContract';
 
 export interface CommonModulesCommandOptions extends VbaDevCommandRuntimeOptions {}
 
@@ -15,16 +20,6 @@ export interface CommonModulesCommandResult {
   exitCode: number;
   cancelled: boolean;
   commonModulesList?: CommonModulesList | undefined;
-}
-
-export interface CommonModulesList {
-  document: string;
-  commonModules: readonly CommonModuleListItem[];
-}
-
-export interface CommonModuleListItem {
-  name: string;
-  requested: boolean;
 }
 
 export async function runCommonModulesAddCommand(
@@ -63,18 +58,7 @@ export async function runCommonModulesListCommand(
 }
 
 export function parseCommonModulesList(stdout: string): CommonModulesList {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(stdout);
-  } catch (error) {
-    throw new Error(`CommonModules list returned invalid JSON: ${String(error)}`);
-  }
-
-  if (!isCommonModulesList(parsed)) {
-    throw new Error('CommonModules list JSON did not include document and commonModules.');
-  }
-
-  return parsed;
+  return parseCommonModulesListOutput(stdout);
 }
 
 export function appendFormattedCommonModulesList(
@@ -144,20 +128,4 @@ async function runCommonModulesMutatingCommand(
   }
 
   return runCommonModulesListForProject(options, context);
-}
-
-function isCommonModulesList(value: unknown): value is CommonModulesList {
-  if (!isRecord(value) || typeof value.document !== 'string' || !Array.isArray(value.commonModules)) {
-    return false;
-  }
-
-  return value.commonModules.every((module) => (
-    isRecord(module) &&
-    typeof module.name === 'string' &&
-    typeof module.requested === 'boolean'
-  ));
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

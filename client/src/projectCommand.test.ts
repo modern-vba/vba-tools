@@ -88,6 +88,7 @@ test('WorkbookBackedProject command failure is surfaced to the user', async () =
     toolCommandName: 'build',
     title: 'VBA Tools: Build',
     extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
+    configuredDevToolPath: path.join('D:', 'tools', 'vba-dev.exe'),
     activeFilePath: path.join(projectRoot, 'project.json'),
     workspaceRoots: [path.dirname(projectRoot)],
     fileExists: async (candidate) => candidate === path.join(projectRoot, 'project.json'),

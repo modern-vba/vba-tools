@@ -1,6 +1,5 @@
-import * as path from 'node:path';
-
 import type { ServerOptions } from 'vscode-languageclient/node';
+import { resolveBundledRuntimePath } from './distributionManifest';
 
 const stdioTransportKind = 0;
 
@@ -15,13 +14,7 @@ export interface VbaLanguageServerOptions extends VbaLanguageServerPathOptions {
 }
 
 export function resolveVbaLanguageServerPath(options: VbaLanguageServerPathOptions): string {
-  return path.join(
-    options.extensionRoot,
-    'bin',
-    'vba-language-server',
-    'win-x64',
-    'vba-language-server.exe'
-  );
+  return resolveBundledRuntimePath(options.extensionRoot, 'vbaLanguageServer');
 }
 
 export function isVbaLanguageServerPlatformSupported(platform: PlatformName = process.platform): boolean {

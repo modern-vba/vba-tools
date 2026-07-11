@@ -8,7 +8,7 @@ import {
 } from './languageServer';
 
 test('VbaLanguageServer resolution uses the bundled Windows executable by default', () => {
-  const extensionRoot = path.join('C:', 'extensions', 'vba-tools');
+  const extensionRoot = path.resolve(__dirname, '..', '..');
 
   assert.equal(
     resolveVbaLanguageServerPath({ extensionRoot }),
@@ -17,7 +17,7 @@ test('VbaLanguageServer resolution uses the bundled Windows executable by defaul
 });
 
 test('VbaLanguageServer launch options use stdio command transport', () => {
-  const extensionRoot = path.join('C:', 'extensions', 'vba-tools');
+  const extensionRoot = path.resolve(__dirname, '..', '..');
   const executablePath = resolveVbaLanguageServerPath({ extensionRoot });
 
   assert.deepEqual(

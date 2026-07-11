@@ -1,6 +1,7 @@
 using System.Text.Json.Nodes;
 using VbaLanguageServer.Diagnostics;
 using VbaLanguageServer.SourceModel;
+using VbaLanguageServer.Syntax;
 using VbaLanguageServer.Workspace;
 
 namespace VbaLanguageServer.Lsp;
@@ -59,8 +60,11 @@ internal sealed class VbaLanguageFeatureService
     }
 
     public static object[] CreateDiagnostics(string uri, string text)
+        => CreateDiagnostics(uri, VbaSyntaxTree.ParseModule(uri, text));
+
+    public static object[] CreateDiagnostics(string uri, VbaSyntaxTree tree)
     {
-        return VbaDocumentDiagnostics.Collect(text, uri)
+        return VbaDocumentDiagnostics.Collect(tree, uri)
             .Select(diagnostic => new
             {
                 code = diagnostic.Code,

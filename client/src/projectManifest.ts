@@ -1,4 +1,4 @@
-export interface WorkbookBackedProjectManifest {
+export interface ProjectManifestProjection {
   projectName: string;
   primaryDocument: string;
   documents: readonly WorkbookBackedProjectDocument[];
@@ -9,7 +9,7 @@ export interface WorkbookBackedProjectDocument {
   sourcePath: string;
 }
 
-export function parseProjectManifest(json: string): WorkbookBackedProjectManifest | undefined {
+export function parseProjectManifestProjection(json: string): ProjectManifestProjection | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(json);
@@ -50,6 +50,8 @@ export function parseProjectManifest(json: string): WorkbookBackedProjectManifes
     documents
   };
 }
+
+export const parseProjectManifest = parseProjectManifestProjection;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

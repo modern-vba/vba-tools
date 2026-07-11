@@ -9,7 +9,7 @@ import {
 } from './devtool';
 
 test('VbaDev resolution uses the bundled Windows executable by default', () => {
-  const extensionRoot = path.join('C:', 'extensions', 'vba-tools');
+  const extensionRoot = path.resolve(__dirname, '..', '..');
 
   assert.equal(
     resolveVbaDevPath({ extensionRoot }),
@@ -71,7 +71,7 @@ test('VbaDev compatibility invokes capabilities JSON and returns parsed versions
 
 test('VbaDev compatibility never falls back to PATH discovery', async () => {
   const calls: Array<{ file: string; args: readonly string[] }> = [];
-  const extensionRoot = path.join('C:', 'extensions', 'vba-tools');
+  const extensionRoot = path.resolve(__dirname, '..', '..');
 
   await resolveCompatibleVbaDev({
     extensionRoot,

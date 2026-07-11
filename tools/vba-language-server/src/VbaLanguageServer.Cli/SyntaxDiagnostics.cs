@@ -39,8 +39,10 @@ public static class VbaSyntaxDiagnostics
 public static class VbaDocumentDiagnostics
 {
     public static IReadOnlyList<VbaDiagnostic> Collect(string source, string uri)
+        => Collect(VbaSyntaxTree.ParseModule(uri, source), uri);
+
+    public static IReadOnlyList<VbaDiagnostic> Collect(VbaSyntaxTree tree, string uri)
     {
-        var tree = VbaSyntaxTree.ParseModule(uri, source);
         return VbaSyntaxDiagnosticCollector.Collect(tree, uri)
             .Select(ToDocumentDiagnostic)
             .Concat(VbaDocumentValidationDiagnosticCollector.Collect(tree, uri).Select(ToDocumentDiagnostic))

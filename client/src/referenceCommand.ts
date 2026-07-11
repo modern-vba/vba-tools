@@ -5,6 +5,11 @@ import {
   resolveVbaDevProjectCommandContext,
   runResolvedVbaDevProjectCommand
 } from './devtoolRuntime';
+import {
+  ReferenceList,
+  ReferenceListItem,
+  parseReferenceListOutput
+} from './vbaDevOutputContract';
 
 export interface ReferenceCommandOptions extends VbaDevCommandRuntimeOptions {}
 
@@ -15,15 +20,6 @@ export interface ReferenceCommandResult {
   exitCode: number;
   cancelled: boolean;
   referenceList?: ReferenceList | undefined;
-}
-
-export interface ReferenceList {
-  document: string;
-  references: readonly ReferenceListItem[];
-}
-
-export interface ReferenceListItem {
-  name: string;
 }
 
 export async function runReferenceAddCommand(
@@ -52,18 +48,7 @@ export async function runReferenceListCommand(
 }
 
 export function parseReferenceList(stdout: string): ReferenceList {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(stdout);
-  } catch (error) {
-    throw new Error(`Reference list returned invalid JSON: ${String(error)}`);
-  }
-
-  if (!isReferenceList(parsed)) {
-    throw new Error('Reference list JSON did not include document and references.');
-  }
-
-  return parsed;
+  return parseReferenceListOutput(stdout);
 }
 
 export function appendFormattedReferenceList(
@@ -144,19 +129,4 @@ async function runReferenceListForProject(
     cancelled: result.cancelled,
     referenceList
   };
-}
-
-function isReferenceList(value: unknown): value is ReferenceList {
-  if (!isRecord(value) || typeof value.document !== 'string' || !Array.isArray(value.references)) {
-    return false;
-  }
-
-  return value.references.every((reference) => (
-    isRecord(reference) &&
-    typeof reference.name === 'string'
-  ));
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

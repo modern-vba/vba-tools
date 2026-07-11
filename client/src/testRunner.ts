@@ -1,4 +1,5 @@
 import './devtool.test';
+import './distributionManifest.test';
 import './languageServer.test';
 import './extensionContributions.test';
 import './projectDiscovery.test';

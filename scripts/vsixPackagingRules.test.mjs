@@ -10,6 +10,8 @@ import {
   assertCliPublishSettings,
   assertLanguageServerPublishSettings,
   assertVsixContents,
+  distributionManifestPath,
+  readDistributionManifest,
   readRequiredVbaDevContract,
   requiredBundledCliPath,
   requiredBundledLanguageServerPath,
@@ -20,6 +22,7 @@ import {
 test('VSIX content rules require the bundled CLI artifact and exclude source tree files', () => {
   assert.doesNotThrow(() => assertVsixContents([
     'README.md',
+    distributionManifestPath,
     requiredBundledCliPath,
     requiredBundledLanguageServerPath,
     requiredVbaDevContractPath,
@@ -29,6 +32,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
   assert.throws(
     () => assertVsixContents([
       'README.md',
+      distributionManifestPath,
       'tools/vba-dev/src/VbaDev.Cli/Program.cs',
       requiredBundledCliPath,
       requiredBundledLanguageServerPath,
@@ -40,6 +44,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
   assert.throws(
     () => assertVsixContents([
       'README.md',
+      distributionManifestPath,
       'tools/vba-language-server/src/VbaLanguageServer.Cli/Program.cs',
       requiredBundledCliPath,
       requiredBundledLanguageServerPath,
@@ -51,6 +56,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
   assert.throws(
     () => assertVsixContents([
       'README.md',
+      distributionManifestPath,
       requiredBundledCliPath,
       'client/out/extension.js'
     ]),
@@ -60,6 +66,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
   assert.throws(
     () => assertVsixContents([
       'README.md',
+      distributionManifestPath,
       requiredBundledCliPath,
       requiredBundledLanguageServerPath,
       requiredVbaDevContractPath,
@@ -71,6 +78,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
   assert.throws(
     () => assertVsixContents([
       'README.md',
+      distributionManifestPath,
       requiredBundledCliPath,
       requiredBundledLanguageServerPath,
       requiredVbaDevContractPath,
@@ -82,6 +90,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
   assert.throws(
     () => assertVsixContents([
       'README.md',
+      distributionManifestPath,
       requiredBundledCliPath,
       requiredBundledLanguageServerPath,
       requiredVbaDevContractPath,
@@ -93,6 +102,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
   assert.throws(
     () => assertVsixContents([
       'README.md',
+      distributionManifestPath,
       requiredBundledCliPath,
       requiredBundledLanguageServerPath,
       requiredVbaDevContractPath,
@@ -189,6 +199,10 @@ test('bundled language server smoke must prove the C# executable runs directly',
 
 test('packaging verification checks file contents publish settings and bundled CLI capabilities', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-packaging-'));
+  await fs.writeFile(
+    path.join(root, distributionManifestPath),
+    JSON.stringify(readDistributionManifest(), null, 2)
+  );
   await fs.mkdir(path.join(root, 'bin', 'vba-dev', 'win-x64'), { recursive: true });
   await fs.writeFile(path.join(root, requiredBundledCliPath), '');
   await fs.mkdir(path.join(root, 'bin', 'vba-language-server', 'win-x64'), { recursive: true });
@@ -239,7 +253,7 @@ test('packaging verification checks file contents publish settings and bundled C
       calls.push({ file: path.basename(file), args });
       if (args.includes('ls')) {
         return {
-          stdout: `${requiredBundledCliPath}\n${requiredBundledLanguageServerPath}\n${requiredVbaDevContractPath}\nREADME.md\n`,
+          stdout: `${distributionManifestPath}\n${requiredBundledCliPath}\n${requiredBundledLanguageServerPath}\n${requiredVbaDevContractPath}\nREADME.md\n`,
           stderr: ''
         };
       }

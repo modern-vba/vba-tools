@@ -25,7 +25,7 @@ internal static class VbaSemanticTokenBuilder
             return [];
         }
 
-        var lines = SplitLines(currentDocument.Text);
+        var lines = SourceTextOccurrences.SplitLines(currentDocument.Text);
         var tokens = new List<VbaSemanticToken>();
         var declarationRanges = new HashSet<string>(StringComparer.Ordinal);
         foreach (var definition in currentDocument.Definitions)
@@ -41,7 +41,7 @@ internal static class VbaSemanticTokenBuilder
 
         for (var lineIndex = 0; lineIndex < lines.Length; lineIndex++)
         {
-            foreach (var occurrence in FindIdentifierOccurrences(lines[lineIndex]))
+            foreach (var occurrence in SourceTextOccurrences.FindIdentifierOccurrences(lines[lineIndex]))
             {
                 var occurrenceRange = new VbaRange(
                     new VbaPosition(lineIndex, occurrence.Start),
@@ -189,88 +189,9 @@ internal static class VbaSemanticTokenBuilder
         return bits;
     }
 
-    private static IEnumerable<IdentifierAtPosition> FindIdentifierOccurrences(string line)
-    {
-        var inString = false;
-        for (var index = 0; index < line.Length; index++)
-        {
-            var current = line[index];
-            if (current == '"' && inString && index + 1 < line.Length && line[index + 1] == '"')
-            {
-                index++;
-                continue;
-            }
-
-            if (current == '"')
-            {
-                inString = !inString;
-                continue;
-            }
-
-            if (!inString && current == '\'')
-            {
-                yield break;
-            }
-
-            if (inString || !IsIdentifierStart(current))
-            {
-                continue;
-            }
-
-            var start = index;
-            index++;
-            while (index < line.Length && IsIdentifierCharacter(line[index]))
-            {
-                index++;
-            }
-
-            yield return new IdentifierAtPosition(line[start..index], start, index);
-            index--;
-        }
-    }
-
-    private static int FindApostropheCommentStart(string line)
-    {
-        var inString = false;
-        for (var index = 0; index < line.Length; index++)
-        {
-            if (line[index] == '"')
-            {
-                if (inString && index + 1 < line.Length && line[index + 1] == '"')
-                {
-                    index++;
-                    continue;
-                }
-
-                inString = !inString;
-                continue;
-            }
-
-            if (!inString && line[index] == '\'')
-            {
-                return index;
-            }
-        }
-
-        return -1;
-    }
-
-    private static string[] SplitLines(string source)
-        => source.Replace("\r\n", "\n", StringComparison.Ordinal)
-            .Replace('\r', '\n')
-            .Split('\n');
-
-    private static bool IsIdentifierStart(char value)
-        => char.IsLetter(value) || value == '_';
-
-    private static bool IsIdentifierCharacter(char value)
-        => char.IsLetterOrDigit(value) || value == '_';
-
     private static string GetRangeKey(VbaRange range)
         => $"{range.Start.Line}:{range.Start.Character}:{range.End.Line}:{range.End.Character}";
 
     private static bool SameUri(string left, string right)
         => string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
-
-    private sealed record IdentifierAtPosition(string Name, int Start, int End);
 }

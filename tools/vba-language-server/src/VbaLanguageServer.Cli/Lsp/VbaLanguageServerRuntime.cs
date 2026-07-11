@@ -201,7 +201,7 @@ internal sealed class VbaLanguageServerRuntime
             if (IsVbaSourceUri(uri))
             {
                 workspace.UpdateDocument(uri, text, cancellationToken);
-                await PublishDiagnosticsAsync(uri, text, cancellationToken);
+                await PublishTrackedDiagnosticsAsync(uri, cancellationToken);
                 await catalogRefresh.PublishReferenceSelectionTraceAsync(uri, cancellationToken);
             }
 
@@ -220,7 +220,7 @@ internal sealed class VbaLanguageServerRuntime
             if (IsVbaSourceUri(uri))
             {
                 workspace.UpdateDocument(uri, text, cancellationToken);
-                await PublishDiagnosticsAsync(uri, text, cancellationToken);
+                await PublishTrackedDiagnosticsAsync(uri, cancellationToken);
             }
 
             catalogRefresh.RefreshReferenceCatalogsInBackground(uri, text, cancellationToken);
@@ -288,7 +288,7 @@ internal sealed class VbaLanguageServerRuntime
         if (IsVbaSourcePath(localPath))
         {
             workspace.UpdateDocument(uri, text, cancellationToken);
-            await PublishDiagnosticsAsync(uri, text, cancellationToken);
+            await PublishTrackedDiagnosticsAsync(uri, cancellationToken);
             await catalogRefresh.PublishReferenceSelectionTraceAsync(uri, cancellationToken);
             catalogRefresh.RefreshReferenceCatalogsInBackground(uri, text, cancellationToken);
             return;
@@ -304,14 +304,20 @@ internal sealed class VbaLanguageServerRuntime
         }
     }
 
-    private Task PublishDiagnosticsAsync(string uri, string text, CancellationToken cancellationToken)
+    private Task PublishTrackedDiagnosticsAsync(string uri, CancellationToken cancellationToken)
     {
+        var syntaxTree = workspace.GetDocumentSyntaxTree(uri, cancellationToken);
+        if (syntaxTree is null)
+        {
+            return PublishEmptyDiagnosticsAsync(uri, cancellationToken);
+        }
+
         return transport.WriteNotificationAsync(
             "textDocument/publishDiagnostics",
             new
             {
                 uri,
-                diagnostics = VbaLanguageFeatureService.CreateDiagnostics(uri, text)
+                diagnostics = VbaLanguageFeatureService.CreateDiagnostics(uri, syntaxTree)
             },
             cancellationToken);
     }

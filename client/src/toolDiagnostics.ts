@@ -1,25 +1,15 @@
-import { fileURLToPath } from 'node:url';
+import {
+  VbaDevDiagnostic,
+  parseVbaDevDiagnostics
+} from './vbaDevOutputContract';
 
-export type VbaDevDiagnosticSeverity = 'error' | 'warning' | 'information' | 'hint';
-
-export interface VbaDevDiagnosticRange {
-  start: VbaDevDiagnosticPosition;
-  end: VbaDevDiagnosticPosition;
-}
-
-export interface VbaDevDiagnosticPosition {
-  line: number;
-  character: number;
-}
-
-export interface VbaDevDiagnostic {
-  owner: string;
-  severity: VbaDevDiagnosticSeverity;
-  uriPath: string;
-  range: VbaDevDiagnosticRange;
-  message: string;
-  code: string;
-}
+export {
+  VbaDevDiagnostic,
+  VbaDevDiagnosticPosition,
+  VbaDevDiagnosticRange,
+  VbaDevDiagnosticSeverity,
+  parseVbaDevDiagnostics
+} from './vbaDevOutputContract';
 
 export interface VbaDevDiagnosticCollection {
   set(uriPath: string, diagnostics: readonly VbaDevDiagnostic[]): void;
@@ -40,28 +30,6 @@ export function combineVbaDevDiagnosticOutput(stdout: string, stderr: string): s
   }
 
   return stdout.length > 0 ? stdout : stderr;
-}
-
-export function parseVbaDevDiagnostics(output: string): VbaDevDiagnostic[] {
-  const diagnostics: VbaDevDiagnostic[] = [];
-  for (const value of parseJsonRecords(output)) {
-    if (isRecord(value) && Array.isArray(value.diagnostics)) {
-      for (const diagnostic of value.diagnostics) {
-        const mapped = toDiagnostic(diagnostic);
-        if (mapped) {
-          diagnostics.push(mapped);
-        }
-      }
-      continue;
-    }
-
-    const mapped = toDiagnostic(value);
-    if (mapped) {
-      diagnostics.push(mapped);
-    }
-  }
-
-  return diagnostics;
 }
 
 export class VbaDevDiagnosticReporter implements VbaDevDiagnosticReporterLike {
@@ -91,110 +59,6 @@ export class VbaDevDiagnosticReporter implements VbaDevDiagnosticReporterLike {
   }
 }
 
-function parseJsonRecords(output: string): unknown[] {
-  const trimmed = output.trim();
-  if (trimmed.length === 0) {
-    return [];
-  }
-
-  const whole = tryParseJson(trimmed);
-  if (whole !== undefined) {
-    return [whole];
-  }
-
-  const records: unknown[] = [];
-  for (const line of output.split(/\r?\n/)) {
-    const parsed = tryParseJson(line.trim());
-    if (parsed !== undefined) {
-      records.push(parsed);
-    }
-  }
-
-  return records;
-}
-
-function toDiagnostic(value: unknown): VbaDevDiagnostic | undefined {
-  if (!isRecord(value) || value.type !== 'diagnostic') {
-    return undefined;
-  }
-
-  const owner = getString(value.owner) ?? getString(value.source);
-  const severity = toSeverity(value.severity);
-  const uriPath = toUriPath(getString(value.uri) ?? getString(value.file));
-  const range = toRange(value.range);
-  const message = getString(value.message);
-  const code = getString(value.code);
-  if (!owner || !severity || !uriPath || !range || !message || !code) {
-    return undefined;
-  }
-
-  return {
-    owner,
-    severity,
-    uriPath,
-    range,
-    message,
-    code
-  };
-}
-
-function toRange(value: unknown): VbaDevDiagnosticRange | undefined {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-
-  const start = toPosition(value.start);
-  const end = toPosition(value.end);
-  if (!start || !end) {
-    return undefined;
-  }
-
-  return { start, end };
-}
-
-function toPosition(value: unknown): VbaDevDiagnosticPosition | undefined {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-
-  const line = getNumber(value.line);
-  const character = getNumber(value.character);
-  if (line === undefined || character === undefined) {
-    return undefined;
-  }
-
-  return { line, character };
-}
-
-function toSeverity(value: unknown): VbaDevDiagnosticSeverity | undefined {
-  if (typeof value !== 'string') {
-    return undefined;
-  }
-
-  const normalized = value.toLowerCase();
-  if (normalized === 'error' || normalized === 'warning' || normalized === 'information' || normalized === 'hint') {
-    return normalized;
-  }
-
-  return undefined;
-}
-
-function toUriPath(value: string | undefined): string | undefined {
-  if (!value) {
-    return undefined;
-  }
-
-  if (value.startsWith('file:')) {
-    try {
-      return fileURLToPath(value);
-    } catch {
-      return undefined;
-    }
-  }
-
-  return value;
-}
-
 function groupByUriPath(diagnostics: readonly VbaDevDiagnostic[]): Map<string, VbaDevDiagnostic[]> {
   const result = new Map<string, VbaDevDiagnostic[]>();
   for (const diagnostic of diagnostics) {
@@ -204,28 +68,4 @@ function groupByUriPath(diagnostics: readonly VbaDevDiagnostic[]): Map<string, V
   }
 
   return result;
-}
-
-function tryParseJson(value: string): unknown | undefined {
-  if (value.length === 0) {
-    return undefined;
-  }
-
-  try {
-    return JSON.parse(value) as unknown;
-  } catch {
-    return undefined;
-  }
-}
-
-function getString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.length > 0 ? value : undefined;
-}
-
-function getNumber(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

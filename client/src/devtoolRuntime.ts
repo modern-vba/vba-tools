@@ -19,9 +19,18 @@ import {
   projectDiagnosticScope
 } from './toolDiagnostics';
 
-export interface VbaDevCommandRuntimeOptions {
+export interface VbaDevInvocationRuntimeOptions {
   extensionRoot: string;
   configuredDevToolPath?: string | undefined;
+  capabilitiesProcess?: ProcessRunner | undefined;
+  startProcess?: StartVbaDevProcess | undefined;
+  outputChannel: VbaToolsOutputChannel;
+  diagnosticReporter?: VbaDevDiagnosticReporterLike | undefined;
+  cancellationToken?: CommandCancellationToken | undefined;
+  requiredContract?: RequiredVbaDevContract | undefined;
+}
+
+export interface VbaDevCommandRuntimeOptions extends VbaDevInvocationRuntimeOptions {
   activeFilePath?: string | undefined;
   workspaceRoots: readonly string[];
   fileExists: (filePath: string) => Promise<boolean>;
@@ -29,18 +38,18 @@ export interface VbaDevCommandRuntimeOptions {
   chooseProject: (
     candidates: readonly WorkbookBackedProjectCandidate[]
   ) => Promise<WorkbookBackedProjectCandidate | undefined>;
-  capabilitiesProcess?: ProcessRunner | undefined;
-  startProcess?: StartVbaDevProcess | undefined;
-  outputChannel: VbaToolsOutputChannel;
-  diagnosticReporter?: VbaDevDiagnosticReporterLike | undefined;
   showErrorMessage: (message: string) => Thenable<unknown> | Promise<unknown>;
-  cancellationToken?: CommandCancellationToken | undefined;
-  requiredContract?: RequiredVbaDevContract | undefined;
 }
 
 export interface VbaDevProjectCommandContext {
   project: WorkbookBackedProjectCandidate;
   executablePath: string;
+}
+
+export interface VbaDevProjectCommandInvocation {
+  projectRoot: string;
+  argsBeforeProject: readonly string[];
+  argsAfterProject?: readonly string[] | undefined;
 }
 
 export interface VbaDevProjectCommandRunResult {
@@ -93,22 +102,53 @@ export async function runResolvedVbaDevProjectCommand(
   argsBeforeProject: readonly string[],
   argsAfterProject: readonly string[] = []
 ): Promise<VbaDevProjectCommandRunResult> {
+  return runResolvedVbaDevProjectCommandInvocation(options, context.executablePath, {
+    projectRoot: context.project.projectRoot,
+    argsBeforeProject,
+    argsAfterProject
+  });
+}
+
+export async function runVbaDevProjectCommandInvocation(
+  options: VbaDevInvocationRuntimeOptions,
+  invocation: VbaDevProjectCommandInvocation
+): Promise<VbaDevProjectCommandRunResult> {
+  const devtool = await resolveCompatibleVbaDev({
+    extensionRoot: options.extensionRoot,
+    configuredPath: options.configuredDevToolPath,
+    runProcess: options.capabilitiesProcess,
+    requiredContract: options.requiredContract
+  });
+
+  return runResolvedVbaDevProjectCommandInvocation(options, devtool.executablePath, invocation);
+}
+
+export async function runResolvedVbaDevProjectCommandInvocation(
+  options: VbaDevInvocationRuntimeOptions,
+  executablePath: string,
+  invocation: VbaDevProjectCommandInvocation
+): Promise<VbaDevProjectCommandRunResult> {
   const result = await runVbaDevCommand({
-    executablePath: context.executablePath,
-    args: [...argsBeforeProject, '--project', context.project.projectRoot, ...argsAfterProject],
+    executablePath,
+    args: [
+      ...invocation.argsBeforeProject,
+      '--project',
+      invocation.projectRoot,
+      ...(invocation.argsAfterProject ?? [])
+    ],
     outputChannel: options.outputChannel,
     cancellationToken: options.cancellationToken,
     startProcess: options.startProcess
   });
 
   options.diagnosticReporter?.refresh(
-    projectDiagnosticScope(context.project.projectRoot),
+    projectDiagnosticScope(invocation.projectRoot),
     combineVbaDevDiagnosticOutput(result.stdout, result.stderr)
   );
 
   return {
-    projectRoot: context.project.projectRoot,
-    executablePath: context.executablePath,
+    projectRoot: invocation.projectRoot,
+    executablePath,
     stdout: result.stdout,
     stderr: result.stderr,
     exitCode: result.exitCode,

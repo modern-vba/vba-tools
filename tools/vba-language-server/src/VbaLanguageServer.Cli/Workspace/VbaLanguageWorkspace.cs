@@ -59,6 +59,19 @@ public sealed class VbaLanguageWorkspace
         }
     }
 
+    public VbaLanguageServer.Syntax.VbaSyntaxTree? GetDocumentSyntaxTree(
+        string uri,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (gate)
+        {
+            return documents.TryGetValue(uri, out var document)
+                ? document.SyntaxTree.CoreSyntaxTree
+                : null;
+        }
+    }
+
     public IReadOnlyList<string> GetDocumentUris(CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
