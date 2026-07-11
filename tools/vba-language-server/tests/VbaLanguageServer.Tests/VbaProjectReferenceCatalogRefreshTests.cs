@@ -9,14 +9,16 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
     [Fact]
     public async Task TypeLibDiscoveryResolvesReferenceCatalogIdentity()
     {
-        var discovery = new TypeLibReferenceCatalogDiscovery(new FakeTypeLibRegistryReader(
-            new TypeLibRegistryEntry(
-                "Custom Library",
-                "{11111111-1111-1111-1111-111111111111}",
-                1,
-                2,
-                0,
-                @"C:\TypeLibs\Custom.tlb")));
+        var discovery = new TypeLibReferenceCatalogDiscovery(
+            new FakeTypeLibRegistryReader(
+                new TypeLibRegistryEntry(
+                    "Custom Library",
+                    "{11111111-1111-1111-1111-111111111111}",
+                    1,
+                    2,
+                    0,
+                    @"C:\TypeLibs\Custom.tlb")),
+            new FakeTypeLibCatalogMetadataReader(new TypeLibCatalogMetadata("Custom", [])));
 
         var result = await discovery.DiscoverAsync("custom library");
 
@@ -55,6 +57,79 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
         Assert.True(result.IsAmbiguous);
         Assert.False(result.HasUsableCatalog);
         Assert.Equal(2, result.Identities.Count);
+    }
+
+    [Fact]
+    public async Task TypeLibDiscoveryBuildsReferenceCatalogMetadataForRepresentativeReference()
+    {
+        var discovery = CreateRegExpDiscovery();
+
+        var result = await discovery.DiscoverAsync("Microsoft VBScript Regular Expressions 5.5");
+
+        Assert.False(result.IsFailure);
+        var catalog = Assert.IsType<VbaProjectReferenceCatalog>(result.Catalog);
+        Assert.Contains("VBScript_RegExp_55", catalog.QualifierAliases);
+        Assert.Contains(catalog.Definitions, definition =>
+            definition.Name == "RegExp"
+            && definition.Kind == VbaSourceDefinitionKind.Class
+            && definition.ParentTypeName is null);
+        Assert.Contains(catalog.Definitions, definition =>
+            definition.Name == "Pattern"
+            && definition.Kind == VbaSourceDefinitionKind.Property
+            && definition.ParentTypeName == "RegExp"
+            && definition.TypeReference?.Name == "String");
+        Assert.Contains(catalog.Definitions, definition =>
+            definition.Name == "Execute"
+            && definition.Kind == VbaSourceDefinitionKind.Procedure
+            && definition.ParentTypeName == "RegExp"
+            && definition.Signature?.Label == "Execute(String) As MatchCollection");
+        Assert.Contains(catalog.Definitions, definition =>
+            definition.Name == "RegExpError"
+            && definition.Kind == VbaSourceDefinitionKind.Enum);
+        Assert.Contains(catalog.Definitions, definition =>
+            definition.Name == "SyntaxError"
+            && definition.Kind == VbaSourceDefinitionKind.EnumMember
+            && definition.ParentTypeName == "RegExpError");
+        Assert.Contains(catalog.Definitions, definition =>
+            definition.Name == "ExecuteComplete"
+            && definition.Kind == VbaSourceDefinitionKind.Event
+            && definition.ParentTypeName == "RegExpEvents");
+    }
+
+    [Fact]
+    public void ComTypeLibCatalogMetadataReaderReadsRegisteredRegExpMetadataWhenAvailable()
+    {
+        var registryEntry = new RegistryTypeLibRegistryReader()
+            .ReadTypeLibraries()
+            .FirstOrDefault(entry => entry.ReferenceName.Equals(
+                "Microsoft VBScript Regular Expressions 5.5",
+                StringComparison.OrdinalIgnoreCase));
+        if (registryEntry is null)
+        {
+            return;
+        }
+
+        var identity = new VbaProjectReferenceCatalogIdentity(
+            registryEntry.ReferenceName,
+            registryEntry.Guid,
+            registryEntry.MajorVersion,
+            registryEntry.MinorVersion,
+            registryEntry.Lcid,
+            registryEntry.Path);
+        var metadata = new ComTypeLibCatalogMetadataReader().ReadMetadata(identity);
+        var catalog = TypeLibReferenceCatalogBuilder.Build(registryEntry.ReferenceName, metadata);
+
+        Assert.Contains(catalog.Definitions, definition =>
+            definition.Name == "RegExp"
+            && definition.Kind == VbaSourceDefinitionKind.Class);
+        Assert.Contains(catalog.Definitions, definition =>
+            definition.Name == "Pattern"
+            && definition.Kind == VbaSourceDefinitionKind.Property
+            && definition.ParentTypeName == "RegExp");
+        Assert.Contains(catalog.Definitions, definition =>
+            definition.Name == "Execute"
+            && definition.Kind == VbaSourceDefinitionKind.Procedure
+            && definition.ParentTypeName == "RegExp");
     }
 
     [Fact]
@@ -114,6 +189,59 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
             .ToArray();
         Assert.Contains("GeneratedType", afterRefresh);
         Assert.True(cache.Identities.ContainsKey("Generated Library"));
+    }
+
+    [Fact]
+    public async Task CatalogRefreshUsesGeneratedTypeLibCatalogForEditorFeatures()
+    {
+        var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
+        var service = new VbaProjectReferenceCatalogRefreshService(
+            cache,
+            CreateRegExpDiscovery());
+        var selection = VbaProjectReferenceSelection.Create(
+            ProjectDocument.ExcelKind,
+            [new VbaProjectReference("Microsoft VBScript Regular Expressions 5.5")]);
+        const string uri = "file:///C:/work/Worker.bas";
+        var sourceDocuments = new Dictionary<string, string>
+        {
+            [uri] = string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Public Sub Run()",
+                "    Dim regex As RegExp",
+                "    regex.",
+                "    regex.Pattern",
+                "    regex.Execute(",
+                "End Sub"
+            ])
+        };
+
+        await service.RefreshAsync(selection);
+        var index = VbaSourceIndex.Build(sourceDocuments, selection, cache.Current);
+
+        var typeCompletion = index.GetCompletionResult(uri, 2, "    Dim regex As ".Length);
+        Assert.Contains(typeCompletion.Definitions, definition =>
+            definition.Name == "RegExp"
+            && definition.Kind == VbaSourceDefinitionKind.Class);
+        var memberCompletion = index.GetCompletionDefinitions(uri, 3, "    regex.".Length);
+        Assert.Contains(memberCompletion, definition =>
+            definition.Name == "Pattern"
+            && definition.Kind == VbaSourceDefinitionKind.Property);
+        Assert.Contains(memberCompletion, definition =>
+            definition.Name == "Execute"
+            && definition.Kind == VbaSourceDefinitionKind.Procedure);
+
+        var patternDefinition = index.ResolveSourceDefinition(uri, 4, "    regex.Pattern".IndexOf("Pattern", StringComparison.Ordinal));
+        Assert.NotNull(patternDefinition);
+        Assert.StartsWith(VbaProjectReferenceCatalogSet.ExternalDefinitionUriPrefix, patternDefinition.Uri);
+        Assert.Contains("regular expression pattern", patternDefinition.Documentation, StringComparison.OrdinalIgnoreCase);
+
+        var signatureHelp = index.GetSignatureHelp(uri, 5, "    regex.Execute(".Length);
+        Assert.NotNull(signatureHelp);
+        Assert.Equal("Execute(String) As MatchCollection", signatureHelp.Signature.Label);
+
+        var location = index.ResolveDefinition(uri, 5, "    regex.Execute(".IndexOf("Execute", StringComparison.Ordinal));
+        Assert.NotNull(location);
+        Assert.StartsWith(VbaProjectReferenceCatalogSet.ExternalDefinitionUriPrefix, location.Uri);
     }
 
     [Fact]
@@ -184,6 +312,75 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
 
         public IReadOnlyList<TypeLibRegistryEntry> ReadTypeLibraries() => entries;
     }
+
+    private sealed class FakeTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataReader
+    {
+        private readonly TypeLibCatalogMetadata metadata;
+
+        public FakeTypeLibCatalogMetadataReader(TypeLibCatalogMetadata metadata)
+        {
+            this.metadata = metadata;
+        }
+
+        public TypeLibCatalogMetadata ReadMetadata(VbaProjectReferenceCatalogIdentity identity)
+            => metadata;
+    }
+
+    private static TypeLibReferenceCatalogDiscovery CreateRegExpDiscovery()
+        => new(
+            new FakeTypeLibRegistryReader(
+                new TypeLibRegistryEntry(
+                    "Microsoft VBScript Regular Expressions 5.5",
+                    "{3F4DACA7-160D-11D2-A8E9-00104B365C9F}",
+                    5,
+                    5,
+                    0,
+                    @"C:\Windows\System32\vbscript.dll\3")),
+            new FakeTypeLibCatalogMetadataReader(
+                new TypeLibCatalogMetadata(
+                    "VBScript_RegExp_55",
+                    [
+                        new TypeLibCatalogType(
+                            "RegExp",
+                            VbaSourceDefinitionKind.Class,
+                            "Regular expression engine.",
+                            [
+                                new TypeLibCatalogMember(
+                                    "Pattern",
+                                    VbaSourceDefinitionKind.Property,
+                                    "Sets or returns the regular expression pattern.",
+                                    TypeReference: new VbaTypeReference("String")),
+                                new TypeLibCatalogMember(
+                                    "Execute",
+                                    VbaSourceDefinitionKind.Procedure,
+                                    "Executes a regular expression search.",
+                                    new VbaCallableSignature(
+                                        "Execute(String) As MatchCollection",
+                                        [new VbaCallableParameter("String", "The string to search.")],
+                                        "Executes a regular expression search."),
+                                    new VbaTypeReference("MatchCollection"))
+                            ]),
+                        new TypeLibCatalogType(
+                            "RegExpError",
+                            VbaSourceDefinitionKind.Enum,
+                            "Regular expression parse errors.",
+                            [
+                                new TypeLibCatalogMember(
+                                    "SyntaxError",
+                                    VbaSourceDefinitionKind.EnumMember,
+                                    "The regular expression syntax is invalid.")
+                            ]),
+                        new TypeLibCatalogType(
+                            "RegExpEvents",
+                            VbaSourceDefinitionKind.Class,
+                            null,
+                            [
+                                new TypeLibCatalogMember(
+                                    "ExecuteComplete",
+                                    VbaSourceDefinitionKind.Event,
+                                    "Occurs after a regular expression search completes.")
+                            ])
+                    ])));
 
     private sealed class BlockingCatalogDiscovery : IVbaProjectReferenceCatalogDiscovery
     {

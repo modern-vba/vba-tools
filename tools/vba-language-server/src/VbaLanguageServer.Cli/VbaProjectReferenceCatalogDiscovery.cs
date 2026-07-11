@@ -132,18 +132,32 @@ public interface ITypeLibRegistryReader
 public sealed class TypeLibReferenceCatalogDiscovery : IVbaProjectReferenceCatalogDiscovery
 {
     private readonly ITypeLibRegistryReader registryReader;
+    private readonly ITypeLibCatalogMetadataReader metadataReader;
 
     /// <summary>
     /// Creates a TypeLib-backed catalog discovery service.
     /// </summary>
     /// <param name="registryReader">The registry reader used to enumerate TypeLib entries.</param>
     public TypeLibReferenceCatalogDiscovery(ITypeLibRegistryReader registryReader)
+        : this(registryReader, new ComTypeLibCatalogMetadataReader())
     {
-        this.registryReader = registryReader;
     }
 
     /// <summary>
-    /// Discovers registry identities matching a reference name.
+    /// Creates a TypeLib-backed catalog discovery service.
+    /// </summary>
+    /// <param name="registryReader">The registry reader used to enumerate TypeLib entries.</param>
+    /// <param name="metadataReader">The reader used to extract TypeLib metadata.</param>
+    public TypeLibReferenceCatalogDiscovery(
+        ITypeLibRegistryReader registryReader,
+        ITypeLibCatalogMetadataReader metadataReader)
+    {
+        this.registryReader = registryReader;
+        this.metadataReader = metadataReader;
+    }
+
+    /// <summary>
+    /// Discovers registry identities and generated catalog metadata matching a reference name.
     /// </summary>
     /// <param name="referenceName">The human-visible reference name.</param>
     /// <param name="cancellationToken">A cancellation token for discovery work.</param>
@@ -178,10 +192,30 @@ public sealed class TypeLibReferenceCatalogDiscovery : IVbaProjectReferenceCatal
                 0 => VbaProjectReferenceCatalogDiscoveryResult.Failure(
                     referenceName,
                     "No matching TypeLib registry entry was found."),
-                1 => VbaProjectReferenceCatalogDiscoveryResult.Success(matches[0]),
+                1 => DiscoverCatalog(referenceName, matches[0], cancellationToken),
                 _ => VbaProjectReferenceCatalogDiscoveryResult.Ambiguous(referenceName, matches)
             };
         }, cancellationToken);
+    }
+
+    private VbaProjectReferenceCatalogDiscoveryResult DiscoverCatalog(
+        string referenceName,
+        VbaProjectReferenceCatalogIdentity identity,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        try
+        {
+            var metadata = metadataReader.ReadMetadata(identity);
+            var catalog = TypeLibReferenceCatalogBuilder.Build(referenceName, metadata);
+            return VbaProjectReferenceCatalogDiscoveryResult.Success(identity, catalog);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return VbaProjectReferenceCatalogDiscoveryResult.Failure(
+                referenceName,
+                $"TypeLib catalog metadata could not be read: {ex.Message}");
+        }
     }
 }
 
