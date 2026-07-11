@@ -536,6 +536,12 @@ function createExplorer(
         stderr: ''
       };
     },
+    requiredContract: {
+      contractVersion: '1.0',
+      commandSchemaVersions: {
+        test: '1.1'
+      }
+    },
     startProcess: options.startProcess ?? ((file, args) => {
       calls.push({ file, args });
       return {

@@ -1,42 +1,12 @@
+import { VbaToolsOutputChannel } from './devtoolCommand';
 import {
-  ProcessRunner,
-  RequiredVbaDevContract,
-  resolveCompatibleVbaDev
-} from './devtool';
-import {
-  CommandCancellationToken,
-  StartVbaDevProcess,
-  VbaToolsOutputChannel,
-  runVbaDevCommand
-} from './devtoolCommand';
-import {
-  WorkbookBackedProjectCandidate,
-  discoverWorkbookBackedProject
-} from './projectDiscovery';
-import {
-  VbaDevDiagnosticReporterLike,
-  combineVbaDevDiagnosticOutput,
-  projectDiagnosticScope
-} from './toolDiagnostics';
+  VbaDevCommandRuntimeOptions,
+  VbaDevProjectCommandContext,
+  resolveVbaDevProjectCommandContext,
+  runResolvedVbaDevProjectCommand
+} from './devtoolRuntime';
 
-export interface ReferenceCommandOptions {
-  extensionRoot: string;
-  configuredDevToolPath?: string | undefined;
-  activeFilePath?: string | undefined;
-  workspaceRoots: readonly string[];
-  fileExists: (filePath: string) => Promise<boolean>;
-  findProjectManifests: (workspaceRoots: readonly string[]) => Promise<readonly string[]>;
-  chooseProject: (
-    candidates: readonly WorkbookBackedProjectCandidate[]
-  ) => Promise<WorkbookBackedProjectCandidate | undefined>;
-  capabilitiesProcess?: ProcessRunner | undefined;
-  startProcess?: StartVbaDevProcess | undefined;
-  outputChannel: VbaToolsOutputChannel;
-  diagnosticReporter?: VbaDevDiagnosticReporterLike | undefined;
-  showErrorMessage: (message: string) => Thenable<unknown> | Promise<unknown>;
-  cancellationToken?: CommandCancellationToken | undefined;
-  requiredContract?: RequiredVbaDevContract | undefined;
-}
+export interface ReferenceCommandOptions extends VbaDevCommandRuntimeOptions {}
 
 export type ReferenceToolCommand = 'add' | 'list' | 'remove';
 
@@ -73,20 +43,12 @@ export async function runReferenceRemoveCommand(
 export async function runReferenceListCommand(
   options: ReferenceCommandOptions
 ): Promise<ReferenceCommandResult | undefined> {
-  const project = await discoverWorkbookBackedProject(options);
-  if (!project) {
-    await options.showErrorMessage('VBA Tools could not find a workbook-backed project.json.');
+  const context = await resolveVbaDevProjectCommandContext(options);
+  if (!context) {
     return undefined;
   }
 
-  const devtool = await resolveCompatibleVbaDev({
-    extensionRoot: options.extensionRoot,
-    configuredPath: options.configuredDevToolPath,
-    runProcess: options.capabilitiesProcess,
-    requiredContract: options.requiredContract
-  });
-
-  return runReferenceListForProject(options, project, devtool.executablePath);
+  return runReferenceListForProject(options, context);
 }
 
 export function parseReferenceList(stdout: string): ReferenceList {
@@ -130,58 +92,38 @@ async function runReferenceMutatingCommand(
     return undefined;
   }
 
-  const project = await discoverWorkbookBackedProject(options);
-  if (!project) {
-    await options.showErrorMessage('VBA Tools could not find a workbook-backed project.json.');
+  const context = await resolveVbaDevProjectCommandContext(options);
+  if (!context) {
     return undefined;
   }
 
-  const devtool = await resolveCompatibleVbaDev({
-    extensionRoot: options.extensionRoot,
-    configuredPath: options.configuredDevToolPath,
-    runProcess: options.capabilitiesProcess,
-    requiredContract: options.requiredContract
-  });
-
-  const result = await runVbaDevCommand({
-    executablePath: devtool.executablePath,
-    args: ['reference', commandName, normalizedReferenceName, '--project', project.projectRoot],
-    outputChannel: options.outputChannel,
-    cancellationToken: options.cancellationToken,
-    startProcess: options.startProcess
-  });
-  options.diagnosticReporter?.refresh(
-    projectDiagnosticScope(project.projectRoot),
-    combineVbaDevDiagnosticOutput(result.stdout, result.stderr)
+  const result = await runResolvedVbaDevProjectCommand(
+    options,
+    context,
+    ['reference', commandName, normalizedReferenceName]
   );
 
   if (!result.cancelled && result.exitCode !== 0) {
     await options.showErrorMessage('Reference command failed. See the VBA Tools output for details.');
     return {
-      projectRoot: project.projectRoot,
+      projectRoot: result.projectRoot,
       exitCode: result.exitCode,
       cancelled: result.cancelled
     };
   }
 
-  return runReferenceListForProject(options, project, devtool.executablePath);
+  return runReferenceListForProject(options, context);
 }
 
 async function runReferenceListForProject(
   options: ReferenceCommandOptions,
-  project: WorkbookBackedProjectCandidate,
-  executablePath: string
+  context: VbaDevProjectCommandContext
 ): Promise<ReferenceCommandResult> {
-  const result = await runVbaDevCommand({
-    executablePath,
-    args: ['reference', 'list', '--project', project.projectRoot, '--format', 'json'],
-    outputChannel: options.outputChannel,
-    cancellationToken: options.cancellationToken,
-    startProcess: options.startProcess
-  });
-  options.diagnosticReporter?.refresh(
-    projectDiagnosticScope(project.projectRoot),
-    combineVbaDevDiagnosticOutput(result.stdout, result.stderr)
+  const result = await runResolvedVbaDevProjectCommand(
+    options,
+    context,
+    ['reference', 'list'],
+    ['--format', 'json']
   );
 
   let referenceList: ReferenceList | undefined;
@@ -197,7 +139,7 @@ async function runReferenceListForProject(
   }
 
   return {
-    projectRoot: project.projectRoot,
+    projectRoot: result.projectRoot,
     exitCode: result.exitCode,
     cancelled: result.cancelled,
     referenceList

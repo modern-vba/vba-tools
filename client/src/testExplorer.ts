@@ -11,6 +11,10 @@ import {
   VbaToolsOutputChannel,
   runVbaDevCommand
 } from './devtoolCommand';
+import {
+  WorkbookBackedProjectDocument,
+  parseProjectManifest
+} from './projectManifest';
 
 export interface TestExplorerItem {
   readonly id: string;
@@ -79,12 +83,7 @@ interface WorkbookBackedProject {
   projectRoot: string;
   manifestPath: string;
   projectName: string;
-  documents: readonly WorkbookBackedDocument[];
-}
-
-interface WorkbookBackedDocument {
-  name: string;
-  sourcePath: string;
+  documents: readonly WorkbookBackedProjectDocument[];
 }
 
 interface TestItemMetadata {
@@ -94,13 +93,6 @@ interface TestItemMetadata {
   moduleName?: string | undefined;
   procedureName?: string | undefined;
 }
-
-const RequiredTestContract: RequiredVbaDevContract = {
-  contractVersion: '1.0',
-  commandSchemaVersions: {
-    test: '1.1'
-  }
-};
 
 export function createWorkbookBackedTestExplorer(
   options: WorkbookBackedTestExplorerOptions
@@ -186,31 +178,6 @@ async function loadWorkbookBackedProjects(
   return projects;
 }
 
-function parseProjectManifest(json: string): { projectName: string; documents: WorkbookBackedDocument[] } | undefined {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(json);
-  } catch {
-    return undefined;
-  }
-
-  if (!isRecord(parsed) || typeof parsed.projectName !== 'string' || !isRecord(parsed.documents)) {
-    return undefined;
-  }
-
-  const documents: WorkbookBackedDocument[] = [];
-  for (const [name, document] of Object.entries(parsed.documents)) {
-    if (isRecord(document) && typeof document.sourcePath === 'string') {
-      documents.push({ name, sourcePath: document.sourcePath });
-    }
-  }
-
-  return {
-    projectName: parsed.projectName,
-    documents
-  };
-}
-
 async function runTests(
   options: WorkbookBackedTestExplorerOptions,
   metadataById: Map<string, TestItemMetadata>,
@@ -261,7 +228,7 @@ async function runTestItem(
     extensionRoot: options.extensionRoot,
     configuredPath: options.configuredDevToolPath,
     runProcess: options.capabilitiesProcess,
-    requiredContract: options.requiredContract ?? RequiredTestContract
+    requiredContract: options.requiredContract
   });
 
   const args = [

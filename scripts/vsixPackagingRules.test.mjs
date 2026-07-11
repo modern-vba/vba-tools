@@ -10,8 +10,10 @@ import {
   assertCliPublishSettings,
   assertLanguageServerPublishSettings,
   assertVsixContents,
+  readRequiredVbaDevContract,
   requiredBundledCliPath,
   requiredBundledLanguageServerPath,
+  requiredVbaDevContractPath,
   verifyVsixPackaging
 } from './vsixPackagingRules.mjs';
 
@@ -20,6 +22,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
     'README.md',
     requiredBundledCliPath,
     requiredBundledLanguageServerPath,
+    requiredVbaDevContractPath,
     'client/out/extension.js'
   ]));
 
@@ -28,7 +31,8 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
       'README.md',
       'tools/vba-dev/src/VbaDev.Cli/Program.cs',
       requiredBundledCliPath,
-      requiredBundledLanguageServerPath
+      requiredBundledLanguageServerPath,
+      requiredVbaDevContractPath
     ]),
     /tools\/vba-dev/
   );
@@ -38,7 +42,8 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
       'README.md',
       'tools/vba-language-server/src/VbaLanguageServer.Cli/Program.cs',
       requiredBundledCliPath,
-      requiredBundledLanguageServerPath
+      requiredBundledLanguageServerPath,
+      requiredVbaDevContractPath
     ]),
     /tools\/vba-language-server/
   );
@@ -57,6 +62,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
       'README.md',
       requiredBundledCliPath,
       requiredBundledLanguageServerPath,
+      requiredVbaDevContractPath,
       'bin/vba-language-server/win-x64/vba-language-server.dll'
     ]),
     /self-contained single executable/
@@ -67,6 +73,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
       'README.md',
       requiredBundledCliPath,
       requiredBundledLanguageServerPath,
+      requiredVbaDevContractPath,
       'bin/vba-language-server/win-x64/vba-language-server.runtimeconfig.json'
     ]),
     /runtimeconfig/
@@ -77,6 +84,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
       'README.md',
       requiredBundledCliPath,
       requiredBundledLanguageServerPath,
+      requiredVbaDevContractPath,
       'bin/vba-language-server/win-x64/vba-language-server.pdb'
     ]),
     /vba-language-server\.pdb/
@@ -87,6 +95,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
       'README.md',
       requiredBundledCliPath,
       requiredBundledLanguageServerPath,
+      requiredVbaDevContractPath,
       'server/out/server.js'
     ]),
     /server\/out\/server\.js/
@@ -147,23 +156,15 @@ test('language server publish settings require a Windows x64 self-contained sing
 });
 
 test('bundled CLI capabilities must satisfy the packaged extension contract surface', () => {
-  const commands = Object.fromEntries([
-    'build',
-    'common-module add',
-    'common-module list',
-    'common-module update',
-    'doctor',
-    'export',
-    'publish',
-    'reference add',
-    'reference list',
-    'reference remove',
-    'test'
-  ].map((commandName) => [commandName, { outputSchemaVersion: '1.0' }]));
+  const contract = readRequiredVbaDevContract();
+  const commands = Object.fromEntries(
+    Object.entries(contract.commandSchemaVersions)
+      .map(([commandName, schemaVersion]) => [commandName, { outputSchemaVersion: schemaVersion }])
+  );
 
   assert.doesNotThrow(() => assertBundledCliCapabilities(JSON.stringify({
     toolVersion: '0.1.0',
-    contractVersion: '1.0',
+    contractVersion: contract.contractVersion,
     commands
   })));
 
@@ -171,7 +172,7 @@ test('bundled CLI capabilities must satisfy the packaged extension contract surf
   assert.throws(
     () => assertBundledCliCapabilities(JSON.stringify({
       toolVersion: '0.1.0',
-      contractVersion: '1.0',
+      contractVersion: contract.contractVersion,
       commands
     })),
     /doctor/
@@ -192,6 +193,10 @@ test('packaging verification checks file contents publish settings and bundled C
   await fs.writeFile(path.join(root, requiredBundledCliPath), '');
   await fs.mkdir(path.join(root, 'bin', 'vba-language-server', 'win-x64'), { recursive: true });
   await fs.writeFile(path.join(root, requiredBundledLanguageServerPath), '');
+  await fs.writeFile(
+    path.join(root, requiredVbaDevContractPath),
+    JSON.stringify(readRequiredVbaDevContract(), null, 2)
+  );
   await fs.mkdir(path.join(root, 'tools', 'vba-dev', 'src', 'VbaDev.Cli'), { recursive: true });
   await fs.writeFile(
     path.join(root, 'tools', 'vba-dev', 'src', 'VbaDev.Cli', 'VbaDev.Cli.csproj'),
@@ -221,19 +226,11 @@ test('packaging verification checks file contents publish settings and bundled C
 `
   );
 
-  const commands = Object.fromEntries([
-    'build',
-    'common-module add',
-    'common-module list',
-    'common-module update',
-    'doctor',
-    'export',
-    'publish',
-    'reference add',
-    'reference list',
-    'reference remove',
-    'test'
-  ].map((commandName) => [commandName, { outputSchemaVersion: '1.0' }]));
+  const contract = readRequiredVbaDevContract();
+  const commands = Object.fromEntries(
+    Object.entries(contract.commandSchemaVersions)
+      .map(([commandName, schemaVersion]) => [commandName, { outputSchemaVersion: schemaVersion }])
+  );
   const calls = [];
 
   await verifyVsixPackaging({
@@ -242,7 +239,7 @@ test('packaging verification checks file contents publish settings and bundled C
       calls.push({ file: path.basename(file), args });
       if (args.includes('ls')) {
         return {
-          stdout: `${requiredBundledCliPath}\n${requiredBundledLanguageServerPath}\nREADME.md\n`,
+          stdout: `${requiredBundledCliPath}\n${requiredBundledLanguageServerPath}\n${requiredVbaDevContractPath}\nREADME.md\n`,
           stderr: ''
         };
       }
@@ -257,7 +254,7 @@ test('packaging verification checks file contents publish settings and bundled C
       return {
         stdout: JSON.stringify({
           toolVersion: '0.1.0',
-          contractVersion: '1.0',
+          contractVersion: contract.contractVersion,
           commands
         }),
         stderr: ''

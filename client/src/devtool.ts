@@ -1,5 +1,6 @@
 import * as path from 'node:path';
 import { execFile } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 
 export interface VbaDevPathResolutionOptions {
   extensionRoot: string;
@@ -38,22 +39,7 @@ export interface CompatibleVbaDev {
   capabilities: VbaDevCapabilities;
 }
 
-export const defaultRequiredVbaDevContract: RequiredVbaDevContract = {
-  contractVersion: '1.0',
-  commandSchemaVersions: {
-    build: '1.0',
-    'common-module add': '1.0',
-    'common-module list': '1.0',
-    'common-module update': '1.0',
-    doctor: '1.0',
-    export: '1.0',
-    publish: '1.0',
-    'reference add': '1.0',
-    'reference list': '1.0',
-    'reference remove': '1.0',
-    test: '1.1'
-  }
-};
+export const requiredVbaDevContractFileName = 'vba-dev-contract.json';
 
 export class VbaDevCompatibilityError extends Error {
   public constructor(message: string) {
@@ -70,11 +56,31 @@ export function resolveVbaDevPath(options: VbaDevPathResolutionOptions): string 
   return path.join(options.extensionRoot, 'bin', 'vba-dev', 'win-x64', 'vba-dev.exe');
 }
 
+export function loadRequiredVbaDevContract(extensionRoot: string): RequiredVbaDevContract {
+  const contractPath = path.join(extensionRoot, requiredVbaDevContractFileName);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(contractPath, 'utf8')) as unknown;
+  } catch (error) {
+    throw new VbaDevCompatibilityError(
+      `VbaDev required contract could not be read from '${contractPath}': ${String(error)}`
+    );
+  }
+
+  if (!isRequiredVbaDevContract(parsed)) {
+    throw new VbaDevCompatibilityError(
+      `VbaDev required contract at '${contractPath}' must include contractVersion and commandSchemaVersions.`
+    );
+  }
+
+  return parsed;
+}
+
 export async function resolveCompatibleVbaDev(
   options: CompatibleVbaDevResolutionOptions
 ): Promise<CompatibleVbaDev> {
   const executablePath = resolveVbaDevPath(options);
-  const requiredContract = options.requiredContract ?? defaultRequiredVbaDevContract;
+  const requiredContract = options.requiredContract ?? loadRequiredVbaDevContract(options.extensionRoot);
   const runProcess = options.runProcess ?? runProcessWithExecFile;
   const result = await runProcess(executablePath, ['capabilities', '--format', 'json']);
   const capabilities = parseCapabilities(executablePath, result.stdout);
@@ -154,6 +160,14 @@ function isCommandCapabilities(value: unknown): value is Record<string, VbaDevCo
     isRecord(command) &&
     typeof command.outputSchemaVersion === 'string'
   ));
+}
+
+function isRequiredVbaDevContract(value: unknown): value is RequiredVbaDevContract {
+  if (!isRecord(value) || typeof value.contractVersion !== 'string' || !isRecord(value.commandSchemaVersions)) {
+    return false;
+  }
+
+  return Object.values(value.commandSchemaVersions).every((schemaVersion) => typeof schemaVersion === 'string');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

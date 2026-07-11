@@ -120,71 +120,7 @@ public sealed class VbaSourceIndex
             .Select((modifier, index) => new { modifier, index })
             .ToDictionary(item => item.modifier, item => item.index, StringComparer.Ordinal);
 
-    private static readonly IReadOnlyDictionary<string, string> LanguageKeywords =
-        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["as"] = "As",
-            ["byref"] = "ByRef",
-            ["byval"] = "ByVal",
-            ["const"] = "Const",
-            ["dim"] = "Dim",
-            ["else"] = "Else",
-            ["elseif"] = "ElseIf",
-            ["end"] = "End",
-            ["enum"] = "Enum",
-            ["explicit"] = "Explicit",
-            ["false"] = "False",
-            ["for"] = "For",
-            ["function"] = "Function",
-            ["global"] = "Global",
-            ["if"] = "If",
-            ["next"] = "Next",
-            ["nothing"] = "Nothing",
-            ["option"] = "Option",
-            ["private"] = "Private",
-            ["property"] = "Property",
-            ["public"] = "Public",
-            ["set"] = "Set",
-            ["string"] = "String",
-            ["sub"] = "Sub",
-            ["then"] = "Then",
-            ["true"] = "True",
-            ["type"] = "Type",
-            ["while"] = "While",
-            ["with"] = "With"
-        };
-
-    public static readonly IReadOnlyList<string> LanguageVocabulary = [
-        "As",
-        "ByRef",
-        "ByVal",
-        "Const",
-        "Dim",
-        "Else",
-        "ElseIf",
-        "End",
-        "Enum",
-        "Explicit",
-        "False",
-        "For",
-        "Function",
-        "Global",
-        "If",
-        "Next",
-        "Nothing",
-        "Option",
-        "Private",
-        "Property",
-        "Public",
-        "Set",
-        "String",
-        "Sub",
-        "Then",
-        "True",
-        "Type",
-        "While",
-        "With"
-    ];
+    public static readonly IReadOnlyList<string> LanguageVocabulary = VbaLanguageVocabulary.Keywords;
 
     private readonly IReadOnlyList<VbaSourceDocument> documents;
     private readonly VbaProjectReferenceSelection? referenceSelection;
@@ -294,86 +230,13 @@ public sealed class VbaSourceIndex
     }
 
     public IReadOnlyList<VbaSemanticToken> GetSemanticTokens(string uri)
-    {
-        var currentDocument = documents.FirstOrDefault(document => SameUri(document.Uri, uri));
-        if (currentDocument is null)
-        {
-            return [];
-        }
-
-        var lines = SplitLines(currentDocument.Text);
-        var tokens = new List<VbaSemanticToken>();
-        var declarationRanges = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var definition in currentDocument.Definitions)
-        {
-            if (!TryCreateSemanticToken(lines, definition, isDeclaration: true, out var token))
-            {
-                continue;
-            }
-
-            tokens.Add(token);
-            declarationRanges.Add(GetRangeKey(token.Range));
-        }
-
-        for (var lineIndex = 0; lineIndex < lines.Length; lineIndex++)
-        {
-            foreach (var occurrence in FindIdentifierOccurrences(lines[lineIndex]))
-            {
-                var occurrenceRange = new VbaRange(
-                    new VbaPosition(lineIndex, occurrence.Start),
-                    new VbaPosition(lineIndex, occurrence.End));
-                if (declarationRanges.Contains(GetRangeKey(occurrenceRange)))
-                {
-                    continue;
-                }
-
-                var definition = ResolveSourceDefinition(uri, lineIndex, occurrence.Start);
-                if (definition is null
-                    || !TryCreateSemanticToken(
-                        lines,
-                        definition,
-                        isDeclaration: false,
-                        out var referenceToken,
-                        occurrenceRange,
-                        occurrence.Name))
-                {
-                    continue;
-                }
-
-                tokens.Add(referenceToken);
-            }
-        }
-
-        return tokens
-            .GroupBy(token => $"{GetRangeKey(token.Range)}:{token.TokenType}:{string.Join(",", token.TokenModifiers)}", StringComparer.Ordinal)
-            .Select(group => group.First())
-            .OrderBy(token => token.Range.Start.Line)
-            .ThenBy(token => token.Range.Start.Character)
-            .ToArray();
-    }
+        => VbaSemanticTokenBuilder.GetSemanticTokens(
+            documents,
+            uri,
+            (line, character) => ResolveSourceDefinition(uri, line, character));
 
     public IReadOnlyList<int> GetSemanticTokenData(string uri)
-    {
-        var data = new List<int>();
-        var previousLine = 0;
-        var previousStart = 0;
-        foreach (var token in GetSemanticTokens(uri))
-        {
-            var line = token.Range.Start.Line;
-            var start = token.Range.Start.Character;
-            var deltaLine = line - previousLine;
-            var deltaStart = deltaLine == 0 ? start - previousStart : start;
-            data.Add(deltaLine);
-            data.Add(deltaStart);
-            data.Add(token.Range.End.Character - token.Range.Start.Character);
-            data.Add(SemanticTokenTypeIndexes[token.TokenType]);
-            data.Add(GetSemanticTokenModifierBits(token.TokenModifiers));
-            previousLine = line;
-            previousStart = start;
-        }
-
-        return data;
-    }
+        => VbaSemanticTokenBuilder.GetSemanticTokenData(GetSemanticTokens(uri));
 
     public IReadOnlyList<VbaSourceDefinition> GetCompletionDefinitions(string uri, int line, int character)
     {
@@ -1359,7 +1222,7 @@ public sealed class VbaSourceIndex
         int lineIndex,
         IReadOnlySet<string> declarationRanges)
     {
-        if (LanguageKeywords.TryGetValue(occurrence.Name, out var keyword))
+        if (VbaLanguageVocabulary.CanonicalKeywords.TryGetValue(occurrence.Name, out var keyword))
         {
             return keyword;
         }

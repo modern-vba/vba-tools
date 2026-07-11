@@ -2,70 +2,6 @@ namespace VbaLanguageServer.Syntax;
 
 internal static class VbaLexer
 {
-    private static readonly HashSet<string> Keywords = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "Alias",
-        "And",
-        "As",
-        "Attribute",
-        "Boolean",
-        "ByRef",
-        "ByVal",
-        "Call",
-        "Case",
-        "Const",
-        "Date",
-        "Declare",
-        "Dim",
-        "Do",
-        "Double",
-        "Each",
-        "Else",
-        "ElseIf",
-        "End",
-        "Enum",
-        "Event",
-        "Explicit",
-        "False",
-        "For",
-        "Friend",
-        "Function",
-        "Get",
-        "If",
-        "In",
-        "Integer",
-        "Let",
-        "Lib",
-        "Long",
-        "Loop",
-        "New",
-        "Next",
-        "Not",
-        "Nothing",
-        "Object",
-        "Option",
-        "Or",
-        "Private",
-        "Property",
-        "Public",
-        "Set",
-        "Single",
-        "Static",
-        "String",
-        "Sub",
-        "Then",
-        "To",
-        "True",
-        "Type",
-        "Until",
-        "Variant",
-        "Wend",
-        "While",
-        "With",
-        "WithEvents",
-        "Xor"
-    };
-
     public static VbaTokenStream Tokenize(string source)
     {
         var state = new LexerState(source);
@@ -252,7 +188,7 @@ internal static class VbaLexer
         }
 
         var text = state.Slice(start.Offset, state.Position.Offset);
-        var kind = Keywords.Contains(text)
+        var kind = VbaLanguageVocabulary.IsKeyword(text)
             ? VbaTokenKind.Keyword
             : VbaTokenKind.Identifier;
         return new VbaToken(kind, text, new VbaSyntaxRange(start, state.Position));
