@@ -21,6 +21,7 @@ vba-dev <command> [options]
 | `test` | document | Run VBA unit tests for the selected document. |
 | `publish` | document | Publish the selected document. |
 | `export` | document/path | Export modules from a workbook into source. |
+| `import` | path | Import VBA sources into an existing workbook. |
 | `doctor` | project/machine | Check project and machine prerequisites. |
 
 Document-scoped commands use the manifest `primaryDocument` when `--document` is omitted.
@@ -43,6 +44,7 @@ Commands:
   test           Run VBA unit tests for the selected document.
   publish        Publish the selected document.
   export         Export modules from a workbook into source.
+  import         Run a path-only import of VBA sources into an existing workbook; unlike build, it does not use project.json.
   doctor         Check project and machine prerequisites.
 ```
 
@@ -236,6 +238,25 @@ Options:
 ```
 
 Without `--from`, `export` reads the selected document's bin workbook. Without `--to`, it writes to the selected document source set. With `--from`, `export` does not require `project.json`, rejects `--project` and `--document`, and writes to the current directory when `--to` is omitted. The destination is cleaned before export when it is an explicit directory or a selected document source set.
+
+### import
+
+```text
+vba-dev import
+
+Run a path-only import of VBA sources into an existing workbook; unlike build, it does not use project.json.
+
+Usage:
+  vba-dev import [options]
+
+Options:
+  --from <dir>                   Source directory containing .bas, .cls, and .frm files.
+  --to <path>                    Existing workbook file to update in place.
+```
+
+`import` updates the target workbook in place. It requires both `--from` and `--to`, resolves relative paths from the current directory, and does not accept `--project` or `--document`. The source directory is scanned only at the top level for `.bas`, `.cls`, and `.frm` files. Matching `.frx` sidecars are imported with their `.frm` files; orphan `.frx` files are ignored.
+
+Before import, existing standard modules, class modules, and form modules are removed from the workbook. Document modules such as `ThisWorkbook` and worksheet modules are left in place. The workbook is saved only after flush and import complete successfully.
 
 ### doctor
 

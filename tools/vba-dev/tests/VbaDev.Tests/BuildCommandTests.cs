@@ -329,6 +329,8 @@ internal sealed class FakeWorkbookBuildAutomation : IWorkbookBuildAutomation
 
     public bool ThrowOnImport { get; init; }
 
+    public bool ThrowOnRemove { get; init; }
+
     public COMException? ReferenceError { get; init; }
 
     public List<string> OpenedWorkbooks { get; } = [];
@@ -389,6 +391,11 @@ internal sealed class FakeWorkbookBuildAutomation : IWorkbookBuildAutomation
 
         public void RemoveModule(string moduleName)
         {
+            if (owner.ThrowOnRemove)
+            {
+                throw new InvalidOperationException("remove failed");
+            }
+
             owner.Events.Add($"remove:{moduleName}");
         }
 

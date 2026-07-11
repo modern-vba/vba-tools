@@ -5,6 +5,7 @@ using VbaDev.App.Build;
 using VbaDev.App.CommonModules;
 using VbaDev.App.Diagnostics;
 using VbaDev.App.Export;
+using VbaDev.App.Import;
 using VbaDev.App.Projects;
 using VbaDev.App.References;
 using VbaDev.App.Testing;
@@ -23,6 +24,7 @@ public sealed class CommandLineApplication
     private readonly PublishCommand publishCommand;
     private readonly TestCommand testCommand;
     private readonly ExportCommand exportCommand;
+    private readonly ImportCommand importCommand;
     private readonly Func<string> getWorkingDirectory;
 
     public CommandLineApplication(
@@ -36,6 +38,7 @@ public sealed class CommandLineApplication
         PublishCommand publishCommand,
         TestCommand testCommand,
         ExportCommand exportCommand,
+        ImportCommand importCommand,
         Func<string> getWorkingDirectory)
     {
         this.commands = commands.ToDictionary(command => command.Name, StringComparer.OrdinalIgnoreCase);
@@ -48,6 +51,7 @@ public sealed class CommandLineApplication
         this.publishCommand = publishCommand;
         this.testCommand = testCommand;
         this.exportCommand = exportCommand;
+        this.importCommand = importCommand;
         this.getWorkingDirectory = getWorkingDirectory;
     }
 
@@ -124,6 +128,14 @@ public sealed class CommandLineApplication
             }
 
             return exportCommand.RunExplicit(new ExportCommandRequest(
+                parsedArgs.Options.GetValueOrDefault("--from"),
+                parsedArgs.Options.GetValueOrDefault("--to"),
+                getWorkingDirectory()));
+        }
+
+        if (command.Name.Equals("import", StringComparison.OrdinalIgnoreCase))
+        {
+            return importCommand.Run(new ImportCommandRequest(
                 parsedArgs.Options.GetValueOrDefault("--from"),
                 parsedArgs.Options.GetValueOrDefault("--to"),
                 getWorkingDirectory()));

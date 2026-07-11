@@ -3,6 +3,7 @@ using VbaDev.App.Build;
 using VbaDev.App.CommonModules;
 using VbaDev.App.Diagnostics;
 using VbaDev.App.Export;
+using VbaDev.App.Import;
 using VbaDev.App.Projects;
 using VbaDev.App.References;
 using VbaDev.App.Testing;
@@ -59,6 +60,7 @@ public static class ToolingCompositionRoot
             new TestResultOutputFormatter());
         var exportCommand = new ExportCommand(
             workbookModuleExporter ?? new ExcelComWorkbookModuleExporter());
+        var importCommand = new ImportCommand(buildAutomation);
         return new CommandLineApplication(
             ToolingCommandCatalog.CreateDefault(),
             projectContextResolver,
@@ -70,6 +72,7 @@ public static class ToolingCompositionRoot
             publishCommand,
             testCommand,
             exportCommand,
+            importCommand,
             () => workingDirectory);
     }
 }

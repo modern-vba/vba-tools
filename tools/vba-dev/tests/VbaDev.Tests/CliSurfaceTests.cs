@@ -16,7 +16,7 @@ public sealed class CliSurfaceTests
         var result = application.Run(["--help"]);
 
         Assert.Equal(0, result.ExitCode);
-        foreach (var commandName in new[] { "new", "common-module", "reference", "build", "test", "publish", "export", "doctor" })
+        foreach (var commandName in new[] { "new", "common-module", "reference", "build", "test", "publish", "export", "import", "doctor" })
         {
             Assert.Contains(commandName, result.StandardOutput, StringComparison.Ordinal);
         }
@@ -105,6 +105,20 @@ public sealed class CliSurfaceTests
         Assert.Contains("--to", result.StandardOutput, StringComparison.Ordinal);
         Assert.Contains("current directory", result.StandardOutput, StringComparison.Ordinal);
         Assert.Contains("selected document source set", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ImportHelpExposesPathOnlyFlow()
+    {
+        var result = application.Run(["import", "--help"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("--from", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("--to", result.StandardOutput, StringComparison.Ordinal);
+        Assert.DoesNotContain("--project", result.StandardOutput, StringComparison.Ordinal);
+        Assert.DoesNotContain("--document", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("path-only", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("build", result.StandardOutput, StringComparison.Ordinal);
     }
 
     [Fact]
