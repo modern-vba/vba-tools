@@ -3,13 +3,13 @@ using VbaDev.App.Projects;
 namespace VbaDev.App.Cli;
 
 public sealed record ToolingCommandInvocation(
-    ToolingCommandDefinition Command,
+    ToolingCommandContract Command,
     IReadOnlyDictionary<string, string?> Options,
     IReadOnlyList<string> Positionals,
     ResolvedProject? Project,
     ResolvedProjectContext? Context,
     string WorkingDirectory,
-    IReadOnlyDictionary<string, ToolingCommandDefinition> Commands)
+    IReadOnlyDictionary<string, ToolingCommandContract> Commands)
 {
     public string? GetOption(string optionName)
         => Options.GetValueOrDefault(optionName);

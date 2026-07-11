@@ -42,6 +42,28 @@ public sealed class DocumentSourceSetLayoutTests
         Assert.False(File.Exists(Path.Combine(destination, "Dialog.frx")));
     }
 
+    [Fact]
+    public void SourceIdentityDiagnosticsReportCollisionsAndDisplacedSidecars()
+    {
+        using var temp = TempDirectory.Create();
+        var sourceSet = temp.CreateDirectory("src");
+        WriteText(Path.Combine(sourceSet, "first", "Feature.bas"), "first");
+        WriteText(Path.Combine(sourceSet, "second", "feature.bas"), "second");
+        WriteText(Path.Combine(sourceSet, "forms", "Dialog.frm"), "form");
+        WriteBytes(Path.Combine(sourceSet, "legacy", "Dialog.frx"), [1, 2, 3]);
+        WriteBytes(Path.Combine(sourceSet, "Orphan.frx"), [9, 9, 9]);
+
+        var diagnostics = DocumentSourceSetLayout.InspectSourceIdentity("Book1", sourceSet);
+
+        Assert.Contains(diagnostics, diagnostic =>
+            diagnostic.Status == DocumentSourceSetLayoutDiagnosticStatus.Fail &&
+            diagnostic.Name.Equals("Document source identity (Book1/Feature.bas)", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(diagnostics, diagnostic =>
+            diagnostic.Status == DocumentSourceSetLayoutDiagnosticStatus.Warn &&
+            diagnostic.Name.Equals("Form sidecar (Book1/Dialog.frx)", StringComparison.Ordinal));
+        Assert.DoesNotContain(diagnostics, diagnostic => diagnostic.Message.Contains("Orphan.frx", StringComparison.Ordinal));
+    }
+
     private static void WriteText(string path, string content)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);

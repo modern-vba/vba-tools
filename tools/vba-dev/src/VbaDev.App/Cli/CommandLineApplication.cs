@@ -1,20 +1,25 @@
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using VbaDev.App.Projects;
 
 namespace VbaDev.App.Cli;
 
 public sealed class CommandLineApplication
 {
-    private readonly IReadOnlyDictionary<string, ToolingCommandDefinition> commands;
+    private readonly IReadOnlyDictionary<string, ToolingCommandContract> commands;
+    private readonly IReadOnlyDictionary<string, ToolingCommandHandler> handlers;
     private readonly ProjectContextResolver projectContextResolver;
     private readonly Func<string> getWorkingDirectory;
 
     public CommandLineApplication(
-        IEnumerable<ToolingCommandDefinition> commands,
+        IEnumerable<ToolingCommandContract> commands,
+        IEnumerable<ToolingCommandHandler> handlers,
         ProjectContextResolver projectContextResolver,
         Func<string> getWorkingDirectory)
     {
         this.commands = commands.ToDictionary(command => command.Name, StringComparer.OrdinalIgnoreCase);
+        this.handlers = handlers.ToDictionary(handler => handler.CommandName, StringComparer.OrdinalIgnoreCase);
         this.projectContextResolver = projectContextResolver;
         this.getWorkingDirectory = getWorkingDirectory;
     }
@@ -52,9 +57,19 @@ public sealed class CommandLineApplication
             return CommandResult.UsageError(resolution.Error);
         }
 
+        if (IsCapabilitiesCommand(command))
+        {
+            return RenderCapabilities(parsedArgs.Options);
+        }
+
+        if (!handlers.TryGetValue(command.Name, out var handler))
+        {
+            return CommandResult.UsageError($"Command '{command.Name}' is not executable.");
+        }
+
         try
         {
-            return command.Execute(new ToolingCommandInvocation(
+            return handler.Execute(new ToolingCommandInvocation(
                 command,
                 parsedArgs.Options,
                 parsedArgs.Positionals,
@@ -99,12 +114,12 @@ public sealed class CommandLineApplication
     }
 
     private ProjectResolutionResult ResolveProjectForInvocation(
-        ToolingCommandDefinition command,
+        ToolingCommandContract command,
         IReadOnlyDictionary<string, string?> options)
     {
         try
         {
-            return command.ProjectResolutionMode switch
+            return command.ContextPolicy.Mode switch
             {
                 ProjectResolutionMode.None => ProjectResolutionResult.Success(null, null),
                 ProjectResolutionMode.ProjectOptional when !options.ContainsKey("--project") => ProjectResolutionResult.Success(null, null),
@@ -117,9 +132,11 @@ public sealed class CommandLineApplication
                 ProjectResolutionMode.DocumentRequired => ProjectResolutionResult.Success(
                     null,
                     ResolveContext(options.GetValueOrDefault("--project"), options.GetValueOrDefault("--document"))),
-                ProjectResolutionMode.ExplicitWorkbookOrDocumentRequired when options.ContainsKey("--from") =>
-                    ResolveExplicitWorkbookInvocation(options),
-                ProjectResolutionMode.ExplicitWorkbookOrDocumentRequired => ProjectResolutionResult.Success(
+                ProjectResolutionMode.DocumentUnlessOptionPresent when
+                    command.ContextPolicy.ContextFreeOption is not null &&
+                    options.ContainsKey(command.ContextPolicy.ContextFreeOption) =>
+                    ResolveContextFreeInvocation(command.ContextPolicy, options),
+                ProjectResolutionMode.DocumentUnlessOptionPresent => ProjectResolutionResult.Success(
                     null,
                     ResolveContext(options.GetValueOrDefault("--project"), options.GetValueOrDefault("--document"))),
                 _ => ProjectResolutionResult.Failure($"Unsupported project resolution mode for command '{command.Name}'.")
@@ -131,16 +148,16 @@ public sealed class CommandLineApplication
         }
     }
 
-    private ProjectResolutionResult ResolveExplicitWorkbookInvocation(IReadOnlyDictionary<string, string?> options)
+    private static ProjectResolutionResult ResolveContextFreeInvocation(
+        ToolingCommandContextPolicy policy,
+        IReadOnlyDictionary<string, string?> options)
     {
-        if (options.ContainsKey("--project"))
+        foreach (var rejectedOption in policy.RejectedOptionsWhenContextFree)
         {
-            return ProjectResolutionResult.Failure("--project cannot be used with --from.");
-        }
-
-        if (options.ContainsKey("--document"))
-        {
-            return ProjectResolutionResult.Failure("--document cannot be used with --from.");
+            if (options.ContainsKey(rejectedOption))
+            {
+                return ProjectResolutionResult.Failure($"{rejectedOption} cannot be used with {policy.ContextFreeOption}.");
+            }
         }
 
         return ProjectResolutionResult.Success(null, null);
@@ -158,7 +175,7 @@ public sealed class CommandLineApplication
             DocumentName: documentName,
             StartDirectory: getWorkingDirectory()));
 
-    private static ParsedCommandLine ParseOptions(ToolingCommandDefinition command, IReadOnlyList<string> args)
+    private static ParsedCommandLine ParseOptions(ToolingCommandContract command, IReadOnlyList<string> args)
     {
         var options = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         var positionals = new List<string>();
@@ -242,7 +259,29 @@ public sealed class CommandLineApplication
         return builder.ToString();
     }
 
-    private static string RenderCommandHelp(ToolingCommandDefinition command)
+    private CommandResult RenderCapabilities(IReadOnlyDictionary<string, string?> options)
+    {
+        var format = options.GetValueOrDefault("--format") ?? "json";
+        if (!format.Equals("json", StringComparison.OrdinalIgnoreCase))
+        {
+            return CommandResult.UsageError($"Unsupported value '{format}' for --format.");
+        }
+
+        var capabilities = new ToolCapabilities(
+            ToolVersion: typeof(CommandLineApplication).Assembly.GetName().Version?.ToString() ?? "0.0.0",
+            ContractVersion: "1.0",
+            Commands: commands.Values
+                .Where(command => !IsCapabilitiesCommand(command))
+                .OrderBy(command => command.Name, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    command => command.Name,
+                    command => new CommandCapability(OutputSchemaVersion: command.OutputSchemaVersion),
+                    StringComparer.OrdinalIgnoreCase));
+
+        return CommandResult.Success(JsonSerializer.Serialize(capabilities, CapabilitiesJsonOptions) + Environment.NewLine);
+    }
+
+    private static string RenderCommandHelp(ToolingCommandContract command)
     {
         var builder = new StringBuilder();
         builder.AppendLine($"vba-dev {command.Name}");
@@ -267,6 +306,9 @@ public sealed class CommandLineApplication
 
     private static bool IsHelp(string arg) => arg is "--help" or "-h" or "/?";
 
+    private static bool IsCapabilitiesCommand(ToolingCommandContract command)
+        => command.Name.Equals("capabilities", StringComparison.OrdinalIgnoreCase);
+
     private sealed record ParsedCommandLine(
         IReadOnlyDictionary<string, string?> Options,
         IReadOnlyList<string> Positionals,
@@ -280,7 +322,7 @@ public sealed class CommandLineApplication
         public static ParsedCommandLine Failure(string error) => new(new Dictionary<string, string?>(), [], error);
     }
 
-    private sealed record CommandMatch(ToolingCommandDefinition? Command, int ConsumedArguments);
+    private sealed record CommandMatch(ToolingCommandContract? Command, int ConsumedArguments);
 
     private sealed record ProjectResolutionResult(
         ResolvedProject? Project,
@@ -292,4 +334,17 @@ public sealed class CommandLineApplication
 
         public static ProjectResolutionResult Failure(string error) => new(null, null, error);
     }
+
+    private sealed record ToolCapabilities(
+        string ToolVersion,
+        string ContractVersion,
+        IReadOnlyDictionary<string, CommandCapability> Commands);
+
+    private sealed record CommandCapability(string OutputSchemaVersion);
+
+    private static readonly JsonSerializerOptions CapabilitiesJsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+    };
 }

@@ -60,6 +60,48 @@ public static class DocumentSourceSetLayout
                 group.OrderBy(path => path, StringComparer.OrdinalIgnoreCase).ToArray()))
             .ToArray();
 
+    public static IReadOnlyList<DocumentSourceSetLayoutDiagnostic> InspectSourceIdentity(
+        string documentName,
+        string sourceSetPath)
+    {
+        var diagnostics = new List<DocumentSourceSetLayoutDiagnostic>();
+        var sourceFiles = EnumerateVbaSourcePaths(sourceSetPath);
+        foreach (var group in FindSourceFileNameCollisions(sourceFiles))
+        {
+            diagnostics.Add(DocumentSourceSetLayoutDiagnostic.Fail(
+                $"Document source identity ({documentName}/{group.FileName})",
+                $"Duplicate exported source file name. Colliding files: {string.Join(", ", group.SourcePaths)}."));
+        }
+
+        var formFilesByName = sourceFiles
+            .Where(IsFormFile)
+            .GroupBy(path => Path.GetFileNameWithoutExtension(path) ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group.OrderBy(path => path, StringComparer.OrdinalIgnoreCase).ToArray(),
+                StringComparer.OrdinalIgnoreCase);
+
+        foreach (var sidecarPath in EnumerateFormSidecarPaths(sourceSetPath))
+        {
+            var sidecarName = Path.GetFileNameWithoutExtension(sidecarPath);
+            if (!formFilesByName.TryGetValue(sidecarName, out var matchingForms))
+            {
+                continue;
+            }
+
+            if (HasSameDirectoryForm(sidecarPath))
+            {
+                continue;
+            }
+
+            diagnostics.Add(DocumentSourceSetLayoutDiagnostic.Warn(
+                $"Form sidecar ({documentName}/{Path.GetFileName(sidecarPath)})",
+                $"Sidecar has no same-directory .frm, but a same-name form exists elsewhere: {sidecarPath}. Matching forms: {string.Join(", ", matchingForms)}."));
+        }
+
+        return diagnostics;
+    }
+
     public static IReadOnlyList<string> FindSourceMatches(string sourceSetPath, string moduleFile)
         => EnumerateVbaSourcePaths(sourceSetPath)
             .Where(path => GetFileName(path).Equals(moduleFile, StringComparison.OrdinalIgnoreCase))
@@ -207,3 +249,21 @@ public static class DocumentSourceSetLayout
 public sealed record DocumentSourceFileNameCollision(
     string FileName,
     IReadOnlyList<string> SourcePaths);
+
+public sealed record DocumentSourceSetLayoutDiagnostic(
+    DocumentSourceSetLayoutDiagnosticStatus Status,
+    string Name,
+    string Message)
+{
+    public static DocumentSourceSetLayoutDiagnostic Fail(string name, string message)
+        => new(DocumentSourceSetLayoutDiagnosticStatus.Fail, name, message);
+
+    public static DocumentSourceSetLayoutDiagnostic Warn(string name, string message)
+        => new(DocumentSourceSetLayoutDiagnosticStatus.Warn, name, message);
+}
+
+public enum DocumentSourceSetLayoutDiagnosticStatus
+{
+    Fail,
+    Warn
+}

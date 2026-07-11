@@ -10,14 +10,10 @@ public sealed class WorkbookSourcePlanner
     private const string PublishExclusionMarker = "'#ExcludePublish";
 
     private readonly CommonModulesManifestReader commonModulesManifestReader;
-    private readonly CommonModulesService commonModulesService;
 
-    public WorkbookSourcePlanner(
-        CommonModulesManifestReader commonModulesManifestReader,
-        CommonModulesService commonModulesService)
+    public WorkbookSourcePlanner(CommonModulesManifestReader commonModulesManifestReader)
     {
         this.commonModulesManifestReader = commonModulesManifestReader;
-        this.commonModulesService = commonModulesService;
     }
 
     public IReadOnlyList<VbaSourceFile> ResolveBuildSourceFiles(ResolvedProjectContext context)
@@ -100,7 +96,7 @@ public sealed class WorkbookSourcePlanner
             .Select(entry => entry.ModuleFile)
             .ToArray();
 
-        return commonModulesService
+        return CommonModulesDependencyResolver
             .ResolveRequestedEntries(entries, installedModuleFiles)
             .ToArray();
     }

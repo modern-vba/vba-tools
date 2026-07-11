@@ -31,7 +31,8 @@ public static class ToolingCompositionRoot
     {
         var manifestStore = projectManifestStore ?? new JsonProjectManifestStore();
         var commonModulesManifestReader = new CommonModulesManifestReader();
-        var commonModulesService = new CommonModulesService(commonModulesManifestReader, manifestStore);
+        var commonModulesInstallationTransaction = new CommonModulesInstallationTransaction(commonModulesManifestReader, manifestStore);
+        var commonModulesService = new CommonModulesService(commonModulesInstallationTransaction);
         var referenceResolver = vbaProjectReferenceResolver ?? new RegistryVbaProjectReferenceResolver();
         var referencePlanner = new VbaProjectReferencePlanner(referenceResolver);
         var referenceService = new VbaProjectReferenceService(manifestStore, referencePlanner);
@@ -46,11 +47,9 @@ public static class ToolingCompositionRoot
         var newProjectCommand = new NewProjectCommand(
             manifestStore,
             initialWorkbookCreator ?? new ExcelComInitialWorkbookCreator(),
-            commonModulesManifestReader,
-            commonModulesService);
+            commonModulesManifestReader);
         var sourcePlanner = new WorkbookSourcePlanner(
-            commonModulesManifestReader,
-            commonModulesService);
+            commonModulesManifestReader);
         var generationPipeline = new WorkbookGenerationPipeline(
             buildAutomation,
             new WorkbookReferenceNormalizer(referencePlanner));
@@ -63,17 +62,20 @@ public static class ToolingCompositionRoot
         var exportCommand = new ExportCommand(
             workbookModuleExporter ?? new ExcelComWorkbookModuleExporter());
         var importCommand = new ImportCommand(buildAutomation);
+        var commandContracts = ToolingCommandCatalog.CreateDefaultContracts();
+        var commandHandlers = ToolingCommandCatalog.CreateDefaultHandlers(
+            doctorCommand,
+            newProjectCommand,
+            commonModulesService,
+            referenceService,
+            buildCommand,
+            publishCommand,
+            testCommand,
+            exportCommand,
+            importCommand);
         return new CommandLineApplication(
-            ToolingCommandCatalog.CreateDefault(
-                doctorCommand,
-                newProjectCommand,
-                commonModulesService,
-                referenceService,
-                buildCommand,
-                publishCommand,
-                testCommand,
-                exportCommand,
-                importCommand),
+            commandContracts,
+            commandHandlers,
             projectContextResolver,
             () => workingDirectory);
     }

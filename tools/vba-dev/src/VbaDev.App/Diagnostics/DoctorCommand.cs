@@ -142,38 +142,11 @@ public sealed class DoctorCommand
         string documentName,
         string sourceSetPath)
     {
-        var sourceFiles = DocumentSourceSetLayout.EnumerateVbaSourcePaths(sourceSetPath);
-        foreach (var group in DocumentSourceSetLayout.FindSourceFileNameCollisions(sourceFiles))
+        foreach (var diagnostic in DocumentSourceSetLayout.InspectSourceIdentity(documentName, sourceSetPath))
         {
-            results.Add(DiagnosticResult.Fail(
-                $"Document source identity ({documentName}/{group.FileName})",
-                $"Duplicate exported source file name. Colliding files: {string.Join(", ", group.SourcePaths)}."));
-        }
-
-        var formFilesByName = sourceFiles
-            .Where(DocumentSourceSetLayout.IsFormFile)
-            .GroupBy(path => Path.GetFileNameWithoutExtension(path) ?? string.Empty, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(
-                group => group.Key,
-                group => group.OrderBy(path => path, StringComparer.OrdinalIgnoreCase).ToArray(),
-                StringComparer.OrdinalIgnoreCase);
-
-        foreach (var sidecarPath in DocumentSourceSetLayout.EnumerateFormSidecarPaths(sourceSetPath))
-        {
-            var sidecarName = Path.GetFileNameWithoutExtension(sidecarPath);
-            if (!formFilesByName.TryGetValue(sidecarName, out var matchingForms))
-            {
-                continue;
-            }
-
-            if (DocumentSourceSetLayout.HasSameDirectoryForm(sidecarPath))
-            {
-                continue;
-            }
-
-            results.Add(DiagnosticResult.Warn(
-                $"Form sidecar ({documentName}/{Path.GetFileName(sidecarPath)})",
-                $"Sidecar has no same-directory .frm, but a same-name form exists elsewhere: {sidecarPath}. Matching forms: {string.Join(", ", matchingForms)}."));
+            results.Add(diagnostic.Status == DocumentSourceSetLayoutDiagnosticStatus.Fail
+                ? DiagnosticResult.Fail(diagnostic.Name, diagnostic.Message)
+                : DiagnosticResult.Warn(diagnostic.Name, diagnostic.Message));
         }
     }
 
@@ -291,7 +264,7 @@ public sealed class DoctorCommand
         {
             try
             {
-                resolvedByName[module.Name] = CommonModulesService.ResolveEntry(entries, module.Name);
+                resolvedByName[module.Name] = CommonModulesDependencyResolver.ResolveEntry(entries, module.Name);
             }
             catch (CommonModulesManifestException)
             {

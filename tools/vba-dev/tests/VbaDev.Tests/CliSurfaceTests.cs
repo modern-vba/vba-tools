@@ -1,4 +1,5 @@
 using VbaDev.App.Cli;
+using VbaDev.App.Projects;
 using VbaDev.Composition;
 using VbaDev.Domain;
 using VbaDev.Infrastructure.Projects;
@@ -133,6 +134,24 @@ public sealed class CliSurfaceTests
         Assert.Contains("\"build\"", result.StandardOutput, StringComparison.Ordinal);
         Assert.Contains("\"test\":{\"outputSchemaVersion\":\"1.1\"}", result.StandardOutput, StringComparison.Ordinal);
         Assert.Empty(result.StandardError);
+    }
+
+    [Fact]
+    public void ContractOnlyApplicationRendersHelpAndCapabilitiesWithoutCommandHandlers()
+    {
+        var contractOnlyApplication = new CommandLineApplication(
+            ToolingCommandCatalog.CreateDefaultContracts(),
+            [],
+            new ProjectContextResolver(new JsonProjectManifestStore()),
+            Directory.GetCurrentDirectory);
+
+        var help = contractOnlyApplication.Run(["build", "--help"]);
+        var capabilities = contractOnlyApplication.Run(["capabilities", "--format", "json"]);
+
+        Assert.Equal(0, help.ExitCode);
+        Assert.Contains("vba-dev build", help.StandardOutput, StringComparison.Ordinal);
+        Assert.Equal(0, capabilities.ExitCode);
+        Assert.Contains("\"test\":{\"outputSchemaVersion\":\"1.1\"}", capabilities.StandardOutput, StringComparison.Ordinal);
     }
 
     [Fact]

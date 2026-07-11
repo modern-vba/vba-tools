@@ -777,6 +777,41 @@ public sealed class CommonModulesCommandTests
     }
 
     [Fact]
+    public void InstallationTransactionWritesRecoveryFileWhenManifestSaveFails()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = CreateProjectWithCommonModules(temp, "Project");
+        var commonRepo = Path.Combine(temp.Path, "common_modules_repo");
+        WriteManifest(commonRepo, ("Feature.bas", "optional", ""));
+        WriteModule(commonRepo, "Feature.bas", "repo feature");
+        var manifestPath = Path.Combine(projectRoot, ProjectManifest.ManifestFileName);
+        var manifest = new JsonProjectManifestStore().Load(manifestPath);
+        var document = manifest.Documents["Book1"];
+        var context = new ResolvedProjectContext(
+            projectRoot,
+            manifestPath,
+            manifest,
+            "Book1",
+            document,
+            Path.Combine(projectRoot, "src", "Book1"),
+            Path.Combine(projectRoot, "src", "Book1", "Book1.xlsm"),
+            Path.Combine(projectRoot, "bin", "Book1", "Book1.xlsm"),
+            Path.Combine(projectRoot, "publish", "Book1", "Book1.xlsm"),
+            commonRepo);
+        var manifestStore = new RecordingProjectManifestStore { ThrowOnSave = true };
+        var transaction = new CommonModulesInstallationTransaction(new CommonModulesManifestReader(), manifestStore);
+
+        var error = Assert.Throws<CommonModulesTransactionException>(() => transaction.Add(context, ["Feature"], force: false));
+
+        Assert.True(manifestStore.FileExistedDuringSave);
+        var recoveryFile = Assert.Single(Directory.EnumerateFiles(projectRoot, "project.failed-*.json"));
+        Assert.Equal(recoveryFile, error.Message);
+        Assert.Contains("\"Feature\"", File.ReadAllText(recoveryFile, Encoding.Unicode), StringComparison.Ordinal);
+        var unchangedManifest = new JsonProjectManifestStore().Load(manifestPath);
+        Assert.Empty(unchangedManifest.Documents["Book1"].CommonModules);
+    }
+
+    [Fact]
     public void UpdateRejectsDocumentSelection()
     {
         using var temp = TempDirectory.Create();

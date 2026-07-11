@@ -11,18 +11,15 @@ public sealed class NewProjectCommand
     private readonly IProjectManifestStore manifestStore;
     private readonly IInitialWorkbookCreator initialWorkbookCreator;
     private readonly CommonModulesManifestReader commonModulesManifestReader;
-    private readonly CommonModulesService commonModulesService;
 
     public NewProjectCommand(
         IProjectManifestStore manifestStore,
         IInitialWorkbookCreator initialWorkbookCreator,
-        CommonModulesManifestReader commonModulesManifestReader,
-        CommonModulesService commonModulesService)
+        CommonModulesManifestReader commonModulesManifestReader)
     {
         this.manifestStore = manifestStore;
         this.initialWorkbookCreator = initialWorkbookCreator;
         this.commonModulesManifestReader = commonModulesManifestReader;
-        this.commonModulesService = commonModulesService;
     }
 
     public CommandResult Run(NewProjectCommandRequest request)
@@ -98,7 +95,7 @@ public sealed class NewProjectCommand
         var requestedModuleFiles = requestedEntries
             .Select(entry => entry.ModuleFile)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var selectedEntries = commonModulesService.ResolveRequestedEntries(entries, requestedModuleFiles.ToArray());
+        var selectedEntries = CommonModulesDependencyResolver.ResolveRequestedEntries(entries, requestedModuleFiles.ToArray());
 
         foreach (var entry in selectedEntries)
         {
