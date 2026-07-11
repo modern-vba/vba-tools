@@ -20,7 +20,7 @@ vba-dev <command> [options]
 | `build` | document | Build the selected document into bin output. |
 | `test` | document | Run VBA unit tests for the selected document. |
 | `publish` | document | Publish the selected document. |
-| `export` | document | Export modules from a workbook into source. |
+| `export` | document/path | Export modules from a workbook into source. |
 | `doctor` | project/machine | Check project and machine prerequisites. |
 
 Document-scoped commands use the manifest `primaryDocument` when `--document` is omitted.
@@ -231,11 +231,11 @@ Usage:
 Options:
   --project <path>               Project root containing project.json.
   --document <name>, -d <name>   Document name from the project manifest.
-  --from <path>                  Workbook to export from.
-  --to <dir>                     Directory to export to.
+  --from <path>                  Workbook to export from; skips project resolution when supplied.
+  --to <dir>                     Directory to export to; defaults to the selected document source set, or the current directory with --from.
 ```
 
-Without `--from`, `export` reads the selected document's bin workbook. Without `--to`, it writes to the selected document source set and cleans existing exported module files first.
+Without `--from`, `export` reads the selected document's bin workbook. Without `--to`, it writes to the selected document source set. With `--from`, `export` does not require `project.json`, rejects `--project` and `--document`, and writes to the current directory when `--to` is omitted. The destination is cleaned before export when it is an explicit directory or a selected document source set.
 
 ### doctor
 

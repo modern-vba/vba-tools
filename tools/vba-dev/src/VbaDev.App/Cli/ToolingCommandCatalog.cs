@@ -26,7 +26,7 @@ public static class ToolingCommandCatalog
             new("build", "Build the selected document into bin output.", "[options]", projectOptions, 30, ProjectResolutionMode.Required),
             new("test", "Run VBA unit tests for the selected document.", "[options]", [.. projectOptions, Option("--format", "Test output format.", "<text|ndjson>", ["text", "ndjson"], ["-f"]), Flag("--no-build", "Skip building before running tests."), Option("--module", "Run tests from one test module.", "<name>"), Option("--procedure", "Run one test procedure. Requires --module.", "<name>")], 40, ProjectResolutionMode.Required),
             new("publish", "Publish the selected document.", "[options]", projectOptions, 50, ProjectResolutionMode.Required),
-            new("export", "Export modules from a workbook into source.", "[options]", [.. projectOptions, Option("--from", "Workbook to export from.", "<path>"), Option("--to", "Directory to export to.", "<dir>")], 70, ProjectResolutionMode.Required),
+            new("export", "Export modules from a workbook into source.", "[options]", [.. projectOptions, Option("--from", "Workbook to export from; skips project resolution when supplied.", "<path>"), Option("--to", "Directory to export to; defaults to the selected document source set, or the current directory with --from.", "<dir>")], 70, ProjectResolutionMode.Required),
             new("doctor", "Check project and machine prerequisites.", "[options]", projectRootOptions, 80, ProjectResolutionMode.Optional),
             new("capabilities", "Print the command contract supported by this executable.", "[options]", [Option("--format", "Capabilities output format.", "<json>", ["json"])], 90)
         ];

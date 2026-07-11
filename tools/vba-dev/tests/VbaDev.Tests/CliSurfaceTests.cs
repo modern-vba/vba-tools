@@ -103,6 +103,8 @@ public sealed class CliSurfaceTests
         Assert.Equal(0, result.ExitCode);
         Assert.Contains("--from", result.StandardOutput, StringComparison.Ordinal);
         Assert.Contains("--to", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("current directory", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("selected document source set", result.StandardOutput, StringComparison.Ordinal);
     }
 
     [Fact]

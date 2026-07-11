@@ -110,6 +110,25 @@ public sealed class CommandLineApplication
             return commonModulesService.Update(projectResolution.Project!);
         }
 
+        if (command.Name.Equals("export", StringComparison.OrdinalIgnoreCase) &&
+            parsedArgs.Options.ContainsKey("--from"))
+        {
+            if (parsedArgs.Options.ContainsKey("--project"))
+            {
+                return CommandResult.UsageError("--project cannot be used with --from.");
+            }
+
+            if (parsedArgs.Options.ContainsKey("--document"))
+            {
+                return CommandResult.UsageError("--document cannot be used with --from.");
+            }
+
+            return exportCommand.RunExplicit(new ExportCommandRequest(
+                parsedArgs.Options.GetValueOrDefault("--from"),
+                parsedArgs.Options.GetValueOrDefault("--to"),
+                getWorkingDirectory()));
+        }
+
         var resolution = ResolveProjectContext(command, parsedArgs.Options);
         if (resolution.Error is not null)
         {

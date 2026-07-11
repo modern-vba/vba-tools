@@ -22,21 +22,9 @@ public sealed class ExportCommand
             var destinationDirectory = string.IsNullOrWhiteSpace(request.ToPath)
                 ? context.DocumentSourceSetPath
                 : ResolveOptionPath(request.WorkingDirectory, request.ToPath);
-            var cleanDestination = string.IsNullOrWhiteSpace(request.ToPath);
+            var cleanDestination = true;
 
-            if (!File.Exists(sourceWorkbookPath))
-            {
-                return CommandResult.UsageError($"Export source workbook was not found: {sourceWorkbookPath}");
-            }
-
-            Directory.CreateDirectory(destinationDirectory);
-            if (cleanDestination)
-            {
-                CleanDocumentSourceSet(destinationDirectory);
-            }
-
-            workbookModuleExporter.ExportModules(sourceWorkbookPath, destinationDirectory);
-            return CommandResult.Success($"Exported {sourceWorkbookPath} to {destinationDirectory}{Environment.NewLine}");
+            return RunCore(sourceWorkbookPath, destinationDirectory, cleanDestination);
         }
         catch (InvalidOperationException ex)
         {
@@ -50,6 +38,59 @@ public sealed class ExportCommand
         {
             return CommandResult.UsageError(ex.Message);
         }
+    }
+
+    public CommandResult RunExplicit(ExportCommandRequest request)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(request.FromPath))
+            {
+                return CommandResult.UsageError("--from requires a workbook path.");
+            }
+
+            var sourceWorkbookPath = ResolveOptionPath(request.WorkingDirectory, request.FromPath!);
+            var destinationDirectory = string.IsNullOrWhiteSpace(request.ToPath)
+                ? Path.GetFullPath(request.WorkingDirectory)
+                : ResolveOptionPath(request.WorkingDirectory, request.ToPath);
+            var cleanDestination = !string.IsNullOrWhiteSpace(request.ToPath);
+
+            return RunCore(sourceWorkbookPath, destinationDirectory, cleanDestination);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return CommandResult.UsageError(ex.Message);
+        }
+        catch (IOException ex)
+        {
+            return CommandResult.UsageError(ex.Message);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return CommandResult.UsageError(ex.Message);
+        }
+    }
+
+    private CommandResult RunCore(string sourceWorkbookPath, string destinationDirectory, bool cleanDestination)
+    {
+        if (!File.Exists(sourceWorkbookPath))
+        {
+            return CommandResult.UsageError($"Export source workbook was not found: {sourceWorkbookPath}");
+        }
+
+        if (File.Exists(destinationDirectory))
+        {
+            return CommandResult.UsageError($"Export destination is not a directory: {destinationDirectory}");
+        }
+
+        Directory.CreateDirectory(destinationDirectory);
+        if (cleanDestination)
+        {
+            CleanDocumentSourceSet(destinationDirectory);
+        }
+
+        workbookModuleExporter.ExportModules(sourceWorkbookPath, destinationDirectory);
+        return CommandResult.Success($"Exported {sourceWorkbookPath} to {destinationDirectory}{Environment.NewLine}");
     }
 
     private static void CleanDocumentSourceSet(string destinationDirectory)

@@ -48,27 +48,63 @@ public sealed class ExportCommandTests
     }
 
     [Fact]
-    public void ExportFromOptionUsesSpecifiedWorkbook()
+    public void ExplicitWorkbookExportDefaultsToWorkingDirectoryWithoutCleaning()
     {
         using var temp = TempDirectory.Create();
-        var root = temp.CreateDirectory("Project");
-        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
-        var sourceSet = CreateDocumentSourceSet(root, "Book1", ("Old.bas", "old"));
         var explicitWorkbook = Path.Combine(temp.Path, "explicit.xlsm");
         File.WriteAllText(explicitWorkbook, "workbook", Encoding.UTF8);
-        CreateWorkbook(root, "bin", "Book1");
+        File.WriteAllText(Path.Combine(temp.Path, "Old.bas"), "old", Encoding.UTF8);
         var exporter = new FakeWorkbookModuleExporter(("Module1.bas", "new"));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookModuleExporter: exporter);
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path, workbookModuleExporter: exporter);
 
         var result = application.Run(["export", "--from", explicitWorkbook]);
 
         Assert.Equal(0, result.ExitCode);
-        Assert.Equal([(explicitWorkbook, sourceSet)], exporter.Calls);
-        Assert.False(File.Exists(Path.Combine(sourceSet, "Old.bas")));
+        Assert.Equal([(explicitWorkbook, temp.Path)], exporter.Calls);
+        Assert.Equal("old", File.ReadAllText(Path.Combine(temp.Path, "Old.bas"), Encoding.UTF8));
+        Assert.Equal("new", File.ReadAllText(Path.Combine(temp.Path, "Module1.bas"), Encoding.UTF8));
     }
 
     [Fact]
-    public void ExportToOptionWritesSpecifiedDirectoryWithoutCleaning()
+    public void ExplicitWorkbookExportDoesNotRequireProjectContext()
+    {
+        using var temp = TempDirectory.Create();
+        var explicitWorkbook = Path.Combine(temp.Path, "explicit.xlsm");
+        File.WriteAllText(explicitWorkbook, "workbook", Encoding.UTF8);
+        var explicitDestination = temp.CreateDirectory("explicit-export");
+        var exporter = new FakeWorkbookModuleExporter(("Module1.bas", "new"));
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path, workbookModuleExporter: exporter);
+
+        var result = application.Run(["export", "--from", explicitWorkbook, "--to", explicitDestination]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal([(explicitWorkbook, explicitDestination)], exporter.Calls);
+        Assert.Equal("new", File.ReadAllText(Path.Combine(explicitDestination, "Module1.bas"), Encoding.UTF8));
+    }
+
+    [Theory]
+    [InlineData("--project")]
+    [InlineData("--document")]
+    public void ExplicitWorkbookExportRejectsProjectContextOptions(string optionName)
+    {
+        using var temp = TempDirectory.Create();
+        var explicitWorkbook = Path.Combine(temp.Path, "explicit.xlsm");
+        File.WriteAllText(explicitWorkbook, "workbook", Encoding.UTF8);
+        var exporter = new FakeWorkbookModuleExporter(("Module1.bas", "new"));
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path, workbookModuleExporter: exporter);
+
+        var optionValue = optionName.Equals("--project", StringComparison.Ordinal)
+            ? temp.Path
+            : "Book1";
+        var result = application.Run(["export", "--from", explicitWorkbook, optionName, optionValue]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains($"{optionName} cannot be used with --from.", result.StandardError, StringComparison.Ordinal);
+        Assert.Empty(exporter.Calls);
+    }
+
+    [Fact]
+    public void ExportToOptionCleansSpecifiedDirectory()
     {
         using var temp = TempDirectory.Create();
         var root = temp.CreateDirectory("Project");
@@ -79,6 +115,7 @@ public sealed class ExportCommandTests
         File.WriteAllText(Path.Combine(explicitDestination, "Old.bas"), "old", Encoding.UTF8);
         File.WriteAllText(Path.Combine(explicitDestination, "Old.frm"), "old", Encoding.UTF8);
         File.WriteAllBytes(Path.Combine(explicitDestination, "Old.frx"), [1, 2, 3]);
+        File.WriteAllText(Path.Combine(explicitDestination, "notes.txt"), "keep", Encoding.UTF8);
         var exporter = new FakeWorkbookModuleExporter(("Module1.bas", "new"));
         var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookModuleExporter: exporter);
 
@@ -86,10 +123,58 @@ public sealed class ExportCommandTests
 
         Assert.Equal(0, result.ExitCode);
         Assert.Equal([(binPath, explicitDestination)], exporter.Calls);
-        Assert.Equal("old", File.ReadAllText(Path.Combine(explicitDestination, "Old.bas"), Encoding.UTF8));
-        Assert.True(File.Exists(Path.Combine(explicitDestination, "Old.frm")));
-        Assert.True(File.Exists(Path.Combine(explicitDestination, "Old.frx")));
+        Assert.False(File.Exists(Path.Combine(explicitDestination, "Old.bas")));
+        Assert.False(File.Exists(Path.Combine(explicitDestination, "Old.frm")));
+        Assert.False(File.Exists(Path.Combine(explicitDestination, "Old.frx")));
+        Assert.Equal("keep", File.ReadAllText(Path.Combine(explicitDestination, "notes.txt"), Encoding.UTF8));
         Assert.Equal("new", File.ReadAllText(Path.Combine(explicitDestination, "Module1.bas"), Encoding.UTF8));
+    }
+
+    [Fact]
+    public void ExportToOptionStillRequiresProjectContext()
+    {
+        using var temp = TempDirectory.Create();
+        var explicitDestination = temp.CreateDirectory("explicit-export");
+        var exporter = new FakeWorkbookModuleExporter(("Module1.bas", "new"));
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path, workbookModuleExporter: exporter);
+
+        var result = application.Run(["export", "--to", explicitDestination]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("Project manifest was not found", result.StandardError, StringComparison.Ordinal);
+        Assert.Empty(exporter.Calls);
+    }
+
+    [Fact]
+    public void ExplicitWorkbookExportRejectsDestinationFile()
+    {
+        using var temp = TempDirectory.Create();
+        var explicitWorkbook = Path.Combine(temp.Path, "explicit.xlsm");
+        var destinationFile = Path.Combine(temp.Path, "Module1.bas");
+        File.WriteAllText(explicitWorkbook, "workbook", Encoding.UTF8);
+        File.WriteAllText(destinationFile, "old", Encoding.UTF8);
+        var exporter = new FakeWorkbookModuleExporter(("Module1.bas", "new"));
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path, workbookModuleExporter: exporter);
+
+        var result = application.Run(["export", "--from", explicitWorkbook, "--to", destinationFile]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains($"Export destination is not a directory: {destinationFile}", result.StandardError, StringComparison.Ordinal);
+        Assert.Empty(exporter.Calls);
+    }
+
+    [Fact]
+    public void ExplicitWorkbookExportRejectsBlankFromPath()
+    {
+        using var temp = TempDirectory.Create();
+        var exporter = new FakeWorkbookModuleExporter(("Module1.bas", "new"));
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path, workbookModuleExporter: exporter);
+
+        var result = application.Run(["export", "--from="]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("--from requires a workbook path.", result.StandardError, StringComparison.Ordinal);
+        Assert.Empty(exporter.Calls);
     }
 
     [Fact]
@@ -97,16 +182,12 @@ public sealed class ExportCommandTests
     {
         using var temp = TempDirectory.Create();
         var workingDirectory = temp.CreateDirectory("work");
-        var root = temp.CreateDirectory("Project");
-        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
-        CreateDocumentSourceSet(root, "Book1");
-        CreateWorkbook(root, "bin", "Book1");
         var relativeWorkbook = Path.Combine(workingDirectory, "relative.xlsm");
         File.WriteAllText(relativeWorkbook, "workbook", Encoding.UTF8);
         var exporter = new FakeWorkbookModuleExporter(("Module1.bas", "new"));
         var application = ToolingCompositionRoot.CreateCommandLineApplication(workingDirectory, workbookModuleExporter: exporter);
 
-        var result = application.Run(["export", "--project", root, "--from", "relative.xlsm", "--to", "out"]);
+        var result = application.Run(["export", "--from", "relative.xlsm", "--to", "out"]);
 
         Assert.Equal(0, result.ExitCode);
         Assert.Equal([(relativeWorkbook, Path.Combine(workingDirectory, "out"))], exporter.Calls);
