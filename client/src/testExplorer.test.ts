@@ -61,7 +61,7 @@ test('Running a project node invokes vba-dev test ndjson with explicit project r
     `passed:${controller.items[0].id}`,
     'end'
   ]);
-  assert.match(output.join(''), /"type":"summary"/);
+  assert.match(output.join(''), /"type":"runFinished"/);
 });
 
 test('Running a document node invokes vba-dev test ndjson with explicit project and document', async () => {
@@ -144,7 +144,7 @@ test('testFinished events discover module and TestProcedure nodes and mark passe
   assert.ok(controller.runs[0].events.includes(`passed:${procedureItem.id}`));
 });
 
-test('current result records are treated as TestProcedure completion events', async () => {
+test('legacy result records are ignored by Test Explorer event projection', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const controller = new FakeTestController();
   const explorer = createExplorer(controller, {
@@ -165,11 +165,12 @@ test('current result records are treated as TestProcedure completion events', as
 
   await explorer.run({ include: [documentItem] }, { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) });
 
-  const moduleItem = documentItem.children.items[0];
-  const procedureItem = moduleItem.children.items[0];
-  assert.equal(moduleItem.label, 'Test_Module');
-  assert.equal(procedureItem.label, 'Test_Passes');
-  assert.ok(controller.runs[0].events.includes(`passed:${procedureItem.id}`));
+  assert.deepEqual(documentItem.children.items, []);
+  assert.deepEqual(controller.runs[0].events, [
+    `started:${documentItem.id}`,
+    `passed:${documentItem.id}`,
+    'end'
+  ]);
 });
 
 test('Running a discovered module node invokes vba-dev test with module selector', async () => {
@@ -530,7 +531,7 @@ function createExplorer(
           toolVersion: '0.1.0',
           contractVersion: '1.0',
           commands: {
-            test: { outputSchemaVersion: '1.1' }
+            test: { outputSchemaVersion: '1.2' }
           }
         }),
         stderr: ''
@@ -539,13 +540,13 @@ function createExplorer(
     requiredContract: {
       contractVersion: '1.0',
       commandSchemaVersions: {
-        test: '1.1'
+        test: '1.2'
       }
     },
     startProcess: options.startProcess ?? ((file, args) => {
       calls.push({ file, args });
       return {
-        onStdout: (listener) => listener(options.stdout ?? '{"type":"summary","document":"Book1","total":1,"passed":1,"failed":0,"errors":0}\n'),
+        onStdout: (listener) => listener(options.stdout ?? '{"type":"runStarted","project":"BookProject","document":"Book1"}\n{"type":"runFinished","project":"BookProject","document":"Book1","outcome":"passed","total":0,"passed":0,"failed":0,"errors":0}\n'),
         onStderr: (listener) => listener(options.stderr ?? ''),
         onExit: (listener) => listener(options.exitCode ?? 0, null),
         kill: () => undefined

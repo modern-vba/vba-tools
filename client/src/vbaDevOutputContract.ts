@@ -61,8 +61,6 @@ export interface VbaDevTestEvent {
   document?: string | undefined;
   module?: string | undefined;
   procedure?: string | undefined;
-  category?: string | undefined;
-  testName?: string | undefined;
   outcome?: string | undefined;
   message?: string | undefined;
   location?: VbaDevTestLocation | undefined;
@@ -268,8 +266,6 @@ function toTestEvent(value: unknown): VbaDevTestEvent | undefined {
     document: getString(value.document),
     module: getString(value.module),
     procedure: getString(value.procedure),
-    category: getString(value.category),
-    testName: getString(value.testName),
     outcome: getString(value.outcome),
     message: getString(value.message),
     location: toTestLocation(value.location)

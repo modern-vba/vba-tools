@@ -43,7 +43,7 @@ public sealed class TestCommand
                 .RunTests(context.BinDocumentPath, request.Selector)
                 .Select(row => TestResultRecord.FromWorkbookRow(context.DocumentName, row))
                 .ToArray();
-            var output = outputFormatter.Format(request.Format, results);
+            var output = outputFormatter.Format(request.Format, context.Manifest.ProjectName, context.DocumentName, results);
 
             return results.Any(result => !result.Outcome.Equals(TestOutcome.Passed, StringComparison.OrdinalIgnoreCase))
                 ? CommandResult.Failure(output)

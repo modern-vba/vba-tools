@@ -132,7 +132,7 @@ public sealed class CliSurfaceTests
         Assert.Contains("\"contractVersion\"", result.StandardOutput, StringComparison.Ordinal);
         Assert.Contains("\"commands\"", result.StandardOutput, StringComparison.Ordinal);
         Assert.Contains("\"build\"", result.StandardOutput, StringComparison.Ordinal);
-        Assert.Contains("\"test\":{\"outputSchemaVersion\":\"1.1\"}", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("\"test\":{\"outputSchemaVersion\":\"1.2\"}", result.StandardOutput, StringComparison.Ordinal);
         Assert.Empty(result.StandardError);
     }
 
@@ -151,7 +151,7 @@ public sealed class CliSurfaceTests
         Assert.Equal(0, help.ExitCode);
         Assert.Contains("vba-dev build", help.StandardOutput, StringComparison.Ordinal);
         Assert.Equal(0, capabilities.ExitCode);
-        Assert.Contains("\"test\":{\"outputSchemaVersion\":\"1.1\"}", capabilities.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("\"test\":{\"outputSchemaVersion\":\"1.2\"}", capabilities.StandardOutput, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -108,7 +108,7 @@ export class TestExplorerNodeIndex {
         continue;
       }
 
-      if (event.type === 'testFinished' || event.type === 'result') {
+      if (event.type === 'testFinished') {
         const item = this.resolveEventItem(controller, runMetadata, event, true);
         if (!item) {
           continue;
@@ -134,13 +134,7 @@ export class TestExplorerNodeIndex {
       }
 
       if (event.type === 'runFinished') {
-        const outcome = (event.outcome ?? '').toLowerCase();
-        if (outcome === 'failed' || outcome === 'error') {
-          errorItem = this.resolveEventItem(controller, runMetadata, event, false);
-          if (errorItem) {
-            testRun.errored(errorItem, event.message ?? 'vba-dev test failed.', toTestMessageLocation(event.location));
-          }
-        }
+        continue;
       }
     }
 
@@ -168,7 +162,7 @@ export class TestExplorerNodeIndex {
       return undefined;
     }
 
-    const moduleName = event.module ?? event.category;
+    const moduleName = event.module;
     if (!moduleName) {
       return documentItem;
     }
@@ -180,7 +174,7 @@ export class TestExplorerNodeIndex {
       return documentItem;
     }
 
-    const procedureName = event.procedure ?? event.testName;
+    const procedureName = event.procedure;
     if (!procedureName) {
       return moduleItem;
     }

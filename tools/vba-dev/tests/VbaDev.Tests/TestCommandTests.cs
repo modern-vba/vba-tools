@@ -12,19 +12,34 @@ namespace VbaDev.Tests;
 public sealed class TestCommandTests
 {
     [Fact]
-    public void NdjsonFormatEmitsOneRecordPerResultPlusSummary()
+    public void NdjsonFormatEmitsEventRecordsForWorkbookTestRun()
     {
-        var formatter = new TestResultOutputFormatter();
-        var results = SampleResults();
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        var binPath = Path.Combine(root, "bin", "Book1", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
+        File.WriteAllText(binPath, "bin", Encoding.UTF8);
+        var runner = new FakeWorkbookTestRunner(
+            new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", "", TimeSpan.FromMilliseconds(12.5)),
+            new WorkbookTestResultRow("Test_Module", "Test_Fails", "NG", "Expected 1 but was 2"),
+            new WorkbookTestResultRow("Test_Module", "Test_Errors", "ERR", "Runtime error"));
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
 
-        var output = formatter.Format("ndjson", results);
+        var result = application.Run(["test", "--no-build", "--format", "ndjson"]);
 
+        Assert.Equal(1, result.ExitCode);
         Assert.Equal(
-            "{\"type\":\"result\",\"document\":\"Book1\",\"category\":\"Test_Module\",\"testName\":\"Test_Passes\",\"outcome\":\"passed\",\"message\":\"\",\"durationMilliseconds\":12.5}\n" +
-            "{\"type\":\"result\",\"document\":\"Book1\",\"category\":\"Test_Module\",\"testName\":\"Test_Fails\",\"outcome\":\"failed\",\"message\":\"Expected 1 but was 2\"}\n" +
-            "{\"type\":\"result\",\"document\":\"Book1\",\"category\":\"Test_Module\",\"testName\":\"Test_Errors\",\"outcome\":\"error\",\"message\":\"Runtime error\"}\n" +
-            "{\"type\":\"summary\",\"document\":\"Book1\",\"total\":3,\"passed\":1,\"failed\":1,\"errors\":1}\n",
-            output);
+            "{\"type\":\"runStarted\",\"project\":\"Project\",\"document\":\"Book1\"}\n" +
+            "{\"type\":\"testStarted\",\"project\":\"Project\",\"document\":\"Book1\",\"module\":\"Test_Module\",\"procedure\":\"Test_Passes\"}\n" +
+            "{\"type\":\"testFinished\",\"project\":\"Project\",\"document\":\"Book1\",\"module\":\"Test_Module\",\"procedure\":\"Test_Passes\",\"outcome\":\"passed\",\"message\":\"\",\"durationMilliseconds\":12.5}\n" +
+            "{\"type\":\"testStarted\",\"project\":\"Project\",\"document\":\"Book1\",\"module\":\"Test_Module\",\"procedure\":\"Test_Fails\"}\n" +
+            "{\"type\":\"testFinished\",\"project\":\"Project\",\"document\":\"Book1\",\"module\":\"Test_Module\",\"procedure\":\"Test_Fails\",\"outcome\":\"failed\",\"message\":\"Expected 1 but was 2\"}\n" +
+            "{\"type\":\"testStarted\",\"project\":\"Project\",\"document\":\"Book1\",\"module\":\"Test_Module\",\"procedure\":\"Test_Errors\"}\n" +
+            "{\"type\":\"testFinished\",\"project\":\"Project\",\"document\":\"Book1\",\"module\":\"Test_Module\",\"procedure\":\"Test_Errors\",\"outcome\":\"error\",\"message\":\"Runtime error\"}\n" +
+            "{\"type\":\"runFinished\",\"project\":\"Project\",\"document\":\"Book1\",\"outcome\":\"failed\",\"total\":3,\"passed\":1,\"failed\":1,\"errors\":1}\n",
+            result.StandardOutput);
+        Assert.Equal(string.Empty, result.StandardError);
     }
 
     [Fact]
@@ -32,7 +47,7 @@ public sealed class TestCommandTests
     {
         var formatter = new TestResultOutputFormatter();
 
-        var output = formatter.Format("text", SampleResults());
+        var output = formatter.Format("text", "Project", "Book1", SampleResults());
 
         Assert.Equal(
             "Book1: 1 passed, 1 failed, 1 errors, 3 total\n" +
@@ -82,8 +97,10 @@ public sealed class TestCommandTests
 
         Assert.Equal(0, result.ExitCode);
         Assert.Equal([new WorkbookTestSelector("Test_Foo", "Test_Bar")], runner.Selectors);
-        Assert.Contains("\"category\":\"Test_Foo\"", result.StandardOutput, StringComparison.Ordinal);
-        Assert.Contains("\"testName\":\"Test_Bar\"", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("\"module\":\"Test_Foo\"", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("\"procedure\":\"Test_Bar\"", result.StandardOutput, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"category\"", result.StandardOutput, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"testName\"", result.StandardOutput, StringComparison.Ordinal);
     }
 
     [Fact]
