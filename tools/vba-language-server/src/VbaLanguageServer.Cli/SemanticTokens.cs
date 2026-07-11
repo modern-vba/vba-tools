@@ -160,10 +160,10 @@ internal static class VbaSemanticTokenBuilder
             VbaSourceDefinitionKind.EnumMember => "enumMember",
             VbaSourceDefinitionKind.Procedure => definition.ParentTypeName is null ? "function" : "method",
             VbaSourceDefinitionKind.Property => "property",
-            VbaSourceDefinitionKind.TypeMember => "property",
+            VbaSourceDefinitionKind.TypeMember => "field",
             VbaSourceDefinitionKind.Event => "event",
-            VbaSourceDefinitionKind.Constant => "variable",
-            VbaSourceDefinitionKind.Variable => "variable",
+            VbaSourceDefinitionKind.Constant => definition.Visibility == VbaSourceDefinitionVisibility.Local ? "variable" : "field",
+            VbaSourceDefinitionKind.Variable => definition.Visibility == VbaSourceDefinitionVisibility.Local ? "variable" : "field",
             VbaSourceDefinitionKind.Parameter => "parameter",
             _ => null
         };

@@ -52,6 +52,53 @@
         "path": "./syntaxes/vba.tmLanguage.json"
       }
     ],
+    "semanticTokenTypes": [
+      {
+        "id": "field",
+        "superType": "property",
+        "description": "A definition or reference to a module-level variable or user-defined type member."
+      }
+    ],
+    "semanticTokenScopes": [
+      {
+        "language": "vba",
+        "scopes": {
+          "class": [
+            "entity.name.type.class.vba"
+          ],
+          "struct": [
+            "entity.name.type.struct.vba"
+          ],
+          "enum": [
+            "entity.name.type.enum.vba"
+          ],
+          "enumMember": [
+            "variable.other.enummember.vba"
+          ],
+          "parameter": [
+            "variable.parameter.vba"
+          ],
+          "variable": [
+            "variable.other.readwrite.vba"
+          ],
+          "property": [
+            "variable.other.property.vba"
+          ],
+          "field": [
+            "entity.name.variable.field.vba"
+          ],
+          "event": [
+            "variable.other.event.vba"
+          ],
+          "function": [
+            "entity.name.function.vba"
+          ],
+          "method": [
+            "entity.name.function.member.vba"
+          ]
+        }
+      }
+    ],
     "commands": [
       {
         "command": "vbaTools.doctor",

@@ -329,7 +329,7 @@ public sealed class VbaSyntaxTreeProjectionTests
         Assert.Contains(index.GetWorkspaceSymbols("shared"), symbol => symbol.Name == "SharedName");
         Assert.Contains(index.GetSemanticTokens(uri), token =>
             token.Text == "SharedName"
-            && token.TokenType == "variable"
+            && token.TokenType == "field"
             && token.TokenModifiers.Contains("declaration"));
 
         var edit = Assert.IsType<VbaTextEdit>(index.FormatDocument(uri, tabSize: 4));

@@ -107,6 +107,16 @@ internal sealed class VbaSemanticResolution
             return null;
         }
 
+        if (TryResolveTypeReferenceDefinition(
+            currentDocument,
+            lines,
+            line,
+            identifier,
+            out var typeDefinition))
+        {
+            return typeDefinition;
+        }
+
         if (TryResolveWithEventsHandler(currentDocument, identifier.Name, out var eventDefinition))
         {
             return eventDefinition;
@@ -494,29 +504,61 @@ internal sealed class VbaSemanticResolution
         out ResolvedType resolvedType)
     {
         resolvedType = default!;
-        if (!string.IsNullOrWhiteSpace(typeReference.Qualifier))
+        if (!TryResolveTypeReferenceDefinition(currentDocument, typeReference, out var definition)
+            || definition is null)
         {
-            var referenceType = ResolveReferenceType(typeReference.Qualifier, typeReference.Name);
-            if (referenceType is not null)
-            {
-                resolvedType = referenceType;
-                return true;
-            }
-
-            var qualifiedSourceType = ResolveSourceType(typeReference.Name, typeReference.Qualifier);
-            if (qualifiedSourceType is not null)
-            {
-                resolvedType = qualifiedSourceType;
-                return true;
-            }
-
             return false;
         }
 
-        var sourceType = ResolveSourceType(typeReference.Name, qualifier: null);
-        if (sourceType is not null)
+        resolvedType = ToResolvedType(definition);
+        return true;
+    }
+
+    private bool TryResolveTypeReferenceDefinition(
+        VbaSourceDocument currentDocument,
+        string[] lines,
+        int line,
+        VbaIdentifierOccurrence identifier,
+        out VbaSourceDefinition? definition)
+    {
+        definition = null;
+        if (VbaLanguageVocabulary.IsKeyword(identifier.Name) ||
+            IsFollowedByDot(lines[line], identifier.End))
         {
-            resolvedType = sourceType;
+            return false;
+        }
+
+        var logicalPrefix = VbaSourceText.GetLogicalPrefix(lines, line, identifier.End);
+        if (!TryGetTypeReferencePrefix(logicalPrefix, out var typeReference))
+        {
+            return false;
+        }
+
+        TryResolveTypeReferenceDefinition(currentDocument, typeReference, out definition);
+        return true;
+    }
+
+    private bool TryResolveTypeReferenceDefinition(
+        VbaSourceDocument currentDocument,
+        VbaTypeReference typeReference,
+        out VbaSourceDefinition? definition)
+    {
+        definition = null;
+        if (!string.IsNullOrWhiteSpace(typeReference.Qualifier))
+        {
+            definition = ResolveReferenceTypeDefinition(typeReference.Qualifier, typeReference.Name);
+            if (definition is not null)
+            {
+                return true;
+            }
+
+            definition = ResolveSourceTypeDefinition(typeReference.Name, typeReference.Qualifier);
+            return definition is not null;
+        }
+
+        definition = ResolveSourceTypeDefinition(typeReference.Name, qualifier: null);
+        if (definition is not null)
+        {
             return true;
         }
 
@@ -531,7 +573,7 @@ internal sealed class VbaSemanticResolution
             return false;
         }
 
-        resolvedType = ToResolvedType(referenceTypeDefinition);
+        definition = referenceTypeDefinition;
         return true;
     }
 
@@ -659,6 +701,12 @@ internal sealed class VbaSemanticResolution
 
     private ResolvedType? ResolveReferenceType(string qualifier, string typeName)
     {
+        var definition = ResolveReferenceTypeDefinition(qualifier, typeName);
+        return definition is null ? null : ToResolvedType(definition);
+    }
+
+    private VbaSourceDefinition? ResolveReferenceTypeDefinition(string qualifier, string typeName)
+    {
         if (referenceSelection is null)
         {
             return null;
@@ -669,11 +717,16 @@ internal sealed class VbaSemanticResolution
             .Where(IsTypeDefinition)
             .Where(definition => definition.ParentTypeName is null)
             .ToArray();
-        var definition = ResolveReferenceCandidates(candidates);
-        return definition is null ? null : ToResolvedType(definition);
+        return ResolveReferenceCandidates(candidates);
     }
 
     private ResolvedType? ResolveSourceType(string typeName, string? qualifier)
+    {
+        var definition = ResolveSourceTypeDefinition(typeName, qualifier);
+        return definition is null ? null : ToResolvedType(definition);
+    }
+
+    private VbaSourceDefinition? ResolveSourceTypeDefinition(string typeName, string? qualifier)
     {
         var candidates = documents
             .SelectMany(document => document.Definitions)
@@ -681,7 +734,7 @@ internal sealed class VbaSemanticResolution
             .Where(definition => SameName(definition.Name, typeName))
             .Where(definition => qualifier is null || SameName(definition.ModuleName, qualifier))
             .ToArray();
-        return candidates.Length == 1 ? ToResolvedType(candidates[0]) : null;
+        return candidates.Length == 1 ? candidates[0] : null;
     }
 
     private VbaSourceDefinition? ResolveSourceTypeCompletionGroup(IReadOnlyList<VbaSourceDefinition> candidates)
@@ -912,6 +965,43 @@ internal sealed class VbaSemanticResolution
             logicalPrefix,
             "\\bAs\\s+(?:(?:[A-Za-z_][A-Za-z0-9_]*)\\s*\\.\\s*)?[A-Za-z_][A-Za-z0-9_]*$|\\bAs\\s*$",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    }
+
+    private static bool TryGetTypeReferencePrefix(string logicalPrefix, out VbaTypeReference typeReference)
+    {
+        typeReference = default!;
+        var match = Regex.Match(
+            logicalPrefix,
+            "\\bAs\\s+(?:New\\s+)?(?:(?<qualifier>[A-Za-z_][A-Za-z0-9_]*)\\s*\\.\\s*)?(?<type>[A-Za-z_][A-Za-z0-9_]*)\\s*$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (!match.Success)
+        {
+            match = Regex.Match(
+                logicalPrefix,
+                "\\bNew\\s+(?:(?<qualifier>[A-Za-z_][A-Za-z0-9_]*)\\s*\\.\\s*)?(?<type>[A-Za-z_][A-Za-z0-9_]*)\\s*$",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        }
+
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        var qualifier = match.Groups["qualifier"].Success
+            ? match.Groups["qualifier"].Value
+            : null;
+        typeReference = new VbaTypeReference(match.Groups["type"].Value, qualifier);
+        return true;
+    }
+
+    private static bool IsFollowedByDot(string line, int position)
+    {
+        while (position < line.Length && char.IsWhiteSpace(line[position]))
+        {
+            position++;
+        }
+
+        return position < line.Length && line[position] == '.';
     }
 
     private static bool TrySplitMemberExpression(

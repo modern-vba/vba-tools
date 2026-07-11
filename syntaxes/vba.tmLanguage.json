@@ -21,6 +21,12 @@
       "include": "#language-constant"
     },
     {
+      "include": "#declaration-end-keyword"
+    },
+    {
+      "include": "#control-keyword"
+    },
+    {
       "include": "#keyword"
     },
     {
@@ -62,9 +68,17 @@
       "name": "constant.language.vba",
       "match": "\\b(?:True|False|Nothing|Null|Empty)\\b"
     },
-    "keyword": {
+    "declaration-end-keyword": {
+      "name": "keyword.vba",
+      "match": "\\bEnd\\s+(?:Sub|Function|Property)\\b"
+    },
+    "control-keyword": {
       "name": "keyword.control.vba",
-      "match": "\\b(?:Public|Private|Friend|Dim|Static|Const|Sub|Function|Property|Get|Let|Set|End|If|Then|Else|ElseIf|For|Each|In|Next|Do|Loop|While|Wend|Select|Case|With|Enum|Type|Event|RaiseEvent|Implements|Option|Explicit|Base|Module|As|ByVal|ByRef|Optional|ParamArray|Call|New|Exit)\\b"
+      "match": "\\b(?:End(?!\\s+(?:Sub|Function|Property)\\b)|If|Then|Else|ElseIf|For|Each|In|Next|Do|Loop|While|Wend|Select|Case|With|Exit)\\b"
+    },
+    "keyword": {
+      "name": "keyword.vba",
+      "match": "\\b(?:Public|Private|Friend|Global|Dim|Static|Const|Sub|Function|Property|Get|Let|Set|Enum|Type|Event|RaiseEvent|Implements|Option|Explicit|Base|Module|As|ByVal|ByRef|Optional|ParamArray|Call|New|Declare|PtrSafe|Lib|Alias|WithEvents)\\b"
     },
     "number": {
       "name": "constant.numeric.vba",

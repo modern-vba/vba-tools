@@ -257,46 +257,52 @@ internal static class VbaSyntaxTreeParser
         var statements = new List<LogicalStatement>();
         for (var lineIndex = codeStartLine; lineIndex < sourceText.Lines.Count; lineIndex++)
         {
-            var startLine = sourceText.Lines[lineIndex];
-            var logicalText = new List<char>();
-            var sourcePositions = new List<VbaSyntaxPosition?>();
-            var endLine = startLine;
-            var isContinued = false;
-
-            while (lineIndex < sourceText.Lines.Count)
-            {
-                var line = sourceText.Lines[lineIndex];
-                endLine = line;
-                var codeText = StripApostropheComment(line.Text);
-                var hasContinuation = HasLineContinuation(codeText);
-                var part = hasContinuation ? RemoveLineContinuation(codeText) : codeText;
-                for (var character = 0; character < part.Length; character++)
-                {
-                    logicalText.Add(part[character]);
-                    sourcePositions.Add(new VbaSyntaxPosition(line.LineNumber, character, line.StartOffset + character));
-                }
-
-                if (!hasContinuation)
-                {
-                    break;
-                }
-
-                isContinued = true;
-                logicalText.Add(' ');
-                sourcePositions.Add(null);
-                lineIndex++;
-            }
-
-            statements.Add(new LogicalStatement(
-                new string(logicalText.ToArray()),
-                sourcePositions,
-                new VbaSyntaxRange(
-                    new VbaSyntaxPosition(startLine.LineNumber, 0, startLine.StartOffset),
-                    new VbaSyntaxPosition(endLine.LineNumber, endLine.Text.Length, endLine.EndOffset)),
-                isContinued));
+            var statement = CreateLogicalStatement(sourceText, lineIndex);
+            statements.Add(statement);
+            lineIndex = statement.Range.End.Line;
         }
 
         return statements;
+    }
+
+    private static LogicalStatement CreateLogicalStatement(SourceText sourceText, int startLineIndex)
+    {
+        var startLine = sourceText.Lines[startLineIndex];
+        var logicalText = new List<char>();
+        var sourcePositions = new List<VbaSyntaxPosition?>();
+        var endLine = startLine;
+        var isContinued = false;
+
+        for (var lineIndex = startLineIndex; lineIndex < sourceText.Lines.Count; lineIndex++)
+        {
+            var line = sourceText.Lines[lineIndex];
+            endLine = line;
+            var codeText = StripApostropheComment(line.Text);
+            var hasContinuation = HasLineContinuation(codeText);
+            var part = hasContinuation ? RemoveLineContinuation(codeText) : codeText;
+            for (var character = 0; character < part.Length; character++)
+            {
+                logicalText.Add(part[character]);
+                sourcePositions.Add(new VbaSyntaxPosition(line.LineNumber, character, line.StartOffset + character));
+            }
+
+            if (!hasContinuation)
+            {
+                break;
+            }
+
+            isContinued = true;
+            logicalText.Add(' ');
+            sourcePositions.Add(null);
+        }
+
+        return new LogicalStatement(
+            new string(logicalText.ToArray()),
+            sourcePositions,
+            new VbaSyntaxRange(
+                new VbaSyntaxPosition(startLine.LineNumber, 0, startLine.StartOffset),
+                new VbaSyntaxPosition(endLine.LineNumber, endLine.Text.Length, endLine.EndOffset)),
+            isContinued);
     }
 
     private static IReadOnlyList<VbaArgumentListSyntax> ParseArgumentLists(LogicalStatement statement)
@@ -791,10 +797,12 @@ internal static class VbaSyntaxTreeParser
             var procedureMatch = ProcedurePattern.Match(codeLine);
             if (procedureMatch.Success)
             {
+                var procedureStatement = CreateLogicalStatement(sourceText, lineIndex);
+                procedureMatch = ProcedurePattern.Match(procedureStatement.Text);
                 var declaration = CreateCallableDeclaration(
                     sourceText,
                     procedureMatch,
-                    line,
+                    procedureStatement,
                     lineIndex,
                     isStatic: procedureMatch.Groups["static"].Success);
                 members.Add(new VbaModuleMemberSyntax(
@@ -1221,6 +1229,41 @@ internal static class VbaSyntaxTreeParser
             IsStatic: isStatic);
     }
 
+    private static VbaCallableDeclarationSyntax CreateCallableDeclaration(
+        SourceText sourceText,
+        Match match,
+        LogicalStatement statement,
+        int lineIndex,
+        bool isStatic = false)
+    {
+        var name = match.Groups["name"].Value;
+        var documentation = ParseDocumentationComment(sourceText.Lines, lineIndex);
+        var parameters = ParseParameterSyntax(match, statement, documentation);
+        var signature = CreateSignature(name, parameters, statement.Text, documentation);
+        var typeReference = ParseReturnTypeReference(statement.Text);
+        var kind = match.Groups["kind"].Success && !match.Groups["propertyKind"].Success
+            ? VbaDeclarationKind.Procedure
+            : VbaDeclarationKind.Property;
+        var endKeyword = kind == VbaDeclarationKind.Property
+            ? "Property"
+            : match.Groups["kind"].Value;
+        var endLine = FindBlockEndLine(sourceText.Lines, statement.Range.End.Line + 1, endKeyword);
+
+        return new VbaCallableDeclarationSyntax(
+            name,
+            kind,
+            GetVisibility(match.Groups["visibility"].Value, defaultPublic: true),
+            RangeFromLogicalSpan(statement, match.Groups["name"].Index, match.Groups["name"].Index + name.Length),
+            CreateBlockRange(sourceText.Lines, lineIndex, endLine),
+            parameters,
+            documentation?.HoverText,
+            signature,
+            typeReference,
+            lineIndex,
+            statement.Text,
+            IsStatic: isStatic);
+    }
+
     private static VbaDeclarationSyntax CreateCallableSourceDeclaration(VbaCallableDeclarationSyntax declaration)
         => new(
             declaration.Name,
@@ -1426,6 +1469,40 @@ internal static class VbaSyntaxTreeParser
             parameters.Add(new VbaCallableParameterSyntax(
                 name,
                 sourceText.RangeForLine(line, start, start + name.Length),
+                documentation?.ParameterDocs.TryGetValue(name, out var parameterDocumentation) == true
+                    ? parameterDocumentation
+                    : null,
+                ParseTypeReference(segment.Text)));
+        }
+
+        return parameters;
+    }
+
+    private static IReadOnlyList<VbaCallableParameterSyntax> ParseParameterSyntax(
+        Match match,
+        LogicalStatement statement,
+        DocumentationComment? documentation)
+    {
+        var parametersGroup = match.Groups["parameters"];
+        if (!parametersGroup.Success || string.IsNullOrWhiteSpace(parametersGroup.Value))
+        {
+            return [];
+        }
+
+        var parameters = new List<VbaCallableParameterSyntax>();
+        foreach (var segment in SplitDeclarationSegments(parametersGroup.Value))
+        {
+            var name = ParseParameterName(segment.Text);
+            if (name is null)
+            {
+                continue;
+            }
+
+            var nameOffset = segment.Text.IndexOf(name, StringComparison.Ordinal);
+            var start = parametersGroup.Index + segment.Start + nameOffset;
+            parameters.Add(new VbaCallableParameterSyntax(
+                name,
+                RangeFromLogicalSpan(statement, start, start + name.Length),
                 documentation?.ParameterDocs.TryGetValue(name, out var parameterDocumentation) == true
                     ? parameterDocumentation
                     : null,

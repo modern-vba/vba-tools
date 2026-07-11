@@ -264,6 +264,7 @@ public sealed class VbaSourceIndex
         "parameter",
         "variable",
         "property",
+        "field",
         "enumMember",
         "event",
         "function",

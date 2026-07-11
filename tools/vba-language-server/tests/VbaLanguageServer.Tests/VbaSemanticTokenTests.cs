@@ -66,4 +66,113 @@ public sealed class VbaSemanticTokenTests
 
         Assert.DoesNotContain(index.GetSemanticTokens(uri), token => token.Text == "Dictionary");
     }
+
+    [Fact]
+    public void SemanticTokensCoverProjectTypeAnnotationsVariablesAndMembers()
+    {
+        const string workerUri = "file:///C:/work/Worker.bas";
+        const string rangeBoundsUri = "file:///C:/work/WorksheetRangeBounds.cls";
+        const string dialogFormUri = "file:///C:/work/DialogForm.frm";
+        var workerText = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Option Explicit",
+            "Public Sub Run( _",
+            "    Optional ByVal inputValue As Long = 1 _",
+            ")",
+            "    aaaa = inputValue",
+            "    Dim range_obj As WorksheetRangeBounds",
+            "    aaaa = range_obj.Column",
+            "    aaaa = range_obj.StartColumn",
+            "    Dim rangeInfo As RangeInfo",
+            "    aaaa = rangeInfo.FirstColumn",
+            "    Dim dialog As DialogForm",
+            "    Set dialog = New DialogForm",
+            "End Sub"
+        ]);
+        var rangeBoundsText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"WorksheetRangeBounds\"",
+            "Private pColumn As Long",
+            "Public StartColumn As Long",
+            "Public Property Get Column() As Long",
+            "    Column = pColumn",
+            "End Property"
+        ]);
+        var rangeInfoText = string.Join('\n', [
+            "Attribute VB_Name = \"RangeInfo\"",
+            "Public Type RangeInfo",
+            "    FirstColumn As Long",
+            "End Type"
+        ]);
+        var dialogFormText = string.Join('\n', [
+            "VERSION 5.00",
+            "Begin VB.Form DialogForm",
+            "End",
+            "Attribute VB_Name = \"DialogForm\"",
+            "Option Explicit"
+        ]);
+        var index = VbaSourceIndex.Build(
+            new Dictionary<string, string>
+            {
+                [workerUri] = workerText,
+                [rangeBoundsUri] = rangeBoundsText,
+                ["file:///C:/work/RangeInfo.bas"] = rangeInfoText,
+                [dialogFormUri] = dialogFormText
+            });
+
+        var tokens = index.GetSemanticTokens(workerUri);
+        var rangeBoundsTokens = index.GetSemanticTokens(rangeBoundsUri);
+        var rangeInfoTokens = index.GetSemanticTokens("file:///C:/work/RangeInfo.bas");
+
+        Assert.Contains(tokens, token =>
+            token.Text == "WorksheetRangeBounds"
+            && token.TokenType == "class"
+            && !token.TokenModifiers.Contains("declaration"));
+        Assert.Equal(
+            2,
+            tokens.Count(token =>
+                token.Text == "DialogForm"
+                && token.TokenType == "class"
+                && !token.TokenModifiers.Contains("declaration")));
+        Assert.Contains(tokens, token =>
+            token.Text == "range_obj"
+            && token.TokenType == "variable"
+            && token.TokenModifiers.Contains("declaration"));
+        Assert.Contains(tokens, token =>
+            token.Text == "inputValue"
+            && token.TokenType == "parameter"
+            && token.TokenModifiers.Contains("declaration"));
+        Assert.Contains(tokens, token =>
+            token.Text == "inputValue"
+            && token.TokenType == "parameter"
+            && !token.TokenModifiers.Contains("declaration"));
+        Assert.Contains(tokens, token =>
+            token.Text == "range_obj"
+            && token.TokenType == "variable"
+            && !token.TokenModifiers.Contains("declaration"));
+        Assert.Contains(tokens, token =>
+            token.Text == "Column"
+            && token.TokenType == "property"
+            && !token.TokenModifiers.Contains("declaration"));
+        Assert.Contains(tokens, token =>
+            token.Text == "StartColumn"
+            && token.TokenType == "field"
+            && !token.TokenModifiers.Contains("declaration"));
+        Assert.Contains(rangeBoundsTokens, token =>
+            token.Text == "pColumn"
+            && token.TokenType == "field"
+            && token.TokenModifiers.Contains("declaration"));
+        Assert.Contains(rangeBoundsTokens, token =>
+            token.Text == "pColumn"
+            && token.TokenType == "field"
+            && !token.TokenModifiers.Contains("declaration"));
+        Assert.Contains(rangeInfoTokens, token =>
+            token.Text == "FirstColumn"
+            && token.TokenType == "field"
+            && token.TokenModifiers.Contains("declaration"));
+        Assert.Contains(tokens, token =>
+            token.Text == "FirstColumn"
+            && token.TokenType == "field"
+            && !token.TokenModifiers.Contains("declaration"));
+    }
 }

@@ -36,6 +36,38 @@ test('extension contributes a VBA TextMate grammar for the vba language', () => 
   ]);
 });
 
+test('extension maps VBA semantic tokens to TextMate fallback scopes', () => {
+  const packageJson = readPackageJson<{
+    contributes?: {
+      semanticTokenTypes?: Array<{
+        id?: string;
+        superType?: string;
+      }>;
+      semanticTokenScopes?: Array<{
+        language?: string;
+        scopes?: Record<string, string[]>;
+      }>;
+    };
+  }>();
+  const mapping = packageJson.contributes?.semanticTokenScopes?.find(
+    (entry) => entry.language === 'vba'
+  )?.scopes;
+
+  assert.deepEqual(mapping?.class, ['entity.name.type.class.vba']);
+  assert.deepEqual(mapping?.variable, ['variable.other.readwrite.vba']);
+  assert.deepEqual(mapping?.property, ['variable.other.property.vba']);
+  assert.deepEqual(mapping?.field, ['entity.name.variable.field.vba']);
+  assert.deepEqual(mapping?.parameter, ['variable.parameter.vba']);
+  assert.deepEqual(mapping?.function, ['entity.name.function.vba']);
+  assert.deepEqual(mapping?.method, ['entity.name.function.member.vba']);
+
+  const fieldTokenType = packageJson.contributes?.semanticTokenTypes?.find(
+    (tokenType) => tokenType.id === 'field'
+  );
+  assert.equal(fieldTokenType?.id, 'field');
+  assert.equal(fieldTokenType?.superType, 'property');
+});
+
 test('extension does not contribute obsolete HostApplication settings', () => {
   const packageJson = readPackageJson<{
     contributes?: {
@@ -181,7 +213,13 @@ test('VBA TextMate grammar has lexical scopes for representative VBA fixtures', 
   assertPatternMatches(patterns, 'comment.block.documentation.vba', "'* @brief Reads a value.");
   assertPatternMatches(patterns, 'comment.line.apostrophe.vba', "' ordinary comment");
   assertPatternMatches(patterns, 'string.quoted.double.vba', '"a ""quoted"" value"');
-  assertPatternMatches(patterns, 'keyword.control.vba', 'Public Function BuildValue() As String');
+  assertPatternMatches(patterns, 'keyword.control.vba', 'If value Then');
+  assertPatternMatches(patterns, 'keyword.control.vba', 'End If');
+  assertPatternDoesNotMatch(patterns, 'keyword.control.vba', 'End Sub');
+  assertPatternMatches(patterns, 'keyword.vba', 'Public Function BuildValue() As String');
+  assertPatternMatches(patterns, 'keyword.vba', 'End Sub');
+  assertPatternMatches(patterns, 'keyword.vba', 'End Function');
+  assertPatternMatches(patterns, 'keyword.vba', 'End Property');
   assertPatternMatches(patterns, 'storage.type.intrinsic.vba', 'Dim value As String');
   assertPatternMatches(patterns, 'constant.language.vba', 'Set target = Nothing');
   assertPatternMatches(patterns, 'constant.numeric.vba', 'value = &HFF');
@@ -214,10 +252,24 @@ function flattenPatterns(grammar: TextMateGrammar): GrammarPattern[] {
 }
 
 function assertPatternMatches(patterns: GrammarPattern[], scopeName: string, fixture: string): void {
-  const pattern = patterns.find((candidate) => candidate.name === scopeName);
-  assert.ok(pattern, `Expected grammar scope ${scopeName}`);
+  assert.ok(
+    patterns.some((candidate) => patternMatches(candidate, scopeName, fixture)),
+    `Expected grammar scope ${scopeName} to match ${fixture}`
+  );
+}
+
+function assertPatternDoesNotMatch(patterns: GrammarPattern[], scopeName: string, fixture: string): void {
+  assert.ok(
+    !patterns.some((candidate) => patternMatches(candidate, scopeName, fixture)),
+    `Expected grammar scope ${scopeName} not to match ${fixture}`
+  );
+}
+
+function patternMatches(pattern: GrammarPattern, scopeName: string, fixture: string): boolean {
+  if (pattern.name !== scopeName) {
+    return false;
+  }
 
   const expression = pattern.match ?? pattern.begin;
-  assert.ok(expression, `Expected grammar scope ${scopeName} to have a match or begin pattern`);
-  assert.match(fixture, new RegExp(expression));
+  return expression !== undefined && new RegExp(expression).test(fixture);
 }
