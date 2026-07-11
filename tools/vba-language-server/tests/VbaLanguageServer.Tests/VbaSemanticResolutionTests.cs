@@ -138,6 +138,8 @@ public sealed class VbaSemanticResolutionTests
             "    Dim range_obj As WorksheetRangeBounds",
             "    range_obj.",
             "    range_obj.Col",
+            "    aaaa = range_obj.Column ",
+            "    aaaa = range_obj. ",
             "End Sub"
         ]);
         var rangeBoundsText = string.Join('\n', [
@@ -174,6 +176,14 @@ public sealed class VbaSemanticResolutionTests
         Assert.Contains("Column", partialLabels);
         Assert.Contains("ColumnCount", partialLabels);
         Assert.DoesNotContain("BuildValue", partialLabels);
+
+        var completedMemberCompletion = index.GetCompletionResult(workerUri, 8, "    aaaa = range_obj.Column ".Length);
+        Assert.Equal(VbaCompletionVocabularyKind.None, completedMemberCompletion.VocabularyKind);
+        Assert.Empty(completedMemberCompletion.Definitions);
+
+        var spacedDotCompletion = index.GetCompletionResult(workerUri, 9, "    aaaa = range_obj. ".Length);
+        Assert.Equal(VbaCompletionVocabularyKind.None, spacedDotCompletion.VocabularyKind);
+        Assert.Empty(spacedDotCompletion.Definitions);
 
         var bareTypeCompletion = index.GetCompletionResult(workerUri, 3, "    Dim bare As ".Length);
         Assert.Equal(VbaCompletionVocabularyKind.TypeName, bareTypeCompletion.VocabularyKind);

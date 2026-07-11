@@ -53,6 +53,12 @@ internal sealed class VbaSemanticResolution
     {
         var currentDocument = documents.FirstOrDefault(document => SameUri(document.Uri, uri));
         if (currentDocument is not null
+            && IsCompletionSuppressedAfterCompletedMemberAccess(currentDocument, line, character))
+        {
+            return new VbaCompletionResult([], VbaCompletionVocabularyKind.None);
+        }
+
+        if (currentDocument is not null
             && TryGetMemberCompletionDefinitions(currentDocument, line, character, out var memberDefinitions))
         {
             return new VbaCompletionResult(memberDefinitions, VbaCompletionVocabularyKind.None);
@@ -239,6 +245,21 @@ internal sealed class VbaSemanticResolution
 
         definitions = GetMembersOfType(receiverType);
         return true;
+    }
+
+    private bool IsCompletionSuppressedAfterCompletedMemberAccess(
+        VbaSourceDocument currentDocument,
+        int line,
+        int character)
+    {
+        var lines = VbaSourceText.SplitLines(currentDocument.Text);
+        if (line < 0 || line >= lines.Length)
+        {
+            return false;
+        }
+
+        var logicalPrefix = VbaSourceText.GetLogicalPrefix(lines, line, character);
+        return IsCompletedMemberAccessWithTrailingWhitespace(logicalPrefix);
     }
 
     private bool TryGetTypeCompletionDefinitions(
@@ -821,7 +842,12 @@ internal sealed class VbaSemanticResolution
     private static bool TryGetMemberReceiverExpression(string logicalPrefix, out string receiverExpression)
     {
         receiverExpression = "";
-        var trimmed = logicalPrefix.TrimEnd();
+        var trimmed = logicalPrefix;
+        if (string.IsNullOrEmpty(trimmed) || char.IsWhiteSpace(trimmed[^1]))
+        {
+            return false;
+        }
+
         var partialMatch = Regex.Match(
             trimmed,
             "[A-Za-z_][A-Za-z0-9_]*$",
@@ -854,6 +880,30 @@ internal sealed class VbaSemanticResolution
 
         receiverExpression = match.Groups["expression"].Value;
         return true;
+    }
+
+    private static bool IsCompletedMemberAccessWithTrailingWhitespace(string logicalPrefix)
+    {
+        if (string.IsNullOrEmpty(logicalPrefix) || !char.IsWhiteSpace(logicalPrefix[^1]))
+        {
+            return false;
+        }
+
+        var trimmed = logicalPrefix.TrimEnd();
+        if (string.IsNullOrEmpty(trimmed))
+        {
+            return false;
+        }
+
+        if (trimmed.EndsWith(".", StringComparison.Ordinal))
+        {
+            return TryGetMemberReceiverExpression(trimmed, out _);
+        }
+
+        return Regex.IsMatch(
+            trimmed,
+            "(?:\\.|[A-Za-z_][A-Za-z0-9_]*)(?:\\s*\\.\\s*[A-Za-z_][A-Za-z0-9_]*)+$",
+            RegexOptions.CultureInvariant);
     }
 
     private static bool IsTypeAnnotationCompletionPrefix(string logicalPrefix)

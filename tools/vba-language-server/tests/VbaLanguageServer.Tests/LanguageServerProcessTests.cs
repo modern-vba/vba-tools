@@ -712,6 +712,8 @@ public sealed class LanguageServerProcessTests
             "    Dim range_obj As WorksheetRangeBounds",
             "    range_obj.",
             "    range_obj.Col",
+            "    aaaa = range_obj.Column ",
+            "    aaaa = range_obj. ",
             "End Sub"
         ]);
         const string workerUri = "file:///C:/work/Worker.bas";
@@ -801,7 +803,31 @@ public sealed class LanguageServerProcessTests
         Assert.DoesNotContain("Sub", typeLabels);
         Assert.DoesNotContain("Then", typeLabels);
 
-        await SendRequestAsync(stdin, stdout, 6, "shutdown", null);
+        var completedMemberCompletion = await SendRequestAsync(
+            stdin,
+            stdout,
+            6,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new { line = 8, character = "    aaaa = range_obj.Column ".Length }
+            });
+        Assert.Empty(completedMemberCompletion.GetProperty("result").EnumerateArray());
+
+        var spacedDotCompletion = await SendRequestAsync(
+            stdin,
+            stdout,
+            7,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new { line = 9, character = "    aaaa = range_obj. ".Length }
+            });
+        Assert.Empty(spacedDotCompletion.GetProperty("result").EnumerateArray());
+
+        await SendRequestAsync(stdin, stdout, 8, "shutdown", null);
         await SendNotificationAsync(stdin, "exit", null);
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await process.WaitForExitAsync(cancellation.Token);
