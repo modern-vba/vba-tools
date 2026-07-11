@@ -1,7 +1,7 @@
 using System.Text.Json;
 using VbaLanguageServer.ProjectModel;
-using VbaLanguageServer.Parsing;
 using VbaLanguageServer.SourceModel;
+using VbaLanguageServer.Syntax;
 using VbaLanguageServer.Workspace;
 using Xunit;
 
@@ -43,8 +43,8 @@ public sealed class VbaLanguageWorkspaceTests
             line: 6,
             character: "    ".Length);
 
-        Assert.Equal(VbaModuleParseUpdateKind.FullModule, initialUpdate);
-        Assert.Equal(VbaModuleParseUpdateKind.ModuleMember, incrementalUpdate);
+        Assert.Equal(VbaSyntaxTreeParseUpdateKind.FullModule, initialUpdate);
+        Assert.Equal(VbaSyntaxTreeParseUpdateKind.ModuleMember, incrementalUpdate);
         Assert.NotNull(definition);
     }
 
@@ -92,6 +92,57 @@ public sealed class VbaLanguageWorkspaceTests
             Assert.Equal(
                 "Microsoft Excel 16.0 Object Library",
                 snapshot.ReferenceSelection.MainVbaProjectReference?.Name);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ProjectSnapshotIncludesDiskSourceFilesAndOverlaysTrackedDocuments()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-inventory-").FullName;
+        try
+        {
+            WriteProjectManifest(projectRoot);
+            var helperPath = Path.Combine(projectRoot, "src", "Book1", "Helper.bas");
+            var helperUri = ToFileUri(helperPath);
+            var callerUri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Caller.bas"));
+            File.WriteAllText(
+                helperPath,
+                string.Join('\n', [
+                    "Attribute VB_Name = \"Helper\"",
+                    "Public Function BuildValue() As String",
+                    "End Function"
+                ]));
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.CreateBundled()));
+            workspace.UpdateDocument(callerUri, string.Join('\n', [
+                "Attribute VB_Name = \"Caller\"",
+                "Public Sub Run()",
+                "    BuildValue",
+                "End Sub"
+            ]));
+
+            var diskDefinition = workspace
+                .CreateProjectSnapshot(callerUri)
+                .SourceIndex
+                .ResolveDefinition(callerUri, line: 2, character: "    ".Length);
+            workspace.UpdateDocument(helperUri, string.Join('\n', [
+                "Attribute VB_Name = \"Helper\"",
+                "Public Function BuildReplacement() As String",
+                "End Function"
+            ]));
+            var overlaySnapshot = workspace.CreateProjectSnapshot(callerUri);
+
+            Assert.Equal(helperUri, diskDefinition?.Uri);
+            Assert.DoesNotContain(
+                overlaySnapshot.SourceIndex.GetWorkspaceSymbols("BuildValue"),
+                symbol => symbol.Uri == helperUri);
+            Assert.Contains(
+                overlaySnapshot.SourceIndex.GetWorkspaceSymbols("BuildReplacement"),
+                symbol => symbol.Uri == helperUri);
         }
         finally
         {

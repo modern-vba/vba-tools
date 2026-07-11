@@ -1,6 +1,5 @@
 using System.Text.RegularExpressions;
 using VbaLanguageServer.Diagnostics;
-using VbaLanguageServer.Parsing;
 using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.Syntax;
 
@@ -60,7 +59,8 @@ public sealed record VbaSourceDocument(
     string Uri,
     string Text,
     string ModuleName,
-    IReadOnlyList<VbaSourceDefinition> Definitions);
+    IReadOnlyList<VbaSourceDefinition> Definitions,
+    VbaSyntaxTree? SyntaxTree = null);
 
 public sealed record VbaDefinitionLocation(string Uri, VbaRange Range);
 
@@ -110,21 +110,11 @@ public sealed class VbaSourceIndex
         "defaultLibrary"
     ];
 
-    private static readonly IReadOnlyDictionary<string, int> SemanticTokenTypeIndexes =
-        SemanticTokenTypes
-            .Select((tokenType, index) => new { tokenType, index })
-            .ToDictionary(item => item.tokenType, item => item.index, StringComparer.Ordinal);
-
-    private static readonly IReadOnlyDictionary<string, int> SemanticTokenModifierIndexes =
-        SemanticTokenModifiers
-            .Select((modifier, index) => new { modifier, index })
-            .ToDictionary(item => item.modifier, item => item.index, StringComparer.Ordinal);
-
     public static readonly IReadOnlyList<string> LanguageVocabulary = VbaLanguageVocabulary.Keywords;
 
     private readonly IReadOnlyList<VbaSourceDocument> documents;
-    private readonly VbaProjectReferenceSelection? referenceSelection;
-    private readonly VbaProjectReferenceCatalogSet referenceCatalogs;
+    private readonly VbaSemanticResolution semanticResolution;
+    private readonly VbaSourceFormatter sourceFormatter;
 
     private VbaSourceIndex(
         IReadOnlyList<VbaSourceDocument> documents,
@@ -132,8 +122,8 @@ public sealed class VbaSourceIndex
         VbaProjectReferenceCatalogSet referenceCatalogs)
     {
         this.documents = documents;
-        this.referenceSelection = referenceSelection;
-        this.referenceCatalogs = referenceCatalogs;
+        semanticResolution = new VbaSemanticResolution(documents, referenceSelection, referenceCatalogs);
+        sourceFormatter = new VbaSourceFormatter(semanticResolution);
     }
 
     public static VbaSourceIndex Build(
@@ -151,7 +141,7 @@ public sealed class VbaSourceIndex
     }
 
     public static VbaSourceIndex BuildFromSyntaxTrees(
-        IReadOnlyDictionary<string, VbaModuleSyntaxTree> sourceDocuments,
+        IReadOnlyDictionary<string, VbaSyntaxTree> sourceDocuments,
         VbaProjectReferenceSelection? referenceSelection = null,
         VbaProjectReferenceCatalogSet? referenceCatalogs = null)
     {
@@ -200,10 +190,10 @@ public sealed class VbaSourceIndex
         var references = new List<VbaDefinitionLocation>();
         foreach (var document in documents)
         {
-            var lines = SourceTextOccurrences.SplitLines(document.Text);
+            var lines = VbaSourceText.SplitLines(document.Text);
             for (var lineIndex = 0; lineIndex < lines.Length; lineIndex++)
             {
-                foreach (var occurrence in SourceTextOccurrences.FindIdentifierOccurrences(lines[lineIndex]))
+                foreach (var occurrence in VbaSourceText.FindIdentifierOccurrences(lines[lineIndex]))
                 {
                     var resolved = ResolveSourceDefinition(document.Uri, lineIndex, occurrence.Start);
                     if (resolved is null || !SameDefinition(resolved, target))
@@ -239,17 +229,7 @@ public sealed class VbaSourceIndex
         => VbaSemanticTokenBuilder.GetSemanticTokenData(GetSemanticTokens(uri));
 
     public IReadOnlyList<VbaSourceDefinition> GetCompletionDefinitions(string uri, int line, int character)
-    {
-        var currentDocument = documents.FirstOrDefault(document => SameUri(document.Uri, uri));
-        if (currentDocument is not null
-            && TryGetMemberCompletionDefinitions(currentDocument, line, character, out var memberDefinitions))
-        {
-            return memberDefinitions;
-        }
-
-        return CreateNameResolutionService()
-            .GetCompletionDefinitions(uri, new VbaPosition(line, character));
-    }
+        => semanticResolution.GetCompletionDefinitions(uri, line, character);
 
     public VbaDefinitionLocation? ResolveDefinition(string uri, int line, int character)
     {
@@ -258,98 +238,10 @@ public sealed class VbaSourceIndex
     }
 
     public VbaSourceDefinition? ResolveSourceDefinition(string uri, int line, int character)
-    {
-        var currentDocument = documents.FirstOrDefault(document => SameUri(document.Uri, uri));
-        if (currentDocument is null)
-        {
-            return null;
-        }
-
-        var lines = SourceTextOccurrences.SplitLines(currentDocument.Text);
-        if (line < 0 || line >= lines.Length)
-        {
-            return null;
-        }
-
-        if (!SourceTextOccurrences.IsCodePosition(lines[line], character))
-        {
-            return null;
-        }
-
-        var identifier = SourceTextOccurrences.GetIdentifierAt(lines[line], character);
-        if (identifier is null)
-        {
-            return null;
-        }
-
-        if (TryResolveWithEventsHandler(currentDocument, identifier.Name, out var eventDefinition))
-        {
-            return eventDefinition;
-        }
-
-        if (TryResolveMemberDefinition(currentDocument, line, identifier.Start, identifier.Name, out var memberDefinition))
-        {
-            return memberDefinition;
-        }
-
-        var qualifier = GetQualifierBefore(lines[line], identifier.Start);
-        return CreateNameResolutionService()
-            .Resolve(uri, new VbaPosition(line, character), qualifier, identifier.Name);
-    }
+        => semanticResolution.ResolveSourceDefinition(uri, line, character);
 
     public VbaSignatureHelp? GetSignatureHelp(string uri, int line, int character)
-    {
-        var currentDocument = documents.FirstOrDefault(document => SameUri(document.Uri, uri));
-        if (currentDocument is null)
-        {
-            return null;
-        }
-
-        var lines = SourceTextOccurrences.SplitLines(currentDocument.Text);
-        if (line < 0 || line >= lines.Length)
-        {
-            return null;
-        }
-
-        var logicalPrefix = GetLogicalPrefix(lines, line, character);
-        if (!TryResolveCalleeDefinition(currentDocument, line, character, logicalPrefix, out var definition, out var arguments))
-        {
-            return null;
-        }
-
-        if (definition?.Signature is null)
-        {
-            return null;
-        }
-
-        var activeParameter = GetActiveSignatureParameter(definition.Signature, arguments);
-        return new VbaSignatureHelp(definition.Signature, activeParameter);
-    }
-
-    private static int GetActiveSignatureParameter(VbaCallableSignature signature, string arguments)
-    {
-        var fallbackParameter = Math.Min(
-            arguments.Count(characterValue => characterValue == ','),
-            Math.Max(0, signature.Parameters.Count - 1));
-        var currentArgumentStart = arguments.LastIndexOf(',') + 1;
-        var currentArgument = arguments[currentArgumentStart..];
-        var namedArgumentMatch = Regex.Match(
-            currentArgument,
-            "^\\s*(?<name>[A-Za-z_][A-Za-z0-9_]*)\\s*:=",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-        if (!namedArgumentMatch.Success)
-        {
-            return fallbackParameter;
-        }
-
-        var parameterIndex = signature.Parameters
-            .Select((parameter, index) => new { parameter, index })
-            .FirstOrDefault(item => item.parameter.Name.Equals(
-                namedArgumentMatch.Groups["name"].Value,
-                StringComparison.OrdinalIgnoreCase))
-            ?.index;
-        return parameterIndex ?? fallbackParameter;
-    }
+        => semanticResolution.GetSignatureHelp(uri, line, character);
 
     public IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>>? CreateRenameChanges(
         string uri,
@@ -372,10 +264,10 @@ public sealed class VbaSourceIndex
         foreach (var document in documents)
         {
             var edits = new List<VbaTextEdit>();
-            var lines = SourceTextOccurrences.SplitLines(document.Text);
+            var lines = VbaSourceText.SplitLines(document.Text);
             for (var lineIndex = 0; lineIndex < lines.Length; lineIndex++)
             {
-                foreach (var occurrence in SourceTextOccurrences.FindIdentifierOccurrences(lines[lineIndex]))
+                foreach (var occurrence in VbaSourceText.FindIdentifierOccurrences(lines[lineIndex]))
                 {
                     if (!SameName(occurrence.Name, target.Name))
                     {
@@ -406,654 +298,7 @@ public sealed class VbaSourceIndex
     public VbaTextEdit? FormatDocument(string uri, int tabSize)
     {
         var document = documents.FirstOrDefault(candidate => SameUri(candidate.Uri, uri));
-        if (document is null)
-        {
-            return null;
-        }
-
-        var formattedText = FormatText(document, Math.Max(1, tabSize));
-        if (string.Equals(formattedText, document.Text, StringComparison.Ordinal))
-        {
-            return null;
-        }
-
-        var lines = SourceTextOccurrences.SplitLines(document.Text);
-        return new VbaTextEdit(
-            new VbaRange(
-                new VbaPosition(0, 0),
-                new VbaPosition(Math.Max(0, lines.Length - 1), lines.Length == 0 ? 0 : lines[^1].Length)),
-            formattedText);
-    }
-
-    private bool TryGetMemberCompletionDefinitions(
-        VbaSourceDocument currentDocument,
-        int line,
-        int character,
-        out IReadOnlyList<VbaSourceDefinition> definitions)
-    {
-        definitions = [];
-        var lines = SourceTextOccurrences.SplitLines(currentDocument.Text);
-        if (line < 0 || line >= lines.Length)
-        {
-            return false;
-        }
-
-        var logicalPrefix = GetLogicalPrefix(lines, line, character);
-        if (!TryGetMemberReceiverExpression(logicalPrefix, out var receiverExpression))
-        {
-            return false;
-        }
-
-        if (!TryResolveExpressionType(currentDocument, line, character, receiverExpression, out var receiverType))
-        {
-            return true;
-        }
-
-        definitions = GetMembersOfType(receiverType);
-        return true;
-    }
-
-    private bool TryResolveMemberDefinition(
-        VbaSourceDocument currentDocument,
-        int line,
-        int character,
-        string memberName,
-        out VbaSourceDefinition? definition)
-    {
-        definition = null;
-        var lines = SourceTextOccurrences.SplitLines(currentDocument.Text);
-        if (line < 0 || line >= lines.Length)
-        {
-            return false;
-        }
-
-        var logicalPrefix = GetLogicalPrefix(lines, line, character);
-        if (!TryGetMemberReceiverExpression(logicalPrefix, out var receiverExpression))
-        {
-            return false;
-        }
-
-        if (!TryResolveExpressionType(currentDocument, line, character, receiverExpression, out var receiverType))
-        {
-            return receiverExpression.Trim().Equals(".", StringComparison.Ordinal);
-        }
-
-        definition = ResolveMember(receiverType, memberName);
-        return true;
-    }
-
-    private bool TryResolveWithEventsHandler(
-        VbaSourceDocument currentDocument,
-        string handlerName,
-        out VbaSourceDefinition? eventDefinition)
-    {
-        eventDefinition = null;
-        foreach (var variable in currentDocument.Definitions
-            .Where(definition => definition.IsWithEvents)
-            .Where(definition => definition.TypeReference is not null)
-            .OrderByDescending(definition => definition.Name.Length))
-        {
-            var prefix = $"{variable.Name}_";
-            if (!handlerName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            var eventName = handlerName[prefix.Length..];
-            if (!TryResolveTypeReference(currentDocument, variable.TypeReference!, out var receiverType))
-            {
-                return true;
-            }
-
-            eventDefinition = ResolveEvent(receiverType, eventName);
-            return true;
-        }
-
-        return false;
-    }
-
-    private bool TryResolveCalleeDefinition(
-        VbaSourceDocument currentDocument,
-        int line,
-        int character,
-        string logicalPrefix,
-        out VbaSourceDefinition? definition,
-        out string arguments)
-    {
-        definition = null;
-        arguments = "";
-        var callMatch = Regex.Matches(
-                logicalPrefix,
-                "(?<callee>(?:\\.|[A-Za-z_][A-Za-z0-9_]*)(?:\\s*\\.\\s*[A-Za-z_][A-Za-z0-9_]*)*)\\s*\\((?<arguments>[^()]*)$",
-                RegexOptions.CultureInvariant)
-            .Cast<Match>()
-            .LastOrDefault();
-        if (callMatch is null)
-        {
-            return false;
-        }
-
-        arguments = callMatch.Groups["arguments"].Value;
-        var callee = NormalizeMemberExpression(callMatch.Groups["callee"].Value);
-        if (TrySplitMemberExpression(callee, out var receiverExpression, out var memberName))
-        {
-            if (TryResolveExpressionType(currentDocument, line, character, receiverExpression, out var receiverType))
-            {
-                definition = ResolveMember(receiverType, memberName);
-                return true;
-            }
-
-            if (receiverExpression.Equals(".", StringComparison.Ordinal))
-            {
-                return true;
-            }
-        }
-
-        var qualifier = GetQualifierFromCallee(callee);
-        var unqualifiedName = qualifier is null ? callee : callee[(qualifier.Length + 1)..];
-        definition = CreateNameResolutionService()
-            .Resolve(currentDocument.Uri, new VbaPosition(line, character), qualifier, unqualifiedName);
-        return true;
-    }
-
-    private bool TryResolveExpressionType(
-        VbaSourceDocument currentDocument,
-        int line,
-        int character,
-        string expression,
-        out ResolvedType resolvedType,
-        IReadOnlyList<ResolvedType>? withReceivers = null)
-    {
-        resolvedType = default!;
-        var normalized = NormalizeMemberExpression(expression);
-        if (string.IsNullOrWhiteSpace(normalized))
-        {
-            return false;
-        }
-
-        var parts = normalized.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (normalized.StartsWith(".", StringComparison.Ordinal))
-        {
-            if (withReceivers is { Count: > 0 })
-            {
-                resolvedType = withReceivers[^1];
-            }
-            else if (!TryGetWithReceiverType(currentDocument, line, character, out resolvedType))
-            {
-                return false;
-            }
-
-            foreach (var memberName in parts)
-            {
-                var member = ResolveMember(resolvedType, memberName);
-                if (member?.TypeReference is null || !TryResolveTypeReference(currentDocument, member.TypeReference, out resolvedType))
-                {
-                    return false;
-                }
-            }
-
-            return true;
-        }
-
-        if (parts.Length == 0)
-        {
-            return false;
-        }
-
-        if (parts.Length >= 2 && TryResolveTypeReference(currentDocument, new VbaTypeReference(parts[1], parts[0]), out resolvedType))
-        {
-            for (var index = 2; index < parts.Length; index++)
-            {
-                var member = ResolveMember(resolvedType, parts[index]);
-                if (member?.TypeReference is null || !TryResolveTypeReference(currentDocument, member.TypeReference, out resolvedType))
-                {
-                    return false;
-                }
-            }
-
-            return true;
-        }
-
-        var firstDefinition = CreateNameResolutionService()
-            .Resolve(currentDocument.Uri, new VbaPosition(line, character), null, parts[0]);
-        if (firstDefinition?.TypeReference is not null)
-        {
-            if (!TryResolveTypeReference(currentDocument, firstDefinition.TypeReference, out resolvedType))
-            {
-                return false;
-            }
-        }
-        else if (firstDefinition is not null && IsTypeDefinition(firstDefinition))
-        {
-            resolvedType = ToResolvedType(firstDefinition);
-        }
-        else
-        {
-            return false;
-        }
-
-        for (var index = 1; index < parts.Length; index++)
-        {
-            var member = ResolveMember(resolvedType, parts[index]);
-            if (member?.TypeReference is null || !TryResolveTypeReference(currentDocument, member.TypeReference, out resolvedType))
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    private bool TryResolveTypeReference(
-        VbaSourceDocument currentDocument,
-        VbaTypeReference typeReference,
-        out ResolvedType resolvedType)
-    {
-        resolvedType = default!;
-        if (!string.IsNullOrWhiteSpace(typeReference.Qualifier))
-        {
-            var referenceType = ResolveReferenceType(typeReference.Qualifier, typeReference.Name);
-            if (referenceType is not null)
-            {
-                resolvedType = referenceType;
-                return true;
-            }
-
-            var qualifiedSourceType = ResolveSourceType(typeReference.Name, typeReference.Qualifier);
-            if (qualifiedSourceType is not null)
-            {
-                resolvedType = qualifiedSourceType;
-                return true;
-            }
-
-            return false;
-        }
-
-        var sourceType = ResolveSourceType(typeReference.Name, qualifier: null);
-        if (sourceType is not null)
-        {
-            resolvedType = sourceType;
-            return true;
-        }
-
-        var referenceCandidates = GetActiveReferenceDefinitions()
-            .Where(definition => SameName(definition.Name, typeReference.Name))
-            .Where(IsTypeDefinition)
-            .Where(definition => definition.ParentTypeName is null)
-            .ToArray();
-        var referenceTypeDefinition = ResolveReferenceCandidates(referenceCandidates);
-        if (referenceTypeDefinition is null)
-        {
-            return false;
-        }
-
-        resolvedType = ToResolvedType(referenceTypeDefinition);
-        return true;
-    }
-
-    private bool TryGetWithReceiverType(
-        VbaSourceDocument currentDocument,
-        int targetLine,
-        int character,
-        out ResolvedType resolvedType)
-    {
-        resolvedType = default!;
-        var lines = SourceTextOccurrences.SplitLines(currentDocument.Text);
-        var stack = new List<ResolvedType>();
-        for (var lineIndex = 0; lineIndex < targetLine && lineIndex < lines.Length; lineIndex++)
-        {
-            var statement = GetLogicalStatement(lines, lineIndex, out var endLine);
-            if (endLine >= targetLine)
-            {
-                break;
-            }
-
-            var trimmed = statement.Trim();
-            if (Regex.IsMatch(trimmed, "^End\\s+With\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-            {
-                if (stack.Count > 0)
-                {
-                    stack.RemoveAt(stack.Count - 1);
-                }
-
-                lineIndex = endLine;
-                continue;
-            }
-
-            var withMatch = Regex.Match(
-                trimmed,
-                "^With\\s+(?<expression>.+)$",
-                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-            if (withMatch.Success
-                && TryResolveExpressionType(
-                    currentDocument,
-                    endLine,
-                    lines[Math.Min(endLine, lines.Length - 1)].Length,
-                    withMatch.Groups["expression"].Value,
-                    out var withType,
-                    stack))
-            {
-                stack.Add(withType);
-            }
-
-            lineIndex = endLine;
-        }
-
-        if (stack.Count == 0)
-        {
-            return false;
-        }
-
-        resolvedType = stack[^1];
-        return true;
-    }
-
-    private IReadOnlyList<VbaSourceDefinition> GetMembersOfType(ResolvedType resolvedType)
-        => GetMemberCandidates(resolvedType)
-            .GroupBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
-            .Where(group => group.Count() == 1)
-            .Select(group => group.Single())
-            .OrderBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-
-    private VbaSourceDefinition? ResolveMember(ResolvedType resolvedType, string memberName)
-    {
-        var candidates = GetMemberCandidates(resolvedType)
-            .Where(definition => SameName(definition.Name, memberName))
-            .ToArray();
-        return candidates.Length == 1 ? candidates[0] : null;
-    }
-
-    private VbaSourceDefinition? ResolveEvent(ResolvedType resolvedType, string eventName)
-    {
-        var candidates = GetMemberCandidates(resolvedType)
-            .Where(definition => definition.Kind == VbaSourceDefinitionKind.Event)
-            .Where(definition => SameName(definition.Name, eventName))
-            .ToArray();
-        return candidates.Length == 1 ? candidates[0] : null;
-    }
-
-    private IEnumerable<VbaSourceDefinition> GetMemberCandidates(ResolvedType resolvedType)
-    {
-        if (resolvedType.ReferenceName is not null)
-        {
-            return GetActiveReferenceDefinitions()
-                .Where(definition => SameName(definition.ModuleName, resolvedType.ReferenceName))
-                .Where(definition => definition.ParentTypeName is not null)
-                .Where(definition => SameName(definition.ParentTypeName!, resolvedType.Name));
-        }
-
-        return documents
-            .Where(document => SameName(document.ModuleName, resolvedType.Name))
-            .SelectMany(document => document.Definitions)
-            .Where(IsReferenceTarget);
-    }
-
-    private ResolvedType? ResolveReferenceType(string qualifier, string typeName)
-    {
-        if (referenceSelection is null)
-        {
-            return null;
-        }
-
-        var candidates = referenceCatalogs
-            .GetQualifiedDefinitions(referenceSelection, qualifier, typeName)
-            .Where(IsTypeDefinition)
-            .Where(definition => definition.ParentTypeName is null)
-            .ToArray();
-        var definition = ResolveReferenceCandidates(candidates);
-        return definition is null ? null : ToResolvedType(definition);
-    }
-
-    private ResolvedType? ResolveSourceType(string typeName, string? qualifier)
-    {
-        var candidates = documents
-            .SelectMany(document => document.Definitions)
-            .Where(IsTypeDefinition)
-            .Where(definition => SameName(definition.Name, typeName))
-            .Where(definition => qualifier is null || SameName(definition.ModuleName, qualifier))
-            .ToArray();
-        return candidates.Length == 1 ? ToResolvedType(candidates[0]) : null;
-    }
-
-    private VbaSourceDefinition? ResolveReferenceCandidates(IReadOnlyList<VbaSourceDefinition> candidates)
-    {
-        if (candidates.Count == 0)
-        {
-            return null;
-        }
-
-        if (candidates.Count == 1)
-        {
-            return candidates[0];
-        }
-
-        if (referenceSelection?.MainVbaProjectReference is not null)
-        {
-            var mainCandidates = candidates
-                .Where(definition => SameName(definition.ModuleName, referenceSelection.MainVbaProjectReference.Name))
-                .ToArray();
-            if (mainCandidates.Length == 1)
-            {
-                return mainCandidates[0];
-            }
-        }
-
-        return null;
-    }
-
-    private IReadOnlyList<VbaSourceDefinition> GetActiveReferenceDefinitions()
-        => referenceSelection is null
-            ? []
-            : referenceCatalogs.GetActiveDefinitions(referenceSelection);
-
-    private static bool TryGetMemberReceiverExpression(string logicalPrefix, out string receiverExpression)
-    {
-        receiverExpression = "";
-        var trimmed = logicalPrefix.TrimEnd();
-        if (!trimmed.EndsWith(".", StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        var beforeDot = trimmed[..^1].TrimEnd();
-        if (string.IsNullOrWhiteSpace(beforeDot))
-        {
-            receiverExpression = ".";
-            return true;
-        }
-
-        var match = Regex.Match(
-            beforeDot,
-            "(?<expression>(?:\\.|[A-Za-z_][A-Za-z0-9_]*)(?:\\s*\\.\\s*[A-Za-z_][A-Za-z0-9_]*)*)$",
-            RegexOptions.CultureInvariant);
-        if (!match.Success)
-        {
-            return false;
-        }
-
-        receiverExpression = match.Groups["expression"].Value;
-        return true;
-    }
-
-    private static bool TrySplitMemberExpression(
-        string expression,
-        out string receiverExpression,
-        out string memberName)
-    {
-        receiverExpression = "";
-        memberName = "";
-        var normalized = NormalizeMemberExpression(expression);
-        var lastDot = normalized.LastIndexOf('.');
-        if (lastDot < 0)
-        {
-            return false;
-        }
-
-        receiverExpression = lastDot == 0 ? "." : normalized[..lastDot];
-        memberName = normalized[(lastDot + 1)..];
-        return !string.IsNullOrWhiteSpace(memberName);
-    }
-
-    private static string? GetQualifierFromCallee(string callee)
-    {
-        var normalized = NormalizeMemberExpression(callee);
-        var lastDot = normalized.LastIndexOf('.');
-        return lastDot < 0 ? null : normalized[..lastDot];
-    }
-
-    private static string GetLogicalPrefix(string[] lines, int line, int character)
-    {
-        var startLine = line;
-        while (startLine > 0 && HasLineContinuation(lines[startLine - 1]))
-        {
-            startLine--;
-        }
-
-        var parts = new List<string>();
-        for (var lineIndex = startLine; lineIndex <= line; lineIndex++)
-        {
-            var text = lineIndex == line
-                ? lines[lineIndex][..Math.Clamp(character, 0, lines[lineIndex].Length)]
-                : lines[lineIndex];
-            parts.Add(RemoveLineContinuation(text));
-        }
-
-        return string.Join(' ', parts);
-    }
-
-    private static string GetLogicalStatement(string[] lines, int startLine, out int endLine)
-    {
-        var parts = new List<string>();
-        endLine = startLine;
-        while (endLine < lines.Length)
-        {
-            parts.Add(RemoveLineContinuation(lines[endLine]));
-            if (!HasLineContinuation(lines[endLine]))
-            {
-                break;
-            }
-
-            endLine++;
-        }
-
-        return string.Join(' ', parts);
-    }
-
-    private static bool HasLineContinuation(string line)
-        => line.TrimEnd().EndsWith("_", StringComparison.Ordinal);
-
-    private static string RemoveLineContinuation(string line)
-    {
-        var trimmed = line.TrimEnd();
-        return trimmed.EndsWith("_", StringComparison.Ordinal)
-            ? trimmed[..^1]
-            : line;
-    }
-
-    private static string NormalizeMemberExpression(string expression)
-        => Regex.Replace(expression, "\\s+", "", RegexOptions.CultureInvariant);
-
-    private static bool IsTypeDefinition(VbaSourceDefinition definition)
-        => definition.Kind is VbaSourceDefinitionKind.Class
-            or VbaSourceDefinitionKind.Form
-            or VbaSourceDefinitionKind.Type;
-
-    private static ResolvedType ToResolvedType(VbaSourceDefinition definition)
-        => new(
-            definition.Name,
-            VbaProjectReferenceCatalogSet.IsExternalDefinition(definition)
-                ? definition.ModuleName
-                : null);
-
-    private static bool TryCreateSemanticToken(
-        string[] lines,
-        VbaSourceDefinition definition,
-        bool isDeclaration,
-        out VbaSemanticToken token,
-        VbaRange? overrideRange = null,
-        string? overrideText = null)
-    {
-        token = default!;
-        var tokenType = GetSemanticTokenType(definition);
-        if (tokenType is null)
-        {
-            return false;
-        }
-
-        var range = overrideRange ?? definition.Range;
-        if (range.Start.Line < 0
-            || range.Start.Line >= lines.Length
-            || range.End.Line != range.Start.Line
-            || range.Start.Character < 0
-            || range.End.Character > lines[range.Start.Line].Length
-            || range.End.Character <= range.Start.Character)
-        {
-            return false;
-        }
-
-        var text = overrideText ?? lines[range.Start.Line][range.Start.Character..range.End.Character];
-        token = new VbaSemanticToken(
-            range,
-            text,
-            tokenType,
-            GetSemanticTokenModifiers(definition, isDeclaration));
-        return true;
-    }
-
-    private static string? GetSemanticTokenType(VbaSourceDefinition definition)
-        => definition.Kind switch
-        {
-            VbaSourceDefinitionKind.Class => "class",
-            VbaSourceDefinitionKind.Form => "class",
-            VbaSourceDefinitionKind.Type => "struct",
-            VbaSourceDefinitionKind.Enum => "enum",
-            VbaSourceDefinitionKind.EnumMember => "enumMember",
-            VbaSourceDefinitionKind.Procedure => definition.ParentTypeName is null ? "function" : "method",
-            VbaSourceDefinitionKind.Property => "property",
-            VbaSourceDefinitionKind.TypeMember => "property",
-            VbaSourceDefinitionKind.Event => "event",
-            VbaSourceDefinitionKind.Constant => "variable",
-            VbaSourceDefinitionKind.Variable => "variable",
-            VbaSourceDefinitionKind.Parameter => "parameter",
-            _ => null
-        };
-
-    private static IReadOnlyList<string> GetSemanticTokenModifiers(
-        VbaSourceDefinition definition,
-        bool isDeclaration)
-    {
-        var modifiers = new List<string>();
-        if (isDeclaration)
-        {
-            modifiers.Add("declaration");
-        }
-
-        if (definition.Kind == VbaSourceDefinitionKind.Constant)
-        {
-            modifiers.Add("readonly");
-        }
-
-        if (VbaProjectReferenceCatalogSet.IsExternalDefinition(definition))
-        {
-            modifiers.Add("defaultLibrary");
-        }
-
-        return modifiers;
-    }
-
-    private static int GetSemanticTokenModifierBits(IReadOnlyList<string> modifiers)
-    {
-        var bits = 0;
-        foreach (var modifier in modifiers)
-        {
-            if (SemanticTokenModifierIndexes.TryGetValue(modifier, out var index))
-            {
-                bits |= 1 << index;
-            }
-        }
-
-        return bits;
+        return document is null ? null : sourceFormatter.FormatDocument(document, tabSize);
     }
 
     private static string GetRangeKey(VbaRange range)
@@ -1061,52 +306,98 @@ public sealed class VbaSourceIndex
 
     private static VbaSourceDocument ParseDocument(string uri, string text)
     {
-        var syntaxTree = VbaModuleParser.Parse(uri, text);
+        var syntaxTree = VbaSyntaxTree.ParseModule(uri, text);
         return CreateDocument(uri, syntaxTree);
     }
 
-    private static VbaSourceDocument CreateDocument(string uri, VbaModuleSyntaxTree syntaxTree)
+    private static VbaSourceDocument CreateDocument(string uri, VbaSyntaxTree syntaxTree)
     {
         var definitions = new List<VbaSourceDefinition>();
-        var moduleDefinition = CreateModuleDefinition(uri, syntaxTree.Identity);
+        var moduleDefinition = CreateModuleDefinition(uri, syntaxTree.Module);
         definitions.Add(moduleDefinition);
-        definitions.AddRange(syntaxTree.Declarations.Select(declaration =>
+        definitions.AddRange(syntaxTree.Module.Declarations.Select(declaration =>
             CreateSourceDefinition(uri, moduleDefinition.Name, declaration)));
 
-        return new VbaSourceDocument(uri, syntaxTree.Text, moduleDefinition.Name, definitions);
+        return new VbaSourceDocument(uri, syntaxTree.Text, moduleDefinition.Name, definitions, syntaxTree);
     }
 
-    private static VbaSourceDefinition CreateModuleDefinition(string uri, VbaModuleIdentity identity)
+    private static VbaSourceDefinition CreateModuleDefinition(string uri, VbaModuleSyntax module)
     {
         return new VbaSourceDefinition(
-            identity.Name,
-            identity.Kind,
+            module.Identity.Name,
+            MapModuleKind(module.Kind),
             VbaSourceDefinitionVisibility.Public,
             uri,
-            identity.Name,
-            identity.Range);
+            module.Identity.Name,
+            MapRange(module.Identity.Range));
     }
 
     private static VbaSourceDefinition CreateSourceDefinition(
         string uri,
         string moduleName,
-        VbaSourceDeclarationSyntax declaration)
+        VbaDeclarationSyntax declaration)
     {
         return new VbaSourceDefinition(
             declaration.Name,
-            declaration.Kind,
-            declaration.Visibility,
+            MapDeclarationKind(declaration.Kind),
+            MapVisibility(declaration.Visibility),
             uri,
             moduleName,
-            declaration.Range,
+            MapRange(declaration.Range),
             declaration.ParentProcedureName,
-            declaration.ParentProcedureRange,
+            declaration.ParentProcedureRange is null ? null : MapRange(declaration.ParentProcedureRange),
             declaration.Documentation,
-            declaration.Signature,
+            declaration.Signature is null ? null : MapSignature(declaration.Signature),
             declaration.ParentTypeName,
-            declaration.TypeReference,
+            declaration.TypeReference is null ? null : MapTypeReference(declaration.TypeReference),
             declaration.IsWithEvents);
     }
+
+    private static VbaSourceDefinitionKind MapModuleKind(VbaModuleKind kind)
+        => kind switch
+        {
+            VbaModuleKind.ClassModule => VbaSourceDefinitionKind.Class,
+            VbaModuleKind.FormModule => VbaSourceDefinitionKind.Form,
+            _ => VbaSourceDefinitionKind.Module
+        };
+
+    private static VbaSourceDefinitionKind MapDeclarationKind(VbaDeclarationKind kind)
+        => kind switch
+        {
+            VbaDeclarationKind.Procedure => VbaSourceDefinitionKind.Procedure,
+            VbaDeclarationKind.Property => VbaSourceDefinitionKind.Property,
+            VbaDeclarationKind.Constant => VbaSourceDefinitionKind.Constant,
+            VbaDeclarationKind.Variable => VbaSourceDefinitionKind.Variable,
+            VbaDeclarationKind.Parameter => VbaSourceDefinitionKind.Parameter,
+            VbaDeclarationKind.Enum => VbaSourceDefinitionKind.Enum,
+            VbaDeclarationKind.EnumMember => VbaSourceDefinitionKind.EnumMember,
+            VbaDeclarationKind.Type => VbaSourceDefinitionKind.Type,
+            VbaDeclarationKind.TypeMember => VbaSourceDefinitionKind.TypeMember,
+            VbaDeclarationKind.Event => VbaSourceDefinitionKind.Event,
+            _ => VbaSourceDefinitionKind.Variable
+        };
+
+    private static VbaSourceDefinitionVisibility MapVisibility(VbaDeclarationVisibility visibility)
+        => visibility switch
+        {
+            VbaDeclarationVisibility.Public => VbaSourceDefinitionVisibility.Public,
+            VbaDeclarationVisibility.Local => VbaSourceDefinitionVisibility.Local,
+            _ => VbaSourceDefinitionVisibility.Private
+        };
+
+    private static VbaRange MapRange(VbaSyntaxRange range)
+        => new(
+            new VbaPosition(range.Start.Line, range.Start.Character),
+            new VbaPosition(range.End.Line, range.End.Character));
+
+    private static VbaCallableSignature MapSignature(VbaCallableSignatureSyntax signature)
+        => new(
+            signature.Label,
+            signature.Parameters.Select(parameter => new VbaCallableParameter(parameter.Name, parameter.Documentation)).ToArray(),
+            signature.Documentation);
+
+    private static VbaTypeReference MapTypeReference(VbaTypeReferenceSyntax typeReference)
+        => new(typeReference.Name, typeReference.Qualifier);
 
     private static bool IsReferenceTarget(VbaSourceDefinition definition)
         => definition.Visibility != VbaSourceDefinitionVisibility.Local
@@ -1123,625 +414,6 @@ public sealed class VbaSourceIndex
             && SameName(left.Name, right.Name)
             && ComparePosition(left.Range.Start, right.Range.Start) == 0
             && ComparePosition(left.Range.End, right.Range.End) == 0;
-
-    private string FormatText(VbaSourceDocument document, int tabSize)
-    {
-        var nameResolution = CreateNameResolutionService();
-        var declarationRanges = document.Definitions
-            .Select(definition => GetRangeKey(definition.Range))
-            .ToHashSet(StringComparer.Ordinal);
-        var syntaxTree = VbaModuleParser.Parse(document.Uri, document.Text).CoreSyntaxTree;
-        var formDesignerRange = syntaxTree.Module.FormDesignerBlock?.Range;
-        var lines = SourceFormatting.SplitLogicalLines(document.Text);
-        var indentationDepths = CreateIndentationDepths(lines, formDesignerRange);
-        var formattedLines = new List<string>(lines.Count);
-
-        for (var lineIndex = 0; lineIndex < lines.Count; lineIndex++)
-        {
-            var line = lines[lineIndex];
-            if (IsLineInRange(formDesignerRange, lineIndex))
-            {
-                formattedLines.Add(line);
-                continue;
-            }
-
-            if (string.IsNullOrWhiteSpace(line))
-            {
-                formattedLines.Add("");
-                continue;
-            }
-
-            var casedLine = FormatLineCasing(line, nameResolution, document, lineIndex, declarationRanges);
-            if (indentationDepths is null)
-            {
-                formattedLines.Add(casedLine);
-                continue;
-            }
-
-            var trimmed = casedLine.TrimStart();
-            formattedLines.Add($"{new string(' ', tabSize * indentationDepths[lineIndex])}{trimmed}");
-        }
-
-        var formattedText = string.Join(SourceFormatting.DetectDominantLineEnding(document.Text), formattedLines);
-        var edits = new SourceFormattingEditCollector();
-        if (!string.Equals(formattedText, document.Text, StringComparison.Ordinal))
-        {
-            edits.Replace(0, document.Text.Length, formattedText);
-        }
-
-        return edits.Apply(document.Text);
-    }
-
-    private string FormatLineCasing(
-        string line,
-        VbaNameResolutionService nameResolution,
-        VbaSourceDocument document,
-        int lineIndex,
-        IReadOnlySet<string> declarationRanges)
-    {
-        var commentStart = SourceTextOccurrences.FindApostropheCommentStart(line);
-        var codePart = commentStart < 0 ? line : line[..commentStart];
-        var commentPart = commentStart < 0 ? "" : line[commentStart..];
-
-        codePart = Regex.Replace(
-            codePart,
-            "^\\s*Attribute\\s+VB_Name",
-            match => match.Value[..^"Attribute VB_Name".Length] + "Attribute VB_Name",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-
-        var edits = new SourceFormattingEditCollector();
-        foreach (var occurrence in SourceTextOccurrences.FindIdentifierOccurrences(codePart))
-        {
-            var canonicalName = GetCanonicalFormattingName(
-                codePart,
-                occurrence,
-                nameResolution,
-                document,
-                lineIndex,
-                declarationRanges);
-            if (canonicalName is not null
-                && !string.Equals(occurrence.Name, canonicalName, StringComparison.Ordinal))
-            {
-                edits.Replace(occurrence.Start, occurrence.End, canonicalName);
-            }
-        }
-
-        return edits.Apply(codePart) + commentPart;
-    }
-
-    private string? GetCanonicalFormattingName(
-        string codePart,
-        IdentifierAtPosition occurrence,
-        VbaNameResolutionService nameResolution,
-        VbaSourceDocument document,
-        int lineIndex,
-        IReadOnlySet<string> declarationRanges)
-    {
-        if (VbaLanguageVocabulary.CanonicalKeywords.TryGetValue(occurrence.Name, out var keyword))
-        {
-            return keyword;
-        }
-
-        var occurrenceRange = new VbaRange(
-            new VbaPosition(lineIndex, occurrence.Start),
-            new VbaPosition(lineIndex, occurrence.End));
-        if (declarationRanges.Contains(GetRangeKey(occurrenceRange)))
-        {
-            return null;
-        }
-
-        if (TryGetMemberChainCanonicalName(
-            codePart,
-            occurrence,
-            nameResolution,
-            document,
-            lineIndex,
-            out var memberChainCanonicalName))
-        {
-            return memberChainCanonicalName;
-        }
-
-        if (TryGetQualifiedCanonicalName(
-            codePart,
-            occurrence,
-            nameResolution,
-            document.Uri,
-            lineIndex,
-            out var qualifiedCanonicalName))
-        {
-            return qualifiedCanonicalName;
-        }
-
-        if (IsQualifiedIdentifierOccurrence(codePart, occurrence))
-        {
-            return null;
-        }
-
-        var definition = nameResolution.Resolve(
-            document.Uri,
-            new VbaPosition(lineIndex, occurrence.Start),
-            qualifier: null,
-            occurrence.Name);
-        if (definition is null)
-        {
-            return null;
-        }
-
-        return definition.Name;
-    }
-
-    private bool TryGetMemberChainCanonicalName(
-        string codePart,
-        IdentifierAtPosition occurrence,
-        VbaNameResolutionService nameResolution,
-        VbaSourceDocument document,
-        int lineIndex,
-        out string? canonicalName)
-    {
-        canonicalName = null;
-        if (TryGetPreviousMemberReceiverExpression(codePart, occurrence, out var receiverExpression))
-        {
-            if (!TryResolveExpressionType(document, lineIndex, occurrence.Start, receiverExpression, out var receiverType))
-            {
-                return false;
-            }
-
-            var member = ResolveMember(receiverType, occurrence.Name);
-            canonicalName = member?.Name;
-            return canonicalName is not null;
-        }
-
-        if (!TryGetNextMember(codePart, occurrence, out _))
-        {
-            return false;
-        }
-
-        var definition = nameResolution.Resolve(
-            document.Uri,
-            new VbaPosition(lineIndex, occurrence.Start),
-            qualifier: null,
-            occurrence.Name);
-        canonicalName = definition?.Name;
-        return canonicalName is not null;
-    }
-
-    private bool TryGetQualifiedCanonicalName(
-        string codePart,
-        IdentifierAtPosition occurrence,
-        VbaNameResolutionService nameResolution,
-        string uri,
-        int lineIndex,
-        out string? canonicalName)
-    {
-        canonicalName = null;
-        if (TryGetPreviousQualifier(codePart, occurrence, out var qualifier))
-        {
-            var definition = ResolveQualifiedDefinition(
-                nameResolution,
-                uri,
-                lineIndex,
-                qualifier.Name,
-                occurrence.Name);
-            canonicalName = definition?.Name;
-            return canonicalName is not null;
-        }
-
-        if (TryGetNextMember(codePart, occurrence, out var member))
-        {
-            var definition = ResolveQualifiedDefinition(
-                nameResolution,
-                uri,
-                lineIndex,
-                occurrence.Name,
-                member.Name);
-            canonicalName = definition is null
-                ? null
-                : GetCanonicalQualifierName(definition, occurrence.Name);
-            return canonicalName is not null;
-        }
-
-        return false;
-    }
-
-    private static VbaSourceDefinition? ResolveQualifiedDefinition(
-        VbaNameResolutionService nameResolution,
-        string uri,
-        int lineIndex,
-        string qualifier,
-        string identifier)
-    {
-        var definition = nameResolution.Resolve(
-            uri,
-            new VbaPosition(lineIndex, 0),
-            qualifier,
-            identifier);
-        return definition;
-    }
-
-    private string? GetCanonicalQualifierName(VbaSourceDefinition definition, string qualifier)
-    {
-        if (!VbaProjectReferenceCatalogSet.IsExternalDefinition(definition))
-        {
-            return definition.ModuleName;
-        }
-
-        return referenceSelection is null
-            ? null
-            : referenceCatalogs.GetActiveCanonicalQualifierAlias(referenceSelection, definition.ModuleName, qualifier);
-    }
-
-    private static bool TryGetPreviousMemberReceiverExpression(
-        string codePart,
-        IdentifierAtPosition occurrence,
-        out string receiverExpression)
-    {
-        receiverExpression = "";
-        var dotIndex = occurrence.Start - 1;
-        while (dotIndex >= 0 && char.IsWhiteSpace(codePart[dotIndex]))
-        {
-            dotIndex--;
-        }
-
-        if (dotIndex < 0 || codePart[dotIndex] != '.')
-        {
-            return false;
-        }
-
-        receiverExpression = codePart[..dotIndex].Trim();
-        return !string.IsNullOrWhiteSpace(receiverExpression);
-    }
-
-    private static bool IsQualifiedIdentifierOccurrence(string codePart, IdentifierAtPosition occurrence)
-    {
-        return TryGetPreviousQualifier(codePart, occurrence, out _)
-            || TryGetNextMember(codePart, occurrence, out _);
-    }
-
-    private static bool TryGetPreviousQualifier(
-        string codePart,
-        IdentifierAtPosition occurrence,
-        out IdentifierAtPosition qualifier)
-    {
-        qualifier = new IdentifierAtPosition("", 0, 0);
-        var dotIndex = occurrence.Start - 1;
-        while (dotIndex >= 0 && char.IsWhiteSpace(codePart[dotIndex]))
-        {
-            dotIndex--;
-        }
-
-        if (dotIndex < 0 || codePart[dotIndex] != '.')
-        {
-            return false;
-        }
-
-        var qualifierEnd = dotIndex - 1;
-        while (qualifierEnd >= 0 && char.IsWhiteSpace(codePart[qualifierEnd]))
-        {
-            qualifierEnd--;
-        }
-
-        if (qualifierEnd < 0 || !SourceTextOccurrences.IsIdentifierCharacter(codePart[qualifierEnd]))
-        {
-            return false;
-        }
-
-        var qualifierStart = qualifierEnd;
-        while (qualifierStart > 0 && SourceTextOccurrences.IsIdentifierCharacter(codePart[qualifierStart - 1]))
-        {
-            qualifierStart--;
-        }
-
-        qualifier = new IdentifierAtPosition(
-            codePart[qualifierStart..(qualifierEnd + 1)],
-            qualifierStart,
-            qualifierEnd + 1);
-        return true;
-    }
-
-    private static bool TryGetNextMember(
-        string codePart,
-        IdentifierAtPosition occurrence,
-        out IdentifierAtPosition member)
-    {
-        member = new IdentifierAtPosition("", 0, 0);
-        var dotIndex = occurrence.End;
-        while (dotIndex < codePart.Length && char.IsWhiteSpace(codePart[dotIndex]))
-        {
-            dotIndex++;
-        }
-
-        if (dotIndex >= codePart.Length || codePart[dotIndex] != '.')
-        {
-            return false;
-        }
-
-        var memberStart = dotIndex + 1;
-        while (memberStart < codePart.Length && char.IsWhiteSpace(codePart[memberStart]))
-        {
-            memberStart++;
-        }
-
-        if (memberStart >= codePart.Length || !SourceTextOccurrences.IsIdentifierStart(codePart[memberStart]))
-        {
-            return false;
-        }
-
-        var memberEnd = memberStart + 1;
-        while (memberEnd < codePart.Length && SourceTextOccurrences.IsIdentifierCharacter(codePart[memberEnd]))
-        {
-            memberEnd++;
-        }
-
-        member = new IdentifierAtPosition(codePart[memberStart..memberEnd], memberStart, memberEnd);
-        return true;
-    }
-
-    private static int[]? CreateIndentationDepths(
-        IReadOnlyList<string> lines,
-        VbaSyntaxRange? formDesignerRange)
-    {
-        var depths = new int[lines.Count];
-        var blockStack = new Stack<string>();
-        var inContinuation = false;
-        var continuationDepth = 0;
-
-        for (var lineIndex = 0; lineIndex < lines.Count; lineIndex++)
-        {
-            if (IsLineInRange(formDesignerRange, lineIndex))
-            {
-                continue;
-            }
-
-            var codePart = SourceTextOccurrences.StripApostropheComment(lines[lineIndex]);
-            var trimmed = codePart.TrimStart();
-            if (string.IsNullOrWhiteSpace(trimmed)
-                || IsFormattingIgnoredCodeLine(trimmed))
-            {
-                depths[lineIndex] = inContinuation ? continuationDepth : blockStack.Count;
-                inContinuation = HasLineContinuation(codePart);
-                continue;
-            }
-
-            if (inContinuation)
-            {
-                depths[lineIndex] = continuationDepth;
-                inContinuation = HasLineContinuation(codePart);
-                continue;
-            }
-
-            var closeTerminator = GetIndentationCloseTerminator(trimmed);
-            var branchTerminator = GetIndentationBranchTerminator(trimmed);
-            if (closeTerminator is not null)
-            {
-                if (blockStack.Count == 0
-                    || !blockStack.Peek().Equals(closeTerminator, StringComparison.OrdinalIgnoreCase))
-                {
-                    return null;
-                }
-
-                blockStack.Pop();
-                depths[lineIndex] = blockStack.Count;
-            }
-            else if (branchTerminator is not null)
-            {
-                if (blockStack.Count == 0
-                    || !blockStack.Peek().Equals(branchTerminator, StringComparison.OrdinalIgnoreCase))
-                {
-                    return null;
-                }
-
-                depths[lineIndex] = Math.Max(0, blockStack.Count - 1);
-            }
-            else
-            {
-                depths[lineIndex] = blockStack.Count;
-            }
-
-            var openTerminator = GetIndentationOpenTerminator(trimmed);
-            if (openTerminator is not null)
-            {
-                blockStack.Push(openTerminator);
-            }
-
-            if (HasLineContinuation(codePart))
-            {
-                inContinuation = true;
-                continuationDepth = depths[lineIndex] + 1;
-            }
-        }
-
-        return blockStack.Count == 0 && !inContinuation ? depths : null;
-    }
-
-    private static bool IsLineInRange(VbaSyntaxRange? range, int line)
-        => range is not null
-            && line >= range.Start.Line
-            && line <= range.End.Line
-            && (line != range.End.Line || range.End.Character > 0);
-
-    private static bool IsFormattingIgnoredCodeLine(string trimmedLine)
-        => Regex.IsMatch(trimmedLine, "^Attribute\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)
-            || Regex.IsMatch(trimmedLine, "^Option\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)
-            || trimmedLine.StartsWith("#", StringComparison.Ordinal);
-
-    private static string? GetIndentationOpenTerminator(string trimmedLine)
-    {
-        if (Regex.IsMatch(
-            trimmedLine,
-            "^((Public|Private|Friend)\\s+)?(Static\\s+)?Sub\\b",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Sub";
-        }
-
-        if (Regex.IsMatch(
-            trimmedLine,
-            "^((Public|Private|Friend)\\s+)?(Static\\s+)?Function\\b",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Function";
-        }
-
-        if (Regex.IsMatch(
-            trimmedLine,
-            "^((Public|Private|Friend)\\s+)?(Static\\s+)?Property\\b",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Property";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^If\\b.*\\bThen\\s*$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End If";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^Select\\s+Case\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Select";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^With\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End With";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^For\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)
-            && !Regex.IsMatch(trimmedLine, ":\\s*Next\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "Next";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^Do\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)
-            && !Regex.IsMatch(trimmedLine, ":\\s*Loop\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "Loop";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^While\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "Wend";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^((Public|Private|Friend)\\s+)?Enum\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Enum";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^((Public|Private|Friend)\\s+)?Type\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Type";
-        }
-
-        return null;
-    }
-
-    private static string? GetIndentationCloseTerminator(string trimmedLine)
-    {
-        if (Regex.IsMatch(trimmedLine, "^End\\s+Sub\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Sub";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^End\\s+Function\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Function";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^End\\s+Property\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Property";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^End\\s+If\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End If";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^End\\s+Select\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Select";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^End\\s+With\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End With";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^Next\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "Next";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^Loop\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "Loop";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^Wend\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "Wend";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^End\\s+Enum\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Enum";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^End\\s+Type\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Type";
-        }
-
-        return null;
-    }
-
-    private static string? GetIndentationBranchTerminator(string trimmedLine)
-    {
-        if (Regex.IsMatch(trimmedLine, "^(Else|ElseIf)\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End If";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^Case\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Select";
-        }
-
-        return null;
-    }
-
-    private static string? GetQualifierBefore(string line, int identifierStart)
-    {
-        var dotIndex = identifierStart - 1;
-        while (dotIndex >= 0 && char.IsWhiteSpace(line[dotIndex]))
-        {
-            dotIndex--;
-        }
-
-        if (dotIndex < 0 || line[dotIndex] != '.')
-        {
-            return null;
-        }
-
-        var qualifierEnd = dotIndex - 1;
-        while (qualifierEnd >= 0 && char.IsWhiteSpace(line[qualifierEnd]))
-        {
-            qualifierEnd--;
-        }
-
-        if (qualifierEnd < 0 || !SourceTextOccurrences.IsIdentifierCharacter(line[qualifierEnd]))
-        {
-            return null;
-        }
-
-        var qualifierStart = qualifierEnd;
-        while (qualifierStart > 0 && SourceTextOccurrences.IsIdentifierCharacter(line[qualifierStart - 1]))
-        {
-            qualifierStart--;
-        }
-
-        return line[qualifierStart..(qualifierEnd + 1)];
-    }
 
     private static bool IsIdentifierName(string value)
         => Regex.IsMatch(
@@ -1760,10 +432,4 @@ public sealed class VbaSourceIndex
         var lineComparison = left.Line.CompareTo(right.Line);
         return lineComparison != 0 ? lineComparison : left.Character.CompareTo(right.Character);
     }
-
-    private VbaNameResolutionService CreateNameResolutionService()
-        => new(documents, referenceSelection, referenceCatalogs);
-
-    private sealed record ResolvedType(string Name, string? ReferenceName);
-
 }

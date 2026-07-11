@@ -1,4 +1,5 @@
 using VbaLanguageServer.Diagnostics;
+using VbaLanguageServer.Syntax;
 
 namespace VbaLanguageServer.SourceModel;
 
@@ -25,7 +26,7 @@ internal static class VbaSemanticTokenBuilder
             return [];
         }
 
-        var lines = SourceTextOccurrences.SplitLines(currentDocument.Text);
+        var lines = VbaSourceText.SplitLines(currentDocument.Text);
         var tokens = new List<VbaSemanticToken>();
         var declarationRanges = new HashSet<string>(StringComparer.Ordinal);
         foreach (var definition in currentDocument.Definitions)
@@ -41,7 +42,7 @@ internal static class VbaSemanticTokenBuilder
 
         for (var lineIndex = 0; lineIndex < lines.Length; lineIndex++)
         {
-            foreach (var occurrence in SourceTextOccurrences.FindIdentifierOccurrences(lines[lineIndex]))
+            foreach (var occurrence in VbaSourceText.FindIdentifierOccurrences(lines[lineIndex]))
             {
                 var occurrenceRange = new VbaRange(
                     new VbaPosition(lineIndex, occurrence.Start),

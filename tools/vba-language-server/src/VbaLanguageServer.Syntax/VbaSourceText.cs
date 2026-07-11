@@ -1,15 +1,44 @@
-namespace VbaLanguageServer.SourceModel;
+namespace VbaLanguageServer.Syntax;
 
-internal sealed record IdentifierAtPosition(string Name, int Start, int End);
+public sealed record VbaIdentifierOccurrence(string Name, int Start, int End);
 
-internal static class SourceTextOccurrences
+public static class VbaSourceText
 {
     public static string[] SplitLines(string source)
         => source.Replace("\r\n", "\n", StringComparison.Ordinal)
             .Replace('\r', '\n')
             .Split('\n');
 
-    public static IEnumerable<IdentifierAtPosition> FindIdentifierOccurrences(string line)
+    public static IReadOnlyList<string> SplitLogicalLines(string source)
+    {
+        var lines = new List<string>();
+        var lineStart = 0;
+        for (var index = 0; index < source.Length; index++)
+        {
+            if (source[index] == '\r')
+            {
+                lines.Add(source[lineStart..index]);
+                if (index + 1 < source.Length && source[index + 1] == '\n')
+                {
+                    index++;
+                }
+
+                lineStart = index + 1;
+                continue;
+            }
+
+            if (source[index] == '\n')
+            {
+                lines.Add(source[lineStart..index]);
+                lineStart = index + 1;
+            }
+        }
+
+        lines.Add(source[lineStart..]);
+        return lines;
+    }
+
+    public static IEnumerable<VbaIdentifierOccurrence> FindIdentifierOccurrences(string line)
     {
         var inString = false;
         for (var index = 0; index < line.Length; index++)
@@ -44,12 +73,12 @@ internal static class SourceTextOccurrences
                 index++;
             }
 
-            yield return new IdentifierAtPosition(line[start..index], start, index);
+            yield return new VbaIdentifierOccurrence(line[start..index], start, index);
             index--;
         }
     }
 
-    public static IdentifierAtPosition? GetIdentifierAt(string line, int character)
+    public static VbaIdentifierOccurrence? GetIdentifierAt(string line, int character)
     {
         if (line.Length == 0)
         {
@@ -79,7 +108,7 @@ internal static class SourceTextOccurrences
             end++;
         }
 
-        return new IdentifierAtPosition(line[start..end], start, end);
+        return new VbaIdentifierOccurrence(line[start..end], start, end);
     }
 
     public static bool IsCodePosition(string line, int character)
@@ -115,6 +144,44 @@ internal static class SourceTextOccurrences
         return !inString;
     }
 
+    public static string GetLogicalPrefix(string[] lines, int line, int character)
+    {
+        var startLine = line;
+        while (startLine > 0 && HasLineContinuation(lines[startLine - 1]))
+        {
+            startLine--;
+        }
+
+        var parts = new List<string>();
+        for (var lineIndex = startLine; lineIndex <= line; lineIndex++)
+        {
+            var text = lineIndex == line
+                ? lines[lineIndex][..Math.Clamp(character, 0, lines[lineIndex].Length)]
+                : lines[lineIndex];
+            parts.Add(RemoveLineContinuation(text));
+        }
+
+        return string.Join(' ', parts);
+    }
+
+    public static string GetLogicalStatement(string[] lines, int startLine, out int endLine)
+    {
+        var parts = new List<string>();
+        endLine = startLine;
+        while (endLine < lines.Length)
+        {
+            parts.Add(RemoveLineContinuation(lines[endLine]));
+            if (!HasLineContinuation(lines[endLine]))
+            {
+                break;
+            }
+
+            endLine++;
+        }
+
+        return string.Join(' ', parts);
+    }
+
     public static string StripApostropheComment(string line)
     {
         var commentStart = FindApostropheCommentStart(line);
@@ -146,6 +213,17 @@ internal static class SourceTextOccurrences
         }
 
         return -1;
+    }
+
+    public static bool HasLineContinuation(string line)
+        => line.TrimEnd().EndsWith("_", StringComparison.Ordinal);
+
+    public static string RemoveLineContinuation(string line)
+    {
+        var trimmed = line.TrimEnd();
+        return trimmed.EndsWith("_", StringComparison.Ordinal)
+            ? trimmed[..^1]
+            : line;
     }
 
     public static bool IsIdentifierStart(char value)

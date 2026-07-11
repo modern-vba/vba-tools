@@ -1,5 +1,4 @@
 using System.Text.Json.Nodes;
-using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.SourceModel;
 using VbaLanguageServer.Workspace;
 
@@ -8,21 +7,18 @@ namespace VbaLanguageServer.Lsp;
 internal sealed class VbaLanguageServerRuntime
 {
     private readonly LspMessageTransport transport;
-    private readonly VbaLanguageWorkspace workspace;
     private readonly VbaLanguageFeatureService features;
-    private readonly ReferenceCatalogRefreshCoordinator catalogRefresh;
+    private readonly VbaDocumentLifecycle documentLifecycle;
     private bool shutdownRequested;
 
     public VbaLanguageServerRuntime(
         LspMessageTransport transport,
-        VbaLanguageWorkspace workspace,
         VbaLanguageFeatureService features,
-        ReferenceCatalogRefreshCoordinator catalogRefresh)
+        VbaDocumentLifecycle documentLifecycle)
     {
         this.transport = transport;
-        this.workspace = workspace;
         this.features = features;
-        this.catalogRefresh = catalogRefresh;
+        this.documentLifecycle = documentLifecycle;
     }
 
     public static VbaLanguageServerRuntime CreateDefault(Stream input, Stream output)
@@ -39,7 +35,8 @@ internal sealed class VbaLanguageServerRuntime
             referenceCatalogCache,
             catalogRefreshService,
             transport);
-        return new VbaLanguageServerRuntime(transport, workspace, features, catalogRefresh);
+        var documentLifecycle = new VbaDocumentLifecycle(transport, workspace, catalogRefresh);
+        return new VbaLanguageServerRuntime(transport, features, documentLifecycle);
     }
 
     public async Task RunAsync(CancellationToken cancellationToken = default)
@@ -175,176 +172,20 @@ internal sealed class VbaLanguageServerRuntime
         switch (method)
         {
             case "textDocument/didOpen":
-                await RecordOpenedDocumentAsync(parameters, cancellationToken);
+                await documentLifecycle.RecordOpenedDocumentAsync(parameters, cancellationToken);
                 return;
             case "textDocument/didChange":
-                await RecordChangedDocumentAsync(parameters, cancellationToken);
+                await documentLifecycle.RecordChangedDocumentAsync(parameters, cancellationToken);
                 return;
             case "textDocument/didClose":
-                await RecordClosedDocumentAsync(parameters, cancellationToken);
+                await documentLifecycle.RecordClosedDocumentAsync(parameters, cancellationToken);
                 return;
             case "workspace/didChangeWatchedFiles":
-                await RecordWatchedFilesChangedAsync(parameters, cancellationToken);
+                await documentLifecycle.RecordWatchedFilesChangedAsync(parameters, cancellationToken);
                 return;
             default:
                 return;
         }
     }
 
-    private async Task RecordOpenedDocumentAsync(JsonNode? parameters, CancellationToken cancellationToken)
-    {
-        var textDocument = parameters?["textDocument"];
-        var uri = textDocument?["uri"]?.GetValue<string>();
-        var text = textDocument?["text"]?.GetValue<string>();
-        if (!string.IsNullOrEmpty(uri) && text is not null)
-        {
-            if (IsVbaSourceUri(uri))
-            {
-                workspace.UpdateDocument(uri, text, cancellationToken);
-                await PublishTrackedDiagnosticsAsync(uri, cancellationToken);
-                await catalogRefresh.PublishReferenceSelectionTraceAsync(uri, cancellationToken);
-            }
-
-            catalogRefresh.RefreshReferenceCatalogsInBackground(uri, text, cancellationToken);
-        }
-    }
-
-    private async Task RecordChangedDocumentAsync(JsonNode? parameters, CancellationToken cancellationToken)
-    {
-        var textDocument = parameters?["textDocument"];
-        var uri = textDocument?["uri"]?.GetValue<string>();
-        var changes = parameters?["contentChanges"]?.AsArray();
-        var text = changes?.LastOrDefault()?["text"]?.GetValue<string>();
-        if (!string.IsNullOrEmpty(uri) && text is not null)
-        {
-            if (IsVbaSourceUri(uri))
-            {
-                workspace.UpdateDocument(uri, text, cancellationToken);
-                await PublishTrackedDiagnosticsAsync(uri, cancellationToken);
-            }
-
-            catalogRefresh.RefreshReferenceCatalogsInBackground(uri, text, cancellationToken);
-        }
-    }
-
-    private async Task RecordClosedDocumentAsync(JsonNode? parameters, CancellationToken cancellationToken)
-    {
-        var uri = parameters?["textDocument"]?["uri"]?.GetValue<string>();
-        if (string.IsNullOrEmpty(uri))
-        {
-            return;
-        }
-
-        if (workspace.RemoveDocument(uri, cancellationToken))
-        {
-            await PublishEmptyDiagnosticsAsync(uri, cancellationToken);
-        }
-    }
-
-    private async Task RecordWatchedFilesChangedAsync(JsonNode? parameters, CancellationToken cancellationToken)
-    {
-        var changes = parameters?["changes"]?.AsArray();
-        if (changes is null)
-        {
-            return;
-        }
-
-        foreach (var change in changes)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var uri = change?["uri"]?.GetValue<string>();
-            var type = change?["type"]?.GetValue<int>();
-            if (string.IsNullOrEmpty(uri) || type is null)
-            {
-                continue;
-            }
-
-            switch (type.Value)
-            {
-                case 1:
-                case 2:
-                    await ReloadChangedFileAsync(uri, cancellationToken);
-                    break;
-                case 3:
-                    if (workspace.RemoveDocument(uri, cancellationToken))
-                    {
-                        await PublishEmptyDiagnosticsAsync(uri, cancellationToken);
-                    }
-
-                    break;
-            }
-        }
-    }
-
-    private async Task ReloadChangedFileAsync(string uri, CancellationToken cancellationToken)
-    {
-        var localPath = VbaProjectResolver.TryGetLocalPath(uri);
-        if (localPath is null || !File.Exists(localPath))
-        {
-            return;
-        }
-
-        var text = await File.ReadAllTextAsync(localPath, cancellationToken);
-        if (IsVbaSourcePath(localPath))
-        {
-            workspace.UpdateDocument(uri, text, cancellationToken);
-            await PublishTrackedDiagnosticsAsync(uri, cancellationToken);
-            await catalogRefresh.PublishReferenceSelectionTraceAsync(uri, cancellationToken);
-            catalogRefresh.RefreshReferenceCatalogsInBackground(uri, text, cancellationToken);
-            return;
-        }
-
-        if (IsProjectManifestPath(localPath))
-        {
-            catalogRefresh.RefreshReferenceCatalogsInBackground(uri, text, cancellationToken);
-            foreach (var documentUri in workspace.GetDocumentUris(cancellationToken))
-            {
-                await catalogRefresh.PublishReferenceSelectionTraceAsync(documentUri, cancellationToken);
-            }
-        }
-    }
-
-    private Task PublishTrackedDiagnosticsAsync(string uri, CancellationToken cancellationToken)
-    {
-        var syntaxTree = workspace.GetDocumentSyntaxTree(uri, cancellationToken);
-        if (syntaxTree is null)
-        {
-            return PublishEmptyDiagnosticsAsync(uri, cancellationToken);
-        }
-
-        return transport.WriteNotificationAsync(
-            "textDocument/publishDiagnostics",
-            new
-            {
-                uri,
-                diagnostics = VbaLanguageFeatureService.CreateDiagnostics(uri, syntaxTree)
-            },
-            cancellationToken);
-    }
-
-    private Task PublishEmptyDiagnosticsAsync(string uri, CancellationToken cancellationToken)
-    {
-        return transport.WriteNotificationAsync(
-            "textDocument/publishDiagnostics",
-            new
-            {
-                uri,
-                diagnostics = Array.Empty<object>()
-            },
-            cancellationToken);
-    }
-
-    private static bool IsVbaSourceUri(string uri)
-    {
-        var localPath = VbaProjectResolver.TryGetLocalPath(uri);
-        return localPath is not null && IsVbaSourcePath(localPath);
-    }
-
-    private static bool IsVbaSourcePath(string path)
-        => path.EndsWith(".bas", StringComparison.OrdinalIgnoreCase)
-            || path.EndsWith(".cls", StringComparison.OrdinalIgnoreCase)
-            || path.EndsWith(".frm", StringComparison.OrdinalIgnoreCase);
-
-    private static bool IsProjectManifestPath(string path)
-        => Path.GetFileName(path).Equals("project.json", StringComparison.OrdinalIgnoreCase);
 }

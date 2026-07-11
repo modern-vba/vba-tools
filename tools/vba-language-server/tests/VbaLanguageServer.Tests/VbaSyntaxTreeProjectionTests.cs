@@ -1,15 +1,15 @@
-using VbaLanguageServer.Diagnostics;
-using VbaLanguageServer.Parsing;
 using VbaLanguageServer.SourceModel;
+using VbaLanguageServer.Syntax;
 using Xunit;
 
 namespace VbaLanguageServer.Tests;
 
-public sealed class VbaModuleParserTests
+public sealed class VbaSyntaxTreeProjectionTests
 {
     [Fact]
     public void ParserReportsModuleMemberUpdateForSafeCallableBodyEdit()
     {
+        const string uri = "file:///C:/work/Worker.bas";
         var original = string.Join('\n', [
             "Attribute VB_Name = \"Worker\"",
             "Public Function BuildValue() As String",
@@ -30,18 +30,19 @@ public sealed class VbaModuleParserTests
             "    BuildValue",
             "End Sub"
         ]);
-        var previousSyntaxTree = VbaModuleParser.Parse("file:///C:/work/Worker.bas", original);
+        var previousSyntaxTree = VbaSyntaxTree.ParseModule(uri, original);
 
-        var result = VbaModuleParser.ParseOrUpdate("file:///C:/work/Worker.bas", updated, previousSyntaxTree);
+        var result = VbaSyntaxTree.ParseOrUpdate(uri, updated, previousSyntaxTree);
 
-        Assert.Equal(VbaModuleParseUpdateKind.ModuleMember, result.UpdateKind);
-        Assert.Contains(result.SyntaxTree.CallableDeclarations, declaration => declaration.Name == "BuildValue");
-        Assert.Contains(result.SyntaxTree.CallableDeclarations, declaration => declaration.Name == "Run");
+        Assert.Equal(VbaSyntaxTreeParseUpdateKind.ModuleMember, result.UpdateKind);
+        Assert.Contains(result.SyntaxTree.Module.CallableDeclarations, declaration => declaration.Name == "BuildValue");
+        Assert.Contains(result.SyntaxTree.Module.CallableDeclarations, declaration => declaration.Name == "Run");
     }
 
     [Fact]
     public void ParserFallsBackToFullModuleRebuildWhenMemberRecoveryIsRequired()
     {
+        const string uri = "file:///C:/work/Worker.bas";
         var original = string.Join('\n', [
             "Attribute VB_Name = \"Worker\"",
             "Public Function BuildValue() As String",
@@ -62,25 +63,25 @@ public sealed class VbaModuleParserTests
             "    BuildValue",
             "End Sub"
         ]);
-        var previousSyntaxTree = VbaModuleParser.Parse("file:///C:/work/Worker.bas", original);
+        var previousSyntaxTree = VbaSyntaxTree.ParseModule(uri, original);
 
-        var result = VbaModuleParser.ParseOrUpdate("file:///C:/work/Worker.bas", malformed, previousSyntaxTree);
+        var result = VbaSyntaxTree.ParseOrUpdate(uri, malformed, previousSyntaxTree);
 
-        Assert.Equal(VbaModuleParseUpdateKind.FullModule, result.UpdateKind);
-        Assert.DoesNotContain(result.SyntaxTree.CallableDeclarations, declaration => declaration.Name == "BuildValue");
-        Assert.Contains(result.SyntaxTree.CallableDeclarations, declaration => declaration.Name == "Run");
+        Assert.Equal(VbaSyntaxTreeParseUpdateKind.FullModule, result.UpdateKind);
+        Assert.DoesNotContain(result.SyntaxTree.Module.CallableDeclarations, declaration => declaration.Name == "BuildValue");
+        Assert.Contains(result.SyntaxTree.Module.CallableDeclarations, declaration => declaration.Name == "Run");
     }
 
     [Fact]
     public void ParserReadsModuleClassAndFormIdentityFromAttributeOrFileName()
     {
-        var standardModule = VbaModuleParser.Parse(
+        var standardModule = VbaSyntaxTree.ParseModule(
             "file:///C:/work/Worker.bas",
             "Attribute VB_Name = \"WorkerModule\"\nOption Explicit\n");
-        var classModule = VbaModuleParser.Parse(
+        var classModule = VbaSyntaxTree.ParseModule(
             "file:///C:/work/Customer.cls",
             "VERSION 1.0 CLASS\nAttribute VB_Name = \"CustomerRecord\"\nOption Explicit\n");
-        var formModule = VbaModuleParser.Parse(
+        var formModule = VbaSyntaxTree.ParseModule(
             "file:///C:/work/Dialog.frm",
             string.Join('\n', [
                 "VERSION 5.00",
@@ -90,23 +91,23 @@ public sealed class VbaModuleParserTests
                 "Attribute VB_Name = \"DialogView\"",
                 "Option Explicit"
             ]));
-        var fallback = VbaModuleParser.Parse(
+        var fallback = VbaSyntaxTree.ParseModule(
             "file:///C:/work/FallbackName.bas",
             "Option Explicit\n");
 
-        Assert.Equal("WorkerModule", standardModule.Identity.Name);
-        Assert.Equal(VbaSourceDefinitionKind.Module, standardModule.Identity.Kind);
-        Assert.Equal("CustomerRecord", classModule.Identity.Name);
-        Assert.Equal(VbaSourceDefinitionKind.Class, classModule.Identity.Kind);
-        Assert.Equal("DialogView", formModule.Identity.Name);
-        Assert.Equal(VbaSourceDefinitionKind.Form, formModule.Identity.Kind);
-        Assert.Equal("FallbackName", fallback.Identity.Name);
+        Assert.Equal("WorkerModule", standardModule.Module.Identity.Name);
+        Assert.Equal(VbaModuleKind.StandardModule, standardModule.Module.Kind);
+        Assert.Equal("CustomerRecord", classModule.Module.Identity.Name);
+        Assert.Equal(VbaModuleKind.ClassModule, classModule.Module.Kind);
+        Assert.Equal("DialogView", formModule.Module.Identity.Name);
+        Assert.Equal(VbaModuleKind.FormModule, formModule.Module.Kind);
+        Assert.Equal("FallbackName", fallback.Module.Identity.Name);
     }
 
     [Fact]
     public void ParserReadsCallableDeclarationsAndFailsClosedForMalformedHeaders()
     {
-        var module = VbaModuleParser.Parse(
+        var tree = VbaSyntaxTree.ParseModule(
             "file:///C:/work/Worker.bas",
             string.Join('\n', [
                 "Attribute VB_Name = \"Worker\"",
@@ -123,13 +124,14 @@ public sealed class VbaModuleParserTests
             ]));
 
         Assert.Collection(
-            module.CallableDeclarations,
+            tree.Module.CallableDeclarations,
             readValue =>
             {
                 Assert.Equal("ReadValue", readValue.Name);
-                Assert.Equal(VbaSourceDefinitionKind.Procedure, readValue.Kind);
-                Assert.Equal(VbaSourceDefinitionVisibility.Public, readValue.Visibility);
-                Assert.Equal(new VbaRange(new VbaPosition(3, "Public Function ".Length), new VbaPosition(3, "Public Function ReadValue".Length)), readValue.Range);
+                Assert.Equal(VbaDeclarationKind.Procedure, readValue.Kind);
+                Assert.Equal(VbaDeclarationVisibility.Public, readValue.Visibility);
+                Assert.Equal(3, readValue.Range.Start.Line);
+                Assert.Equal("Public Function ".Length, readValue.Range.Start.Character);
                 Assert.Equal("ReadValue(Key) As String", readValue.Signature.Label);
                 var parameter = Assert.Single(readValue.Signature.Parameters);
                 Assert.Equal("Key", parameter.Name);
@@ -138,19 +140,19 @@ public sealed class VbaModuleParserTests
             saveValue =>
             {
                 Assert.Equal("SaveValue", saveValue.Name);
-                Assert.Equal(VbaSourceDefinitionVisibility.Private, saveValue.Visibility);
+                Assert.Equal(VbaDeclarationVisibility.Private, saveValue.Visibility);
             },
             displayName =>
             {
                 Assert.Equal("DisplayName", displayName.Name);
-                Assert.Equal(VbaSourceDefinitionKind.Property, displayName.Kind);
+                Assert.Equal(VbaDeclarationKind.Property, displayName.Kind);
             });
     }
 
     [Fact]
     public void ParserReadsClassAndFormCallableDeclarationsAfterExportHeaders()
     {
-        var classModule = VbaModuleParser.Parse(
+        var classModule = VbaSyntaxTree.ParseModule(
             "file:///C:/work/Customer.cls",
             string.Join('\n', [
                 "VERSION 1.0 CLASS",
@@ -161,7 +163,7 @@ public sealed class VbaModuleParserTests
                 "Private Sub Class_Initialize()",
                 "End Sub"
             ]));
-        var formModule = VbaModuleParser.Parse(
+        var formModule = VbaSyntaxTree.ParseModule(
             "file:///C:/work/Dialog.frm",
             string.Join('\n', [
                 "VERSION 5.00",
@@ -175,32 +177,32 @@ public sealed class VbaModuleParserTests
             ]));
 
         Assert.Collection(
-            classModule.CallableDeclarations,
+            classModule.Module.CallableDeclarations,
             displayName =>
             {
                 Assert.Equal("DisplayName", displayName.Name);
-                Assert.Equal(VbaSourceDefinitionKind.Property, displayName.Kind);
-                Assert.Equal(VbaSourceDefinitionVisibility.Public, displayName.Visibility);
+                Assert.Equal(VbaDeclarationKind.Property, displayName.Kind);
+                Assert.Equal(VbaDeclarationVisibility.Public, displayName.Visibility);
                 Assert.Equal(3, displayName.LineIndex);
             },
             initialize =>
             {
                 Assert.Equal("Class_Initialize", initialize.Name);
-                Assert.Equal(VbaSourceDefinitionKind.Procedure, initialize.Kind);
-                Assert.Equal(VbaSourceDefinitionVisibility.Private, initialize.Visibility);
+                Assert.Equal(VbaDeclarationKind.Procedure, initialize.Kind);
+                Assert.Equal(VbaDeclarationVisibility.Private, initialize.Visibility);
                 Assert.Equal(5, initialize.LineIndex);
             });
-        var formCallable = Assert.Single(formModule.CallableDeclarations);
+        var formCallable = Assert.Single(formModule.Module.CallableDeclarations);
         Assert.Equal("CommandButton1_Click", formCallable.Name);
-        Assert.Equal(VbaSourceDefinitionKind.Procedure, formCallable.Kind);
-        Assert.Equal(VbaSourceDefinitionVisibility.Private, formCallable.Visibility);
+        Assert.Equal(VbaDeclarationKind.Procedure, formCallable.Kind);
+        Assert.Equal(VbaDeclarationVisibility.Private, formCallable.Visibility);
         Assert.Equal(6, formCallable.LineIndex);
     }
 
     [Fact]
-    public void ParserRepresentsDeclarationsDocumentationAndLocalScopeInAstModel()
+    public void ParserRepresentsDeclarationsDocumentationAndLocalScopeInSyntaxModel()
     {
-        var module = VbaModuleParser.Parse(
+        var tree = VbaSyntaxTree.ParseModule(
             "file:///C:/work/Worker.bas",
             string.Join('\n', [
                 "Attribute VB_Name = \"Worker\"",
@@ -227,53 +229,53 @@ public sealed class VbaModuleParserTests
                 "End Function"
             ]));
 
-        var declarations = module.Declarations;
+        var declarations = tree.Module.Declarations;
         Assert.Contains(declarations, declaration =>
             declaration.Name == "Saved"
-            && declaration.Kind == VbaSourceDefinitionKind.Event
+            && declaration.Kind == VbaDeclarationKind.Event
             && declaration.Documentation == "Event documentation.");
         Assert.Contains(declarations, declaration =>
             declaration.Name == "Name"
-            && declaration.Kind == VbaSourceDefinitionKind.Parameter
-            && declaration.Visibility == VbaSourceDefinitionVisibility.Local);
+            && declaration.Kind == VbaDeclarationKind.Parameter
+            && declaration.Visibility == VbaDeclarationVisibility.Local);
         Assert.Contains(declarations, declaration =>
             declaration.Name == "Status"
-            && declaration.Kind == VbaSourceDefinitionKind.Enum
-            && declaration.Visibility == VbaSourceDefinitionVisibility.Public);
+            && declaration.Kind == VbaDeclarationKind.Enum
+            && declaration.Visibility == VbaDeclarationVisibility.Public);
         Assert.Contains(declarations, declaration =>
             declaration.Name == "StatusReady"
-            && declaration.Kind == VbaSourceDefinitionKind.EnumMember
-            && declaration.Visibility == VbaSourceDefinitionVisibility.Public);
+            && declaration.Kind == VbaDeclarationKind.EnumMember
+            && declaration.Visibility == VbaDeclarationVisibility.Public);
         Assert.Contains(declarations, declaration =>
             declaration.Name == "CustomerRecord"
-            && declaration.Kind == VbaSourceDefinitionKind.Type);
+            && declaration.Kind == VbaDeclarationKind.Type);
         Assert.Contains(declarations, declaration =>
             declaration.Name == "Id"
-            && declaration.Kind == VbaSourceDefinitionKind.TypeMember);
+            && declaration.Kind == VbaDeclarationKind.TypeMember);
         Assert.Contains(declarations, declaration =>
             declaration.Name == "MaxCount"
-            && declaration.Kind == VbaSourceDefinitionKind.Constant
-            && declaration.Visibility == VbaSourceDefinitionVisibility.Private
+            && declaration.Kind == VbaDeclarationKind.Constant
+            && declaration.Visibility == VbaDeclarationVisibility.Private
             && declaration.Documentation == "Limit documentation.");
         Assert.Contains(declarations, declaration =>
             declaration.Name == "moduleValue"
-            && declaration.Kind == VbaSourceDefinitionKind.Variable
-            && declaration.Visibility == VbaSourceDefinitionVisibility.Private);
+            && declaration.Kind == VbaDeclarationKind.Variable
+            && declaration.Visibility == VbaDeclarationVisibility.Private);
         var readValue = Assert.Single(declarations, declaration => declaration.Name == "ReadValue");
-        Assert.Equal(VbaSourceDefinitionKind.Procedure, readValue.Kind);
+        Assert.Equal(VbaDeclarationKind.Procedure, readValue.Kind);
         Assert.Equal("Reads a value.\n\n@return selected value", readValue.Signature?.Documentation);
         var key = Assert.Single(declarations, declaration => declaration.Name == "Key");
         Assert.Equal("ReadValue", key.ParentProcedureName);
         Assert.Equal("lookup key", key.Documentation);
         var local = Assert.Single(declarations, declaration => declaration.Name == "localCount");
         Assert.Equal("ReadValue", local.ParentProcedureName);
-        Assert.Equal(VbaSourceDefinitionVisibility.Local, local.Visibility);
+        Assert.Equal(VbaDeclarationVisibility.Local, local.Visibility);
     }
 
     [Fact]
-    public void ParserExcludesFormDesignerBlockFromAstDeclarations()
+    public void ParserExcludesFormDesignerBlockFromSyntaxDeclarations()
     {
-        var module = VbaModuleParser.Parse(
+        var tree = VbaSyntaxTree.ParseModule(
             "file:///C:/work/Dialog.frm",
             string.Join('\n', [
                 "VERSION 5.00",
@@ -286,53 +288,12 @@ public sealed class VbaModuleParserTests
                 "End Sub"
             ]));
 
-        Assert.Contains(module.Declarations, declaration => declaration.Name == "CommandButton1_Click");
-        Assert.DoesNotContain(module.Declarations, declaration => declaration.Name == "Caption");
+        Assert.Contains(tree.Module.Declarations, declaration => declaration.Name == "CommandButton1_Click");
+        Assert.DoesNotContain(tree.Module.Declarations, declaration => declaration.Name == "Caption");
     }
 
     [Fact]
-    public void ParserDerivesSourceDefinitionsAndSignaturesFromVbaSyntaxTreeDeclarations()
-    {
-        const string uri = "file:///C:/work/Worker.bas";
-        var source = string.Join('\n', [
-            "Attribute VB_Name = \"Worker\"",
-            "Option Explicit",
-            "Public Declare PtrSafe Function GetTickCount Lib \"kernel32\" () As Long",
-            "Private Const MaxCount As Long = 10, DefaultName = \"fallback\"",
-            "Dim firstValue As New Collection, implicitValue",
-            "Public Static Function Build(ByVal Key As String) As String",
-            "    Dim localCount As Long, implicitLocal",
-            "End Function"
-        ]);
-
-        var module = VbaModuleParser.Parse(uri, source);
-        var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = source });
-
-        Assert.Contains(module.Members, member => member.Name == "GetTickCount");
-        Assert.Contains(module.Declarations, declaration =>
-            declaration.Name == "DefaultName"
-            && declaration.Kind == VbaSourceDefinitionKind.Constant
-            && declaration.TypeReference is null);
-        Assert.Contains(module.Declarations, declaration =>
-            declaration.Name == "firstValue"
-            && declaration.Kind == VbaSourceDefinitionKind.Variable
-            && declaration.TypeReference?.Name == "Collection");
-        Assert.Contains(module.Declarations, declaration =>
-            declaration.Name == "implicitValue"
-            && declaration.Kind == VbaSourceDefinitionKind.Variable
-            && declaration.TypeReference is null);
-        Assert.Contains(module.Declarations, declaration =>
-            declaration.Name == "implicitLocal"
-            && declaration.Visibility == VbaSourceDefinitionVisibility.Local
-            && declaration.ParentProcedureName == "Build");
-
-        var buildDefinition = Assert.Single(index.GetDocumentDefinitions(uri), definition => definition.Name == "Build");
-        Assert.Equal("Build(Key) As String", buildDefinition.Signature?.Label);
-        Assert.Contains(index.GetDocumentDefinitions(uri), definition => definition.Name == "GetTickCount");
-    }
-
-    [Fact]
-    public void ParserKeepsRepresentativeVbaDeclarationsOnTheVbaSyntaxTreePath()
+    public void SourceIndexProjectsSyntaxTreeDeclarationsForEditorFeatures()
     {
         const string uri = "file:///C:/work/Compat.bas";
         var source = string.Join('\n', [
@@ -345,24 +306,23 @@ public sealed class VbaModuleParserTests
             "    BuildValue = Prefix & SharedName",
             "End Function"
         ]);
+        var syntaxTree = VbaSyntaxTree.ParseModule(uri, source);
+        var index = VbaSourceIndex.BuildFromSyntaxTrees(new Dictionary<string, VbaSyntaxTree> { [uri] = syntaxTree });
 
-        var module = VbaModuleParser.Parse(uri, source);
-        var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = source });
-
-        Assert.Contains(module.Declarations, declaration =>
+        Assert.Contains(syntaxTree.Module.Declarations, declaration =>
             declaration.Name == "BufferSize"
-            && declaration.Kind == VbaSourceDefinitionKind.Constant
-            && declaration.Visibility == VbaSourceDefinitionVisibility.Public
+            && declaration.Kind == VbaDeclarationKind.Constant
+            && declaration.Visibility == VbaDeclarationVisibility.Public
             && declaration.TypeReference?.Name == "Long");
-        Assert.Contains(module.Declarations, declaration =>
+        Assert.Contains(syntaxTree.Module.Declarations, declaration =>
             declaration.Name == "SharedName"
-            && declaration.Kind == VbaSourceDefinitionKind.Variable
-            && declaration.Visibility == VbaSourceDefinitionVisibility.Public
+            && declaration.Kind == VbaDeclarationKind.Variable
+            && declaration.Visibility == VbaDeclarationVisibility.Public
             && declaration.TypeReference?.Name == "String");
-        Assert.Contains(module.Declarations, declaration =>
+        Assert.Contains(syntaxTree.Module.Declarations, declaration =>
             declaration.Name == "GetTickCount"
-            && declaration.Kind == VbaSourceDefinitionKind.Procedure
-            && declaration.Visibility == VbaSourceDefinitionVisibility.Private);
+            && declaration.Kind == VbaDeclarationKind.Procedure
+            && declaration.Visibility == VbaDeclarationVisibility.Private);
 
         var buildValue = Assert.Single(index.GetDocumentDefinitions(uri), definition => definition.Name == "BuildValue");
         Assert.Equal("BuildValue(Prefix) As String", buildValue.Signature?.Label);
@@ -371,7 +331,9 @@ public sealed class VbaModuleParserTests
             token.Text == "SharedName"
             && token.TokenType == "variable"
             && token.TokenModifiers.Contains("declaration"));
-        Assert.Contains("Global Const BufferSize As Long = 260", index.FormatDocument(uri, tabSize: 4)?.NewText);
-        Assert.Contains("Global SharedName As String", index.FormatDocument(uri, tabSize: 4)?.NewText);
+
+        var edit = Assert.IsType<VbaTextEdit>(index.FormatDocument(uri, tabSize: 4));
+        Assert.Contains("Global Const BufferSize As Long = 260", edit.NewText);
+        Assert.Contains("Global SharedName As String", edit.NewText);
     }
 }

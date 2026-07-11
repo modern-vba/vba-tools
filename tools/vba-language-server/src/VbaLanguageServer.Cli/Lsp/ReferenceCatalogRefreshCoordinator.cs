@@ -1,4 +1,3 @@
-using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.SourceModel;
 using VbaLanguageServer.Workspace;
 
@@ -22,58 +21,35 @@ internal sealed class ReferenceCatalogRefreshCoordinator
 
     public async Task PublishReferenceSelectionTraceAsync(string uri, CancellationToken cancellationToken)
     {
-        VbaProjectResolution resolution;
-        try
+        if (!LanguageServerManifestResolution.TryCreateReferenceSelectionContext(
+            uri,
+            referenceCatalogCache.Current,
+            out var context,
+            out var error))
         {
-            resolution = VbaProjectResolver.Resolve(uri);
-        }
-        catch (ProjectManifestException ex)
-        {
-            await transport.WriteLogMessageAsync(
-                2,
-                $"Project manifest could not be resolved for reference selection: {ex.Message}",
-                cancellationToken);
+            if (error is not null)
+            {
+                await transport.WriteLogMessageAsync(
+                    2,
+                    $"Project manifest could not be resolved for reference selection: {error.Message}",
+                    cancellationToken);
+            }
+
             return;
         }
 
-        if (resolution.Kind != VbaProjectResolutionKind.ManifestDocument
-            || string.IsNullOrEmpty(resolution.DocumentName)
-            || string.IsNullOrEmpty(resolution.DocumentKind))
-        {
-            return;
-        }
-
-        var selection = VbaProjectReferenceSelection.Create(
-            resolution.DocumentKind,
-            resolution.ReferenceEntries);
-        var references = selection.References.Count == 0
-            ? "<none>"
-            : string.Join(", ", selection.References.Select(reference => reference.Name));
-        await transport.WriteLogMessageAsync(
-            3,
-            $"VbaProjectReferenceSelection document={resolution.DocumentName} references={references} main={selection.MainVbaProjectReference?.Name ?? "<none>"}",
-            cancellationToken);
-
-        if (selection.MissingExpectedMainReference is not null)
+        foreach (var message in context.Messages)
         {
             await transport.WriteLogMessageAsync(
-                2,
-                $"Manifest/reference consistency warning: document '{resolution.DocumentName}' kind '{resolution.DocumentKind}' is missing expected main reference '{selection.MissingExpectedMainReference}'. Host definitions will not be activated implicitly.",
-                cancellationToken);
-        }
-
-        foreach (var referenceName in referenceCatalogCache.Current.GetMissingCatalogReferenceNames(selection))
-        {
-            await transport.WriteLogMessageAsync(
-                2,
-                $"Reference catalog availability warning: document '{resolution.DocumentName}' reference '{referenceName}' has no bundled or cached VbaProjectReferenceCatalog metadata. The reference remains active, but external definitions are unavailable.",
+                message.Type,
+                message.Text,
                 cancellationToken);
         }
     }
 
     public void RefreshReferenceCatalogsInBackground(string uri, string text, CancellationToken cancellationToken)
     {
-        if (VbaLanguageWorkspace.TryCreateReferenceSelections(uri, text, out var selections))
+        if (LanguageServerManifestResolution.TryCreateReferenceSelections(uri, text, out var selections))
         {
             _ = RefreshReferenceCatalogsInBackgroundAsync(uri, selections, cancellationToken);
         }
