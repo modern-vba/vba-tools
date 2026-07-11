@@ -14,6 +14,8 @@ public sealed class CommonModulesService
         WriteIndented = true
     };
 
+    private static readonly UnicodeEncoding Utf16LeWithBom = new(bigEndian: false, byteOrderMark: true);
+
     private readonly CommonModulesManifestReader manifestReader;
     private readonly IProjectManifestStore manifestStore;
 
@@ -44,7 +46,8 @@ public sealed class CommonModulesService
             var requestedNames = normalizedRequestedModules
                 .Select(GetCommonModuleName)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var document = GetDocument(context.Manifest, context.DocumentName);
+            var plannedManifest = CloneManifest(context.Manifest);
+            var document = GetDocument(plannedManifest, context.DocumentName);
             var installedByName = document.CommonModules.ToDictionary(
                 module => module.Name,
                 StringComparer.OrdinalIgnoreCase);
@@ -52,14 +55,24 @@ public sealed class CommonModulesService
                 .Where(entry => !installedByName.ContainsKey(GetCommonModuleName(entry.ModuleFile)))
                 .ToArray();
 
-            EnsureNoUntrackedConflicts(context.DocumentSourceSetPath, entriesToCopy, force);
-            var copied = CopyEntries(repositoryPath, context.DocumentSourceSetPath, entriesToCopy, "Copied", overwrite: force);
+            var copyPlan = PlanCopyEntries(repositoryPath, context.DocumentSourceSetPath, entriesToCopy, "Copied", force, documentName: null);
             var changed = ApplyInstalledEntries(document, orderedEntries, requestedNames, installedByName);
-            if (changed)
+            var fileResult = TryExecuteCopyPlan(copyPlan);
+            if (fileResult is not null)
             {
-                manifestStore.Save(context.ProjectRoot, context.Manifest);
+                return fileResult;
             }
 
+            if (changed)
+            {
+                var saveResult = TrySaveManifest(context.ProjectRoot, plannedManifest);
+                if (saveResult is not null)
+                {
+                    return saveResult;
+                }
+            }
+
+            var copied = BuildCopyOutput(copyPlan);
             return copied.Length == 0
                 ? CommandResult.Success("No CommonModules changes." + Environment.NewLine)
                 : CommandResult.Success(copied);
@@ -103,9 +116,11 @@ public sealed class CommonModulesService
         {
             var repositoryPath = GetRepositoryPath(project);
             var entries = manifestReader.Load(repositoryPath);
-            var output = new StringBuilder();
+            var plannedManifest = CloneManifest(project.Manifest);
+            var copyPlans = new List<CommonModuleCopyPlan>();
+            var manifestChanged = false;
 
-            foreach (var (documentName, document) in project.Manifest.Documents.OrderBy(item => item.Key, StringComparer.OrdinalIgnoreCase))
+            foreach (var (documentName, document) in plannedManifest.Documents.OrderBy(item => item.Key, StringComparer.OrdinalIgnoreCase))
             {
                 var documentSourceSetPath = project.ResolvePath(document.SourcePath);
                 var installedModuleNames = document.CommonModules
@@ -132,13 +147,29 @@ public sealed class CommonModulesService
                     StringComparer.OrdinalIgnoreCase);
                 var requestedNames = requestedModuleNames.ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-                output.Append(CopyEntries(repositoryPath, documentSourceSetPath, orderedEntries, "Updated", overwrite: true, documentName));
+                copyPlans.AddRange(PlanCopyEntries(repositoryPath, documentSourceSetPath, orderedEntries, "Updated", overwrite: true, documentName));
                 if (ApplyInstalledEntries(document, dependencyClosureEntries, requestedNames, installedByName))
                 {
-                    manifestStore.Save(project.ProjectRoot, project.Manifest);
+                    manifestChanged = true;
                 }
             }
 
+            var fileResult = TryExecuteCopyPlan(copyPlans);
+            if (fileResult is not null)
+            {
+                return fileResult;
+            }
+
+            if (manifestChanged)
+            {
+                var saveResult = TrySaveManifest(project.ProjectRoot, plannedManifest);
+                if (saveResult is not null)
+                {
+                    return saveResult;
+                }
+            }
+
+            var output = BuildCopyOutput(copyPlans);
             return output.Length == 0
                 ? CommandResult.Success("No installed CommonModules entries were found." + Environment.NewLine)
                 : CommandResult.Success(output.ToString());
@@ -232,7 +263,7 @@ public sealed class CommonModulesService
         return entries.ToArray();
     }
 
-    private static string CopyEntries(
+    private static IReadOnlyList<CommonModuleCopyPlan> PlanCopyEntries(
         string repositoryPath,
         string documentSourceSetPath,
         IReadOnlyList<CommonModuleManifestEntry> entries,
@@ -240,8 +271,7 @@ public sealed class CommonModulesService
         bool overwrite,
         string? documentName = null)
     {
-        Directory.CreateDirectory(documentSourceSetPath);
-        var output = new StringBuilder();
+        var plans = new List<CommonModuleCopyPlan>();
         foreach (var entry in entries)
         {
             var sourcePath = Path.Combine(repositoryPath, entry.ModuleFile);
@@ -250,33 +280,203 @@ public sealed class CommonModulesService
                 throw new CommonModulesManifestException($"CommonModules source file was not found: {sourcePath}");
             }
 
-            File.Copy(sourcePath, Path.Combine(documentSourceSetPath, entry.ModuleFile), overwrite);
+            var targetPath = ResolveTargetPath(documentSourceSetPath, entry.ModuleFile, overwrite);
+            var sidecarDeletePaths = IsFormFile(entry.ModuleFile)
+                ? FindFormSidecars(documentSourceSetPath, entry.ModuleFile)
+                : [];
+            var sourceSidecarPath = IsFormFile(entry.ModuleFile)
+                ? ResolveExistingSidecarPath(sourcePath)
+                : null;
+            var targetSidecarPath = sourceSidecarPath is null
+                ? null
+                : Path.ChangeExtension(targetPath, ".frx");
             var outputPath = documentName is null ? entry.ModuleFile : $"{documentName}/{entry.ModuleFile}";
-            output.AppendLine($"{verb} {outputPath}");
+            plans.Add(new CommonModuleCopyPlan(
+                SourcePath: sourcePath,
+                TargetPath: targetPath,
+                SourceSidecarPath: sourceSidecarPath,
+                TargetSidecarPath: targetSidecarPath,
+                SidecarDeletePaths: sidecarDeletePaths,
+                Verb: verb,
+                OutputPath: outputPath));
+        }
+
+        return plans;
+    }
+
+    private static string ResolveTargetPath(
+        string documentSourceSetPath,
+        string moduleFile,
+        bool overwrite)
+    {
+        var matches = FindSourceMatches(documentSourceSetPath, moduleFile);
+        if (!overwrite && matches.Count > 0)
+        {
+            throw new CommonModulesManifestException($"CommonModules target source file already exists: {matches[0]}");
+        }
+
+        if (overwrite && matches.Count > 1)
+        {
+            throw new CommonModulesManifestException(
+                $"CommonModules target source file has multiple matches for '{moduleFile}': {string.Join(", ", matches)}");
+        }
+
+        return matches.Count == 1
+            ? matches[0]
+            : Path.Combine(documentSourceSetPath, moduleFile);
+    }
+
+    private CommandResult? TryExecuteCopyPlan(IReadOnlyList<CommonModuleCopyPlan> copyPlan)
+    {
+        try
+        {
+            foreach (var plan in copyPlan)
+            {
+                foreach (var sidecarPath in plan.SidecarDeletePaths.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
+                {
+                    if (File.Exists(sidecarPath))
+                    {
+                        File.Delete(sidecarPath);
+                    }
+                }
+
+                Directory.CreateDirectory(Path.GetDirectoryName(plan.TargetPath)!);
+                File.Copy(plan.SourcePath, plan.TargetPath, overwrite: true);
+                if (plan.SourceSidecarPath is not null && plan.TargetSidecarPath is not null)
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(plan.TargetSidecarPath)!);
+                    File.Copy(plan.SourceSidecarPath, plan.TargetSidecarPath, overwrite: true);
+                }
+            }
+
+            return null;
+        }
+        catch (IOException ex)
+        {
+            return FileOperationFailure(ex);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return FileOperationFailure(ex);
+        }
+    }
+
+    private CommandResult? TrySaveManifest(string projectRoot, ProjectManifest manifest)
+    {
+        try
+        {
+            manifestStore.Save(projectRoot, manifest);
+            return null;
+        }
+        catch (IOException ex)
+        {
+            return WriteManifestRecovery(projectRoot, manifest, ex);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return WriteManifestRecovery(projectRoot, manifest, ex);
+        }
+        catch (ProjectManifestException ex)
+        {
+            return WriteManifestRecovery(projectRoot, manifest, ex);
+        }
+    }
+
+    private static CommandResult FileOperationFailure(Exception ex)
+        => CommandResult.UsageError(
+            $"CommonModules file operation failed before manifest save; manifest was not saved and source files may have been partially updated. {ex.Message}");
+
+    private static CommandResult WriteManifestRecovery(string projectRoot, ProjectManifest manifest, Exception manifestSaveException)
+    {
+        try
+        {
+            Directory.CreateDirectory(projectRoot);
+            var recoveryPath = Path.Combine(projectRoot, $"project.failed-{DateTime.Now:yyyyMMdd-HHmmss-fff}.json");
+            var json = JsonSerializer.Serialize(manifest, JsonOptions);
+            File.WriteAllText(recoveryPath, json + Environment.NewLine, Utf16LeWithBom);
+            return CommandResult.UsageError(recoveryPath);
+        }
+        catch (IOException ex)
+        {
+            return RecoveryFailure(manifestSaveException, ex);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return RecoveryFailure(manifestSaveException, ex);
+        }
+    }
+
+    private static CommandResult RecoveryFailure(Exception manifestSaveException, Exception recoveryException)
+        => CommandResult.UsageError(
+            $"Project manifest could not be saved ({manifestSaveException.Message}), and recovery file could not be written: {recoveryException.Message}");
+
+    private static string BuildCopyOutput(IReadOnlyList<CommonModuleCopyPlan> copyPlan)
+    {
+        var output = new StringBuilder();
+        foreach (var plan in copyPlan)
+        {
+            output.AppendLine($"{plan.Verb} {plan.OutputPath}");
         }
 
         return output.ToString();
     }
 
-    private static void EnsureNoUntrackedConflicts(
-        string documentSourceSetPath,
-        IReadOnlyList<CommonModuleManifestEntry> entries,
-        bool force)
+    private static ProjectManifest CloneManifest(ProjectManifest manifest)
     {
-        if (force)
+        var json = JsonSerializer.Serialize(manifest, JsonOptions);
+        return JsonSerializer.Deserialize<ProjectManifest>(json, JsonOptions)
+            ?? throw new CommonModulesManifestException("Project manifest could not be cloned.");
+    }
+
+    private static IReadOnlyList<string> FindSourceMatches(string documentSourceSetPath, string moduleFile)
+    {
+        if (!Directory.Exists(documentSourceSetPath))
         {
-            return;
+            return [];
         }
 
-        foreach (var entry in entries)
-        {
-            var targetPath = Path.Combine(documentSourceSetPath, entry.ModuleFile);
-            if (File.Exists(targetPath))
-            {
-                throw new CommonModulesManifestException($"CommonModules target source file already exists: {targetPath}");
-            }
-        }
+        return Directory
+            .EnumerateFiles(documentSourceSetPath, "*", SearchOption.AllDirectories)
+            .Where(path =>
+                IsVbaSourceFile(path) &&
+                Path.GetFileName(path).Equals(moduleFile, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
     }
+
+    private static IReadOnlyList<string> FindFormSidecars(string documentSourceSetPath, string moduleFile)
+    {
+        if (!Directory.Exists(documentSourceSetPath))
+        {
+            return [];
+        }
+
+        var formName = Path.GetFileNameWithoutExtension(moduleFile);
+        return Directory
+            .EnumerateFiles(documentSourceSetPath, "*", SearchOption.AllDirectories)
+            .Where(path =>
+                Path.GetExtension(path).Equals(".frx", StringComparison.OrdinalIgnoreCase) &&
+                Path.GetFileNameWithoutExtension(path).Equals(formName, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static string? ResolveExistingSidecarPath(string formSourcePath)
+    {
+        var sidecarPath = Path.ChangeExtension(formSourcePath, ".frx");
+        return File.Exists(sidecarPath) ? sidecarPath : null;
+    }
+
+    private static bool IsVbaSourceFile(string path)
+    {
+        var extension = Path.GetExtension(path);
+        return extension.Equals(".bas", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".cls", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".frm", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsFormFile(string path)
+        => Path.GetExtension(path).Equals(".frm", StringComparison.OrdinalIgnoreCase);
 
     private static bool ApplyInstalledEntries(
         ProjectDocument document,
@@ -347,4 +547,13 @@ public sealed class CommonModulesService
     private sealed record CommonModuleListOutput(
         string Document,
         IReadOnlyList<InstalledCommonModule> CommonModules);
+
+    private sealed record CommonModuleCopyPlan(
+        string SourcePath,
+        string TargetPath,
+        string? SourceSidecarPath,
+        string? TargetSidecarPath,
+        IReadOnlyList<string> SidecarDeletePaths,
+        string Verb,
+        string OutputPath);
 }

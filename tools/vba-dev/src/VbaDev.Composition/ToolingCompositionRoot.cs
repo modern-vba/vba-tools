@@ -26,9 +26,10 @@ public static class ToolingCompositionRoot
         IWorkbookBuildAutomation? workbookBuildAutomation = null,
         IWorkbookTestRunner? workbookTestRunner = null,
         IWorkbookModuleExporter? workbookModuleExporter = null,
-        IVbaProjectReferenceResolver? vbaProjectReferenceResolver = null)
+        IVbaProjectReferenceResolver? vbaProjectReferenceResolver = null,
+        IProjectManifestStore? projectManifestStore = null)
     {
-        var manifestStore = new JsonProjectManifestStore();
+        var manifestStore = projectManifestStore ?? new JsonProjectManifestStore();
         var commonModulesManifestReader = new CommonModulesManifestReader();
         var commonModulesService = new CommonModulesService(commonModulesManifestReader, manifestStore);
         var referenceResolver = vbaProjectReferenceResolver ?? new RegistryVbaProjectReferenceResolver();

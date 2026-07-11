@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using VbaDev.App.CommonModules;
+using VbaDev.App.Projects;
 using VbaDev.Composition;
 using VbaDev.Domain;
 using VbaDev.Infrastructure.Projects;
@@ -179,6 +180,61 @@ public sealed class CommonModulesCommandTests
     }
 
     [Fact]
+    public void AddUsesFlatNestedSourceIdentityForConflictsAndForcedOverwrite()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = CreateProjectWithCommonModules(temp, "Project");
+        var commonRepo = Path.Combine(temp.Path, "common_modules_repo");
+        WriteManifest(commonRepo, ("Feature.bas", "optional", ""));
+        WriteModule(commonRepo, "Feature.bas", "repo feature");
+        var sourceSet = Path.Combine(projectRoot, "src", "Book1");
+        WriteModule(sourceSet, Path.Combine("nested", "Feature.bas"), "local feature");
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+
+        var conflict = application.Run(["common-module", "add", "Feature"]);
+
+        Assert.Equal(1, conflict.ExitCode);
+        Assert.Contains("already exists", conflict.StandardError, StringComparison.Ordinal);
+        Assert.Equal("local feature", File.ReadAllText(Path.Combine(sourceSet, "nested", "Feature.bas")));
+        Assert.False(File.Exists(Path.Combine(sourceSet, "Feature.bas")));
+
+        var forced = application.Run(["common-module", "add", "Feature", "--force"]);
+
+        Assert.Equal(0, forced.ExitCode);
+        Assert.Equal("repo feature", File.ReadAllText(Path.Combine(sourceSet, "nested", "Feature.bas")));
+        Assert.False(File.Exists(Path.Combine(sourceSet, "Feature.bas")));
+    }
+
+    [Fact]
+    public void AddForceFailsOnDuplicateNestedMatchesBeforeAnyFileOrManifestMutation()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = CreateProjectWithCommonModules(temp, "Project");
+        var commonRepo = Path.Combine(temp.Path, "common_modules_repo");
+        WriteManifest(
+            commonRepo,
+            ("Base.bas", "runtime-baseline", ""),
+            ("Feature.bas", "optional", "Base.bas"));
+        WriteModule(commonRepo, "Base.bas", "repo base");
+        WriteModule(commonRepo, "Feature.bas", "repo feature");
+        var sourceSet = Path.Combine(projectRoot, "src", "Book1");
+        WriteModule(sourceSet, "Base.bas", "local base");
+        WriteModule(sourceSet, Path.Combine("first", "Feature.bas"), "local feature 1");
+        WriteModule(sourceSet, Path.Combine("second", "Feature.bas"), "local feature 2");
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+
+        var result = application.Run(["common-module", "add", "Feature", "--force"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("multiple", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Feature.bas", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("local base", File.ReadAllText(Path.Combine(sourceSet, "Base.bas")));
+        Assert.Equal("local feature 1", File.ReadAllText(Path.Combine(sourceSet, "first", "Feature.bas")));
+        var manifest = new JsonProjectManifestStore().Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
+        Assert.Empty(manifest.Documents["Book1"].CommonModules);
+    }
+
+    [Fact]
     public void AddUsesPrimaryDocumentByDefaultAndHonorsExplicitDocument()
     {
         using var temp = TempDirectory.Create();
@@ -316,6 +372,75 @@ public sealed class CommonModulesCommandTests
             ],
             updatedManifest.Documents["Book1"].CommonModules);
         Assert.Contains("Updated Book1/Feature.bas", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void UpdateOverwritesNestedInstalledModulesAndCopiesMissingDependenciesToRoot()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = CreateProjectWithCommonModules(temp, "Project");
+        var store = new JsonProjectManifestStore();
+        var manifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
+        manifest.Documents["Book1"].CommonModules.Add(new InstalledCommonModule("Feature", Requested: true));
+        store.Save(projectRoot, manifest);
+        var commonRepo = Path.Combine(temp.Path, "common_modules_repo");
+        WriteManifest(
+            commonRepo,
+            ("Base.bas", "runtime-baseline", ""),
+            ("Feature.bas", "optional", "Base.bas"));
+        WriteModule(commonRepo, "Base.bas", "base v2");
+        WriteModule(commonRepo, "Feature.bas", "feature v2");
+        var sourceSet = Path.Combine(projectRoot, "src", "Book1");
+        WriteModule(sourceSet, Path.Combine("nested", "Feature.bas"), "feature v1");
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+
+        var result = application.Run(["common-module", "update"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal("feature v2", File.ReadAllText(Path.Combine(sourceSet, "nested", "Feature.bas")));
+        Assert.Equal("base v2", File.ReadAllText(Path.Combine(sourceSet, "Base.bas")));
+        Assert.False(File.Exists(Path.Combine(sourceSet, "Feature.bas")));
+    }
+
+    [Fact]
+    public void UpdateFailsOnDuplicateNestedMatchesBeforeAnyFileOrManifestMutation()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = CreateProjectWithCommonModules(temp, "Project");
+        var store = new JsonProjectManifestStore();
+        var manifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
+        manifest.Documents["Book1"].CommonModules.AddRange(
+            [
+                new InstalledCommonModule("Base", Requested: false),
+                new InstalledCommonModule("Feature", Requested: true)
+            ]);
+        store.Save(projectRoot, manifest);
+        var commonRepo = Path.Combine(temp.Path, "common_modules_repo");
+        WriteManifest(
+            commonRepo,
+            ("Base.bas", "runtime-baseline", ""),
+            ("Feature.bas", "optional", "Base.bas"));
+        WriteModule(commonRepo, "Base.bas", "base v2");
+        WriteModule(commonRepo, "Feature.bas", "feature v2");
+        var sourceSet = Path.Combine(projectRoot, "src", "Book1");
+        WriteModule(sourceSet, "Base.bas", "base v1");
+        WriteModule(sourceSet, Path.Combine("first", "Feature.bas"), "feature v1 first");
+        WriteModule(sourceSet, Path.Combine("second", "Feature.bas"), "feature v1 second");
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+
+        var result = application.Run(["common-module", "update"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("multiple", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("base v1", File.ReadAllText(Path.Combine(sourceSet, "Base.bas")));
+        Assert.Equal("feature v1 first", File.ReadAllText(Path.Combine(sourceSet, "first", "Feature.bas")));
+        var updatedManifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
+        Assert.Equal(
+            [
+                new InstalledCommonModule("Base", Requested: false),
+                new InstalledCommonModule("Feature", Requested: true)
+            ],
+            updatedManifest.Documents["Book1"].CommonModules);
     }
 
     [Fact]
@@ -514,6 +639,83 @@ public sealed class CommonModulesCommandTests
     }
 
     [Fact]
+    public void AddAndUpdateNormalizeFormSidecarsBesideTheForm()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = CreateProjectWithCommonModules(temp, "Project");
+        var commonRepo = Path.Combine(temp.Path, "common_modules_repo");
+        WriteManifest(commonRepo, ("Dialog.frm", "optional", ""));
+        WriteModule(commonRepo, "Dialog.frm", "repo form");
+        WriteBytes(Path.Combine(commonRepo, "Dialog.frx"), [1, 2, 3]);
+        var sourceSet = Path.Combine(projectRoot, "src", "Book1");
+        WriteModule(sourceSet, Path.Combine("forms", "Dialog.frm"), "local form");
+        WriteBytes(Path.Combine(sourceSet, "Dialog.frx"), [9]);
+        WriteBytes(Path.Combine(sourceSet, "forms", "Dialog.frx"), [8]);
+        WriteBytes(Path.Combine(sourceSet, "legacy", "Dialog.frx"), [7]);
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+
+        var add = application.Run(["common-module", "add", "Dialog", "--force"]);
+
+        Assert.Equal(0, add.ExitCode);
+        Assert.Equal("repo form", File.ReadAllText(Path.Combine(sourceSet, "forms", "Dialog.frm")));
+        Assert.Equal([Path.Combine(sourceSet, "forms", "Dialog.frx")], Directory.EnumerateFiles(sourceSet, "Dialog.frx", SearchOption.AllDirectories));
+        Assert.Equal([1, 2, 3], File.ReadAllBytes(Path.Combine(sourceSet, "forms", "Dialog.frx")));
+
+        File.Delete(Path.Combine(commonRepo, "Dialog.frx"));
+        WriteBytes(Path.Combine(sourceSet, "Dialog.frx"), [6]);
+        WriteBytes(Path.Combine(sourceSet, "other", "Dialog.frx"), [5]);
+        var update = application.Run(["common-module", "update"]);
+
+        Assert.Equal(0, update.ExitCode);
+        Assert.Empty(Directory.EnumerateFiles(sourceSet, "Dialog.frx", SearchOption.AllDirectories));
+    }
+
+    [Fact]
+    public void AddReportsFileCopyFailureWithoutSavingManifest()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = CreateProjectWithCommonModules(temp, "Project");
+        var commonRepo = Path.Combine(temp.Path, "common_modules_repo");
+        WriteManifest(commonRepo, ("Feature.bas", "optional", ""));
+        WriteModule(commonRepo, "Feature.bas", "repo feature");
+        Directory.CreateDirectory(Path.Combine(projectRoot, "src", "Book1", "Feature.bas"));
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+
+        var result = application.Run(["common-module", "add", "Feature", "--force"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("manifest was not saved", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("source files may have been partially updated", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        var manifest = new JsonProjectManifestStore().Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
+        Assert.Empty(manifest.Documents["Book1"].CommonModules);
+    }
+
+    [Fact]
+    public void AddSavesManifestAfterCopiesAndWritesRecoveryFileWhenManifestSaveFails()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = CreateProjectWithCommonModules(temp, "Project");
+        var commonRepo = Path.Combine(temp.Path, "common_modules_repo");
+        WriteManifest(commonRepo, ("Feature.bas", "optional", ""));
+        WriteModule(commonRepo, "Feature.bas", "repo feature");
+        var manifestStore = new RecordingProjectManifestStore { ThrowOnSave = true };
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot, projectManifestStore: manifestStore);
+
+        var result = application.Run(["common-module", "add", "Feature"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.True(manifestStore.FileExistedDuringSave);
+        var recoveryFile = Assert.Single(Directory.EnumerateFiles(projectRoot, "project.failed-*.json"));
+        Assert.Equal(recoveryFile, result.StandardError.Trim());
+        var recoveryBytes = File.ReadAllBytes(recoveryFile);
+        Assert.Equal(0xff, recoveryBytes[0]);
+        Assert.Equal(0xfe, recoveryBytes[1]);
+        Assert.Contains("\"Feature\"", File.ReadAllText(recoveryFile, Encoding.Unicode), StringComparison.Ordinal);
+        var manifest = new JsonProjectManifestStore().Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
+        Assert.Empty(manifest.Documents["Book1"].CommonModules);
+    }
+
+    [Fact]
     public void UpdateRejectsDocumentSelection()
     {
         using var temp = TempDirectory.Create();
@@ -550,7 +752,36 @@ public sealed class CommonModulesCommandTests
 
     private static void WriteModule(string directory, string fileName, string content)
     {
-        Directory.CreateDirectory(directory);
-        File.WriteAllText(Path.Combine(directory, fileName), content, new UTF8Encoding(false));
+        var path = Path.Combine(directory, fileName);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, content, new UTF8Encoding(false));
+    }
+
+    private static void WriteBytes(string path, byte[] content)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllBytes(path, content);
+    }
+
+    private sealed class RecordingProjectManifestStore : IProjectManifestStore
+    {
+        private readonly JsonProjectManifestStore inner = new();
+
+        public bool ThrowOnSave { get; init; }
+
+        public bool FileExistedDuringSave { get; private set; }
+
+        public ProjectManifest Load(string manifestPath) => inner.Load(manifestPath);
+
+        public void Save(string projectRoot, ProjectManifest manifest)
+        {
+            FileExistedDuringSave = File.Exists(Path.Combine(projectRoot, "src", "Book1", "Feature.bas"));
+            if (ThrowOnSave)
+            {
+                throw new IOException("manifest save failed");
+            }
+
+            inner.Save(projectRoot, manifest);
+        }
     }
 }
