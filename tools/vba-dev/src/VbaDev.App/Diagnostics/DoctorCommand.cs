@@ -98,6 +98,11 @@ public sealed class DoctorCommand
             results.Add(File.Exists(templatePath)
                 ? DiagnosticResult.Pass($"Source template ({documentName})", $"Found {templatePath}.")
                 : DiagnosticResult.Fail($"Source template ({documentName})", $"Create the macro-enabled template workbook: {templatePath}."));
+            if (Directory.Exists(sourceSetPath))
+            {
+                AddDocumentSourceIdentityDiagnostics(results, documentName, sourceSetPath);
+            }
+
             results.Add(Directory.Exists(binDirectory)
                 ? DiagnosticResult.Pass($"Bin output directory ({documentName})", $"Found {binDirectory}.")
                 : DiagnosticResult.Warn($"Bin output directory ({documentName})", $"Will be created by build when needed: {binDirectory}."));
@@ -129,6 +134,61 @@ public sealed class DoctorCommand
         {
             results.Add(DiagnosticResult.Fail("Command defaults", ex.Message));
         }
+    }
+
+    private static void AddDocumentSourceIdentityDiagnostics(
+        List<DiagnosticResult> results,
+        string documentName,
+        string sourceSetPath)
+    {
+        var sourceFiles = EnumerateVbaSourceFiles(sourceSetPath).ToArray();
+        foreach (var group in sourceFiles
+                     .GroupBy(GetFileName, StringComparer.OrdinalIgnoreCase)
+                     .Where(group => group.Skip(1).Any())
+                     .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            results.Add(DiagnosticResult.Fail(
+                $"Document source identity ({documentName}/{group.Key})",
+                $"Duplicate exported source file name. Colliding files: {string.Join(", ", group.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))}."));
+        }
+
+        var formFilesByName = sourceFiles
+            .Where(path => Path.GetExtension(path).Equals(".frm", StringComparison.OrdinalIgnoreCase))
+            .GroupBy(GetFileNameWithoutExtension, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group.OrderBy(path => path, StringComparer.OrdinalIgnoreCase).ToArray(),
+                StringComparer.OrdinalIgnoreCase);
+
+        foreach (var sidecarPath in Directory.EnumerateFiles(sourceSetPath, "*", SearchOption.AllDirectories)
+                     .Where(path => Path.GetExtension(path).Equals(".frx", StringComparison.OrdinalIgnoreCase))
+                     .OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
+        {
+            var sidecarName = Path.GetFileNameWithoutExtension(sidecarPath);
+            if (!formFilesByName.TryGetValue(sidecarName, out var matchingForms))
+            {
+                continue;
+            }
+
+            if (HasSameDirectoryForm(sidecarPath, sidecarName))
+            {
+                continue;
+            }
+
+            results.Add(DiagnosticResult.Warn(
+                $"Form sidecar ({documentName}/{Path.GetFileName(sidecarPath)})",
+                $"Sidecar has no same-directory .frm, but a same-name form exists elsewhere: {sidecarPath}. Matching forms: {string.Join(", ", matchingForms)}."));
+        }
+    }
+
+    private static bool HasSameDirectoryForm(string sidecarPath, string sidecarName)
+    {
+        var directory = Path.GetDirectoryName(sidecarPath);
+        return directory is not null &&
+            Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly)
+                .Any(path =>
+                    Path.GetExtension(path).Equals(".frm", StringComparison.OrdinalIgnoreCase) &&
+                    Path.GetFileNameWithoutExtension(path).Equals(sidecarName, StringComparison.OrdinalIgnoreCase));
     }
 
     private void AddVbaProjectReferenceDiagnostics(List<DiagnosticResult> results, ResolvedProject project)
@@ -391,13 +451,21 @@ public sealed class DoctorCommand
         string commonModulesRepositoryPath,
         CommonModuleManifestEntry entry)
     {
-        var sourcePath = Path.Combine(sourceSetPath, entry.ModuleFile);
+        var sourceMatches = FindSourceMatches(sourceSetPath, entry.ModuleFile);
         var repositoryPath = Path.Combine(commonModulesRepositoryPath, entry.ModuleFile);
-        if (!File.Exists(sourcePath))
+        if (sourceMatches.Count == 0)
         {
             results.Add(DiagnosticResult.Fail(
                 $"CommonModules ({documentName}/{moduleName})",
-                $"Manifest-listed source file was not found: {sourcePath}."));
+                $"Manifest-listed source file was not found under {sourceSetPath}: {entry.ModuleFile}."));
+            return;
+        }
+
+        if (sourceMatches.Count > 1)
+        {
+            results.Add(DiagnosticResult.Fail(
+                $"CommonModules ({documentName}/{moduleName})",
+                $"Installed CommonModule has multiple source matches for '{entry.ModuleFile}': {string.Join(", ", sourceMatches)}."));
             return;
         }
 
@@ -409,6 +477,7 @@ public sealed class DoctorCommand
             return;
         }
 
+        var sourcePath = sourceMatches[0];
         if (!File.ReadAllBytes(sourcePath).SequenceEqual(File.ReadAllBytes(repositoryPath)))
         {
             results.Add(DiagnosticResult.Warn(
@@ -416,6 +485,38 @@ public sealed class DoctorCommand
                 $"Source file differs from CommonModulesRepository: {sourcePath}."));
         }
     }
+
+    private static IReadOnlyList<string> FindSourceMatches(string sourceSetPath, string moduleFile)
+        => EnumerateVbaSourceFiles(sourceSetPath)
+            .Where(path => GetFileName(path).Equals(moduleFile, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+    private static IEnumerable<string> EnumerateVbaSourceFiles(string sourceSetPath)
+    {
+        if (!Directory.Exists(sourceSetPath))
+        {
+            return [];
+        }
+
+        return Directory
+            .EnumerateFiles(sourceSetPath, "*", SearchOption.AllDirectories)
+            .Where(IsVbaSourceFile);
+    }
+
+    private static bool IsVbaSourceFile(string path)
+    {
+        var extension = Path.GetExtension(path);
+        return extension.Equals(".bas", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".cls", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".frm", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string GetFileName(string path)
+        => Path.GetFileName(path) ?? string.Empty;
+
+    private static string GetFileNameWithoutExtension(string path)
+        => Path.GetFileNameWithoutExtension(path) ?? string.Empty;
 
     private static string Render(IReadOnlyList<DiagnosticResult> results)
     {

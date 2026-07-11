@@ -174,6 +174,56 @@ public sealed class DoctorCommandTests
     }
 
     [Fact]
+    public void DoctorReportsDuplicateRecursiveSourceNamesAndDisplacedSidecars()
+    {
+        using var temp = TempDirectory.Create();
+        var (root, _) = CreateDoctorProject(temp);
+        var sourceSet = Path.Combine(root, "src", "Book1");
+        WriteModule(sourceSet, Path.Combine("first", "Feature.bas"), "first");
+        WriteModule(sourceSet, Path.Combine("second", "feature.bas"), "second");
+        WriteModule(sourceSet, Path.Combine("forms", "Dialog.frm"), "form");
+        WriteBytes(Path.Combine(sourceSet, "legacy", "Dialog.frx"), [1, 2, 3]);
+        WriteBytes(Path.Combine(sourceSet, "Orphan.frx"), [9, 9, 9]);
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, new FakeEnvironmentDiagnosticPort());
+
+        var result = application.Run(["doctor"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("[FAIL] Document source identity (Book1/Feature.bas)", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(Path.Combine("first", "Feature.bas"), result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains(Path.Combine("second", "feature.bas"), result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("[WARN] Form sidecar (Book1/Dialog.frx)", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains(Path.Combine("legacy", "Dialog.frx"), result.StandardOutput, StringComparison.Ordinal);
+        Assert.DoesNotContain("Orphan.frx", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DoctorFindsNestedCommonModulesForDriftAndDuplicateChecks()
+    {
+        using var temp = TempDirectory.Create();
+        var (root, commonRepo) = CreateDoctorProject(temp);
+        WriteManifest(commonRepo, ("Feature.bas", "optional", ""));
+        WriteModule(commonRepo, "Feature.bas", "canonical");
+        WriteModule(Path.Combine(root, "src", "Book1"), Path.Combine("nested", "Feature.bas"), "local edit");
+        AddInstalledCommonModules(root, new InstalledCommonModule("Feature", Requested: true));
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, new FakeEnvironmentDiagnosticPort());
+
+        var drift = application.Run(["doctor"]);
+
+        Assert.Equal(0, drift.ExitCode);
+        Assert.Contains("[WARN] CommonModules (Book1/Feature)", drift.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains(Path.Combine("nested", "Feature.bas"), drift.StandardOutput, StringComparison.Ordinal);
+        Assert.DoesNotContain("Manifest-listed source file was not found", drift.StandardOutput, StringComparison.Ordinal);
+
+        WriteModule(Path.Combine(root, "src", "Book1"), Path.Combine("other", "feature.bas"), "other edit");
+        var duplicate = application.Run(["doctor"]);
+
+        Assert.Equal(1, duplicate.ExitCode);
+        Assert.Contains("[FAIL] CommonModules (Book1/Feature)", duplicate.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("multiple", duplicate.StandardOutput, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void DoctorValidatesManifestReferencesForEveryDocument()
     {
         using var temp = TempDirectory.Create();
@@ -336,8 +386,15 @@ public sealed class DoctorCommandTests
 
     private static void WriteModule(string directory, string fileName, string content)
     {
-        Directory.CreateDirectory(directory);
-        File.WriteAllText(Path.Combine(directory, fileName), content, new UTF8Encoding(false));
+        var path = Path.Combine(directory, fileName);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, content, new UTF8Encoding(false));
+    }
+
+    private static void WriteBytes(string path, byte[] content)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllBytes(path, content);
     }
 }
 
