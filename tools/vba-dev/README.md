@@ -26,6 +26,12 @@ vba-dev <command> [options]
 
 Document-scoped commands use the manifest `primaryDocument` when `--document` is omitted.
 
+## Document source sets
+
+A `DocumentSourceSet` is recursive, but exported VBA source identity is flat. `.bas`, `.cls`, and `.frm` files may live in nested organization directories under `sourcePath`, but their extension-including file names must be unique case-insensitively within that one source set.
+
+Read-side commands such as `build`, `publish`, and `import` discover `.bas`, `.cls`, and `.frm` files recursively and sort them by exported file name. `.frx` files are not independent source inputs and are not preflighted separately; same-directory form sidecar handling is delegated to the underlying form import/export behavior. Write-side commands that place form files, such as `export` and `common-module add/update`, colocate `.frx` sidecars beside the selected `.frm` path.
+
 ## Help
 
 ### Root
@@ -83,6 +89,8 @@ Options:
 
 CommonModuleName values are extensionless module base names resolved through the CommonModules manifest. Dependencies are copied with the requested entries and recorded in `project.json`.
 
+`common-module add` searches the selected document source set recursively for existing `.bas`, `.cls`, and `.frm` files with the same exported file name. Without `--force`, any match is a conflict. With `--force`, exactly one match is overwritten in place, no match copies to the source-set root, and multiple matches fail before file or manifest mutation.
+
 ### common-module list
 
 ```text
@@ -114,6 +122,12 @@ Options:
 ```
 
 `common-module update` is project-scoped. It updates manifest-listed installed CommonModules entries and preserves the manifest `requested` intent.
+
+Update uses the same recursive flat source identity as add. Existing installed entries are overwritten in place when exactly one matching source file exists; missing installed entries are copied to the source-set root; duplicate matches fail before mutation.
+
+For `.frm` CommonModules, add and update first remove every same-name `.frx` under the target source set. If the canonical CommonModules repository has a matching `.frx`, exactly one sidecar is written beside the destination `.frm`; if it has no sidecar, no same-name `.frx` remains in the target source set.
+
+Multi-entry add and update commands preflight the full file plan and planned manifest before deleting sidecars, copying files, or saving `project.json`. The manifest is saved last. If file deletion or copy fails after file mutation begins, the command reports that the manifest was not saved and that source files may have been partially updated; no file rollback is attempted. If manifest saving fails after successful file operations, the planned manifest is written as UTF-16LE with BOM to `project.failed-YYYYMMDD-HHMMSS-fff.json` beside `project.json`, and the command prints only that recovery file path.
 
 ### reference add
 
@@ -180,7 +194,7 @@ Options:
   --document <name>, -d <name>   Document name from the project manifest.
 ```
 
-`build` creates the bin workbook from the source template, normalizes manifest-defined VBA project references, imports source files, and writes the selected document's bin output.
+`build` creates the bin workbook from the source template, normalizes manifest-defined VBA project references, recursively imports source files, and writes the selected document's bin output. Project-local source files are imported after CommonModules dependency ordering, sorted by extension-including exported file name. Duplicate `.bas`, `.cls`, or `.frm` file names fail before source import. `.frx` files are not imported or validated independently.
 
 ### test
 
@@ -218,7 +232,7 @@ Options:
   --document <name>, -d <name>   Document name from the project manifest.
 ```
 
-`publish` creates the publish workbook from the source template, normalizes manifest-defined VBA project references, imports publishable source files, and writes the selected document's publish output.
+`publish` creates the publish workbook from the source template, normalizes manifest-defined VBA project references, recursively imports publishable source files, and writes the selected document's publish output. It uses the same flat file-name ordering and duplicate-source failure behavior as `build`. Publish excludes CommonModules entries classified as test-only by the CommonModules manifest and project-local source files whose first scanned lines contain `'#ExcludePublish`.
 
 ### export
 
@@ -237,7 +251,11 @@ Options:
   --to <dir>                     Directory to export to; defaults to the selected document source set, or the current directory with --from.
 ```
 
-Without `--from`, `export` reads the selected document's bin workbook. Without `--to`, it writes to the selected document source set. With `--from`, `export` does not require `project.json`, rejects `--project` and `--document`, and writes to the current directory when `--to` is omitted. The destination is cleaned before export when it is an explicit directory or a selected document source set.
+Without `--from`, `export` is project-aware: it reads the selected document's manifest-resolved bin workbook and writes to the selected document source set unless `--to` names another destination. With `--from`, export is explicit-workbook mode: it does not resolve `project.json`, rejects `--project` and `--document`, and writes to the current directory when `--to` is omitted.
+
+Cleanup is enabled when the destination is manifest-owned or when `--to` is supplied. Cleanup-enabled export records existing `.bas`, `.cls`, and `.frm` relative paths, exports the workbook to a temporary directory first, and leaves the destination untouched if workbook export fails. After a successful temporary export, it recursively deletes existing `.bas`, `.cls`, `.frm`, and `.frx` files only; empty directories and unrelated files remain. Exported file names that match previous source files are restored to those previous relative paths, new exported file names are placed at the destination root, and exported form `.frx` files are written beside their `.frm`.
+
+When cleanup is not enabled, export writes directly to the destination. It overwrites file paths it writes, but it does not delete unrelated files or displaced `.frx` files elsewhere in the destination.
 
 ### import
 
@@ -254,9 +272,13 @@ Options:
   --to <path>                    Existing workbook file to update in place.
 ```
 
-`import` updates the target workbook in place. It requires both `--from` and `--to`, resolves relative paths from the current directory, and does not accept `--project` or `--document`. The source directory is scanned only at the top level for `.bas`, `.cls`, and `.frm` files. Matching `.frx` sidecars are imported with their `.frm` files; orphan `.frx` files are ignored.
+`import` updates the target workbook in place. It requires both `--from` and `--to`, resolves relative paths from the current directory, and does not accept `--project` or `--document`. The source directory is scanned recursively for `.bas`, `.cls`, and `.frm` files and treated as one flat source file set ordered by extension-including exported file name. Relative paths are not ordering tie-breakers because duplicate exported file names fail before the workbook is opened. The command also fails before opening the workbook when no importable source files exist.
+
+`.frx` files are not independent import inputs and are not preflighted separately. A matching same-directory `.frx` may be consumed by the form import mechanism for its `.frm`; orphan `.frx` files are ignored.
 
 Before import, existing standard modules, class modules, and form modules are removed from the workbook. Document modules such as `ThisWorkbook` and worksheet modules are left in place. The workbook is saved only after flush and import complete successfully.
+
+Unlike `build`, `import` does not add, remove, or normalize manifest-defined references, does not resolve CommonModules dependencies, does not interpret `'#ExcludePublish`, and does not validate whether the workbook compiles.
 
 ### doctor
 
@@ -272,7 +294,7 @@ Options:
   --project <path>               Project root containing project.json.
 ```
 
-`doctor` checks manifest paths, CommonModules repository state, manifest-defined CommonModules dependencies, manifest-defined VBA project references, and machine prerequisites.
+`doctor` checks manifest paths, recursive source identity, CommonModules repository state, manifest-defined CommonModules dependencies, manifest-defined VBA project references, and machine prerequisites. Duplicate `.bas`, `.cls`, or `.frm` exported file names in one document source set are failures. A `.frx` with no same-directory `.frm` is a warning only when a same-name `.frm` exists elsewhere in the same source set; `.frx` files with no same-name `.frm` anywhere are ignored. CommonModules drift checks find installed source files in nested directories and fail when an installed CommonModule has multiple matching source files.
 
 ## project.json
 
@@ -330,7 +352,7 @@ Example:
 | `primaryDocument` | Default document used by document-scoped commands when `--document` is omitted. |
 | `documents` | Document definitions keyed by document name. |
 | `documents.<document>.kind` | Document kind. Currently only `excel` is supported. |
-| `documents.<document>.sourcePath` | DocumentSourceSet directory containing the template workbook and exported VBA source. |
+| `documents.<document>.sourcePath` | Recursive DocumentSourceSet directory containing the template workbook and exported VBA source. `.bas`, `.cls`, and `.frm` file identity is flat by exported file name. |
 | `documents.<document>.templatePath` | Source template workbook used by `build` and `publish`. |
 | `documents.<document>.binPath` | Workbook generated by `build` and used by default by `test` and `export`. |
 | `documents.<document>.publishPath` | Workbook generated by `publish`. |

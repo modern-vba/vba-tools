@@ -90,6 +90,16 @@ Office macro documents under a project manifest. The initial supported document
 kind for workbook-backed automation is an Excel `.xlsm` workbook.
 _Avoid_: workspace folder, repository, source folder
 
+**ExplicitWorkbookExport**:
+A `VbaDev` export operation scoped by a caller-provided workbook path rather
+than by a `ProjectManifest` document definition.
+_Avoid_: path-only export, ad hoc export, project export
+
+**ExplicitWorkbookImport**:
+A `VbaDev` import operation scoped by a caller-provided source directory and
+workbook path rather than by a `ProjectManifest` document definition.
+_Avoid_: path-only import, ad hoc import, project import
+
 **ProjectManifest**:
 The project-local manifest, stored as `project.json`, that identifies a
 `WorkbookBackedProject` and carries default values for VS Code commands and
@@ -111,6 +121,12 @@ A `.bas`, `.cls`, or `.frm` text file exported from a VBA project and edited or
 analyzed outside the VBE.
 _Avoid_: workbook, code blob
 
+**VbaFormSidecar**:
+An `.frx` binary sidecar that stores non-text designer data for a `.frm` form.
+It belongs to the same form source unit as the matching same-directory `.frm`
+file and does not define separate source identity or placement.
+_Avoid_: exported source, separate module, generated cache
+
 **PrimaryOfficeDocument**:
 The single Office macro document that a `WorkbookBackedProject` treats as the
 subject of project lifecycle commands.
@@ -118,7 +134,10 @@ _Avoid_: arbitrary workbook, generated output, secondary document
 
 **DocumentSourceSet**:
 The exported VBA source files and source template document that belong to one
-Office macro document within a `WorkbookBackedProject`.
+Office macro document within a `WorkbookBackedProject`. Nested organization
+directories under the document source path do not create separate source sets;
+exported VBA source identity remains flat, and extension-including source file
+names must be unique within the source set.
 _Avoid_: source folder, document, test suite
 
 **VbaProjectReference**:
