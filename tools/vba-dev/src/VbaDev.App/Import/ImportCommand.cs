@@ -91,17 +91,38 @@ public sealed class ImportCommand
         }
 
         var sourceFiles = Directory
-            .EnumerateFiles(sourceDirectory, "*", SearchOption.TopDirectoryOnly)
+            .EnumerateFiles(sourceDirectory, "*", SearchOption.AllDirectories)
             .Where(IsVbaSourceFile)
             .Select(CreateSourceFile)
-            .OrderBy(source => source.FileName, StringComparer.OrdinalIgnoreCase)
             .ToArray();
         if (sourceFiles.Length == 0)
         {
             throw new InvalidOperationException($"No importable VBA source files were found in: {sourceDirectory}");
         }
 
-        return sourceFiles;
+        ThrowIfDuplicateSourceFileNames(sourceDirectory, sourceFiles);
+
+        return sourceFiles
+            .OrderBy(source => source.FileName, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static void ThrowIfDuplicateSourceFileNames(string sourceDirectory, IReadOnlyList<VbaSourceFile> sourceFiles)
+    {
+        var duplicateGroups = sourceFiles
+            .GroupBy(source => source.FileName, StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Skip(1).Any())
+            .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (duplicateGroups.Length == 0)
+        {
+            return;
+        }
+
+        var lines = duplicateGroups.Select(group =>
+            $"Duplicate source file name '{group.Key}': {string.Join(", ", group.Select(source => source.SourcePath).OrderBy(path => path, StringComparer.OrdinalIgnoreCase))}");
+        throw new InvalidOperationException(
+            $"Duplicate VBA source file names were found under {sourceDirectory}.{Environment.NewLine}{string.Join(Environment.NewLine, lines)}");
     }
 
     private static void ValidateTargetWorkbook(string targetWorkbookPath)

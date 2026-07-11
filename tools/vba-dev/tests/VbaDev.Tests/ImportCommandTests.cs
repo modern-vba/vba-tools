@@ -64,19 +64,17 @@ public sealed class ImportCommandTests
     }
 
     [Fact]
-    public void ImportCommandSelectsTopLevelSourcesInStableNameOrderAndPairsFormFrx()
+    public void ImportCommandSelectsRecursiveSourcesInStableNameOrderAndPairsFormFrx()
     {
         using var temp = TempDirectory.Create();
         var sourceDirectory = temp.CreateDirectory("src");
-        var nestedDirectory = Path.Combine(sourceDirectory, "nested");
-        Directory.CreateDirectory(nestedDirectory);
         var targetWorkbook = Path.Combine(temp.Path, "target.xlsm");
-        File.WriteAllText(Path.Combine(sourceDirectory, "Zeta.cls"), "VERSION 1.0 CLASS", Encoding.UTF8);
-        File.WriteAllText(Path.Combine(sourceDirectory, "Dialog.frm"), "VERSION 5.00", Encoding.UTF8);
-        File.WriteAllBytes(Path.Combine(sourceDirectory, "Dialog.frx"), [1, 2, 3]);
-        File.WriteAllText(Path.Combine(sourceDirectory, "Alpha.bas"), "Attribute VB_Name = \"Alpha\"", Encoding.UTF8);
-        File.WriteAllBytes(Path.Combine(sourceDirectory, "Orphan.frx"), [9, 9, 9]);
-        File.WriteAllText(Path.Combine(nestedDirectory, "Nested.bas"), "Attribute VB_Name = \"Nested\"", Encoding.UTF8);
+        WriteText(Path.Combine(sourceDirectory, "z", "Zeta.cls"), "VERSION 1.0 CLASS");
+        WriteText(Path.Combine(sourceDirectory, "forms", "Dialog.frm"), "VERSION 5.00");
+        WriteBytes(Path.Combine(sourceDirectory, "forms", "Dialog.frx"), [1, 2, 3]);
+        WriteText(Path.Combine(sourceDirectory, "Alpha.bas"), "Attribute VB_Name = \"Alpha\"");
+        WriteBytes(Path.Combine(sourceDirectory, "nested", "Orphan.frx"), [9, 9, 9]);
+        WriteText(Path.Combine(sourceDirectory, "nested", "Nested.bas"), "Attribute VB_Name = \"Nested\"");
         File.WriteAllText(targetWorkbook, "workbook", Encoding.UTF8);
         var automation = new FakeWorkbookBuildAutomation();
         var application = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path, workbookBuildAutomation: automation);
@@ -84,9 +82,30 @@ public sealed class ImportCommandTests
         var result = application.Run(["import", "--from", sourceDirectory, "--to", targetWorkbook]);
 
         Assert.Equal(0, result.ExitCode);
-        Assert.Equal(["Alpha.bas", "Dialog.frm", "Zeta.cls"], automation.ImportedSources.Select(source => source.FileName));
+        Assert.Equal(["Alpha.bas", "Dialog.frm", "Nested.bas", "Zeta.cls"], automation.ImportedSources.Select(source => source.FileName));
         var importedForm = Assert.Single(automation.ImportedSources, source => source.Kind == VbaSourceKind.Form);
-        Assert.Equal(Path.Combine(sourceDirectory, "Dialog.frx"), importedForm.BinaryPath);
+        Assert.Equal(Path.Combine(sourceDirectory, "forms", "Dialog.frx"), importedForm.BinaryPath);
+    }
+
+    [Fact]
+    public void ImportCommandFailsBeforeOpeningWorkbookWhenRecursiveSourceNamesCollide()
+    {
+        using var temp = TempDirectory.Create();
+        var sourceDirectory = temp.CreateDirectory("src");
+        var targetWorkbook = Path.Combine(temp.Path, "target.xlsm");
+        WriteText(Path.Combine(sourceDirectory, "first", "Shared.bas"), "Attribute VB_Name = \"Shared\"");
+        WriteText(Path.Combine(sourceDirectory, "second", "shared.bas"), "Attribute VB_Name = \"shared\"");
+        File.WriteAllText(targetWorkbook, "workbook", Encoding.UTF8);
+        var automation = new FakeWorkbookBuildAutomation();
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path, workbookBuildAutomation: automation);
+
+        var result = application.Run(["import", "--from", sourceDirectory, "--to", targetWorkbook]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("Shared.bas", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(Path.Combine("first", "Shared.bas"), result.StandardError, StringComparison.Ordinal);
+        Assert.Contains(Path.Combine("second", "shared.bas"), result.StandardError, StringComparison.Ordinal);
+        Assert.Empty(automation.OpenedWorkbooks);
     }
 
     [Fact]
@@ -222,5 +241,17 @@ public sealed class ImportCommandTests
         Assert.Contains("import failed", result.StandardError, StringComparison.Ordinal);
         Assert.Contains("remove:OldModule", automation.Events);
         Assert.DoesNotContain("save", automation.Events);
+    }
+
+    private static void WriteText(string path, string content)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, content, Encoding.UTF8);
+    }
+
+    private static void WriteBytes(string path, byte[] content)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllBytes(path, content);
     }
 }
