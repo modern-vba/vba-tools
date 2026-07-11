@@ -3,12 +3,21 @@ using VbaLanguageServer.Workspace;
 
 namespace VbaLanguageServer.Lsp;
 
+/// <summary>
+/// Publishes reference-selection trace messages and starts background catalog refresh work.
+/// </summary>
 internal sealed class ReferenceCatalogRefreshCoordinator
 {
     private readonly VbaProjectReferenceCatalogCache referenceCatalogCache;
     private readonly VbaProjectReferenceCatalogRefreshService catalogRefreshService;
     private readonly LspMessageTransport transport;
 
+    /// <summary>
+    /// Creates a reference catalog refresh coordinator.
+    /// </summary>
+    /// <param name="referenceCatalogCache">The current reference catalog cache.</param>
+    /// <param name="catalogRefreshService">The refresh service for missing catalogs.</param>
+    /// <param name="transport">The transport used to publish log messages.</param>
     public ReferenceCatalogRefreshCoordinator(
         VbaProjectReferenceCatalogCache referenceCatalogCache,
         VbaProjectReferenceCatalogRefreshService catalogRefreshService,
@@ -19,6 +28,11 @@ internal sealed class ReferenceCatalogRefreshCoordinator
         this.transport = transport;
     }
 
+    /// <summary>
+    /// Publishes trace and warning messages for the reference selection that applies to a URI.
+    /// </summary>
+    /// <param name="uri">The document URI.</param>
+    /// <param name="cancellationToken">A cancellation token for message publication.</param>
     public async Task PublishReferenceSelectionTraceAsync(string uri, CancellationToken cancellationToken)
     {
         if (!LanguageServerManifestResolution.TryCreateReferenceSelectionContext(
@@ -47,6 +61,12 @@ internal sealed class ReferenceCatalogRefreshCoordinator
         }
     }
 
+    /// <summary>
+    /// Starts background catalog refresh for reference selections affected by a document text change.
+    /// </summary>
+    /// <param name="uri">The changed document URI.</param>
+    /// <param name="text">The changed document text.</param>
+    /// <param name="cancellationToken">A cancellation token for refresh work.</param>
     public void RefreshReferenceCatalogsInBackground(string uri, string text, CancellationToken cancellationToken)
     {
         if (LanguageServerManifestResolution.TryCreateReferenceSelections(uri, text, out var selections))

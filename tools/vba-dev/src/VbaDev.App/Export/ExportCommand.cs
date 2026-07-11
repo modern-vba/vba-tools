@@ -4,15 +4,28 @@ using VbaDev.App.Workbooks;
 
 namespace VbaDev.App.Export;
 
+/// <summary>
+/// Exports workbook modules into project or explicit source directories.
+/// </summary>
 public sealed class ExportCommand
 {
     private readonly IWorkbookModuleExporter workbookModuleExporter;
 
+    /// <summary>
+    /// Creates the export command.
+    /// </summary>
+    /// <param name="workbookModuleExporter">The workbook exporter used to read VBA project modules.</param>
     public ExportCommand(IWorkbookModuleExporter workbookModuleExporter)
     {
         this.workbookModuleExporter = workbookModuleExporter;
     }
 
+    /// <summary>
+    /// Exports from a resolved project document workbook into its document source set by default.
+    /// </summary>
+    /// <param name="context">The resolved project and document context.</param>
+    /// <param name="request">The export command request.</param>
+    /// <returns>The command result describing the export operation or validation error.</returns>
     public CommandResult Run(ResolvedProjectContext context, ExportCommandRequest request)
     {
         try
@@ -41,6 +54,11 @@ public sealed class ExportCommand
         }
     }
 
+    /// <summary>
+    /// Exports from an explicit workbook path without project manifest resolution.
+    /// </summary>
+    /// <param name="request">The export command request containing the required --from path.</param>
+    /// <returns>The command result describing the export operation or validation error.</returns>
     public CommandResult RunExplicit(ExportCommandRequest request)
     {
         try

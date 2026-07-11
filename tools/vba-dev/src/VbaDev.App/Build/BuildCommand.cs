@@ -7,11 +7,19 @@ using VbaDev.Domain;
 
 namespace VbaDev.App.Build;
 
+/// <summary>
+/// Builds a workbook-backed document from its template and full document source set.
+/// </summary>
 public sealed class BuildCommand
 {
     private readonly WorkbookSourcePlanner sourcePlanner;
     private readonly WorkbookGenerationPipeline generationPipeline;
 
+    /// <summary>
+    /// Creates the build command.
+    /// </summary>
+    /// <param name="sourcePlanner">The planner that selects source files for build output.</param>
+    /// <param name="generationPipeline">The pipeline that generates the target workbook.</param>
     public BuildCommand(
         WorkbookSourcePlanner sourcePlanner,
         WorkbookGenerationPipeline generationPipeline)
@@ -20,6 +28,11 @@ public sealed class BuildCommand
         this.generationPipeline = generationPipeline;
     }
 
+    /// <summary>
+    /// Generates the document's bin workbook and imports all build source files.
+    /// </summary>
+    /// <param name="context">The resolved project and document context.</param>
+    /// <returns>The command result describing the generated workbook or any user-facing failure.</returns>
     public CommandResult Run(ResolvedProjectContext context)
     {
         try

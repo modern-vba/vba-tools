@@ -5,6 +5,9 @@ using VbaLanguageServer.Syntax;
 
 namespace VbaLanguageServer.SourceModel;
 
+/// <summary>
+/// Provides semantic resolution for completion, definition, signature help, and formatting.
+/// </summary>
 internal sealed class VbaSemanticResolution
 {
     private readonly IReadOnlyList<VbaSourceDocument> documents;
@@ -12,6 +15,12 @@ internal sealed class VbaSemanticResolution
     private readonly VbaProjectReferenceCatalogSet referenceCatalogs;
     private readonly VbaNameResolutionService nameResolution;
 
+    /// <summary>
+    /// Creates the semantic resolution service.
+    /// </summary>
+    /// <param name="documents">The indexed source documents.</param>
+    /// <param name="referenceSelection">The active reference selection for the project.</param>
+    /// <param name="referenceCatalogs">The available reference catalogs.</param>
     public VbaSemanticResolution(
         IReadOnlyList<VbaSourceDocument> documents,
         VbaProjectReferenceSelection? referenceSelection,
@@ -23,6 +32,13 @@ internal sealed class VbaSemanticResolution
         nameResolution = new VbaNameResolutionService(documents, referenceSelection, referenceCatalogs);
     }
 
+    /// <summary>
+    /// Gets completion definitions visible at a position, including member completions when a receiver resolves.
+    /// </summary>
+    /// <param name="uri">The document URI.</param>
+    /// <param name="line">The zero-based line.</param>
+    /// <param name="character">The zero-based character.</param>
+    /// <returns>The completion candidate definitions.</returns>
     public IReadOnlyList<VbaSourceDefinition> GetCompletionDefinitions(string uri, int line, int character)
     {
         var currentDocument = documents.FirstOrDefault(document => SameUri(document.Uri, uri));
@@ -35,6 +51,13 @@ internal sealed class VbaSemanticResolution
         return nameResolution.GetCompletionDefinitions(uri, new VbaPosition(line, character));
     }
 
+    /// <summary>
+    /// Resolves the definition referenced at a source position.
+    /// </summary>
+    /// <param name="uri">The document URI.</param>
+    /// <param name="line">The zero-based line.</param>
+    /// <param name="character">The zero-based character.</param>
+    /// <returns>The resolved source or reference definition, or null when unresolved or ambiguous.</returns>
     public VbaSourceDefinition? ResolveSourceDefinition(string uri, int line, int character)
     {
         var currentDocument = documents.FirstOrDefault(document => SameUri(document.Uri, uri));
@@ -74,6 +97,13 @@ internal sealed class VbaSemanticResolution
         return nameResolution.Resolve(uri, new VbaPosition(line, character), qualifier, identifier.Name);
     }
 
+    /// <summary>
+    /// Resolves callable signature help at a source position.
+    /// </summary>
+    /// <param name="uri">The document URI.</param>
+    /// <param name="line">The zero-based line.</param>
+    /// <param name="character">The zero-based character.</param>
+    /// <returns>The signature help result, or null when no callable resolves.</returns>
     public VbaSignatureHelp? GetSignatureHelp(string uri, int line, int character)
     {
         var currentDocument = documents.FirstOrDefault(document => SameUri(document.Uri, uri));
@@ -103,6 +133,15 @@ internal sealed class VbaSemanticResolution
         return new VbaSignatureHelp(definition.Signature, activeParameter);
     }
 
+    /// <summary>
+    /// Resolves the canonical casing for an identifier occurrence during formatting.
+    /// </summary>
+    /// <param name="codePart">The code portion of the physical source line.</param>
+    /// <param name="occurrence">The identifier occurrence to normalize.</param>
+    /// <param name="document">The source document being formatted.</param>
+    /// <param name="lineIndex">The zero-based physical line index.</param>
+    /// <param name="declarationRanges">The declaration ranges that must not be renamed by formatting.</param>
+    /// <returns>The canonical name, or null when formatting should leave the occurrence unchanged.</returns>
     public string? GetCanonicalFormattingName(
         string codePart,
         VbaIdentifierOccurrence occurrence,

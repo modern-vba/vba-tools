@@ -14,11 +14,30 @@ using VbaDev.Infrastructure.Workbooks;
 
 namespace VbaDev.Composition;
 
+/// <summary>
+/// Wires VbaDev application services to their default infrastructure adapters.
+/// </summary>
 public static class ToolingCompositionRoot
 {
+    /// <summary>
+    /// Creates the default command-line application for the current working directory.
+    /// </summary>
+    /// <returns>The composed command-line application.</returns>
     public static CommandLineApplication CreateCommandLineApplication()
         => CreateCommandLineApplication(Directory.GetCurrentDirectory());
 
+    /// <summary>
+    /// Creates a command-line application with optional test or host-specific adapter overrides.
+    /// </summary>
+    /// <param name="workingDirectory">The working directory used by command parsing and path resolution.</param>
+    /// <param name="environmentDiagnosticPort">The optional environment diagnostics adapter.</param>
+    /// <param name="initialWorkbookCreator">The optional initial workbook creator adapter.</param>
+    /// <param name="workbookBuildAutomation">The optional workbook build automation adapter.</param>
+    /// <param name="workbookTestRunner">The optional workbook test runner adapter.</param>
+    /// <param name="workbookModuleExporter">The optional workbook module exporter adapter.</param>
+    /// <param name="vbaProjectReferenceResolver">The optional VBA project reference resolver adapter.</param>
+    /// <param name="projectManifestStore">The optional project manifest persistence adapter.</param>
+    /// <returns>The composed command-line application.</returns>
     public static CommandLineApplication CreateCommandLineApplication(
         string workingDirectory,
         IEnvironmentDiagnosticPort? environmentDiagnosticPort = null,

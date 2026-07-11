@@ -1,7 +1,16 @@
 namespace VbaDev.App.CommonModules;
 
+/// <summary>
+/// Resolves requested CommonModules entries into dependency-ordered install plans.
+/// </summary>
 public static class CommonModulesDependencyResolver
 {
+    /// <summary>
+    /// Resolves requested modules and their dependencies in copy order.
+    /// </summary>
+    /// <param name="entries">The complete manifest entry set.</param>
+    /// <param name="requestedModules">The requested module names or file names.</param>
+    /// <returns>The requested entries and their dependencies with dependencies before dependents.</returns>
     public static IReadOnlyList<CommonModuleManifestEntry> ResolveRequestedEntries(
         IReadOnlyList<CommonModuleManifestEntry> entries,
         IReadOnlyList<string> requestedModules)
@@ -19,6 +28,12 @@ public static class CommonModulesDependencyResolver
         return ordered;
     }
 
+    /// <summary>
+    /// Finds a single manifest entry by module file name or extensionless CommonModuleName.
+    /// </summary>
+    /// <param name="entries">The complete manifest entry set.</param>
+    /// <param name="requestedModule">The requested module name or module file name.</param>
+    /// <returns>The matching manifest entry.</returns>
     public static CommonModuleManifestEntry ResolveEntry(
         IReadOnlyList<CommonModuleManifestEntry> entries,
         string requestedModule)
@@ -35,6 +50,11 @@ public static class CommonModulesDependencyResolver
         };
     }
 
+    /// <summary>
+    /// Merges ordered entry groups while keeping the first occurrence of each module file.
+    /// </summary>
+    /// <param name="entryGroups">The ordered entry groups to combine.</param>
+    /// <returns>A deduplicated entry array that preserves first-seen order.</returns>
     public static CommonModuleManifestEntry[] MergeEntries(params IReadOnlyList<CommonModuleManifestEntry>[] entryGroups)
     {
         var entries = new List<CommonModuleManifestEntry>();

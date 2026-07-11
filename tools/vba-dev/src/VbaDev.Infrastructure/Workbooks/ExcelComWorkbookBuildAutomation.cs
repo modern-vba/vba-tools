@@ -2,6 +2,9 @@ using VbaDev.App.Workbooks;
 
 namespace VbaDev.Infrastructure.Workbooks;
 
+/// <summary>
+/// Implements workbook build automation through Excel COM and VBIDE.
+/// </summary>
 public sealed class ExcelComWorkbookBuildAutomation : IWorkbookBuildAutomation
 {
     private const int VbextComponentTypeStandardModule = 1;
@@ -9,6 +12,11 @@ public sealed class ExcelComWorkbookBuildAutomation : IWorkbookBuildAutomation
     private const int VbextComponentTypeForm = 3;
     private const int VbextComponentTypeDocument = 100;
 
+    /// <summary>
+    /// Opens an Excel workbook for VBA project build operations.
+    /// </summary>
+    /// <param name="workbookPath">The workbook path to open.</param>
+    /// <returns>An Excel COM-backed workbook build session.</returns>
     public IWorkbookBuildSession OpenWorkbook(string workbookPath)
     {
         if (!OperatingSystem.IsWindows())
@@ -63,12 +71,21 @@ public sealed class ExcelComWorkbookBuildAutomation : IWorkbookBuildAutomation
         private readonly object excelObject;
         private readonly object workbookObject;
 
+        /// <summary>
+        /// Initializes a build session over an Excel application and workbook COM object.
+        /// </summary>
+        /// <param name="excelObject">The Excel application COM object.</param>
+        /// <param name="workbookObject">The workbook COM object.</param>
         public ExcelComWorkbookBuildSession(object excelObject, object workbookObject)
         {
             this.excelObject = excelObject;
             this.workbookObject = workbookObject;
         }
 
+        /// <summary>
+        /// Reads the VBA components currently present in the workbook.
+        /// </summary>
+        /// <returns>The workbook module descriptors.</returns>
         public IReadOnlyList<WorkbookModule> GetModules()
         {
             dynamic workbook = workbookObject;
@@ -106,6 +123,10 @@ public sealed class ExcelComWorkbookBuildAutomation : IWorkbookBuildAutomation
             return modules;
         }
 
+        /// <summary>
+        /// Reads the workbook's VBA project references.
+        /// </summary>
+        /// <returns>The reference names and whether each reference can be removed.</returns>
         public IReadOnlyList<WorkbookReference> GetReferences()
         {
             dynamic workbook = workbookObject;
@@ -148,6 +169,11 @@ public sealed class ExcelComWorkbookBuildAutomation : IWorkbookBuildAutomation
             return result;
         }
 
+        /// <summary>
+        /// Removes a matching non-built-in VBA project reference from the workbook.
+        /// </summary>
+        /// <param name="referenceName">The reference description to remove.</param>
+        /// <returns><see langword="true"/> when a reference was removed; otherwise, <see langword="false"/>.</returns>
         public bool RemoveReference(string referenceName)
         {
             dynamic workbook = workbookObject;
@@ -196,6 +222,10 @@ public sealed class ExcelComWorkbookBuildAutomation : IWorkbookBuildAutomation
             }
         }
 
+        /// <summary>
+        /// Adds a VBA project reference to the workbook from a resolved type library selection.
+        /// </summary>
+        /// <param name="reference">The resolved reference to add.</param>
         public void AddReference(ResolvedVbaProjectReference reference)
         {
             dynamic workbook = workbookObject;
@@ -218,6 +248,10 @@ public sealed class ExcelComWorkbookBuildAutomation : IWorkbookBuildAutomation
             }
         }
 
+        /// <summary>
+        /// Removes a VBA component from the workbook by module name.
+        /// </summary>
+        /// <param name="moduleName">The module name to remove.</param>
         public void RemoveModule(string moduleName)
         {
             dynamic workbook = workbookObject;
@@ -241,6 +275,10 @@ public sealed class ExcelComWorkbookBuildAutomation : IWorkbookBuildAutomation
             }
         }
 
+        /// <summary>
+        /// Imports a VBA source file into the workbook.
+        /// </summary>
+        /// <param name="sourceFile">The source file to import.</param>
         public void ImportModule(VbaSourceFile sourceFile)
         {
             dynamic workbook = workbookObject;
@@ -263,12 +301,18 @@ public sealed class ExcelComWorkbookBuildAutomation : IWorkbookBuildAutomation
             }
         }
 
+        /// <summary>
+        /// Saves the workbook through Excel automation.
+        /// </summary>
         public void Save()
         {
             dynamic workbook = workbookObject;
             workbook.Save();
         }
 
+        /// <summary>
+        /// Closes the workbook, quits Excel, and releases collected COM references.
+        /// </summary>
         public void Dispose()
         {
             try

@@ -5,6 +5,9 @@ using VbaDev.Domain;
 
 namespace VbaDev.Infrastructure.Projects;
 
+/// <summary>
+/// Loads and saves project manifests as JSON files on disk.
+/// </summary>
 public sealed class JsonProjectManifestStore : IProjectManifestStore
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -15,6 +18,11 @@ public sealed class JsonProjectManifestStore : IProjectManifestStore
 
     private static readonly UnicodeEncoding Utf16LeWithBom = new(bigEndian: false, byteOrderMark: true);
 
+    /// <summary>
+    /// Loads and validates a project manifest JSON file.
+    /// </summary>
+    /// <param name="manifestPath">The manifest path to read.</param>
+    /// <returns>The parsed and validated project manifest.</returns>
     public ProjectManifest Load(string manifestPath)
     {
         try
@@ -45,6 +53,11 @@ public sealed class JsonProjectManifestStore : IProjectManifestStore
         }
     }
 
+    /// <summary>
+    /// Writes a validated project manifest to project.json under a project root.
+    /// </summary>
+    /// <param name="projectRoot">The project root directory.</param>
+    /// <param name="manifest">The manifest to save.</param>
     public void Save(string projectRoot, ProjectManifest manifest)
     {
         Validate(manifest, ProjectManifest.ManifestFileName);

@@ -4,6 +4,9 @@ using VbaDev.App.Workbooks;
 
 namespace VbaDev.App.Build;
 
+/// <summary>
+/// Selects and orders the VBA source files that should be imported into generated workbooks.
+/// </summary>
 public sealed class WorkbookSourcePlanner
 {
     private const int PublishMarkerScanLineLimit = 32;
@@ -11,17 +14,31 @@ public sealed class WorkbookSourcePlanner
 
     private readonly CommonModulesManifestReader commonModulesManifestReader;
 
+    /// <summary>
+    /// Creates the workbook source planner.
+    /// </summary>
+    /// <param name="commonModulesManifestReader">The reader used to resolve installed CommonModules dependencies.</param>
     public WorkbookSourcePlanner(CommonModulesManifestReader commonModulesManifestReader)
     {
         this.commonModulesManifestReader = commonModulesManifestReader;
     }
 
+    /// <summary>
+    /// Resolves the source files for build output, including test-only project and CommonModules sources.
+    /// </summary>
+    /// <param name="context">The resolved project and document context.</param>
+    /// <returns>The ordered source files to import into the build workbook.</returns>
     public IReadOnlyList<VbaSourceFile> ResolveBuildSourceFiles(ResolvedProjectContext context)
         => ResolveSourceFiles(
             context,
             includeCommonModule: _ => true,
             includeProjectLocalSource: _ => true);
 
+    /// <summary>
+    /// Resolves the source files for publish output, excluding test-only and explicitly excluded sources.
+    /// </summary>
+    /// <param name="context">The resolved project and document context.</param>
+    /// <returns>The ordered source files to import into the published workbook.</returns>
     public IReadOnlyList<VbaSourceFile> ResolvePublishSourceFiles(ResolvedProjectContext context)
         => ResolveSourceFiles(
             context,

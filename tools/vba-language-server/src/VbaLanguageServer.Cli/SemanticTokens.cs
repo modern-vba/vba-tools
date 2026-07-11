@@ -3,6 +3,9 @@ using VbaLanguageServer.Syntax;
 
 namespace VbaLanguageServer.SourceModel;
 
+/// <summary>
+/// Builds semantic tokens and LSP token data from source definitions and resolved references.
+/// </summary>
 internal static class VbaSemanticTokenBuilder
 {
     private static readonly IReadOnlyDictionary<string, int> SemanticTokenTypeIndexes =
@@ -15,6 +18,13 @@ internal static class VbaSemanticTokenBuilder
             .Select((modifier, index) => new { modifier, index })
             .ToDictionary(item => item.modifier, item => item.index, StringComparer.Ordinal);
 
+    /// <summary>
+    /// Builds semantic tokens for declarations and resolved identifier references in one document.
+    /// </summary>
+    /// <param name="documents">The indexed source documents.</param>
+    /// <param name="uri">The target document URI.</param>
+    /// <param name="resolveSourceDefinition">A resolver for identifier references by line and character.</param>
+    /// <returns>The semantic tokens sorted in source order.</returns>
     public static IReadOnlyList<VbaSemanticToken> GetSemanticTokens(
         IReadOnlyList<VbaSourceDocument> documents,
         string uri,
@@ -77,6 +87,11 @@ internal static class VbaSemanticTokenBuilder
             .ToArray();
     }
 
+    /// <summary>
+    /// Encodes semantic tokens using the LSP relative integer format.
+    /// </summary>
+    /// <param name="tokens">The semantic tokens sorted in source order.</param>
+    /// <returns>The encoded semantic token data.</returns>
     public static IReadOnlyList<int> GetSemanticTokenData(IReadOnlyList<VbaSemanticToken> tokens)
     {
         var data = new List<int>();

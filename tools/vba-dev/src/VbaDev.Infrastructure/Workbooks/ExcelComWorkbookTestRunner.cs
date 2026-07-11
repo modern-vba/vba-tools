@@ -3,6 +3,9 @@ using VbaDev.App.Testing;
 
 namespace VbaDev.Infrastructure.Workbooks;
 
+/// <summary>
+/// Runs VBA unit tests inside Excel through COM automation.
+/// </summary>
 public sealed class ExcelComWorkbookTestRunner : IWorkbookTestRunner
 {
     private const int MsoAutomationSecurityLow = 1;
@@ -10,6 +13,12 @@ public sealed class ExcelComWorkbookTestRunner : IWorkbookTestRunner
     private const string UnitTestEntryPoint = "UnitTestMain";
     private const string UnitTestSheetName = "UNIT_TEST_SHEET";
 
+    /// <summary>
+    /// Runs the UnitTestMain macro and reads result rows from the unit-test worksheet.
+    /// </summary>
+    /// <param name="workbookPath">The workbook path containing tests.</param>
+    /// <param name="selector">The optional module or procedure selector passed to UnitTestMain.</param>
+    /// <returns>The raw workbook test result rows.</returns>
     public IReadOnlyList<WorkbookTestResultRow> RunTests(string workbookPath, WorkbookTestSelector selector)
     {
         if (!OperatingSystem.IsWindows())

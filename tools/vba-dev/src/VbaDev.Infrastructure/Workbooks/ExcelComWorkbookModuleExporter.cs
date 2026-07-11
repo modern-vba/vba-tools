@@ -2,12 +2,20 @@ using VbaDev.App.Export;
 
 namespace VbaDev.Infrastructure.Workbooks;
 
+/// <summary>
+/// Exports VBA modules from Excel workbooks through COM automation.
+/// </summary>
 public sealed class ExcelComWorkbookModuleExporter : IWorkbookModuleExporter
 {
     private const int VbextComponentTypeStandardModule = 1;
     private const int VbextComponentTypeClassModule = 2;
     private const int VbextComponentTypeForm = 3;
 
+    /// <summary>
+    /// Exports standard modules, class modules, and forms from an Excel workbook.
+    /// </summary>
+    /// <param name="workbookPath">The workbook path to export from.</param>
+    /// <param name="destinationDirectory">The destination directory for exported sources.</param>
     public void ExportModules(string workbookPath, string destinationDirectory)
     {
         if (!OperatingSystem.IsWindows())

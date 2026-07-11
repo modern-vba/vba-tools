@@ -4,12 +4,21 @@ using VbaLanguageServer.Workspace;
 
 namespace VbaLanguageServer.Lsp;
 
+/// <summary>
+/// Handles LSP document lifecycle notifications and diagnostic publication.
+/// </summary>
 internal sealed class VbaDocumentLifecycle
 {
     private readonly LspMessageTransport transport;
     private readonly VbaLanguageWorkspace workspace;
     private readonly ReferenceCatalogRefreshCoordinator catalogRefresh;
 
+    /// <summary>
+    /// Creates a document lifecycle handler.
+    /// </summary>
+    /// <param name="transport">The transport used to publish diagnostics.</param>
+    /// <param name="workspace">The workspace that tracks open documents.</param>
+    /// <param name="catalogRefresh">The coordinator used for reference trace and refresh work.</param>
     public VbaDocumentLifecycle(
         LspMessageTransport transport,
         VbaLanguageWorkspace workspace,
@@ -20,6 +29,11 @@ internal sealed class VbaDocumentLifecycle
         this.catalogRefresh = catalogRefresh;
     }
 
+    /// <summary>
+    /// Records a textDocument/didOpen notification and publishes diagnostics for VBA sources.
+    /// </summary>
+    /// <param name="parameters">The LSP notification parameters.</param>
+    /// <param name="cancellationToken">A cancellation token for lifecycle work.</param>
     public async Task RecordOpenedDocumentAsync(JsonNode? parameters, CancellationToken cancellationToken)
     {
         var textDocument = parameters?["textDocument"];
@@ -38,6 +52,11 @@ internal sealed class VbaDocumentLifecycle
         }
     }
 
+    /// <summary>
+    /// Records a textDocument/didChange notification and publishes diagnostics for VBA sources.
+    /// </summary>
+    /// <param name="parameters">The LSP notification parameters.</param>
+    /// <param name="cancellationToken">A cancellation token for lifecycle work.</param>
     public async Task RecordChangedDocumentAsync(JsonNode? parameters, CancellationToken cancellationToken)
     {
         var textDocument = parameters?["textDocument"];
@@ -56,6 +75,11 @@ internal sealed class VbaDocumentLifecycle
         }
     }
 
+    /// <summary>
+    /// Records a textDocument/didClose notification and clears diagnostics for removed tracked documents.
+    /// </summary>
+    /// <param name="parameters">The LSP notification parameters.</param>
+    /// <param name="cancellationToken">A cancellation token for lifecycle work.</param>
     public async Task RecordClosedDocumentAsync(JsonNode? parameters, CancellationToken cancellationToken)
     {
         var uri = parameters?["textDocument"]?["uri"]?.GetValue<string>();
@@ -70,6 +94,11 @@ internal sealed class VbaDocumentLifecycle
         }
     }
 
+    /// <summary>
+    /// Records workspace file changes by reloading changed sources and excluding deleted source files.
+    /// </summary>
+    /// <param name="parameters">The LSP notification parameters.</param>
+    /// <param name="cancellationToken">A cancellation token for lifecycle work.</param>
     public async Task RecordWatchedFilesChangedAsync(JsonNode? parameters, CancellationToken cancellationToken)
     {
         var changes = parameters?["changes"]?.AsArray();

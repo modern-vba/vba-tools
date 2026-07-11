@@ -9,6 +9,9 @@ using VbaDev.Domain;
 
 namespace VbaDev.App.Diagnostics;
 
+/// <summary>
+/// Checks project configuration, source layout, CommonModules, references, and host environment readiness.
+/// </summary>
 public sealed class DoctorCommand
 {
     private readonly ProjectContextResolver projectContextResolver;
@@ -17,6 +20,14 @@ public sealed class DoctorCommand
     private readonly IWorkbookBuildAutomation workbookBuildAutomation;
     private readonly IEnvironmentDiagnosticPort environmentDiagnosticPort;
 
+    /// <summary>
+    /// Creates the doctor command.
+    /// </summary>
+    /// <param name="projectContextResolver">The resolver used to locate and load project manifests.</param>
+    /// <param name="commonModulesManifestReader">The reader used to validate CommonModules repositories.</param>
+    /// <param name="referencePlanner">The planner used to validate VBA project references.</param>
+    /// <param name="workbookBuildAutomation">The workbook automation port used to inspect template references.</param>
+    /// <param name="environmentDiagnosticPort">The port for machine and host diagnostics.</param>
     public DoctorCommand(
         ProjectContextResolver projectContextResolver,
         CommonModulesManifestReader commonModulesManifestReader,
@@ -31,6 +42,11 @@ public sealed class DoctorCommand
         this.environmentDiagnosticPort = environmentDiagnosticPort;
     }
 
+    /// <summary>
+    /// Runs doctor diagnostics and formats the combined report.
+    /// </summary>
+    /// <param name="request">The doctor command input.</param>
+    /// <returns>A command result whose exit code fails only when at least one diagnostic fails.</returns>
     public CommandResult Run(DoctorCommandRequest request)
     {
         var results = new List<DiagnosticResult>();

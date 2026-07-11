@@ -4,6 +4,9 @@ using System.Runtime.InteropServices;
 
 namespace VbaDev.Infrastructure.Workbooks;
 
+/// <summary>
+/// Tracks an Excel process that appears to be owned by the current automation session.
+/// </summary>
 internal sealed class ExcelComApplicationProcess
 {
     private readonly int processId;
@@ -15,6 +18,10 @@ internal sealed class ExcelComApplicationProcess
         this.startTime = startTime;
     }
 
+    /// <summary>
+    /// Captures the currently running Excel processes before starting automation.
+    /// </summary>
+    /// <returns>A map from process ID to process start time.</returns>
     public static IReadOnlyDictionary<int, DateTime> CaptureRunningExcelProcesses()
     {
         if (!OperatingSystem.IsWindows())
@@ -38,6 +45,12 @@ internal sealed class ExcelComApplicationProcess
         return processes;
     }
 
+    /// <summary>
+    /// Attempts to identify the Excel process created for a COM application object.
+    /// </summary>
+    /// <param name="excelObject">The Excel.Application COM object.</param>
+    /// <param name="existingExcelProcesses">The process snapshot captured before Excel startup.</param>
+    /// <returns>The owned Excel process tracker, or null when ownership is ambiguous.</returns>
     public static ExcelComApplicationProcess? TryCaptureOwned(
         object excelObject,
         IReadOnlyDictionary<int, DateTime> existingExcelProcesses)
@@ -109,6 +122,9 @@ internal sealed class ExcelComApplicationProcess
         return candidates.Count == 1 ? candidates[0] : null;
     }
 
+    /// <summary>
+    /// Terminates the tracked Excel process if it still matches the captured process identity.
+    /// </summary>
     public void TerminateIfStillRunning()
     {
         if (!OperatingSystem.IsWindows())

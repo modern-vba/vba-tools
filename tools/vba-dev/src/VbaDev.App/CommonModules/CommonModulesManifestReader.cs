@@ -1,9 +1,20 @@
 namespace VbaDev.App.CommonModules;
 
+/// <summary>
+/// Reads and validates the tab-separated CommonModules manifest from a repository directory.
+/// </summary>
 public sealed class CommonModulesManifestReader
 {
+    /// <summary>
+    /// The expected CommonModules manifest file name.
+    /// </summary>
     public const string ManifestFileName = "common-modules-manifest.tsv";
 
+    /// <summary>
+    /// Loads the CommonModules manifest entries from a repository path.
+    /// </summary>
+    /// <param name="commonModulesRepositoryPath">The CommonModulesRepository directory.</param>
+    /// <returns>The validated manifest entries in file order.</returns>
     public IReadOnlyList<CommonModuleManifestEntry> Load(string commonModulesRepositoryPath)
     {
         var manifestPath = Path.Combine(commonModulesRepositoryPath, ManifestFileName);

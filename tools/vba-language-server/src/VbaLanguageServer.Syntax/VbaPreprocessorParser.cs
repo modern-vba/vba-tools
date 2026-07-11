@@ -1,7 +1,16 @@
 namespace VbaLanguageServer.Syntax;
 
+/// <summary>
+/// Parses VBA preprocessor directives and nested #If blocks from module source lines.
+/// </summary>
 internal static class VbaPreprocessorParser
 {
+    /// <summary>
+    /// Parses preprocessor directives beginning at the module code section.
+    /// </summary>
+    /// <param name="lines">The physical source lines with offsets.</param>
+    /// <param name="codeStartLine">The zero-based line where code parsing begins.</param>
+    /// <returns>The parsed directives, blocks, and preprocessor diagnostics.</returns>
     public static ParsedPreprocessor Parse(IReadOnlyList<SourceLine> lines, int codeStartLine)
     {
         var directives = new List<VbaPreprocessorDirectiveSyntax>();
@@ -142,15 +151,28 @@ internal static class VbaPreprocessorParser
             directive.Range);
 }
 
+/// <summary>
+/// Contains parsed preprocessor syntax and diagnostics.
+/// </summary>
+/// <param name="Directives">The parsed directive lines in source order.</param>
+/// <param name="Blocks">The top-level preprocessor blocks.</param>
+/// <param name="Diagnostics">The diagnostics produced while parsing preprocessor nesting.</param>
 internal sealed record ParsedPreprocessor(
     IReadOnlyList<VbaPreprocessorDirectiveSyntax> Directives,
     IReadOnlyList<VbaPreprocessorBlockSyntax> Blocks,
     IReadOnlyList<VbaSyntaxDiagnostic> Diagnostics);
 
+/// <summary>
+/// Builds a preprocessor #If block while scanning directive lines.
+/// </summary>
 internal sealed class PreprocessorBlockBuilder
 {
     private readonly List<PreprocessorBranchBuilder> branches = [];
 
+    /// <summary>
+    /// Creates a block builder for an opening #If directive.
+    /// </summary>
+    /// <param name="ifDirective">The opening #If directive.</param>
     public PreprocessorBlockBuilder(VbaPreprocessorDirectiveSyntax ifDirective)
     {
         IfDirective = ifDirective;
@@ -158,16 +180,31 @@ internal sealed class PreprocessorBlockBuilder
         branches.Add(CurrentBranch);
     }
 
+    /// <summary>
+    /// Gets the opening #If directive for the block.
+    /// </summary>
     public VbaPreprocessorDirectiveSyntax IfDirective { get; }
 
+    /// <summary>
+    /// Gets the branch currently receiving body lines and nested blocks.
+    /// </summary>
     public PreprocessorBranchBuilder CurrentBranch { get; private set; }
 
+    /// <summary>
+    /// Starts a new #ElseIf or #Else branch.
+    /// </summary>
+    /// <param name="directive">The directive that starts the new branch.</param>
     public void StartBranch(VbaPreprocessorDirectiveSyntax directive)
     {
         CurrentBranch = new PreprocessorBranchBuilder(directive);
         branches.Add(CurrentBranch);
     }
 
+    /// <summary>
+    /// Builds the completed preprocessor block syntax.
+    /// </summary>
+    /// <param name="endDirective">The closing #End If directive, or null for an unterminated block.</param>
+    /// <returns>The preprocessor block syntax.</returns>
     public VbaPreprocessorBlockSyntax Build(VbaPreprocessorDirectiveSyntax? endDirective)
     {
         var builtBranches = branches.Select(branch => branch.Build()).ToArray();
@@ -182,22 +219,45 @@ internal sealed class PreprocessorBlockBuilder
     }
 }
 
+/// <summary>
+/// Builds one branch inside a preprocessor #If block.
+/// </summary>
 internal sealed class PreprocessorBranchBuilder
 {
+    /// <summary>
+    /// Creates a branch builder for a branch directive.
+    /// </summary>
+    /// <param name="directive">The directive that starts the branch.</param>
     public PreprocessorBranchBuilder(VbaPreprocessorDirectiveSyntax directive)
     {
         Directive = directive;
         EndLine = null;
     }
 
+    /// <summary>
+    /// Gets the directive that starts the branch.
+    /// </summary>
     public VbaPreprocessorDirectiveSyntax Directive { get; }
 
+    /// <summary>
+    /// Gets the raw body lines collected for the branch.
+    /// </summary>
     public List<string> BodyLines { get; } = [];
 
+    /// <summary>
+    /// Gets nested preprocessor blocks collected inside the branch.
+    /// </summary>
     public List<VbaPreprocessorBlockSyntax> NestedBlocks { get; } = [];
 
+    /// <summary>
+    /// Gets or sets the last source line included in the branch body.
+    /// </summary>
     public SourceLine? EndLine { get; set; }
 
+    /// <summary>
+    /// Builds the branch syntax from collected lines and nested blocks.
+    /// </summary>
+    /// <returns>The preprocessor branch syntax.</returns>
     public VbaPreprocessorBranchSyntax Build()
     {
         var end = EndLine is null

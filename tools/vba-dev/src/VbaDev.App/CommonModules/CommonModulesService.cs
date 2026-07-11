@@ -6,6 +6,9 @@ using VbaDev.Domain;
 
 namespace VbaDev.App.CommonModules;
 
+/// <summary>
+/// Implements the user-facing CommonModules command operations.
+/// </summary>
 public sealed class CommonModulesService
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -16,14 +19,31 @@ public sealed class CommonModulesService
 
     private readonly CommonModulesInstallationTransaction installationTransaction;
 
+    /// <summary>
+    /// Creates the CommonModules command service.
+    /// </summary>
+    /// <param name="installationTransaction">The transaction that applies source file and manifest changes.</param>
     public CommonModulesService(CommonModulesInstallationTransaction installationTransaction)
     {
         this.installationTransaction = installationTransaction;
     }
 
+    /// <summary>
+    /// Adds requested CommonModules entries to the current document source set.
+    /// </summary>
+    /// <param name="context">The resolved project and document context.</param>
+    /// <param name="requestedModules">The requested module names or file names.</param>
+    /// <param name="force">Whether existing target source files may be overwritten.</param>
+    /// <returns>The command result to print and return from the CLI.</returns>
     public CommandResult Add(ResolvedProjectContext context, IReadOnlyList<string> requestedModules, bool force)
         => RunTransaction(() => installationTransaction.Add(context, requestedModules, force));
 
+    /// <summary>
+    /// Lists the CommonModules entries tracked for the current document.
+    /// </summary>
+    /// <param name="context">The resolved project and document context.</param>
+    /// <param name="format">The output format, either text or json.</param>
+    /// <returns>The formatted command result.</returns>
     public CommandResult List(ResolvedProjectContext context, string format)
     {
         var document = GetDocument(context.Manifest, context.DocumentName);
@@ -51,6 +71,11 @@ public sealed class CommonModulesService
         return CommandResult.Success(builder.ToString());
     }
 
+    /// <summary>
+    /// Updates all installed CommonModules entries in the project.
+    /// </summary>
+    /// <param name="project">The resolved project to update.</param>
+    /// <returns>The command result to print and return from the CLI.</returns>
     public CommandResult Update(ResolvedProject project)
         => RunTransaction(() => installationTransaction.Update(project));
 

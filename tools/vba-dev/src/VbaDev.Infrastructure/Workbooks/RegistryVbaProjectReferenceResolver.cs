@@ -4,8 +4,16 @@ using VbaDev.App.Workbooks;
 
 namespace VbaDev.Infrastructure.Workbooks;
 
+/// <summary>
+/// Resolves VBA project references from the Windows TypeLib registry.
+/// </summary>
 public sealed class RegistryVbaProjectReferenceResolver : IVbaProjectReferenceResolver
 {
+    /// <summary>
+    /// Finds registered TypeLib identities whose description matches a reference name.
+    /// </summary>
+    /// <param name="referenceName">The human-visible reference description.</param>
+    /// <returns>The usable reference identities selected from the registry.</returns>
     public IReadOnlyList<ResolvedVbaProjectReference> Resolve(string referenceName)
     {
         if (!OperatingSystem.IsWindows())

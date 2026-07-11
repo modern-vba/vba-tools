@@ -2,15 +2,27 @@ using VbaDev.Domain;
 
 namespace VbaDev.App.Projects;
 
+/// <summary>
+/// Locates project manifests and resolves document-specific project context for commands.
+/// </summary>
 public sealed class ProjectContextResolver
 {
     private readonly IProjectManifestStore manifestStore;
 
+    /// <summary>
+    /// Creates a project context resolver.
+    /// </summary>
+    /// <param name="manifestStore">The manifest store used to load project.json.</param>
     public ProjectContextResolver(IProjectManifestStore manifestStore)
     {
         this.manifestStore = manifestStore;
     }
 
+    /// <summary>
+    /// Resolves and loads a project manifest without selecting a document.
+    /// </summary>
+    /// <param name="request">The project resolution request.</param>
+    /// <returns>The resolved project.</returns>
     public ResolvedProject ResolveProject(ProjectResolutionRequest request)
     {
         var projectRoot = ResolveProjectRoot(request);
@@ -26,6 +38,11 @@ public sealed class ProjectContextResolver
                 : ResolvePath(projectRoot, manifest.CommonModulesRepository));
     }
 
+    /// <summary>
+    /// Resolves a project manifest and selected document context.
+    /// </summary>
+    /// <param name="request">The project and document resolution request.</param>
+    /// <returns>The resolved document context.</returns>
     public ResolvedProjectContext Resolve(ProjectResolutionRequest request)
     {
         var project = ResolveProject(request);

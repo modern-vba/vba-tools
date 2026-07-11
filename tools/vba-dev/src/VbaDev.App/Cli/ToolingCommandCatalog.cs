@@ -9,8 +9,15 @@ using VbaDev.App.Testing;
 
 namespace VbaDev.App.Cli;
 
+/// <summary>
+/// Builds the default command contracts and handlers for the VbaDev executable.
+/// </summary>
 public static class ToolingCommandCatalog
 {
+    /// <summary>
+    /// Creates the command contract list advertised by help and capabilities output.
+    /// </summary>
+    /// <returns>The default commands supported by this executable.</returns>
     public static IReadOnlyList<ToolingCommandContract> CreateDefaultContracts()
     {
         var projectRootOptions = new[]
@@ -42,6 +49,19 @@ public static class ToolingCommandCatalog
         ];
     }
 
+    /// <summary>
+    /// Creates handlers that adapt parsed command invocations to application services.
+    /// </summary>
+    /// <param name="doctorCommand">The environment diagnostics command.</param>
+    /// <param name="newProjectCommand">The project creation command.</param>
+    /// <param name="commonModulesService">The CommonModules command service.</param>
+    /// <param name="referenceService">The VBA project reference command service.</param>
+    /// <param name="buildCommand">The build command.</param>
+    /// <param name="publishCommand">The publish command.</param>
+    /// <param name="testCommand">The test command.</param>
+    /// <param name="exportCommand">The export command.</param>
+    /// <param name="importCommand">The import command.</param>
+    /// <returns>The default handler bindings keyed by command name.</returns>
     public static IReadOnlyList<ToolingCommandHandler> CreateDefaultHandlers(
         DoctorCommand doctorCommand,
         NewProjectCommand newProjectCommand,

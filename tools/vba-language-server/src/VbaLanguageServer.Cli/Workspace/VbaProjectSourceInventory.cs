@@ -3,10 +3,21 @@ using VbaLanguageServer.Syntax;
 
 namespace VbaLanguageServer.Workspace;
 
+/// <summary>
+/// Creates source document inventories for manifest-backed and ad-hoc VBA project scopes.
+/// </summary>
 internal static class VbaProjectSourceInventory
 {
     private static readonly string[] SourcePatterns = ["*.bas", "*.cls", "*.frm"];
 
+    /// <summary>
+    /// Creates a scoped document snapshot from disk source files and tracked open documents.
+    /// </summary>
+    /// <param name="resolution">The project boundary resolution.</param>
+    /// <param name="trackedDocuments">The current in-memory tracked documents.</param>
+    /// <param name="excludedUris">Source URIs that should not be loaded from disk.</param>
+    /// <param name="cancellationToken">A cancellation token for inventory work.</param>
+    /// <returns>The tracked documents that belong to the resolved project scope.</returns>
     public static Dictionary<string, VbaTrackedDocument> CreateSnapshot(
         VbaProjectResolution resolution,
         IReadOnlyDictionary<string, VbaTrackedDocument> trackedDocuments,

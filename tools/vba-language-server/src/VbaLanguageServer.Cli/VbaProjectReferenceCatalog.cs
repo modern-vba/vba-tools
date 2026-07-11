@@ -3,6 +3,16 @@ using VbaLanguageServer.ProjectModel;
 
 namespace VbaLanguageServer.SourceModel;
 
+/// <summary>
+/// Represents one definition supplied by an active VBA project reference catalog.
+/// </summary>
+/// <param name="ReferenceName">The manifest reference name that owns the definition.</param>
+/// <param name="Name">The definition name.</param>
+/// <param name="Kind">The editor-facing definition kind.</param>
+/// <param name="Documentation">The documentation text supplied by the catalog.</param>
+/// <param name="Signature">The callable signature supplied by the catalog.</param>
+/// <param name="ParentTypeName">The containing type name for members.</param>
+/// <param name="TypeReference">The result or member type reference supplied by the catalog.</param>
 public sealed record VbaProjectReferenceDefinition(
     string ReferenceName,
     string Name,
@@ -12,13 +22,25 @@ public sealed record VbaProjectReferenceDefinition(
     string? ParentTypeName = null,
     VbaTypeReference? TypeReference = null);
 
+/// <summary>
+/// Contains reference-catalog definitions and qualifier aliases for one VBA project reference.
+/// </summary>
+/// <param name="ReferenceName">The manifest reference name.</param>
+/// <param name="QualifierAliases">The qualifier aliases that can address this reference explicitly.</param>
+/// <param name="Definitions">The definitions supplied by the reference catalog.</param>
 public sealed record VbaProjectReferenceCatalog(
     string ReferenceName,
     IReadOnlyList<string> QualifierAliases,
     IReadOnlyList<VbaProjectReferenceDefinition> Definitions);
 
+/// <summary>
+/// Stores available VBA project reference catalogs and projects them into source-model definitions.
+/// </summary>
 public sealed class VbaProjectReferenceCatalogSet
 {
+    /// <summary>
+    /// The URI prefix used for definitions that originate from reference catalogs.
+    /// </summary>
     public const string ExternalDefinitionUriPrefix = "vba-reference://";
 
     private readonly IReadOnlyDictionary<string, VbaProjectReferenceCatalog> catalogs;
@@ -28,9 +50,16 @@ public sealed class VbaProjectReferenceCatalogSet
         this.catalogs = catalogs;
     }
 
+    /// <summary>
+    /// Gets an empty catalog set.
+    /// </summary>
     public static VbaProjectReferenceCatalogSet Empty { get; } =
         new(new Dictionary<string, VbaProjectReferenceCatalog>(StringComparer.OrdinalIgnoreCase));
 
+    /// <summary>
+    /// Creates the bundled minimal reference catalog set shipped with the language server.
+    /// </summary>
+    /// <returns>The bundled reference catalog set.</returns>
     public static VbaProjectReferenceCatalogSet CreateBundled()
     {
         var bundledCatalogs = new[]
@@ -180,9 +209,19 @@ public sealed class VbaProjectReferenceCatalogSet
                 StringComparer.OrdinalIgnoreCase));
     }
 
+    /// <summary>
+    /// Determines whether a source definition originated from a reference catalog.
+    /// </summary>
+    /// <param name="definition">The definition to inspect.</param>
+    /// <returns>True when the definition URI uses the external reference URI prefix.</returns>
     public static bool IsExternalDefinition(VbaSourceDefinition definition)
         => definition.Uri.StartsWith(ExternalDefinitionUriPrefix, StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// Returns a new catalog set with a catalog added or replaced.
+    /// </summary>
+    /// <param name="catalog">The catalog to add.</param>
+    /// <returns>The merged catalog set.</returns>
     public VbaProjectReferenceCatalogSet WithCatalog(VbaProjectReferenceCatalog catalog)
     {
         var merged = new Dictionary<string, VbaProjectReferenceCatalog>(catalogs, StringComparer.OrdinalIgnoreCase)
@@ -192,14 +231,29 @@ public sealed class VbaProjectReferenceCatalogSet
         return new VbaProjectReferenceCatalogSet(merged);
     }
 
+    /// <summary>
+    /// Determines whether a catalog is available for a reference name.
+    /// </summary>
+    /// <param name="referenceName">The manifest reference name.</param>
+    /// <returns>True when the catalog set contains the reference.</returns>
     public bool HasCatalog(string referenceName)
         => catalogs.ContainsKey(referenceName);
 
+    /// <summary>
+    /// Gets all definitions contributed by catalogs active in a reference selection.
+    /// </summary>
+    /// <param name="selection">The active reference selection.</param>
+    /// <returns>The active catalog definitions projected into source definitions.</returns>
     public IReadOnlyList<VbaSourceDefinition> GetActiveDefinitions(VbaProjectReferenceSelection selection)
         => GetActiveReferenceDefinitions(selection)
             .Select(ToSourceDefinition)
             .ToArray();
 
+    /// <summary>
+    /// Gets selected reference names that do not currently have catalogs.
+    /// </summary>
+    /// <param name="selection">The active reference selection.</param>
+    /// <returns>The missing reference names ordered for deterministic reporting.</returns>
     public IReadOnlyList<string> GetMissingCatalogReferenceNames(VbaProjectReferenceSelection selection)
     {
         return selection.References
@@ -210,6 +264,13 @@ public sealed class VbaProjectReferenceCatalogSet
             .ToArray();
     }
 
+    /// <summary>
+    /// Gets active reference definitions addressed by a qualifier and member name.
+    /// </summary>
+    /// <param name="selection">The active reference selection.</param>
+    /// <param name="qualifier">The qualifier alias used in source.</param>
+    /// <param name="memberName">The requested member or root definition name.</param>
+    /// <returns>The matching reference definitions.</returns>
     public IReadOnlyList<VbaSourceDefinition> GetQualifiedDefinitions(
         VbaProjectReferenceSelection selection,
         string qualifier,
@@ -220,6 +281,12 @@ public sealed class VbaProjectReferenceCatalogSet
             .ToArray();
     }
 
+    /// <summary>
+    /// Gets all active reference definitions addressed by a qualifier alias.
+    /// </summary>
+    /// <param name="selection">The active reference selection.</param>
+    /// <param name="qualifier">The qualifier alias used in source.</param>
+    /// <returns>The matching reference definitions.</returns>
     public IReadOnlyList<VbaSourceDefinition> GetQualifiedDefinitions(
         VbaProjectReferenceSelection selection,
         string qualifier)
@@ -232,6 +299,13 @@ public sealed class VbaProjectReferenceCatalogSet
             .ToArray();
     }
 
+    /// <summary>
+    /// Gets the canonical active qualifier alias that matches a typed qualifier.
+    /// </summary>
+    /// <param name="selection">The active reference selection.</param>
+    /// <param name="referenceName">The reference name that owns the definition.</param>
+    /// <param name="qualifier">The qualifier spelling found in source.</param>
+    /// <returns>The canonical qualifier alias, or null when it is not active.</returns>
     public string? GetActiveCanonicalQualifierAlias(
         VbaProjectReferenceSelection selection,
         string referenceName,

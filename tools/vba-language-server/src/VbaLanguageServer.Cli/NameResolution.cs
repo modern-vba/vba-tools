@@ -3,6 +3,9 @@ using VbaLanguageServer.ProjectModel;
 
 namespace VbaLanguageServer.SourceModel;
 
+/// <summary>
+/// Resolves VBA names by applying local, current-module, project, and reference precedence rules.
+/// </summary>
 public sealed class VbaNameResolutionService
 {
     private const int LocalRank = 0;
@@ -14,6 +17,12 @@ public sealed class VbaNameResolutionService
     private readonly VbaProjectReferenceSelection? referenceSelection;
     private readonly VbaProjectReferenceCatalogSet referenceCatalogs;
 
+    /// <summary>
+    /// Creates a name resolution service over indexed source documents and active references.
+    /// </summary>
+    /// <param name="documents">The indexed source documents.</param>
+    /// <param name="referenceSelection">The active reference selection for the project.</param>
+    /// <param name="referenceCatalogs">The available reference catalogs.</param>
     public VbaNameResolutionService(
         IReadOnlyList<VbaSourceDocument> documents,
         VbaProjectReferenceSelection? referenceSelection,
@@ -24,6 +33,12 @@ public sealed class VbaNameResolutionService
         this.referenceCatalogs = referenceCatalogs;
     }
 
+    /// <summary>
+    /// Gets unqualified completion definitions visible at a position.
+    /// </summary>
+    /// <param name="uri">The document URI.</param>
+    /// <param name="position">The source position.</param>
+    /// <returns>The visible and unambiguous completion definitions.</returns>
     public IReadOnlyList<VbaSourceDefinition> GetCompletionDefinitions(string uri, VbaPosition position)
     {
         var currentDocument = FindDocument(uri);
@@ -37,6 +52,11 @@ public sealed class VbaNameResolutionService
             .ToArray();
     }
 
+    /// <summary>
+    /// Gets project-level definitions that can participate in document formatting.
+    /// </summary>
+    /// <param name="uri">The document URI.</param>
+    /// <returns>The definitions that can supply canonical casing outside local scope.</returns>
     public IReadOnlyList<VbaSourceDefinition> GetFormattingDefinitions(string uri)
     {
         var currentDocument = FindDocument(uri);
@@ -50,6 +70,14 @@ public sealed class VbaNameResolutionService
             .ToArray();
     }
 
+    /// <summary>
+    /// Resolves an identifier with an optional qualifier at a source position.
+    /// </summary>
+    /// <param name="uri">The document URI.</param>
+    /// <param name="position">The source position used for local visibility.</param>
+    /// <param name="qualifier">The optional qualifier preceding the identifier.</param>
+    /// <param name="identifier">The identifier to resolve.</param>
+    /// <returns>The resolved definition, or null when unresolved or ambiguous.</returns>
     public VbaSourceDefinition? Resolve(
         string uri,
         VbaPosition position,

@@ -4,15 +4,27 @@ using VbaDev.App.Workbooks;
 
 namespace VbaDev.App.Import;
 
+/// <summary>
+/// Imports exported VBA source files into an existing workbook without using project.json.
+/// </summary>
 public sealed class ImportCommand
 {
     private readonly IWorkbookBuildAutomation workbookBuildAutomation;
 
+    /// <summary>
+    /// Creates the import command.
+    /// </summary>
+    /// <param name="workbookBuildAutomation">The workbook automation port used to modify the target workbook.</param>
     public ImportCommand(IWorkbookBuildAutomation workbookBuildAutomation)
     {
         this.workbookBuildAutomation = workbookBuildAutomation;
     }
 
+    /// <summary>
+    /// Replaces importable modules in the target workbook with source files from a directory.
+    /// </summary>
+    /// <param name="request">The import command input containing required --from and --to paths.</param>
+    /// <returns>The command result describing the import operation or validation error.</returns>
     public CommandResult Run(ImportCommandRequest request)
     {
         try

@@ -1,5 +1,13 @@
 namespace VbaLanguageServer.Syntax;
 
+/// <summary>
+/// Contains the parsed token stream, module syntax, and syntax diagnostics for one VBA source document.
+/// </summary>
+/// <param name="Uri">The document URI associated with the source text.</param>
+/// <param name="Text">The complete source text that was parsed.</param>
+/// <param name="TokenStream">The source-range-preserving token stream.</param>
+/// <param name="Module">The parsed module syntax model.</param>
+/// <param name="Diagnostics">The parser recovery diagnostics produced for the source text.</param>
 public sealed record VbaSyntaxTree(
     string Uri,
     string Text,
@@ -7,9 +15,22 @@ public sealed record VbaSyntaxTree(
     VbaModuleSyntax Module,
     IReadOnlyList<VbaSyntaxDiagnostic> Diagnostics)
 {
+    /// <summary>
+    /// Parses a VBA module source document.
+    /// </summary>
+    /// <param name="uri">The document URI associated with the source text.</param>
+    /// <param name="source">The complete source text to parse.</param>
+    /// <returns>The parsed syntax tree.</returns>
     public static VbaSyntaxTree ParseModule(string uri, string source)
         => VbaSyntaxTreeParser.ParseModule(uri, source);
 
+    /// <summary>
+    /// Parses source text and classifies whether the change can be treated as a member-level update.
+    /// </summary>
+    /// <param name="uri">The document URI associated with the source text.</param>
+    /// <param name="source">The complete source text to parse.</param>
+    /// <param name="previousSyntaxTree">The previous syntax tree for incremental classification.</param>
+    /// <returns>The parsed syntax tree and update kind.</returns>
     public static VbaSyntaxTreeParseResult ParseOrUpdate(
         string uri,
         string source,
@@ -122,12 +143,27 @@ public sealed record VbaSyntaxTree(
         => startLine <= member.BlockRange.Start.Line || endLine >= member.BlockRange.End.Line;
 }
 
+/// <summary>
+/// Identifies the granularity of a syntax tree update.
+/// </summary>
 public enum VbaSyntaxTreeParseUpdateKind
 {
+    /// <summary>
+    /// The full module should be refreshed.
+    /// </summary>
     FullModule,
+
+    /// <summary>
+    /// A single module member changed without touching its block boundary.
+    /// </summary>
     ModuleMember
 }
 
+/// <summary>
+/// Contains a parsed syntax tree and the update granularity inferred during parsing.
+/// </summary>
+/// <param name="SyntaxTree">The parsed syntax tree.</param>
+/// <param name="UpdateKind">The inferred update kind.</param>
 public sealed record VbaSyntaxTreeParseResult(
     VbaSyntaxTree SyntaxTree,
     VbaSyntaxTreeParseUpdateKind UpdateKind);

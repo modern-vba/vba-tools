@@ -7,6 +7,9 @@ using VbaDev.Domain;
 
 namespace VbaDev.App.References;
 
+/// <summary>
+/// Implements user-facing commands for listing and editing document VBA project references.
+/// </summary>
 public sealed class VbaProjectReferenceService
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -18,6 +21,11 @@ public sealed class VbaProjectReferenceService
     private readonly IProjectManifestStore manifestStore;
     private readonly VbaProjectReferencePlanner referencePlanner;
 
+    /// <summary>
+    /// Creates the reference command service.
+    /// </summary>
+    /// <param name="manifestStore">The store used to persist reference changes to project.json.</param>
+    /// <param name="referencePlanner">The planner used to validate and resolve requested references.</param>
     public VbaProjectReferenceService(
         IProjectManifestStore manifestStore,
         VbaProjectReferencePlanner referencePlanner)
@@ -26,6 +34,12 @@ public sealed class VbaProjectReferenceService
         this.referencePlanner = referencePlanner;
     }
 
+    /// <summary>
+    /// Adds references to the selected document manifest entry.
+    /// </summary>
+    /// <param name="context">The resolved project and document context.</param>
+    /// <param name="referenceNames">The requested human-visible reference names.</param>
+    /// <returns>The command result describing manifest changes or validation errors.</returns>
     public CommandResult Add(ResolvedProjectContext context, IReadOnlyList<string> referenceNames)
     {
         var normalizedNames = NormalizeNames(referenceNames);
@@ -69,6 +83,12 @@ public sealed class VbaProjectReferenceService
             : CommandResult.Success(output.ToString());
     }
 
+    /// <summary>
+    /// Removes references from the selected document manifest entry.
+    /// </summary>
+    /// <param name="context">The resolved project and document context.</param>
+    /// <param name="referenceNames">The reference names to remove from project.json.</param>
+    /// <returns>The command result describing manifest changes.</returns>
     public CommandResult Remove(ResolvedProjectContext context, IReadOnlyList<string> referenceNames)
     {
         var normalizedNames = NormalizeNames(referenceNames);
@@ -100,6 +120,12 @@ public sealed class VbaProjectReferenceService
             : CommandResult.Success(output.ToString());
     }
 
+    /// <summary>
+    /// Lists references tracked for the selected document.
+    /// </summary>
+    /// <param name="context">The resolved project and document context.</param>
+    /// <param name="format">The output format, either text or json.</param>
+    /// <returns>The formatted command result.</returns>
     public CommandResult List(ResolvedProjectContext context, string format)
     {
         var document = GetDocument(context.Manifest, context.DocumentName);

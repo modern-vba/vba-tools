@@ -1,7 +1,13 @@
 namespace VbaLanguageServer.Syntax;
 
+/// <summary>
+/// Provides canonical casing for fixed VBA language vocabulary.
+/// </summary>
 public static class VbaLanguageVocabulary
 {
+    /// <summary>
+    /// Maps known VBA vocabulary words to their canonical source formatting spelling.
+    /// </summary>
     public static readonly IReadOnlyDictionary<string, string> CanonicalKeywords =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -68,12 +74,20 @@ public static class VbaLanguageVocabulary
             ["xor"] = "Xor"
         };
 
+    /// <summary>
+    /// Gets the canonical vocabulary words ordered for completion display.
+    /// </summary>
     public static readonly IReadOnlyList<string> Keywords =
         CanonicalKeywords.Values
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(keyword => keyword, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
+    /// <summary>
+    /// Determines whether a value is known fixed VBA language vocabulary.
+    /// </summary>
+    /// <param name="value">The candidate word.</param>
+    /// <returns>True when the word has canonical vocabulary casing.</returns>
     public static bool IsKeyword(string value)
         => CanonicalKeywords.ContainsKey(value);
 }

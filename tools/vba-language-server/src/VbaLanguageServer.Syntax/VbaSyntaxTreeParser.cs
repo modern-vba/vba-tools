@@ -2,6 +2,9 @@ using System.Text.RegularExpressions;
 
 namespace VbaLanguageServer.Syntax;
 
+/// <summary>
+/// Parses exported VBA module source text into the reusable syntax model.
+/// </summary>
 internal static class VbaSyntaxTreeParser
 {
     private static readonly Regex AttributePattern = new(
@@ -48,6 +51,12 @@ internal static class VbaSyntaxTreeParser
         "[A-Za-z_][A-Za-z0-9_]*",
         RegexOptions.CultureInvariant);
 
+    /// <summary>
+    /// Parses one module source document.
+    /// </summary>
+    /// <param name="uri">The document URI used for module kind and fallback identity inference.</param>
+    /// <param name="source">The complete source text to parse.</param>
+    /// <returns>The parsed syntax tree.</returns>
     public static VbaSyntaxTree ParseModule(string uri, string source)
     {
         var tokenStream = VbaTokenStream.FromText(source);
@@ -1890,8 +1899,16 @@ internal static class VbaSyntaxTreeParser
         VbaSyntaxPosition StartPosition,
         VbaSyntaxRange FullRange)
     {
+        /// <summary>
+        /// Gets whether the source text contains no characters.
+        /// </summary>
         public bool IsEmpty => Text.Length == 0;
 
+        /// <summary>
+        /// Creates a source text model that tracks line boundaries and the full source range.
+        /// </summary>
+        /// <param name="source">The source text to index.</param>
+        /// <returns>The indexed source text.</returns>
         public static SourceText From(string source)
         {
             var lines = new List<SourceLine>();
@@ -1928,9 +1945,21 @@ internal static class VbaSyntaxTreeParser
             return new SourceText(source, lines, startPosition, new VbaSyntaxRange(startPosition, endPosition));
         }
 
+        /// <summary>
+        /// Converts an absolute character offset to a syntax position.
+        /// </summary>
+        /// <param name="offset">The zero-based character offset.</param>
+        /// <returns>The corresponding line, character, and offset position.</returns>
         public VbaSyntaxPosition PositionAt(int offset)
             => PositionAt(Text, offset);
 
+        /// <summary>
+        /// Builds a syntax range for a span on a single source line.
+        /// </summary>
+        /// <param name="line">The source line that contains the span.</param>
+        /// <param name="startCharacter">The zero-based start character on the line.</param>
+        /// <param name="endCharacter">The zero-based end character on the line.</param>
+        /// <returns>The range that covers the requested line span.</returns>
         public VbaSyntaxRange RangeForLine(SourceLine line, int startCharacter, int endCharacter)
             => new(
                 new VbaSyntaxPosition(line.LineNumber, startCharacter, line.StartOffset + startCharacter),
@@ -1969,40 +1998,89 @@ internal static class VbaSyntaxTreeParser
     }
 }
 
+/// <summary>
+/// Represents one physical source line with absolute offsets.
+/// </summary>
+/// <param name="LineNumber">The zero-based physical line number.</param>
+/// <param name="Text">The line text without newline characters.</param>
+/// <param name="StartOffset">The inclusive source offset where the line starts.</param>
+/// <param name="EndOffset">The exclusive source offset where the line text ends.</param>
 internal sealed record SourceLine(
     int LineNumber,
     string Text,
     int StartOffset,
     int EndOffset);
 
+/// <summary>
+/// Contains module members and declarations parsed from a module body.
+/// </summary>
+/// <param name="Members">The top-level module member blocks.</param>
+/// <param name="Declarations">The parsed definitions.</param>
+/// <param name="CallableDeclarations">The parsed callable definitions.</param>
 internal sealed record ParsedMembers(
     IReadOnlyList<VbaModuleMemberSyntax> Members,
     IReadOnlyList<VbaDeclarationSyntax> Declarations,
     IReadOnlyList<VbaCallableDeclarationSyntax> CallableDeclarations);
 
+/// <summary>
+/// Contains parsed statement syntax and statement-level diagnostics.
+/// </summary>
+/// <param name="Statements">The parsed statement and block nodes.</param>
+/// <param name="Diagnostics">The diagnostics produced while parsing statements.</param>
 internal sealed record ParsedStatements(
     IReadOnlyList<VbaStatementSyntax> Statements,
     IReadOnlyList<VbaSyntaxDiagnostic> Diagnostics);
 
+/// <summary>
+/// Contains parsed expressions, argument lists, and completion contexts.
+/// </summary>
+/// <param name="Expressions">The parsed expression fragments.</param>
+/// <param name="ArgumentLists">The parsed call argument lists.</param>
+/// <param name="CompletionContexts">The parsed completion contexts.</param>
 internal sealed record ParsedExpressions(
     IReadOnlyList<VbaExpressionSyntax> Expressions,
     IReadOnlyList<VbaArgumentListSyntax> ArgumentLists,
     IReadOnlyList<VbaCompletionContextSyntax> CompletionContexts);
 
 
+/// <summary>
+/// Represents a logical VBA statement assembled from one or more physical lines.
+/// </summary>
+/// <param name="Text">The logical statement text.</param>
+/// <param name="SourcePositions">The source position for each character in the logical text, when available.</param>
+/// <param name="Range">The source range covered by the logical statement.</param>
+/// <param name="IsContinued">Whether the statement spans physical lines using continuation markers.</param>
 internal sealed record LogicalStatement(
     string Text,
     IReadOnlyList<VbaSyntaxPosition?> SourcePositions,
     VbaSyntaxRange Range,
     bool IsContinued);
 
+/// <summary>
+/// Tracks an open statement block while parsing nested block structure.
+/// </summary>
+/// <param name="Kind">The block statement kind.</param>
+/// <param name="ExpectedTerminator">The terminator text expected for this block.</param>
+/// <param name="Range">The source range of the block opener.</param>
 internal sealed record BlockFrame(
     VbaStatementKind Kind,
     string ExpectedTerminator,
     VbaSyntaxRange Range);
 
+/// <summary>
+/// Represents one declaration segment split from a multi-declaration line.
+/// </summary>
+/// <param name="Start">The segment start character in the source line.</param>
+/// <param name="Text">The segment text.</param>
 internal sealed record DeclarationSegment(int Start, string Text);
 
+/// <summary>
+/// Represents parsed Doxygen-style documentation comment content attached to a declaration.
+/// </summary>
+/// <param name="HoverText">The rendered documentation text for hover display.</param>
+/// <param name="Summary">The summary text, when present.</param>
+/// <param name="ParameterDocs">The parameter documentation keyed by parameter name.</param>
+/// <param name="ReturnDocumentation">The return value documentation, when present.</param>
 internal sealed record DocumentationComment(
     string HoverText,
     string? Summary,

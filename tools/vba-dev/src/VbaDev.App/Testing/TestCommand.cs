@@ -5,12 +5,21 @@ using VbaDev.App.Projects;
 
 namespace VbaDev.App.Testing;
 
+/// <summary>
+/// Runs workbook-backed VBA tests and formats the resulting command output.
+/// </summary>
 public sealed class TestCommand
 {
     private readonly BuildCommand buildCommand;
     private readonly IWorkbookTestRunner workbookTestRunner;
     private readonly TestResultOutputFormatter outputFormatter;
 
+    /// <summary>
+    /// Creates the test command.
+    /// </summary>
+    /// <param name="buildCommand">The build command used when the test request builds first.</param>
+    /// <param name="workbookTestRunner">The workbook automation port used to execute tests.</param>
+    /// <param name="outputFormatter">The formatter for text and machine-readable test output.</param>
     public TestCommand(
         BuildCommand buildCommand,
         IWorkbookTestRunner workbookTestRunner,
@@ -21,6 +30,12 @@ public sealed class TestCommand
         this.outputFormatter = outputFormatter;
     }
 
+    /// <summary>
+    /// Optionally builds the selected document, runs workbook tests, and formats the results.
+    /// </summary>
+    /// <param name="context">The resolved project and document context.</param>
+    /// <param name="request">The test command input.</param>
+    /// <returns>A successful result when all tests pass, otherwise a failing command result with test output.</returns>
     public CommandResult Run(ResolvedProjectContext context, TestCommandRequest request)
     {
         try

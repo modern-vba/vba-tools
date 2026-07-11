@@ -5,32 +5,121 @@ using VbaLanguageServer.Syntax;
 
 namespace VbaLanguageServer.SourceModel;
 
+/// <summary>
+/// Identifies the editor-facing kind of a source definition.
+/// </summary>
 public enum VbaSourceDefinitionKind
 {
+    /// <summary>
+    /// A standard module definition.
+    /// </summary>
     Module,
+
+    /// <summary>
+    /// A class module definition.
+    /// </summary>
     Class,
+
+    /// <summary>
+    /// A form module definition.
+    /// </summary>
     Form,
+
+    /// <summary>
+    /// A Sub or Function procedure definition.
+    /// </summary>
     Procedure,
+
+    /// <summary>
+    /// A property procedure definition.
+    /// </summary>
     Property,
+
+    /// <summary>
+    /// A constant definition.
+    /// </summary>
     Constant,
+
+    /// <summary>
+    /// A variable or field definition.
+    /// </summary>
     Variable,
+
+    /// <summary>
+    /// A callable parameter definition.
+    /// </summary>
     Parameter,
+
+    /// <summary>
+    /// An enum type definition.
+    /// </summary>
     Enum,
+
+    /// <summary>
+    /// An enum member definition.
+    /// </summary>
     EnumMember,
+
+    /// <summary>
+    /// A user-defined type definition.
+    /// </summary>
     Type,
+
+    /// <summary>
+    /// A member of a user-defined type.
+    /// </summary>
     TypeMember,
+
+    /// <summary>
+    /// An event definition.
+    /// </summary>
     Event
 }
 
+/// <summary>
+/// Represents the visibility scope of a source definition.
+/// </summary>
 public enum VbaSourceDefinitionVisibility
 {
+    /// <summary>
+    /// Visible outside the declaring module.
+    /// </summary>
     Public,
+
+    /// <summary>
+    /// Visible only inside the declaring module.
+    /// </summary>
     Private,
+
+    /// <summary>
+    /// Visible only inside the declaring procedure.
+    /// </summary>
     Local
 }
 
+/// <summary>
+/// Represents a resolved or parsed type annotation used by semantic features.
+/// </summary>
+/// <param name="Name">The type name.</param>
+/// <param name="Qualifier">The optional module or reference qualifier.</param>
 public sealed record VbaTypeReference(string Name, string? Qualifier = null);
 
+/// <summary>
+/// Represents one source-defined or reference-catalog definition used by editor features.
+/// </summary>
+/// <param name="Name">The definition name.</param>
+/// <param name="Kind">The editor-facing definition kind.</param>
+/// <param name="Visibility">The definition visibility.</param>
+/// <param name="Uri">The source URI or reference-catalog URI that owns the definition.</param>
+/// <param name="ModuleName">The module or reference root that owns the definition.</param>
+/// <param name="Range">The source range of the definition.</param>
+/// <param name="ParentProcedureName">The containing procedure for local definitions.</param>
+/// <param name="ParentProcedureRange">The containing procedure range for local definitions.</param>
+/// <param name="Documentation">The documentation text shown by hover and signature help.</param>
+/// <param name="Signature">The callable signature, when the definition is callable.</param>
+/// <param name="ParentTypeName">The containing enum or user-defined type name for members.</param>
+/// <param name="TypeReference">The explicit result or variable type reference.</param>
+/// <param name="IsWithEvents">Whether the definition declares WithEvents.</param>
 public sealed record VbaSourceDefinition(
     string Name,
     VbaSourceDefinitionKind Kind,
@@ -46,15 +135,39 @@ public sealed record VbaSourceDefinition(
     VbaTypeReference? TypeReference = null,
     bool IsWithEvents = false);
 
+/// <summary>
+/// Represents one callable parameter in editor-facing signature metadata.
+/// </summary>
+/// <param name="Name">The parameter name.</param>
+/// <param name="Documentation">The parameter documentation text.</param>
 public sealed record VbaCallableParameter(string Name, string? Documentation = null);
 
+/// <summary>
+/// Represents callable signature metadata used by hover and signature help.
+/// </summary>
+/// <param name="Label">The full signature label.</param>
+/// <param name="Parameters">The ordered parameter metadata.</param>
+/// <param name="Documentation">The callable documentation text.</param>
 public sealed record VbaCallableSignature(
     string Label,
     IReadOnlyList<VbaCallableParameter> Parameters,
     string? Documentation = null);
 
+/// <summary>
+/// Represents the signature help result for a call site.
+/// </summary>
+/// <param name="Signature">The callable signature to show.</param>
+/// <param name="ActiveParameter">The zero-based active parameter index.</param>
 public sealed record VbaSignatureHelp(VbaCallableSignature Signature, int ActiveParameter);
 
+/// <summary>
+/// Represents one parsed source document in the source index.
+/// </summary>
+/// <param name="Uri">The document URI.</param>
+/// <param name="Text">The complete source text.</param>
+/// <param name="ModuleName">The parsed module identity.</param>
+/// <param name="Definitions">The definitions declared by the document.</param>
+/// <param name="SyntaxTree">The parsed syntax tree for features that need structured syntax.</param>
 public sealed record VbaSourceDocument(
     string Uri,
     string Text,
@@ -62,24 +175,54 @@ public sealed record VbaSourceDocument(
     IReadOnlyList<VbaSourceDefinition> Definitions,
     VbaSyntaxTree? SyntaxTree = null);
 
+/// <summary>
+/// Represents a definition or reference location.
+/// </summary>
+/// <param name="Uri">The document URI.</param>
+/// <param name="Range">The source range.</param>
 public sealed record VbaDefinitionLocation(string Uri, VbaRange Range);
 
+/// <summary>
+/// Represents one text edit in LSP-compatible coordinates.
+/// </summary>
+/// <param name="Range">The source range to replace.</param>
+/// <param name="NewText">The replacement text.</param>
 public sealed record VbaTextEdit(VbaRange Range, string NewText);
 
+/// <summary>
+/// Represents a workspace symbol projected from a source definition.
+/// </summary>
+/// <param name="Name">The symbol name.</param>
+/// <param name="Kind">The symbol definition kind.</param>
+/// <param name="Uri">The owning document URI.</param>
+/// <param name="Range">The symbol source range.</param>
 public sealed record VbaWorkspaceSymbol(
     string Name,
     VbaSourceDefinitionKind Kind,
     string Uri,
     VbaRange Range);
 
+/// <summary>
+/// Represents one semantic token before LSP delta encoding.
+/// </summary>
+/// <param name="Range">The source range covered by the token.</param>
+/// <param name="Text">The source text covered by the token.</param>
+/// <param name="TokenType">The semantic token type name.</param>
+/// <param name="TokenModifiers">The semantic token modifier names.</param>
 public sealed record VbaSemanticToken(
     VbaRange Range,
     string Text,
     string TokenType,
     IReadOnlyList<string> TokenModifiers);
 
+/// <summary>
+/// Indexes parsed VBA source documents and serves editor-intelligence queries over their definitions.
+/// </summary>
 public sealed class VbaSourceIndex
 {
+    /// <summary>
+    /// Gets the semantic token legend types advertised to LSP clients.
+    /// </summary>
     public static readonly IReadOnlyList<string> SemanticTokenTypes = [
         "namespace",
         "type",
@@ -97,6 +240,9 @@ public sealed class VbaSourceIndex
         "method"
     ];
 
+    /// <summary>
+    /// Gets the semantic token legend modifiers advertised to LSP clients.
+    /// </summary>
     public static readonly IReadOnlyList<string> SemanticTokenModifiers = [
         "declaration",
         "definition",
@@ -110,6 +256,9 @@ public sealed class VbaSourceIndex
         "defaultLibrary"
     ];
 
+    /// <summary>
+    /// Gets the fixed VBA language vocabulary used by completion and formatting features.
+    /// </summary>
     public static readonly IReadOnlyList<string> LanguageVocabulary = VbaLanguageVocabulary.Keywords;
 
     private readonly IReadOnlyList<VbaSourceDocument> documents;
@@ -126,6 +275,13 @@ public sealed class VbaSourceIndex
         sourceFormatter = new VbaSourceFormatter(semanticResolution);
     }
 
+    /// <summary>
+    /// Builds a source index from raw source text documents.
+    /// </summary>
+    /// <param name="sourceDocuments">The source text keyed by document URI.</param>
+    /// <param name="referenceSelection">The active VBA project reference selection.</param>
+    /// <param name="referenceCatalogs">The available reference catalogs.</param>
+    /// <returns>The built source index.</returns>
     public static VbaSourceIndex Build(
         IReadOnlyDictionary<string, string> sourceDocuments,
         VbaProjectReferenceSelection? referenceSelection = null,
@@ -140,6 +296,13 @@ public sealed class VbaSourceIndex
             referenceCatalogs ?? VbaProjectReferenceCatalogSet.Empty);
     }
 
+    /// <summary>
+    /// Builds a source index from already parsed syntax trees.
+    /// </summary>
+    /// <param name="sourceDocuments">The syntax trees keyed by document URI.</param>
+    /// <param name="referenceSelection">The active VBA project reference selection.</param>
+    /// <param name="referenceCatalogs">The available reference catalogs.</param>
+    /// <returns>The built source index.</returns>
     public static VbaSourceIndex BuildFromSyntaxTrees(
         IReadOnlyDictionary<string, VbaSyntaxTree> sourceDocuments,
         VbaProjectReferenceSelection? referenceSelection = null,
@@ -154,12 +317,22 @@ public sealed class VbaSourceIndex
             referenceCatalogs ?? VbaProjectReferenceCatalogSet.Empty);
     }
 
+    /// <summary>
+    /// Gets definitions declared in a document.
+    /// </summary>
+    /// <param name="uri">The document URI.</param>
+    /// <returns>The document definitions, or an empty list when the document is not indexed.</returns>
     public IReadOnlyList<VbaSourceDefinition> GetDocumentDefinitions(string uri)
         => documents
             .FirstOrDefault(document => SameUri(document.Uri, uri))
             ?.Definitions
             ?? Array.Empty<VbaSourceDefinition>();
 
+    /// <summary>
+    /// Searches workspace symbols across indexed source documents.
+    /// </summary>
+    /// <param name="query">The optional symbol name substring.</param>
+    /// <returns>The matching non-local source symbols.</returns>
     public IReadOnlyList<VbaWorkspaceSymbol> GetWorkspaceSymbols(string query)
     {
         var normalizedQuery = query ?? "";
@@ -179,6 +352,13 @@ public sealed class VbaSourceIndex
             .ToArray();
     }
 
+    /// <summary>
+    /// Finds source references to the definition at a document position.
+    /// </summary>
+    /// <param name="uri">The document URI containing the position.</param>
+    /// <param name="line">The zero-based line.</param>
+    /// <param name="character">The zero-based character.</param>
+    /// <returns>The matching reference locations across indexed source documents.</returns>
     public IReadOnlyList<VbaDefinitionLocation> FindReferences(string uri, int line, int character)
     {
         var target = ResolveSourceDefinition(uri, line, character);
@@ -219,30 +399,76 @@ public sealed class VbaSourceIndex
             .ToArray();
     }
 
+    /// <summary>
+    /// Gets semantic tokens for one document.
+    /// </summary>
+    /// <param name="uri">The document URI.</param>
+    /// <returns>The semantic tokens before LSP encoding.</returns>
     public IReadOnlyList<VbaSemanticToken> GetSemanticTokens(string uri)
         => VbaSemanticTokenBuilder.GetSemanticTokens(
             documents,
             uri,
             (line, character) => ResolveSourceDefinition(uri, line, character));
 
+    /// <summary>
+    /// Gets LSP delta-encoded semantic token data for one document.
+    /// </summary>
+    /// <param name="uri">The document URI.</param>
+    /// <returns>The encoded semantic token integer data.</returns>
     public IReadOnlyList<int> GetSemanticTokenData(string uri)
         => VbaSemanticTokenBuilder.GetSemanticTokenData(GetSemanticTokens(uri));
 
+    /// <summary>
+    /// Gets completion definitions visible at a document position.
+    /// </summary>
+    /// <param name="uri">The document URI.</param>
+    /// <param name="line">The zero-based line.</param>
+    /// <param name="character">The zero-based character.</param>
+    /// <returns>The completion candidate definitions.</returns>
     public IReadOnlyList<VbaSourceDefinition> GetCompletionDefinitions(string uri, int line, int character)
         => semanticResolution.GetCompletionDefinitions(uri, line, character);
 
+    /// <summary>
+    /// Resolves the definition location for the reference at a document position.
+    /// </summary>
+    /// <param name="uri">The document URI.</param>
+    /// <param name="line">The zero-based line.</param>
+    /// <param name="character">The zero-based character.</param>
+    /// <returns>The definition location, or null when the reference is unresolved or ambiguous.</returns>
     public VbaDefinitionLocation? ResolveDefinition(string uri, int line, int character)
     {
         var definition = ResolveSourceDefinition(uri, line, character);
         return definition is null ? null : new VbaDefinitionLocation(definition.Uri, definition.Range);
     }
 
+    /// <summary>
+    /// Resolves the source definition for the reference at a document position.
+    /// </summary>
+    /// <param name="uri">The document URI.</param>
+    /// <param name="line">The zero-based line.</param>
+    /// <param name="character">The zero-based character.</param>
+    /// <returns>The resolved definition, or null when unresolved or ambiguous.</returns>
     public VbaSourceDefinition? ResolveSourceDefinition(string uri, int line, int character)
         => semanticResolution.ResolveSourceDefinition(uri, line, character);
 
+    /// <summary>
+    /// Gets signature help for the call site at a document position.
+    /// </summary>
+    /// <param name="uri">The document URI.</param>
+    /// <param name="line">The zero-based line.</param>
+    /// <param name="character">The zero-based character.</param>
+    /// <returns>The signature help result, or null when no callable target resolves.</returns>
     public VbaSignatureHelp? GetSignatureHelp(string uri, int line, int character)
         => semanticResolution.GetSignatureHelp(uri, line, character);
 
+    /// <summary>
+    /// Creates workspace edits for renaming the source definition at a document position.
+    /// </summary>
+    /// <param name="uri">The document URI containing the rename position.</param>
+    /// <param name="line">The zero-based line.</param>
+    /// <param name="character">The zero-based character.</param>
+    /// <param name="newName">The requested new identifier name.</param>
+    /// <returns>The edits keyed by URI, or null when the rename is not valid.</returns>
     public IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>>? CreateRenameChanges(
         string uri,
         int line,
@@ -295,6 +521,12 @@ public sealed class VbaSourceIndex
         return changes.Count == 0 ? null : changes;
     }
 
+    /// <summary>
+    /// Formats a document and returns a whole-document replacement edit when formatting changes text.
+    /// </summary>
+    /// <param name="uri">The document URI.</param>
+    /// <param name="tabSize">The number of spaces used per indentation level.</param>
+    /// <returns>The formatting edit, or null when the document is unknown or already formatted.</returns>
     public VbaTextEdit? FormatDocument(string uri, int tabSize)
     {
         var document = documents.FirstOrDefault(candidate => SameUri(candidate.Uri, uri));

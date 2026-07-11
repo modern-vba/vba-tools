@@ -5,6 +5,9 @@ using VbaDev.App.Projects;
 
 namespace VbaDev.App.Cli;
 
+/// <summary>
+/// Parses VbaDev command-line arguments, resolves project context, and dispatches command handlers.
+/// </summary>
 public sealed class CommandLineApplication
 {
     private readonly IReadOnlyDictionary<string, ToolingCommandContract> commands;
@@ -12,6 +15,13 @@ public sealed class CommandLineApplication
     private readonly ProjectContextResolver projectContextResolver;
     private readonly Func<string> getWorkingDirectory;
 
+    /// <summary>
+    /// Creates a command-line application from command contracts, handlers, and context resolution services.
+    /// </summary>
+    /// <param name="commands">The supported command contracts.</param>
+    /// <param name="handlers">The executable command handlers.</param>
+    /// <param name="projectContextResolver">The resolver used for project and document context policies.</param>
+    /// <param name="getWorkingDirectory">A callback returning the current working directory for relative paths.</param>
     public CommandLineApplication(
         IEnumerable<ToolingCommandContract> commands,
         IEnumerable<ToolingCommandHandler> handlers,
@@ -24,6 +34,11 @@ public sealed class CommandLineApplication
         this.getWorkingDirectory = getWorkingDirectory;
     }
 
+    /// <summary>
+    /// Runs one command-line invocation.
+    /// </summary>
+    /// <param name="args">The command-line arguments after the executable name.</param>
+    /// <returns>The command result containing exit code and output streams.</returns>
     public CommandResult Run(IReadOnlyList<string> args)
     {
         if (args.Count == 0 || IsHelp(args[0]))
@@ -314,11 +329,22 @@ public sealed class CommandLineApplication
         IReadOnlyList<string> Positionals,
         string? Error)
     {
+        /// <summary>
+        /// Creates a parsed command line result with resolved options and positional arguments.
+        /// </summary>
+        /// <param name="options">The parsed option values keyed by option name.</param>
+        /// <param name="positionals">The positional arguments that remain after command and option parsing.</param>
+        /// <returns>The successful parse result.</returns>
         public static ParsedCommandLine Success(
             IReadOnlyDictionary<string, string?> options,
             IReadOnlyList<string> positionals)
             => new(options, positionals, null);
 
+        /// <summary>
+        /// Creates a parsed command line result that carries a parse error.
+        /// </summary>
+        /// <param name="error">The parse error to report.</param>
+        /// <returns>The failed parse result.</returns>
         public static ParsedCommandLine Failure(string error) => new(new Dictionary<string, string?>(), [], error);
     }
 
@@ -329,9 +355,20 @@ public sealed class CommandLineApplication
         ResolvedProjectContext? Context,
         string? Error)
     {
+        /// <summary>
+        /// Creates a project resolution result for a command that can proceed.
+        /// </summary>
+        /// <param name="project">The resolved project, when the command requires one.</param>
+        /// <param name="context">The resolved project context, when available.</param>
+        /// <returns>The successful project resolution result.</returns>
         public static ProjectResolutionResult Success(ResolvedProject? project, ResolvedProjectContext? context)
             => new(project, context, null);
 
+        /// <summary>
+        /// Creates a project resolution result that carries a resolution error.
+        /// </summary>
+        /// <param name="error">The resolution error to report.</param>
+        /// <returns>The failed project resolution result.</returns>
         public static ProjectResolutionResult Failure(string error) => new(null, null, error);
     }
 

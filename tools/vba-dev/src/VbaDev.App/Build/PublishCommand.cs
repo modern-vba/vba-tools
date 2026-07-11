@@ -7,11 +7,19 @@ using VbaDev.Domain;
 
 namespace VbaDev.App.Build;
 
+/// <summary>
+/// Publishes a workbook-backed document from its template and publishable source files.
+/// </summary>
 public sealed class PublishCommand
 {
     private readonly WorkbookSourcePlanner sourcePlanner;
     private readonly WorkbookGenerationPipeline generationPipeline;
 
+    /// <summary>
+    /// Creates the publish command.
+    /// </summary>
+    /// <param name="sourcePlanner">The planner that selects publishable source files.</param>
+    /// <param name="generationPipeline">The pipeline that generates the published workbook.</param>
     public PublishCommand(
         WorkbookSourcePlanner sourcePlanner,
         WorkbookGenerationPipeline generationPipeline)
@@ -20,6 +28,11 @@ public sealed class PublishCommand
         this.generationPipeline = generationPipeline;
     }
 
+    /// <summary>
+    /// Generates the document's publish workbook while excluding test-only sources.
+    /// </summary>
+    /// <param name="context">The resolved project and document context.</param>
+    /// <returns>The command result describing the published workbook or any user-facing failure.</returns>
     public CommandResult Run(ResolvedProjectContext context)
     {
         try

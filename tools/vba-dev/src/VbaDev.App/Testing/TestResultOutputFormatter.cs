@@ -4,6 +4,9 @@ using System.Text.Json.Serialization;
 
 namespace VbaDev.App.Testing;
 
+/// <summary>
+/// Formats normalized test results as human-readable text or NDJSON events.
+/// </summary>
 public sealed class TestResultOutputFormatter
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -12,6 +15,14 @@ public sealed class TestResultOutputFormatter
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
 
+    /// <summary>
+    /// Formats a test run result set.
+    /// </summary>
+    /// <param name="format">The requested output format.</param>
+    /// <param name="project">The project name to include in machine-readable events.</param>
+    /// <param name="document">The document name to include in machine-readable events.</param>
+    /// <param name="results">The normalized test results.</param>
+    /// <returns>The formatted test output.</returns>
     public string Format(string format, string project, string document, IReadOnlyList<TestResultRecord> results)
         => format.ToLowerInvariant() switch
         {
@@ -68,6 +79,12 @@ public sealed class TestResultOutputFormatter
         string Module,
         string Procedure)
     {
+        /// <summary>
+        /// Creates a JSON record that marks the start of a single workbook test.
+        /// </summary>
+        /// <param name="project">The project that produced the test result.</param>
+        /// <param name="result">The test result to describe.</param>
+        /// <returns>The JSON output record.</returns>
         public static TestStartedJsonRecord FromResult(string project, TestResultRecord result)
             => new(
                 "testStarted",
@@ -87,6 +104,12 @@ public sealed class TestResultOutputFormatter
         string Message,
         double? DurationMilliseconds)
     {
+        /// <summary>
+        /// Creates a JSON record that reports the completion of a single workbook test.
+        /// </summary>
+        /// <param name="project">The project that produced the test result.</param>
+        /// <param name="result">The completed test result.</param>
+        /// <returns>The JSON output record.</returns>
         public static TestFinishedJsonRecord FromResult(string project, TestResultRecord result)
             => new(
                 "testFinished",
@@ -109,6 +132,13 @@ public sealed class TestResultOutputFormatter
         int Failed,
         int Errors)
     {
+        /// <summary>
+        /// Creates a JSON record that summarizes the completed workbook test run.
+        /// </summary>
+        /// <param name="project">The project that produced the test results.</param>
+        /// <param name="document">The workbook document that was tested.</param>
+        /// <param name="results">The completed test results.</param>
+        /// <returns>The JSON output record.</returns>
         public static RunFinishedJsonRecord FromResults(string project, string document, IReadOnlyList<TestResultRecord> results)
         {
             var summary = TestResultSummary.FromResults(results);

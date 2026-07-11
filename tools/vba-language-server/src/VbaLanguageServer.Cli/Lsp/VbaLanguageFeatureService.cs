@@ -6,15 +6,26 @@ using VbaLanguageServer.Workspace;
 
 namespace VbaLanguageServer.Lsp;
 
+/// <summary>
+/// Creates LSP response payloads for VBA language features from workspace snapshots.
+/// </summary>
 internal sealed class VbaLanguageFeatureService
 {
     private readonly VbaLanguageWorkspace workspace;
 
+    /// <summary>
+    /// Creates a feature service over a language workspace.
+    /// </summary>
+    /// <param name="workspace">The workspace used to build project snapshots.</param>
     public VbaLanguageFeatureService(VbaLanguageWorkspace workspace)
     {
         this.workspace = workspace;
     }
 
+    /// <summary>
+    /// Creates the initialize response payload with language-server capabilities.
+    /// </summary>
+    /// <returns>The initialize result payload.</returns>
     public static object CreateInitializeResult()
     {
         return new
@@ -59,9 +70,21 @@ internal sealed class VbaLanguageFeatureService
         };
     }
 
+    /// <summary>
+    /// Creates LSP diagnostic payloads by parsing source text.
+    /// </summary>
+    /// <param name="uri">The document URI.</param>
+    /// <param name="text">The source text.</param>
+    /// <returns>The diagnostic payload objects.</returns>
     public static object[] CreateDiagnostics(string uri, string text)
         => CreateDiagnostics(uri, VbaSyntaxTree.ParseModule(uri, text));
 
+    /// <summary>
+    /// Creates LSP diagnostic payloads from a parsed syntax tree.
+    /// </summary>
+    /// <param name="uri">The document URI.</param>
+    /// <param name="tree">The parsed syntax tree.</param>
+    /// <returns>The diagnostic payload objects.</returns>
     public static object[] CreateDiagnostics(string uri, VbaSyntaxTree tree)
     {
         return VbaDocumentDiagnostics.Collect(tree, uri)
@@ -76,6 +99,12 @@ internal sealed class VbaLanguageFeatureService
             .ToArray<object>();
     }
 
+    /// <summary>
+    /// Creates textDocument/documentSymbol response items.
+    /// </summary>
+    /// <param name="parameters">The LSP request parameters.</param>
+    /// <param name="cancellationToken">A cancellation token for snapshot creation.</param>
+    /// <returns>The document symbol payload objects, or an empty array for invalid input.</returns>
     public object[] CreateDocumentSymbols(JsonNode? parameters, CancellationToken cancellationToken = default)
     {
         var uri = parameters?["textDocument"]?["uri"]?.GetValue<string>();
@@ -97,6 +126,12 @@ internal sealed class VbaLanguageFeatureService
             .ToArray<object>();
     }
 
+    /// <summary>
+    /// Creates a textDocument/definition response location.
+    /// </summary>
+    /// <param name="parameters">The LSP request parameters.</param>
+    /// <param name="cancellationToken">A cancellation token for snapshot creation.</param>
+    /// <returns>The definition location payload, or null when unresolved.</returns>
     public object? CreateDefinitionLocation(JsonNode? parameters, CancellationToken cancellationToken = default)
     {
         var uri = parameters?["textDocument"]?["uri"]?.GetValue<string>();
@@ -119,6 +154,12 @@ internal sealed class VbaLanguageFeatureService
             };
     }
 
+    /// <summary>
+    /// Creates textDocument/references response locations.
+    /// </summary>
+    /// <param name="parameters">The LSP request parameters.</param>
+    /// <param name="cancellationToken">A cancellation token for snapshot creation.</param>
+    /// <returns>The reference location payload objects, or an empty array for invalid input.</returns>
     public object[] CreateReferenceLocations(JsonNode? parameters, CancellationToken cancellationToken = default)
     {
         if (!TryGetTextDocumentPosition(parameters, out var uri, out var line, out var character))
@@ -137,6 +178,12 @@ internal sealed class VbaLanguageFeatureService
             .ToArray<object>();
     }
 
+    /// <summary>
+    /// Creates workspace/symbol response items across distinct workspace snapshots.
+    /// </summary>
+    /// <param name="parameters">The LSP request parameters.</param>
+    /// <param name="cancellationToken">A cancellation token for snapshot creation.</param>
+    /// <returns>The workspace symbol payload objects.</returns>
     public object[] CreateWorkspaceSymbols(JsonNode? parameters, CancellationToken cancellationToken = default)
     {
         var query = parameters?["query"]?.GetValue<string>() ?? "";
@@ -157,6 +204,12 @@ internal sealed class VbaLanguageFeatureService
             .ToArray<object>();
     }
 
+    /// <summary>
+    /// Creates textDocument/completion response items.
+    /// </summary>
+    /// <param name="parameters">The LSP request parameters.</param>
+    /// <param name="cancellationToken">A cancellation token for snapshot creation.</param>
+    /// <returns>The completion item payload objects, or an empty array for invalid input.</returns>
     public object[] CreateCompletionItems(JsonNode? parameters, CancellationToken cancellationToken = default)
     {
         if (!TryGetTextDocumentPosition(parameters, out var uri, out var line, out var character))
@@ -186,6 +239,12 @@ internal sealed class VbaLanguageFeatureService
             .ToArray<object>();
     }
 
+    /// <summary>
+    /// Creates a textDocument/hover response.
+    /// </summary>
+    /// <param name="parameters">The LSP request parameters.</param>
+    /// <param name="cancellationToken">A cancellation token for snapshot creation.</param>
+    /// <returns>The hover payload, or null when no definition resolves.</returns>
     public object? CreateHover(JsonNode? parameters, CancellationToken cancellationToken = default)
     {
         if (!TryGetTextDocumentPosition(parameters, out var uri, out var line, out var character))
@@ -215,6 +274,12 @@ internal sealed class VbaLanguageFeatureService
         };
     }
 
+    /// <summary>
+    /// Creates a textDocument/signatureHelp response.
+    /// </summary>
+    /// <param name="parameters">The LSP request parameters.</param>
+    /// <param name="cancellationToken">A cancellation token for snapshot creation.</param>
+    /// <returns>The signature help payload, or null when no callable resolves.</returns>
     public object? CreateSignatureHelp(JsonNode? parameters, CancellationToken cancellationToken = default)
     {
         if (!TryGetTextDocumentPosition(parameters, out var uri, out var line, out var character))
@@ -249,6 +314,12 @@ internal sealed class VbaLanguageFeatureService
         };
     }
 
+    /// <summary>
+    /// Creates a textDocument/prepareRename response range.
+    /// </summary>
+    /// <param name="parameters">The LSP request parameters.</param>
+    /// <param name="cancellationToken">A cancellation token for snapshot creation.</param>
+    /// <returns>The rename target range, or null when rename is unavailable.</returns>
     public object? CreatePrepareRename(JsonNode? parameters, CancellationToken cancellationToken = default)
     {
         if (!TryGetTextDocumentPosition(parameters, out var uri, out var line, out var character))
@@ -261,6 +332,12 @@ internal sealed class VbaLanguageFeatureService
         return definition is null ? null : definition.Range;
     }
 
+    /// <summary>
+    /// Creates a textDocument/rename workspace edit response.
+    /// </summary>
+    /// <param name="parameters">The LSP request parameters.</param>
+    /// <param name="cancellationToken">A cancellation token for snapshot creation.</param>
+    /// <returns>The workspace edit payload, or null when rename is invalid.</returns>
     public object? CreateRenameEdit(JsonNode? parameters, CancellationToken cancellationToken = default)
     {
         if (!TryGetTextDocumentPosition(parameters, out var uri, out var line, out var character))
@@ -294,6 +371,12 @@ internal sealed class VbaLanguageFeatureService
         };
     }
 
+    /// <summary>
+    /// Creates textDocument/formatting response edits.
+    /// </summary>
+    /// <param name="parameters">The LSP request parameters.</param>
+    /// <param name="cancellationToken">A cancellation token for snapshot creation.</param>
+    /// <returns>The formatting edit payload objects, or an empty array when no edit is needed.</returns>
     public object[] CreateFormattingEdits(JsonNode? parameters, CancellationToken cancellationToken = default)
     {
         var uri = parameters?["textDocument"]?["uri"]?.GetValue<string>();
@@ -320,6 +403,12 @@ internal sealed class VbaLanguageFeatureService
         ];
     }
 
+    /// <summary>
+    /// Creates a textDocument/semanticTokens/full response.
+    /// </summary>
+    /// <param name="parameters">The LSP request parameters.</param>
+    /// <param name="cancellationToken">A cancellation token for snapshot creation.</param>
+    /// <returns>The semantic tokens payload.</returns>
     public object CreateSemanticTokens(JsonNode? parameters, CancellationToken cancellationToken = default)
     {
         var uri = parameters?["textDocument"]?["uri"]?.GetValue<string>();

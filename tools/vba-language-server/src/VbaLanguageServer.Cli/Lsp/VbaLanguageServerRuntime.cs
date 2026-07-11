@@ -4,6 +4,9 @@ using VbaLanguageServer.Workspace;
 
 namespace VbaLanguageServer.Lsp;
 
+/// <summary>
+/// Runs the stdio JSON-RPC message loop for the VBA language server.
+/// </summary>
 internal sealed class VbaLanguageServerRuntime
 {
     private readonly LspMessageTransport transport;
@@ -11,6 +14,12 @@ internal sealed class VbaLanguageServerRuntime
     private readonly VbaDocumentLifecycle documentLifecycle;
     private bool shutdownRequested;
 
+    /// <summary>
+    /// Creates a language-server runtime from transport, feature, and lifecycle components.
+    /// </summary>
+    /// <param name="transport">The LSP transport used for JSON-RPC messages.</param>
+    /// <param name="features">The feature service used for request handling.</param>
+    /// <param name="documentLifecycle">The document lifecycle handler used for notifications.</param>
     public VbaLanguageServerRuntime(
         LspMessageTransport transport,
         VbaLanguageFeatureService features,
@@ -21,6 +30,12 @@ internal sealed class VbaLanguageServerRuntime
         this.documentLifecycle = documentLifecycle;
     }
 
+    /// <summary>
+    /// Creates the default stdio runtime with bundled reference catalogs and registry discovery.
+    /// </summary>
+    /// <param name="input">The JSON-RPC input stream.</param>
+    /// <param name="output">The JSON-RPC output stream.</param>
+    /// <returns>The configured language-server runtime.</returns>
     public static VbaLanguageServerRuntime CreateDefault(Stream input, Stream output)
     {
         var transport = new LspMessageTransport(input, output);
@@ -39,6 +54,11 @@ internal sealed class VbaLanguageServerRuntime
         return new VbaLanguageServerRuntime(transport, features, documentLifecycle);
     }
 
+    /// <summary>
+    /// Runs the request and notification loop until cancellation, EOF, or exit notification.
+    /// </summary>
+    /// <param name="cancellationToken">A cancellation token for the message loop.</param>
+    /// <returns>A task that completes when the runtime stops.</returns>
     public async Task RunAsync(CancellationToken cancellationToken = default)
     {
         while (!cancellationToken.IsCancellationRequested)

@@ -1,7 +1,15 @@
 namespace VbaLanguageServer.Syntax;
 
+/// <summary>
+/// Tokenizes VBA source text into source-range-preserving lexical tokens.
+/// </summary>
 internal static class VbaLexer
 {
+    /// <summary>
+    /// Produces the lexical token stream for a VBA source document.
+    /// </summary>
+    /// <param name="source">The source text to tokenize.</param>
+    /// <returns>The token stream in source order.</returns>
     public static VbaTokenStream Tokenize(string source)
     {
         var state = new LexerState(source);
@@ -288,29 +296,59 @@ internal static class VbaLexer
 
     private sealed class LexerState
     {
+        /// <summary>
+        /// Initializes a lexer cursor at the beginning of the supplied source.
+        /// </summary>
+        /// <param name="source">The source text to tokenize.</param>
         public LexerState(string source)
         {
             Source = source;
             Position = new VbaSyntaxPosition(0, 0, 0);
         }
 
+        /// <summary>
+        /// Gets the source text being tokenized.
+        /// </summary>
         public string Source { get; }
 
+        /// <summary>
+        /// Gets the current line, character, and offset of the lexer cursor.
+        /// </summary>
         public VbaSyntaxPosition Position { get; private set; }
 
+        /// <summary>
+        /// Gets whether the lexer cursor has reached the end of the source text.
+        /// </summary>
         public bool IsAtEnd => Position.Offset >= Source.Length;
 
+        /// <summary>
+        /// Gets the current source character, or a null character sentinel at end of source.
+        /// </summary>
         public char Current => IsAtEnd ? '\0' : Source[Position.Offset];
 
+        /// <summary>
+        /// Returns a character relative to the current cursor position.
+        /// </summary>
+        /// <param name="distance">The number of characters to look ahead from the current offset.</param>
+        /// <returns>The requested character, or a null character sentinel beyond the end of source.</returns>
         public char Peek(int distance)
         {
             var offset = Position.Offset + distance;
             return offset >= Source.Length ? '\0' : Source[offset];
         }
 
+        /// <summary>
+        /// Returns a source substring by absolute offsets.
+        /// </summary>
+        /// <param name="startOffset">The inclusive zero-based start offset.</param>
+        /// <param name="endOffset">The exclusive zero-based end offset.</param>
+        /// <returns>The requested source slice.</returns>
         public string Slice(int startOffset, int endOffset)
             => Source[startOffset..endOffset];
 
+        /// <summary>
+        /// Advances the cursor by one source character, normalizing CRLF to a single line break.
+        /// </summary>
         public void Advance()
         {
             if (IsAtEnd)
@@ -339,6 +377,10 @@ internal static class VbaLexer
             Position = new VbaSyntaxPosition(Position.Line, Position.Character + 1, Position.Offset + 1);
         }
 
+        /// <summary>
+        /// Restores the lexer cursor to a previously captured position.
+        /// </summary>
+        /// <param name="position">The position to restore.</param>
         public void Rewind(VbaSyntaxPosition position)
         {
             Position = position;

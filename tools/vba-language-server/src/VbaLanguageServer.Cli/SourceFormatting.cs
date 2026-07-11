@@ -4,23 +4,54 @@ using VbaLanguageServer.Syntax;
 
 namespace VbaLanguageServer.SourceModel;
 
+/// <summary>
+/// Represents a source replacement used while constructing a formatted document.
+/// </summary>
+/// <param name="StartOffset">The inclusive source offset where replacement starts.</param>
+/// <param name="EndOffset">The exclusive source offset where replacement ends.</param>
+/// <param name="NewText">The replacement text.</param>
 internal sealed record SourceFormattingEdit(int StartOffset, int EndOffset, string NewText);
 
+/// <summary>
+/// Collects non-overlapping source formatting edits and applies them to source text.
+/// </summary>
 internal sealed class SourceFormattingEditCollector
 {
     private readonly List<SourceFormattingEdit> edits = [];
 
+    /// <summary>
+    /// Gets the collected formatting edits.
+    /// </summary>
     public IReadOnlyList<SourceFormattingEdit> Edits => edits;
 
+    /// <summary>
+    /// Adds a replacement edit.
+    /// </summary>
+    /// <param name="startOffset">The inclusive source offset where replacement starts.</param>
+    /// <param name="endOffset">The exclusive source offset where replacement ends.</param>
+    /// <param name="newText">The replacement text.</param>
     public void Replace(int startOffset, int endOffset, string newText)
         => edits.Add(new SourceFormattingEdit(startOffset, endOffset, newText));
 
+    /// <summary>
+    /// Applies the collected edits to source text.
+    /// </summary>
+    /// <param name="source">The source text to edit.</param>
+    /// <returns>The edited source text.</returns>
     public string Apply(string source)
         => SourceFormatting.ApplyEdits(source, edits);
 }
 
+/// <summary>
+/// Provides low-level source formatting text helpers.
+/// </summary>
 internal static class SourceFormatting
 {
+    /// <summary>
+    /// Splits source text into physical lines without newline characters.
+    /// </summary>
+    /// <param name="source">The source text to split.</param>
+    /// <returns>The source lines in order.</returns>
     public static IReadOnlyList<string> SplitLogicalLines(string source)
     {
         var lines = new List<string>();
@@ -50,6 +81,11 @@ internal static class SourceFormatting
         return lines;
     }
 
+    /// <summary>
+    /// Detects the dominant line ending used by source text.
+    /// </summary>
+    /// <param name="source">The source text to inspect.</param>
+    /// <returns>The line ending to preserve during formatting.</returns>
     public static string DetectDominantLineEnding(string source)
     {
         var crlfCount = 0;
@@ -86,6 +122,12 @@ internal static class SourceFormatting
         return lfCount >= crCount ? "\n" : "\r";
     }
 
+    /// <summary>
+    /// Applies non-overlapping replacement edits to source text.
+    /// </summary>
+    /// <param name="source">The source text to edit.</param>
+    /// <param name="edits">The replacement edits to apply.</param>
+    /// <returns>The edited source text.</returns>
     public static string ApplyEdits(string source, IEnumerable<SourceFormattingEdit> edits)
     {
         var orderedEdits = edits
@@ -122,15 +164,28 @@ internal static class SourceFormatting
     }
 }
 
+/// <summary>
+/// Formats VBA source text for casing and indentation while preserving semantics.
+/// </summary>
 internal sealed class VbaSourceFormatter
 {
     private readonly VbaSemanticResolution semanticResolution;
 
+    /// <summary>
+    /// Creates a source formatter.
+    /// </summary>
+    /// <param name="semanticResolution">The semantic resolver used for canonical casing decisions.</param>
     public VbaSourceFormatter(VbaSemanticResolution semanticResolution)
     {
         this.semanticResolution = semanticResolution;
     }
 
+    /// <summary>
+    /// Formats a source document and returns a whole-document replacement edit when needed.
+    /// </summary>
+    /// <param name="document">The source document to format.</param>
+    /// <param name="tabSize">The number of spaces per indentation level.</param>
+    /// <returns>The formatting edit, or null when no changes are required.</returns>
     public VbaTextEdit? FormatDocument(VbaSourceDocument document, int tabSize)
     {
         var formattedText = FormatText(document, Math.Max(1, tabSize));

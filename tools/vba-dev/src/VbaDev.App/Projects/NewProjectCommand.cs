@@ -6,12 +6,21 @@ using VbaDev.Domain;
 
 namespace VbaDev.App.Projects;
 
+/// <summary>
+/// Creates a new Excel workbook-backed VBA project with default source, bin, and publish layout.
+/// </summary>
 public sealed class NewProjectCommand
 {
     private readonly IProjectManifestStore manifestStore;
     private readonly IInitialWorkbookCreator initialWorkbookCreator;
     private readonly CommonModulesManifestReader commonModulesManifestReader;
 
+    /// <summary>
+    /// Creates the new-project command.
+    /// </summary>
+    /// <param name="manifestStore">The store used to write the initial project manifest.</param>
+    /// <param name="initialWorkbookCreator">The workbook creator used to generate the source template workbook.</param>
+    /// <param name="commonModulesManifestReader">The reader used to discover initial CommonModules files.</param>
     public NewProjectCommand(
         IProjectManifestStore manifestStore,
         IInitialWorkbookCreator initialWorkbookCreator,
@@ -22,6 +31,11 @@ public sealed class NewProjectCommand
         this.commonModulesManifestReader = commonModulesManifestReader;
     }
 
+    /// <summary>
+    /// Creates the project directory, source template workbook, initial CommonModules files, and project manifest.
+    /// </summary>
+    /// <param name="request">The new-project command input.</param>
+    /// <returns>The command result describing created project state or validation errors.</returns>
     public CommandResult Run(NewProjectCommandRequest request)
     {
         var projectRoot = ResolveProjectRoot(request);

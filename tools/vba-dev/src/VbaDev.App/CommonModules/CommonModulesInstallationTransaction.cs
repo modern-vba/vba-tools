@@ -6,6 +6,9 @@ using VbaDev.Domain;
 
 namespace VbaDev.App.CommonModules;
 
+/// <summary>
+/// Applies CommonModules source file copies and manifest updates as a recoverable project transaction.
+/// </summary>
 public sealed class CommonModulesInstallationTransaction
 {
     private const string CommonModulesDirectoryName = "common-modules";
@@ -21,6 +24,11 @@ public sealed class CommonModulesInstallationTransaction
     private readonly CommonModulesManifestReader manifestReader;
     private readonly IProjectManifestStore manifestStore;
 
+    /// <summary>
+    /// Creates a transaction coordinator for CommonModules installation operations.
+    /// </summary>
+    /// <param name="manifestReader">The manifest reader for the configured CommonModulesRepository.</param>
+    /// <param name="manifestStore">The project manifest store used to persist installed entries.</param>
     public CommonModulesInstallationTransaction(
         CommonModulesManifestReader manifestReader,
         IProjectManifestStore manifestStore)
@@ -29,6 +37,13 @@ public sealed class CommonModulesInstallationTransaction
         this.manifestStore = manifestStore;
     }
 
+    /// <summary>
+    /// Adds requested CommonModules entries to one document source set and records them in the manifest.
+    /// </summary>
+    /// <param name="context">The resolved project and document context to update.</param>
+    /// <param name="requestedModules">The requested module names or file names.</param>
+    /// <param name="force">Whether existing target source files may be overwritten.</param>
+    /// <returns>A human-readable summary of copied files.</returns>
     public string Add(ResolvedProjectContext context, IReadOnlyList<string> requestedModules, bool force)
     {
         var normalizedRequestedModules = requestedModules
@@ -70,6 +85,11 @@ public sealed class CommonModulesInstallationTransaction
             : copied;
     }
 
+    /// <summary>
+    /// Refreshes all installed CommonModules source files in a project from the configured repository.
+    /// </summary>
+    /// <param name="project">The resolved project whose installed CommonModules entries should be updated.</param>
+    /// <returns>A human-readable summary of updated files.</returns>
     public string Update(ResolvedProject project)
     {
         var repositoryPath = GetRepositoryPath(project);

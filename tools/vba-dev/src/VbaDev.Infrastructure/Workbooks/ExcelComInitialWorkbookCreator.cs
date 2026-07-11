@@ -2,10 +2,18 @@ using VbaDev.App.Workbooks;
 
 namespace VbaDev.Infrastructure.Workbooks;
 
+/// <summary>
+/// Creates initial macro-enabled workbooks through Excel COM.
+/// </summary>
 public sealed class ExcelComInitialWorkbookCreator : IInitialWorkbookCreator
 {
     private const int XlOpenXmlWorkbookMacroEnabled = 52;
 
+    /// <summary>
+    /// Creates a new .xlsm workbook and returns the default reference descriptions present in its VBA project.
+    /// </summary>
+    /// <param name="workbookPath">The workbook path to create.</param>
+    /// <returns>The default VBA project reference descriptions.</returns>
     public IReadOnlyList<string> CreateInitialWorkbook(string workbookPath)
     {
         if (!OperatingSystem.IsWindows())
