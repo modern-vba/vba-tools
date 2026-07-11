@@ -24,11 +24,13 @@ public sealed record VbaProjectSnapshot(
 /// <param name="Text">The latest document text.</param>
 /// <param name="SyntaxTree">The latest parsed syntax tree.</param>
 /// <param name="LastParseUpdateKind">The last parse update granularity.</param>
+/// <param name="SourceDocument">The projected source document, when already available.</param>
 public sealed record VbaTrackedDocument(
     string Uri,
     string Text,
     VbaSyntaxTree SyntaxTree,
-    VbaSyntaxTreeParseUpdateKind LastParseUpdateKind);
+    VbaSyntaxTreeParseUpdateKind LastParseUpdateKind,
+    VbaSourceDocument? SourceDocument = null);
 
 /// <summary>
 /// Maintains open document text and creates project snapshots for language-server features.
@@ -39,6 +41,7 @@ public sealed class VbaLanguageWorkspace
     private readonly Dictionary<string, VbaTrackedDocument> documents = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> excludedSourceUris = new(StringComparer.OrdinalIgnoreCase);
     private readonly VbaProjectReferenceCatalogCache referenceCatalogCache;
+    private readonly VbaProjectSourceDocumentCache diskDocumentCache = new();
 
     /// <summary>
     /// Creates a language workspace.
@@ -71,7 +74,8 @@ public sealed class VbaLanguageWorkspace
                 uri,
                 text,
                 parseResult.SyntaxTree,
-                parseResult.UpdateKind);
+                parseResult.UpdateKind,
+                VbaSourceIndex.CreateDocument(uri, parseResult.SyntaxTree));
             return parseResult.UpdateKind;
         }
     }
@@ -158,6 +162,7 @@ public sealed class VbaLanguageWorkspace
             resolution,
             documentSnapshot,
             excludedSnapshot,
+            diskDocumentCache,
             cancellationToken);
 
         if (!scopedTrackedDocuments.ContainsKey(activeUri)
@@ -168,13 +173,16 @@ public sealed class VbaLanguageWorkspace
 
         var scopedDocuments = scopedTrackedDocuments
             .ToDictionary(pair => pair.Key, pair => pair.Value.Text, StringComparer.OrdinalIgnoreCase);
-        var scopedSyntaxTrees = scopedTrackedDocuments
-            .ToDictionary(pair => pair.Key, pair => pair.Value.SyntaxTree, StringComparer.OrdinalIgnoreCase);
+        var scopedSourceDocuments = scopedTrackedDocuments
+            .ToDictionary(
+                pair => pair.Key,
+                pair => pair.Value.SourceDocument ?? VbaSourceIndex.CreateDocument(pair.Value.Uri, pair.Value.SyntaxTree),
+                StringComparer.OrdinalIgnoreCase);
         var manifestContext = LanguageServerManifestResolution.Create(
             resolution,
             referenceCatalogCache.Current);
-        var sourceIndex = VbaSourceIndex.BuildFromSyntaxTrees(
-            scopedSyntaxTrees,
+        var sourceIndex = VbaSourceIndex.BuildFromSourceDocuments(
+            scopedSourceDocuments,
             manifestContext.ReferenceSelection,
             referenceCatalogCache.Current);
 

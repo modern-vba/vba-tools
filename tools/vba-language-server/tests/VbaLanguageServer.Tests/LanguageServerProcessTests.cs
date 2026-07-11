@@ -42,7 +42,7 @@ public sealed class LanguageServerProcessTests
         var capabilities = initialize
             .GetProperty("result")
             .GetProperty("capabilities");
-        Assert.Equal(2, capabilities.GetProperty("textDocumentSync").GetInt32());
+        Assert.Equal(1, capabilities.GetProperty("textDocumentSync").GetInt32());
         Assert.True(capabilities.TryGetProperty("completionProvider", out _));
         Assert.True(capabilities.GetProperty("referencesProvider").GetBoolean());
         Assert.True(capabilities.GetProperty("workspaceSymbolProvider").GetBoolean());
@@ -664,6 +664,144 @@ public sealed class LanguageServerProcessTests
         Assert.DoesNotContain("currentValue", outsideLabels);
 
         await SendRequestAsync(stdin, stdout, 4, "shutdown", null);
+        await SendNotificationAsync(stdin, "exit", null);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await process.WaitForExitAsync(cancellation.Token);
+        Assert.Equal(0, process.ExitCode);
+    }
+
+    [Fact]
+    public async Task Server_returns_member_completion_without_language_vocabulary()
+    {
+        var serverProjectPath = Path.GetFullPath(
+            Path.Combine(
+                AppContext.BaseDirectory,
+                "..",
+                "..",
+                "..",
+                "..",
+                "..",
+                "src",
+                "VbaLanguageServer.Cli",
+                "VbaLanguageServer.Cli.csproj"));
+
+        using var process = StartLanguageServer(serverProjectPath);
+        await using var stdin = process.StandardInput.BaseStream;
+        using var stdout = process.StandardOutput.BaseStream;
+
+        await InitializeAsync(stdin, stdout);
+        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument("file:///C:/work/WorksheetRangeBounds.cls", string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"WorksheetRangeBounds\"",
+            "Public Property Get Column() As Long",
+            "End Property",
+            "Public Property Get ColumnCount() As Long",
+            "End Property"
+        ])));
+        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument("file:///C:/work/Helper.bas", string.Join('\n', [
+            "Attribute VB_Name = \"Helper\"",
+            "Public Function BuildValue() As String",
+            "End Function"
+        ])));
+        var workerText = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Option Explicit",
+            "Public Sub Run()",
+            "    Dim bare As ",
+            "    Dim typed As WorksheetRan",
+            "    Dim range_obj As WorksheetRangeBounds",
+            "    range_obj.",
+            "    range_obj.Col",
+            "End Sub"
+        ]);
+        const string workerUri = "file:///C:/work/Worker.bas";
+        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(workerUri, workerText));
+
+        var dotCompletion = await SendRequestAsync(
+            stdin,
+            stdout,
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new { line = 6, character = "    range_obj.".Length }
+            });
+        var dotLabels = dotCompletion
+            .GetProperty("result")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("label").GetString())
+            .ToArray();
+        Assert.Contains("Column", dotLabels);
+        Assert.Contains("ColumnCount", dotLabels);
+        Assert.DoesNotContain("Alias", dotLabels);
+        Assert.DoesNotContain("Dim", dotLabels);
+        Assert.DoesNotContain("BuildValue", dotLabels);
+
+        var partialCompletion = await SendRequestAsync(
+            stdin,
+            stdout,
+            3,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new { line = 7, character = "    range_obj.Col".Length }
+            });
+        var partialLabels = partialCompletion
+            .GetProperty("result")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("label").GetString())
+            .ToArray();
+        Assert.Contains("Column", partialLabels);
+        Assert.Contains("ColumnCount", partialLabels);
+        Assert.DoesNotContain("Alias", partialLabels);
+        Assert.DoesNotContain("Dim", partialLabels);
+        Assert.DoesNotContain("BuildValue", partialLabels);
+
+        var bareTypeCompletion = await SendRequestAsync(
+            stdin,
+            stdout,
+            4,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new { line = 3, character = "    Dim bare As ".Length }
+            });
+        var bareTypeLabels = bareTypeCompletion
+            .GetProperty("result")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("label").GetString())
+            .ToArray();
+        Assert.Contains("WorksheetRangeBounds", bareTypeLabels);
+        Assert.Contains("String", bareTypeLabels);
+        Assert.DoesNotContain("Alias", bareTypeLabels);
+        Assert.DoesNotContain("Sub", bareTypeLabels);
+        Assert.DoesNotContain("Then", bareTypeLabels);
+
+        var typeCompletion = await SendRequestAsync(
+            stdin,
+            stdout,
+            5,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new { line = 4, character = "    Dim typed As WorksheetRan".Length }
+            });
+        var typeLabels = typeCompletion
+            .GetProperty("result")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("label").GetString())
+            .ToArray();
+        Assert.Contains("WorksheetRangeBounds", typeLabels);
+        Assert.Contains("String", typeLabels);
+        Assert.DoesNotContain("Alias", typeLabels);
+        Assert.DoesNotContain("Sub", typeLabels);
+        Assert.DoesNotContain("Then", typeLabels);
+
+        await SendRequestAsync(stdin, stdout, 6, "shutdown", null);
         await SendNotificationAsync(stdin, "exit", null);
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await process.WaitForExitAsync(cancellation.Token);

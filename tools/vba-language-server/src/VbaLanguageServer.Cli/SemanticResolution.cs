@@ -40,15 +40,33 @@ internal sealed class VbaSemanticResolution
     /// <param name="character">The zero-based character.</param>
     /// <returns>The completion candidate definitions.</returns>
     public IReadOnlyList<VbaSourceDefinition> GetCompletionDefinitions(string uri, int line, int character)
+        => GetCompletionResult(uri, line, character).Definitions;
+
+    /// <summary>
+    /// Gets completion definitions and vocabulary eligibility for a source position.
+    /// </summary>
+    /// <param name="uri">The document URI.</param>
+    /// <param name="line">The zero-based line.</param>
+    /// <param name="character">The zero-based character.</param>
+    /// <returns>The completion result for the position.</returns>
+    public VbaCompletionResult GetCompletionResult(string uri, int line, int character)
     {
         var currentDocument = documents.FirstOrDefault(document => SameUri(document.Uri, uri));
         if (currentDocument is not null
             && TryGetMemberCompletionDefinitions(currentDocument, line, character, out var memberDefinitions))
         {
-            return memberDefinitions;
+            return new VbaCompletionResult(memberDefinitions, VbaCompletionVocabularyKind.None);
         }
 
-        return nameResolution.GetCompletionDefinitions(uri, new VbaPosition(line, character));
+        if (currentDocument is not null
+            && TryGetTypeCompletionDefinitions(currentDocument, line, character, out var typeDefinitions))
+        {
+            return new VbaCompletionResult(typeDefinitions, VbaCompletionVocabularyKind.TypeName);
+        }
+
+        return new VbaCompletionResult(
+            nameResolution.GetCompletionDefinitions(uri, new VbaPosition(line, character)),
+            VbaCompletionVocabularyKind.Keyword);
     }
 
     /// <summary>
@@ -220,6 +238,35 @@ internal sealed class VbaSemanticResolution
         }
 
         definitions = GetMembersOfType(receiverType);
+        return true;
+    }
+
+    private bool TryGetTypeCompletionDefinitions(
+        VbaSourceDocument currentDocument,
+        int line,
+        int character,
+        out IReadOnlyList<VbaSourceDefinition> definitions)
+    {
+        definitions = [];
+        var lines = VbaSourceText.SplitLines(currentDocument.Text);
+        if (line < 0 || line >= lines.Length)
+        {
+            return false;
+        }
+
+        var logicalPrefix = VbaSourceText.GetLogicalPrefix(lines, line, character);
+        if (!IsTypeAnnotationCompletionPrefix(logicalPrefix))
+        {
+            return false;
+        }
+
+        definitions = GetVisibleTypeDefinitions(currentDocument)
+            .GroupBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(group => ResolveSourceTypeCompletionGroup(group.ToArray()))
+            .Where(definition => definition is not null)
+            .Select(definition => definition!)
+            .OrderBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
         return true;
     }
 
@@ -565,6 +612,30 @@ internal sealed class VbaSemanticResolution
             .Where(IsReferenceTarget);
     }
 
+    private IEnumerable<VbaSourceDefinition> GetVisibleTypeDefinitions(VbaSourceDocument currentDocument)
+    {
+        foreach (var definition in currentDocument.Definitions.Where(IsTypeDefinition))
+        {
+            yield return definition;
+        }
+
+        foreach (var definition in documents
+            .Where(document => !SameUri(document.Uri, currentDocument.Uri))
+            .SelectMany(document => document.Definitions)
+            .Where(IsTypeDefinition)
+            .Where(definition => definition.Visibility == VbaSourceDefinitionVisibility.Public))
+        {
+            yield return definition;
+        }
+
+        foreach (var definition in GetActiveReferenceDefinitions()
+            .Where(IsTypeDefinition)
+            .Where(definition => definition.ParentTypeName is null))
+        {
+            yield return definition;
+        }
+    }
+
     private ResolvedType? ResolveReferenceType(string qualifier, string typeName)
     {
         if (referenceSelection is null)
@@ -590,6 +661,24 @@ internal sealed class VbaSemanticResolution
             .Where(definition => qualifier is null || SameName(definition.ModuleName, qualifier))
             .ToArray();
         return candidates.Length == 1 ? ToResolvedType(candidates[0]) : null;
+    }
+
+    private VbaSourceDefinition? ResolveSourceTypeCompletionGroup(IReadOnlyList<VbaSourceDefinition> candidates)
+    {
+        var sourceCandidates = candidates
+            .Where(definition => !VbaProjectReferenceCatalogSet.IsExternalDefinition(definition))
+            .ToArray();
+        if (sourceCandidates.Length == 1)
+        {
+            return sourceCandidates[0];
+        }
+
+        if (sourceCandidates.Length > 1)
+        {
+            return null;
+        }
+
+        return ResolveReferenceCandidates(candidates);
     }
 
     private VbaSourceDefinition? ResolveReferenceCandidates(IReadOnlyList<VbaSourceDefinition> candidates)
@@ -733,6 +822,15 @@ internal sealed class VbaSemanticResolution
     {
         receiverExpression = "";
         var trimmed = logicalPrefix.TrimEnd();
+        var partialMatch = Regex.Match(
+            trimmed,
+            "[A-Za-z_][A-Za-z0-9_]*$",
+            RegexOptions.CultureInvariant);
+        if (partialMatch.Success)
+        {
+            trimmed = trimmed[..partialMatch.Index].TrimEnd();
+        }
+
         if (!trimmed.EndsWith(".", StringComparison.Ordinal))
         {
             return false;
@@ -756,6 +854,14 @@ internal sealed class VbaSemanticResolution
 
         receiverExpression = match.Groups["expression"].Value;
         return true;
+    }
+
+    private static bool IsTypeAnnotationCompletionPrefix(string logicalPrefix)
+    {
+        return Regex.IsMatch(
+            logicalPrefix,
+            "\\bAs\\s+(?:(?:[A-Za-z_][A-Za-z0-9_]*)\\s*\\.\\s*)?[A-Za-z_][A-Za-z0-9_]*$|\\bAs\\s*$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     }
 
     private static bool TrySplitMemberExpression(

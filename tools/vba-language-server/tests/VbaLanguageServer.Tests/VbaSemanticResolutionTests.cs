@@ -124,6 +124,71 @@ public sealed class VbaSemanticResolutionTests
     }
 
     [Fact]
+    public void MemberAndTypeCompletionUseSourceTypeContext()
+    {
+        const string workerUri = "file:///C:/work/Worker.bas";
+        const string rangeBoundsUri = "file:///C:/work/WorksheetRangeBounds.cls";
+        const string helperUri = "file:///C:/work/Helper.bas";
+        var workerText = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Option Explicit",
+            "Public Sub Run()",
+            "    Dim bare As ",
+            "    Dim typed As WorksheetRan",
+            "    Dim range_obj As WorksheetRangeBounds",
+            "    range_obj.",
+            "    range_obj.Col",
+            "End Sub"
+        ]);
+        var rangeBoundsText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"WorksheetRangeBounds\"",
+            "Public Property Get Column() As Long",
+            "End Property",
+            "Public Property Get ColumnCount() As Long",
+            "End Property"
+        ]);
+        var helperText = string.Join('\n', [
+            "Attribute VB_Name = \"Helper\"",
+            "Public Function BuildValue() As String",
+            "End Function"
+        ]);
+        var index = BuildIndex(
+            new Dictionary<string, string>
+            {
+                [workerUri] = workerText,
+                [rangeBoundsUri] = rangeBoundsText,
+                [helperUri] = helperText
+            });
+
+        var dotCompletion = index.GetCompletionResult(workerUri, 6, "    range_obj.".Length);
+        var dotLabels = dotCompletion.Definitions.Select(definition => definition.Name).ToArray();
+        Assert.Equal(VbaCompletionVocabularyKind.None, dotCompletion.VocabularyKind);
+        Assert.Contains("Column", dotLabels);
+        Assert.Contains("ColumnCount", dotLabels);
+        Assert.DoesNotContain("BuildValue", dotLabels);
+
+        var partialCompletion = index.GetCompletionResult(workerUri, 7, "    range_obj.Col".Length);
+        var partialLabels = partialCompletion.Definitions.Select(definition => definition.Name).ToArray();
+        Assert.Equal(VbaCompletionVocabularyKind.None, partialCompletion.VocabularyKind);
+        Assert.Contains("Column", partialLabels);
+        Assert.Contains("ColumnCount", partialLabels);
+        Assert.DoesNotContain("BuildValue", partialLabels);
+
+        var bareTypeCompletion = index.GetCompletionResult(workerUri, 3, "    Dim bare As ".Length);
+        Assert.Equal(VbaCompletionVocabularyKind.TypeName, bareTypeCompletion.VocabularyKind);
+        Assert.Contains(
+            bareTypeCompletion.Definitions,
+            definition => definition.Name == "WorksheetRangeBounds" && definition.Kind == VbaSourceDefinitionKind.Class);
+
+        var typeCompletion = index.GetCompletionResult(workerUri, 4, "    Dim typed As WorksheetRan".Length);
+        Assert.Equal(VbaCompletionVocabularyKind.TypeName, typeCompletion.VocabularyKind);
+        Assert.Contains(
+            typeCompletion.Definitions,
+            definition => definition.Name == "WorksheetRangeBounds" && definition.Kind == VbaSourceDefinitionKind.Class);
+    }
+
+    [Fact]
     public void SignatureHelpUsesActiveNamedArgumentWhenParameterNameMatches()
     {
         const string uri = "file:///C:/work/Worker.bas";

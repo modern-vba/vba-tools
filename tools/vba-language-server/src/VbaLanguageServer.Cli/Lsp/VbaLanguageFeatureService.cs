@@ -32,7 +32,7 @@ internal sealed class VbaLanguageFeatureService
         {
             capabilities = new
             {
-                textDocumentSync = 2,
+                textDocumentSync = 1,
                 definitionProvider = true,
                 referencesProvider = true,
                 documentSymbolProvider = true,
@@ -218,21 +218,22 @@ internal sealed class VbaLanguageFeatureService
         }
 
         var snapshot = workspace.CreateProjectSnapshot(uri, cancellationToken);
-        var sourceItems = snapshot.SourceIndex
-            .GetCompletionDefinitions(uri, line, character)
+        var completion = snapshot.SourceIndex.GetCompletionResult(uri, line, character);
+        var sourceItems = completion
+            .Definitions
             .Select(definition => new
             {
                 label = definition.Name,
                 kind = GetCompletionKind(definition.Kind)
             });
-        var vocabularyItems = VbaSourceIndex.LanguageVocabulary.Select(label => new
+        var vocabularyItems = GetCompletionVocabulary(completion.VocabularyKind).Select(label => new
         {
             label,
             kind = 14
         });
 
-        return sourceItems
-            .Concat(vocabularyItems)
+        var items = sourceItems.Concat(vocabularyItems);
+        return items
             .GroupBy(item => item.label, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.First())
             .OrderBy(item => item.label, StringComparer.OrdinalIgnoreCase)
@@ -447,6 +448,14 @@ internal sealed class VbaLanguageFeatureService
                 kind = "markdown",
                 value
             };
+
+    private static IReadOnlyList<string> GetCompletionVocabulary(VbaCompletionVocabularyKind vocabularyKind)
+        => vocabularyKind switch
+        {
+            VbaCompletionVocabularyKind.Keyword => VbaSourceIndex.LanguageVocabulary,
+            VbaCompletionVocabularyKind.TypeName => VbaSourceIndex.TypeVocabulary,
+            _ => []
+        };
 
     private static int GetSymbolKind(VbaSourceDefinitionKind kind)
         => kind switch

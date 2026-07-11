@@ -161,6 +161,36 @@ public sealed record VbaCallableSignature(
 public sealed record VbaSignatureHelp(VbaCallableSignature Signature, int ActiveParameter);
 
 /// <summary>
+/// Identifies which fixed VBA vocabulary set can be appended to completion definitions.
+/// </summary>
+public enum VbaCompletionVocabularyKind
+{
+    /// <summary>
+    /// No fixed VBA vocabulary is valid in the completion context.
+    /// </summary>
+    None,
+
+    /// <summary>
+    /// Fixed VBA type names are valid in the completion context.
+    /// </summary>
+    TypeName,
+
+    /// <summary>
+    /// General fixed VBA language keywords are valid in the completion context.
+    /// </summary>
+    Keyword
+}
+
+/// <summary>
+/// Represents completion definitions and the fixed language vocabulary that should be added.
+/// </summary>
+/// <param name="Definitions">The completion candidate definitions.</param>
+/// <param name="VocabularyKind">The fixed VBA vocabulary set valid in this completion context.</param>
+public sealed record VbaCompletionResult(
+    IReadOnlyList<VbaSourceDefinition> Definitions,
+    VbaCompletionVocabularyKind VocabularyKind);
+
+/// <summary>
 /// Represents one parsed source document in the source index.
 /// </summary>
 /// <param name="Uri">The document URI.</param>
@@ -261,6 +291,11 @@ public sealed class VbaSourceIndex
     /// </summary>
     public static readonly IReadOnlyList<string> LanguageVocabulary = VbaLanguageVocabulary.Keywords;
 
+    /// <summary>
+    /// Gets the fixed VBA type names used by type annotation completion.
+    /// </summary>
+    public static readonly IReadOnlyList<string> TypeVocabulary = VbaLanguageVocabulary.TypeNames;
+
     private readonly IReadOnlyList<VbaSourceDocument> documents;
     private readonly VbaSemanticResolution semanticResolution;
     private readonly VbaSourceFormatter sourceFormatter;
@@ -313,6 +348,24 @@ public sealed class VbaSourceIndex
             .ToArray();
         return new VbaSourceIndex(
             parsedDocuments,
+            referenceSelection,
+            referenceCatalogs ?? VbaProjectReferenceCatalogSet.Empty);
+    }
+
+    /// <summary>
+    /// Builds a source index from already parsed and projected source documents.
+    /// </summary>
+    /// <param name="sourceDocuments">The projected source documents keyed by document URI.</param>
+    /// <param name="referenceSelection">The active VBA project reference selection.</param>
+    /// <param name="referenceCatalogs">The available reference catalogs.</param>
+    /// <returns>The built source index.</returns>
+    public static VbaSourceIndex BuildFromSourceDocuments(
+        IReadOnlyDictionary<string, VbaSourceDocument> sourceDocuments,
+        VbaProjectReferenceSelection? referenceSelection = null,
+        VbaProjectReferenceCatalogSet? referenceCatalogs = null)
+    {
+        return new VbaSourceIndex(
+            sourceDocuments.Values.ToArray(),
             referenceSelection,
             referenceCatalogs ?? VbaProjectReferenceCatalogSet.Empty);
     }
@@ -426,7 +479,17 @@ public sealed class VbaSourceIndex
     /// <param name="character">The zero-based character.</param>
     /// <returns>The completion candidate definitions.</returns>
     public IReadOnlyList<VbaSourceDefinition> GetCompletionDefinitions(string uri, int line, int character)
-        => semanticResolution.GetCompletionDefinitions(uri, line, character);
+        => GetCompletionResult(uri, line, character).Definitions;
+
+    /// <summary>
+    /// Gets completion definitions and context metadata for a document position.
+    /// </summary>
+    /// <param name="uri">The document URI.</param>
+    /// <param name="line">The zero-based line.</param>
+    /// <param name="character">The zero-based character.</param>
+    /// <returns>The completion result for the position.</returns>
+    public VbaCompletionResult GetCompletionResult(string uri, int line, int character)
+        => semanticResolution.GetCompletionResult(uri, line, character);
 
     /// <summary>
     /// Resolves the definition location for the reference at a document position.
@@ -542,7 +605,7 @@ public sealed class VbaSourceIndex
         return CreateDocument(uri, syntaxTree);
     }
 
-    private static VbaSourceDocument CreateDocument(string uri, VbaSyntaxTree syntaxTree)
+    internal static VbaSourceDocument CreateDocument(string uri, VbaSyntaxTree syntaxTree)
     {
         var definitions = new List<VbaSourceDefinition>();
         var moduleDefinition = CreateModuleDefinition(uri, syntaxTree.Module);

@@ -151,6 +151,62 @@ public sealed class VbaLanguageWorkspaceTests
     }
 
     [Fact]
+    public void ProjectSnapshotIncludesDiskSourceFilesForEncodedWindowsDriveUris()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-encoded-uri-").FullName;
+        try
+        {
+            WriteProjectManifest(projectRoot);
+            var helperPath = Path.Combine(projectRoot, "src", "Book1", "Helper.bas");
+            var callerPath = Path.Combine(projectRoot, "src", "Book1", "Caller.bas");
+            File.WriteAllText(
+                helperPath,
+                string.Join('\n', [
+                    "Attribute VB_Name = \"Helper\"",
+                    "Public Function BuildValue() As String",
+                    "End Function"
+                ]));
+            File.WriteAllText(
+                callerPath,
+                string.Join('\n', [
+                    "Attribute VB_Name = \"Caller\"",
+                    "Public Sub OldRun()",
+                    "End Sub"
+                ]));
+
+            var callerUri = ToEncodedDriveFileUri(callerPath);
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.CreateBundled()));
+            workspace.UpdateDocument(callerUri, string.Join('\n', [
+                "Attribute VB_Name = \"Caller\"",
+                "Public Sub Run()",
+                "    BuildValue",
+                "End Sub"
+            ]));
+
+            var snapshot = workspace.CreateProjectSnapshot(callerUri);
+            var definition = snapshot.SourceIndex.ResolveDefinition(
+                callerUri,
+                line: 2,
+                character: "    ".Length);
+            var callerDocumentCount = snapshot.SourceDocuments.Keys
+                .Select(VbaProjectResolver.TryGetLocalPath)
+                .Count(path => path is not null
+                    && string.Equals(path, Path.GetFullPath(callerPath), StringComparison.OrdinalIgnoreCase));
+
+            Assert.Equal(VbaProjectResolutionKind.ManifestDocument, snapshot.Resolution.Kind);
+            Assert.Equal("Book1", snapshot.Resolution.DocumentName);
+            Assert.NotNull(definition);
+            Assert.EndsWith("Helper.bas", VbaProjectResolver.TryGetLocalPath(definition.Uri), StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(1, callerDocumentCount);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void ProjectSnapshotInvalidatesRemovedAndRenamedSourceDocuments()
     {
         const string callerUri = "file:///C:/work/Caller.bas";
@@ -372,4 +428,12 @@ public sealed class VbaLanguageWorkspaceTests
 
     private static string ToFileUri(string path)
         => new Uri(path).AbsoluteUri;
+
+    private static string ToEncodedDriveFileUri(string path)
+    {
+        var fullPath = Path.GetFullPath(path).Replace(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return fullPath.Length >= 2 && fullPath[1] == Path.VolumeSeparatorChar
+            ? $"file:///{char.ToLowerInvariant(fullPath[0])}%3A{fullPath[2..]}"
+            : new Uri(path).AbsoluteUri;
+    }
 }

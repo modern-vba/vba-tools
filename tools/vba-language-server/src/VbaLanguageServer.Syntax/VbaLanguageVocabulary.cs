@@ -16,11 +16,13 @@ public static class VbaLanguageVocabulary
             ["as"] = "As",
             ["attribute"] = "Attribute",
             ["boolean"] = "Boolean",
+            ["byte"] = "Byte",
             ["byref"] = "ByRef",
             ["byval"] = "ByVal",
             ["call"] = "Call",
             ["case"] = "Case",
             ["const"] = "Const",
+            ["currency"] = "Currency",
             ["date"] = "Date",
             ["declare"] = "Declare",
             ["dim"] = "Dim",
@@ -45,6 +47,8 @@ public static class VbaLanguageVocabulary
             ["let"] = "Let",
             ["lib"] = "Lib",
             ["long"] = "Long",
+            ["longlong"] = "LongLong",
+            ["longptr"] = "LongPtr",
             ["loop"] = "Loop",
             ["new"] = "New",
             ["next"] = "Next",
@@ -82,6 +86,26 @@ public static class VbaLanguageVocabulary
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(keyword => keyword, StringComparer.OrdinalIgnoreCase)
             .ToArray();
+
+    /// <summary>
+    /// Gets fixed VBA type names that are valid in type annotation completions.
+    /// </summary>
+    public static readonly IReadOnlyList<string> TypeNames =
+    [
+        "Boolean",
+        "Byte",
+        "Currency",
+        "Date",
+        "Double",
+        "Integer",
+        "Long",
+        "LongLong",
+        "LongPtr",
+        "Object",
+        "Single",
+        "String",
+        "Variant"
+    ];
 
     /// <summary>
     /// Determines whether a value is known fixed VBA language vocabulary.

@@ -116,7 +116,19 @@ public static class VbaProjectResolver
         try
         {
             var parsed = new Uri(uri);
-            return parsed.IsFile ? Path.GetFullPath(parsed.LocalPath) : null;
+            if (!parsed.IsFile)
+            {
+                return null;
+            }
+
+            if (TryGetFullPath(parsed.LocalPath, out var localPath))
+            {
+                return localPath;
+            }
+
+            var absolutePath = Uri.UnescapeDataString(parsed.AbsolutePath);
+            var candidatePath = NormalizeFileAbsolutePath(absolutePath);
+            return TryGetFullPath(candidatePath, out localPath) ? localPath : null;
         }
         catch (UriFormatException)
         {
@@ -160,4 +172,42 @@ public static class VbaProjectResolver
 
     private static string TrimTrailingSeparator(string path)
         => path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+    private static string NormalizeFileAbsolutePath(string path)
+    {
+        var normalized = path.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
+        if (normalized.Length >= 3
+            && IsDirectorySeparator(normalized[0])
+            && char.IsLetter(normalized[1])
+            && normalized[2] == Path.VolumeSeparatorChar)
+        {
+            return normalized[1..];
+        }
+
+        return normalized;
+    }
+
+    private static bool TryGetFullPath(string path, out string fullPath)
+    {
+        try
+        {
+            fullPath = Path.GetFullPath(NormalizeFileAbsolutePath(path));
+            return true;
+        }
+        catch (ArgumentException)
+        {
+        }
+        catch (NotSupportedException)
+        {
+        }
+        catch (PathTooLongException)
+        {
+        }
+
+        fullPath = "";
+        return false;
+    }
+
+    private static bool IsDirectorySeparator(char value)
+        => value == Path.DirectorySeparatorChar || value == Path.AltDirectorySeparatorChar;
 }

@@ -1,4 +1,5 @@
 using VbaLanguageServer.ProjectModel;
+using VbaLanguageServer.SourceModel;
 using VbaLanguageServer.Syntax;
 
 namespace VbaLanguageServer.Workspace;
@@ -16,47 +17,57 @@ internal static class VbaProjectSourceInventory
     /// <param name="resolution">The project boundary resolution.</param>
     /// <param name="trackedDocuments">The current in-memory tracked documents.</param>
     /// <param name="excludedUris">Source URIs that should not be loaded from disk.</param>
+    /// <param name="diskDocumentCache">The cache used for disk-loaded source documents.</param>
     /// <param name="cancellationToken">A cancellation token for inventory work.</param>
     /// <returns>The tracked documents that belong to the resolved project scope.</returns>
     public static Dictionary<string, VbaTrackedDocument> CreateSnapshot(
         VbaProjectResolution resolution,
         IReadOnlyDictionary<string, VbaTrackedDocument> trackedDocuments,
         IReadOnlySet<string> excludedUris,
+        VbaProjectSourceDocumentCache? diskDocumentCache = null,
         CancellationToken cancellationToken = default)
     {
         var documents = new Dictionary<string, VbaTrackedDocument>(StringComparer.OrdinalIgnoreCase);
+        var excludedPaths = CreateLocalPathSet(excludedUris);
+        var trackedDocumentsByPath = CreateTrackedDocumentPathMap(trackedDocuments.Values);
         foreach (var uri in EnumerateSourceUris(resolution, cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (excludedUris.Contains(uri))
+            var localPath = VbaProjectResolver.TryGetLocalPath(uri);
+            if (localPath is null || excludedUris.Contains(uri) || excludedPaths.Contains(localPath))
             {
                 continue;
             }
 
             if (trackedDocuments.TryGetValue(uri, out var trackedDocument))
             {
-                documents[uri] = trackedDocument;
+                documents[trackedDocument.Uri] = trackedDocument;
                 continue;
             }
 
-            var localPath = VbaProjectResolver.TryGetLocalPath(uri);
-            if (localPath is null || !File.Exists(localPath))
+            if (trackedDocumentsByPath.TryGetValue(localPath, out trackedDocument))
+            {
+                documents[trackedDocument.Uri] = trackedDocument;
+                continue;
+            }
+
+            if (!File.Exists(localPath))
             {
                 continue;
             }
 
-            var text = File.ReadAllText(localPath);
-            documents[uri] = new VbaTrackedDocument(
-                uri,
-                text,
-                VbaSyntaxTree.ParseModule(uri, text),
-                VbaSyntaxTreeParseUpdateKind.FullModule);
+            documents[uri] = diskDocumentCache is null
+                ? LoadDocument(uri, localPath, cancellationToken)
+                : diskDocumentCache.GetOrLoadDocument(uri, localPath, cancellationToken);
         }
 
         foreach (var trackedDocument in trackedDocuments.Values)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!excludedUris.Contains(trackedDocument.Uri) && resolution.ContainsUri(trackedDocument.Uri))
+            var trackedPath = VbaProjectResolver.TryGetLocalPath(trackedDocument.Uri);
+            if (!excludedUris.Contains(trackedDocument.Uri)
+                && (trackedPath is null || !excludedPaths.Contains(trackedPath))
+                && resolution.ContainsUri(trackedDocument.Uri))
             {
                 documents[trackedDocument.Uri] = trackedDocument;
             }
@@ -86,5 +97,52 @@ internal static class VbaProjectSourceInventory
                 yield return new Uri(Path.GetFullPath(path)).AbsoluteUri;
             }
         }
+    }
+
+    private static VbaTrackedDocument LoadDocument(
+        string uri,
+        string localPath,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var text = File.ReadAllText(localPath);
+        var syntaxTree = VbaSyntaxTree.ParseModule(uri, text);
+        return new VbaTrackedDocument(
+            uri,
+            text,
+            syntaxTree,
+            VbaSyntaxTreeParseUpdateKind.FullModule,
+            VbaSourceIndex.CreateDocument(uri, syntaxTree));
+    }
+
+    private static HashSet<string> CreateLocalPathSet(IEnumerable<string> uris)
+    {
+        var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var uri in uris)
+        {
+            var localPath = VbaProjectResolver.TryGetLocalPath(uri);
+            if (localPath is not null)
+            {
+                paths.Add(localPath);
+            }
+        }
+
+        return paths;
+    }
+
+    private static Dictionary<string, VbaTrackedDocument> CreateTrackedDocumentPathMap(
+        IEnumerable<VbaTrackedDocument> trackedDocuments)
+    {
+        var map = new Dictionary<string, VbaTrackedDocument>(StringComparer.OrdinalIgnoreCase);
+        foreach (var trackedDocument in trackedDocuments)
+        {
+            var localPath = VbaProjectResolver.TryGetLocalPath(trackedDocument.Uri);
+            if (localPath is not null)
+            {
+                map[localPath] = trackedDocument;
+            }
+        }
+
+        return map;
     }
 }
