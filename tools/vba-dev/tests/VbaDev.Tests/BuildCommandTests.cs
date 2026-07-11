@@ -83,10 +83,12 @@ public sealed class BuildCommandTests
         CreateWorkbookSource(
             root,
             "Book1",
-            ("Zeta.cls", "VERSION 1.0 CLASS"),
-            ("Feature.bas", "Attribute VB_Name = \"Feature\""),
+            (Path.Combine("nested", "Zeta.cls"), "VERSION 1.0 CLASS"),
+            (Path.Combine("shared", "Feature.bas"), "Attribute VB_Name = \"Feature\""),
             ("Alpha.bas", "Attribute VB_Name = \"Alpha\""),
-            ("Base.bas", "Attribute VB_Name = \"Base\""));
+            (Path.Combine("shared", "Base.bas"), "Attribute VB_Name = \"Base\""),
+            (Path.Combine("forms", "Dialog.frm"), "VERSION 5.00"));
+        File.WriteAllBytes(Path.Combine(root, "src", "Book1", "forms", "Orphan.frx"), [1, 2, 3]);
         var automation = new FakeWorkbookBuildAutomation();
         var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookBuildAutomation: automation);
 
@@ -98,10 +100,34 @@ public sealed class BuildCommandTests
                 "import:Base.bas",
                 "import:Feature.bas",
                 "import:Alpha.bas",
+                "import:Dialog.frm",
                 "import:Zeta.cls",
                 "save"
             ],
             automation.Events);
+    }
+
+    [Fact]
+    public void BuildFailsBeforeSourceImportWhenNestedSourceNamesCollide()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        CreateWorkbookSource(
+            root,
+            "Book1",
+            (Path.Combine("feature", "Shared.bas"), "Attribute VB_Name = \"Shared\""),
+            (Path.Combine("legacy", "shared.bas"), "Attribute VB_Name = \"shared\""));
+        var automation = new FakeWorkbookBuildAutomation();
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookBuildAutomation: automation);
+
+        var result = application.Run(["build"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("Shared.bas", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(Path.Combine("feature", "Shared.bas"), result.StandardError, StringComparison.Ordinal);
+        Assert.Contains(Path.Combine("legacy", "shared.bas"), result.StandardError, StringComparison.Ordinal);
+        Assert.DoesNotContain("import:", automation.Events);
     }
 
     [Fact]
@@ -313,7 +339,9 @@ public sealed class BuildCommandTests
         File.WriteAllText(Path.Combine(sourceDirectory, $"{documentName}.xlsm"), $"template:{documentName}", Encoding.UTF8);
         foreach (var source in sources)
         {
-            File.WriteAllText(Path.Combine(sourceDirectory, source.FileName), source.Content, Encoding.UTF8);
+            var sourcePath = Path.Combine(sourceDirectory, source.FileName);
+            Directory.CreateDirectory(Path.GetDirectoryName(sourcePath)!);
+            File.WriteAllText(sourcePath, source.Content, Encoding.UTF8);
         }
     }
 }

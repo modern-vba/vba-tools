@@ -47,10 +47,15 @@ public sealed class WorkbookSourcePlanner
             throw new BuildCommandException($"Document source set was not found: {context.DocumentSourceSetPath}");
         }
 
-        var sourceFilesByName = Directory
-            .EnumerateFiles(context.DocumentSourceSetPath, "*", SearchOption.TopDirectoryOnly)
+        var discoveredSourceFiles = Directory
+            .EnumerateFiles(context.DocumentSourceSetPath, "*", SearchOption.AllDirectories)
             .Where(IsVbaSourceFile)
             .Select(CreateSourceFile)
+            .ToArray();
+
+        ThrowIfDuplicateSourceFileNames(context.DocumentSourceSetPath, discoveredSourceFiles);
+
+        var sourceFilesByName = discoveredSourceFiles
             .ToDictionary(source => source.FileName, StringComparer.OrdinalIgnoreCase);
 
         var installedCommonModuleEntries = ResolveInstalledCommonModuleEntries(context, sourceFilesByName);
@@ -104,6 +109,24 @@ public sealed class WorkbookSourcePlanner
 
     private static bool IsTestOnlyCommonModule(CommonModuleManifestEntry entry)
         => entry.HasCategory("test-foundation") || entry.HasCategory("test-double");
+
+    private static void ThrowIfDuplicateSourceFileNames(string sourceSetPath, IReadOnlyList<VbaSourceFile> sourceFiles)
+    {
+        var duplicateGroups = sourceFiles
+            .GroupBy(source => source.FileName, StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Skip(1).Any())
+            .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (duplicateGroups.Length == 0)
+        {
+            return;
+        }
+
+        var lines = duplicateGroups.Select(group =>
+            $"Duplicate source file name '{group.Key}': {string.Join(", ", group.Select(source => source.SourcePath).OrderBy(path => path, StringComparer.OrdinalIgnoreCase))}");
+        throw new BuildCommandException(
+            $"Duplicate VBA source file names were found under {sourceSetPath}.{Environment.NewLine}{string.Join(Environment.NewLine, lines)}");
+    }
 
     private static bool HasPublishExclusionMarker(VbaSourceFile source)
     {

@@ -74,9 +74,10 @@ public sealed class PublishCommandTests
         CreateWorkbookSource(
             root,
             "Book1",
-            ("Hidden.bas", "Attribute VB_Name = \"Hidden\"\n'#ExcludePublish\nPublic Sub Hidden()\nEnd Sub\n"),
-            ("Test_Local.bas", "Attribute VB_Name = \"Test_Local\"\nPublic Sub Test_StillPublishable()\nEnd Sub\n"),
-            ("Keep.bas", "Attribute VB_Name = \"Keep\""));
+            (Path.Combine("nested", "Hidden.bas"), "Attribute VB_Name = \"Hidden\"\n'#ExcludePublish\nPublic Sub Hidden()\nEnd Sub\n"),
+            (Path.Combine("tests", "Test_Local.bas"), "Attribute VB_Name = \"Test_Local\"\nPublic Sub Test_StillPublishable()\nEnd Sub\n"),
+            (Path.Combine("runtime", "Keep.bas"), "Attribute VB_Name = \"Keep\""));
+        File.WriteAllBytes(Path.Combine(root, "src", "Book1", "nested", "Orphan.frx"), [1, 2, 3]);
         var automation = new FakeWorkbookBuildAutomation();
         var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookBuildAutomation: automation);
 
@@ -230,7 +231,9 @@ public sealed class PublishCommandTests
         File.WriteAllText(Path.Combine(sourceDirectory, $"{documentName}.xlsm"), $"template:{documentName}", Encoding.UTF8);
         foreach (var source in sources)
         {
-            File.WriteAllText(Path.Combine(sourceDirectory, source.FileName), source.Content, Encoding.UTF8);
+            var sourcePath = Path.Combine(sourceDirectory, source.FileName);
+            Directory.CreateDirectory(Path.GetDirectoryName(sourcePath)!);
+            File.WriteAllText(sourcePath, source.Content, Encoding.UTF8);
         }
     }
 }
