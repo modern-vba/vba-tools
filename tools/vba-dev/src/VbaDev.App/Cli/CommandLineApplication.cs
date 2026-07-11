@@ -1,14 +1,5 @@
 using System.Text;
-using System.Text.Json;
-using System.Text.Json.Serialization;
-using VbaDev.App.Build;
-using VbaDev.App.CommonModules;
-using VbaDev.App.Diagnostics;
-using VbaDev.App.Export;
-using VbaDev.App.Import;
 using VbaDev.App.Projects;
-using VbaDev.App.References;
-using VbaDev.App.Testing;
 
 namespace VbaDev.App.Cli;
 
@@ -16,42 +7,15 @@ public sealed class CommandLineApplication
 {
     private readonly IReadOnlyDictionary<string, ToolingCommandDefinition> commands;
     private readonly ProjectContextResolver projectContextResolver;
-    private readonly DoctorCommand doctorCommand;
-    private readonly NewProjectCommand newProjectCommand;
-    private readonly CommonModulesService commonModulesService;
-    private readonly VbaProjectReferenceService referenceService;
-    private readonly BuildCommand buildCommand;
-    private readonly PublishCommand publishCommand;
-    private readonly TestCommand testCommand;
-    private readonly ExportCommand exportCommand;
-    private readonly ImportCommand importCommand;
     private readonly Func<string> getWorkingDirectory;
 
     public CommandLineApplication(
         IEnumerable<ToolingCommandDefinition> commands,
         ProjectContextResolver projectContextResolver,
-        DoctorCommand doctorCommand,
-        NewProjectCommand newProjectCommand,
-        CommonModulesService commonModulesService,
-        VbaProjectReferenceService referenceService,
-        BuildCommand buildCommand,
-        PublishCommand publishCommand,
-        TestCommand testCommand,
-        ExportCommand exportCommand,
-        ImportCommand importCommand,
         Func<string> getWorkingDirectory)
     {
         this.commands = commands.ToDictionary(command => command.Name, StringComparer.OrdinalIgnoreCase);
         this.projectContextResolver = projectContextResolver;
-        this.doctorCommand = doctorCommand;
-        this.newProjectCommand = newProjectCommand;
-        this.commonModulesService = commonModulesService;
-        this.referenceService = referenceService;
-        this.buildCommand = buildCommand;
-        this.publishCommand = publishCommand;
-        this.testCommand = testCommand;
-        this.exportCommand = exportCommand;
-        this.importCommand = importCommand;
         this.getWorkingDirectory = getWorkingDirectory;
     }
 
@@ -82,178 +46,28 @@ public sealed class CommandLineApplication
             return CommandResult.UsageError(parsedArgs.Error);
         }
 
-        if (command.Name.Equals("new excel", StringComparison.OrdinalIgnoreCase))
-        {
-            return newProjectCommand.Run(new NewProjectCommandRequest(
-                parsedArgs.Options.GetValueOrDefault("--name"),
-                null,
-                parsedArgs.Options.GetValueOrDefault("--output"),
-                getWorkingDirectory()));
-        }
-
-        if (command.Name.Equals("doctor", StringComparison.OrdinalIgnoreCase))
-        {
-            return doctorCommand.Run(new DoctorCommandRequest(
-                parsedArgs.Options.GetValueOrDefault("--project"),
-                getWorkingDirectory()));
-        }
-
-        if (command.Name.Equals("capabilities", StringComparison.OrdinalIgnoreCase))
-        {
-            return RenderCapabilities(parsedArgs.Options.GetValueOrDefault("--format") ?? "json");
-        }
-
-        if (command.Name.Equals("common-module update", StringComparison.OrdinalIgnoreCase))
-        {
-            var projectResolution = ResolveProject(command, parsedArgs.Options);
-            if (projectResolution.Error is not null)
-            {
-                return CommandResult.UsageError(projectResolution.Error);
-            }
-
-            return commonModulesService.Update(projectResolution.Project!);
-        }
-
-        if (command.Name.Equals("export", StringComparison.OrdinalIgnoreCase) &&
-            parsedArgs.Options.ContainsKey("--from"))
-        {
-            if (parsedArgs.Options.ContainsKey("--project"))
-            {
-                return CommandResult.UsageError("--project cannot be used with --from.");
-            }
-
-            if (parsedArgs.Options.ContainsKey("--document"))
-            {
-                return CommandResult.UsageError("--document cannot be used with --from.");
-            }
-
-            return exportCommand.RunExplicit(new ExportCommandRequest(
-                parsedArgs.Options.GetValueOrDefault("--from"),
-                parsedArgs.Options.GetValueOrDefault("--to"),
-                getWorkingDirectory()));
-        }
-
-        if (command.Name.Equals("import", StringComparison.OrdinalIgnoreCase))
-        {
-            return importCommand.Run(new ImportCommandRequest(
-                parsedArgs.Options.GetValueOrDefault("--from"),
-                parsedArgs.Options.GetValueOrDefault("--to"),
-                getWorkingDirectory()));
-        }
-
-        var resolution = ResolveProjectContext(command, parsedArgs.Options);
+        var resolution = ResolveProjectForInvocation(command, parsedArgs.Options);
         if (resolution.Error is not null)
         {
             return CommandResult.UsageError(resolution.Error);
         }
 
-        if (command.Name.Equals("test", StringComparison.OrdinalIgnoreCase) && resolution.Context is not null)
+        try
         {
-            try
-            {
-                var moduleName = parsedArgs.Options.GetValueOrDefault("--module");
-                var procedureName = parsedArgs.Options.GetValueOrDefault("--procedure");
-                if (!string.IsNullOrWhiteSpace(procedureName) && string.IsNullOrWhiteSpace(moduleName))
-                {
-                    return CommandResult.UsageError("--procedure requires --module.");
-                }
-
-                var format = CommandDefaultResolver.ResolveTestFormat(
-                    resolution.Context.Manifest,
-                    parsedArgs.Options.GetValueOrDefault("--format"));
-                return testCommand.Run(
-                    resolution.Context,
-                    new TestCommandRequest(
-                        format,
-                        !parsedArgs.Options.ContainsKey("--no-build"),
-                        new WorkbookTestSelector(
-                            string.IsNullOrWhiteSpace(moduleName) ? null : moduleName,
-                            string.IsNullOrWhiteSpace(procedureName) ? null : procedureName)));
-            }
-            catch (ProjectManifestException ex)
-            {
-                return CommandResult.UsageError(ex.Message);
-            }
-        }
-
-        if (command.Name.Equals("common-module add", StringComparison.OrdinalIgnoreCase) && resolution.Context is not null)
-        {
-            return commonModulesService.Add(
-                resolution.Context,
+            return command.Execute(new ToolingCommandInvocation(
+                command,
+                parsedArgs.Options,
                 parsedArgs.Positionals,
-                parsedArgs.Options.ContainsKey("--force"));
-        }
-
-        if (command.Name.Equals("common-module list", StringComparison.OrdinalIgnoreCase) && resolution.Context is not null)
-        {
-            return commonModulesService.List(
+                resolution.Project,
                 resolution.Context,
-                parsedArgs.Options.GetValueOrDefault("--format") ?? "text");
+                getWorkingDirectory(),
+                commands));
         }
-
-        if (command.Name.Equals("reference add", StringComparison.OrdinalIgnoreCase) && resolution.Context is not null)
+        catch (InvalidOperationException ex)
         {
-            return referenceService.Add(resolution.Context, parsedArgs.Positionals);
+            return CommandResult.UsageError(ex.Message);
         }
-
-        if (command.Name.Equals("reference remove", StringComparison.OrdinalIgnoreCase) && resolution.Context is not null)
-        {
-            return referenceService.Remove(resolution.Context, parsedArgs.Positionals);
-        }
-
-        if (command.Name.Equals("reference list", StringComparison.OrdinalIgnoreCase) && resolution.Context is not null)
-        {
-            return referenceService.List(
-                resolution.Context,
-                parsedArgs.Options.GetValueOrDefault("--format") ?? "text");
-        }
-
-        if (command.Name.Equals("build", StringComparison.OrdinalIgnoreCase) && resolution.Context is not null)
-        {
-            return buildCommand.Run(resolution.Context);
-        }
-
-        if (command.Name.Equals("publish", StringComparison.OrdinalIgnoreCase) && resolution.Context is not null)
-        {
-            return publishCommand.Run(resolution.Context);
-        }
-
-        if (command.Name.Equals("export", StringComparison.OrdinalIgnoreCase) && resolution.Context is not null)
-        {
-            return exportCommand.Run(
-                resolution.Context,
-                new ExportCommandRequest(
-                    parsedArgs.Options.GetValueOrDefault("--from"),
-                    parsedArgs.Options.GetValueOrDefault("--to"),
-                    getWorkingDirectory()));
-        }
-
-        return CommandResult.NotImplemented($"Command '{command.Name}' is not implemented yet.");
     }
-
-    private CommandResult RenderCapabilities(string format)
-    {
-        if (!format.Equals("json", StringComparison.OrdinalIgnoreCase))
-        {
-            return CommandResult.UsageError($"Unsupported value '{format}' for --format.");
-        }
-
-        var capabilities = new ToolCapabilities(
-            ToolVersion: typeof(CommandLineApplication).Assembly.GetName().Version?.ToString() ?? "0.0.0",
-            ContractVersion: "1.0",
-            Commands: commands.Values
-                .Where(command => !command.Name.Equals("capabilities", StringComparison.OrdinalIgnoreCase))
-                .OrderBy(command => command.Name, StringComparer.OrdinalIgnoreCase)
-                .ToDictionary(
-                    command => command.Name,
-                    command => new CommandCapability(OutputSchemaVersion: GetCommandOutputSchemaVersion(command.Name)),
-                    StringComparer.OrdinalIgnoreCase));
-
-        return CommandResult.Success(JsonSerializer.Serialize(capabilities, CapabilitiesJsonOptions) + Environment.NewLine);
-    }
-
-    private static string GetCommandOutputSchemaVersion(string commandName)
-        => commandName.Equals("test", StringComparison.OrdinalIgnoreCase) ? "1.1" : "1.0";
 
     private CommandMatch MatchCommand(IReadOnlyList<string> args)
     {
@@ -284,63 +98,65 @@ public sealed class CommandLineApplication
         return new CommandMatch(null, 0);
     }
 
-    private ResolvedProjectResolutionResult ResolveProject(
+    private ProjectResolutionResult ResolveProjectForInvocation(
         ToolingCommandDefinition command,
         IReadOnlyDictionary<string, string?> options)
     {
-        if (command.ProjectResolutionMode == ProjectResolutionMode.None)
-        {
-            return ResolvedProjectResolutionResult.Success(null);
-        }
-
-        var hasProjectOption = options.ContainsKey("--project");
-        if (command.ProjectResolutionMode == ProjectResolutionMode.Optional && !hasProjectOption)
-        {
-            return ResolvedProjectResolutionResult.Success(null);
-        }
-
         try
         {
-            var project = projectContextResolver.ResolveProject(new ProjectResolutionRequest(
-                ProjectRoot: options.GetValueOrDefault("--project"),
-                DocumentName: null,
-                StartDirectory: getWorkingDirectory()));
-            return ResolvedProjectResolutionResult.Success(project);
-        }
-        catch (ProjectManifestException ex)
-        {
-            return ResolvedProjectResolutionResult.Failure(ex.Message);
-        }
-    }
-
-    private ProjectResolutionResult ResolveProjectContext(
-        ToolingCommandDefinition command,
-        IReadOnlyDictionary<string, string?> options)
-    {
-        if (command.ProjectResolutionMode == ProjectResolutionMode.None)
-        {
-            return ProjectResolutionResult.Success(null);
-        }
-
-        var hasProjectOption = options.ContainsKey("--project");
-        if (command.ProjectResolutionMode == ProjectResolutionMode.Optional && !hasProjectOption)
-        {
-            return ProjectResolutionResult.Success(null);
-        }
-
-        try
-        {
-            var context = projectContextResolver.Resolve(new ProjectResolutionRequest(
-                ProjectRoot: options.GetValueOrDefault("--project"),
-                DocumentName: options.GetValueOrDefault("--document"),
-                StartDirectory: getWorkingDirectory()));
-            return ProjectResolutionResult.Success(context);
+            return command.ProjectResolutionMode switch
+            {
+                ProjectResolutionMode.None => ProjectResolutionResult.Success(null, null),
+                ProjectResolutionMode.ProjectOptional when !options.ContainsKey("--project") => ProjectResolutionResult.Success(null, null),
+                ProjectResolutionMode.ProjectOptional => ProjectResolutionResult.Success(
+                    ResolveProject(options.GetValueOrDefault("--project")),
+                    null),
+                ProjectResolutionMode.ProjectRequired => ProjectResolutionResult.Success(
+                    ResolveProject(options.GetValueOrDefault("--project")),
+                    null),
+                ProjectResolutionMode.DocumentRequired => ProjectResolutionResult.Success(
+                    null,
+                    ResolveContext(options.GetValueOrDefault("--project"), options.GetValueOrDefault("--document"))),
+                ProjectResolutionMode.ExplicitWorkbookOrDocumentRequired when options.ContainsKey("--from") =>
+                    ResolveExplicitWorkbookInvocation(options),
+                ProjectResolutionMode.ExplicitWorkbookOrDocumentRequired => ProjectResolutionResult.Success(
+                    null,
+                    ResolveContext(options.GetValueOrDefault("--project"), options.GetValueOrDefault("--document"))),
+                _ => ProjectResolutionResult.Failure($"Unsupported project resolution mode for command '{command.Name}'.")
+            };
         }
         catch (ProjectManifestException ex)
         {
             return ProjectResolutionResult.Failure(ex.Message);
         }
     }
+
+    private ProjectResolutionResult ResolveExplicitWorkbookInvocation(IReadOnlyDictionary<string, string?> options)
+    {
+        if (options.ContainsKey("--project"))
+        {
+            return ProjectResolutionResult.Failure("--project cannot be used with --from.");
+        }
+
+        if (options.ContainsKey("--document"))
+        {
+            return ProjectResolutionResult.Failure("--document cannot be used with --from.");
+        }
+
+        return ProjectResolutionResult.Success(null, null);
+    }
+
+    private ResolvedProject ResolveProject(string? projectRoot)
+        => projectContextResolver.ResolveProject(new ProjectResolutionRequest(
+            ProjectRoot: projectRoot,
+            DocumentName: null,
+            StartDirectory: getWorkingDirectory()));
+
+    private ResolvedProjectContext ResolveContext(string? projectRoot, string? documentName)
+        => projectContextResolver.Resolve(new ProjectResolutionRequest(
+            ProjectRoot: projectRoot,
+            DocumentName: documentName,
+            StartDirectory: getWorkingDirectory()));
 
     private static ParsedCommandLine ParseOptions(ToolingCommandDefinition command, IReadOnlyList<string> args)
     {
@@ -405,42 +221,6 @@ public sealed class CommandLineApplication
         return ParsedCommandLine.Success(options, positionals);
     }
 
-    private sealed record ParsedCommandLine(
-        IReadOnlyDictionary<string, string?> Options,
-        IReadOnlyList<string> Positionals,
-        string? Error)
-    {
-        public static ParsedCommandLine Success(
-            IReadOnlyDictionary<string, string?> options,
-            IReadOnlyList<string> positionals)
-            => new(options, positionals, null);
-
-        public static ParsedCommandLine Failure(string error) => new(new Dictionary<string, string?>(), [], error);
-    }
-
-    private sealed record CommandMatch(ToolingCommandDefinition? Command, int ConsumedArguments);
-
-    private sealed record ToolCapabilities(
-        string ToolVersion,
-        string ContractVersion,
-        IReadOnlyDictionary<string, CommandCapability> Commands);
-
-    private sealed record CommandCapability(string OutputSchemaVersion);
-
-    private sealed record ProjectResolutionResult(ResolvedProjectContext? Context, string? Error)
-    {
-        public static ProjectResolutionResult Success(ResolvedProjectContext? context) => new(context, null);
-
-        public static ProjectResolutionResult Failure(string error) => new(null, error);
-    }
-
-    private sealed record ResolvedProjectResolutionResult(ResolvedProject? Project, string? Error)
-    {
-        public static ResolvedProjectResolutionResult Success(ResolvedProject? project) => new(project, null);
-
-        public static ResolvedProjectResolutionResult Failure(string error) => new(null, error);
-    }
-
     private string RenderRootHelp()
     {
         var builder = new StringBuilder();
@@ -487,9 +267,29 @@ public sealed class CommandLineApplication
 
     private static bool IsHelp(string arg) => arg is "--help" or "-h" or "/?";
 
-    private static readonly JsonSerializerOptions CapabilitiesJsonOptions = new()
+    private sealed record ParsedCommandLine(
+        IReadOnlyDictionary<string, string?> Options,
+        IReadOnlyList<string> Positionals,
+        string? Error)
     {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
-    };
+        public static ParsedCommandLine Success(
+            IReadOnlyDictionary<string, string?> options,
+            IReadOnlyList<string> positionals)
+            => new(options, positionals, null);
+
+        public static ParsedCommandLine Failure(string error) => new(new Dictionary<string, string?>(), [], error);
+    }
+
+    private sealed record CommandMatch(ToolingCommandDefinition? Command, int ConsumedArguments);
+
+    private sealed record ProjectResolutionResult(
+        ResolvedProject? Project,
+        ResolvedProjectContext? Context,
+        string? Error)
+    {
+        public static ProjectResolutionResult Success(ResolvedProject? project, ResolvedProjectContext? context)
+            => new(project, context, null);
+
+        public static ProjectResolutionResult Failure(string error) => new(null, null, error);
+    }
 }

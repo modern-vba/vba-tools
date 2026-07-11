@@ -33,13 +33,14 @@ public static class ToolingCompositionRoot
         var commonModulesManifestReader = new CommonModulesManifestReader();
         var commonModulesService = new CommonModulesService(commonModulesManifestReader, manifestStore);
         var referenceResolver = vbaProjectReferenceResolver ?? new RegistryVbaProjectReferenceResolver();
-        var referenceService = new VbaProjectReferenceService(manifestStore, referenceResolver);
+        var referencePlanner = new VbaProjectReferencePlanner(referenceResolver);
+        var referenceService = new VbaProjectReferenceService(manifestStore, referencePlanner);
         var projectContextResolver = new ProjectContextResolver(manifestStore);
         var buildAutomation = workbookBuildAutomation ?? new ExcelComWorkbookBuildAutomation();
         var doctorCommand = new DoctorCommand(
             projectContextResolver,
             commonModulesManifestReader,
-            referenceResolver,
+            referencePlanner,
             buildAutomation,
             environmentDiagnosticPort ?? new SkippedEnvironmentDiagnosticPort());
         var newProjectCommand = new NewProjectCommand(
@@ -52,7 +53,7 @@ public static class ToolingCompositionRoot
             commonModulesService);
         var generationPipeline = new WorkbookGenerationPipeline(
             buildAutomation,
-            new WorkbookReferenceNormalizer(referenceResolver));
+            new WorkbookReferenceNormalizer(referencePlanner));
         var buildCommand = new BuildCommand(sourcePlanner, generationPipeline);
         var publishCommand = new PublishCommand(sourcePlanner, generationPipeline);
         var testCommand = new TestCommand(
@@ -63,17 +64,17 @@ public static class ToolingCompositionRoot
             workbookModuleExporter ?? new ExcelComWorkbookModuleExporter());
         var importCommand = new ImportCommand(buildAutomation);
         return new CommandLineApplication(
-            ToolingCommandCatalog.CreateDefault(),
+            ToolingCommandCatalog.CreateDefault(
+                doctorCommand,
+                newProjectCommand,
+                commonModulesService,
+                referenceService,
+                buildCommand,
+                publishCommand,
+                testCommand,
+                exportCommand,
+                importCommand),
             projectContextResolver,
-            doctorCommand,
-            newProjectCommand,
-            commonModulesService,
-            referenceService,
-            buildCommand,
-            publishCommand,
-            testCommand,
-            exportCommand,
-            importCommand,
             () => workingDirectory);
     }
 }

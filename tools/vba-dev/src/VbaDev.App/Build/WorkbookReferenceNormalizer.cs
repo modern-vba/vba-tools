@@ -1,3 +1,4 @@
+using VbaDev.App.References;
 using VbaDev.App.Workbooks;
 using VbaDev.Domain;
 
@@ -5,11 +6,11 @@ namespace VbaDev.App.Build;
 
 public sealed class WorkbookReferenceNormalizer
 {
-    private readonly IVbaProjectReferenceResolver referenceResolver;
+    private readonly VbaProjectReferencePlanner referencePlanner;
 
-    public WorkbookReferenceNormalizer(IVbaProjectReferenceResolver referenceResolver)
+    public WorkbookReferenceNormalizer(VbaProjectReferencePlanner referencePlanner)
     {
-        this.referenceResolver = referenceResolver;
+        this.referencePlanner = referencePlanner;
     }
 
     public IReadOnlyList<string> Normalize(
@@ -31,7 +32,7 @@ public sealed class WorkbookReferenceNormalizer
 
             if (!reference.IsRemovable || !session.RemoveReference(reference.Name))
             {
-                warnings.Add($"[WARN] VbaProjectReferences ({documentName}/{reference.Name}): Unlisted protected reference remains.");
+                warnings.Add(VbaProjectReferencePlanner.FormatProtectedReferenceWarning(documentName, reference.Name));
             }
         }
 
@@ -42,29 +43,10 @@ public sealed class WorkbookReferenceNormalizer
         {
             if (!currentNames.Contains(reference.Name))
             {
-                session.AddReference(ResolveDesiredReference(documentName, reference.Name));
+                session.AddReference(referencePlanner.ResolveDocumentReference(documentName, reference.Name));
             }
         }
 
         return warnings;
-    }
-
-    private ResolvedVbaProjectReference ResolveDesiredReference(string documentName, string referenceName)
-    {
-        var matches = referenceResolver.Resolve(referenceName);
-        if (matches.Count == 0)
-        {
-            throw new BuildCommandException($"VbaProjectReference '{referenceName}' for document '{documentName}' was not found.");
-        }
-
-        if (matches.Count > 1)
-        {
-            var candidates = string.Join(
-                ", ",
-                matches.Select(match => $"{match.Guid} {match.Major}.{match.Minor}"));
-            throw new BuildCommandException($"VbaProjectReference '{referenceName}' for document '{documentName}' is ambiguous: {candidates}.");
-        }
-
-        return matches[0];
     }
 }

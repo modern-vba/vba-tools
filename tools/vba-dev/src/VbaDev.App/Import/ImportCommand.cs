@@ -90,39 +90,19 @@ public sealed class ImportCommand
             throw new InvalidOperationException($"Import source directory was not found: {sourceDirectory}");
         }
 
-        var sourceFiles = Directory
-            .EnumerateFiles(sourceDirectory, "*", SearchOption.AllDirectories)
-            .Where(IsVbaSourceFile)
-            .Select(CreateSourceFile)
+        var sourceFiles = DocumentSourceSetLayout
+            .EnumerateVbaSourceFiles(sourceDirectory)
             .ToArray();
         if (sourceFiles.Length == 0)
         {
             throw new InvalidOperationException($"No importable VBA source files were found in: {sourceDirectory}");
         }
 
-        ThrowIfDuplicateSourceFileNames(sourceDirectory, sourceFiles);
+        DocumentSourceSetLayout.ThrowIfDuplicateSourceFileNames(sourceDirectory, sourceFiles);
 
         return sourceFiles
             .OrderBy(source => source.FileName, StringComparer.OrdinalIgnoreCase)
             .ToArray();
-    }
-
-    private static void ThrowIfDuplicateSourceFileNames(string sourceDirectory, IReadOnlyList<VbaSourceFile> sourceFiles)
-    {
-        var duplicateGroups = sourceFiles
-            .GroupBy(source => source.FileName, StringComparer.OrdinalIgnoreCase)
-            .Where(group => group.Skip(1).Any())
-            .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-        if (duplicateGroups.Length == 0)
-        {
-            return;
-        }
-
-        var lines = duplicateGroups.Select(group =>
-            $"Duplicate source file name '{group.Key}': {string.Join(", ", group.Select(source => source.SourcePath).OrderBy(path => path, StringComparer.OrdinalIgnoreCase))}");
-        throw new InvalidOperationException(
-            $"Duplicate VBA source file names were found under {sourceDirectory}.{Environment.NewLine}{string.Join(Environment.NewLine, lines)}");
     }
 
     private static void ValidateTargetWorkbook(string targetWorkbookPath)
@@ -136,34 +116,6 @@ public sealed class ImportCommand
         {
             throw new InvalidOperationException($"Import target workbook was not found: {targetWorkbookPath}");
         }
-    }
-
-    private static bool IsVbaSourceFile(string path)
-    {
-        var extension = Path.GetExtension(path);
-        return extension.Equals(".bas", StringComparison.OrdinalIgnoreCase) ||
-            extension.Equals(".cls", StringComparison.OrdinalIgnoreCase) ||
-            extension.Equals(".frm", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static VbaSourceFile CreateSourceFile(string path)
-    {
-        var kind = Path.GetExtension(path).ToLowerInvariant() switch
-        {
-            ".bas" => VbaSourceKind.StandardModule,
-            ".cls" => VbaSourceKind.ClassModule,
-            ".frm" => VbaSourceKind.Form,
-            _ => throw new InvalidOperationException($"Unsupported VBA source file: {path}")
-        };
-
-        var binaryPath = kind == VbaSourceKind.Form
-            ? Path.ChangeExtension(path, ".frx")
-            : null;
-
-        return new VbaSourceFile(
-            SourcePath: path,
-            Kind: kind,
-            BinaryPath: binaryPath is not null && File.Exists(binaryPath) ? binaryPath : null);
     }
 
     private static string ResolveOptionPath(string workingDirectory, string path)

@@ -47,13 +47,11 @@ public sealed class WorkbookSourcePlanner
             throw new BuildCommandException($"Document source set was not found: {context.DocumentSourceSetPath}");
         }
 
-        var discoveredSourceFiles = Directory
-            .EnumerateFiles(context.DocumentSourceSetPath, "*", SearchOption.AllDirectories)
-            .Where(IsVbaSourceFile)
-            .Select(CreateSourceFile)
+        var discoveredSourceFiles = DocumentSourceSetLayout
+            .EnumerateVbaSourceFiles(context.DocumentSourceSetPath)
             .ToArray();
 
-        ThrowIfDuplicateSourceFileNames(context.DocumentSourceSetPath, discoveredSourceFiles);
+        DocumentSourceSetLayout.ThrowIfDuplicateSourceFileNames(context.DocumentSourceSetPath, discoveredSourceFiles);
 
         var sourceFilesByName = discoveredSourceFiles
             .ToDictionary(source => source.FileName, StringComparer.OrdinalIgnoreCase);
@@ -110,24 +108,6 @@ public sealed class WorkbookSourcePlanner
     private static bool IsTestOnlyCommonModule(CommonModuleManifestEntry entry)
         => entry.HasCategory("test-foundation") || entry.HasCategory("test-double");
 
-    private static void ThrowIfDuplicateSourceFileNames(string sourceSetPath, IReadOnlyList<VbaSourceFile> sourceFiles)
-    {
-        var duplicateGroups = sourceFiles
-            .GroupBy(source => source.FileName, StringComparer.OrdinalIgnoreCase)
-            .Where(group => group.Skip(1).Any())
-            .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-        if (duplicateGroups.Length == 0)
-        {
-            return;
-        }
-
-        var lines = duplicateGroups.Select(group =>
-            $"Duplicate source file name '{group.Key}': {string.Join(", ", group.Select(source => source.SourcePath).OrderBy(path => path, StringComparer.OrdinalIgnoreCase))}");
-        throw new BuildCommandException(
-            $"Duplicate VBA source file names were found under {sourceSetPath}.{Environment.NewLine}{string.Join(Environment.NewLine, lines)}");
-    }
-
     private static bool HasPublishExclusionMarker(VbaSourceFile source)
     {
         foreach (var line in File.ReadLines(source.SourcePath).Take(PublishMarkerScanLineLimit))
@@ -141,31 +121,4 @@ public sealed class WorkbookSourcePlanner
         return false;
     }
 
-    private static bool IsVbaSourceFile(string path)
-    {
-        var extension = Path.GetExtension(path);
-        return extension.Equals(".bas", StringComparison.OrdinalIgnoreCase) ||
-            extension.Equals(".cls", StringComparison.OrdinalIgnoreCase) ||
-            extension.Equals(".frm", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static VbaSourceFile CreateSourceFile(string path)
-    {
-        var kind = Path.GetExtension(path).ToLowerInvariant() switch
-        {
-            ".bas" => VbaSourceKind.StandardModule,
-            ".cls" => VbaSourceKind.ClassModule,
-            ".frm" => VbaSourceKind.Form,
-            _ => throw new BuildCommandException($"Unsupported VBA source file: {path}")
-        };
-
-        var binaryPath = kind == VbaSourceKind.Form
-            ? Path.ChangeExtension(path, ".frx")
-            : null;
-
-        return new VbaSourceFile(
-            SourcePath: path,
-            Kind: kind,
-            BinaryPath: binaryPath is not null && File.Exists(binaryPath) ? binaryPath : null);
-    }
 }

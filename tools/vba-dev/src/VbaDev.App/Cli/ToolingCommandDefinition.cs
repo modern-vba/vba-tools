@@ -6,11 +6,15 @@ public sealed record ToolingCommandDefinition(
     string UsageSuffix,
     IReadOnlyList<CommandOptionDefinition> Options,
     int DisplayOrder,
-    ProjectResolutionMode ProjectResolutionMode = ProjectResolutionMode.None);
+    ProjectResolutionMode ProjectResolutionMode,
+    Func<ToolingCommandInvocation, CommandResult> Execute,
+    string OutputSchemaVersion = "1.0");
 
 public enum ProjectResolutionMode
 {
     None,
-    Required,
-    Optional
+    ProjectRequired,
+    ProjectOptional,
+    DocumentRequired,
+    ExplicitWorkbookOrDocumentRequired
 }

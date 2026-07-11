@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using VbaDev.App.Cli;
 using VbaDev.App.Projects;
+using VbaDev.App.Workbooks;
 using VbaDev.Domain;
 
 namespace VbaDev.App.CommonModules;
@@ -283,11 +284,11 @@ public sealed class CommonModulesService
             }
 
             var targetPath = ResolveTargetPath(documentSourceSetPath, entry.ModuleFile, overwrite);
-            var sidecarDeletePaths = IsFormFile(entry.ModuleFile)
-                ? FindFormSidecars(documentSourceSetPath, entry.ModuleFile)
+            var sidecarDeletePaths = DocumentSourceSetLayout.IsFormFile(entry.ModuleFile)
+                ? DocumentSourceSetLayout.FindFormSidecars(documentSourceSetPath, entry.ModuleFile)
                 : [];
-            var sourceSidecarPath = IsFormFile(entry.ModuleFile)
-                ? ResolveExistingSidecarPath(sourcePath)
+            var sourceSidecarPath = DocumentSourceSetLayout.IsFormFile(entry.ModuleFile)
+                ? DocumentSourceSetLayout.ResolveExistingSidecarPath(sourcePath)
                 : null;
             var targetSidecarPath = sourceSidecarPath is null
                 ? null
@@ -312,7 +313,7 @@ public sealed class CommonModulesService
         string moduleFile,
         bool overwrite)
     {
-        var matches = FindSourceMatches(documentSourceSetPath, moduleFile);
+        var matches = DocumentSourceSetLayout.FindSourceMatches(documentSourceSetPath, moduleFile);
         if (!overwrite && matches.Count > 0)
         {
             throw new CommonModulesManifestException($"CommonModules target source file already exists: {matches[0]}");
@@ -430,56 +431,6 @@ public sealed class CommonModulesService
         return JsonSerializer.Deserialize<ProjectManifest>(json, JsonOptions)
             ?? throw new CommonModulesManifestException("Project manifest could not be cloned.");
     }
-
-    private static IReadOnlyList<string> FindSourceMatches(string documentSourceSetPath, string moduleFile)
-    {
-        if (!Directory.Exists(documentSourceSetPath))
-        {
-            return [];
-        }
-
-        return Directory
-            .EnumerateFiles(documentSourceSetPath, "*", SearchOption.AllDirectories)
-            .Where(path =>
-                IsVbaSourceFile(path) &&
-                Path.GetFileName(path).Equals(moduleFile, StringComparison.OrdinalIgnoreCase))
-            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-    }
-
-    private static IReadOnlyList<string> FindFormSidecars(string documentSourceSetPath, string moduleFile)
-    {
-        if (!Directory.Exists(documentSourceSetPath))
-        {
-            return [];
-        }
-
-        var formName = Path.GetFileNameWithoutExtension(moduleFile);
-        return Directory
-            .EnumerateFiles(documentSourceSetPath, "*", SearchOption.AllDirectories)
-            .Where(path =>
-                Path.GetExtension(path).Equals(".frx", StringComparison.OrdinalIgnoreCase) &&
-                Path.GetFileNameWithoutExtension(path).Equals(formName, StringComparison.OrdinalIgnoreCase))
-            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-    }
-
-    private static string? ResolveExistingSidecarPath(string formSourcePath)
-    {
-        var sidecarPath = Path.ChangeExtension(formSourcePath, ".frx");
-        return File.Exists(sidecarPath) ? sidecarPath : null;
-    }
-
-    private static bool IsVbaSourceFile(string path)
-    {
-        var extension = Path.GetExtension(path);
-        return extension.Equals(".bas", StringComparison.OrdinalIgnoreCase) ||
-            extension.Equals(".cls", StringComparison.OrdinalIgnoreCase) ||
-            extension.Equals(".frm", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool IsFormFile(string path)
-        => Path.GetExtension(path).Equals(".frm", StringComparison.OrdinalIgnoreCase);
 
     private static bool ApplyInstalledEntries(
         ProjectDocument document,

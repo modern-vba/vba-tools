@@ -16,14 +16,14 @@ public sealed class VbaProjectReferenceService
     };
 
     private readonly IProjectManifestStore manifestStore;
-    private readonly IVbaProjectReferenceResolver referenceResolver;
+    private readonly VbaProjectReferencePlanner referencePlanner;
 
     public VbaProjectReferenceService(
         IProjectManifestStore manifestStore,
-        IVbaProjectReferenceResolver referenceResolver)
+        VbaProjectReferencePlanner referencePlanner)
     {
         this.manifestStore = manifestStore;
-        this.referenceResolver = referenceResolver;
+        this.referencePlanner = referencePlanner;
     }
 
     public CommandResult Add(ResolvedProjectContext context, IReadOnlyList<string> referenceNames)
@@ -34,24 +34,14 @@ public sealed class VbaProjectReferenceService
             return CommandResult.UsageError("reference add requires at least one reference name.");
         }
 
-        var resolvedReferences = new List<ResolvedVbaProjectReference>();
-        foreach (var referenceName in normalizedNames)
+        IReadOnlyList<ResolvedVbaProjectReference> resolvedReferences;
+        try
         {
-            var matches = referenceResolver.Resolve(referenceName);
-            if (matches.Count == 0)
-            {
-                return CommandResult.UsageError($"VbaProjectReference '{referenceName}' was not found.");
-            }
-
-            if (matches.Count > 1)
-            {
-                var candidates = string.Join(
-                    ", ",
-                    matches.Select(match => $"{match.Name} ({match.Guid} {match.Major}.{match.Minor})"));
-                return CommandResult.UsageError($"VbaProjectReference '{referenceName}' is ambiguous: {candidates}.");
-            }
-
-            resolvedReferences.Add(matches[0]);
+            resolvedReferences = referencePlanner.ResolveManifestInputReferences(normalizedNames);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return CommandResult.UsageError(ex.Message);
         }
 
         var document = GetDocument(context.Manifest, context.DocumentName);
