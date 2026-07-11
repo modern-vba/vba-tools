@@ -108,7 +108,9 @@ public sealed class NewProjectCommand
                 throw new CommonModulesManifestException($"CommonModules source file was not found: {sourcePath}");
             }
 
-            File.Copy(sourcePath, Path.Combine(sourceSetPath, entry.ModuleFile), overwrite: true);
+            var targetPath = Path.Combine(sourceSetPath, "common-modules", Path.GetFileName(entry.ModuleFile));
+            Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
+            File.Copy(sourcePath, targetPath, overwrite: true);
         }
 
         return selectedEntries

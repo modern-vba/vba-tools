@@ -59,8 +59,10 @@ public sealed class CommonModulesCommandTests
 
         Assert.Equal(0, result.ExitCode);
         var sourceSet = Path.Combine(projectRoot, "src", "Book1");
-        Assert.Equal("base", File.ReadAllText(Path.Combine(sourceSet, "Base.bas")));
-        Assert.Equal("feature", File.ReadAllText(Path.Combine(sourceSet, "Feature.bas")));
+        Assert.Equal("base", File.ReadAllText(Path.Combine(sourceSet, "common-modules", "Base.bas")));
+        Assert.Equal("feature", File.ReadAllText(Path.Combine(sourceSet, "common-modules", "Feature.bas")));
+        Assert.False(File.Exists(Path.Combine(sourceSet, "Base.bas")));
+        Assert.False(File.Exists(Path.Combine(sourceSet, "Feature.bas")));
         var manifest = new JsonProjectManifestStore().Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
         Assert.Equal(
             [
@@ -68,7 +70,49 @@ public sealed class CommonModulesCommandTests
                 new InstalledCommonModule("Feature", Requested: true)
             ],
             manifest.Documents["Book1"].CommonModules);
-        Assert.True(result.StandardOutput.IndexOf("Copied Base.bas", StringComparison.Ordinal) < result.StandardOutput.IndexOf("Copied Feature.bas", StringComparison.Ordinal));
+        Assert.True(result.StandardOutput.IndexOf("Copied common-modules/Base.bas", StringComparison.Ordinal) < result.StandardOutput.IndexOf("Copied common-modules/Feature.bas", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AddFlattensRepositoryDirectoriesWhenCopyingToCommonModulesDirectory()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = CreateProjectWithCommonModules(temp, "Project");
+        var commonRepo = Path.Combine(temp.Path, "common_modules_repo");
+        WriteManifest(commonRepo, ("runtime/Feature.bas", "optional", ""));
+        WriteModule(commonRepo, Path.Combine("runtime", "Feature.bas"), "feature");
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+
+        var result = application.Run(["common-module", "add", "Feature"]);
+
+        Assert.Equal(0, result.ExitCode);
+        var sourceSet = Path.Combine(projectRoot, "src", "Book1");
+        Assert.Equal("feature", File.ReadAllText(Path.Combine(sourceSet, "common-modules", "Feature.bas")));
+        Assert.False(File.Exists(Path.Combine(sourceSet, "Feature.bas")));
+        Assert.False(File.Exists(Path.Combine(sourceSet, "common-modules", "runtime", "Feature.bas")));
+        Assert.Contains("Copied common-modules/Feature.bas", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AddPlacesNewFormSidecarInCommonModulesDirectory()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = CreateProjectWithCommonModules(temp, "Project");
+        var commonRepo = Path.Combine(temp.Path, "common_modules_repo");
+        WriteManifest(commonRepo, ("Dialog.frm", "optional", ""));
+        WriteModule(commonRepo, "Dialog.frm", "repo form");
+        WriteBytes(Path.Combine(commonRepo, "Dialog.frx"), [1, 2, 3]);
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+
+        var result = application.Run(["common-module", "add", "Dialog"]);
+
+        Assert.Equal(0, result.ExitCode);
+        var sourceSet = Path.Combine(projectRoot, "src", "Book1");
+        Assert.Equal("repo form", File.ReadAllText(Path.Combine(sourceSet, "common-modules", "Dialog.frm")));
+        Assert.Equal([1, 2, 3], File.ReadAllBytes(Path.Combine(sourceSet, "common-modules", "Dialog.frx")));
+        Assert.False(File.Exists(Path.Combine(sourceSet, "Dialog.frm")));
+        Assert.False(File.Exists(Path.Combine(sourceSet, "Dialog.frx")));
+        Assert.Contains("Copied common-modules/Dialog.frm", result.StandardOutput, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -91,9 +135,12 @@ public sealed class CommonModulesCommandTests
 
         Assert.Equal(0, result.ExitCode);
         var sourceSet = Path.Combine(projectRoot, "src", "Book1");
-        Assert.Equal("root", File.ReadAllText(Path.Combine(sourceSet, "Root.bas")));
-        Assert.Equal("list", File.ReadAllText(Path.Combine(sourceSet, "ObjectList.cls")));
-        Assert.Equal("set", File.ReadAllText(Path.Combine(sourceSet, "ObjectSet.cls")));
+        Assert.Equal("root", File.ReadAllText(Path.Combine(sourceSet, "common-modules", "Root.bas")));
+        Assert.Equal("list", File.ReadAllText(Path.Combine(sourceSet, "common-modules", "ObjectList.cls")));
+        Assert.Equal("set", File.ReadAllText(Path.Combine(sourceSet, "common-modules", "ObjectSet.cls")));
+        Assert.False(File.Exists(Path.Combine(sourceSet, "Root.bas")));
+        Assert.False(File.Exists(Path.Combine(sourceSet, "ObjectList.cls")));
+        Assert.False(File.Exists(Path.Combine(sourceSet, "ObjectSet.cls")));
         var manifest = new JsonProjectManifestStore().Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
         Assert.Equal(
             [
@@ -146,7 +193,7 @@ public sealed class CommonModulesCommandTests
 
         Assert.Equal(0, result.ExitCode);
         var sourceSet = Path.Combine(projectRoot, "src", "Book1");
-        Assert.Equal("feature v1", File.ReadAllText(Path.Combine(sourceSet, "Feature.bas")));
+        Assert.Equal("feature v1", File.ReadAllText(Path.Combine(sourceSet, "common-modules", "Feature.bas")));
         var manifest = new JsonProjectManifestStore().Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
         Assert.Equal([new InstalledCommonModule("Feature", Requested: true)], manifest.Documents["Book1"].CommonModules);
     }
@@ -203,6 +250,8 @@ public sealed class CommonModulesCommandTests
         Assert.Equal(0, forced.ExitCode);
         Assert.Equal("repo feature", File.ReadAllText(Path.Combine(sourceSet, "nested", "Feature.bas")));
         Assert.False(File.Exists(Path.Combine(sourceSet, "Feature.bas")));
+        Assert.False(Directory.Exists(Path.Combine(sourceSet, "common-modules")));
+        Assert.Contains("Copied nested/Feature.bas", forced.StandardOutput, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -360,10 +409,11 @@ public sealed class CommonModulesCommandTests
         var result = application.Run(["common-module", "update"]);
 
         Assert.Equal(0, result.ExitCode);
-        Assert.Equal("base v2", File.ReadAllText(Path.Combine(sourceSet, "Base.bas")));
+        Assert.Equal("base v2", File.ReadAllText(Path.Combine(sourceSet, "common-modules", "Base.bas")));
         Assert.Equal("feature v2", File.ReadAllText(Path.Combine(sourceSet, "Feature.bas")));
         Assert.Equal("unlisted v1", File.ReadAllText(Path.Combine(sourceSet, "Unlisted.bas")));
         Assert.Equal("obsolete", File.ReadAllText(Path.Combine(sourceSet, "Obsolete.bas")));
+        Assert.False(File.Exists(Path.Combine(sourceSet, "Base.bas")));
         var updatedManifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
         Assert.Equal(
             [
@@ -371,11 +421,12 @@ public sealed class CommonModulesCommandTests
                 new InstalledCommonModule("Feature", Requested: true)
             ],
             updatedManifest.Documents["Book1"].CommonModules);
+        Assert.Contains("Updated Book1/common-modules/Base.bas", result.StandardOutput, StringComparison.Ordinal);
         Assert.Contains("Updated Book1/Feature.bas", result.StandardOutput, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void UpdateOverwritesNestedInstalledModulesAndCopiesMissingDependenciesToRoot()
+    public void UpdateOverwritesNestedInstalledModulesAndCopiesMissingDependenciesToCommonModulesDirectory()
     {
         using var temp = TempDirectory.Create();
         var projectRoot = CreateProjectWithCommonModules(temp, "Project");
@@ -398,8 +449,11 @@ public sealed class CommonModulesCommandTests
 
         Assert.Equal(0, result.ExitCode);
         Assert.Equal("feature v2", File.ReadAllText(Path.Combine(sourceSet, "nested", "Feature.bas")));
-        Assert.Equal("base v2", File.ReadAllText(Path.Combine(sourceSet, "Base.bas")));
+        Assert.Equal("base v2", File.ReadAllText(Path.Combine(sourceSet, "common-modules", "Base.bas")));
+        Assert.False(File.Exists(Path.Combine(sourceSet, "Base.bas")));
         Assert.False(File.Exists(Path.Combine(sourceSet, "Feature.bas")));
+        Assert.Contains("Updated Book1/nested/Feature.bas", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("Updated Book1/common-modules/Base.bas", result.StandardOutput, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -466,8 +520,9 @@ public sealed class CommonModulesCommandTests
         var result = application.Run(["common-module", "update"]);
 
         Assert.Equal(0, result.ExitCode);
-        Assert.Equal("base v2", File.ReadAllText(Path.Combine(sourceSet, "Base.bas")));
+        Assert.Equal("base v2", File.ReadAllText(Path.Combine(sourceSet, "common-modules", "Base.bas")));
         Assert.Equal("feature v2", File.ReadAllText(Path.Combine(sourceSet, "Feature.bas")));
+        Assert.False(File.Exists(Path.Combine(sourceSet, "Base.bas")));
         var updatedManifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
         Assert.Equal(
             [
@@ -508,8 +563,10 @@ public sealed class CommonModulesCommandTests
         var result = application.Run(["common-module", "update"]);
 
         Assert.Equal(0, result.ExitCode);
-        Assert.Equal("base v2", File.ReadAllText(Path.Combine(firstSourceSet, "Base.bas")));
-        Assert.Equal("base v2", File.ReadAllText(Path.Combine(secondSourceSet, "Base.bas")));
+        Assert.Equal("base v2", File.ReadAllText(Path.Combine(firstSourceSet, "common-modules", "Base.bas")));
+        Assert.Equal("base v2", File.ReadAllText(Path.Combine(secondSourceSet, "common-modules", "Base.bas")));
+        Assert.False(File.Exists(Path.Combine(firstSourceSet, "Base.bas")));
+        Assert.False(File.Exists(Path.Combine(secondSourceSet, "Base.bas")));
         var updatedManifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
         Assert.Equal(
             [
@@ -630,11 +687,15 @@ public sealed class CommonModulesCommandTests
         var result = application.Run(["common-module", "update"]);
 
         Assert.Equal(0, result.ExitCode);
-        Assert.Equal("base v2", File.ReadAllText(Path.Combine(firstSourceSet, "Base.bas")));
+        Assert.Equal("base v2", File.ReadAllText(Path.Combine(firstSourceSet, "common-modules", "Base.bas")));
         Assert.Equal("feature v2", File.ReadAllText(Path.Combine(firstSourceSet, "Feature.bas")));
-        Assert.Equal("base v2", File.ReadAllText(Path.Combine(secondSourceSet, "Base.bas")));
+        Assert.Equal("base v2", File.ReadAllText(Path.Combine(secondSourceSet, "common-modules", "Base.bas")));
         Assert.Equal("feature v2", File.ReadAllText(Path.Combine(secondSourceSet, "Feature.bas")));
+        Assert.False(File.Exists(Path.Combine(firstSourceSet, "Base.bas")));
+        Assert.False(File.Exists(Path.Combine(secondSourceSet, "Base.bas")));
+        Assert.Contains("Updated Book1/common-modules/Base.bas", result.StandardOutput, StringComparison.Ordinal);
         Assert.Contains("Updated Book1/Feature.bas", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("Updated SecondBook/common-modules/Base.bas", result.StandardOutput, StringComparison.Ordinal);
         Assert.Contains("Updated SecondBook/Feature.bas", result.StandardOutput, StringComparison.Ordinal);
     }
 
@@ -678,7 +739,7 @@ public sealed class CommonModulesCommandTests
         var commonRepo = Path.Combine(temp.Path, "common_modules_repo");
         WriteManifest(commonRepo, ("Feature.bas", "optional", ""));
         WriteModule(commonRepo, "Feature.bas", "repo feature");
-        Directory.CreateDirectory(Path.Combine(projectRoot, "src", "Book1", "Feature.bas"));
+        Directory.CreateDirectory(Path.Combine(projectRoot, "src", "Book1", "common-modules", "Feature.bas"));
         var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
 
         var result = application.Run(["common-module", "add", "Feature", "--force"]);
@@ -775,7 +836,7 @@ public sealed class CommonModulesCommandTests
 
         public void Save(string projectRoot, ProjectManifest manifest)
         {
-            FileExistedDuringSave = File.Exists(Path.Combine(projectRoot, "src", "Book1", "Feature.bas"));
+            FileExistedDuringSave = File.Exists(Path.Combine(projectRoot, "src", "Book1", "common-modules", "Feature.bas"));
             if (ThrowOnSave)
             {
                 throw new IOException("manifest save failed");

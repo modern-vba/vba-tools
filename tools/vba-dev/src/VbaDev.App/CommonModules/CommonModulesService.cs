@@ -8,6 +8,8 @@ namespace VbaDev.App.CommonModules;
 
 public sealed class CommonModulesService
 {
+    private const string CommonModulesDirectoryName = "common-modules";
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -290,7 +292,8 @@ public sealed class CommonModulesService
             var targetSidecarPath = sourceSidecarPath is null
                 ? null
                 : Path.ChangeExtension(targetPath, ".frx");
-            var outputPath = documentName is null ? entry.ModuleFile : $"{documentName}/{entry.ModuleFile}";
+            var relativeTargetPath = NormalizeDisplayPath(Path.GetRelativePath(documentSourceSetPath, targetPath));
+            var outputPath = documentName is null ? relativeTargetPath : $"{documentName}/{relativeTargetPath}";
             plans.Add(new CommonModuleCopyPlan(
                 SourcePath: sourcePath,
                 TargetPath: targetPath,
@@ -323,7 +326,7 @@ public sealed class CommonModulesService
 
         return matches.Count == 1
             ? matches[0]
-            : Path.Combine(documentSourceSetPath, moduleFile);
+            : Path.Combine(documentSourceSetPath, CommonModulesDirectoryName, Path.GetFileName(moduleFile));
     }
 
     private CommandResult? TryExecuteCopyPlan(IReadOnlyList<CommonModuleCopyPlan> copyPlan)
@@ -522,6 +525,9 @@ public sealed class CommonModulesService
 
     private static string GetCommonModuleName(string moduleFile)
         => Path.GetFileNameWithoutExtension(moduleFile);
+
+    private static string NormalizeDisplayPath(string path)
+        => path.Replace(Path.DirectorySeparatorChar, '/').Replace(Path.AltDirectorySeparatorChar, '/');
 
     private static string GetRepositoryPath(ResolvedProjectContext context)
         => GetRepositoryPath(context.CommonModulesRepositoryPath);

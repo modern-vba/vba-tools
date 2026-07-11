@@ -29,6 +29,7 @@ public sealed class NewProjectCommandTests
         Assert.True(Directory.Exists(Path.Combine(projectRoot, "bin", "SampleProject")));
         Assert.True(Directory.Exists(Path.Combine(projectRoot, "publish", "SampleProject")));
         Assert.True(File.Exists(Path.Combine(projectRoot, "src", "SampleProject", "SampleProject.xlsm")));
+        Assert.False(Directory.Exists(Path.Combine(projectRoot, "src", "SampleProject", "common-modules")));
         Assert.Contains(Path.Combine(projectRoot, "src", "SampleProject", "SampleProject.xlsm"), workbookCreator.CreatedPaths);
 
         var manifestPath = Path.Combine(projectRoot, ProjectManifest.ManifestFileName);
@@ -143,9 +144,10 @@ public sealed class NewProjectCommandTests
 
         Assert.Equal(0, result.ExitCode);
         var sourceSet = Path.Combine(temp.Path, "SampleProject", "src", "SampleProject");
-        Assert.True(File.Exists(Path.Combine(sourceSet, "Core.bas")));
-        Assert.True(File.Exists(Path.Combine(sourceSet, "Runtime.bas")));
-        Assert.True(File.Exists(Path.Combine(sourceSet, "UnitTest.bas")));
+        var commonModulesDirectory = Path.Combine(sourceSet, "common-modules");
+        Assert.True(File.Exists(Path.Combine(commonModulesDirectory, "Core.bas")));
+        Assert.True(File.Exists(Path.Combine(commonModulesDirectory, "Runtime.bas")));
+        Assert.True(File.Exists(Path.Combine(commonModulesDirectory, "UnitTest.bas")));
         Assert.False(File.Exists(Path.Combine(sourceSet, "Optional.bas")));
         var manifest = new JsonProjectManifestStore().Load(Path.Combine(temp.Path, "SampleProject", ProjectManifest.ManifestFileName));
         Assert.Equal("../common_modules_repo", manifest.CommonModulesRepository);

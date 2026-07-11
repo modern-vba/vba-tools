@@ -82,6 +82,14 @@ A CommonModules source entry that has been added to one `DocumentSourceSet` and
 is tracked as part of that document's desired shared-source set.
 _Avoid_: inferred module file, loose copy, reference
 
+**CommonModulesDirectory**:
+The `common-modules` organization directory inside a `DocumentSourceSet`. It is
+the default placement for CommonModules source files when `VbaDev` needs to copy
+an `InstalledCommonModule` source file but no existing same-name source file
+already chooses a location. It does not create a separate source set, and
+CommonModules installation is still determined by the `ProjectManifest`.
+_Avoid_: CommonModulesRepository, source set, installed-module marker
+
 ## Workbook Projects
 
 **WorkbookBackedProject**:

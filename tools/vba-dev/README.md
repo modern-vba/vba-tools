@@ -71,6 +71,8 @@ Options:
 
 `--output` selects the project root directory. `--name` selects the generated project and document base name; when omitted, it is derived from the output directory.
 
+When a CommonModules repository is available, initial CommonModules are copied under the generated document source set's `common-modules` directory using each entry's file name.
+
 ### common-module add
 
 ```text
@@ -89,7 +91,7 @@ Options:
 
 CommonModuleName values are extensionless module base names resolved through the CommonModules manifest. Dependencies are copied with the requested entries and recorded in `project.json`.
 
-`common-module add` searches the selected document source set recursively for existing `.bas`, `.cls`, and `.frm` files with the same exported file name. Without `--force`, any match is a conflict. With `--force`, exactly one match is overwritten in place, no match copies to the source-set root, and multiple matches fail before file or manifest mutation.
+`common-module add` searches the selected document source set recursively for existing `.bas`, `.cls`, and `.frm` files with the same exported file name. Without `--force`, any match is a conflict. With `--force`, exactly one match is overwritten in place, no match copies to the source set's `common-modules` directory using the entry's file name, and multiple matches fail before file or manifest mutation.
 
 ### common-module list
 
@@ -123,11 +125,13 @@ Options:
 
 `common-module update` is project-scoped. It updates manifest-listed installed CommonModules entries and preserves the manifest `requested` intent.
 
-Update uses the same recursive flat source identity as add. Existing installed entries are overwritten in place when exactly one matching source file exists; missing installed entries are copied to the source-set root; duplicate matches fail before mutation.
+Update uses the same recursive flat source identity as add. Existing installed entries are overwritten in place when exactly one matching source file exists; missing installed entries are copied to the source set's `common-modules` directory using the entry's file name; duplicate matches fail before mutation.
 
 For `.frm` CommonModules, add and update first remove every same-name `.frx` under the target source set. If the canonical CommonModules repository has a matching `.frx`, exactly one sidecar is written beside the destination `.frm`; if it has no sidecar, no same-name `.frx` remains in the target source set.
 
 Multi-entry add and update commands preflight the full file plan and planned manifest before deleting sidecars, copying files, or saving `project.json`. The manifest is saved last. If file deletion or copy fails after file mutation begins, the command reports that the manifest was not saved and that source files may have been partially updated; no file rollback is attempted. If manifest saving fails after successful file operations, the planned manifest is written as UTF-16LE with BOM to `project.failed-YYYYMMDD-HHMMSS-fff.json` beside `project.json`, and the command prints only that recovery file path.
+
+Copy and update output reports the actual destination path relative to the document source set, such as `common-modules/Feature.bas` for a new placement or `nested/Feature.bas` for an in-place overwrite.
 
 ### reference add
 
