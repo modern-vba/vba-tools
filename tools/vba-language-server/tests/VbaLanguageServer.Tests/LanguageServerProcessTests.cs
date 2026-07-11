@@ -1233,12 +1233,20 @@ public sealed class LanguageServerProcessTests
                 "Uncataloged Reference Library",
                 selection.GetProperty("params").GetProperty("message").GetString(),
                 StringComparison.Ordinal);
-            var availability = await ReadLogMessageAsync(stdout, "has no bundled or cached VbaProjectReferenceCatalog metadata");
-            Assert.Equal(2, availability.GetProperty("params").GetProperty("type").GetInt32());
-            Assert.Contains(
-                "Uncataloged Reference Library",
-                availability.GetProperty("params").GetProperty("message").GetString(),
-                StringComparison.Ordinal);
+            var availability = await ReadLogMessageAsync(stdout, "Reference catalog availability");
+            Assert.Equal(3, availability.GetProperty("params").GetProperty("type").GetInt32());
+            var availabilityMessage = availability.GetProperty("params").GetProperty("message").GetString();
+            Assert.Contains("Uncataloged Reference Library", availabilityMessage, StringComparison.Ordinal);
+            Assert.Contains("editor metadata is not currently available", availabilityMessage, StringComparison.Ordinal);
+            Assert.Contains("reference remains active for workbook build/test", availabilityMessage, StringComparison.Ordinal);
+            Assert.Contains("external editor definitions are unavailable", availabilityMessage, StringComparison.Ordinal);
+            Assert.DoesNotContain("warning", availabilityMessage, StringComparison.OrdinalIgnoreCase);
+
+            var discoveryFailure = await ReadLogMessageAsync(stdout, "could not be discovered");
+            Assert.Equal(2, discoveryFailure.GetProperty("params").GetProperty("type").GetInt32());
+            var discoveryFailureMessage = discoveryFailure.GetProperty("params").GetProperty("message").GetString();
+            Assert.Contains("Uncataloged Reference Library", discoveryFailureMessage, StringComparison.Ordinal);
+            Assert.Contains("No matching TypeLib registry entry was found.", discoveryFailureMessage, StringComparison.Ordinal);
 
             var hover = await SendPositionRequestAsync(stdin, stdout, 2, "textDocument/hover", uri, text, "UncatalogedType");
             Assert.Equal(JsonValueKind.Null, hover.GetProperty("result").ValueKind);

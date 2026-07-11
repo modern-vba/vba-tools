@@ -181,8 +181,8 @@ internal static class LanguageServerManifestResolution
         foreach (var referenceName in catalogSet.GetMissingCatalogReferenceNames(selection))
         {
             messages.Add(new VbaLanguageServerManifestMessage(
-                2,
-                $"Reference catalog availability warning: document '{resolution.DocumentName}' reference '{referenceName}' has no bundled or cached VbaProjectReferenceCatalog metadata. The reference remains active, but external definitions are unavailable."));
+                3,
+                $"Reference catalog availability: document '{resolution.DocumentName}' reference '{referenceName}' editor metadata is not currently available. The reference remains active for workbook build/test, but external editor definitions are unavailable until bundled or generated metadata is available."));
         }
 
         return messages;
