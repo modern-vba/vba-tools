@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using VbaLanguageServer.SourceModel;
 using Xunit;
 
 namespace VbaLanguageServer.Tests;
@@ -229,6 +230,82 @@ public sealed class LanguageServerProcessTests
         Assert.True(afterLength > beforeLength);
 
         await SendRequestAsync(stdin, stdout, 4, "shutdown", null);
+        await SendNotificationAsync(stdin, "exit", null);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await process.WaitForExitAsync(cancellation.Token);
+        Assert.Equal(0, process.ExitCode);
+    }
+
+    [Fact]
+    public async Task Server_returns_project_symbol_semantic_tokens_for_range_bounds_scenario()
+    {
+        var serverProjectPath = Path.GetFullPath(
+            Path.Combine(
+                AppContext.BaseDirectory,
+                "..",
+                "..",
+                "..",
+                "..",
+                "..",
+                "src",
+                "VbaLanguageServer.Cli",
+                "VbaLanguageServer.Cli.csproj"));
+
+        using var process = StartLanguageServer(serverProjectPath);
+        await using var stdin = process.StandardInput.BaseStream;
+        using var stdout = process.StandardOutput.BaseStream;
+
+        await InitializeAsync(stdin, stdout);
+        const string rangeBoundsUri = "file:///C:/work/WorksheetRangeBounds.cls";
+        var rangeBoundsText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"WorksheetRangeBounds\"",
+            "Private pColumn As Long",
+            "Public Property Get Column() As Long",
+            "    Column = pColumn",
+            "End Property"
+        ]);
+        const string workerUri = "file:///C:/work/Worker.bas";
+        var workerText = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Option Explicit",
+            "Private Function TestFunction() As String",
+            "    Dim range_obj As WorksheetRangeBounds",
+            "    aaaa = range_obj.Column",
+            "End Function"
+        ]);
+        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(rangeBoundsUri, rangeBoundsText));
+        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(workerUri, workerText));
+
+        var response = await SendRequestAsync(
+            stdin,
+            stdout,
+            2,
+            "textDocument/semanticTokens/full",
+            new
+            {
+                textDocument = new { uri = workerUri }
+            });
+        var tokens = DecodeSemanticTokens(response, workerText);
+
+        Assert.Contains(tokens, token =>
+            token.Text == "WorksheetRangeBounds"
+            && token.TokenType == "class"
+            && !token.TokenModifiers.Contains("declaration"));
+        Assert.Contains(tokens, token =>
+            token.Text == "range_obj"
+            && token.TokenType == "variable"
+            && token.TokenModifiers.Contains("declaration"));
+        Assert.Contains(tokens, token =>
+            token.Text == "range_obj"
+            && token.TokenType == "variable"
+            && !token.TokenModifiers.Contains("declaration"));
+        Assert.Contains(tokens, token =>
+            token.Text == "Column"
+            && token.TokenType == "property"
+            && !token.TokenModifiers.Contains("declaration"));
+
+        await SendRequestAsync(stdin, stdout, 3, "shutdown", null);
         await SendNotificationAsync(stdin, "exit", null);
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await process.WaitForExitAsync(cancellation.Token);
@@ -2137,8 +2214,57 @@ public sealed class LanguageServerProcessTests
         return (line, character);
     }
 
+    private static IReadOnlyList<DecodedSemanticToken> DecodeSemanticTokens(JsonElement response, string text)
+    {
+        var lines = text.Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n')
+            .Split('\n');
+        var data = response
+            .GetProperty("result")
+            .GetProperty("data")
+            .EnumerateArray()
+            .Select(item => item.GetInt32())
+            .ToArray();
+        var tokens = new List<DecodedSemanticToken>();
+        var line = 0;
+        var character = 0;
+        for (var index = 0; index < data.Length; index += 5)
+        {
+            var deltaLine = data[index];
+            var deltaStart = data[index + 1];
+            var length = data[index + 2];
+            var tokenTypeIndex = data[index + 3];
+            var modifierBits = data[index + 4];
+            line += deltaLine;
+            character = deltaLine == 0 ? character + deltaStart : deltaStart;
+            var tokenText = lines[line].Substring(character, length);
+            tokens.Add(new DecodedSemanticToken(
+                tokenText,
+                VbaSourceIndex.SemanticTokenTypes[tokenTypeIndex],
+                DecodeSemanticTokenModifiers(modifierBits),
+                line,
+                character,
+                length));
+        }
+
+        return tokens;
+    }
+
+    private static IReadOnlyList<string> DecodeSemanticTokenModifiers(int modifierBits)
+        => VbaSourceIndex.SemanticTokenModifiers
+            .Where((_, index) => (modifierBits & (1 << index)) != 0)
+            .ToArray();
+
     private static string ToFileUri(string path)
         => new Uri(path).AbsoluteUri;
+
+    private sealed record DecodedSemanticToken(
+        string Text,
+        string TokenType,
+        IReadOnlyList<string> TokenModifiers,
+        int Line,
+        int Character,
+        int Length);
 
     private static string ProjectManifestFixtureText(string fixtureName)
         => File.ReadAllText(Path.GetFullPath(Path.Combine(
