@@ -2229,6 +2229,7 @@ public sealed class LanguageServerProcessTests
 
     private static Process StartLanguageServer(string serverProjectPath)
     {
+        var cacheRoot = Directory.CreateTempSubdirectory("vba-ls-process-cache-").FullName;
         var startInfo = new ProcessStartInfo
         {
             FileName = "dotnet",
@@ -2237,6 +2238,7 @@ public sealed class LanguageServerProcessTests
             RedirectStandardError = true,
             UseShellExecute = false
         };
+        startInfo.Environment[VbaProjectReferenceCatalogPersistentStore.CacheRootEnvironmentVariable] = cacheRoot;
         startInfo.ArgumentList.Add("run");
         startInfo.ArgumentList.Add("--project");
         startInfo.ArgumentList.Add(serverProjectPath);
@@ -2249,6 +2251,20 @@ public sealed class LanguageServerProcessTests
             if (!string.IsNullOrWhiteSpace(args.Data))
             {
                 Debug.WriteLine(args.Data);
+            }
+        };
+        process.EnableRaisingEvents = true;
+        process.Exited += (_, _) =>
+        {
+            try
+            {
+                Directory.Delete(cacheRoot, recursive: true);
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
             }
         };
         process.BeginErrorReadLine();

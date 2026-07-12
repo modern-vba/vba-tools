@@ -43,7 +43,8 @@ internal sealed class VbaLanguageServerRuntime
             VbaProjectReferenceCatalogSet.CreateBundled());
         var catalogRefreshService = new VbaProjectReferenceCatalogRefreshService(
             referenceCatalogCache,
-            new TypeLibReferenceCatalogDiscovery(new RegistryTypeLibRegistryReader()));
+            new TypeLibReferenceCatalogDiscovery(new RegistryTypeLibRegistryReader()),
+            VbaProjectReferenceCatalogPersistentStore.CreateDefault());
         var workspace = new VbaLanguageWorkspace(referenceCatalogCache);
         var features = new VbaLanguageFeatureService(workspace);
         var catalogRefresh = new ReferenceCatalogRefreshCoordinator(

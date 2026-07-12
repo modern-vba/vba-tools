@@ -398,6 +398,19 @@ public sealed class VbaProjectReferenceCatalogCache
     }
 
     /// <summary>
+    /// Determines whether a reference name already has a resolved catalog identity in memory.
+    /// </summary>
+    /// <param name="referenceName">The human-visible reference name.</param>
+    /// <returns>True when an identity is already cached for the reference.</returns>
+    public bool HasIdentity(string referenceName)
+    {
+        lock (gate)
+        {
+            return identities.ContainsKey(referenceName);
+        }
+    }
+
+    /// <summary>
     /// Gets selected reference names whose generated catalog identity has not been discovered yet.
     /// </summary>
     /// <param name="selection">The active reference selection.</param>
@@ -483,6 +496,7 @@ public sealed class VbaProjectReferenceCatalogRefreshService
 {
     private readonly VbaProjectReferenceCatalogCache cache;
     private readonly IVbaProjectReferenceCatalogDiscovery discovery;
+    private readonly VbaProjectReferenceCatalogPersistentStore? persistentStore;
 
     /// <summary>
     /// Creates a catalog refresh service.
@@ -492,9 +506,24 @@ public sealed class VbaProjectReferenceCatalogRefreshService
     public VbaProjectReferenceCatalogRefreshService(
         VbaProjectReferenceCatalogCache cache,
         IVbaProjectReferenceCatalogDiscovery discovery)
+        : this(cache, discovery, null)
+    {
+    }
+
+    /// <summary>
+    /// Creates a catalog refresh service.
+    /// </summary>
+    /// <param name="cache">The catalog cache to read and update.</param>
+    /// <param name="discovery">The discovery service used for missing references.</param>
+    /// <param name="persistentStore">The optional persistent store used across language-server sessions.</param>
+    public VbaProjectReferenceCatalogRefreshService(
+        VbaProjectReferenceCatalogCache cache,
+        IVbaProjectReferenceCatalogDiscovery discovery,
+        VbaProjectReferenceCatalogPersistentStore? persistentStore)
     {
         this.cache = cache;
         this.discovery = discovery;
+        this.persistentStore = persistentStore;
     }
 
     /// <summary>
@@ -507,6 +536,7 @@ public sealed class VbaProjectReferenceCatalogRefreshService
         VbaProjectReferenceSelection selection,
         CancellationToken cancellationToken = default)
     {
+        PreloadPersistedCatalogs(selection);
         var refreshReferenceNames = cache.TakeRefreshCandidateReferenceNames(selection);
         var results = new List<VbaProjectReferenceCatalogRefreshResult>();
         foreach (var referenceName in refreshReferenceNames)
@@ -527,9 +557,55 @@ public sealed class VbaProjectReferenceCatalogRefreshService
             }
 
             cache.Store(discoveryResult);
+            SavePersistedCatalog(discoveryResult);
             results.Add(new VbaProjectReferenceCatalogRefreshResult(referenceName, discoveryResult));
         }
 
         return results;
+    }
+
+    private void PreloadPersistedCatalogs(VbaProjectReferenceSelection selection)
+    {
+        if (persistentStore is null)
+        {
+            return;
+        }
+
+        foreach (var referenceName in selection.References
+            .Select(reference => reference.Name)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase))
+        {
+            if (cache.HasIdentity(referenceName))
+            {
+                continue;
+            }
+
+            var loadResult = persistentStore.Load(referenceName);
+            if (loadResult.Entry is not null)
+            {
+                cache.Store(VbaProjectReferenceCatalogDiscoveryResult.Success(
+                    loadResult.Entry.Identity,
+                    loadResult.Entry.Catalog));
+            }
+        }
+    }
+
+    private void SavePersistedCatalog(VbaProjectReferenceCatalogDiscoveryResult discoveryResult)
+    {
+        if (persistentStore is null || discoveryResult.Identities.Count != 1 || discoveryResult.Catalog is null)
+        {
+            return;
+        }
+
+        try
+        {
+            persistentStore.Save(new VbaProjectReferenceCatalogPersistentEntry(
+                discoveryResult.Identities[0],
+                discoveryResult.Catalog));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
     }
 }
