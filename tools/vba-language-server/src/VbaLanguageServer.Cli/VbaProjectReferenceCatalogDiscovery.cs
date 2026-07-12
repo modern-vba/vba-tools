@@ -481,13 +481,31 @@ public sealed record VbaProjectReferenceCatalogCacheState(
     long Version);
 
 /// <summary>
+/// Identifies how a reference catalog refresh request was handled.
+/// </summary>
+public enum VbaProjectReferenceCatalogRefreshStatus
+{
+    /// <summary>
+    /// The reference was refreshed through catalog discovery.
+    /// </summary>
+    Refreshed,
+
+    /// <summary>
+    /// The reference already had a current persisted catalog, so expensive discovery was skipped.
+    /// </summary>
+    SkippedValidPersistentCache
+}
+
+/// <summary>
 /// Represents one reference catalog refresh result.
 /// </summary>
 /// <param name="ReferenceName">The reference name refreshed.</param>
 /// <param name="DiscoveryResult">The discovery result for the reference.</param>
+/// <param name="Status">How the refresh request was handled.</param>
 public sealed record VbaProjectReferenceCatalogRefreshResult(
     string ReferenceName,
-    VbaProjectReferenceCatalogDiscoveryResult DiscoveryResult);
+    VbaProjectReferenceCatalogDiscoveryResult DiscoveryResult,
+    VbaProjectReferenceCatalogRefreshStatus Status = VbaProjectReferenceCatalogRefreshStatus.Refreshed);
 
 /// <summary>
 /// Refreshes missing reference catalogs for an active reference selection.
@@ -536,9 +554,9 @@ public sealed class VbaProjectReferenceCatalogRefreshService
         VbaProjectReferenceSelection selection,
         CancellationToken cancellationToken = default)
     {
-        PreloadPersistedCatalogs(selection);
-        var refreshReferenceNames = cache.TakeRefreshCandidateReferenceNames(selection);
         var results = new List<VbaProjectReferenceCatalogRefreshResult>();
+        results.AddRange(PreloadPersistedCatalogs(selection));
+        var refreshReferenceNames = cache.TakeRefreshCandidateReferenceNames(selection);
         foreach (var referenceName in refreshReferenceNames)
         {
             VbaProjectReferenceCatalogDiscoveryResult discoveryResult;
@@ -564,13 +582,15 @@ public sealed class VbaProjectReferenceCatalogRefreshService
         return results;
     }
 
-    private void PreloadPersistedCatalogs(VbaProjectReferenceSelection selection)
+    private IReadOnlyList<VbaProjectReferenceCatalogRefreshResult> PreloadPersistedCatalogs(
+        VbaProjectReferenceSelection selection)
     {
         if (persistentStore is null)
         {
-            return;
+            return [];
         }
 
+        var results = new List<VbaProjectReferenceCatalogRefreshResult>();
         foreach (var referenceName in selection.References
             .Select(reference => reference.Name)
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -587,8 +607,16 @@ public sealed class VbaProjectReferenceCatalogRefreshService
                 cache.Store(VbaProjectReferenceCatalogDiscoveryResult.Success(
                     loadResult.Entry.Identity,
                     loadResult.Entry.Catalog));
+                results.Add(new VbaProjectReferenceCatalogRefreshResult(
+                    referenceName,
+                    VbaProjectReferenceCatalogDiscoveryResult.Success(
+                        loadResult.Entry.Identity,
+                        loadResult.Entry.Catalog),
+                    VbaProjectReferenceCatalogRefreshStatus.SkippedValidPersistentCache));
             }
         }
+
+        return results;
     }
 
     private void SavePersistedCatalog(VbaProjectReferenceCatalogDiscoveryResult discoveryResult)

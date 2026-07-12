@@ -162,7 +162,8 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
             var signatureHelp = index.GetSignatureHelp(uri, 5, "    generated.GeneratedMethod(".Length);
             var semanticTokens = index.GetSemanticTokens(uri);
 
-            Assert.Empty(results);
+            var result = Assert.Single(results);
+            Assert.Equal(VbaProjectReferenceCatalogRefreshStatus.SkippedValidPersistentCache, result.Status);
             Assert.Equal(0, discovery.CallCount);
             Assert.Contains("GeneratedMember", memberCompletion);
             Assert.DoesNotContain("BundledOnly", memberCompletion);
@@ -173,6 +174,49 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
             Assert.Contains(semanticTokens, token => token.Text == "GeneratedType" && token.TokenType == "class");
             Assert.Contains(semanticTokens, token => token.Text == "GeneratedMember" && token.TokenType == "property");
             Assert.True(cache.Identities.ContainsKey("Generated Library"));
+        }
+        finally
+        {
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task CatalogRefreshFallsBackToDiscoveryWhenPersistedCatalogMetadataIsIncompatible()
+    {
+        var cacheRoot = Directory.CreateTempSubdirectory("vba-ls-catalog-store-").FullName;
+        try
+        {
+            var store = new VbaProjectReferenceCatalogPersistentStore(cacheRoot);
+            store.Save(new VbaProjectReferenceCatalogPersistentEntry(
+                CreateIdentity("Generated Library"),
+                CreateGeneratedCatalog("Generated Library", "OldType", "OldMember")));
+            var indexPath = store.GetReferenceIndexPath("Generated Library");
+            File.WriteAllText(
+                indexPath,
+                File.ReadAllText(indexPath)
+                    .Replace(
+                        VbaProjectReferenceCatalogPersistentStore.CurrentGeneratorVersion,
+                        "older-generator",
+                        StringComparison.Ordinal));
+            var refreshedCatalog = CreateGeneratedCatalog("Generated Library", "GeneratedType", "GeneratedMember");
+            var discovery = new CountingCatalogDiscovery(
+                VbaProjectReferenceCatalogDiscoveryResult.Success(
+                    CreateIdentity("Generated Library"),
+                    refreshedCatalog));
+            var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
+            var service = new VbaProjectReferenceCatalogRefreshService(cache, discovery, store);
+            var selection = VbaProjectReferenceSelection.Create(
+                ProjectDocument.ExcelKind,
+                [new VbaProjectReference("Generated Library")]);
+
+            var results = await service.RefreshAsync(selection);
+
+            var result = Assert.Single(results);
+            Assert.Equal(VbaProjectReferenceCatalogRefreshStatus.Refreshed, result.Status);
+            Assert.Equal(1, discovery.CallCount);
+            Assert.True(result.DiscoveryResult.HasUsableCatalog);
+            Assert.True(cache.Current.HasCatalog("Generated Library"));
         }
         finally
         {
@@ -223,6 +267,13 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
 
     private sealed class CountingCatalogDiscovery : IVbaProjectReferenceCatalogDiscovery
     {
+        private readonly VbaProjectReferenceCatalogDiscoveryResult? result;
+
+        public CountingCatalogDiscovery(VbaProjectReferenceCatalogDiscoveryResult? result = null)
+        {
+            this.result = result;
+        }
+
         public int CallCount { get; private set; }
 
         public Task<VbaProjectReferenceCatalogDiscoveryResult> DiscoverAsync(
@@ -230,7 +281,7 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
             CancellationToken cancellationToken = default)
         {
             CallCount++;
-            return Task.FromResult(VbaProjectReferenceCatalogDiscoveryResult.Failure(
+            return Task.FromResult(result ?? VbaProjectReferenceCatalogDiscoveryResult.Failure(
                 referenceName,
                 "Discovery should not have been called."));
         }

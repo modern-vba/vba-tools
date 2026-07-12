@@ -1073,6 +1073,73 @@ public sealed class LanguageServerProcessTests
     }
 
     [Fact]
+    public async Task Server_logs_skipped_reference_catalog_refresh_for_valid_persisted_cache()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-persisted-catalog-").FullName;
+        var cacheRoot = Directory.CreateTempSubdirectory("vba-ls-persisted-catalog-cache-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(projectRoot, "Generated Library");
+            new VbaProjectReferenceCatalogPersistentStore(cacheRoot).Save(
+                new VbaProjectReferenceCatalogPersistentEntry(
+                    new VbaProjectReferenceCatalogIdentity(
+                        "Generated Library",
+                        "{33333333-3333-3333-3333-333333333333}",
+                        1,
+                        0,
+                        0,
+                        @"C:\TypeLibs\Generated.tlb"),
+                    new VbaProjectReferenceCatalog(
+                        "Generated Library",
+                        ["Generated"],
+                        [
+                            new VbaProjectReferenceDefinition(
+                                "Generated Library",
+                                "GeneratedType",
+                                VbaSourceDefinitionKind.Class)
+                        ])));
+
+            var serverProjectPath = Path.GetFullPath(
+                Path.Combine(
+                    AppContext.BaseDirectory,
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "src",
+                    "VbaLanguageServer.Cli",
+                    "VbaLanguageServer.Cli.csproj"));
+
+            using var process = StartLanguageServer(serverProjectPath, cacheRoot);
+            await using var stdin = process.StandardInput.BaseStream;
+            using var stdout = process.StandardOutput.BaseStream;
+
+            await InitializeAsync(stdin, stdout);
+            var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
+            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Public Sub Run()",
+                "End Sub"
+            ])));
+
+            var logMessage = await ReadLogMessageContainingAsync(stdout, "skipped TypeLib discovery");
+
+            Assert.Contains("Generated Library", logMessage);
+            await SendRequestAsync(stdin, stdout, 2, "shutdown", null);
+            await SendNotificationAsync(stdin, "exit", null);
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await process.WaitForExitAsync(cancellation.Token);
+            Assert.Equal(0, process.ExitCode);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Server_returns_generated_excel_workbook_member_completion_after_catalog_refresh()
     {
         if (!HasRegisteredTypeLib("Microsoft Excel 16.0 Object Library"))
@@ -2227,9 +2294,10 @@ public sealed class LanguageServerProcessTests
         }
     }
 
-    private static Process StartLanguageServer(string serverProjectPath)
+    private static Process StartLanguageServer(string serverProjectPath, string? referenceCatalogCacheRoot = null)
     {
-        var cacheRoot = Directory.CreateTempSubdirectory("vba-ls-process-cache-").FullName;
+        var ownsCacheRoot = referenceCatalogCacheRoot is null;
+        var cacheRoot = referenceCatalogCacheRoot ?? Directory.CreateTempSubdirectory("vba-ls-process-cache-").FullName;
         var startInfo = new ProcessStartInfo
         {
             FileName = "dotnet",
@@ -2256,6 +2324,11 @@ public sealed class LanguageServerProcessTests
         process.EnableRaisingEvents = true;
         process.Exited += (_, _) =>
         {
+            if (!ownsCacheRoot)
+            {
+                return;
+            }
+
             try
             {
                 Directory.Delete(cacheRoot, recursive: true);
@@ -2638,5 +2711,29 @@ public sealed class LanguageServerProcessTests
             && bytes[^3] == '\n'
             && bytes[^2] == '\r'
             && bytes[^1] == '\n';
+    }
+
+    private static async Task<string> ReadLogMessageContainingAsync(Stream stdout, string expectedText)
+    {
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        while (true)
+        {
+            var message = await ReadMessageAsync(stdout, cancellation.Token);
+            if (!message.TryGetProperty("method", out var methodElement)
+                || methodElement.GetString() != "window/logMessage")
+            {
+                continue;
+            }
+
+            var logMessage = message
+                .GetProperty("params")
+                .GetProperty("message")
+                .GetString()
+                ?? "";
+            if (logMessage.Contains(expectedText, StringComparison.Ordinal))
+            {
+                return logMessage;
+            }
+        }
     }
 }

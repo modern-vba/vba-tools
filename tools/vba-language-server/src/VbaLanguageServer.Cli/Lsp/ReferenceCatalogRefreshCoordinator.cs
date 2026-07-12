@@ -109,6 +109,15 @@ internal sealed class ReferenceCatalogRefreshCoordinator
         VbaProjectReferenceCatalogRefreshResult result,
         CancellationToken cancellationToken)
     {
+        if (result.Status == VbaProjectReferenceCatalogRefreshStatus.SkippedValidPersistentCache)
+        {
+            await transport.WriteLogMessageAsync(
+                3,
+                $"Reference catalog refresh: document '{documentName}' reference '{result.ReferenceName}' skipped TypeLib discovery because a current persisted catalog is available.",
+                cancellationToken);
+            return;
+        }
+
         var discovery = result.DiscoveryResult;
         if (discovery.IsFailure)
         {
