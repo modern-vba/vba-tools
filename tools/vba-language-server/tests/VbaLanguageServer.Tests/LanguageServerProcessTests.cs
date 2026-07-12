@@ -681,6 +681,9 @@ public sealed class LanguageServerProcessTests
             "Attribute VB_Name = \"Builder\"",
             "Option Explicit",
             "",
+            "Public WsSrv As IWorksheetService",
+            "Private HiddenSrv As IWorksheetService",
+            "",
             "Public Function BuildValue() As String",
             "End Function",
             "",
@@ -695,6 +698,7 @@ public sealed class LanguageServerProcessTests
             "Public Sub Run()",
             "    Dim currentValue As String",
             "    ",
+            "    WsSr",
             "End Sub"
         ]);
         const string callerUri = "file:///C:/work/Caller.bas";
@@ -723,10 +727,28 @@ public sealed class LanguageServerProcessTests
         Assert.Contains("If", labels);
         Assert.Contains("String", labels);
 
-        var outsideProcedureCompletion = await SendRequestAsync(
+        var publicModuleVariableCompletion = await SendRequestAsync(
             stdin,
             stdout,
             3,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = callerUri },
+                position = new { line = 6, character = "    WsSr".Length }
+            });
+        var publicModuleVariableLabels = publicModuleVariableCompletion
+            .GetProperty("result")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("label").GetString())
+            .ToArray();
+        Assert.Contains("WsSrv", publicModuleVariableLabels);
+        Assert.DoesNotContain("HiddenSrv", publicModuleVariableLabels);
+
+        var outsideProcedureCompletion = await SendRequestAsync(
+            stdin,
+            stdout,
+            4,
             "textDocument/completion",
             new
             {
@@ -740,7 +762,7 @@ public sealed class LanguageServerProcessTests
             .ToArray();
         Assert.DoesNotContain("currentValue", outsideLabels);
 
-        await SendRequestAsync(stdin, stdout, 4, "shutdown", null);
+        await SendRequestAsync(stdin, stdout, 5, "shutdown", null);
         await SendNotificationAsync(stdin, "exit", null);
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await process.WaitForExitAsync(cancellation.Token);

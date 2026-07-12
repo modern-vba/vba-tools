@@ -1761,6 +1761,12 @@ internal static class VbaSyntaxTreeParser
             return VbaDeclarationVisibility.Public;
         }
 
+        if (visibility.Equals("Public", StringComparison.OrdinalIgnoreCase)
+            || visibility.Equals("Friend", StringComparison.OrdinalIgnoreCase))
+        {
+            return VbaDeclarationVisibility.Public;
+        }
+
         return defaultPublic
             ? VbaDeclarationVisibility.Public
             : VbaDeclarationVisibility.Private;
