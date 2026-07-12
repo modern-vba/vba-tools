@@ -1,4 +1,5 @@
 using Microsoft.Win32;
+using System.Diagnostics;
 using System.Runtime.Versioning;
 using VbaLanguageServer.ProjectModel;
 
@@ -342,6 +343,7 @@ public sealed class VbaProjectReferenceCatalogCache
     private VbaProjectReferenceCatalogSet catalogSet;
     private long version;
     private readonly Dictionary<string, VbaProjectReferenceCatalogIdentity> identities = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, VbaProjectReferenceCatalogSource> catalogSources = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> refreshesInProgress = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
@@ -351,6 +353,10 @@ public sealed class VbaProjectReferenceCatalogCache
     public VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet catalogSet)
     {
         this.catalogSet = catalogSet;
+        foreach (var referenceName in catalogSet.ReferenceNames)
+        {
+            catalogSources[referenceName] = VbaProjectReferenceCatalogSource.Bundled;
+        }
     }
 
     /// <summary>
@@ -392,6 +398,37 @@ public sealed class VbaProjectReferenceCatalogCache
             {
                 return new Dictionary<string, VbaProjectReferenceCatalogIdentity>(identities, StringComparer.OrdinalIgnoreCase);
             }
+        }
+    }
+
+    /// <summary>
+    /// Gets the known source for each currently available catalog.
+    /// </summary>
+    public IReadOnlyDictionary<string, VbaProjectReferenceCatalogSource> CatalogSources
+    {
+        get
+        {
+            lock (gate)
+            {
+                return new Dictionary<string, VbaProjectReferenceCatalogSource>(
+                    catalogSources,
+                    StringComparer.OrdinalIgnoreCase);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Gets the known catalog source for a reference name.
+    /// </summary>
+    /// <param name="referenceName">The human-visible reference name.</param>
+    /// <returns>The catalog source, or <see cref="VbaProjectReferenceCatalogSource.Unavailable"/>.</returns>
+    public VbaProjectReferenceCatalogSource GetCatalogSource(string referenceName)
+    {
+        lock (gate)
+        {
+            return catalogSources.TryGetValue(referenceName, out var source)
+                ? source
+                : VbaProjectReferenceCatalogSource.Unavailable;
         }
     }
 
@@ -451,8 +488,24 @@ public sealed class VbaProjectReferenceCatalogCache
             if (result.Catalog is not null)
             {
                 catalogSet = catalogSet.WithCatalog(result.Catalog);
+                catalogSources[result.ReferenceName] = VbaProjectReferenceCatalogSource.Generated;
                 version++;
             }
+        }
+    }
+
+    /// <summary>
+    /// Stores a current persisted catalog and marks its TypeLib identity as resolved.
+    /// </summary>
+    /// <param name="entry">The persisted catalog entry.</param>
+    public void StorePersistedCatalog(VbaProjectReferenceCatalogPersistentEntry entry)
+    {
+        lock (gate)
+        {
+            identities[entry.Identity.ReferenceName] = entry.Identity;
+            catalogSet = catalogSet.WithCatalog(entry.Catalog);
+            catalogSources[entry.Identity.ReferenceName] = VbaProjectReferenceCatalogSource.Persisted;
+            version++;
         }
     }
 
@@ -465,6 +518,7 @@ public sealed class VbaProjectReferenceCatalogCache
         lock (gate)
         {
             catalogSet = catalogSet.WithCatalog(catalog);
+            catalogSources[catalog.ReferenceName] = VbaProjectReferenceCatalogSource.StalePersisted;
             version++;
         }
     }
@@ -492,6 +546,37 @@ public sealed record VbaProjectReferenceCatalogCacheState(
     long Version);
 
 /// <summary>
+/// Identifies where the active catalog for a reference came from.
+/// </summary>
+public enum VbaProjectReferenceCatalogSource
+{
+    /// <summary>
+    /// No editor metadata catalog is available for the reference.
+    /// </summary>
+    Unavailable,
+
+    /// <summary>
+    /// The catalog came from the bundled minimal metadata shipped with the language server.
+    /// </summary>
+    Bundled,
+
+    /// <summary>
+    /// The catalog came from a current persisted generated cache entry.
+    /// </summary>
+    Persisted,
+
+    /// <summary>
+    /// The catalog came from a stale persisted generated cache entry.
+    /// </summary>
+    StalePersisted,
+
+    /// <summary>
+    /// The catalog was generated from TypeLib metadata in the current session.
+    /// </summary>
+    Generated
+}
+
+/// <summary>
 /// Identifies how a reference catalog refresh request was handled.
 /// </summary>
 public enum VbaProjectReferenceCatalogRefreshStatus
@@ -509,7 +594,12 @@ public enum VbaProjectReferenceCatalogRefreshStatus
     /// <summary>
     /// A stale persisted catalog was loaded while refresh continues in the background.
     /// </summary>
-    LoadedStalePersistentCache
+    LoadedStalePersistentCache,
+
+    /// <summary>
+    /// A persisted cache entry could not be read, but refresh can continue.
+    /// </summary>
+    PersistentCacheReadWarning
 }
 
 /// <summary>
@@ -518,10 +608,20 @@ public enum VbaProjectReferenceCatalogRefreshStatus
 /// <param name="ReferenceName">The reference name refreshed.</param>
 /// <param name="DiscoveryResult">The discovery result for the reference.</param>
 /// <param name="Status">How the refresh request was handled.</param>
+/// <param name="Source">The best active catalog source after this result was handled.</param>
+/// <param name="Phase">The refresh phase that produced the result.</param>
+/// <param name="ExpensiveMetadataRan">Whether TypeLib discovery or metadata extraction was scheduled.</param>
+/// <param name="Elapsed">The elapsed time spent in the phase.</param>
+/// <param name="WarningMessage">A non-fatal warning associated with the result.</param>
 public sealed record VbaProjectReferenceCatalogRefreshResult(
     string ReferenceName,
     VbaProjectReferenceCatalogDiscoveryResult DiscoveryResult,
-    VbaProjectReferenceCatalogRefreshStatus Status = VbaProjectReferenceCatalogRefreshStatus.Refreshed);
+    VbaProjectReferenceCatalogRefreshStatus Status = VbaProjectReferenceCatalogRefreshStatus.Refreshed,
+    VbaProjectReferenceCatalogSource Source = VbaProjectReferenceCatalogSource.Unavailable,
+    string Phase = "typelib-discovery",
+    bool ExpensiveMetadataRan = true,
+    TimeSpan Elapsed = default,
+    string? WarningMessage = null);
 
 /// <summary>
 /// Refreshes missing reference catalogs for an active reference selection.
@@ -594,6 +694,8 @@ public sealed class VbaProjectReferenceCatalogRefreshService
         foreach (var referenceName in refreshReferenceNames)
         {
             VbaProjectReferenceCatalogDiscoveryResult discoveryResult;
+            var sourceBeforeDiscovery = cache.GetCatalogSource(referenceName);
+            var stopwatch = Stopwatch.StartNew();
             try
             {
                 discoveryResult = await refreshWorker.DiscoverAsync(discovery, referenceName, cancellationToken);
@@ -607,10 +709,24 @@ public sealed class VbaProjectReferenceCatalogRefreshService
             {
                 discoveryResult = VbaProjectReferenceCatalogDiscoveryResult.Failure(referenceName, ex.Message);
             }
+            finally
+            {
+                stopwatch.Stop();
+            }
 
             cache.Store(discoveryResult);
-            SavePersistedCatalog(discoveryResult);
-            results.Add(new VbaProjectReferenceCatalogRefreshResult(referenceName, discoveryResult));
+            var saveWarning = SavePersistedCatalog(discoveryResult);
+            var source = discoveryResult.HasUsableCatalog
+                ? VbaProjectReferenceCatalogSource.Generated
+                : sourceBeforeDiscovery;
+            results.Add(new VbaProjectReferenceCatalogRefreshResult(
+                referenceName,
+                discoveryResult,
+                Source: source,
+                Phase: "typelib-discovery",
+                ExpensiveMetadataRan: true,
+                Elapsed: stopwatch.Elapsed,
+                WarningMessage: saveWarning));
         }
 
         return results;
@@ -635,19 +751,37 @@ public sealed class VbaProjectReferenceCatalogRefreshService
                 continue;
             }
 
+            var stopwatch = Stopwatch.StartNew();
             var loadResult = persistentStore.Load(referenceName);
+            stopwatch.Stop();
+            if (loadResult.Entry is null && loadResult.WarningMessage is not null)
+            {
+                results.Add(new VbaProjectReferenceCatalogRefreshResult(
+                    referenceName,
+                    VbaProjectReferenceCatalogDiscoveryResult.Failure(referenceName, loadResult.WarningMessage),
+                    VbaProjectReferenceCatalogRefreshStatus.PersistentCacheReadWarning,
+                    cache.GetCatalogSource(referenceName),
+                    "persistent-load",
+                    ExpensiveMetadataRan: false,
+                    Elapsed: stopwatch.Elapsed,
+                    WarningMessage: loadResult.WarningMessage));
+                continue;
+            }
+
             if (loadResult.Entry is not null
                 && loadResult.Status == VbaProjectReferenceCatalogPersistentLoadStatus.Current)
             {
-                cache.Store(VbaProjectReferenceCatalogDiscoveryResult.Success(
-                    loadResult.Entry.Identity,
-                    loadResult.Entry.Catalog));
+                cache.StorePersistedCatalog(loadResult.Entry);
                 results.Add(new VbaProjectReferenceCatalogRefreshResult(
                     referenceName,
                     VbaProjectReferenceCatalogDiscoveryResult.Success(
                         loadResult.Entry.Identity,
-                    loadResult.Entry.Catalog),
-                    VbaProjectReferenceCatalogRefreshStatus.SkippedValidPersistentCache));
+                        loadResult.Entry.Catalog),
+                    VbaProjectReferenceCatalogRefreshStatus.SkippedValidPersistentCache,
+                    VbaProjectReferenceCatalogSource.Persisted,
+                    "persistent-load",
+                    ExpensiveMetadataRan: false,
+                    Elapsed: stopwatch.Elapsed));
                 continue;
             }
 
@@ -660,18 +794,23 @@ public sealed class VbaProjectReferenceCatalogRefreshService
                     VbaProjectReferenceCatalogDiscoveryResult.Success(
                         loadResult.Entry.Identity,
                         loadResult.Entry.Catalog),
-                    VbaProjectReferenceCatalogRefreshStatus.LoadedStalePersistentCache));
+                    VbaProjectReferenceCatalogRefreshStatus.LoadedStalePersistentCache,
+                    VbaProjectReferenceCatalogSource.StalePersisted,
+                    "persistent-load",
+                    ExpensiveMetadataRan: false,
+                    Elapsed: stopwatch.Elapsed,
+                    WarningMessage: loadResult.WarningMessage));
             }
         }
 
         return results;
     }
 
-    private void SavePersistedCatalog(VbaProjectReferenceCatalogDiscoveryResult discoveryResult)
+    private string? SavePersistedCatalog(VbaProjectReferenceCatalogDiscoveryResult discoveryResult)
     {
         if (persistentStore is null || discoveryResult.Identities.Count != 1 || discoveryResult.Catalog is null)
         {
-            return;
+            return null;
         }
 
         try
@@ -679,9 +818,11 @@ public sealed class VbaProjectReferenceCatalogRefreshService
             persistentStore.Save(new VbaProjectReferenceCatalogPersistentEntry(
                 discoveryResult.Identities[0],
                 discoveryResult.Catalog));
+            return null;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+            return $"Persisted reference catalog cache for '{discoveryResult.ReferenceName}' could not be written: {ex.Message}";
         }
     }
 }

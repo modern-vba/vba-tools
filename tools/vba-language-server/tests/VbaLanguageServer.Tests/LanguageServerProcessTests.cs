@@ -1123,9 +1123,212 @@ public sealed class LanguageServerProcessTests
                 "End Sub"
             ])));
 
-            var logMessage = await ReadLogMessageContainingAsync(stdout, "skipped TypeLib discovery");
+            var logMessage = await ReadLogMessageContainingAsync(
+                stdout,
+                "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
 
             Assert.Contains("Generated Library", logMessage);
+            await SendRequestAsync(stdin, stdout, 2, "shutdown", null);
+            await SendNotificationAsync(stdin, "exit", null);
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await process.WaitForExitAsync(cancellation.Token);
+            Assert.Equal(0, process.ExitCode);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_logs_bundled_reference_catalog_availability()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-bundled-catalog-log-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(projectRoot, "Microsoft Excel 16.0 Object Library");
+            var serverProjectPath = Path.GetFullPath(
+                Path.Combine(
+                    AppContext.BaseDirectory,
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "src",
+                    "VbaLanguageServer.Cli",
+                    "VbaLanguageServer.Cli.csproj"));
+
+            using var process = StartLanguageServer(serverProjectPath);
+            await using var stdin = process.StandardInput.BaseStream;
+            using var stdout = process.StandardOutput.BaseStream;
+
+            await InitializeAsync(stdin, stdout);
+            var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
+            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Public Sub Run()",
+                "End Sub"
+            ])));
+
+            var logMessage = await ReadLogMessageContainingAsync(
+                stdout,
+                "source=bundled outcome=available");
+
+            Assert.Contains("Microsoft Excel 16.0 Object Library", logMessage);
+            await SendRequestAsync(stdin, stdout, 2, "shutdown", null);
+            await SendNotificationAsync(stdin, "exit", null);
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await process.WaitForExitAsync(cancellation.Token);
+            Assert.Equal(0, process.ExitCode);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_logs_stale_and_failed_reference_catalog_diagnostics_once()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-stale-catalog-log-").FullName;
+        var cacheRoot = Directory.CreateTempSubdirectory("vba-ls-stale-catalog-cache-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(projectRoot, "Generated Library");
+            var store = new VbaProjectReferenceCatalogPersistentStore(cacheRoot);
+            store.Save(new VbaProjectReferenceCatalogPersistentEntry(
+                CreateGeneratedReferenceCatalogIdentity("Generated Library"),
+                CreateGeneratedReferenceCatalog("Generated Library")));
+            MarkReferenceCatalogIndexAsStale(store, "Generated Library");
+
+            var serverProjectPath = Path.GetFullPath(
+                Path.Combine(
+                    AppContext.BaseDirectory,
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "src",
+                    "VbaLanguageServer.Cli",
+                    "VbaLanguageServer.Cli.csproj"));
+
+            using var process = StartLanguageServer(serverProjectPath, cacheRoot);
+            await using var stdin = process.StandardInput.BaseStream;
+            using var stdout = process.StandardOutput.BaseStream;
+
+            await InitializeAsync(stdin, stdout);
+            var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
+            var text = string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Public Sub Run()",
+                "End Sub"
+            ]);
+            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, text));
+
+            var staleMessage = await ReadLogMessageContainingAsync(
+                stdout,
+                "source=stale-persisted outcome=stale phase=persistent-load expensiveMetadata=false");
+            var failedMessage = await ReadLogMessageContainingAsync(
+                stdout,
+                "source=stale-persisted outcome=failed phase=typelib-discovery expensiveMetadata=true");
+
+            Assert.Contains("Generated Library", staleMessage);
+            Assert.Contains("warning=", staleMessage);
+            Assert.Contains("No matching TypeLib registry entry", failedMessage);
+
+            await SendNotificationAsync(
+                stdin,
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new
+                    {
+                        uri,
+                        version = 2
+                    },
+                    contentChanges = new[]
+                    {
+                        new
+                        {
+                            text
+                        }
+                    }
+                });
+
+            var duplicateFailure = await TryReadLogMessageAsync(
+                stdout,
+                "source=stale-persisted outcome=failed phase=typelib-discovery expensiveMetadata=true",
+                TimeSpan.FromMilliseconds(500));
+
+            Assert.Null(duplicateFailure);
+
+            await SendRequestAsync(stdin, stdout, 2, "shutdown", null);
+            await SendNotificationAsync(stdin, "exit", null);
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await process.WaitForExitAsync(cancellation.Token);
+            Assert.Equal(0, process.ExitCode);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_logs_corrupt_reference_catalog_cache_as_non_fatal()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-corrupt-catalog-log-").FullName;
+        var cacheRoot = Directory.CreateTempSubdirectory("vba-ls-corrupt-catalog-cache-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(projectRoot, "Generated Library");
+            var store = new VbaProjectReferenceCatalogPersistentStore(cacheRoot);
+            store.Save(new VbaProjectReferenceCatalogPersistentEntry(
+                CreateGeneratedReferenceCatalogIdentity("Generated Library"),
+                CreateGeneratedReferenceCatalog("Generated Library")));
+            File.WriteAllText(
+                store.GetReferenceIndexPath("Generated Library"),
+                "{ this is not valid json");
+
+            var serverProjectPath = Path.GetFullPath(
+                Path.Combine(
+                    AppContext.BaseDirectory,
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "src",
+                    "VbaLanguageServer.Cli",
+                    "VbaLanguageServer.Cli.csproj"));
+
+            using var process = StartLanguageServer(serverProjectPath, cacheRoot);
+            await using var stdin = process.StandardInput.BaseStream;
+            using var stdout = process.StandardOutput.BaseStream;
+
+            await InitializeAsync(stdin, stdout);
+            var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
+            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Public Sub Run()",
+                "End Sub"
+            ])));
+
+            var corruptMessage = await ReadLogMessageContainingAsync(
+                stdout,
+                "source=unavailable outcome=cache-read-warning phase=persistent-load expensiveMetadata=false");
+            var failedMessage = await ReadLogMessageContainingAsync(
+                stdout,
+                "source=unavailable outcome=failed phase=typelib-discovery expensiveMetadata=true");
+
+            Assert.Contains("non-fatal", corruptMessage);
+            Assert.Contains("could not be read", corruptMessage);
+            Assert.Contains("No matching TypeLib registry entry", failedMessage);
+
             await SendRequestAsync(stdin, stdout, 2, "shutdown", null);
             await SendNotificationAsync(stdin, "exit", null);
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
@@ -1577,7 +1780,9 @@ public sealed class LanguageServerProcessTests
             Assert.Contains("external editor definitions are unavailable", availabilityMessage, StringComparison.Ordinal);
             Assert.DoesNotContain("warning", availabilityMessage, StringComparison.OrdinalIgnoreCase);
 
-            var discoveryFailure = await ReadLogMessageAsync(stdout, "could not be discovered");
+            var discoveryFailure = await ReadLogMessageAsync(
+                stdout,
+                "source=unavailable outcome=failed phase=typelib-discovery expensiveMetadata=true");
             Assert.Equal(2, discoveryFailure.GetProperty("params").GetProperty("type").GetInt32());
             var discoveryFailureMessage = discoveryFailure.GetProperty("params").GetProperty("message").GetString();
             Assert.Contains("Uncataloged Reference Library", discoveryFailureMessage, StringComparison.Ordinal);
@@ -2597,6 +2802,40 @@ public sealed class LanguageServerProcessTests
                 {
                     WriteIndented = true
                 }));
+    }
+
+    private static VbaProjectReferenceCatalogIdentity CreateGeneratedReferenceCatalogIdentity(string referenceName)
+        => new(
+            referenceName,
+            "{33333333-3333-3333-3333-333333333333}",
+            1,
+            0,
+            0,
+            @"C:\TypeLibs\Generated.tlb");
+
+    private static VbaProjectReferenceCatalog CreateGeneratedReferenceCatalog(string referenceName)
+        => new(
+            referenceName,
+            ["Generated"],
+            [
+                new VbaProjectReferenceDefinition(
+                    referenceName,
+                    "GeneratedType",
+                    VbaSourceDefinitionKind.Class)
+            ]);
+
+    private static void MarkReferenceCatalogIndexAsStale(
+        VbaProjectReferenceCatalogPersistentStore store,
+        string referenceName)
+    {
+        var indexPath = store.GetReferenceIndexPath(referenceName);
+        var json = File.ReadAllText(indexPath);
+        File.WriteAllText(
+            indexPath,
+            json.Replace(
+                VbaProjectReferenceCatalogPersistentStore.CurrentGeneratorVersion,
+                "old-generator",
+                StringComparison.Ordinal));
     }
 
     private static async Task WriteMessageAsync(Stream stream, object message)

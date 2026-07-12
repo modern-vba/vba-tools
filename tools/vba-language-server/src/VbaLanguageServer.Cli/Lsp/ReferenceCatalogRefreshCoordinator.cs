@@ -11,6 +11,8 @@ internal sealed class ReferenceCatalogRefreshCoordinator
     private readonly VbaProjectReferenceCatalogCache referenceCatalogCache;
     private readonly VbaProjectReferenceCatalogRefreshService catalogRefreshService;
     private readonly LspMessageTransport transport;
+    private readonly object diagnosticGate = new();
+    private readonly HashSet<string> publishedDiagnostics = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Creates a reference catalog refresh coordinator.
@@ -57,6 +59,21 @@ internal sealed class ReferenceCatalogRefreshCoordinator
             await transport.WriteLogMessageAsync(
                 message.Type,
                 message.Text,
+                cancellationToken);
+        }
+
+        foreach (var reference in context.ReferenceSelection?.References ?? [])
+        {
+            var source = referenceCatalogCache.GetCatalogSource(reference.Name);
+            if (source == VbaProjectReferenceCatalogSource.Unavailable)
+            {
+                continue;
+            }
+
+            await WriteLogMessageOnceAsync(
+                3,
+                $"Reference catalog availability: document '{context.Resolution.DocumentName}' reference '{reference.Name}' source={FormatCatalogSource(source)} outcome=available.",
+                $"availability\u001f{context.Resolution.DocumentName}\u001f{reference.Name}\u001f{source}",
                 cancellationToken);
         }
     }
@@ -109,40 +126,31 @@ internal sealed class ReferenceCatalogRefreshCoordinator
         VbaProjectReferenceCatalogRefreshResult result,
         CancellationToken cancellationToken)
     {
+        await PublishCatalogRefreshDiagnosticAsync(documentName, result, cancellationToken);
+
+        if (result.Status == VbaProjectReferenceCatalogRefreshStatus.PersistentCacheReadWarning)
+        {
+            return;
+        }
+
         if (result.Status == VbaProjectReferenceCatalogRefreshStatus.SkippedValidPersistentCache)
         {
-            await transport.WriteLogMessageAsync(
-                3,
-                $"Reference catalog refresh: document '{documentName}' reference '{result.ReferenceName}' skipped TypeLib discovery because a current persisted catalog is available.",
-                cancellationToken);
             return;
         }
 
         if (result.Status == VbaProjectReferenceCatalogRefreshStatus.LoadedStalePersistentCache)
         {
-            await transport.WriteLogMessageAsync(
-                3,
-                $"Reference catalog refresh: document '{documentName}' reference '{result.ReferenceName}' loaded a stale persisted catalog while background refresh continues.",
-                cancellationToken);
             return;
         }
 
         var discovery = result.DiscoveryResult;
         if (discovery.IsFailure)
         {
-            await transport.WriteLogMessageAsync(
-                2,
-                $"Reference catalog discovery warning: document '{documentName}' reference '{result.ReferenceName}' could not be discovered for {uri}: {discovery.ErrorMessage}",
-                cancellationToken);
             return;
         }
 
         if (discovery.IsAmbiguous)
         {
-            await transport.WriteLogMessageAsync(
-                2,
-                $"Reference catalog discovery warning: document '{documentName}' reference '{result.ReferenceName}' is ambiguous across {discovery.Identities.Count} TypeLib candidates; no catalog was cached.",
-                cancellationToken);
             return;
         }
 
@@ -163,4 +171,103 @@ internal sealed class ReferenceCatalogRefreshCoordinator
                 cancellationToken);
         }
     }
+
+    private async Task PublishCatalogRefreshDiagnosticAsync(
+        string documentName,
+        VbaProjectReferenceCatalogRefreshResult result,
+        CancellationToken cancellationToken)
+    {
+        var outcome = FormatRefreshOutcome(result);
+        var warning = FormatRefreshWarning(result);
+        var message =
+            $"Reference catalog refresh diagnostics: document '{documentName}' reference '{result.ReferenceName}' source={FormatCatalogSource(result.Source)} outcome={outcome} phase={result.Phase} expensiveMetadata={FormatBoolean(result.ExpensiveMetadataRan)} elapsedMs={FormatElapsedMilliseconds(result.Elapsed)}{warning}.";
+        var type = outcome is "failed" or "ambiguous" or "cache-read-warning" ? 2 : 3;
+        var key = string.Join(
+            "\u001f",
+            "refresh",
+            documentName,
+            result.ReferenceName,
+            FormatCatalogSource(result.Source),
+            outcome,
+            result.Phase,
+            result.WarningMessage ?? result.DiscoveryResult.ErrorMessage ?? "");
+
+        await WriteLogMessageOnceAsync(type, message, key, cancellationToken);
+    }
+
+    private async Task WriteLogMessageOnceAsync(
+        int type,
+        string message,
+        string key,
+        CancellationToken cancellationToken)
+    {
+        lock (diagnosticGate)
+        {
+            if (!publishedDiagnostics.Add(key))
+            {
+                return;
+            }
+        }
+
+        await transport.WriteLogMessageAsync(type, message, cancellationToken);
+    }
+
+    private static string FormatCatalogSource(VbaProjectReferenceCatalogSource source)
+        => source switch
+        {
+            VbaProjectReferenceCatalogSource.Bundled => "bundled",
+            VbaProjectReferenceCatalogSource.Persisted => "persisted",
+            VbaProjectReferenceCatalogSource.StalePersisted => "stale-persisted",
+            VbaProjectReferenceCatalogSource.Generated => "generated",
+            _ => "unavailable"
+        };
+
+    private static string FormatRefreshOutcome(VbaProjectReferenceCatalogRefreshResult result)
+    {
+        if (result.Status == VbaProjectReferenceCatalogRefreshStatus.SkippedValidPersistentCache)
+        {
+            return "skipped";
+        }
+
+        if (result.Status == VbaProjectReferenceCatalogRefreshStatus.LoadedStalePersistentCache)
+        {
+            return "stale";
+        }
+
+        if (result.Status == VbaProjectReferenceCatalogRefreshStatus.PersistentCacheReadWarning)
+        {
+            return "cache-read-warning";
+        }
+
+        if (result.DiscoveryResult.IsFailure)
+        {
+            return "failed";
+        }
+
+        if (result.DiscoveryResult.IsAmbiguous)
+        {
+            return "ambiguous";
+        }
+
+        return result.DiscoveryResult.HasUsableCatalog ? "refreshed" : "skipped";
+    }
+
+    private static string FormatRefreshWarning(VbaProjectReferenceCatalogRefreshResult result)
+    {
+        var warning = result.WarningMessage ?? result.DiscoveryResult.ErrorMessage;
+        if (string.IsNullOrWhiteSpace(warning) && result.DiscoveryResult.IsAmbiguous)
+        {
+            warning = $"Reference matched {result.DiscoveryResult.Identities.Count} TypeLib candidates.";
+        }
+
+        return string.IsNullOrWhiteSpace(warning)
+            ? ""
+            : $" warning=non-fatal: {warning.ReplaceLineEndings(" ")}";
+    }
+
+    private static string FormatBoolean(bool value)
+        => value ? "true" : "false";
+
+    private static long FormatElapsedMilliseconds(TimeSpan elapsed)
+        => Math.Max(0, (long)Math.Ceiling(elapsed.TotalMilliseconds));
 }

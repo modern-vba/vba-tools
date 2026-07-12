@@ -210,6 +210,14 @@ public sealed class VbaProjectReferenceCatalogSet
     }
 
     /// <summary>
+    /// Gets the reference names that currently have catalogs.
+    /// </summary>
+    public IReadOnlyList<string> ReferenceNames
+        => catalogs.Keys
+            .OrderBy(referenceName => referenceName, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+    /// <summary>
     /// Determines whether a source definition originated from a reference catalog.
     /// </summary>
     /// <param name="definition">The definition to inspect.</param>

@@ -390,6 +390,41 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
         }
     }
 
+    [Fact]
+    public async Task CatalogRefreshReportsNonFatalPersistentWriteFailure()
+    {
+        var tempRoot = Directory.CreateTempSubdirectory("vba-ls-catalog-store-").FullName;
+        try
+        {
+            var cacheRootFile = Path.Combine(tempRoot, "cache-root");
+            File.WriteAllText(cacheRootFile, "not a directory");
+            var refreshedCatalog = CreateGeneratedCatalog("Generated Library", "GeneratedType", "GeneratedMember");
+            var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
+            var service = new VbaProjectReferenceCatalogRefreshService(
+                cache,
+                new CountingCatalogDiscovery(VbaProjectReferenceCatalogDiscoveryResult.Success(
+                    CreateIdentity("Generated Library"),
+                    refreshedCatalog)),
+                new VbaProjectReferenceCatalogPersistentStore(cacheRootFile));
+            var selection = VbaProjectReferenceSelection.Create(
+                ProjectDocument.ExcelKind,
+                [new VbaProjectReference("Generated Library")]);
+
+            var result = Assert.Single(await service.RefreshAsync(selection));
+
+            Assert.True(result.DiscoveryResult.HasUsableCatalog);
+            Assert.Equal(VbaProjectReferenceCatalogSource.Generated, result.Source);
+            Assert.True(result.ExpensiveMetadataRan);
+            Assert.Equal("typelib-discovery", result.Phase);
+            Assert.Contains("could not be written", result.WarningMessage, StringComparison.OrdinalIgnoreCase);
+            Assert.True(cache.Current.HasCatalog("Generated Library"));
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
     private static VbaProjectReferenceCatalogIdentity CreateIdentity(string referenceName)
         => new(
             referenceName,
