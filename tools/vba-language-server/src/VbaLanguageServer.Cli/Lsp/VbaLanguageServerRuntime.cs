@@ -41,9 +41,11 @@ internal sealed class VbaLanguageServerRuntime
         var transport = new LspMessageTransport(input, output);
         var referenceCatalogCache = new VbaProjectReferenceCatalogCache(
             VbaProjectReferenceCatalogSet.CreateBundled());
+        var catalogDiscovery = BlockingReferenceCatalogDiscoveryHook.WrapIfConfigured(
+            new TypeLibReferenceCatalogDiscovery(new RegistryTypeLibRegistryReader()));
         var catalogRefreshService = new VbaProjectReferenceCatalogRefreshService(
             referenceCatalogCache,
-            new TypeLibReferenceCatalogDiscovery(new RegistryTypeLibRegistryReader()),
+            catalogDiscovery,
             VbaProjectReferenceCatalogPersistentStore.CreateDefault());
         var workspace = new VbaLanguageWorkspace(referenceCatalogCache);
         var features = new VbaLanguageFeatureService(workspace);

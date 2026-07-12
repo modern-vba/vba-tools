@@ -1190,6 +1190,203 @@ public sealed class LanguageServerProcessTests
     }
 
     [Fact]
+    public async Task Server_uses_current_persisted_excel_catalog_for_first_completion_without_discovery()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-current-startup-catalog-").FullName;
+        var cacheRoot = Directory.CreateTempSubdirectory("vba-ls-current-startup-cache-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(projectRoot, "Microsoft Excel 16.0 Object Library");
+            new VbaProjectReferenceCatalogPersistentStore(cacheRoot).Save(
+                new VbaProjectReferenceCatalogPersistentEntry(
+                    CreateGeneratedReferenceCatalogIdentity("Microsoft Excel 16.0 Object Library"),
+                    CreateGeneratedExcelReferenceCatalog()));
+            var discoveryStartedFile = Path.Combine(projectRoot, "discovery-started.txt");
+            var discoveryReleaseFile = Path.Combine(projectRoot, "discovery-release.txt");
+
+            var serverProjectPath = Path.GetFullPath(
+                Path.Combine(
+                    AppContext.BaseDirectory,
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "src",
+                    "VbaLanguageServer.Cli",
+                    "VbaLanguageServer.Cli.csproj"));
+
+            using var process = StartLanguageServer(
+                serverProjectPath,
+                cacheRoot,
+                new Dictionary<string, string>
+                {
+                    ["VBA_TOOLS_REFERENCE_CATALOG_DISCOVERY_STARTED_FILE"] = discoveryStartedFile,
+                    ["VBA_TOOLS_REFERENCE_CATALOG_DISCOVERY_RELEASE_FILE"] = discoveryReleaseFile
+                });
+            await using var stdin = process.StandardInput.BaseStream;
+            using var stdout = process.StandardOutput.BaseStream;
+
+            await InitializeAsync(stdin, stdout);
+            var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
+            var text = CreateExcelStartupCatalogWorkerText();
+            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, text));
+
+            var completion = await SendRequestAsync(
+                stdin,
+                stdout,
+                2,
+                "textDocument/completion",
+                new
+                {
+                    textDocument = new { uri },
+                    position = new
+                    {
+                        line = 7,
+                        character = "    Set target_sheet = target_book.W".Length
+                    }
+                });
+            var completionLabels = completion
+                .GetProperty("result")
+                .EnumerateArray()
+                .Select(item => item.GetProperty("label").GetString())
+                .ToArray();
+            var discoveryStarted = await TryWaitForFileAsync(
+                discoveryStartedFile,
+                TimeSpan.FromMilliseconds(300));
+
+            Assert.Contains("Worksheets", completionLabels);
+            Assert.False(discoveryStarted);
+
+            File.WriteAllText(discoveryReleaseFile, "release");
+            await SendRequestAsync(stdin, stdout, 3, "shutdown", null);
+            await SendNotificationAsync(stdin, "exit", null);
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await process.WaitForExitAsync(cancellation.Token);
+            Assert.Equal(0, process.ExitCode);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_uses_stale_persisted_excel_catalog_for_editor_features_while_refresh_is_blocked()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-stale-startup-catalog-").FullName;
+        var cacheRoot = Directory.CreateTempSubdirectory("vba-ls-stale-startup-cache-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(projectRoot, "Microsoft Excel 16.0 Object Library");
+            var store = new VbaProjectReferenceCatalogPersistentStore(cacheRoot);
+            store.Save(new VbaProjectReferenceCatalogPersistentEntry(
+                CreateGeneratedReferenceCatalogIdentity("Microsoft Excel 16.0 Object Library"),
+                CreateGeneratedExcelReferenceCatalog()));
+            MarkReferenceCatalogIndexAsStale(store, "Microsoft Excel 16.0 Object Library");
+            var discoveryStartedFile = Path.Combine(projectRoot, "discovery-started.txt");
+            var discoveryReleaseFile = Path.Combine(projectRoot, "discovery-release.txt");
+
+            var serverProjectPath = Path.GetFullPath(
+                Path.Combine(
+                    AppContext.BaseDirectory,
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "src",
+                    "VbaLanguageServer.Cli",
+                    "VbaLanguageServer.Cli.csproj"));
+
+            using var process = StartLanguageServer(
+                serverProjectPath,
+                cacheRoot,
+                new Dictionary<string, string>
+                {
+                    ["VBA_TOOLS_REFERENCE_CATALOG_DISCOVERY_STARTED_FILE"] = discoveryStartedFile,
+                    ["VBA_TOOLS_REFERENCE_CATALOG_DISCOVERY_RELEASE_FILE"] = discoveryReleaseFile
+                });
+            await using var stdin = process.StandardInput.BaseStream;
+            using var stdout = process.StandardOutput.BaseStream;
+
+            await InitializeAsync(stdin, stdout);
+            var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
+            var text = CreateExcelStartupCatalogWorkerText();
+            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, text));
+            await WaitForFileAsync(discoveryStartedFile, TimeSpan.FromSeconds(5));
+
+            var completion = await SendRequestAsync(
+                stdin,
+                stdout,
+                2,
+                "textDocument/completion",
+                new
+                {
+                    textDocument = new { uri },
+                    position = new
+                    {
+                        line = 7,
+                        character = "    Set target_sheet = target_book.W".Length
+                    }
+                });
+            var completionLabels = completion
+                .GetProperty("result")
+                .EnumerateArray()
+                .Select(item => item.GetProperty("label").GetString())
+                .ToArray();
+            var signatureHelp = await SendPositionRequestAsync(
+                stdin,
+                stdout,
+                3,
+                "textDocument/signatureHelp",
+                uri,
+                text,
+                "Range(",
+                "Range(".Length);
+            var semanticTokensResponse = await SendRequestAsync(
+                stdin,
+                stdout,
+                4,
+                "textDocument/semanticTokens/full",
+                new
+                {
+                    textDocument = new { uri }
+                });
+            var semanticTokens = DecodeSemanticTokens(semanticTokensResponse, text);
+
+            Assert.Contains("Worksheets", completionLabels);
+            var signature = signatureHelp
+                .GetProperty("result")
+                .GetProperty("signatures")
+                .EnumerateArray()
+                .Single();
+            Assert.Equal("Range(Cell1, Cell2) As Range", signature.GetProperty("label").GetString());
+            Assert.Contains(semanticTokens, token =>
+                token.Text == "Workbook"
+                && token.TokenType == "class"
+                && !token.TokenModifiers.Contains("declaration"));
+            Assert.Contains(semanticTokens, token =>
+                token.Text == "Range"
+                && token.TokenType == "property"
+                && token.Line == 8);
+
+            File.WriteAllText(discoveryReleaseFile, "release");
+            await SendRequestAsync(stdin, stdout, 5, "shutdown", null);
+            await SendNotificationAsync(stdin, "exit", null);
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await process.WaitForExitAsync(cancellation.Token);
+            Assert.Equal(0, process.ExitCode);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Server_logs_stale_and_failed_reference_catalog_diagnostics_once()
     {
         var projectRoot = Directory.CreateTempSubdirectory("vba-ls-stale-catalog-log-").FullName;
@@ -2499,7 +2696,10 @@ public sealed class LanguageServerProcessTests
         }
     }
 
-    private static Process StartLanguageServer(string serverProjectPath, string? referenceCatalogCacheRoot = null)
+    private static Process StartLanguageServer(
+        string serverProjectPath,
+        string? referenceCatalogCacheRoot = null,
+        IReadOnlyDictionary<string, string>? environment = null)
     {
         var ownsCacheRoot = referenceCatalogCacheRoot is null;
         var cacheRoot = referenceCatalogCacheRoot ?? Directory.CreateTempSubdirectory("vba-ls-process-cache-").FullName;
@@ -2512,6 +2712,11 @@ public sealed class LanguageServerProcessTests
             UseShellExecute = false
         };
         startInfo.Environment[VbaProjectReferenceCatalogPersistentStore.CacheRootEnvironmentVariable] = cacheRoot;
+        foreach (var (name, value) in environment ?? new Dictionary<string, string>())
+        {
+            startInfo.Environment[name] = value;
+        }
+
         startInfo.ArgumentList.Add("run");
         startInfo.ArgumentList.Add("--project");
         startInfo.ArgumentList.Add(serverProjectPath);
@@ -2824,6 +3029,68 @@ public sealed class LanguageServerProcessTests
                     VbaSourceDefinitionKind.Class)
             ]);
 
+    private static VbaProjectReferenceCatalog CreateGeneratedExcelReferenceCatalog()
+        => new(
+            "Microsoft Excel 16.0 Object Library",
+            ["Excel"],
+            [
+                new VbaProjectReferenceDefinition(
+                    "Microsoft Excel 16.0 Object Library",
+                    "Workbook",
+                    VbaSourceDefinitionKind.Class,
+                    "Represents a Microsoft Excel workbook."),
+                new VbaProjectReferenceDefinition(
+                    "Microsoft Excel 16.0 Object Library",
+                    "Worksheets",
+                    VbaSourceDefinitionKind.Class,
+                    "Represents the worksheets in a workbook."),
+                new VbaProjectReferenceDefinition(
+                    "Microsoft Excel 16.0 Object Library",
+                    "Worksheet",
+                    VbaSourceDefinitionKind.Class,
+                    "Represents a Microsoft Excel worksheet."),
+                new VbaProjectReferenceDefinition(
+                    "Microsoft Excel 16.0 Object Library",
+                    "Range",
+                    VbaSourceDefinitionKind.Class,
+                    "Represents a cell or range of cells."),
+                new VbaProjectReferenceDefinition(
+                    "Microsoft Excel 16.0 Object Library",
+                    "Worksheets",
+                    VbaSourceDefinitionKind.Property,
+                    "Returns the workbook worksheets.",
+                    ParentTypeName: "Workbook",
+                    TypeReference: new VbaTypeReference("Worksheets", "Excel")),
+                new VbaProjectReferenceDefinition(
+                    "Microsoft Excel 16.0 Object Library",
+                    "Range",
+                    VbaSourceDefinitionKind.Property,
+                    "Returns a Range object.",
+                    new VbaCallableSignature(
+                        "Range(Cell1, Cell2) As Range",
+                        [
+                            new VbaCallableParameter("Cell1", "The first cell."),
+                            new VbaCallableParameter("Cell2", "The second cell.")
+                        ],
+                        "Returns a Range object."),
+                    ParentTypeName: "Worksheet",
+                    TypeReference: new VbaTypeReference("Range", "Excel"))
+            ]);
+
+    private static string CreateExcelStartupCatalogWorkerText()
+        => string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Option Explicit",
+            "",
+            "Public Sub Run()",
+            "    Dim target_book As Workbook",
+            "    Dim target_sheet As Worksheet",
+            "    Dim target_range As Range",
+            "    Set target_sheet = target_book.W",
+            "    Set target_range = target_sheet.Range(",
+            "End Sub"
+        ]);
+
     private static void MarkReferenceCatalogIndexAsStale(
         VbaProjectReferenceCatalogPersistentStore store,
         string referenceName)
@@ -2836,6 +3103,30 @@ public sealed class LanguageServerProcessTests
                 VbaProjectReferenceCatalogPersistentStore.CurrentGeneratorVersion,
                 "old-generator",
                 StringComparison.Ordinal));
+    }
+
+    private static async Task WaitForFileAsync(string path, TimeSpan timeout)
+    {
+        if (!await TryWaitForFileAsync(path, timeout))
+        {
+            throw new TimeoutException($"Timed out waiting for file: {path}");
+        }
+    }
+
+    private static async Task<bool> TryWaitForFileAsync(string path, TimeSpan timeout)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (File.Exists(path))
+            {
+                return true;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(20));
+        }
+
+        return File.Exists(path);
     }
 
     private static async Task WriteMessageAsync(Stream stream, object message)

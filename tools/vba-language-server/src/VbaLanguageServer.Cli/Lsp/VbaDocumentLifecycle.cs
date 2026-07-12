@@ -44,6 +44,7 @@ internal sealed class VbaDocumentLifecycle
             if (IsVbaSourceUri(uri))
             {
                 workspace.UpdateDocument(uri, text, cancellationToken);
+                await catalogRefresh.PreloadReferenceCatalogsAsync(uri, text, cancellationToken);
                 await PublishTrackedDiagnosticsAsync(uri, cancellationToken);
                 await catalogRefresh.PublishReferenceSelectionTraceAsync(uri, cancellationToken);
             }
@@ -68,6 +69,7 @@ internal sealed class VbaDocumentLifecycle
             if (IsVbaSourceUri(uri))
             {
                 workspace.UpdateDocument(uri, text, cancellationToken);
+                await catalogRefresh.PreloadReferenceCatalogsAsync(uri, text, cancellationToken);
                 await PublishTrackedDiagnosticsAsync(uri, cancellationToken);
             }
 

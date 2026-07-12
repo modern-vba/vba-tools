@@ -99,6 +99,87 @@ public interface IVbaProjectReferenceCatalogDiscovery
 }
 
 /// <summary>
+/// Adds a file-based blocking hook around catalog discovery for language-server process tests.
+/// </summary>
+internal sealed class BlockingReferenceCatalogDiscoveryHook : IVbaProjectReferenceCatalogDiscovery
+{
+    /// <summary>
+    /// The environment variable containing the file written when discovery reaches the hook.
+    /// </summary>
+    internal const string StartedFileEnvironmentVariable = "VBA_TOOLS_REFERENCE_CATALOG_DISCOVERY_STARTED_FILE";
+
+    /// <summary>
+    /// The environment variable containing the file that releases the blocked discovery hook.
+    /// </summary>
+    internal const string ReleaseFileEnvironmentVariable = "VBA_TOOLS_REFERENCE_CATALOG_DISCOVERY_RELEASE_FILE";
+
+    private readonly IVbaProjectReferenceCatalogDiscovery inner;
+    private readonly string? startedFile;
+    private readonly string? releaseFile;
+
+    private BlockingReferenceCatalogDiscoveryHook(
+        IVbaProjectReferenceCatalogDiscovery inner,
+        string? startedFile,
+        string? releaseFile)
+    {
+        this.inner = inner;
+        this.startedFile = startedFile;
+        this.releaseFile = releaseFile;
+    }
+
+    /// <summary>
+    /// Wraps discovery when the test hook environment variables are configured.
+    /// </summary>
+    /// <param name="inner">The discovery service to wrap.</param>
+    /// <returns>The original discovery service or a wrapped hook.</returns>
+    public static IVbaProjectReferenceCatalogDiscovery WrapIfConfigured(IVbaProjectReferenceCatalogDiscovery inner)
+    {
+        var startedFile = Environment.GetEnvironmentVariable(StartedFileEnvironmentVariable);
+        var releaseFile = Environment.GetEnvironmentVariable(ReleaseFileEnvironmentVariable);
+        return string.IsNullOrWhiteSpace(startedFile) && string.IsNullOrWhiteSpace(releaseFile)
+            ? inner
+            : new BlockingReferenceCatalogDiscoveryHook(inner, startedFile, releaseFile);
+    }
+
+    /// <inheritdoc />
+    public async Task<VbaProjectReferenceCatalogDiscoveryResult> DiscoverAsync(
+        string referenceName,
+        CancellationToken cancellationToken = default)
+    {
+        WriteStartedFile(referenceName);
+        if (!string.IsNullOrWhiteSpace(releaseFile))
+        {
+            while (!File.Exists(releaseFile))
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(20), cancellationToken);
+            }
+
+            return VbaProjectReferenceCatalogDiscoveryResult.Failure(
+                referenceName,
+                "TypeLib discovery was released by the reference catalog test hook before metadata extraction ran.");
+        }
+
+        return await inner.DiscoverAsync(referenceName, cancellationToken);
+    }
+
+    private void WriteStartedFile(string referenceName)
+    {
+        if (string.IsNullOrWhiteSpace(startedFile))
+        {
+            return;
+        }
+
+        var directory = Path.GetDirectoryName(startedFile);
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        File.WriteAllText(startedFile, referenceName);
+    }
+}
+
+/// <summary>
 /// Represents one TypeLib registry entry that may satisfy a VBA project reference.
 /// </summary>
 /// <param name="ReferenceName">The human-visible TypeLib description.</param>
@@ -732,7 +813,12 @@ public sealed class VbaProjectReferenceCatalogRefreshService
         return results;
     }
 
-    private IReadOnlyList<VbaProjectReferenceCatalogRefreshResult> PreloadPersistedCatalogs(
+    /// <summary>
+    /// Loads usable persisted catalogs into memory without running TypeLib discovery.
+    /// </summary>
+    /// <param name="selection">The active reference selection.</param>
+    /// <returns>The preload results for references that had persisted cache state.</returns>
+    public IReadOnlyList<VbaProjectReferenceCatalogRefreshResult> PreloadPersistedCatalogs(
         VbaProjectReferenceSelection selection)
     {
         if (persistentStore is null)
@@ -747,6 +833,11 @@ public sealed class VbaProjectReferenceCatalogRefreshService
             .OrderBy(name => name, StringComparer.OrdinalIgnoreCase))
         {
             if (cache.HasIdentity(referenceName))
+            {
+                continue;
+            }
+
+            if (cache.GetCatalogSource(referenceName) == VbaProjectReferenceCatalogSource.StalePersisted)
             {
                 continue;
             }

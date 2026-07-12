@@ -79,6 +79,32 @@ internal sealed class ReferenceCatalogRefreshCoordinator
     }
 
     /// <summary>
+    /// Loads persisted catalogs for selections affected by a document before editor requests continue.
+    /// </summary>
+    /// <param name="uri">The changed document URI.</param>
+    /// <param name="text">The changed document text.</param>
+    /// <param name="cancellationToken">A cancellation token for preload work.</param>
+    public async Task PreloadReferenceCatalogsAsync(string uri, string text, CancellationToken cancellationToken)
+    {
+        if (!LanguageServerManifestResolution.TryCreateReferenceSelections(uri, text, out var selections))
+        {
+            return;
+        }
+
+        foreach (var selectionContext in selections)
+        {
+            foreach (var result in catalogRefreshService.PreloadPersistedCatalogs(selectionContext.Selection))
+            {
+                await PublishCatalogRefreshResultAsync(
+                    uri,
+                    selectionContext.DocumentName,
+                    result,
+                    cancellationToken);
+            }
+        }
+    }
+
+    /// <summary>
     /// Starts background catalog refresh for reference selections affected by a document text change.
     /// </summary>
     /// <param name="uri">The changed document URI.</param>
