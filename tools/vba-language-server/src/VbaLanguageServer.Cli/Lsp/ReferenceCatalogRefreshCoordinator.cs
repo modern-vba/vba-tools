@@ -118,6 +118,15 @@ internal sealed class ReferenceCatalogRefreshCoordinator
             return;
         }
 
+        if (result.Status == VbaProjectReferenceCatalogRefreshStatus.LoadedStalePersistentCache)
+        {
+            await transport.WriteLogMessageAsync(
+                3,
+                $"Reference catalog refresh: document '{documentName}' reference '{result.ReferenceName}' loaded a stale persisted catalog while background refresh continues.",
+                cancellationToken);
+            return;
+        }
+
         var discovery = result.DiscoveryResult;
         if (discovery.IsFailure)
         {

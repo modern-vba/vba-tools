@@ -68,29 +68,68 @@ public sealed record VbaProjectReferenceCatalogPersistentEntry
 }
 
 /// <summary>
+/// Identifies the validation state of a persisted generated reference catalog load.
+/// </summary>
+public enum VbaProjectReferenceCatalogPersistentLoadStatus
+{
+    /// <summary>
+    /// No persisted entry exists for the reference.
+    /// </summary>
+    Missing,
+
+    /// <summary>
+    /// The persisted entry is current for the active cache schema and generator version.
+    /// </summary>
+    Current,
+
+    /// <summary>
+    /// The persisted entry is usable but should be refreshed.
+    /// </summary>
+    Stale,
+
+    /// <summary>
+    /// The persisted entry could not be safely read.
+    /// </summary>
+    Unreadable
+}
+
+/// <summary>
 /// Represents the result of loading one persisted generated reference catalog.
 /// </summary>
-/// <param name="Entry">The loaded catalog entry, when available and compatible.</param>
-/// <param name="WarningMessage">A recoverable warning explaining why the entry could not be loaded.</param>
+/// <param name="Status">The load validation status.</param>
+/// <param name="Entry">The loaded catalog entry, when available and usable.</param>
+/// <param name="WarningMessage">A recoverable warning explaining why the entry is stale or unreadable.</param>
 public sealed record VbaProjectReferenceCatalogPersistentLoadResult(
+    VbaProjectReferenceCatalogPersistentLoadStatus Status,
     VbaProjectReferenceCatalogPersistentEntry? Entry,
     string? WarningMessage)
 {
     /// <summary>
-    /// Creates a successful load result.
+    /// Creates a current load result.
     /// </summary>
     /// <param name="entry">The loaded persisted catalog entry.</param>
     /// <returns>The load result.</returns>
-    public static VbaProjectReferenceCatalogPersistentLoadResult Loaded(
+    public static VbaProjectReferenceCatalogPersistentLoadResult Current(
         VbaProjectReferenceCatalogPersistentEntry entry)
-        => new(entry, null);
+        => new(VbaProjectReferenceCatalogPersistentLoadStatus.Current, entry, null);
+
+    /// <summary>
+    /// Creates a stale load result.
+    /// </summary>
+    /// <param name="entry">The loaded persisted catalog entry.</param>
+    /// <param name="warningMessage">The stale-cache warning message.</param>
+    /// <returns>The load result.</returns>
+    public static VbaProjectReferenceCatalogPersistentLoadResult Stale(
+        VbaProjectReferenceCatalogPersistentEntry entry,
+        string warningMessage)
+        => new(VbaProjectReferenceCatalogPersistentLoadStatus.Stale, entry, warningMessage);
 
     /// <summary>
     /// Creates a cache miss without a warning.
     /// </summary>
     /// <returns>The load result.</returns>
     public static VbaProjectReferenceCatalogPersistentLoadResult Miss()
-        => new(null, null);
+        => new(VbaProjectReferenceCatalogPersistentLoadStatus.Missing, null, null);
 
     /// <summary>
     /// Creates a recoverable cache miss with a warning.
@@ -98,7 +137,7 @@ public sealed record VbaProjectReferenceCatalogPersistentLoadResult(
     /// <param name="warningMessage">The warning message.</param>
     /// <returns>The load result.</returns>
     public static VbaProjectReferenceCatalogPersistentLoadResult Warning(string warningMessage)
-        => new(null, warningMessage);
+        => new(VbaProjectReferenceCatalogPersistentLoadStatus.Unreadable, null, warningMessage);
 }
 
 /// <summary>
@@ -211,6 +250,7 @@ public sealed class VbaProjectReferenceCatalogPersistentStore
         try
         {
             var index = ReadJson<ReferenceCatalogIndex>(indexPath);
+            var staleWarnings = new List<string>();
             if (index.SchemaVersion != CurrentSchemaVersion)
             {
                 return VbaProjectReferenceCatalogPersistentLoadResult.Warning(
@@ -219,7 +259,7 @@ public sealed class VbaProjectReferenceCatalogPersistentStore
 
             if (!index.GeneratorVersion.Equals(CurrentGeneratorVersion, StringComparison.Ordinal))
             {
-                return VbaProjectReferenceCatalogPersistentLoadResult.Warning(
+                staleWarnings.Add(
                     $"Persisted reference catalog index for '{referenceName}' uses unsupported generator version '{index.GeneratorVersion}'.");
             }
 
@@ -233,7 +273,7 @@ public sealed class VbaProjectReferenceCatalogPersistentStore
 
             if (!entry.GeneratorVersion.Equals(CurrentGeneratorVersion, StringComparison.Ordinal))
             {
-                return VbaProjectReferenceCatalogPersistentLoadResult.Warning(
+                staleWarnings.Add(
                     $"Persisted reference catalog entry for '{referenceName}' uses unsupported generator version '{entry.GeneratorVersion}'.");
             }
 
@@ -249,7 +289,9 @@ public sealed class VbaProjectReferenceCatalogPersistentStore
                     $"Persisted reference catalog entry for '{referenceName}' contains catalog '{entry.Catalog.ReferenceName}'.");
             }
 
-            return VbaProjectReferenceCatalogPersistentLoadResult.Loaded(entry);
+            return staleWarnings.Count == 0
+                ? VbaProjectReferenceCatalogPersistentLoadResult.Current(entry)
+                : VbaProjectReferenceCatalogPersistentLoadResult.Stale(entry, string.Join(" ", staleWarnings));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {

@@ -81,6 +81,7 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
             var loadResult = store.Load("Generated Library");
 
             Assert.Null(loadResult.Entry);
+            Assert.Equal(VbaProjectReferenceCatalogPersistentLoadStatus.Unreadable, loadResult.Status);
             Assert.Contains("could not be read", loadResult.WarningMessage, StringComparison.OrdinalIgnoreCase);
         }
         finally
@@ -191,14 +192,7 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
             store.Save(new VbaProjectReferenceCatalogPersistentEntry(
                 CreateIdentity("Generated Library"),
                 CreateGeneratedCatalog("Generated Library", "OldType", "OldMember")));
-            var indexPath = store.GetReferenceIndexPath("Generated Library");
-            File.WriteAllText(
-                indexPath,
-                File.ReadAllText(indexPath)
-                    .Replace(
-                        VbaProjectReferenceCatalogPersistentStore.CurrentGeneratorVersion,
-                        "older-generator",
-                        StringComparison.Ordinal));
+            MarkReferenceIndexAsStale(store, "Generated Library");
             var refreshedCatalog = CreateGeneratedCatalog("Generated Library", "GeneratedType", "GeneratedMember");
             var discovery = new CountingCatalogDiscovery(
                 VbaProjectReferenceCatalogDiscoveryResult.Success(
@@ -212,11 +206,131 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
 
             var results = await service.RefreshAsync(selection);
 
-            var result = Assert.Single(results);
-            Assert.Equal(VbaProjectReferenceCatalogRefreshStatus.Refreshed, result.Status);
+            Assert.Contains(results, result =>
+                result.Status == VbaProjectReferenceCatalogRefreshStatus.LoadedStalePersistentCache);
+            var result = Assert.Single(
+                results,
+                result => result.Status == VbaProjectReferenceCatalogRefreshStatus.Refreshed);
             Assert.Equal(1, discovery.CallCount);
             Assert.True(result.DiscoveryResult.HasUsableCatalog);
             Assert.True(cache.Current.HasCatalog("Generated Library"));
+        }
+        finally
+        {
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task CatalogRefreshKeepsStalePersistedCatalogActiveWhileDiscoveryIsBlockedAndReplacesAfterSuccess()
+    {
+        var cacheRoot = Directory.CreateTempSubdirectory("vba-ls-catalog-store-").FullName;
+        try
+        {
+            var store = new VbaProjectReferenceCatalogPersistentStore(cacheRoot);
+            store.Save(new VbaProjectReferenceCatalogPersistentEntry(
+                CreateIdentity("Generated Library"),
+                CreateGeneratedCatalog("Generated Library", "GeneratedType", "StaleMember")));
+            MarkReferenceIndexAsStale(store, "Generated Library");
+            var discovery = new BlockingCatalogDiscovery(
+                VbaProjectReferenceCatalogDiscoveryResult.Success(
+                    CreateIdentity("Generated Library"),
+                    CreateGeneratedCatalog("Generated Library", "GeneratedType", "FreshMember")));
+            var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
+            var service = new VbaProjectReferenceCatalogRefreshService(cache, discovery, store);
+            var selection = VbaProjectReferenceSelection.Create(
+                ProjectDocument.ExcelKind,
+                [new VbaProjectReference("Generated Library")]);
+
+            var refreshTask = service.RefreshAsync(selection);
+            await discovery.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var beforeRefreshMembers = GetGeneratedTypeMemberCompletionNames(cache, selection);
+
+            discovery.Release();
+            var results = await refreshTask;
+            var afterRefreshMembers = GetGeneratedTypeMemberCompletionNames(cache, selection);
+
+            Assert.Contains("StaleMember", beforeRefreshMembers);
+            Assert.DoesNotContain("FreshMember", beforeRefreshMembers);
+            Assert.Contains(results, result =>
+                result.Status == VbaProjectReferenceCatalogRefreshStatus.LoadedStalePersistentCache);
+            Assert.Contains("FreshMember", afterRefreshMembers);
+            Assert.DoesNotContain("StaleMember", afterRefreshMembers);
+        }
+        finally
+        {
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task CatalogRefreshPreservesStalePersistedCatalogWhenRefreshFails()
+    {
+        var cacheRoot = Directory.CreateTempSubdirectory("vba-ls-catalog-store-").FullName;
+        try
+        {
+            var store = new VbaProjectReferenceCatalogPersistentStore(cacheRoot);
+            store.Save(new VbaProjectReferenceCatalogPersistentEntry(
+                CreateIdentity("Generated Library"),
+                CreateGeneratedCatalog("Generated Library", "GeneratedType", "StaleMember")));
+            MarkReferenceIndexAsStale(store, "Generated Library");
+            var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
+            var selection = VbaProjectReferenceSelection.Create(
+                ProjectDocument.ExcelKind,
+                [new VbaProjectReference("Generated Library")]);
+            var service = new VbaProjectReferenceCatalogRefreshService(
+                cache,
+                new CountingCatalogDiscovery(VbaProjectReferenceCatalogDiscoveryResult.Failure(
+                    "Generated Library",
+                    "TypeLib registry is unavailable.")),
+                store);
+
+            var results = await service.RefreshAsync(selection);
+            var members = GetGeneratedTypeMemberCompletionNames(cache, selection);
+
+            Assert.Contains(results, result =>
+                result.Status == VbaProjectReferenceCatalogRefreshStatus.LoadedStalePersistentCache);
+            Assert.Contains(results, result => result.DiscoveryResult.IsFailure);
+            Assert.Contains("StaleMember", members);
+        }
+        finally
+        {
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task CatalogRefreshPreservesStalePersistedCatalogWhenRefreshIsAmbiguous()
+    {
+        var cacheRoot = Directory.CreateTempSubdirectory("vba-ls-catalog-store-").FullName;
+        try
+        {
+            var store = new VbaProjectReferenceCatalogPersistentStore(cacheRoot);
+            store.Save(new VbaProjectReferenceCatalogPersistentEntry(
+                CreateIdentity("Generated Library"),
+                CreateGeneratedCatalog("Generated Library", "GeneratedType", "StaleMember")));
+            MarkReferenceIndexAsStale(store, "Generated Library");
+            var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
+            var selection = VbaProjectReferenceSelection.Create(
+                ProjectDocument.ExcelKind,
+                [new VbaProjectReference("Generated Library")]);
+            var service = new VbaProjectReferenceCatalogRefreshService(
+                cache,
+                new CountingCatalogDiscovery(VbaProjectReferenceCatalogDiscoveryResult.Ambiguous(
+                    "Generated Library",
+                    [
+                        CreateIdentity("Generated Library"),
+                        CreateIdentity("Generated Library") with { Guid = "{44444444-4444-4444-4444-444444444444}" }
+                    ])),
+                store);
+
+            var results = await service.RefreshAsync(selection);
+            var members = GetGeneratedTypeMemberCompletionNames(cache, selection);
+
+            Assert.Contains(results, result =>
+                result.Status == VbaProjectReferenceCatalogRefreshStatus.LoadedStalePersistentCache);
+            Assert.Contains(results, result => result.DiscoveryResult.IsAmbiguous);
+            Assert.Contains("StaleMember", members);
         }
         finally
         {
@@ -264,6 +378,66 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
                     ParentTypeName: typeName,
                     TypeReference: new VbaTypeReference("String"))
             ]);
+
+    private static void MarkReferenceIndexAsStale(
+        VbaProjectReferenceCatalogPersistentStore store,
+        string referenceName)
+    {
+        var indexPath = store.GetReferenceIndexPath(referenceName);
+        File.WriteAllText(
+            indexPath,
+            File.ReadAllText(indexPath)
+                .Replace(
+                    VbaProjectReferenceCatalogPersistentStore.CurrentGeneratorVersion,
+                    "older-generator",
+                    StringComparison.Ordinal));
+    }
+
+    private static IReadOnlyList<string> GetGeneratedTypeMemberCompletionNames(
+        VbaProjectReferenceCatalogCache cache,
+        VbaProjectReferenceSelection selection)
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var sourceDocuments = new Dictionary<string, string>
+        {
+            [uri] = string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Public Sub Run()",
+                "    Dim generated As GeneratedType",
+                "    generated.",
+                "End Sub"
+            ])
+        };
+        return VbaSourceIndex
+            .Build(sourceDocuments, selection, cache.Current)
+            .GetCompletionDefinitions(uri, 3, "    generated.".Length)
+            .Select(definition => definition.Name)
+            .ToArray();
+    }
+
+    private sealed class BlockingCatalogDiscovery : IVbaProjectReferenceCatalogDiscovery
+    {
+        private readonly VbaProjectReferenceCatalogDiscoveryResult result;
+        private readonly TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public BlockingCatalogDiscovery(VbaProjectReferenceCatalogDiscoveryResult result)
+        {
+            this.result = result;
+        }
+
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<VbaProjectReferenceCatalogDiscoveryResult> DiscoverAsync(
+            string referenceName,
+            CancellationToken cancellationToken = default)
+        {
+            Started.TrySetResult();
+            await release.Task.WaitAsync(cancellationToken);
+            return result;
+        }
+
+        public void Release() => release.TrySetResult();
+    }
 
     private sealed class CountingCatalogDiscovery : IVbaProjectReferenceCatalogDiscovery
     {

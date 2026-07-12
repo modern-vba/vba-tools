@@ -459,6 +459,19 @@ public sealed class VbaProjectReferenceCatalogCache
     }
 
     /// <summary>
+    /// Stores a usable stale catalog without marking its TypeLib identity as current.
+    /// </summary>
+    /// <param name="catalog">The stale catalog to make available to editor features.</param>
+    public void StoreStaleCatalog(VbaProjectReferenceCatalog catalog)
+    {
+        lock (gate)
+        {
+            catalogSet = catalogSet.WithCatalog(catalog);
+            version++;
+        }
+    }
+
+    /// <summary>
     /// Releases a refresh candidate without storing discovery metadata.
     /// </summary>
     /// <param name="referenceName">The reference name whose refresh attempt ended before a result was stored.</param>
@@ -493,7 +506,12 @@ public enum VbaProjectReferenceCatalogRefreshStatus
     /// <summary>
     /// The reference already had a current persisted catalog, so expensive discovery was skipped.
     /// </summary>
-    SkippedValidPersistentCache
+    SkippedValidPersistentCache,
+
+    /// <summary>
+    /// A stale persisted catalog was loaded while refresh continues in the background.
+    /// </summary>
+    LoadedStalePersistentCache
 }
 
 /// <summary>
@@ -602,7 +620,8 @@ public sealed class VbaProjectReferenceCatalogRefreshService
             }
 
             var loadResult = persistentStore.Load(referenceName);
-            if (loadResult.Entry is not null)
+            if (loadResult.Entry is not null
+                && loadResult.Status == VbaProjectReferenceCatalogPersistentLoadStatus.Current)
             {
                 cache.Store(VbaProjectReferenceCatalogDiscoveryResult.Success(
                     loadResult.Entry.Identity,
@@ -611,8 +630,21 @@ public sealed class VbaProjectReferenceCatalogRefreshService
                     referenceName,
                     VbaProjectReferenceCatalogDiscoveryResult.Success(
                         loadResult.Entry.Identity,
-                        loadResult.Entry.Catalog),
+                    loadResult.Entry.Catalog),
                     VbaProjectReferenceCatalogRefreshStatus.SkippedValidPersistentCache));
+                continue;
+            }
+
+            if (loadResult.Entry is not null
+                && loadResult.Status == VbaProjectReferenceCatalogPersistentLoadStatus.Stale)
+            {
+                cache.StoreStaleCatalog(loadResult.Entry.Catalog);
+                results.Add(new VbaProjectReferenceCatalogRefreshResult(
+                    referenceName,
+                    VbaProjectReferenceCatalogDiscoveryResult.Success(
+                        loadResult.Entry.Identity,
+                        loadResult.Entry.Catalog),
+                    VbaProjectReferenceCatalogRefreshStatus.LoadedStalePersistentCache));
             }
         }
 
