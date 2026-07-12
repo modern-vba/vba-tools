@@ -30,6 +30,35 @@ public sealed class SyntaxDiagnosticsTests
     }
 
     [Fact]
+    public void Diagnostics_accept_block_if_condition_split_by_explicit_line_continuation()
+    {
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Option Explicit",
+            "",
+            "Public Sub Run()",
+            "    For Each line_str In lines_arr",
+            "        If (Not has_msg_str And LenB(StrConv(line_str, vbFromUnicode)) <= PageSize) _",
+            "                Or (has_msg_str And LenB(StrConv(msg_str, vbFromUnicode)) + 2 + LenB(StrConv(line_str, vbFromUnicode)) <= PageSize) Then",
+            "            If Not has_msg_str Then",
+            "                msg_str = line_str",
+            "                has_msg_str = True",
+            "            Else",
+            "                msg_str = msg_str & vbCrLf & line_str",
+            "            End If",
+            "        Else",
+            "            If has_msg_str Then",
+            "                Call msgs_list.Add(msg_str)",
+            "            End If",
+            "        End If",
+            "    Next line_str",
+            "End Sub"
+        ]);
+
+        Assert.Empty(VbaSyntaxDiagnostics.Collect(source, "Worker.bas"));
+    }
+
+    [Fact]
     public void Diagnostics_match_existing_typescript_unterminated_string_case()
     {
         const string invalidLine = "    value = \"unterminated";

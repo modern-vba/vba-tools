@@ -858,32 +858,54 @@ internal static class VbaSyntaxTreeParser
         var statements = new List<VbaStatementSyntax>();
         var diagnostics = new List<VbaSyntaxDiagnostic>();
         var blockStack = new Stack<BlockFrame>();
+        var inLogicalContinuation = false;
 
         for (var lineIndex = codeStartLine; lineIndex < sourceText.Lines.Count; lineIndex++)
         {
             var line = sourceText.Lines[lineIndex];
-            diagnostics.AddRange(CollectLineContinuationDiagnostics(line));
+            var lineContinuationDiagnostics = CollectLineContinuationDiagnostics(line).ToArray();
+            diagnostics.AddRange(lineContinuationDiagnostics);
             diagnostics.AddRange(CollectStringDiagnostics(line));
             diagnostics.AddRange(CollectRaiseEventDiagnostics(line));
 
             var codeLine = StripApostropheComment(line.Text);
+            var hasValidLineContinuation = HasLineContinuation(codeLine)
+                && !lineContinuationDiagnostics.Any(diagnostic =>
+                    diagnostic.Code == "syntax.invalidTrailingCommentContinuation");
+            if (inLogicalContinuation)
+            {
+                inLogicalContinuation = hasValidLineContinuation;
+                continue;
+            }
+
             if (string.IsNullOrWhiteSpace(codeLine)
                 || AttributePattern.IsMatch(codeLine)
                 || OptionPattern.IsMatch(codeLine)
                 || codeLine.TrimStart().StartsWith("#", StringComparison.Ordinal))
             {
+                inLogicalContinuation = hasValidLineContinuation;
                 continue;
             }
 
+            var statementText = line.Text;
+            var statementRange = CreateLineRange(line);
             var trimmed = codeLine.TrimStart();
+            if (hasValidLineContinuation)
+            {
+                var logicalStatement = CreateLogicalStatement(sourceText, lineIndex);
+                statementText = logicalStatement.Text;
+                statementRange = logicalStatement.Range;
+                trimmed = logicalStatement.Text.TrimStart();
+            }
+
             if (IsMalformedDeclarationHeader(trimmed))
             {
-                var range = CreateLineRange(line);
                 diagnostics.Add(new VbaSyntaxDiagnostic(
                     "syntax.malformedDeclarationHeader",
                     "Declaration header is malformed.",
-                    range));
-                statements.Add(new VbaStatementSyntax(VbaStatementKind.Malformed, line.Text, range, IsMalformed: true));
+                    statementRange));
+                statements.Add(new VbaStatementSyntax(VbaStatementKind.Malformed, statementText, statementRange, IsMalformed: true));
+                inLogicalContinuation = hasValidLineContinuation;
                 continue;
             }
 
@@ -894,19 +916,19 @@ internal static class VbaSyntaxTreeParser
                     diagnostics.Add(new VbaSyntaxDiagnostic(
                         "syntax.unexpectedStatementBoundaryToken",
                         $"Unexpected statement-boundary token '{unexpectedClose}'.",
-                        CreateLineRange(line)));
-                    statements.Add(new VbaStatementSyntax(VbaStatementKind.Malformed, line.Text, CreateLineRange(line), IsMalformed: true));
+                        statementRange));
+                    statements.Add(new VbaStatementSyntax(VbaStatementKind.Malformed, statementText, statementRange, IsMalformed: true));
                 }
 
+                inLogicalContinuation = hasValidLineContinuation;
                 continue;
             }
 
             var statementKind = ClassifyStatement(trimmed);
-            var rangeForLine = CreateLineRange(line);
             statements.Add(new VbaStatementSyntax(
                 statementKind,
-                line.Text,
-                rangeForLine,
+                statementText,
+                statementRange,
                 IsMalformed: statementKind == VbaStatementKind.Malformed));
 
             if (statementKind == VbaStatementKind.Malformed)
@@ -914,15 +936,18 @@ internal static class VbaSyntaxTreeParser
                 diagnostics.Add(new VbaSyntaxDiagnostic(
                     "syntax.unexpectedStatementBoundaryToken",
                     "Unexpected token at statement boundary.",
-                    rangeForLine));
+                    statementRange));
+                inLogicalContinuation = hasValidLineContinuation;
                 continue;
             }
 
             var expectedTerminator = GetExpectedBlockTerminator(trimmed, statementKind);
             if (expectedTerminator is not null)
             {
-                blockStack.Push(new BlockFrame(statementKind, expectedTerminator, rangeForLine));
+                blockStack.Push(new BlockFrame(statementKind, expectedTerminator, statementRange));
             }
+
+            inLogicalContinuation = hasValidLineContinuation;
         }
 
         foreach (var block in blockStack)
