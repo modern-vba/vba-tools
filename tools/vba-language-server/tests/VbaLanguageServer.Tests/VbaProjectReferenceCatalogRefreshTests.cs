@@ -133,6 +133,56 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
     }
 
     [Fact]
+    public void ComTypeLibCatalogMetadataReaderReadsRegisteredExcelWorkbookMetadataWhenAvailable()
+    {
+        var registryEntry = new RegistryTypeLibRegistryReader()
+            .ReadTypeLibraries()
+            .FirstOrDefault(entry => entry.ReferenceName.Equals(
+                "Microsoft Excel 16.0 Object Library",
+                StringComparison.OrdinalIgnoreCase));
+        if (registryEntry is null)
+        {
+            return;
+        }
+
+        var identity = new VbaProjectReferenceCatalogIdentity(
+            registryEntry.ReferenceName,
+            registryEntry.Guid,
+            registryEntry.MajorVersion,
+            registryEntry.MinorVersion,
+            registryEntry.Lcid,
+            registryEntry.Path);
+        var metadata = new ComTypeLibCatalogMetadataReader().ReadMetadata(identity);
+        var catalog = TypeLibReferenceCatalogBuilder.Build(registryEntry.ReferenceName, metadata);
+
+        Assert.Contains(catalog.Definitions, definition =>
+            definition.Name == "Workbook"
+            && definition.Kind == VbaSourceDefinitionKind.Class
+            && definition.ParentTypeName is null);
+        Assert.Contains(catalog.Definitions, definition =>
+            definition.Name == "Worksheet"
+            && definition.Kind == VbaSourceDefinitionKind.Class
+            && definition.ParentTypeName is null);
+        Assert.Contains(catalog.Definitions, definition =>
+            definition.Name == "Worksheets"
+            && definition.Kind == VbaSourceDefinitionKind.Class
+            && definition.ParentTypeName is null);
+        Assert.Contains(catalog.Definitions, definition =>
+            definition.Name == "Sheets"
+            && definition.Kind == VbaSourceDefinitionKind.Class
+            && definition.ParentTypeName is null);
+        Assert.Contains(catalog.Definitions, definition =>
+            definition.Name == "Worksheets"
+            && definition.Kind == VbaSourceDefinitionKind.Property
+            && definition.ParentTypeName == "Workbook"
+            && definition.TypeReference?.Name == "Sheets");
+        Assert.Contains(catalog.Definitions, definition =>
+            definition.Name == "Item"
+            && definition.Kind == VbaSourceDefinitionKind.Property
+            && definition.ParentTypeName == "Sheets");
+    }
+
+    [Fact]
     public async Task CatalogRefreshUpdatesCacheAfterDiscoveryWithoutBlockingEditorRequests()
     {
         var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
@@ -188,6 +238,131 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
             .Select(definition => definition.Name)
             .ToArray();
         Assert.Contains("GeneratedType", afterRefresh);
+        Assert.True(cache.Identities.ContainsKey("Generated Library"));
+    }
+
+    [Fact]
+    public async Task CatalogRefreshCoalescesConcurrentDiscoveryForSameReference()
+    {
+        var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
+        var discovery = new BlockingCatalogDiscovery(
+            VbaProjectReferenceCatalogDiscoveryResult.Success(
+                new VbaProjectReferenceCatalogIdentity(
+                    "Generated Library",
+                    "{33333333-3333-3333-3333-333333333333}",
+                    1,
+                    0,
+                    0,
+                    @"C:\TypeLibs\Generated.tlb"),
+                new VbaProjectReferenceCatalog(
+                    "Generated Library",
+                    ["Generated"],
+                    [
+                        new VbaProjectReferenceDefinition(
+                            "Generated Library",
+                            "GeneratedType",
+                            VbaSourceDefinitionKind.Class,
+                            "Generated from refreshed catalog metadata.")
+                    ])));
+        var service = new VbaProjectReferenceCatalogRefreshService(cache, discovery);
+        var selection = VbaProjectReferenceSelection.Create(
+            ProjectDocument.ExcelKind,
+            [new VbaProjectReference("Generated Library")]);
+
+        var firstRefresh = service.RefreshAsync(selection);
+        await discovery.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var secondRefresh = service.RefreshAsync(selection);
+
+        try
+        {
+            var completedSecond = await Task.WhenAny(secondRefresh, Task.Delay(TimeSpan.FromSeconds(1)));
+
+            Assert.Same(secondRefresh, completedSecond);
+            Assert.Empty(await secondRefresh);
+        }
+        finally
+        {
+            discovery.Release();
+            await firstRefresh;
+            if (secondRefresh.IsCompleted)
+            {
+                await secondRefresh;
+            }
+        }
+
+        Assert.Equal(1, discovery.CallCount);
+    }
+
+    [Fact]
+    public async Task CatalogRefreshReplacesBundledCatalogWithGeneratedCatalog()
+    {
+        var bundledCatalog = new VbaProjectReferenceCatalog(
+            "Generated Library",
+            ["Generated"],
+            [
+                new VbaProjectReferenceDefinition(
+                    "Generated Library",
+                    "GeneratedType",
+                    VbaSourceDefinitionKind.Class,
+                    "Bundled minimal metadata."),
+                new VbaProjectReferenceDefinition(
+                    "Generated Library",
+                    "BundledOnly",
+                    VbaSourceDefinitionKind.Property,
+                    "Bundled-only member.",
+                    ParentTypeName: "GeneratedType")
+            ]);
+        var cache = new VbaProjectReferenceCatalogCache(
+            VbaProjectReferenceCatalogSet.Empty.WithCatalog(bundledCatalog));
+        var discovery = new TypeLibReferenceCatalogDiscovery(
+            new FakeTypeLibRegistryReader(
+                new TypeLibRegistryEntry(
+                    "Generated Library",
+                    "{33333333-3333-3333-3333-333333333333}",
+                    1,
+                    0,
+                    0,
+                    @"C:\TypeLibs\Generated.tlb")),
+            new FakeTypeLibCatalogMetadataReader(
+                new TypeLibCatalogMetadata(
+                    "Generated",
+                    [
+                        new TypeLibCatalogType(
+                            "GeneratedType",
+                            VbaSourceDefinitionKind.Class,
+                            "Generated metadata.",
+                            [
+                                new TypeLibCatalogMember(
+                                    "GeneratedOnly",
+                                    VbaSourceDefinitionKind.Property,
+                                    "Generated-only member.")
+                            ])
+                    ])));
+        var service = new VbaProjectReferenceCatalogRefreshService(cache, discovery);
+        var selection = VbaProjectReferenceSelection.Create(
+            ProjectDocument.ExcelKind,
+            [new VbaProjectReference("Generated Library")]);
+        const string uri = "file:///C:/work/Worker.bas";
+        var sourceDocuments = new Dictionary<string, string>
+        {
+            [uri] = string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Public Sub Run()",
+                "    Dim generated As GeneratedType",
+                "    generated.",
+                "End Sub"
+            ])
+        };
+
+        var results = await service.RefreshAsync(selection);
+        var index = VbaSourceIndex.Build(sourceDocuments, selection, cache.Current);
+        var memberCompletion = index.GetCompletionDefinitions(uri, 3, "    generated.".Length)
+            .Select(definition => definition.Name)
+            .ToArray();
+
+        Assert.Single(results);
+        Assert.Contains("GeneratedOnly", memberCompletion);
+        Assert.DoesNotContain("BundledOnly", memberCompletion);
         Assert.True(cache.Identities.ContainsKey("Generated Library"));
     }
 
@@ -394,10 +569,13 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
 
         public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        public int CallCount { get; private set; }
+
         public async Task<VbaProjectReferenceCatalogDiscoveryResult> DiscoverAsync(
             string referenceName,
             CancellationToken cancellationToken = default)
         {
+            CallCount++;
             Started.TrySetResult();
             await release.Task.WaitAsync(cancellationToken);
             return result;

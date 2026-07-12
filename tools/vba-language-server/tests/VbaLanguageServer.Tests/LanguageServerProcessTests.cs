@@ -1073,6 +1073,92 @@ public sealed class LanguageServerProcessTests
     }
 
     [Fact]
+    public async Task Server_returns_generated_excel_workbook_member_completion_after_catalog_refresh()
+    {
+        if (!HasRegisteredTypeLib("Microsoft Excel 16.0 Object Library"))
+        {
+            return;
+        }
+
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-excel-catalog-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(
+                projectRoot,
+                "Microsoft Excel 16.0 Object Library");
+
+            var serverProjectPath = Path.GetFullPath(
+                Path.Combine(
+                    AppContext.BaseDirectory,
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "src",
+                    "VbaLanguageServer.Cli",
+                    "VbaLanguageServer.Cli.csproj"));
+
+            using var process = StartLanguageServer(serverProjectPath);
+            await using var stdin = process.StandardInput.BaseStream;
+            using var stdout = process.StandardOutput.BaseStream;
+
+            await InitializeAsync(stdin, stdout);
+            var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
+            var text = string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Option Explicit",
+                "",
+                "Public Sub Run()",
+                "    Dim target_book As Workbook",
+                "    Dim target_sheet As Worksheet",
+                "    Set target_sheet = target_book.W",
+                "End Sub"
+            ]);
+            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, text));
+
+            var refresh = await TryReadLogMessageAsync(
+                stdout,
+                "Reference catalog refresh: document 'Book1' reference 'Microsoft Excel 16.0 Object Library' cached",
+                TimeSpan.FromSeconds(20));
+            Assert.NotNull(refresh);
+
+            var completion = await SendRequestAsync(
+                stdin,
+                stdout,
+                2,
+                "textDocument/completion",
+                new
+                {
+                    textDocument = new { uri },
+                    position = new { line = 6, character = "    Set target_sheet = target_book.W".Length }
+                });
+            var completionItems = completion
+                .GetProperty("result")
+                .EnumerateArray()
+                .ToArray();
+            var completionLabels = completionItems
+                .Select(item => item.GetProperty("label").GetString())
+                .ToArray();
+            var worksheetsCompletion = completionItems.Single(item =>
+                item.GetProperty("label").GetString() == "Worksheets");
+
+            Assert.Contains("Worksheets", completionLabels);
+            Assert.Equal(10, worksheetsCompletion.GetProperty("kind").GetInt32());
+
+            await SendRequestAsync(stdin, stdout, 3, "shutdown", null);
+            await SendNotificationAsync(stdin, "exit", null);
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await process.WaitForExitAsync(cancellation.Token);
+            Assert.Equal(0, process.ExitCode);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Server_prefers_source_definitions_over_reference_catalogs()
     {
         var projectRoot = Directory.CreateTempSubdirectory("vba-ls-source-precedence-").FullName;
@@ -2279,6 +2365,11 @@ public sealed class LanguageServerProcessTests
             "fixtures",
             "project-manifest",
             fixtureName)));
+
+    private static bool HasRegisteredTypeLib(string referenceName)
+        => new RegistryTypeLibRegistryReader()
+            .ReadTypeLibraries()
+            .Any(entry => entry.ReferenceName.Equals(referenceName, StringComparison.OrdinalIgnoreCase));
 
     private static void WriteReferenceCatalogProjectManifest(string projectRoot, params string[] referenceNames)
     {

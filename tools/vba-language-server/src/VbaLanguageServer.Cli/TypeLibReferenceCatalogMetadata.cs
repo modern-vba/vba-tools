@@ -514,7 +514,8 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
     {
         try
         {
-            typeInfo.GetRefTypeInfo(typeDesc.lpValue.ToInt32(), out var referencedTypeInfo);
+            var hrefType = unchecked((int)typeDesc.lpValue.ToInt64());
+            typeInfo.GetRefTypeInfo(hrefType, out var referencedTypeInfo);
             referencedTypeInfo.GetDocumentation(TypeDocumentationMemberId, out var name, out _, out _, out _);
             return string.IsNullOrWhiteSpace(name) ? null : new VbaTypeReference(name);
         }

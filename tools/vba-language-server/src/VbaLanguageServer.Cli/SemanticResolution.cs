@@ -13,6 +13,7 @@ internal sealed class VbaSemanticResolution
     private readonly IReadOnlyList<VbaSourceDocument> documents;
     private readonly VbaProjectReferenceSelection? referenceSelection;
     private readonly VbaProjectReferenceCatalogSet referenceCatalogs;
+    private readonly IReadOnlyList<VbaSourceDefinition> activeReferenceDefinitions;
     private readonly VbaNameResolutionService nameResolution;
 
     /// <summary>
@@ -29,7 +30,14 @@ internal sealed class VbaSemanticResolution
         this.documents = documents;
         this.referenceSelection = referenceSelection;
         this.referenceCatalogs = referenceCatalogs;
-        nameResolution = new VbaNameResolutionService(documents, referenceSelection, referenceCatalogs);
+        activeReferenceDefinitions = referenceSelection is null
+            ? []
+            : referenceCatalogs.GetActiveDefinitions(referenceSelection);
+        nameResolution = new VbaNameResolutionService(
+            documents,
+            referenceSelection,
+            referenceCatalogs,
+            activeReferenceDefinitions);
     }
 
     /// <summary>
@@ -782,9 +790,7 @@ internal sealed class VbaSemanticResolution
     }
 
     private IReadOnlyList<VbaSourceDefinition> GetActiveReferenceDefinitions()
-        => referenceSelection is null
-            ? []
-            : referenceCatalogs.GetActiveDefinitions(referenceSelection);
+        => activeReferenceDefinitions;
 
     private bool TryGetMemberChainCanonicalName(
         string codePart,

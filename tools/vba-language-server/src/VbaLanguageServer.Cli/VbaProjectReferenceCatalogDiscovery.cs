@@ -343,6 +343,7 @@ public sealed class VbaProjectReferenceCatalogCache
     private readonly object gate = new();
     private VbaProjectReferenceCatalogSet catalogSet;
     private readonly Dictionary<string, VbaProjectReferenceCatalogIdentity> identities = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> refreshesInProgress = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Creates a catalog cache with an initial catalog set.
@@ -382,6 +383,31 @@ public sealed class VbaProjectReferenceCatalogCache
     }
 
     /// <summary>
+    /// Gets selected reference names whose generated catalog identity has not been discovered yet.
+    /// </summary>
+    /// <param name="selection">The active reference selection.</param>
+    /// <returns>The reference names ordered for deterministic refresh work.</returns>
+    public IReadOnlyList<string> TakeRefreshCandidateReferenceNames(VbaProjectReferenceSelection selection)
+    {
+        lock (gate)
+        {
+            var candidateNames = selection.References
+                .Where(reference => !identities.ContainsKey(reference.Name))
+                .Where(reference => !refreshesInProgress.Contains(reference.Name))
+                .Select(reference => reference.Name)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            foreach (var candidateName in candidateNames)
+            {
+                refreshesInProgress.Add(candidateName);
+            }
+
+            return candidateNames;
+        }
+    }
+
+    /// <summary>
     /// Stores a discovery result in the cache.
     /// </summary>
     /// <param name="result">The discovery result to store.</param>
@@ -389,6 +415,8 @@ public sealed class VbaProjectReferenceCatalogCache
     {
         lock (gate)
         {
+            refreshesInProgress.Remove(result.ReferenceName);
+
             if (result.Identities.Count == 1)
             {
                 identities[result.ReferenceName] = result.Identities[0];
@@ -398,6 +426,18 @@ public sealed class VbaProjectReferenceCatalogCache
             {
                 catalogSet = catalogSet.WithCatalog(result.Catalog);
             }
+        }
+    }
+
+    /// <summary>
+    /// Releases a refresh candidate without storing discovery metadata.
+    /// </summary>
+    /// <param name="referenceName">The reference name whose refresh attempt ended before a result was stored.</param>
+    public void ReleaseRefreshCandidate(string referenceName)
+    {
+        lock (gate)
+        {
+            refreshesInProgress.Remove(referenceName);
         }
     }
 }
@@ -433,7 +473,7 @@ public sealed class VbaProjectReferenceCatalogRefreshService
     }
 
     /// <summary>
-    /// Discovers catalogs for selected references that are missing from the current cache.
+    /// Discovers generated catalogs for selected references that have not been resolved yet.
     /// </summary>
     /// <param name="selection">The active reference selection.</param>
     /// <param name="cancellationToken">A cancellation token for refresh work.</param>
@@ -442,14 +482,19 @@ public sealed class VbaProjectReferenceCatalogRefreshService
         VbaProjectReferenceSelection selection,
         CancellationToken cancellationToken = default)
     {
-        var missingReferenceNames = cache.Current.GetMissingCatalogReferenceNames(selection);
+        var refreshReferenceNames = cache.TakeRefreshCandidateReferenceNames(selection);
         var results = new List<VbaProjectReferenceCatalogRefreshResult>();
-        foreach (var referenceName in missingReferenceNames)
+        foreach (var referenceName in refreshReferenceNames)
         {
             VbaProjectReferenceCatalogDiscoveryResult discoveryResult;
             try
             {
                 discoveryResult = await discovery.DiscoverAsync(referenceName, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                cache.ReleaseRefreshCandidate(referenceName);
+                throw;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {

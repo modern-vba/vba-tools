@@ -16,6 +16,8 @@ public sealed class VbaNameResolutionService
     private readonly IReadOnlyList<VbaSourceDocument> documents;
     private readonly VbaProjectReferenceSelection? referenceSelection;
     private readonly VbaProjectReferenceCatalogSet referenceCatalogs;
+    private readonly IReadOnlyList<VbaSourceDefinition> activeReferenceDefinitions;
+    private readonly IReadOnlyDictionary<string, IReadOnlyList<VbaSourceDefinition>> activeReferenceDefinitionsByName;
 
     /// <summary>
     /// Creates a name resolution service over indexed source documents and active references.
@@ -23,14 +25,24 @@ public sealed class VbaNameResolutionService
     /// <param name="documents">The indexed source documents.</param>
     /// <param name="referenceSelection">The active reference selection for the project.</param>
     /// <param name="referenceCatalogs">The available reference catalogs.</param>
+    /// <param name="activeReferenceDefinitions">The active reference definitions projected for this index.</param>
     public VbaNameResolutionService(
         IReadOnlyList<VbaSourceDocument> documents,
         VbaProjectReferenceSelection? referenceSelection,
-        VbaProjectReferenceCatalogSet referenceCatalogs)
+        VbaProjectReferenceCatalogSet referenceCatalogs,
+        IReadOnlyList<VbaSourceDefinition>? activeReferenceDefinitions = null)
     {
         this.documents = documents;
         this.referenceSelection = referenceSelection;
         this.referenceCatalogs = referenceCatalogs;
+        this.activeReferenceDefinitions = activeReferenceDefinitions
+            ?? (referenceSelection is null ? [] : referenceCatalogs.GetActiveDefinitions(referenceSelection));
+        activeReferenceDefinitionsByName = this.activeReferenceDefinitions
+            .GroupBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlyList<VbaSourceDefinition>)group.ToArray(),
+                StringComparer.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -91,8 +103,7 @@ public sealed class VbaNameResolutionService
         }
 
         var candidates = qualifier is null
-            ? GetUnqualifiedCandidates(currentDocument, position, includeLocals: true)
-                .Where(candidate => SameName(candidate.Definition.Name, identifier))
+            ? GetUnqualifiedCandidates(currentDocument, position, includeLocals: true, identifier)
             : GetQualifiedCandidates(currentDocument, qualifier)
                 .Where(candidate => SameName(candidate.Definition.Name, identifier));
         return ResolveRankedCandidates(candidates);
@@ -101,19 +112,23 @@ public sealed class VbaNameResolutionService
     private IEnumerable<RankedDefinition> GetUnqualifiedCandidates(
         VbaSourceDocument currentDocument,
         VbaPosition position,
-        bool includeLocals)
+        bool includeLocals,
+        string? requestedName = null)
     {
         if (includeLocals)
         {
             foreach (var definition in currentDocument.Definitions
                 .Where(definition => definition.Visibility == VbaSourceDefinitionVisibility.Local)
-                .Where(definition => ContainsPosition(definition, position)))
+                .Where(definition => ContainsPosition(definition, position))
+                .Where(definition => MatchesRequestedName(definition, requestedName)))
             {
                 yield return new RankedDefinition(definition, LocalRank);
             }
         }
 
-        foreach (var definition in currentDocument.Definitions.Where(IsReferenceTarget))
+        foreach (var definition in currentDocument.Definitions
+            .Where(IsReferenceTarget)
+            .Where(definition => MatchesRequestedName(definition, requestedName)))
         {
             yield return new RankedDefinition(definition, CurrentModuleRank);
         }
@@ -122,14 +137,15 @@ public sealed class VbaNameResolutionService
             .Where(document => !SameUri(document.Uri, currentDocument.Uri))
             .SelectMany(document => document.Definitions)
             .Where(IsReferenceTarget)
-            .Where(definition => definition.Visibility == VbaSourceDefinitionVisibility.Public))
+            .Where(definition => definition.Visibility == VbaSourceDefinitionVisibility.Public)
+            .Where(definition => MatchesRequestedName(definition, requestedName)))
         {
             yield return new RankedDefinition(definition, ProjectRank);
         }
 
         if (referenceSelection is not null)
         {
-            foreach (var definition in referenceCatalogs.GetActiveDefinitions(referenceSelection))
+            foreach (var definition in GetActiveReferenceDefinitions(requestedName))
             {
                 yield return new RankedDefinition(definition, ReferenceRank);
             }
@@ -200,6 +216,16 @@ public sealed class VbaNameResolutionService
 
         return null;
     }
+
+    private IEnumerable<VbaSourceDefinition> GetActiveReferenceDefinitions(string? requestedName)
+        => requestedName is null
+            ? activeReferenceDefinitions
+            : activeReferenceDefinitionsByName.TryGetValue(requestedName, out var definitions)
+                ? definitions
+                : [];
+
+    private static bool MatchesRequestedName(VbaSourceDefinition definition, string? requestedName)
+        => requestedName is null || SameName(definition.Name, requestedName);
 
     private VbaSourceDocument? FindDocument(string uri)
         => documents.FirstOrDefault(document => SameUri(document.Uri, uri));
