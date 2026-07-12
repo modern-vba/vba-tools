@@ -376,7 +376,7 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
                 var memberKind = IsPropertyInvokeKind(funcDesc.invkind)
                     ? VbaSourceDefinitionKind.Property
                     : VbaSourceDefinitionKind.Procedure;
-                var signature = memberKind == VbaSourceDefinitionKind.Procedure
+                var signature = memberKind == VbaSourceDefinitionKind.Procedure || parameters.Count > 0
                     ? CreateSignature(memberName, parameters, returnType, EmptyToNull(documentation))
                     : null;
 

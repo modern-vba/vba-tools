@@ -1159,6 +1159,111 @@ public sealed class LanguageServerProcessTests
     }
 
     [Fact]
+    public async Task Server_returns_generated_excel_parameterized_property_signature_help_after_catalog_refresh()
+    {
+        if (!HasRegisteredTypeLib("Microsoft Excel 16.0 Object Library"))
+        {
+            return;
+        }
+
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-excel-catalog-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(
+                projectRoot,
+                "Microsoft Excel 16.0 Object Library");
+
+            var serverProjectPath = Path.GetFullPath(
+                Path.Combine(
+                    AppContext.BaseDirectory,
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "src",
+                    "VbaLanguageServer.Cli",
+                    "VbaLanguageServer.Cli.csproj"));
+
+            using var process = StartLanguageServer(serverProjectPath);
+            await using var stdin = process.StandardInput.BaseStream;
+            using var stdout = process.StandardOutput.BaseStream;
+
+            await InitializeAsync(stdin, stdout);
+            var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
+            var text = string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Option Explicit",
+                "",
+                "Public Sub Run()",
+                "    Dim target_sheet As Worksheet",
+                "    Dim target_range As Range",
+                "    Dim first_cell As Range",
+                "    Set target_range = target_sheet.Range(",
+                "    Set target_range = target_sheet.Range(first_cell, ",
+                "End Sub"
+            ]);
+            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, text));
+
+            var refresh = await TryReadLogMessageAsync(
+                stdout,
+                "Reference catalog refresh: document 'Book1' reference 'Microsoft Excel 16.0 Object Library' cached",
+                TimeSpan.FromSeconds(20));
+            Assert.NotNull(refresh);
+
+            var firstParameterHelp = await SendPositionRequestAsync(
+                stdin,
+                stdout,
+                2,
+                "textDocument/signatureHelp",
+                uri,
+                text,
+                "Range(",
+                "Range(".Length);
+            var firstParameterResult = firstParameterHelp.GetProperty("result");
+            Assert.Equal(0, firstParameterResult.GetProperty("activeParameter").GetInt32());
+            var firstSignature = firstParameterResult
+                .GetProperty("signatures")
+                .EnumerateArray()
+                .Single();
+            Assert.Equal("Range(Cell1, Cell2) As Range", firstSignature.GetProperty("label").GetString());
+            var parameterLabels = firstSignature
+                .GetProperty("parameters")
+                .EnumerateArray()
+                .Select(parameter => parameter.GetProperty("label").GetString() ?? "")
+                .ToArray();
+            Assert.Equal(["Cell1", "Cell2"], parameterLabels);
+
+            var secondParameterHelp = await SendPositionRequestAsync(
+                stdin,
+                stdout,
+                3,
+                "textDocument/signatureHelp",
+                uri,
+                text,
+                "Range(first_cell, ",
+                "Range(first_cell, ".Length);
+            var secondParameterResult = secondParameterHelp.GetProperty("result");
+            Assert.Equal(1, secondParameterResult.GetProperty("activeParameter").GetInt32());
+            var secondSignature = secondParameterResult
+                .GetProperty("signatures")
+                .EnumerateArray()
+                .Single();
+            Assert.Equal("Range(Cell1, Cell2) As Range", secondSignature.GetProperty("label").GetString());
+
+            await SendRequestAsync(stdin, stdout, 4, "shutdown", null);
+            await SendNotificationAsync(stdin, "exit", null);
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await process.WaitForExitAsync(cancellation.Token);
+            Assert.Equal(0, process.ExitCode);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Server_prefers_source_definitions_over_reference_catalogs()
     {
         var projectRoot = Directory.CreateTempSubdirectory("vba-ls-source-precedence-").FullName;

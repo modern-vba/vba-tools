@@ -180,6 +180,13 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
             definition.Name == "Item"
             && definition.Kind == VbaSourceDefinitionKind.Property
             && definition.ParentTypeName == "Sheets");
+        Assert.Contains(catalog.Definitions, definition =>
+            definition.Name == "Range"
+            && definition.Kind == VbaSourceDefinitionKind.Property
+            && definition.ParentTypeName == "Worksheet"
+            && definition.TypeReference?.Name == "Range"
+            && definition.Signature?.Label == "Range(Cell1, Cell2) As Range"
+            && definition.Signature.Parameters.Select(parameter => parameter.Name).SequenceEqual(["Cell1", "Cell2"]));
     }
 
     [Fact]
