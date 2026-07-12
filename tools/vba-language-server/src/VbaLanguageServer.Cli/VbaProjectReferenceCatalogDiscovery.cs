@@ -166,36 +166,34 @@ public sealed class TypeLibReferenceCatalogDiscovery : IVbaProjectReferenceCatal
         string referenceName,
         CancellationToken cancellationToken = default)
     {
-        return Task.Run(() =>
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var matches = registryReader
-                .ReadTypeLibraries()
-                .Where(entry => entry.ReferenceName.Equals(referenceName, StringComparison.OrdinalIgnoreCase))
-                .Select(entry => new VbaProjectReferenceCatalogIdentity(
-                    entry.ReferenceName,
-                    entry.Guid,
-                    entry.MajorVersion,
-                    entry.MinorVersion,
-                    entry.Lcid,
-                    entry.Path))
-                .DistinctBy(identity => (
-                    identity.Guid.ToUpperInvariant(),
-                    identity.MajorVersion,
-                    identity.MinorVersion,
-                    identity.Lcid,
-                    identity.Path.ToUpperInvariant()))
-                .ToArray();
+        cancellationToken.ThrowIfCancellationRequested();
+        var matches = registryReader
+            .ReadTypeLibraries()
+            .Where(entry => entry.ReferenceName.Equals(referenceName, StringComparison.OrdinalIgnoreCase))
+            .Select(entry => new VbaProjectReferenceCatalogIdentity(
+                entry.ReferenceName,
+                entry.Guid,
+                entry.MajorVersion,
+                entry.MinorVersion,
+                entry.Lcid,
+                entry.Path))
+            .DistinctBy(identity => (
+                identity.Guid.ToUpperInvariant(),
+                identity.MajorVersion,
+                identity.MinorVersion,
+                identity.Lcid,
+                identity.Path.ToUpperInvariant()))
+            .ToArray();
 
-            return matches.Length switch
-            {
-                0 => VbaProjectReferenceCatalogDiscoveryResult.Failure(
-                    referenceName,
-                    "No matching TypeLib registry entry was found."),
-                1 => DiscoverCatalog(referenceName, matches[0], cancellationToken),
-                _ => VbaProjectReferenceCatalogDiscoveryResult.Ambiguous(referenceName, matches)
-            };
-        }, cancellationToken);
+        var result = matches.Length switch
+        {
+            0 => VbaProjectReferenceCatalogDiscoveryResult.Failure(
+                referenceName,
+                "No matching TypeLib registry entry was found."),
+            1 => DiscoverCatalog(referenceName, matches[0], cancellationToken),
+            _ => VbaProjectReferenceCatalogDiscoveryResult.Ambiguous(referenceName, matches)
+        };
+        return Task.FromResult(result);
     }
 
     private VbaProjectReferenceCatalogDiscoveryResult DiscoverCatalog(
@@ -533,6 +531,7 @@ public sealed class VbaProjectReferenceCatalogRefreshService
     private readonly VbaProjectReferenceCatalogCache cache;
     private readonly IVbaProjectReferenceCatalogDiscovery discovery;
     private readonly VbaProjectReferenceCatalogPersistentStore? persistentStore;
+    private readonly IVbaProjectReferenceCatalogRefreshWorker refreshWorker;
 
     /// <summary>
     /// Creates a catalog refresh service.
@@ -542,7 +541,7 @@ public sealed class VbaProjectReferenceCatalogRefreshService
     public VbaProjectReferenceCatalogRefreshService(
         VbaProjectReferenceCatalogCache cache,
         IVbaProjectReferenceCatalogDiscovery discovery)
-        : this(cache, discovery, null)
+        : this(cache, discovery, null, LowImpactReferenceCatalogRefreshWorker.Shared)
     {
     }
 
@@ -556,10 +555,27 @@ public sealed class VbaProjectReferenceCatalogRefreshService
         VbaProjectReferenceCatalogCache cache,
         IVbaProjectReferenceCatalogDiscovery discovery,
         VbaProjectReferenceCatalogPersistentStore? persistentStore)
+        : this(cache, discovery, persistentStore, LowImpactReferenceCatalogRefreshWorker.Shared)
+    {
+    }
+
+    /// <summary>
+    /// Creates a catalog refresh service.
+    /// </summary>
+    /// <param name="cache">The catalog cache to read and update.</param>
+    /// <param name="discovery">The discovery service used for missing references.</param>
+    /// <param name="persistentStore">The optional persistent store used across language-server sessions.</param>
+    /// <param name="refreshWorker">The worker used to schedule low-impact discovery work.</param>
+    public VbaProjectReferenceCatalogRefreshService(
+        VbaProjectReferenceCatalogCache cache,
+        IVbaProjectReferenceCatalogDiscovery discovery,
+        VbaProjectReferenceCatalogPersistentStore? persistentStore,
+        IVbaProjectReferenceCatalogRefreshWorker refreshWorker)
     {
         this.cache = cache;
         this.discovery = discovery;
         this.persistentStore = persistentStore;
+        this.refreshWorker = refreshWorker;
     }
 
     /// <summary>
@@ -580,7 +596,7 @@ public sealed class VbaProjectReferenceCatalogRefreshService
             VbaProjectReferenceCatalogDiscoveryResult discoveryResult;
             try
             {
-                discoveryResult = await discovery.DiscoverAsync(referenceName, cancellationToken);
+                discoveryResult = await refreshWorker.DiscoverAsync(discovery, referenceName, cancellationToken);
             }
             catch (OperationCanceledException)
             {
