@@ -45,7 +45,10 @@ import {
 import {
   VbaDevDiagnosticReporter
 } from './toolDiagnostics';
-import { createVbaLanguageServerOptions } from './languageServer';
+import {
+  createVbaLanguageServerOptions,
+  createVbaLanguageServerReferenceCatalogCacheRoot
+} from './languageServer';
 import {
   createVscodeDiagnosticCollectionAdapter,
   createVscodeTestControllerAdapter
@@ -60,7 +63,10 @@ export async function activate(context: ExtensionContext): Promise<void> {
   context.subscriptions.push(outputChannel);
   try {
     const serverOptions = createVbaLanguageServerOptions({
-      extensionRoot: context.extensionPath
+      extensionRoot: context.extensionPath,
+      referenceCatalogCacheRoot: createVbaLanguageServerReferenceCatalogCacheRoot(
+        context.globalStorageUri.fsPath
+      )
     });
 
     const clientOptions: LanguageClientOptions = {

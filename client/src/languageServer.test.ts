@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import * as path from 'node:path';
 
 import {
+  createVbaLanguageServerReferenceCatalogCacheRoot,
   createVbaLanguageServerOptions,
+  referenceCatalogCacheRootEnvironmentVariable,
   resolveVbaLanguageServerPath
 } from './languageServer';
 
@@ -19,19 +21,51 @@ test('VbaLanguageServer resolution uses the bundled Windows executable by defaul
 test('VbaLanguageServer launch options use stdio command transport', () => {
   const extensionRoot = path.resolve(__dirname, '..', '..');
   const executablePath = resolveVbaLanguageServerPath({ extensionRoot });
+  const referenceCatalogCacheRoot = path.join(extensionRoot, 'globalStorage', 'reference-catalogs');
+  const options = createVbaLanguageServerOptions({
+    extensionRoot,
+    platform: 'win32',
+    referenceCatalogCacheRoot
+  });
 
-  assert.deepEqual(
-    createVbaLanguageServerOptions({ extensionRoot, platform: 'win32' }),
-    {
-      run: {
-        command: executablePath,
-        transport: 0
-      },
-      debug: {
-        command: executablePath,
-        transport: 0
-      }
-    }
+  const launchOptions = options as {
+    readonly run: {
+      readonly command: string;
+      readonly transport: number;
+      readonly options: { readonly env?: NodeJS.ProcessEnv };
+    };
+    readonly debug: {
+      readonly command: string;
+      readonly transport: number;
+      readonly options: { readonly env?: NodeJS.ProcessEnv };
+    };
+  };
+
+  assert.equal(launchOptions.run.command, executablePath);
+  assert.equal(launchOptions.run.transport, 0);
+  assert.equal(
+    launchOptions.run.options.env?.[referenceCatalogCacheRootEnvironmentVariable],
+    referenceCatalogCacheRoot
+  );
+  assert.deepEqual(launchOptions.debug, launchOptions.run);
+});
+
+test('VbaLanguageServer reference catalog cache root is derived from VS Code global storage', () => {
+  const globalStorageRoot = path.join(
+    'C:',
+    'Users',
+    'alice',
+    'AppData',
+    'Roaming',
+    'Code',
+    'User',
+    'globalStorage',
+    'tkmr-akhs.vba-tools'
+  );
+
+  assert.equal(
+    createVbaLanguageServerReferenceCatalogCacheRoot(globalStorageRoot),
+    path.join(globalStorageRoot, 'reference-catalogs')
   );
 });
 

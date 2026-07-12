@@ -63,6 +63,58 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
     }
 
     [Fact]
+    public void PersistentStoreDefaultRootUsesConfiguredEnvironmentOverride()
+    {
+        var previousCacheRoot = Environment.GetEnvironmentVariable(
+            VbaProjectReferenceCatalogPersistentStore.CacheRootEnvironmentVariable);
+        var configuredCacheRoot = Path.Combine(
+            Path.GetTempPath(),
+            $"vba-ls-configured-catalog-store-{Guid.NewGuid():N}");
+        try
+        {
+            Environment.SetEnvironmentVariable(
+                VbaProjectReferenceCatalogPersistentStore.CacheRootEnvironmentVariable,
+                configuredCacheRoot);
+
+            Assert.Equal(
+                configuredCacheRoot,
+                VbaProjectReferenceCatalogPersistentStore.GetDefaultRootDirectory());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                VbaProjectReferenceCatalogPersistentStore.CacheRootEnvironmentVariable,
+                previousCacheRoot);
+        }
+    }
+
+    [Fact]
+    public void PersistentStoreDefaultRootDoesNotUseBuildOutputWhenUnconfigured()
+    {
+        var previousCacheRoot = Environment.GetEnvironmentVariable(
+            VbaProjectReferenceCatalogPersistentStore.CacheRootEnvironmentVariable);
+        try
+        {
+            Environment.SetEnvironmentVariable(
+                VbaProjectReferenceCatalogPersistentStore.CacheRootEnvironmentVariable,
+                null);
+
+            var defaultRoot = Path.GetFullPath(VbaProjectReferenceCatalogPersistentStore.GetDefaultRootDirectory());
+            var buildOutputRoot = Path.GetFullPath(AppContext.BaseDirectory);
+
+            Assert.False(
+                defaultRoot.StartsWith(buildOutputRoot, StringComparison.OrdinalIgnoreCase),
+                $"Default reference catalog cache root should not be inside build output. Root: {defaultRoot}");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                VbaProjectReferenceCatalogPersistentStore.CacheRootEnvironmentVariable,
+                previousCacheRoot);
+        }
+    }
+
+    [Fact]
     public void PersistentStoreTreatsCorruptedCacheAsRecoverableMiss()
     {
         var cacheRoot = Directory.CreateTempSubdirectory("vba-ls-catalog-store-").FullName;
