@@ -26,8 +26,32 @@ internal static class VbaProjectSourceInventory
         IReadOnlySet<string> excludedUris,
         VbaProjectSourceDocumentCache? diskDocumentCache = null,
         CancellationToken cancellationToken = default)
+        => CreateInventorySnapshot(
+            resolution,
+            trackedDocuments,
+            excludedUris,
+            diskDocumentCache,
+            cancellationToken)
+            .Documents;
+
+    /// <summary>
+    /// Creates a scoped document inventory and a stamp for detecting unchanged disk inputs.
+    /// </summary>
+    /// <param name="resolution">The project boundary resolution.</param>
+    /// <param name="trackedDocuments">The current in-memory tracked documents.</param>
+    /// <param name="excludedUris">Source URIs that should not be loaded from disk.</param>
+    /// <param name="diskDocumentCache">The cache used for disk-loaded source documents.</param>
+    /// <param name="cancellationToken">A cancellation token for inventory work.</param>
+    /// <returns>The scoped inventory and its source-file stamp.</returns>
+    public static VbaProjectSourceInventorySnapshot CreateInventorySnapshot(
+        VbaProjectResolution resolution,
+        IReadOnlyDictionary<string, VbaTrackedDocument> trackedDocuments,
+        IReadOnlySet<string> excludedUris,
+        VbaProjectSourceDocumentCache? diskDocumentCache = null,
+        CancellationToken cancellationToken = default)
     {
         var documents = new Dictionary<string, VbaTrackedDocument>(StringComparer.OrdinalIgnoreCase);
+        var fileStates = new List<string>();
         var excludedPaths = CreateLocalPathSet(excludedUris);
         var trackedDocumentsByPath = CreateTrackedDocumentPathMap(trackedDocuments.Values);
         foreach (var uri in EnumerateSourceUris(resolution, cancellationToken))
@@ -39,6 +63,14 @@ internal static class VbaProjectSourceInventory
                 continue;
             }
 
+            var fileInfo = new FileInfo(localPath);
+            if (!fileInfo.Exists)
+            {
+                continue;
+            }
+
+            fileStates.Add(CreateFileState(fileInfo));
+
             if (trackedDocuments.TryGetValue(uri, out var trackedDocument))
             {
                 documents[trackedDocument.Uri] = trackedDocument;
@@ -48,11 +80,6 @@ internal static class VbaProjectSourceInventory
             if (trackedDocumentsByPath.TryGetValue(localPath, out trackedDocument))
             {
                 documents[trackedDocument.Uri] = trackedDocument;
-                continue;
-            }
-
-            if (!File.Exists(localPath))
-            {
                 continue;
             }
 
@@ -73,7 +100,9 @@ internal static class VbaProjectSourceInventory
             }
         }
 
-        return documents;
+        return new VbaProjectSourceInventorySnapshot(
+            documents,
+            CreateInventoryStamp(fileStates));
     }
 
     private static IEnumerable<string> EnumerateSourceUris(
@@ -145,4 +174,25 @@ internal static class VbaProjectSourceInventory
 
         return map;
     }
+
+    private static string CreateFileState(FileInfo fileInfo)
+        => string.Join(
+            "|",
+            Path.GetFullPath(fileInfo.FullName),
+            fileInfo.Length.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            fileInfo.LastWriteTimeUtc.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
+    private static string CreateInventoryStamp(IEnumerable<string> fileStates)
+        => string.Join(
+            "\n",
+            fileStates.OrderBy(state => state, StringComparer.OrdinalIgnoreCase));
 }
+
+/// <summary>
+/// Represents a scoped project source inventory and its disk source stamp.
+/// </summary>
+/// <param name="Documents">The tracked documents that belong to the resolved project scope.</param>
+/// <param name="Stamp">The deterministic source-file stamp for cache invalidation.</param>
+internal sealed record VbaProjectSourceInventorySnapshot(
+    Dictionary<string, VbaTrackedDocument> Documents,
+    string Stamp);

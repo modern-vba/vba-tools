@@ -68,6 +68,26 @@ public sealed class VbaSemanticTokenTests
     }
 
     [Fact]
+    public void SemanticTokenDataIsCachedWithinSourceIndexSnapshot()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Option Explicit",
+            "Public Sub Run()",
+            "    Dim value As Long",
+            "    value = 1",
+            "End Sub"
+        ]);
+        var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = text });
+
+        var firstData = index.GetSemanticTokenData(uri);
+        var secondData = index.GetSemanticTokenData(uri);
+
+        Assert.Same(firstData, secondData);
+    }
+
+    [Fact]
     public void SemanticTokensCoverProjectTypeAnnotationsVariablesAndMembers()
     {
         const string workerUri = "file:///C:/work/Worker.bas";

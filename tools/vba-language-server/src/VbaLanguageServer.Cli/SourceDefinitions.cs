@@ -300,6 +300,9 @@ public sealed class VbaSourceIndex
     private readonly IReadOnlyList<VbaSourceDocument> documents;
     private readonly VbaSemanticResolution semanticResolution;
     private readonly VbaSourceFormatter sourceFormatter;
+    private readonly object semanticTokenCacheGate = new();
+    private readonly Dictionary<string, IReadOnlyList<VbaSemanticToken>> semanticTokenCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, IReadOnlyList<int>> semanticTokenDataCache = new(StringComparer.OrdinalIgnoreCase);
 
     private VbaSourceIndex(
         IReadOnlyList<VbaSourceDocument> documents,
@@ -459,10 +462,30 @@ public sealed class VbaSourceIndex
     /// <param name="uri">The document URI.</param>
     /// <returns>The semantic tokens before LSP encoding.</returns>
     public IReadOnlyList<VbaSemanticToken> GetSemanticTokens(string uri)
-        => VbaSemanticTokenBuilder.GetSemanticTokens(
+    {
+        lock (semanticTokenCacheGate)
+        {
+            if (semanticTokenCache.TryGetValue(uri, out var cachedTokens))
+            {
+                return cachedTokens;
+            }
+        }
+
+        var tokens = VbaSemanticTokenBuilder.GetSemanticTokens(
             documents,
             uri,
             (line, character) => ResolveSourceDefinition(uri, line, character));
+        lock (semanticTokenCacheGate)
+        {
+            if (semanticTokenCache.TryGetValue(uri, out var cachedTokens))
+            {
+                return cachedTokens;
+            }
+
+            semanticTokenCache[uri] = tokens;
+            return tokens;
+        }
+    }
 
     /// <summary>
     /// Gets LSP delta-encoded semantic token data for one document.
@@ -470,7 +493,27 @@ public sealed class VbaSourceIndex
     /// <param name="uri">The document URI.</param>
     /// <returns>The encoded semantic token integer data.</returns>
     public IReadOnlyList<int> GetSemanticTokenData(string uri)
-        => VbaSemanticTokenBuilder.GetSemanticTokenData(GetSemanticTokens(uri));
+    {
+        lock (semanticTokenCacheGate)
+        {
+            if (semanticTokenDataCache.TryGetValue(uri, out var cachedData))
+            {
+                return cachedData;
+            }
+        }
+
+        var data = VbaSemanticTokenBuilder.GetSemanticTokenData(GetSemanticTokens(uri));
+        lock (semanticTokenCacheGate)
+        {
+            if (semanticTokenDataCache.TryGetValue(uri, out var cachedData))
+            {
+                return cachedData;
+            }
+
+            semanticTokenDataCache[uri] = data;
+            return data;
+        }
+    }
 
     /// <summary>
     /// Gets completion definitions visible at a document position.

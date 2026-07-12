@@ -342,6 +342,7 @@ public sealed class VbaProjectReferenceCatalogCache
 {
     private readonly object gate = new();
     private VbaProjectReferenceCatalogSet catalogSet;
+    private long version;
     private readonly Dictionary<string, VbaProjectReferenceCatalogIdentity> identities = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> refreshesInProgress = new(StringComparer.OrdinalIgnoreCase);
 
@@ -364,6 +365,20 @@ public sealed class VbaProjectReferenceCatalogCache
             lock (gate)
             {
                 return catalogSet;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Gets a versioned snapshot of the current reference catalog set.
+    /// </summary>
+    public VbaProjectReferenceCatalogCacheState State
+    {
+        get
+        {
+            lock (gate)
+            {
+                return new VbaProjectReferenceCatalogCacheState(catalogSet, version);
             }
         }
     }
@@ -425,6 +440,7 @@ public sealed class VbaProjectReferenceCatalogCache
             if (result.Catalog is not null)
             {
                 catalogSet = catalogSet.WithCatalog(result.Catalog);
+                version++;
             }
         }
     }
@@ -441,6 +457,15 @@ public sealed class VbaProjectReferenceCatalogCache
         }
     }
 }
+
+/// <summary>
+/// Represents a versioned reference catalog cache snapshot.
+/// </summary>
+/// <param name="CatalogSet">The catalog set available to editor features.</param>
+/// <param name="Version">The cache version that changes when the catalog set changes.</param>
+public sealed record VbaProjectReferenceCatalogCacheState(
+    VbaProjectReferenceCatalogSet CatalogSet,
+    long Version);
 
 /// <summary>
 /// Represents one reference catalog refresh result.

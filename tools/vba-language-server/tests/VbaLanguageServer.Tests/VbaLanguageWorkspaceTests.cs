@@ -10,6 +10,33 @@ namespace VbaLanguageServer.Tests;
 public sealed class VbaLanguageWorkspaceTests
 {
     [Fact]
+    public void ProjectSnapshotReusesCachedSnapshotUntilWorkspaceInputsChange()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.CreateBundled()));
+        workspace.UpdateDocument(uri, string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "End Sub"
+        ]));
+
+        var firstSnapshot = workspace.CreateProjectSnapshot(uri);
+        var reusedSnapshot = workspace.CreateProjectSnapshot(uri);
+        workspace.UpdateDocument(uri, string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub RenamedRun()",
+            "End Sub"
+        ]));
+        var refreshedSnapshot = workspace.CreateProjectSnapshot(uri);
+        var reusedRefreshedSnapshot = workspace.CreateProjectSnapshot(uri);
+
+        Assert.Same(firstSnapshot, reusedSnapshot);
+        Assert.NotSame(firstSnapshot, refreshedSnapshot);
+        Assert.Same(refreshedSnapshot, reusedRefreshedSnapshot);
+    }
+
+    [Fact]
     public void ProjectSnapshotReusesModuleMemberUpdatesForSafeDocumentChanges()
     {
         const string uri = "file:///C:/work/Worker.bas";
@@ -142,6 +169,58 @@ public sealed class VbaLanguageWorkspaceTests
                 symbol => symbol.Uri == helperUri);
             Assert.Contains(
                 overlaySnapshot.SourceIndex.GetWorkspaceSymbols("BuildReplacement"),
+                symbol => symbol.Uri == helperUri);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ProjectSnapshotCacheInvalidatesWhenDiskSourceChanges()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-disk-refresh-").FullName;
+        try
+        {
+            WriteProjectManifest(projectRoot);
+            var helperPath = Path.Combine(projectRoot, "src", "Book1", "Helper.bas");
+            var helperUri = ToFileUri(helperPath);
+            var callerUri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Caller.bas"));
+            File.WriteAllText(
+                helperPath,
+                string.Join('\n', [
+                    "Attribute VB_Name = \"Helper\"",
+                    "Public Function BuildValue() As String",
+                    "End Function"
+                ]));
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.CreateBundled()));
+            workspace.UpdateDocument(callerUri, string.Join('\n', [
+                "Attribute VB_Name = \"Caller\"",
+                "Public Sub Run()",
+                "    BuildValue",
+                "End Sub"
+            ]));
+
+            var initialSnapshot = workspace.CreateProjectSnapshot(callerUri);
+            var reusedSnapshot = workspace.CreateProjectSnapshot(callerUri);
+            File.WriteAllText(
+                helperPath,
+                string.Join('\n', [
+                    "Attribute VB_Name = \"Helper\"",
+                    "Public Function BuildReplacement() As String",
+                    "End Function"
+                ]));
+            var refreshedSnapshot = workspace.CreateProjectSnapshot(callerUri);
+
+            Assert.Same(initialSnapshot, reusedSnapshot);
+            Assert.NotSame(initialSnapshot, refreshedSnapshot);
+            Assert.Contains(
+                refreshedSnapshot.SourceIndex.GetWorkspaceSymbols("BuildReplacement"),
+                symbol => symbol.Uri == helperUri);
+            Assert.DoesNotContain(
+                refreshedSnapshot.SourceIndex.GetWorkspaceSymbols("BuildValue"),
                 symbol => symbol.Uri == helperUri);
         }
         finally
@@ -309,8 +388,9 @@ public sealed class VbaLanguageWorkspaceTests
             var workspace = new VbaLanguageWorkspace(cache);
             workspace.UpdateDocument(uri, "Attribute VB_Name = \"Worker\"\nPublic Sub Run()\nEnd Sub");
 
-            var beforeRefresh = workspace
-                .CreateProjectSnapshot(uri)
+            var beforeRefreshSnapshot = workspace.CreateProjectSnapshot(uri);
+            var reusedBeforeRefreshSnapshot = workspace.CreateProjectSnapshot(uri);
+            var beforeRefresh = beforeRefreshSnapshot
                 .SourceIndex
                 .GetCompletionDefinitions(uri, line: 1, character: 0)
                 .Select(definition => definition.Name)
@@ -332,13 +412,15 @@ public sealed class VbaLanguageWorkspaceTests
                             "GeneratedType",
                             VbaSourceDefinitionKind.Class)
                     ])));
-            var afterRefresh = workspace
-                .CreateProjectSnapshot(uri)
+            var afterRefreshSnapshot = workspace.CreateProjectSnapshot(uri);
+            var afterRefresh = afterRefreshSnapshot
                 .SourceIndex
                 .GetCompletionDefinitions(uri, line: 1, character: 0)
                 .Select(definition => definition.Name)
                 .ToArray();
 
+            Assert.Same(beforeRefreshSnapshot, reusedBeforeRefreshSnapshot);
+            Assert.NotSame(beforeRefreshSnapshot, afterRefreshSnapshot);
             Assert.DoesNotContain("GeneratedType", beforeRefresh);
             Assert.Contains("GeneratedType", afterRefresh);
         }
