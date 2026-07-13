@@ -80,6 +80,12 @@ internal sealed class VbaSemanticResolution
         }
 
         if (currentDocument is not null
+            && IsCompletionSuppressedAfterLineContinuationMarker(currentDocument, line, character))
+        {
+            return new VbaCompletionResult([], VbaCompletionVocabularyKind.None);
+        }
+
+        if (currentDocument is not null
             && IsCompletionSuppressedAfterCompletedMemberAccess(currentDocument, line, character))
         {
             return new VbaCompletionResult([], VbaCompletionVocabularyKind.None);
@@ -294,6 +300,21 @@ internal sealed class VbaSemanticResolution
         int line,
         int character)
         => !VbaLexicalFacts.FromText(currentDocument.Text).IsCodePosition(line, character);
+
+    private static bool IsCompletionSuppressedAfterLineContinuationMarker(
+        VbaSourceDocument currentDocument,
+        int line,
+        int character)
+    {
+        var lexicalFacts = VbaLexicalFacts.FromText(currentDocument.Text);
+        if (!lexicalFacts.TryGetLine(line, out var text))
+        {
+            return false;
+        }
+
+        var prefix = text[..Math.Clamp(character, 0, text.Length)];
+        return prefix.EndsWith(" _", StringComparison.Ordinal);
+    }
 
     private bool TryGetTypeCompletionDefinitions(
         VbaSourceDocument currentDocument,

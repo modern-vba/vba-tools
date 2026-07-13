@@ -335,6 +335,48 @@ public sealed class VbaSemanticResolutionTests
     }
 
     [Fact]
+    public void CompletionStaysSilentImmediatelyAfterLineContinuationMarker()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    BuildValue _",
+            "    Dim value As String",
+            "End Sub",
+            "Public Sub BuildValue()",
+            "End Sub"
+        ]);
+        var index = BuildIndex(uri, text);
+
+        var continuationCompletion = index.GetCompletionResult(uri, 2, "    BuildValue _".Length);
+        var codeCompletion = index.GetCompletionResult(uri, 3, "    Dim value As ".Length);
+
+        Assert.Equal(VbaCompletionVocabularyKind.None, continuationCompletion.VocabularyKind);
+        Assert.Empty(continuationCompletion.Definitions);
+        Assert.Equal(VbaCompletionVocabularyKind.TypeName, codeCompletion.VocabularyKind);
+        Assert.NotEmpty(codeCompletion.Definitions);
+    }
+
+    [Fact]
+    public void CompletionContinuesAfterIdentifierUnderscoreWithoutPrecedingSpace()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    value_",
+            "End Sub"
+        ]);
+        var index = BuildIndex(uri, text);
+
+        var completion = index.GetCompletionResult(uri, 2, "    value_".Length);
+
+        Assert.Equal(VbaCompletionVocabularyKind.Keyword, completion.VocabularyKind);
+        Assert.NotEmpty(completion.Definitions);
+    }
+
+    [Fact]
     public void SignatureHelpUsesActiveNamedArgumentWhenParameterNameMatches()
     {
         const string uri = "file:///C:/work/Worker.bas";
