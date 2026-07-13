@@ -451,8 +451,8 @@ public sealed class SourceFormattingTests
             "Do",
             "While false",
             "value = BuildValue( _",
-            "1, _",
-            "2)",
+            "        1, _",
+            "            2)",
             "Wend",
             "Loop",
             "next",
@@ -483,8 +483,8 @@ public sealed class SourceFormattingTests
             "                    Do",
             "                        While False",
             "                            value = BuildValue( _",
-            "                                    1, _",
-            "                                    2)",
+            "        1, _",
+            "            2)",
             "                        Wend",
             "                    Loop",
             "                Next",
@@ -507,19 +507,19 @@ public sealed class SourceFormattingTests
     }
 
     [Fact]
-    public void FormatDocumentScalesContinuationIndentWithTabSize()
+    public void FormatDocumentPreservesContinuationIndentAndFormatsContinuationCasing()
     {
         const string uri = "file:///C:/work/Worker.bas";
         var source = string.Join('\n', [
-            "public sub Run()",
+            "public sub Run(ByVal Fallback as string)",
             "value = BuildValue( _",
-            "1)",
+            "        fallback)",
             "end sub"
         ]);
         var expected = string.Join('\n', [
-            "Public Sub Run()",
+            "Public Sub Run(ByVal Fallback As String)",
             "  value = BuildValue( _",
-            "      1)",
+            "        Fallback)",
             "End Sub"
         ]);
         var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = source });

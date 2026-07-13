@@ -44,6 +44,11 @@ public sealed class VbaIndentationFormatting
             return text;
         }
 
+        if (line.IsContinuationLine)
+        {
+            return text;
+        }
+
         return $"{new string(' ', Math.Max(1, tabSize) * line.IndentationDepth)}{text.TrimStart()}";
     }
 }

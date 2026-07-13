@@ -137,7 +137,7 @@ public sealed record VbaFormattingInput(
                     if (VbaSourceText.HasLineContinuation(codeText))
                     {
                         inContinuation = true;
-                        continuationDepth = depth + 2;
+                        continuationDepth = depth + 1;
                     }
                 }
             }
