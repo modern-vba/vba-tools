@@ -113,6 +113,41 @@ public sealed class VbaLexicalFacts
     }
 
     /// <summary>
+    /// Determines whether a source position is in code rather than inside a string or apostrophe comment.
+    /// </summary>
+    /// <param name="line">The zero-based line number.</param>
+    /// <param name="character">The zero-based character position.</param>
+    /// <returns>True when the position is inside code.</returns>
+    public bool IsCodePosition(int line, int character)
+        => TryGetLine(line, out var text)
+            && VbaSourceText.IsCodePosition(text, character)
+            && !IsRemCommentPosition(text, character);
+
+    private static bool IsRemCommentPosition(string line, int character)
+    {
+        var start = 0;
+        while (start < line.Length && char.IsWhiteSpace(line[start]))
+        {
+            start++;
+        }
+
+        if (start >= line.Length
+            || line.Length - start < 3
+            || !line.AsSpan(start, 3).Equals("Rem", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var end = start + 3;
+        if (end < line.Length && VbaSourceText.IsIdentifierCharacter(line[end]))
+        {
+            return false;
+        }
+
+        return character >= start;
+    }
+
+    /// <summary>
     /// Finds identifier occurrences in the code portion of a physical line.
     /// </summary>
     /// <param name="line">The physical line to inspect.</param>

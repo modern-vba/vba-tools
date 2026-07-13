@@ -74,6 +74,12 @@ internal sealed class VbaSemanticResolution
     {
         var currentDocument = documents.FirstOrDefault(document => SameUri(document.Uri, uri));
         if (currentDocument is not null
+            && IsCompletionSuppressedInNonCodeText(currentDocument, line, character))
+        {
+            return new VbaCompletionResult([], VbaCompletionVocabularyKind.None);
+        }
+
+        if (currentDocument is not null
             && IsCompletionSuppressedAfterCompletedMemberAccess(currentDocument, line, character))
         {
             return new VbaCompletionResult([], VbaCompletionVocabularyKind.None);
@@ -282,6 +288,12 @@ internal sealed class VbaSemanticResolution
             currentDocument,
             line,
             character);
+
+    private static bool IsCompletionSuppressedInNonCodeText(
+        VbaSourceDocument currentDocument,
+        int line,
+        int character)
+        => !VbaLexicalFacts.FromText(currentDocument.Text).IsCodePosition(line, character);
 
     private bool TryGetTypeCompletionDefinitions(
         VbaSourceDocument currentDocument,
