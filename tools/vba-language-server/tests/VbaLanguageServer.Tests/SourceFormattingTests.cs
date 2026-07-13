@@ -461,8 +461,8 @@ public sealed class SourceFormattingTests
             "                    Do",
             "                        While False",
             "                            value = BuildValue( _",
-            "                                1, _",
-            "                                2)",
+            "                                    1, _",
+            "                                    2)",
             "                        Wend",
             "                    Loop",
             "                Next",
@@ -479,6 +479,30 @@ public sealed class SourceFormattingTests
         var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = source });
 
         var edit = index.FormatDocument(uri, tabSize: 4);
+
+        Assert.NotNull(edit);
+        Assert.Equal(expected, edit.NewText);
+    }
+
+    [Fact]
+    public void FormatDocumentScalesContinuationIndentWithTabSize()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var source = string.Join('\n', [
+            "public sub Run()",
+            "value = BuildValue( _",
+            "1)",
+            "end sub"
+        ]);
+        var expected = string.Join('\n', [
+            "Public Sub Run()",
+            "  value = BuildValue( _",
+            "      1)",
+            "End Sub"
+        ]);
+        var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = source });
+
+        var edit = index.FormatDocument(uri, tabSize: 2);
 
         Assert.NotNull(edit);
         Assert.Equal(expected, edit.NewText);

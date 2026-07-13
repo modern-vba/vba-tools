@@ -98,7 +98,7 @@ public sealed class VbaSyntaxTreeStatementTests
         Assert.Equal("End If", formattingInput.Lines[2].BlockTransition.OpenTerminator);
         Assert.Equal(1, formattingInput.Lines[2].IndentationDepth);
         Assert.True(formattingInput.Lines[4].IsContinuationLine);
-        Assert.Equal(3, formattingInput.Lines[4].IndentationDepth);
+        Assert.Equal(4, formattingInput.Lines[4].IndentationDepth);
         Assert.Equal("End If", formattingInput.Lines[5].BlockTransition.BranchTerminator);
         Assert.Equal(1, formattingInput.Lines[5].IndentationDepth);
         Assert.Equal("End If", formattingInput.Lines[7].BlockTransition.CloseTerminator);
