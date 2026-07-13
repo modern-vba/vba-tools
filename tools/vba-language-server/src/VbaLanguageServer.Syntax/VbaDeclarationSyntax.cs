@@ -198,6 +198,8 @@ public sealed record VbaCallableSignatureSyntax(
 /// </summary>
 /// <param name="Name">The parameter name.</param>
 /// <param name="Documentation">The parameter documentation text.</param>
+/// <param name="IsOptional">Whether the parameter is declared Optional.</param>
 public sealed record VbaCallableParameterInfoSyntax(
     string Name,
-    string? Documentation = null);
+    string? Documentation = null,
+    bool IsOptional = false);

@@ -1076,7 +1076,7 @@ public sealed class LanguageServerProcessTests
                 .GetProperty("signatures")
                 .EnumerateArray()
                 .Single();
-            Assert.Equal("Run(Macro, Arg1)", firstSignature.GetProperty("label").GetString());
+            Assert.Equal("Run(Macro, [Arg1])", firstSignature.GetProperty("label").GetString());
             Assert.Contains(
                 "The macro or function to run.",
                 firstSignature.GetProperty("parameters").EnumerateArray().First().GetProperty("documentation").GetProperty("value").GetString(),
@@ -1715,7 +1715,7 @@ public sealed class LanguageServerProcessTests
                 .GetProperty("signatures")
                 .EnumerateArray()
                 .Single();
-            Assert.Equal("Range(Cell1, Cell2) As Range", firstSignature.GetProperty("label").GetString());
+            Assert.Equal("Range(Cell1, [Cell2]) As Range", firstSignature.GetProperty("label").GetString());
             var parameterLabels = firstSignature
                 .GetProperty("parameters")
                 .EnumerateArray()
@@ -1738,7 +1738,7 @@ public sealed class LanguageServerProcessTests
                 .GetProperty("signatures")
                 .EnumerateArray()
                 .Single();
-            Assert.Equal("Range(Cell1, Cell2) As Range", secondSignature.GetProperty("label").GetString());
+            Assert.Equal("Range(Cell1, [Cell2]) As Range", secondSignature.GetProperty("label").GetString());
 
             await SendRequestAsync(stdin, stdout, 4, "shutdown", null);
             await SendNotificationAsync(stdin, "exit", null);

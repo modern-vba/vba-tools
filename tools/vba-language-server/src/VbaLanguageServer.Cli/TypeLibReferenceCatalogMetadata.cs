@@ -432,7 +432,9 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
             var parameterName = index < names.Count && !string.IsNullOrWhiteSpace(names[index])
                 ? names[index]
                 : $"Arg{parameters.Count + 1}";
-            parameters.Add(new VbaCallableParameter(parameterName));
+            var isOptional = (element.desc.paramdesc.wParamFlags & PARAMFLAG.PARAMFLAG_FOPT) != 0
+                || (element.desc.paramdesc.wParamFlags & PARAMFLAG.PARAMFLAG_FHASDEFAULT) != 0;
+            parameters.Add(new VbaCallableParameter(parameterName, IsOptional: isOptional));
         }
 
         return parameters;
@@ -452,7 +454,7 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
         VbaTypeReference? returnType,
         string? documentation)
     {
-        var label = $"{memberName}({string.Join(", ", parameters.Select(parameter => parameter.Name))})";
+        var label = $"{memberName}({string.Join(", ", parameters.Select(CreateParameterLabel))})";
         if (returnType is not null)
         {
             label = $"{label} As {returnType.Name}";
@@ -460,6 +462,9 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
 
         return new VbaCallableSignature(label, parameters, documentation);
     }
+
+    private static string CreateParameterLabel(VbaCallableParameter parameter)
+        => parameter.IsOptional ? $"[{parameter.Name}]" : parameter.Name;
 
     [SupportedOSPlatform("windows")]
     private static VbaTypeReference? ToTypeReference(ITypeInfo typeInfo, TYPEDESC typeDesc)

@@ -35,7 +35,7 @@ public sealed class VbaSemanticResolutionTests
         var runDefinition = index.ResolveSourceDefinition(uri, 5, "    app.".Length);
         Assert.Equal("Microsoft Excel 16.0 Object Library", runDefinition?.ModuleName);
         Assert.Equal("Application", runDefinition?.ParentTypeName);
-        Assert.Equal("Run(Macro, Arg1)", index.GetSignatureHelp(uri, 5, "    app.Run(".Length)?.Signature.Label);
+        Assert.Equal("Run(Macro, [Arg1])", index.GetSignatureHelp(uri, 5, "    app.Run(".Length)?.Signature.Label);
 
         var dictionaryCompletionLabels = index.GetCompletionDefinitions(uri, 7, "    dict.".Length)
             .Select(definition => definition.Name)
@@ -117,8 +117,8 @@ public sealed class VbaSemanticResolutionTests
             .ToArray();
         Assert.Contains("Open", workbookLabels);
 
-        Assert.Equal("Run(Macro, Arg1)", index.GetSignatureHelp(uri, 6, "        .Run(".Length)?.Signature.Label);
-        Assert.Equal("Run(Macro, Arg1)", index.GetSignatureHelp(uri, 8, "        ".Length)?.Signature.Label);
+        Assert.Equal("Run(Macro, [Arg1])", index.GetSignatureHelp(uri, 6, "        .Run(".Length)?.Signature.Label);
+        Assert.Equal("Run(Macro, [Arg1])", index.GetSignatureHelp(uri, 8, "        ".Length)?.Signature.Label);
         Assert.Equal("Open(FileName)", index.GetSignatureHelp(uri, 11, "            .Open(".Length)?.Signature.Label);
         Assert.Equal("Open(FileName)", index.GetSignatureHelp(uri, 16, "        .Open(".Length)?.Signature.Label);
     }
@@ -284,6 +284,64 @@ public sealed class VbaSemanticResolutionTests
 
         Assert.Equal("BuildValue(Arg1, [Arg2]) As String", sourceMember?.Signature.Label);
         Assert.Null(nonCallable);
+    }
+
+    [Fact]
+    public void SignatureHelpBracketsReferenceOptionalParametersOnlyWhenMetadataIsAvailable()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    Dim generated As GeneratedType",
+            "    generated.OptionalMethod(",
+            "    generated.PlainMethod(",
+            "End Sub"
+        ]);
+        var selection = VbaProjectReferenceSelection.Create(
+            ProjectDocument.ExcelKind,
+            [new VbaProjectReference("Generated Library")]);
+        var catalog = new VbaProjectReferenceCatalog(
+            "Generated Library",
+            ["Generated"],
+            [
+                new VbaProjectReferenceDefinition(
+                    "Generated Library",
+                    "GeneratedType",
+                    VbaSourceDefinitionKind.Class),
+                new VbaProjectReferenceDefinition(
+                    "Generated Library",
+                    "OptionalMethod",
+                    VbaSourceDefinitionKind.Procedure,
+                    Signature: new VbaCallableSignature(
+                        "OptionalMethod(Required, OptionalValue)",
+                        [
+                            new VbaCallableParameter("Required"),
+                            new VbaCallableParameter("OptionalValue", IsOptional: true)
+                        ]),
+                    ParentTypeName: "GeneratedType"),
+                new VbaProjectReferenceDefinition(
+                    "Generated Library",
+                    "PlainMethod",
+                    VbaSourceDefinitionKind.Procedure,
+                    Signature: new VbaCallableSignature(
+                        "PlainMethod(Required, OptionalValue)",
+                        [
+                            new VbaCallableParameter("Required"),
+                            new VbaCallableParameter("OptionalValue")
+                        ]),
+                    ParentTypeName: "GeneratedType")
+            ]);
+        var index = VbaSourceIndex.Build(
+            new Dictionary<string, string> { [uri] = text },
+            selection,
+            VbaProjectReferenceCatalogSet.Empty.WithCatalog(catalog));
+
+        var optionalSignature = index.GetSignatureHelp(uri, 3, "    generated.OptionalMethod(".Length);
+        var plainSignature = index.GetSignatureHelp(uri, 4, "    generated.PlainMethod(".Length);
+
+        Assert.Equal("OptionalMethod(Required, [OptionalValue])", optionalSignature?.Signature.Label);
+        Assert.Equal("PlainMethod(Required, OptionalValue)", plainSignature?.Signature.Label);
     }
 
     [Fact]

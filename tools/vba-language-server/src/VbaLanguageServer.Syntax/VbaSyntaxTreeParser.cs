@@ -1559,7 +1559,12 @@ internal static class VbaSyntaxTreeParser
 
         return new VbaCallableSignatureSyntax(
             label,
-            parameters.Select(parameter => new VbaCallableParameterInfoSyntax(parameter.Name, parameter.Documentation)).ToArray(),
+            parameters
+                .Select(parameter => new VbaCallableParameterInfoSyntax(
+                    parameter.Name,
+                    parameter.Documentation,
+                    parameter.IsOptional))
+                .ToArray(),
             documentationLines.Count == 0 ? null : string.Join('\n', documentationLines));
     }
 

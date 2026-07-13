@@ -114,10 +114,13 @@ public sealed class VbaProjectReferenceCatalogSet
                         VbaSourceDefinitionKind.Procedure,
                         "Runs a macro or calls a function.",
                         new VbaCallableSignature(
-                            "Run(Macro, Arg1)",
+                            "Run(Macro, [Arg1])",
                             [
                                 new VbaCallableParameter("Macro", "The macro or function to run."),
-                                new VbaCallableParameter("Arg1", "The first argument passed to the macro.")
+                                new VbaCallableParameter(
+                                    "Arg1",
+                                    "The first argument passed to the macro.",
+                                    IsOptional: true)
                             ],
                             "Runs a macro or calls a function."),
                         ParentTypeName: "Application"),
@@ -349,10 +352,34 @@ public sealed class VbaProjectReferenceCatalogSet
             definition.ReferenceName,
             new VbaRange(new VbaPosition(0, 0), new VbaPosition(0, definition.Name.Length)),
             Documentation: definition.Documentation,
-            Signature: definition.Signature,
+            Signature: CreateSourceSignature(definition),
             ParentTypeName: definition.ParentTypeName,
             TypeReference: definition.TypeReference);
     }
+
+    private static VbaCallableSignature? CreateSourceSignature(VbaProjectReferenceDefinition definition)
+    {
+        if (definition.Signature is null)
+        {
+            return null;
+        }
+
+        if (!definition.Signature.Parameters.Any(parameter => parameter.IsOptional))
+        {
+            return definition.Signature;
+        }
+
+        var label = $"{definition.Name}({string.Join(", ", definition.Signature.Parameters.Select(CreateParameterLabel))})";
+        if (definition.TypeReference is not null)
+        {
+            label = $"{label} As {definition.TypeReference.Name}";
+        }
+
+        return definition.Signature with { Label = label };
+    }
+
+    private static string CreateParameterLabel(VbaCallableParameter parameter)
+        => parameter.IsOptional ? $"[{parameter.Name}]" : parameter.Name;
 
     private sealed record ActiveReferenceCatalog(string ManifestReferenceName, VbaProjectReferenceCatalog Catalog);
 }

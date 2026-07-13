@@ -140,7 +140,8 @@ public sealed record VbaSourceDefinition(
 /// </summary>
 /// <param name="Name">The parameter name.</param>
 /// <param name="Documentation">The parameter documentation text.</param>
-public sealed record VbaCallableParameter(string Name, string? Documentation = null);
+/// <param name="IsOptional">Whether the parameter is optional when the source metadata provides it.</param>
+public sealed record VbaCallableParameter(string Name, string? Documentation = null, bool IsOptional = false);
 
 /// <summary>
 /// Represents callable signature metadata used by hover and signature help.
@@ -731,7 +732,12 @@ public sealed class VbaSourceIndex
     private static VbaCallableSignature MapSignature(VbaCallableSignatureSyntax signature)
         => new(
             signature.Label,
-            signature.Parameters.Select(parameter => new VbaCallableParameter(parameter.Name, parameter.Documentation)).ToArray(),
+            signature.Parameters
+                .Select(parameter => new VbaCallableParameter(
+                    parameter.Name,
+                    parameter.Documentation,
+                    parameter.IsOptional))
+                .ToArray(),
             signature.Documentation);
 
     private static VbaTypeReference MapTypeReference(VbaTypeReferenceSyntax typeReference)
