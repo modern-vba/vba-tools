@@ -13,8 +13,8 @@ internal sealed class VbaSemanticResolution
     private readonly IReadOnlyList<VbaSourceDocument> documents;
     private readonly VbaProjectReferenceSelection? referenceSelection;
     private readonly VbaProjectReferenceCatalogSet referenceCatalogs;
-    private readonly IReadOnlyList<VbaSourceDefinition> activeReferenceDefinitions;
     private readonly VbaNameResolutionService nameResolution;
+    private readonly VbaTypeResolution typeResolution;
 
     /// <summary>
     /// Creates the semantic resolution service.
@@ -30,7 +30,7 @@ internal sealed class VbaSemanticResolution
         this.documents = documents;
         this.referenceSelection = referenceSelection;
         this.referenceCatalogs = referenceCatalogs;
-        activeReferenceDefinitions = referenceSelection is null
+        var activeReferenceDefinitions = referenceSelection is null
             ? []
             : referenceCatalogs.GetActiveDefinitions(referenceSelection);
         nameResolution = new VbaNameResolutionService(
@@ -38,6 +38,12 @@ internal sealed class VbaSemanticResolution
             referenceSelection,
             referenceCatalogs,
             activeReferenceDefinitions);
+        typeResolution = new VbaTypeResolution(
+            documents,
+            referenceSelection,
+            referenceCatalogs,
+            activeReferenceDefinitions,
+            nameResolution);
     }
 
     /// <summary>
@@ -115,7 +121,7 @@ internal sealed class VbaSemanticResolution
             return null;
         }
 
-        if (TryResolveTypeReferenceDefinition(
+        if (typeResolution.TryResolveTypeReferenceDefinition(
             currentDocument,
             lines,
             line,
@@ -224,7 +230,7 @@ internal sealed class VbaSemanticResolution
             return qualifiedCanonicalName;
         }
 
-        if (IsQualifiedIdentifierOccurrence(codePart, occurrence))
+        if (VbaMemberExpressionSyntax.IsQualifiedIdentifierOccurrence(codePart, occurrence))
         {
             return null;
         }
@@ -251,17 +257,17 @@ internal sealed class VbaSemanticResolution
         }
 
         var logicalPrefix = VbaSourceText.GetLogicalPrefix(lines, line, character);
-        if (!TryGetMemberReceiverExpression(logicalPrefix, out var receiverExpression))
+        if (!VbaMemberExpressionSyntax.TryGetMemberReceiverExpression(logicalPrefix, out var receiverExpression))
         {
             return false;
         }
 
-        if (!TryResolveExpressionType(currentDocument, line, character, receiverExpression, out var receiverType))
+        if (!typeResolution.TryResolveExpressionType(currentDocument, line, character, receiverExpression, out var receiverType))
         {
             return true;
         }
 
-        definitions = GetMembersOfType(receiverType);
+        definitions = typeResolution.GetMembersOfType(receiverType);
         return true;
     }
 
@@ -277,7 +283,7 @@ internal sealed class VbaSemanticResolution
         }
 
         var logicalPrefix = VbaSourceText.GetLogicalPrefix(lines, line, character);
-        return IsCompletedMemberAccessWithTrailingWhitespace(logicalPrefix);
+        return VbaMemberExpressionSyntax.IsCompletedMemberAccessWithTrailingWhitespace(logicalPrefix);
     }
 
     private bool TryGetTypeCompletionDefinitions(
@@ -299,9 +305,9 @@ internal sealed class VbaSemanticResolution
             return false;
         }
 
-        definitions = GetVisibleTypeDefinitions(currentDocument)
+        definitions = typeResolution.GetVisibleTypeDefinitions(currentDocument)
             .GroupBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
-            .Select(group => ResolveSourceTypeCompletionGroup(group.ToArray()))
+            .Select(group => typeResolution.ResolveSourceTypeCompletionGroup(group.ToArray()))
             .Where(definition => definition is not null)
             .Select(definition => definition!)
             .OrderBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
@@ -324,17 +330,17 @@ internal sealed class VbaSemanticResolution
         }
 
         var logicalPrefix = VbaSourceText.GetLogicalPrefix(lines, line, character);
-        if (!TryGetMemberReceiverExpression(logicalPrefix, out var receiverExpression))
+        if (!VbaMemberExpressionSyntax.TryGetMemberReceiverExpression(logicalPrefix, out var receiverExpression))
         {
             return false;
         }
 
-        if (!TryResolveExpressionType(currentDocument, line, character, receiverExpression, out var receiverType))
+        if (!typeResolution.TryResolveExpressionType(currentDocument, line, character, receiverExpression, out var receiverType))
         {
             return receiverExpression.Trim().Equals(".", StringComparison.Ordinal);
         }
 
-        definition = ResolveMember(receiverType, memberName);
+        definition = typeResolution.ResolveMember(receiverType, memberName);
         return true;
     }
 
@@ -356,12 +362,12 @@ internal sealed class VbaSemanticResolution
             }
 
             var eventName = handlerName[prefix.Length..];
-            if (!TryResolveTypeReference(currentDocument, variable.TypeReference!, out var receiverType))
+            if (!typeResolution.TryResolveTypeReference(currentDocument, variable.TypeReference!, out var receiverType))
             {
                 return true;
             }
 
-            eventDefinition = ResolveEvent(receiverType, eventName);
+            eventDefinition = typeResolution.ResolveEvent(receiverType, eventName);
             return true;
         }
 
@@ -390,12 +396,12 @@ internal sealed class VbaSemanticResolution
         }
 
         arguments = callMatch.Groups["arguments"].Value;
-        var callee = NormalizeMemberExpression(callMatch.Groups["callee"].Value);
-        if (TrySplitMemberExpression(callee, out var receiverExpression, out var memberName))
+        var callee = VbaMemberExpressionSyntax.NormalizeMemberExpression(callMatch.Groups["callee"].Value);
+        if (VbaMemberExpressionSyntax.TrySplitMemberExpression(callee, out var receiverExpression, out var memberName))
         {
-            if (TryResolveExpressionType(currentDocument, line, character, receiverExpression, out var receiverType))
+            if (typeResolution.TryResolveExpressionType(currentDocument, line, character, receiverExpression, out var receiverType))
             {
-                definition = ResolveMember(receiverType, memberName);
+                definition = typeResolution.ResolveMember(receiverType, memberName);
                 return true;
             }
 
@@ -405,7 +411,7 @@ internal sealed class VbaSemanticResolution
             }
         }
 
-        var qualifier = GetQualifierFromCallee(callee);
+        var qualifier = VbaMemberExpressionSyntax.GetQualifierFromCallee(callee);
         var unqualifiedName = qualifier is null ? callee : callee[(qualifier.Length + 1)..];
         definition = nameResolution.Resolve(
             currentDocument.Uri,
@@ -415,383 +421,6 @@ internal sealed class VbaSemanticResolution
         return true;
     }
 
-    private bool TryResolveExpressionType(
-        VbaSourceDocument currentDocument,
-        int line,
-        int character,
-        string expression,
-        out ResolvedType resolvedType,
-        IReadOnlyList<ResolvedType>? withReceivers = null)
-    {
-        resolvedType = default!;
-        var normalized = NormalizeMemberExpression(expression);
-        if (string.IsNullOrWhiteSpace(normalized))
-        {
-            return false;
-        }
-
-        var parts = normalized.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (normalized.StartsWith(".", StringComparison.Ordinal))
-        {
-            if (withReceivers is { Count: > 0 })
-            {
-                resolvedType = withReceivers[^1];
-            }
-            else if (!TryGetWithReceiverType(currentDocument, line, character, out resolvedType))
-            {
-                return false;
-            }
-
-            foreach (var memberName in parts)
-            {
-                var member = ResolveMember(resolvedType, memberName);
-                if (member?.TypeReference is null || !TryResolveTypeReference(currentDocument, member.TypeReference, out resolvedType))
-                {
-                    return false;
-                }
-            }
-
-            return true;
-        }
-
-        if (parts.Length == 0)
-        {
-            return false;
-        }
-
-        if (parts.Length >= 2 && TryResolveTypeReference(currentDocument, new VbaTypeReference(parts[1], parts[0]), out resolvedType))
-        {
-            for (var index = 2; index < parts.Length; index++)
-            {
-                var member = ResolveMember(resolvedType, parts[index]);
-                if (member?.TypeReference is null || !TryResolveTypeReference(currentDocument, member.TypeReference, out resolvedType))
-                {
-                    return false;
-                }
-            }
-
-            return true;
-        }
-
-        var firstDefinition = nameResolution.Resolve(
-            currentDocument.Uri,
-            new VbaPosition(line, character),
-            qualifier: null,
-            parts[0]);
-        if (firstDefinition?.TypeReference is not null)
-        {
-            if (!TryResolveTypeReference(currentDocument, firstDefinition.TypeReference, out resolvedType))
-            {
-                return false;
-            }
-        }
-        else if (firstDefinition is not null && IsTypeDefinition(firstDefinition))
-        {
-            resolvedType = ToResolvedType(firstDefinition);
-        }
-        else
-        {
-            return false;
-        }
-
-        for (var index = 1; index < parts.Length; index++)
-        {
-            var member = ResolveMember(resolvedType, parts[index]);
-            if (member?.TypeReference is null || !TryResolveTypeReference(currentDocument, member.TypeReference, out resolvedType))
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    private bool TryResolveTypeReference(
-        VbaSourceDocument currentDocument,
-        VbaTypeReference typeReference,
-        out ResolvedType resolvedType)
-    {
-        resolvedType = default!;
-        if (!TryResolveTypeReferenceDefinition(currentDocument, typeReference, out var definition)
-            || definition is null)
-        {
-            return false;
-        }
-
-        resolvedType = ToResolvedType(definition);
-        return true;
-    }
-
-    private bool TryResolveTypeReferenceDefinition(
-        VbaSourceDocument currentDocument,
-        string[] lines,
-        int line,
-        VbaIdentifierOccurrence identifier,
-        out VbaSourceDefinition? definition)
-    {
-        definition = null;
-        if (VbaLanguageVocabulary.IsKeyword(identifier.Name) ||
-            IsFollowedByDot(lines[line], identifier.End))
-        {
-            return false;
-        }
-
-        var logicalPrefix = VbaSourceText.GetLogicalPrefix(lines, line, identifier.End);
-        if (!TryGetTypeReferencePrefix(logicalPrefix, out var typeReference))
-        {
-            return false;
-        }
-
-        TryResolveTypeReferenceDefinition(currentDocument, typeReference, out definition);
-        return true;
-    }
-
-    private bool TryResolveTypeReferenceDefinition(
-        VbaSourceDocument currentDocument,
-        VbaTypeReference typeReference,
-        out VbaSourceDefinition? definition)
-    {
-        definition = null;
-        if (!string.IsNullOrWhiteSpace(typeReference.Qualifier))
-        {
-            definition = ResolveReferenceTypeDefinition(typeReference.Qualifier, typeReference.Name);
-            if (definition is not null)
-            {
-                return true;
-            }
-
-            definition = ResolveSourceTypeDefinition(typeReference.Name, typeReference.Qualifier);
-            return definition is not null;
-        }
-
-        definition = ResolveSourceTypeDefinition(typeReference.Name, qualifier: null);
-        if (definition is not null)
-        {
-            return true;
-        }
-
-        var referenceCandidates = GetActiveReferenceDefinitions()
-            .Where(definition => SameName(definition.Name, typeReference.Name))
-            .Where(IsTypeDefinition)
-            .Where(definition => definition.ParentTypeName is null)
-            .ToArray();
-        var referenceTypeDefinition = ResolveReferenceCandidates(referenceCandidates);
-        if (referenceTypeDefinition is null)
-        {
-            return false;
-        }
-
-        definition = referenceTypeDefinition;
-        return true;
-    }
-
-    private bool TryGetWithReceiverType(
-        VbaSourceDocument currentDocument,
-        int targetLine,
-        int character,
-        out ResolvedType resolvedType)
-    {
-        resolvedType = default!;
-        var lines = VbaSourceText.SplitLines(currentDocument.Text);
-        var stack = new List<ResolvedType>();
-        for (var lineIndex = 0; lineIndex < targetLine && lineIndex < lines.Length; lineIndex++)
-        {
-            var statement = VbaSourceText.GetLogicalStatement(lines, lineIndex, out var endLine);
-            if (endLine >= targetLine)
-            {
-                break;
-            }
-
-            var trimmed = statement.Trim();
-            if (Regex.IsMatch(trimmed, "^End\\s+With\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-            {
-                if (stack.Count > 0)
-                {
-                    stack.RemoveAt(stack.Count - 1);
-                }
-
-                lineIndex = endLine;
-                continue;
-            }
-
-            var withMatch = Regex.Match(
-                trimmed,
-                "^With\\s+(?<expression>.+)$",
-                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-            if (withMatch.Success
-                && TryResolveExpressionType(
-                    currentDocument,
-                    endLine,
-                    lines[Math.Min(endLine, lines.Length - 1)].Length,
-                    withMatch.Groups["expression"].Value,
-                    out var withType,
-                    stack))
-            {
-                stack.Add(withType);
-            }
-
-            lineIndex = endLine;
-        }
-
-        if (stack.Count == 0)
-        {
-            return false;
-        }
-
-        resolvedType = stack[^1];
-        return true;
-    }
-
-    private IReadOnlyList<VbaSourceDefinition> GetMembersOfType(ResolvedType resolvedType)
-        => GetMemberCandidates(resolvedType)
-            .GroupBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
-            .Where(group => group.Count() == 1)
-            .Select(group => group.Single())
-            .OrderBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-
-    private VbaSourceDefinition? ResolveMember(ResolvedType resolvedType, string memberName)
-    {
-        var candidates = GetMemberCandidates(resolvedType)
-            .Where(definition => SameName(definition.Name, memberName))
-            .ToArray();
-        return candidates.Length == 1 ? candidates[0] : null;
-    }
-
-    private VbaSourceDefinition? ResolveEvent(ResolvedType resolvedType, string eventName)
-    {
-        var candidates = GetMemberCandidates(resolvedType)
-            .Where(definition => definition.Kind == VbaSourceDefinitionKind.Event)
-            .Where(definition => SameName(definition.Name, eventName))
-            .ToArray();
-        return candidates.Length == 1 ? candidates[0] : null;
-    }
-
-    private IEnumerable<VbaSourceDefinition> GetMemberCandidates(ResolvedType resolvedType)
-    {
-        if (resolvedType.ReferenceName is not null)
-        {
-            return GetActiveReferenceDefinitions()
-                .Where(definition => SameName(definition.ModuleName, resolvedType.ReferenceName))
-                .Where(definition => definition.ParentTypeName is not null)
-                .Where(definition => SameName(definition.ParentTypeName!, resolvedType.Name));
-        }
-
-        return documents
-            .Where(document => SameName(document.ModuleName, resolvedType.Name))
-            .SelectMany(document => document.Definitions)
-            .Where(IsReferenceTarget);
-    }
-
-    private IEnumerable<VbaSourceDefinition> GetVisibleTypeDefinitions(VbaSourceDocument currentDocument)
-    {
-        foreach (var definition in currentDocument.Definitions.Where(IsTypeDefinition))
-        {
-            yield return definition;
-        }
-
-        foreach (var definition in documents
-            .Where(document => !SameUri(document.Uri, currentDocument.Uri))
-            .SelectMany(document => document.Definitions)
-            .Where(IsTypeDefinition)
-            .Where(definition => definition.Visibility == VbaSourceDefinitionVisibility.Public))
-        {
-            yield return definition;
-        }
-
-        foreach (var definition in GetActiveReferenceDefinitions()
-            .Where(IsTypeDefinition)
-            .Where(definition => definition.ParentTypeName is null))
-        {
-            yield return definition;
-        }
-    }
-
-    private ResolvedType? ResolveReferenceType(string qualifier, string typeName)
-    {
-        var definition = ResolveReferenceTypeDefinition(qualifier, typeName);
-        return definition is null ? null : ToResolvedType(definition);
-    }
-
-    private VbaSourceDefinition? ResolveReferenceTypeDefinition(string qualifier, string typeName)
-    {
-        if (referenceSelection is null)
-        {
-            return null;
-        }
-
-        var candidates = referenceCatalogs
-            .GetQualifiedDefinitions(referenceSelection, qualifier, typeName)
-            .Where(IsTypeDefinition)
-            .Where(definition => definition.ParentTypeName is null)
-            .ToArray();
-        return ResolveReferenceCandidates(candidates);
-    }
-
-    private ResolvedType? ResolveSourceType(string typeName, string? qualifier)
-    {
-        var definition = ResolveSourceTypeDefinition(typeName, qualifier);
-        return definition is null ? null : ToResolvedType(definition);
-    }
-
-    private VbaSourceDefinition? ResolveSourceTypeDefinition(string typeName, string? qualifier)
-    {
-        var candidates = documents
-            .SelectMany(document => document.Definitions)
-            .Where(IsTypeDefinition)
-            .Where(definition => SameName(definition.Name, typeName))
-            .Where(definition => qualifier is null || SameName(definition.ModuleName, qualifier))
-            .ToArray();
-        return candidates.Length == 1 ? candidates[0] : null;
-    }
-
-    private VbaSourceDefinition? ResolveSourceTypeCompletionGroup(IReadOnlyList<VbaSourceDefinition> candidates)
-    {
-        var sourceCandidates = candidates
-            .Where(definition => !VbaProjectReferenceCatalogSet.IsExternalDefinition(definition))
-            .ToArray();
-        if (sourceCandidates.Length == 1)
-        {
-            return sourceCandidates[0];
-        }
-
-        if (sourceCandidates.Length > 1)
-        {
-            return null;
-        }
-
-        return ResolveReferenceCandidates(candidates);
-    }
-
-    private VbaSourceDefinition? ResolveReferenceCandidates(IReadOnlyList<VbaSourceDefinition> candidates)
-    {
-        if (candidates.Count == 0)
-        {
-            return null;
-        }
-
-        if (candidates.Count == 1)
-        {
-            return candidates[0];
-        }
-
-        if (referenceSelection?.MainVbaProjectReference is not null)
-        {
-            var mainCandidates = candidates
-                .Where(definition => SameName(definition.ModuleName, referenceSelection.MainVbaProjectReference.Name))
-                .ToArray();
-            if (mainCandidates.Length == 1)
-            {
-                return mainCandidates[0];
-            }
-        }
-
-        return null;
-    }
-
-    private IReadOnlyList<VbaSourceDefinition> GetActiveReferenceDefinitions()
-        => activeReferenceDefinitions;
-
     private bool TryGetMemberChainCanonicalName(
         string codePart,
         VbaIdentifierOccurrence occurrence,
@@ -800,19 +429,19 @@ internal sealed class VbaSemanticResolution
         out string? canonicalName)
     {
         canonicalName = null;
-        if (TryGetPreviousMemberReceiverExpression(codePart, occurrence, out var receiverExpression))
+        if (VbaMemberExpressionSyntax.TryGetPreviousMemberReceiverExpression(codePart, occurrence, out var receiverExpression))
         {
-            if (!TryResolveExpressionType(document, lineIndex, occurrence.Start, receiverExpression, out var receiverType))
+            if (!typeResolution.TryResolveExpressionType(document, lineIndex, occurrence.Start, receiverExpression, out var receiverType))
             {
                 return false;
             }
 
-            var member = ResolveMember(receiverType, occurrence.Name);
+            var member = typeResolution.ResolveMember(receiverType, occurrence.Name);
             canonicalName = member?.Name;
             return canonicalName is not null;
         }
 
-        if (!TryGetNextMember(codePart, occurrence, out _))
+        if (!VbaMemberExpressionSyntax.TryGetNextMember(codePart, occurrence, out _))
         {
             return false;
         }
@@ -834,7 +463,7 @@ internal sealed class VbaSemanticResolution
         out string? canonicalName)
     {
         canonicalName = null;
-        if (TryGetPreviousQualifier(codePart, occurrence, out var qualifier))
+        if (VbaMemberExpressionSyntax.TryGetPreviousQualifier(codePart, occurrence, out var qualifier))
         {
             var definition = nameResolution.Resolve(
                 uri,
@@ -845,7 +474,7 @@ internal sealed class VbaSemanticResolution
             return canonicalName is not null;
         }
 
-        if (TryGetNextMember(codePart, occurrence, out var member))
+        if (VbaMemberExpressionSyntax.TryGetNextMember(codePart, occurrence, out var member))
         {
             var definition = nameResolution.Resolve(
                 uri,
@@ -898,73 +527,6 @@ internal sealed class VbaSemanticResolution
         return parameterIndex ?? fallbackParameter;
     }
 
-    private static bool TryGetMemberReceiverExpression(string logicalPrefix, out string receiverExpression)
-    {
-        receiverExpression = "";
-        var trimmed = logicalPrefix;
-        if (string.IsNullOrEmpty(trimmed) || char.IsWhiteSpace(trimmed[^1]))
-        {
-            return false;
-        }
-
-        var partialMatch = Regex.Match(
-            trimmed,
-            "[A-Za-z_][A-Za-z0-9_]*$",
-            RegexOptions.CultureInvariant);
-        if (partialMatch.Success)
-        {
-            trimmed = trimmed[..partialMatch.Index].TrimEnd();
-        }
-
-        if (!trimmed.EndsWith(".", StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        var beforeDot = trimmed[..^1].TrimEnd();
-        if (string.IsNullOrWhiteSpace(beforeDot))
-        {
-            receiverExpression = ".";
-            return true;
-        }
-
-        var match = Regex.Match(
-            beforeDot,
-            "(?<expression>(?:\\.|[A-Za-z_][A-Za-z0-9_]*)(?:\\s*\\.\\s*[A-Za-z_][A-Za-z0-9_]*)*)$",
-            RegexOptions.CultureInvariant);
-        if (!match.Success)
-        {
-            return false;
-        }
-
-        receiverExpression = match.Groups["expression"].Value;
-        return true;
-    }
-
-    private static bool IsCompletedMemberAccessWithTrailingWhitespace(string logicalPrefix)
-    {
-        if (string.IsNullOrEmpty(logicalPrefix) || !char.IsWhiteSpace(logicalPrefix[^1]))
-        {
-            return false;
-        }
-
-        var trimmed = logicalPrefix.TrimEnd();
-        if (string.IsNullOrEmpty(trimmed))
-        {
-            return false;
-        }
-
-        if (trimmed.EndsWith(".", StringComparison.Ordinal))
-        {
-            return TryGetMemberReceiverExpression(trimmed, out _);
-        }
-
-        return Regex.IsMatch(
-            trimmed,
-            "(?:\\.|[A-Za-z_][A-Za-z0-9_]*)(?:\\s*\\.\\s*[A-Za-z_][A-Za-z0-9_]*)+$",
-            RegexOptions.CultureInvariant);
-    }
-
     private static bool IsTypeAnnotationCompletionPrefix(string logicalPrefix)
     {
         return Regex.IsMatch(
@@ -972,196 +534,6 @@ internal sealed class VbaSemanticResolution
             "\\bAs\\s+(?:(?:[A-Za-z_][A-Za-z0-9_]*)\\s*\\.\\s*)?[A-Za-z_][A-Za-z0-9_]*$|\\bAs\\s*$",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     }
-
-    private static bool TryGetTypeReferencePrefix(string logicalPrefix, out VbaTypeReference typeReference)
-    {
-        typeReference = default!;
-        var match = Regex.Match(
-            logicalPrefix,
-            "\\bAs\\s+(?:New\\s+)?(?:(?<qualifier>[A-Za-z_][A-Za-z0-9_]*)\\s*\\.\\s*)?(?<type>[A-Za-z_][A-Za-z0-9_]*)\\s*$",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-        if (!match.Success)
-        {
-            match = Regex.Match(
-                logicalPrefix,
-                "\\bNew\\s+(?:(?<qualifier>[A-Za-z_][A-Za-z0-9_]*)\\s*\\.\\s*)?(?<type>[A-Za-z_][A-Za-z0-9_]*)\\s*$",
-                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-        }
-
-        if (!match.Success)
-        {
-            return false;
-        }
-
-        var qualifier = match.Groups["qualifier"].Success
-            ? match.Groups["qualifier"].Value
-            : null;
-        typeReference = new VbaTypeReference(match.Groups["type"].Value, qualifier);
-        return true;
-    }
-
-    private static bool IsFollowedByDot(string line, int position)
-    {
-        while (position < line.Length && char.IsWhiteSpace(line[position]))
-        {
-            position++;
-        }
-
-        return position < line.Length && line[position] == '.';
-    }
-
-    private static bool TrySplitMemberExpression(
-        string expression,
-        out string receiverExpression,
-        out string memberName)
-    {
-        receiverExpression = "";
-        memberName = "";
-        var normalized = NormalizeMemberExpression(expression);
-        var lastDot = normalized.LastIndexOf('.');
-        if (lastDot < 0)
-        {
-            return false;
-        }
-
-        receiverExpression = lastDot == 0 ? "." : normalized[..lastDot];
-        memberName = normalized[(lastDot + 1)..];
-        return !string.IsNullOrWhiteSpace(memberName);
-    }
-
-    private static bool TryGetPreviousMemberReceiverExpression(
-        string codePart,
-        VbaIdentifierOccurrence occurrence,
-        out string receiverExpression)
-    {
-        receiverExpression = "";
-        var dotIndex = occurrence.Start - 1;
-        while (dotIndex >= 0 && char.IsWhiteSpace(codePart[dotIndex]))
-        {
-            dotIndex--;
-        }
-
-        if (dotIndex < 0 || codePart[dotIndex] != '.')
-        {
-            return false;
-        }
-
-        receiverExpression = codePart[..dotIndex].Trim();
-        return !string.IsNullOrWhiteSpace(receiverExpression);
-    }
-
-    private static bool IsQualifiedIdentifierOccurrence(string codePart, VbaIdentifierOccurrence occurrence)
-    {
-        return TryGetPreviousQualifier(codePart, occurrence, out _)
-            || TryGetNextMember(codePart, occurrence, out _);
-    }
-
-    private static bool TryGetPreviousQualifier(
-        string codePart,
-        VbaIdentifierOccurrence occurrence,
-        out VbaIdentifierOccurrence qualifier)
-    {
-        qualifier = new VbaIdentifierOccurrence("", 0, 0);
-        var dotIndex = occurrence.Start - 1;
-        while (dotIndex >= 0 && char.IsWhiteSpace(codePart[dotIndex]))
-        {
-            dotIndex--;
-        }
-
-        if (dotIndex < 0 || codePart[dotIndex] != '.')
-        {
-            return false;
-        }
-
-        var qualifierEnd = dotIndex - 1;
-        while (qualifierEnd >= 0 && char.IsWhiteSpace(codePart[qualifierEnd]))
-        {
-            qualifierEnd--;
-        }
-
-        if (qualifierEnd < 0 || !VbaSourceText.IsIdentifierCharacter(codePart[qualifierEnd]))
-        {
-            return false;
-        }
-
-        var qualifierStart = qualifierEnd;
-        while (qualifierStart > 0 && VbaSourceText.IsIdentifierCharacter(codePart[qualifierStart - 1]))
-        {
-            qualifierStart--;
-        }
-
-        qualifier = new VbaIdentifierOccurrence(
-            codePart[qualifierStart..(qualifierEnd + 1)],
-            qualifierStart,
-            qualifierEnd + 1);
-        return true;
-    }
-
-    private static bool TryGetNextMember(
-        string codePart,
-        VbaIdentifierOccurrence occurrence,
-        out VbaIdentifierOccurrence member)
-    {
-        member = new VbaIdentifierOccurrence("", 0, 0);
-        var dotIndex = occurrence.End;
-        while (dotIndex < codePart.Length && char.IsWhiteSpace(codePart[dotIndex]))
-        {
-            dotIndex++;
-        }
-
-        if (dotIndex >= codePart.Length || codePart[dotIndex] != '.')
-        {
-            return false;
-        }
-
-        var memberStart = dotIndex + 1;
-        while (memberStart < codePart.Length && char.IsWhiteSpace(codePart[memberStart]))
-        {
-            memberStart++;
-        }
-
-        if (memberStart >= codePart.Length || !VbaSourceText.IsIdentifierStart(codePart[memberStart]))
-        {
-            return false;
-        }
-
-        var memberEnd = memberStart + 1;
-        while (memberEnd < codePart.Length && VbaSourceText.IsIdentifierCharacter(codePart[memberEnd]))
-        {
-            memberEnd++;
-        }
-
-        member = new VbaIdentifierOccurrence(codePart[memberStart..memberEnd], memberStart, memberEnd);
-        return true;
-    }
-
-    private static string? GetQualifierFromCallee(string callee)
-    {
-        var normalized = NormalizeMemberExpression(callee);
-        var lastDot = normalized.LastIndexOf('.');
-        return lastDot < 0 ? null : normalized[..lastDot];
-    }
-
-    private static string NormalizeMemberExpression(string expression)
-        => Regex.Replace(expression, "\\s+", "", RegexOptions.CultureInvariant);
-
-    private static bool IsTypeDefinition(VbaSourceDefinition definition)
-        => definition.Kind is VbaSourceDefinitionKind.Class
-            or VbaSourceDefinitionKind.Form
-            or VbaSourceDefinitionKind.Type;
-
-    private static ResolvedType ToResolvedType(VbaSourceDefinition definition)
-        => new(
-            definition.Name,
-            VbaProjectReferenceCatalogSet.IsExternalDefinition(definition)
-                ? definition.ModuleName
-                : null);
-
-    private static bool IsReferenceTarget(VbaSourceDefinition definition)
-        => definition.Visibility != VbaSourceDefinitionVisibility.Local
-            && definition.Kind != VbaSourceDefinitionKind.Module
-            && definition.Kind != VbaSourceDefinitionKind.Class
-            && definition.Kind != VbaSourceDefinitionKind.Form;
 
     private static string? GetQualifierBefore(string line, int identifierStart)
     {
@@ -1202,8 +574,4 @@ internal sealed class VbaSemanticResolution
     private static bool SameUri(string left, string right)
         => string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
 
-    private static bool SameName(string left, string right)
-        => string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
-
-    private sealed record ResolvedType(string Name, string? ReferenceName);
 }

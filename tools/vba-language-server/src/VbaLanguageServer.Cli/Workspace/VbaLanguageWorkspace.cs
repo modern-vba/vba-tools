@@ -43,6 +43,7 @@ public sealed class VbaLanguageWorkspace
     private readonly Dictionary<string, CachedProjectSnapshot> projectSnapshotCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly VbaProjectReferenceCatalogCache referenceCatalogCache;
     private readonly VbaProjectSourceDocumentCache diskDocumentCache = new();
+    private readonly VbaProjectSnapshotBuilder snapshotBuilder;
     private long workspaceVersion;
 
     /// <summary>
@@ -52,6 +53,7 @@ public sealed class VbaLanguageWorkspace
     public VbaLanguageWorkspace(VbaProjectReferenceCatalogCache referenceCatalogCache)
     {
         this.referenceCatalogCache = referenceCatalogCache;
+        snapshotBuilder = new VbaProjectSnapshotBuilder(diskDocumentCache);
     }
 
     /// <summary>
@@ -172,19 +174,12 @@ public sealed class VbaLanguageWorkspace
         var resolution = VbaProjectResolver.Resolve(activeUri);
         var workspaceState = CopyWorkspaceState();
         var referenceCatalogState = referenceCatalogCache.State;
-        var inventorySnapshot = VbaProjectSourceInventory.CreateInventorySnapshot(
+        var inventorySnapshot = snapshotBuilder.CreateInventorySnapshot(
+            activeUri,
             resolution,
             workspaceState.Documents,
             workspaceState.ExcludedSourceUris,
-            diskDocumentCache,
             cancellationToken);
-        var scopedTrackedDocuments = inventorySnapshot.Documents;
-
-        if (!scopedTrackedDocuments.ContainsKey(activeUri)
-            && workspaceState.Documents.TryGetValue(activeUri, out var activeDocument))
-        {
-            scopedTrackedDocuments[activeUri] = activeDocument;
-        }
 
         var cacheKey = CreateSnapshotCacheKey(activeUri, resolution);
         if (TryGetCachedSnapshot(
@@ -197,26 +192,10 @@ public sealed class VbaLanguageWorkspace
             return cachedSnapshot;
         }
 
-        var scopedDocuments = scopedTrackedDocuments
-            .ToDictionary(pair => pair.Key, pair => pair.Value.Text, StringComparer.OrdinalIgnoreCase);
-        var scopedSourceDocuments = scopedTrackedDocuments
-            .ToDictionary(
-                pair => pair.Key,
-                pair => pair.Value.SourceDocument ?? VbaSourceIndex.CreateDocument(pair.Value.Uri, pair.Value.SyntaxTree),
-                StringComparer.OrdinalIgnoreCase);
-        var manifestContext = LanguageServerManifestResolution.Create(
+        var snapshot = snapshotBuilder.BuildSnapshot(
             resolution,
+            inventorySnapshot.Documents,
             referenceCatalogState.CatalogSet);
-        var sourceIndex = VbaSourceIndex.BuildFromSourceDocuments(
-            scopedSourceDocuments,
-            manifestContext.ReferenceSelection,
-            referenceCatalogState.CatalogSet);
-
-        var snapshot = new VbaProjectSnapshot(
-            resolution,
-            scopedDocuments,
-            manifestContext.ReferenceSelection,
-            sourceIndex);
         StoreCachedSnapshot(
             cacheKey,
             workspaceState.Version,

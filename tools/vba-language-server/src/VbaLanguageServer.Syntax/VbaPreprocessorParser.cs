@@ -11,7 +11,7 @@ internal static class VbaPreprocessorParser
     /// <param name="lines">The physical source lines with offsets.</param>
     /// <param name="codeStartLine">The zero-based line where code parsing begins.</param>
     /// <returns>The parsed directives, blocks, and preprocessor diagnostics.</returns>
-    public static ParsedPreprocessor Parse(IReadOnlyList<SourceLine> lines, int codeStartLine)
+    public static ParsedPreprocessor Parse(IReadOnlyList<VbaSourceLine> lines, int codeStartLine)
     {
         var directives = new List<VbaPreprocessorDirectiveSyntax>();
         var blocks = new List<VbaPreprocessorBlockSyntax>();
@@ -105,7 +105,7 @@ internal static class VbaPreprocessorParser
     }
 
     private static bool TryCreatePreprocessorDirective(
-        SourceLine line,
+        VbaSourceLine line,
         out VbaPreprocessorDirectiveSyntax directive)
     {
         directive = default!;
@@ -252,7 +252,7 @@ internal sealed class PreprocessorBranchBuilder
     /// <summary>
     /// Gets or sets the last source line included in the branch body.
     /// </summary>
-    public SourceLine? EndLine { get; set; }
+    public VbaSourceLine? EndLine { get; set; }
 
     /// <summary>
     /// Builds the branch syntax from collected lines and nested blocks.

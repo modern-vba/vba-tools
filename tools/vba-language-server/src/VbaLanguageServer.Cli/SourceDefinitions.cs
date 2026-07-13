@@ -299,6 +299,7 @@ public sealed class VbaSourceIndex
 
     private readonly IReadOnlyList<VbaSourceDocument> documents;
     private readonly VbaSemanticResolution semanticResolution;
+    private readonly VbaResolvedIdentifierOccurrenceIndex resolvedOccurrences;
     private readonly VbaSourceFormatter sourceFormatter;
     private readonly object semanticTokenCacheGate = new();
     private readonly Dictionary<string, IReadOnlyList<VbaSemanticToken>> semanticTokenCache = new(StringComparer.OrdinalIgnoreCase);
@@ -311,6 +312,7 @@ public sealed class VbaSourceIndex
     {
         this.documents = documents;
         semanticResolution = new VbaSemanticResolution(documents, referenceSelection, referenceCatalogs);
+        resolvedOccurrences = new VbaResolvedIdentifierOccurrenceIndex(documents, semanticResolution.ResolveSourceDefinition);
         sourceFormatter = new VbaSourceFormatter(semanticResolution);
     }
 
@@ -424,30 +426,8 @@ public sealed class VbaSourceIndex
             return [];
         }
 
-        var references = new List<VbaDefinitionLocation>();
-        foreach (var document in documents)
-        {
-            var lines = VbaSourceText.SplitLines(document.Text);
-            for (var lineIndex = 0; lineIndex < lines.Length; lineIndex++)
-            {
-                foreach (var occurrence in VbaSourceText.FindIdentifierOccurrences(lines[lineIndex]))
-                {
-                    var resolved = ResolveSourceDefinition(document.Uri, lineIndex, occurrence.Start);
-                    if (resolved is null || !SameDefinition(resolved, target))
-                    {
-                        continue;
-                    }
-
-                    references.Add(new VbaDefinitionLocation(
-                        document.Uri,
-                        new VbaRange(
-                            new VbaPosition(lineIndex, occurrence.Start),
-                            new VbaPosition(lineIndex, occurrence.End))));
-                }
-            }
-        }
-
-        return references
+        return resolvedOccurrences.FindMatching(target)
+            .Select(occurrence => new VbaDefinitionLocation(occurrence.Uri, occurrence.Range))
             .GroupBy(reference => $"{reference.Uri}:{GetRangeKey(reference.Range)}", StringComparer.OrdinalIgnoreCase)
             .Select(group => group.First())
             .OrderBy(reference => reference.Uri, StringComparer.OrdinalIgnoreCase)
@@ -474,7 +454,7 @@ public sealed class VbaSourceIndex
         var tokens = VbaSemanticTokenBuilder.GetSemanticTokens(
             documents,
             uri,
-            (line, character) => ResolveSourceDefinition(uri, line, character));
+            resolvedOccurrences.GetDocumentOccurrences(uri));
         lock (semanticTokenCacheGate)
         {
             if (semanticTokenCache.TryGetValue(uri, out var cachedTokens))
@@ -593,37 +573,14 @@ public sealed class VbaSourceIndex
             return null;
         }
 
-        var changes = new Dictionary<string, IReadOnlyList<VbaTextEdit>>(StringComparer.OrdinalIgnoreCase);
-        foreach (var document in documents)
-        {
-            var edits = new List<VbaTextEdit>();
-            var lines = VbaSourceText.SplitLines(document.Text);
-            for (var lineIndex = 0; lineIndex < lines.Length; lineIndex++)
-            {
-                foreach (var occurrence in VbaSourceText.FindIdentifierOccurrences(lines[lineIndex]))
-                {
-                    if (!SameName(occurrence.Name, target.Name))
-                    {
-                        continue;
-                    }
-
-                    var resolved = ResolveSourceDefinition(document.Uri, lineIndex, occurrence.Start);
-                    if (resolved is not null && SameDefinition(resolved, target))
-                    {
-                        edits.Add(new VbaTextEdit(
-                            new VbaRange(
-                                new VbaPosition(lineIndex, occurrence.Start),
-                                new VbaPosition(lineIndex, occurrence.End)),
-                            newName));
-                    }
-                }
-            }
-
-            if (edits.Count > 0)
-            {
-                changes[document.Uri] = edits;
-            }
-        }
+        var changes = resolvedOccurrences.FindMatching(target)
+            .GroupBy(occurrence => occurrence.Uri, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlyList<VbaTextEdit>)group
+                    .Select(occurrence => new VbaTextEdit(occurrence.Range, newName))
+                    .ToArray(),
+                StringComparer.OrdinalIgnoreCase);
 
         return changes.Count == 0 ? null : changes;
     }
@@ -748,12 +705,6 @@ public sealed class VbaSourceIndex
         => !VbaProjectReferenceCatalogSet.IsExternalDefinition(definition)
             && (definition.Visibility == VbaSourceDefinitionVisibility.Local || IsReferenceTarget(definition));
 
-    private static bool SameDefinition(VbaSourceDefinition left, VbaSourceDefinition right)
-        => SameUri(left.Uri, right.Uri)
-            && SameName(left.Name, right.Name)
-            && ComparePosition(left.Range.Start, right.Range.Start) == 0
-            && ComparePosition(left.Range.End, right.Range.End) == 0;
-
     private static bool IsIdentifierName(string value)
         => Regex.IsMatch(
             value,
@@ -763,12 +714,4 @@ public sealed class VbaSourceIndex
     private static bool SameUri(string left, string right)
         => string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
 
-    private static bool SameName(string left, string right)
-        => string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
-
-    private static int ComparePosition(VbaPosition left, VbaPosition right)
-    {
-        var lineComparison = left.Line.CompareTo(right.Line);
-        return lineComparison != 0 ? lineComparison : left.Character.CompareTo(right.Character);
-    }
 }

@@ -60,7 +60,7 @@ internal static class VbaSyntaxTreeParser
     public static VbaSyntaxTree ParseModule(string uri, string source)
     {
         var tokenStream = VbaTokenStream.FromText(source);
-        var sourceText = SourceText.From(source);
+        var sourceText = VbaSourceText.From(source);
         var kind = GetModuleKind(uri);
         var diagnostics = new List<VbaSyntaxDiagnostic>();
         var codeStartLine = 0;
@@ -117,7 +117,7 @@ internal static class VbaSyntaxTreeParser
         return new VbaSyntaxTree(uri, source, tokenStream, module, diagnostics);
     }
 
-    private static IReadOnlyList<VbaModuleAttributeSyntax> ParseAttributes(SourceText sourceText, int startLine)
+    private static IReadOnlyList<VbaModuleAttributeSyntax> ParseAttributes(VbaSourceText sourceText, int startLine)
     {
         var attributes = new List<VbaModuleAttributeSyntax>();
         for (var index = startLine; index < sourceText.Lines.Count; index++)
@@ -146,7 +146,7 @@ internal static class VbaSyntaxTreeParser
         return attributes;
     }
 
-    private static IReadOnlyList<VbaModuleOptionSyntax> ParseOptions(SourceText sourceText, int startLine)
+    private static IReadOnlyList<VbaModuleOptionSyntax> ParseOptions(VbaSourceText sourceText, int startLine)
     {
         var options = new List<VbaModuleOptionSyntax>();
         for (var index = startLine; index < sourceText.Lines.Count; index++)
@@ -168,7 +168,7 @@ internal static class VbaSyntaxTreeParser
         return options;
     }
 
-    private static ParsedExpressions ParseExpressionsAndCompletionContexts(SourceText sourceText, int codeStartLine)
+    private static ParsedExpressions ParseExpressionsAndCompletionContexts(VbaSourceText sourceText, int codeStartLine)
     {
         var expressions = new List<VbaExpressionSyntax>();
         var argumentLists = new List<VbaArgumentListSyntax>();
@@ -252,7 +252,7 @@ internal static class VbaSyntaxTreeParser
         return new ParsedExpressions(expressions, argumentLists, completionContexts);
     }
 
-    private static IReadOnlyList<LogicalStatement> CreateLogicalStatements(SourceText sourceText, int codeStartLine)
+    private static IReadOnlyList<LogicalStatement> CreateLogicalStatements(VbaSourceText sourceText, int codeStartLine)
     {
         var statements = new List<LogicalStatement>();
         for (var lineIndex = codeStartLine; lineIndex < sourceText.Lines.Count; lineIndex++)
@@ -265,7 +265,7 @@ internal static class VbaSyntaxTreeParser
         return statements;
     }
 
-    private static LogicalStatement CreateLogicalStatement(SourceText sourceText, int startLineIndex)
+    private static LogicalStatement CreateLogicalStatement(VbaSourceText sourceText, int startLineIndex)
     {
         var startLine = sourceText.Lines[startLineIndex];
         var logicalText = new List<char>();
@@ -277,9 +277,9 @@ internal static class VbaSyntaxTreeParser
         {
             var line = sourceText.Lines[lineIndex];
             endLine = line;
-            var codeText = StripApostropheComment(line.Text);
-            var hasContinuation = HasLineContinuation(codeText);
-            var part = hasContinuation ? RemoveLineContinuation(codeText) : codeText;
+            var codeText = VbaSourceText.StripApostropheComment(line.Text);
+            var hasContinuation = VbaSourceText.HasLineContinuation(codeText);
+            var part = hasContinuation ? VbaSourceText.RemoveLineContinuation(codeText) : codeText;
             for (var character = 0; character < part.Length; character++)
             {
                 logicalText.Add(part[character]);
@@ -576,13 +576,13 @@ internal static class VbaSyntaxTreeParser
             end--;
         }
 
-        if (end < 0 || !IsIdentifierCharacter(text[end]))
+        if (end < 0 || !VbaSourceText.IsIdentifierCharacter(text[end]))
         {
             return "";
         }
 
         var start = end;
-        while (start >= 0 && IsIdentifierCharacter(text[start]))
+        while (start >= 0 && VbaSourceText.IsIdentifierCharacter(text[start]))
         {
             start--;
         }
@@ -595,7 +595,7 @@ internal static class VbaSyntaxTreeParser
                 start--;
             }
 
-            while (start >= 0 && (IsIdentifierCharacter(text[start]) || text[start] == '.'))
+            while (start >= 0 && (VbaSourceText.IsIdentifierCharacter(text[start]) || text[start] == '.'))
             {
                 start--;
             }
@@ -644,18 +644,7 @@ internal static class VbaSyntaxTreeParser
         return null;
     }
 
-    private static bool HasLineContinuation(string line)
-        => line.TrimEnd().EndsWith("_", StringComparison.Ordinal);
-
-    private static string RemoveLineContinuation(string line)
-    {
-        var trimmed = line.TrimEnd();
-        return trimmed.EndsWith("_", StringComparison.Ordinal)
-            ? trimmed[..^1]
-            : line;
-    }
-
-    private static ParsedMembers ParseMembersAndDeclarations(SourceText sourceText, int codeStartLine)
+    private static ParsedMembers ParseMembersAndDeclarations(VbaSourceText sourceText, int codeStartLine)
     {
         var members = new List<VbaModuleMemberSyntax>();
         var declarations = new List<VbaDeclarationSyntax>();
@@ -664,7 +653,7 @@ internal static class VbaSyntaxTreeParser
         for (var lineIndex = codeStartLine; lineIndex < sourceText.Lines.Count; lineIndex++)
         {
             var line = sourceText.Lines[lineIndex];
-            var codeLine = StripApostropheComment(line.Text);
+            var codeLine = VbaSourceText.StripApostropheComment(line.Text);
             if (string.IsNullOrWhiteSpace(codeLine))
             {
                 continue;
@@ -853,7 +842,7 @@ internal static class VbaSyntaxTreeParser
         return new ParsedMembers(members, declarations, callableDeclarations);
     }
 
-    private static ParsedStatements ParseStatementsAndDiagnostics(SourceText sourceText, int codeStartLine)
+    private static ParsedStatements ParseStatementsAndDiagnostics(VbaSourceText sourceText, int codeStartLine)
     {
         var statements = new List<VbaStatementSyntax>();
         var diagnostics = new List<VbaSyntaxDiagnostic>();
@@ -868,8 +857,8 @@ internal static class VbaSyntaxTreeParser
             diagnostics.AddRange(CollectStringDiagnostics(line));
             diagnostics.AddRange(CollectRaiseEventDiagnostics(line));
 
-            var codeLine = StripApostropheComment(line.Text);
-            var hasValidLineContinuation = HasLineContinuation(codeLine)
+            var codeLine = VbaSourceText.StripApostropheComment(line.Text);
+            var hasValidLineContinuation = VbaSourceText.HasLineContinuation(codeLine)
                 && !lineContinuationDiagnostics.Any(diagnostic =>
                     diagnostic.Code == "syntax.invalidTrailingCommentContinuation");
             if (inLogicalContinuation)
@@ -961,9 +950,9 @@ internal static class VbaSyntaxTreeParser
         return new ParsedStatements(statements, diagnostics);
     }
 
-    private static IEnumerable<VbaSyntaxDiagnostic> CollectRaiseEventDiagnostics(SourceLine line)
+    private static IEnumerable<VbaSyntaxDiagnostic> CollectRaiseEventDiagnostics(VbaSourceLine line)
     {
-        var codeLine = StripApostropheComment(line.Text);
+        var codeLine = VbaSourceText.StripApostropheComment(line.Text);
         var index = SkipWhitespace(codeLine, 0);
         const string keyword = "RaiseEvent";
         if (!StartsWithKeyword(codeLine, index, keyword))
@@ -998,9 +987,9 @@ internal static class VbaSyntaxTreeParser
                 new VbaSyntaxPosition(line.LineNumber, codeLine.Length, line.StartOffset + codeLine.Length)));
     }
 
-    private static IEnumerable<VbaSyntaxDiagnostic> CollectLineContinuationDiagnostics(SourceLine line)
+    private static IEnumerable<VbaSyntaxDiagnostic> CollectLineContinuationDiagnostics(VbaSourceLine line)
     {
-        var commentStart = FindApostropheCommentStart(line.Text);
+        var commentStart = VbaSourceText.FindApostropheCommentStart(line.Text);
         if (commentStart < 0)
         {
             yield break;
@@ -1019,7 +1008,7 @@ internal static class VbaSyntaxTreeParser
         }
     }
 
-    private static IEnumerable<VbaSyntaxDiagnostic> CollectStringDiagnostics(SourceLine line)
+    private static IEnumerable<VbaSyntaxDiagnostic> CollectStringDiagnostics(VbaSourceLine line)
     {
         if (IsRemCommentLine(line.Text))
         {
@@ -1214,9 +1203,9 @@ internal static class VbaSyntaxTreeParser
     }
 
     private static VbaCallableDeclarationSyntax CreateCallableDeclaration(
-        SourceText sourceText,
+        VbaSourceText sourceText,
         Match match,
-        SourceLine line,
+        VbaSourceLine line,
         int lineIndex,
         bool isExternal = false,
         bool isStatic = false)
@@ -1255,7 +1244,7 @@ internal static class VbaSyntaxTreeParser
     }
 
     private static VbaCallableDeclarationSyntax CreateCallableDeclaration(
-        SourceText sourceText,
+        VbaSourceText sourceText,
         Match match,
         LogicalStatement statement,
         int lineIndex,
@@ -1319,12 +1308,12 @@ internal static class VbaSyntaxTreeParser
             TypeReference: parameter.TypeReference);
 
     private static VbaDeclarationSyntax CreateDeclaration(
-        SourceText sourceText,
+        VbaSourceText sourceText,
         Match match,
         string groupName,
         VbaDeclarationKind kind,
         VbaDeclarationVisibility visibility,
-        SourceLine line,
+        VbaSourceLine line,
         string? documentation = null,
         VbaCallableSignatureSyntax? signature = null,
         string? parentProcedureName = null,
@@ -1354,18 +1343,18 @@ internal static class VbaSyntaxTreeParser
     }
 
     private static VbaModuleMemberSyntax CreateSingleLineMember(
-        SourceText sourceText,
+        VbaSourceText sourceText,
         Match match,
         string groupName,
         VbaDeclarationKind kind,
-        SourceLine line)
+        VbaSourceLine line)
         => new(
             match.Groups[groupName].Value,
             kind,
             CreateLineRange(line));
 
     private static void AddMemberDeclarations(
-        SourceText sourceText,
+        VbaSourceText sourceText,
         ICollection<VbaDeclarationSyntax> declarations,
         int startLine,
         int endLine,
@@ -1375,7 +1364,7 @@ internal static class VbaSyntaxTreeParser
         for (var lineIndex = startLine; lineIndex < endLine; lineIndex++)
         {
             var line = sourceText.Lines[lineIndex];
-            var codeLine = StripApostropheComment(line.Text);
+            var codeLine = VbaSourceText.StripApostropheComment(line.Text);
             var match = IdentifierPattern.Match(codeLine);
             if (!match.Success)
             {
@@ -1393,7 +1382,7 @@ internal static class VbaSyntaxTreeParser
     }
 
     private static void AddLocalVariableDeclarations(
-        SourceText sourceText,
+        VbaSourceText sourceText,
         ICollection<VbaDeclarationSyntax> declarations,
         int startLine,
         int endLine,
@@ -1403,7 +1392,7 @@ internal static class VbaSyntaxTreeParser
         for (var lineIndex = startLine; lineIndex < endLine; lineIndex++)
         {
             var line = sourceText.Lines[lineIndex];
-            var codeLine = StripApostropheComment(line.Text);
+            var codeLine = VbaSourceText.StripApostropheComment(line.Text);
             var match = LocalVariablePattern.Match(codeLine);
             if (!match.Success)
             {
@@ -1425,9 +1414,9 @@ internal static class VbaSyntaxTreeParser
     }
 
     private static IReadOnlyList<VbaDeclarationSyntax> ParseVariableLikeDeclarations(
-        SourceText sourceText,
+        VbaSourceText sourceText,
         Group declarationsGroup,
-        SourceLine line,
+        VbaSourceLine line,
         VbaDeclarationKind kind,
         VbaDeclarationVisibility visibility,
         string? documentation = null,
@@ -1469,9 +1458,9 @@ internal static class VbaSyntaxTreeParser
     }
 
     private static IReadOnlyList<VbaCallableParameterSyntax> ParseParameterSyntax(
-        SourceText sourceText,
+        VbaSourceText sourceText,
         Match match,
-        SourceLine line,
+        VbaSourceLine line,
         DocumentationComment? documentation)
     {
         var parametersGroup = match.Groups["parameters"];
@@ -1623,7 +1612,7 @@ internal static class VbaSyntaxTreeParser
         return segments;
     }
 
-    private static DocumentationComment? ParseDocumentationComment(IReadOnlyList<SourceLine> lines, int declarationLine)
+    private static DocumentationComment? ParseDocumentationComment(IReadOnlyList<VbaSourceLine> lines, int declarationLine)
     {
         var rawLines = new Stack<string>();
         for (var lineIndex = declarationLine - 1; lineIndex >= 0; lineIndex--)
@@ -1757,14 +1746,14 @@ internal static class VbaSyntaxTreeParser
             match.Groups["new"].Success);
     }
 
-    private static int FindBlockEndLine(IReadOnlyList<SourceLine> lines, int startLine, string keyword)
+    private static int FindBlockEndLine(IReadOnlyList<VbaSourceLine> lines, int startLine, string keyword)
     {
         var pattern = new Regex(
             $"^\\s*End\\s+{Regex.Escape(keyword)}\\b",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         for (var lineIndex = startLine; lineIndex < lines.Count; lineIndex++)
         {
-            if (pattern.IsMatch(StripApostropheComment(lines[lineIndex].Text)))
+            if (pattern.IsMatch(VbaSourceText.StripApostropheComment(lines[lineIndex].Text)))
             {
                 return lineIndex;
             }
@@ -1813,9 +1802,6 @@ internal static class VbaSyntaxTreeParser
     private static bool IsWithEventsVariableDeclaration(string codeLine)
         => Regex.IsMatch(codeLine, "\\bWithEvents\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
-    private static bool IsIdentifierCharacter(char value)
-        => char.IsAsciiLetterOrDigit(value) || value == '_';
-
     private static int SkipWhitespace(string text, int startIndex)
     {
         var index = startIndex;
@@ -1830,22 +1816,19 @@ internal static class VbaSyntaxTreeParser
     private static int ReadIdentifierEnd(string text, int startIndex)
     {
         var index = startIndex;
-        if (index >= text.Length || !IsIdentifierStartCharacter(text[index]))
+        if (index >= text.Length || !VbaSourceText.IsIdentifierStart(text[index]))
         {
             return startIndex;
         }
 
         index++;
-        while (index < text.Length && IsIdentifierCharacter(text[index]))
+        while (index < text.Length && VbaSourceText.IsIdentifierCharacter(text[index]))
         {
             index++;
         }
 
         return index;
     }
-
-    private static bool IsIdentifierStartCharacter(char value)
-        => char.IsAsciiLetter(value) || value == '_';
 
     private static bool StartsWithKeyword(string text, int startIndex, string keyword)
     {
@@ -1854,54 +1837,27 @@ internal static class VbaSyntaxTreeParser
             return false;
         }
 
-        var beforeIsBoundary = startIndex == 0 || !IsIdentifierCharacter(text[startIndex - 1]);
+        var beforeIsBoundary = startIndex == 0 || !VbaSourceText.IsIdentifierCharacter(text[startIndex - 1]);
         var afterIndex = startIndex + keyword.Length;
-        var afterIsBoundary = afterIndex >= text.Length || !IsIdentifierCharacter(text[afterIndex]);
+        var afterIsBoundary = afterIndex >= text.Length || !VbaSourceText.IsIdentifierCharacter(text[afterIndex]);
         return beforeIsBoundary && afterIsBoundary;
     }
 
-    private static VbaSyntaxRange CreateRange(SourceText sourceText, Match match, string groupName, SourceLine line)
+    private static VbaSyntaxRange CreateRange(VbaSourceText sourceText, Match match, string groupName, VbaSourceLine line)
     {
         var group = match.Groups[groupName];
         return sourceText.RangeForLine(line, group.Index, group.Index + group.Length);
     }
 
-    private static VbaSyntaxRange CreateLineRange(SourceLine line)
+    private static VbaSyntaxRange CreateLineRange(VbaSourceLine line)
         => new(
             new VbaSyntaxPosition(line.LineNumber, 0, line.StartOffset),
             new VbaSyntaxPosition(line.LineNumber, line.Text.Length, line.EndOffset));
 
-    private static VbaSyntaxRange CreateBlockRange(IReadOnlyList<SourceLine> lines, int startLine, int endLine)
+    private static VbaSyntaxRange CreateBlockRange(IReadOnlyList<VbaSourceLine> lines, int startLine, int endLine)
         => new(
             new VbaSyntaxPosition(startLine, 0, lines[startLine].StartOffset),
             new VbaSyntaxPosition(endLine, lines[endLine].Text.Length, lines[endLine].EndOffset));
-
-    private static int FindApostropheCommentStart(string line)
-    {
-        var inString = false;
-        for (var index = 0; index < line.Length; index++)
-        {
-            var current = line[index];
-            if (current == '"' && inString && index + 1 < line.Length && line[index + 1] == '"')
-            {
-                index++;
-                continue;
-            }
-
-            if (current == '"')
-            {
-                inString = !inString;
-                continue;
-            }
-
-            if (!inString && current == '\'')
-            {
-                return index;
-            }
-        }
-
-        return -1;
-    }
 
     private static bool IsRemCommentLine(string line)
     {
@@ -1910,36 +1866,9 @@ internal static class VbaSyntaxTreeParser
             || trimmed.StartsWith("Rem ", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static string StripApostropheComment(string line)
-    {
-        var inString = false;
-        for (var index = 0; index < line.Length; index++)
-        {
-            var current = line[index];
-            if (current == '"' && inString && index + 1 < line.Length && line[index + 1] == '"')
-            {
-                index++;
-                continue;
-            }
-
-            if (current == '"')
-            {
-                inString = !inString;
-                continue;
-            }
-
-            if (!inString && current == '\'')
-            {
-                return line[..index];
-            }
-        }
-
-        return line;
-    }
-
     private static VbaModuleIdentitySyntax CreateIdentity(
         string uri,
-        SourceText sourceText,
+        VbaSourceText sourceText,
         VbaModuleKind kind,
         IReadOnlyList<VbaModuleAttributeSyntax> attributes)
     {
@@ -1956,7 +1885,7 @@ internal static class VbaSyntaxTreeParser
             new VbaSyntaxRange(sourceText.StartPosition, sourceText.StartPosition));
     }
 
-    private static SourceLine? FindAttributeNameLine(SourceText sourceText)
+    private static VbaSourceLine? FindAttributeNameLine(VbaSourceText sourceText)
         => sourceText.Lines.FirstOrDefault(line =>
             AttributePattern.Match(line.Text) is { Success: true } match
             && match.Groups["name"].Value.Equals("VB_Name", StringComparison.OrdinalIgnoreCase));
@@ -2001,123 +1930,7 @@ internal static class VbaSyntaxTreeParser
         }
     }
 
-    private sealed record SourceText(
-        string Text,
-        IReadOnlyList<SourceLine> Lines,
-        VbaSyntaxPosition StartPosition,
-        VbaSyntaxRange FullRange)
-    {
-        /// <summary>
-        /// Gets whether the source text contains no characters.
-        /// </summary>
-        public bool IsEmpty => Text.Length == 0;
-
-        /// <summary>
-        /// Creates a source text model that tracks line boundaries and the full source range.
-        /// </summary>
-        /// <param name="source">The source text to index.</param>
-        /// <returns>The indexed source text.</returns>
-        public static SourceText From(string source)
-        {
-            var lines = new List<SourceLine>();
-            var line = 0;
-            var offset = 0;
-            while (offset <= source.Length)
-            {
-                var startOffset = offset;
-                while (offset < source.Length && source[offset] is not '\r' and not '\n')
-                {
-                    offset++;
-                }
-
-                lines.Add(new SourceLine(line, source[startOffset..offset], startOffset, offset));
-                if (offset >= source.Length)
-                {
-                    break;
-                }
-
-                if (source[offset] == '\r' && offset + 1 < source.Length && source[offset + 1] == '\n')
-                {
-                    offset += 2;
-                }
-                else
-                {
-                    offset++;
-                }
-
-                line++;
-            }
-
-            var startPosition = new VbaSyntaxPosition(0, 0, 0);
-            var endPosition = PositionAt(source, source.Length);
-            return new SourceText(source, lines, startPosition, new VbaSyntaxRange(startPosition, endPosition));
-        }
-
-        /// <summary>
-        /// Converts an absolute character offset to a syntax position.
-        /// </summary>
-        /// <param name="offset">The zero-based character offset.</param>
-        /// <returns>The corresponding line, character, and offset position.</returns>
-        public VbaSyntaxPosition PositionAt(int offset)
-            => PositionAt(Text, offset);
-
-        /// <summary>
-        /// Builds a syntax range for a span on a single source line.
-        /// </summary>
-        /// <param name="line">The source line that contains the span.</param>
-        /// <param name="startCharacter">The zero-based start character on the line.</param>
-        /// <param name="endCharacter">The zero-based end character on the line.</param>
-        /// <returns>The range that covers the requested line span.</returns>
-        public VbaSyntaxRange RangeForLine(SourceLine line, int startCharacter, int endCharacter)
-            => new(
-                new VbaSyntaxPosition(line.LineNumber, startCharacter, line.StartOffset + startCharacter),
-                new VbaSyntaxPosition(line.LineNumber, endCharacter, line.StartOffset + endCharacter));
-
-        private static VbaSyntaxPosition PositionAt(string source, int offset)
-        {
-            var line = 0;
-            var character = 0;
-            for (var index = 0; index < offset; index++)
-            {
-                if (source[index] == '\r')
-                {
-                    if (index + 1 < source.Length && source[index + 1] == '\n')
-                    {
-                        index++;
-                    }
-
-                    line++;
-                    character = 0;
-                    continue;
-                }
-
-                if (source[index] == '\n')
-                {
-                    line++;
-                    character = 0;
-                    continue;
-                }
-
-                character++;
-            }
-
-            return new VbaSyntaxPosition(line, character, offset);
-        }
-    }
 }
-
-/// <summary>
-/// Represents one physical source line with absolute offsets.
-/// </summary>
-/// <param name="LineNumber">The zero-based physical line number.</param>
-/// <param name="Text">The line text without newline characters.</param>
-/// <param name="StartOffset">The inclusive source offset where the line starts.</param>
-/// <param name="EndOffset">The exclusive source offset where the line text ends.</param>
-internal sealed record SourceLine(
-    int LineNumber,
-    string Text,
-    int StartOffset,
-    int EndOffset);
 
 /// <summary>
 /// Contains module members and declarations parsed from a module body.

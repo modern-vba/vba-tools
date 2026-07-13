@@ -23,12 +23,12 @@ internal static class VbaSemanticTokenBuilder
     /// </summary>
     /// <param name="documents">The indexed source documents.</param>
     /// <param name="uri">The target document URI.</param>
-    /// <param name="resolveSourceDefinition">A resolver for identifier references by line and character.</param>
+    /// <param name="resolvedOccurrences">The resolved identifier occurrences in the target document.</param>
     /// <returns>The semantic tokens sorted in source order.</returns>
     public static IReadOnlyList<VbaSemanticToken> GetSemanticTokens(
         IReadOnlyList<VbaSourceDocument> documents,
         string uri,
-        Func<int, int, VbaSourceDefinition?> resolveSourceDefinition)
+        IReadOnlyList<VbaResolvedIdentifierOccurrence> resolvedOccurrences)
     {
         var currentDocument = documents.FirstOrDefault(document => SameUri(document.Uri, uri));
         if (currentDocument is null)
@@ -50,33 +50,25 @@ internal static class VbaSemanticTokenBuilder
             declarationRanges.Add(GetRangeKey(token.Range));
         }
 
-        for (var lineIndex = 0; lineIndex < lines.Length; lineIndex++)
+        foreach (var occurrence in resolvedOccurrences)
         {
-            foreach (var occurrence in VbaSourceText.FindIdentifierOccurrences(lines[lineIndex]))
+            if (declarationRanges.Contains(GetRangeKey(occurrence.Range)))
             {
-                var occurrenceRange = new VbaRange(
-                    new VbaPosition(lineIndex, occurrence.Start),
-                    new VbaPosition(lineIndex, occurrence.End));
-                if (declarationRanges.Contains(GetRangeKey(occurrenceRange)))
-                {
-                    continue;
-                }
-
-                var definition = resolveSourceDefinition(lineIndex, occurrence.Start);
-                if (definition is null
-                    || !TryCreateSemanticToken(
-                        lines,
-                        definition,
-                        isDeclaration: false,
-                        out var referenceToken,
-                        occurrenceRange,
-                        occurrence.Name))
-                {
-                    continue;
-                }
-
-                tokens.Add(referenceToken);
+                continue;
             }
+
+            if (!TryCreateSemanticToken(
+                lines,
+                occurrence.Definition,
+                isDeclaration: false,
+                out var referenceToken,
+                occurrence.Range,
+                occurrence.Occurrence.Name))
+            {
+                continue;
+            }
+
+            tokens.Add(referenceToken);
         }
 
         return tokens
