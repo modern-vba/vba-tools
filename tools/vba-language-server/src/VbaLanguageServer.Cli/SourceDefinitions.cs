@@ -321,8 +321,9 @@ public sealed class VbaSourceIndex
         VbaProjectReferenceCatalogSet referenceCatalogs)
     {
         this.documents = documents;
-        semanticResolution = new VbaSemanticResolution(documents, referenceSelection, referenceCatalogs);
-        resolutionTable = new VbaResolutionTable(semanticResolution.ResolveSourceDefinition);
+        var resolutionPolicy = new VbaResolutionPolicy();
+        semanticResolution = new VbaSemanticResolution(documents, referenceSelection, referenceCatalogs, resolutionPolicy);
+        resolutionTable = new VbaResolutionTable(semanticResolution.ResolveSourceDefinition, resolutionPolicy);
         resolvedOccurrences = new VbaResolvedIdentifierOccurrenceIndex(documents, resolutionTable);
         sourceFormatter = new VbaSourceFormatter(semanticResolution);
     }

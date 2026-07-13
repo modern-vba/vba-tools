@@ -8,16 +8,12 @@ namespace VbaLanguageServer.SourceModel;
 /// </summary>
 public sealed class VbaNameResolutionService
 {
-    private const int LocalRank = 0;
-    private const int CurrentModuleRank = 1;
-    private const int ProjectRank = 2;
-    private const int ReferenceRank = 3;
-
     private readonly IReadOnlyList<VbaSourceDocument> documents;
     private readonly VbaProjectReferenceSelection? referenceSelection;
     private readonly VbaProjectReferenceCatalogSet referenceCatalogs;
     private readonly IReadOnlyList<VbaSourceDefinition> activeReferenceDefinitions;
     private readonly IReadOnlyDictionary<string, IReadOnlyList<VbaSourceDefinition>> activeReferenceDefinitionsByName;
+    private readonly VbaResolutionPolicy resolutionPolicy;
 
     /// <summary>
     /// Creates a name resolution service over indexed source documents and active references.
@@ -31,10 +27,26 @@ public sealed class VbaNameResolutionService
         VbaProjectReferenceSelection? referenceSelection,
         VbaProjectReferenceCatalogSet referenceCatalogs,
         IReadOnlyList<VbaSourceDefinition>? activeReferenceDefinitions = null)
+        : this(
+            documents,
+            referenceSelection,
+            referenceCatalogs,
+            activeReferenceDefinitions,
+            new VbaResolutionPolicy())
+    {
+    }
+
+    internal VbaNameResolutionService(
+        IReadOnlyList<VbaSourceDocument> documents,
+        VbaProjectReferenceSelection? referenceSelection,
+        VbaProjectReferenceCatalogSet referenceCatalogs,
+        IReadOnlyList<VbaSourceDefinition>? activeReferenceDefinitions,
+        VbaResolutionPolicy resolutionPolicy)
     {
         this.documents = documents;
         this.referenceSelection = referenceSelection;
         this.referenceCatalogs = referenceCatalogs;
+        this.resolutionPolicy = resolutionPolicy;
         this.activeReferenceDefinitions = activeReferenceDefinitions
             ?? (referenceSelection is null ? [] : referenceCatalogs.GetActiveDefinitions(referenceSelection));
         activeReferenceDefinitionsByName = this.activeReferenceDefinitions
@@ -109,7 +121,7 @@ public sealed class VbaNameResolutionService
         return ResolveRankedCandidates(candidates);
     }
 
-    private IEnumerable<RankedDefinition> GetUnqualifiedCandidates(
+    private IEnumerable<VbaRankedDefinition> GetUnqualifiedCandidates(
         VbaSourceDocument currentDocument,
         VbaPosition position,
         bool includeLocals,
@@ -122,46 +134,46 @@ public sealed class VbaNameResolutionService
                 .Where(definition => ContainsPosition(definition, position))
                 .Where(definition => MatchesRequestedName(definition, requestedName)))
             {
-                yield return new RankedDefinition(definition, LocalRank);
+                yield return new VbaRankedDefinition(definition, VbaResolutionPolicy.LocalRank);
             }
         }
 
         foreach (var definition in currentDocument.Definitions
-            .Where(IsReferenceTarget)
+            .Where(resolutionPolicy.IsReferenceTarget)
             .Where(definition => MatchesRequestedName(definition, requestedName)))
         {
-            yield return new RankedDefinition(definition, CurrentModuleRank);
+            yield return new VbaRankedDefinition(definition, VbaResolutionPolicy.CurrentModuleRank);
         }
 
         foreach (var definition in documents
             .Where(document => !SameUri(document.Uri, currentDocument.Uri))
             .SelectMany(document => document.Definitions)
-            .Where(IsReferenceTarget)
+            .Where(resolutionPolicy.IsReferenceTarget)
             .Where(definition => definition.Visibility == VbaSourceDefinitionVisibility.Public)
             .Where(definition => MatchesRequestedName(definition, requestedName)))
         {
-            yield return new RankedDefinition(definition, ProjectRank);
+            yield return new VbaRankedDefinition(definition, VbaResolutionPolicy.ProjectRank);
         }
 
         if (referenceSelection is not null)
         {
             foreach (var definition in GetActiveReferenceDefinitions(requestedName))
             {
-                yield return new RankedDefinition(definition, ReferenceRank);
+                yield return new VbaRankedDefinition(definition, VbaResolutionPolicy.ReferenceRank);
             }
         }
     }
 
-    private IEnumerable<RankedDefinition> GetQualifiedCandidates(VbaSourceDocument currentDocument, string qualifier)
+    private IEnumerable<VbaRankedDefinition> GetQualifiedCandidates(VbaSourceDocument currentDocument, string qualifier)
     {
         foreach (var document in documents.Where(document => SameName(document.ModuleName, qualifier)))
         {
             var allowPrivate = SameUri(currentDocument.Uri, document.Uri);
             foreach (var definition in document.Definitions
-                .Where(IsReferenceTarget)
+                .Where(resolutionPolicy.IsReferenceTarget)
                 .Where(definition => allowPrivate || definition.Visibility == VbaSourceDefinitionVisibility.Public))
             {
-                yield return new RankedDefinition(definition, CurrentModuleRank);
+                yield return new VbaRankedDefinition(definition, VbaResolutionPolicy.CurrentModuleRank);
             }
         }
 
@@ -169,12 +181,12 @@ public sealed class VbaNameResolutionService
         {
             foreach (var definition in referenceCatalogs.GetQualifiedDefinitions(referenceSelection, qualifier))
             {
-                yield return new RankedDefinition(definition, ReferenceRank);
+                yield return new VbaRankedDefinition(definition, VbaResolutionPolicy.ReferenceRank);
             }
         }
     }
 
-    private IReadOnlyList<VbaSourceDefinition> ResolveCompletionCandidates(IEnumerable<RankedDefinition> candidates)
+    private IReadOnlyList<VbaSourceDefinition> ResolveCompletionCandidates(IEnumerable<VbaRankedDefinition> candidates)
     {
         return candidates
             .GroupBy(candidate => candidate.Definition.Name, StringComparer.OrdinalIgnoreCase)
@@ -184,38 +196,8 @@ public sealed class VbaNameResolutionService
             .ToArray();
     }
 
-    private VbaSourceDefinition? ResolveRankedCandidates(IEnumerable<RankedDefinition> candidates)
-    {
-        var rankedCandidates = candidates.ToArray();
-        if (rankedCandidates.Length == 0)
-        {
-            return null;
-        }
-
-        var bestRank = rankedCandidates.Min(candidate => candidate.Rank);
-        var bestCandidates = rankedCandidates
-            .Where(candidate => candidate.Rank == bestRank)
-            .ToArray();
-        if (bestCandidates.Length == 1)
-        {
-            return bestCandidates[0].Definition;
-        }
-
-        if (bestRank == ReferenceRank && referenceSelection?.MainVbaProjectReference is not null)
-        {
-            var mainReferenceCandidates = bestCandidates
-                .Where(candidate => candidate.Definition.ModuleName.Equals(
-                    referenceSelection.MainVbaProjectReference.Name,
-                    StringComparison.OrdinalIgnoreCase))
-                .ToArray();
-            if (mainReferenceCandidates.Length == 1)
-            {
-                return mainReferenceCandidates[0].Definition;
-            }
-        }
-
-        return null;
-    }
+    private VbaSourceDefinition? ResolveRankedCandidates(IEnumerable<VbaRankedDefinition> candidates)
+        => resolutionPolicy.ResolveRankedCandidates(candidates, referenceSelection);
 
     private IEnumerable<VbaSourceDefinition> GetActiveReferenceDefinitions(string? requestedName)
         => requestedName is null
@@ -241,12 +223,6 @@ public sealed class VbaNameResolutionService
             && ComparePosition(position, definition.ParentProcedureRange.End) <= 0;
     }
 
-    private static bool IsReferenceTarget(VbaSourceDefinition definition)
-        => definition.Visibility != VbaSourceDefinitionVisibility.Local
-            && definition.Kind != VbaSourceDefinitionKind.Module
-            && definition.Kind != VbaSourceDefinitionKind.Class
-            && definition.Kind != VbaSourceDefinitionKind.Form;
-
     private static bool SameUri(string left, string right)
         => string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
 
@@ -258,6 +234,4 @@ public sealed class VbaNameResolutionService
         var lineComparison = left.Line.CompareTo(right.Line);
         return lineComparison != 0 ? lineComparison : left.Character.CompareTo(right.Character);
     }
-
-    private sealed record RankedDefinition(VbaSourceDefinition Definition, int Rank);
 }

@@ -26,14 +26,18 @@ internal sealed record VbaDefinitionIdentity(string Uri, string Name, VbaRange R
 internal sealed class VbaResolutionTable
 {
     private readonly Func<string, int, int, VbaSourceDefinition?> resolveSourceDefinition;
+    private readonly VbaResolutionPolicy resolutionPolicy;
 
     /// <summary>
     /// Creates a resolution table over a snapshot resolver.
     /// </summary>
     /// <param name="resolveSourceDefinition">The resolver for document positions.</param>
-    public VbaResolutionTable(Func<string, int, int, VbaSourceDefinition?> resolveSourceDefinition)
+    public VbaResolutionTable(
+        Func<string, int, int, VbaSourceDefinition?> resolveSourceDefinition,
+        VbaResolutionPolicy? resolutionPolicy = null)
     {
         this.resolveSourceDefinition = resolveSourceDefinition;
+        this.resolutionPolicy = resolutionPolicy ?? new VbaResolutionPolicy();
     }
 
     /// <summary>
@@ -60,8 +64,7 @@ internal sealed class VbaResolutionTable
     /// <param name="definition">The resolved definition.</param>
     /// <returns>True when rename should be allowed.</returns>
     public bool IsRenameTarget(VbaSourceDefinition definition)
-        => !VbaProjectReferenceCatalogSet.IsExternalDefinition(definition)
-            && (definition.Visibility == VbaSourceDefinitionVisibility.Local || IsReferenceTarget(definition));
+        => resolutionPolicy.IsRenameTarget(definition);
 
     /// <summary>
     /// Determines whether two definitions have the same identity.
@@ -83,12 +86,6 @@ internal sealed class VbaResolutionTable
             && SameName(left.Name, right.Name)
             && ComparePosition(left.Range.Start, right.Range.Start) == 0
             && ComparePosition(left.Range.End, right.Range.End) == 0;
-
-    private static bool IsReferenceTarget(VbaSourceDefinition definition)
-        => definition.Visibility != VbaSourceDefinitionVisibility.Local
-            && definition.Kind != VbaSourceDefinitionKind.Module
-            && definition.Kind != VbaSourceDefinitionKind.Class
-            && definition.Kind != VbaSourceDefinitionKind.Form;
 
     private static bool SameUri(string left, string right)
         => string.Equals(left, right, StringComparison.OrdinalIgnoreCase);

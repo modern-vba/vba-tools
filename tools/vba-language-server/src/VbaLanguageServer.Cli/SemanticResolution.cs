@@ -16,6 +16,7 @@ internal sealed class VbaSemanticResolution
     private readonly VbaNameResolutionService nameResolution;
     private readonly VbaTypeResolution typeResolution;
     private readonly VbaMemberChainResolution memberChainResolution;
+    private readonly VbaMemberChainContextProvider memberChainContextProvider = new();
 
     /// <summary>
     /// Creates the semantic resolution service.
@@ -26,11 +27,13 @@ internal sealed class VbaSemanticResolution
     public VbaSemanticResolution(
         IReadOnlyList<VbaSourceDocument> documents,
         VbaProjectReferenceSelection? referenceSelection,
-        VbaProjectReferenceCatalogSet referenceCatalogs)
+        VbaProjectReferenceCatalogSet referenceCatalogs,
+        VbaResolutionPolicy? resolutionPolicy = null)
     {
         this.documents = documents;
         this.referenceSelection = referenceSelection;
         this.referenceCatalogs = referenceCatalogs;
+        resolutionPolicy ??= new VbaResolutionPolicy();
         var activeReferenceDefinitions = referenceSelection is null
             ? []
             : referenceCatalogs.GetActiveDefinitions(referenceSelection);
@@ -38,13 +41,15 @@ internal sealed class VbaSemanticResolution
             documents,
             referenceSelection,
             referenceCatalogs,
-            activeReferenceDefinitions);
+            activeReferenceDefinitions,
+            resolutionPolicy);
         typeResolution = new VbaTypeResolution(
             documents,
             referenceSelection,
             referenceCatalogs,
             activeReferenceDefinitions,
-            nameResolution);
+            nameResolution,
+            resolutionPolicy);
         memberChainResolution = new VbaMemberChainResolution(typeResolution);
     }
 
@@ -106,26 +111,15 @@ internal sealed class VbaSemanticResolution
             return null;
         }
 
-        var lines = VbaSourceText.SplitLines(currentDocument.Text);
-        if (line < 0 || line >= lines.Length)
-        {
-            return null;
-        }
-
-        if (!VbaSourceText.IsCodePosition(lines[line], character))
-        {
-            return null;
-        }
-
-        var identifier = VbaSourceText.GetIdentifierAt(lines[line], character);
-        if (identifier is null)
+        var lexicalFacts = VbaLexicalFacts.FromText(currentDocument.Text);
+        if (!lexicalFacts.TryGetCodeIdentifierAt(line, character, out var identifier))
         {
             return null;
         }
 
         if (typeResolution.TryResolveTypeReferenceDefinition(
             currentDocument,
-            lines,
+            lexicalFacts.ToLineArray(),
             line,
             identifier,
             out var typeDefinition))
@@ -143,7 +137,12 @@ internal sealed class VbaSemanticResolution
             return memberDefinition;
         }
 
-        var qualifier = GetQualifierBefore(lines[line], identifier.Start);
+        if (!lexicalFacts.TryGetLine(line, out var physicalLine))
+        {
+            return null;
+        }
+
+        var qualifier = GetQualifierBefore(physicalLine, identifier.Start);
         return nameResolution.Resolve(uri, new VbaPosition(line, character), qualifier, identifier.Name);
     }
 
@@ -162,13 +161,12 @@ internal sealed class VbaSemanticResolution
             return null;
         }
 
-        var lines = VbaSourceText.SplitLines(currentDocument.Text);
-        if (line < 0 || line >= lines.Length)
+        var lexicalFacts = VbaLexicalFacts.FromText(currentDocument.Text);
+        if (!lexicalFacts.TryGetLogicalPrefix(line, character, out var logicalPrefix))
         {
             return null;
         }
 
-        var logicalPrefix = VbaSourceText.GetLogicalPrefix(lines, line, character);
         if (!TryResolveCalleeDefinition(currentDocument, line, character, logicalPrefix, out var definition, out var arguments))
         {
             return null;
@@ -252,19 +250,21 @@ internal sealed class VbaSemanticResolution
         out IReadOnlyList<VbaSourceDefinition> definitions)
     {
         definitions = [];
-        var lines = VbaSourceText.SplitLines(currentDocument.Text);
-        if (line < 0 || line >= lines.Length)
+        if (!memberChainContextProvider.TryGetCompletionContext(
+            currentDocument,
+            line,
+            character,
+            out var context))
         {
             return false;
         }
 
-        var logicalPrefix = VbaSourceText.GetLogicalPrefix(lines, line, character);
-        if (!VbaMemberExpressionSyntax.TryGetMemberReceiverExpression(logicalPrefix, out var receiverExpression))
-        {
-            return false;
-        }
-
-        if (!memberChainResolution.TryResolveExpressionType(currentDocument, line, character, receiverExpression, out var receiverType))
+        if (!memberChainResolution.TryResolveExpressionType(
+            currentDocument,
+            line,
+            character,
+            context.ReceiverExpression,
+            out var receiverType))
         {
             return true;
         }
@@ -277,16 +277,10 @@ internal sealed class VbaSemanticResolution
         VbaSourceDocument currentDocument,
         int line,
         int character)
-    {
-        var lines = VbaSourceText.SplitLines(currentDocument.Text);
-        if (line < 0 || line >= lines.Length)
-        {
-            return false;
-        }
-
-        var logicalPrefix = VbaSourceText.GetLogicalPrefix(lines, line, character);
-        return VbaMemberExpressionSyntax.IsCompletedMemberAccessWithTrailingWhitespace(logicalPrefix);
-    }
+        => memberChainContextProvider.IsCompletedMemberAccessWithTrailingWhitespace(
+            currentDocument,
+            line,
+            character);
 
     private bool TryGetTypeCompletionDefinitions(
         VbaSourceDocument currentDocument,
@@ -295,13 +289,12 @@ internal sealed class VbaSemanticResolution
         out IReadOnlyList<VbaSourceDefinition> definitions)
     {
         definitions = [];
-        var lines = VbaSourceText.SplitLines(currentDocument.Text);
-        if (line < 0 || line >= lines.Length)
+        var lexicalFacts = VbaLexicalFacts.FromText(currentDocument.Text);
+        if (!lexicalFacts.TryGetLogicalPrefix(line, character, out var logicalPrefix))
         {
             return false;
         }
 
-        var logicalPrefix = VbaSourceText.GetLogicalPrefix(lines, line, character);
         if (!IsTypeAnnotationCompletionPrefix(logicalPrefix))
         {
             return false;
@@ -325,21 +318,24 @@ internal sealed class VbaSemanticResolution
         out VbaSourceDefinition? definition)
     {
         definition = null;
-        var lines = VbaSourceText.SplitLines(currentDocument.Text);
-        if (line < 0 || line >= lines.Length)
+        if (!memberChainContextProvider.TryGetMemberReferenceContext(
+            currentDocument,
+            line,
+            character,
+            memberName,
+            out var context))
         {
             return false;
         }
 
-        var logicalPrefix = VbaSourceText.GetLogicalPrefix(lines, line, character);
-        if (!VbaMemberExpressionSyntax.TryGetMemberReceiverExpression(logicalPrefix, out var receiverExpression))
+        if (!memberChainResolution.TryResolveExpressionType(
+            currentDocument,
+            line,
+            character,
+            context.ReceiverExpression,
+            out var receiverType))
         {
-            return false;
-        }
-
-        if (!memberChainResolution.TryResolveExpressionType(currentDocument, line, character, receiverExpression, out var receiverType))
-        {
-            return receiverExpression.Trim().Equals(".", StringComparison.Ordinal);
+            return context.IsWithReceiver;
         }
 
         definition = memberChainResolution.ResolveMember(receiverType, memberName);
@@ -386,40 +382,36 @@ internal sealed class VbaSemanticResolution
     {
         definition = null;
         arguments = "";
-        var callMatch = Regex.Matches(
-                logicalPrefix,
-                "(?<callee>(?:\\.|[A-Za-z_][A-Za-z0-9_]*)(?:\\s*\\.\\s*[A-Za-z_][A-Za-z0-9_]*)*)\\s*\\((?<arguments>[^()]*)$",
-                RegexOptions.CultureInvariant)
-            .Cast<Match>()
-            .LastOrDefault();
-        if (callMatch is null)
+        if (!memberChainContextProvider.TryGetCallExpressionContext(logicalPrefix, out var context))
         {
             return false;
         }
 
-        arguments = callMatch.Groups["arguments"].Value;
-        var callee = VbaMemberExpressionSyntax.NormalizeMemberExpression(callMatch.Groups["callee"].Value);
-        if (VbaMemberExpressionSyntax.TrySplitMemberExpression(callee, out var receiverExpression, out var memberName))
+        arguments = context.Arguments;
+        if (context.MemberChain is not null)
         {
-            if (memberChainResolution.TryResolveExpressionType(currentDocument, line, character, receiverExpression, out var receiverType))
+            if (memberChainResolution.TryResolveExpressionType(
+                currentDocument,
+                line,
+                character,
+                context.MemberChain.ReceiverExpression,
+                out var receiverType))
             {
-                definition = memberChainResolution.ResolveMember(receiverType, memberName);
+                definition = memberChainResolution.ResolveMember(receiverType, context.MemberChain.MemberName!);
                 return true;
             }
 
-            if (receiverExpression.Equals(".", StringComparison.Ordinal))
+            if (context.MemberChain.IsWithReceiver)
             {
                 return true;
             }
         }
 
-        var qualifier = VbaMemberExpressionSyntax.GetQualifierFromCallee(callee);
-        var unqualifiedName = qualifier is null ? callee : callee[(qualifier.Length + 1)..];
         definition = nameResolution.Resolve(
             currentDocument.Uri,
             new VbaPosition(line, character),
-            qualifier,
-            unqualifiedName);
+            context.Qualifier,
+            context.UnqualifiedName);
         return true;
     }
 
@@ -431,9 +423,14 @@ internal sealed class VbaSemanticResolution
         out string? canonicalName)
     {
         canonicalName = null;
-        if (VbaMemberExpressionSyntax.TryGetPreviousMemberReceiverExpression(codePart, occurrence, out var receiverExpression))
+        if (memberChainContextProvider.TryGetPreviousMemberContext(codePart, occurrence, out var context))
         {
-            if (!memberChainResolution.TryResolveExpressionType(document, lineIndex, occurrence.Start, receiverExpression, out var receiverType))
+            if (!memberChainResolution.TryResolveExpressionType(
+                document,
+                lineIndex,
+                occurrence.Start,
+                context.ReceiverExpression,
+                out var receiverType))
             {
                 return false;
             }

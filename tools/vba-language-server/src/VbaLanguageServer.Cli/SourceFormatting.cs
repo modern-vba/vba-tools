@@ -209,32 +209,14 @@ internal sealed class VbaSourceFormatter
             .ToHashSet(StringComparer.Ordinal);
         var syntaxTree = document.SyntaxTree ?? VbaSyntaxTree.ParseModule(document.Uri, document.Text);
         var formattingInput = VbaFormattingInput.FromSyntaxTree(syntaxTree);
+        var indentationFormatting = VbaIndentationFormatting.FromInput(formattingInput);
         var formattedLines = new List<string>(formattingInput.Lines.Count);
 
         foreach (var formattingLine in formattingInput.Lines)
         {
             var line = formattingLine.Text;
-            if (formattingLine.IsFormDesigner)
-            {
-                formattedLines.Add(line);
-                continue;
-            }
-
-            if (formattingLine.IsBlankOrComment && string.IsNullOrWhiteSpace(line))
-            {
-                formattedLines.Add("");
-                continue;
-            }
-
             var casedLine = FormatLineCasing(line, document, formattingLine.LineNumber, declarationRanges);
-            if (!formattingInput.CanApplyIndentation)
-            {
-                formattedLines.Add(casedLine);
-                continue;
-            }
-
-            var trimmed = casedLine.TrimStart();
-            formattedLines.Add($"{new string(' ', tabSize * formattingLine.IndentationDepth)}{trimmed}");
+            formattedLines.Add(indentationFormatting.Apply(formattingLine, casedLine, tabSize));
         }
 
         var formattedText = string.Join(SourceFormatting.DetectDominantLineEnding(document.Text), formattedLines);
@@ -253,9 +235,8 @@ internal sealed class VbaSourceFormatter
         int lineIndex,
         IReadOnlySet<string> declarationRanges)
     {
-        var commentStart = VbaSourceText.FindApostropheCommentStart(line);
-        var codePart = commentStart < 0 ? line : line[..commentStart];
-        var commentPart = commentStart < 0 ? "" : line[commentStart..];
+        var lineParts = VbaLexicalFacts.SplitCodeAndComment(line);
+        var codePart = lineParts.CodePart;
 
         codePart = Regex.Replace(
             codePart,
@@ -264,7 +245,7 @@ internal sealed class VbaSourceFormatter
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
         var edits = new SourceFormattingEditCollector();
-        foreach (var occurrence in VbaSourceText.FindIdentifierOccurrences(codePart))
+        foreach (var occurrence in VbaLexicalFacts.FindCodeIdentifierOccurrences(codePart))
         {
             var canonicalName = semanticResolution.GetCanonicalFormattingName(
                 codePart,
@@ -279,7 +260,7 @@ internal sealed class VbaSourceFormatter
             }
         }
 
-        return edits.Apply(codePart) + commentPart;
+        return edits.Apply(codePart) + lineParts.CommentPart;
     }
 
     private static string GetRangeKey(VbaRange range)

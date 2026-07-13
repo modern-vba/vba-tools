@@ -17,19 +17,22 @@ internal sealed class VbaTypeResolution
     private readonly VbaProjectReferenceCatalogSet referenceCatalogs;
     private readonly IReadOnlyList<VbaSourceDefinition> activeReferenceDefinitions;
     private readonly VbaNameResolutionService nameResolution;
+    private readonly VbaResolutionPolicy resolutionPolicy;
 
     public VbaTypeResolution(
         IReadOnlyList<VbaSourceDocument> documents,
         VbaProjectReferenceSelection? referenceSelection,
         VbaProjectReferenceCatalogSet referenceCatalogs,
         IReadOnlyList<VbaSourceDefinition> activeReferenceDefinitions,
-        VbaNameResolutionService nameResolution)
+        VbaNameResolutionService nameResolution,
+        VbaResolutionPolicy? resolutionPolicy = null)
     {
         this.documents = documents;
         this.referenceSelection = referenceSelection;
         this.referenceCatalogs = referenceCatalogs;
         this.activeReferenceDefinitions = activeReferenceDefinitions;
         this.nameResolution = nameResolution;
+        this.resolutionPolicy = resolutionPolicy ?? new VbaResolutionPolicy();
     }
 
     public bool TryResolveExpressionType(
@@ -102,7 +105,7 @@ internal sealed class VbaTypeResolution
                 return false;
             }
         }
-        else if (firstDefinition is not null && IsTypeDefinition(firstDefinition))
+        else if (firstDefinition is not null && resolutionPolicy.IsTypeDefinition(firstDefinition))
         {
             resolvedType = ToResolvedType(firstDefinition);
         }
@@ -189,7 +192,7 @@ internal sealed class VbaTypeResolution
 
         var referenceCandidates = activeReferenceDefinitions
             .Where(definition => SameName(definition.Name, typeReference.Name))
-            .Where(IsTypeDefinition)
+            .Where(resolutionPolicy.IsTypeDefinition)
             .Where(definition => definition.ParentTypeName is null)
             .ToArray();
         var referenceTypeDefinition = ResolveReferenceCandidates(referenceCandidates);
@@ -229,7 +232,7 @@ internal sealed class VbaTypeResolution
 
     public IEnumerable<VbaSourceDefinition> GetVisibleTypeDefinitions(VbaSourceDocument currentDocument)
     {
-        foreach (var definition in currentDocument.Definitions.Where(IsTypeDefinition))
+        foreach (var definition in currentDocument.Definitions.Where(resolutionPolicy.IsTypeDefinition))
         {
             yield return definition;
         }
@@ -237,14 +240,14 @@ internal sealed class VbaTypeResolution
         foreach (var definition in documents
             .Where(document => !SameUri(document.Uri, currentDocument.Uri))
             .SelectMany(document => document.Definitions)
-            .Where(IsTypeDefinition)
+            .Where(resolutionPolicy.IsTypeDefinition)
             .Where(definition => definition.Visibility == VbaSourceDefinitionVisibility.Public))
         {
             yield return definition;
         }
 
         foreach (var definition in activeReferenceDefinitions
-            .Where(IsTypeDefinition)
+            .Where(resolutionPolicy.IsTypeDefinition)
             .Where(definition => definition.ParentTypeName is null))
         {
             yield return definition;
@@ -339,7 +342,7 @@ internal sealed class VbaTypeResolution
         return documents
             .Where(document => SameName(document.ModuleName, resolvedType.Name))
             .SelectMany(document => document.Definitions)
-            .Where(IsReferenceTarget);
+            .Where(resolutionPolicy.IsReferenceTarget);
     }
 
     private VbaSourceDefinition? ResolveReferenceTypeDefinition(string qualifier, string typeName)
@@ -351,7 +354,7 @@ internal sealed class VbaTypeResolution
 
         var candidates = referenceCatalogs
             .GetQualifiedDefinitions(referenceSelection, qualifier, typeName)
-            .Where(IsTypeDefinition)
+            .Where(resolutionPolicy.IsTypeDefinition)
             .Where(definition => definition.ParentTypeName is null)
             .ToArray();
         return ResolveReferenceCandidates(candidates);
@@ -361,38 +364,15 @@ internal sealed class VbaTypeResolution
     {
         var candidates = documents
             .SelectMany(document => document.Definitions)
-            .Where(IsTypeDefinition)
+            .Where(resolutionPolicy.IsTypeDefinition)
             .Where(definition => SameName(definition.Name, typeName))
             .Where(definition => qualifier is null || SameName(definition.ModuleName, qualifier))
             .ToArray();
         return candidates.Length == 1 ? candidates[0] : null;
     }
 
-    private VbaSourceDefinition? ResolveReferenceCandidates(IReadOnlyList<VbaSourceDefinition> candidates)
-    {
-        if (candidates.Count == 0)
-        {
-            return null;
-        }
-
-        if (candidates.Count == 1)
-        {
-            return candidates[0];
-        }
-
-        if (referenceSelection?.MainVbaProjectReference is not null)
-        {
-            var mainCandidates = candidates
-                .Where(definition => SameName(definition.ModuleName, referenceSelection.MainVbaProjectReference.Name))
-                .ToArray();
-            if (mainCandidates.Length == 1)
-            {
-                return mainCandidates[0];
-            }
-        }
-
-        return null;
-    }
+    private VbaSourceDefinition? ResolveReferenceCandidates(IEnumerable<VbaSourceDefinition> candidates)
+        => resolutionPolicy.ResolveReferenceCandidates(candidates, referenceSelection);
 
     private static bool TryGetTypeReferencePrefix(string logicalPrefix, out VbaTypeReference typeReference)
     {
@@ -431,23 +411,12 @@ internal sealed class VbaTypeResolution
         return position < line.Length && line[position] == '.';
     }
 
-    private static bool IsTypeDefinition(VbaSourceDefinition definition)
-        => definition.Kind is VbaSourceDefinitionKind.Class
-            or VbaSourceDefinitionKind.Form
-            or VbaSourceDefinitionKind.Type;
-
     private static VbaResolvedType ToResolvedType(VbaSourceDefinition definition)
         => new(
             definition.Name,
             VbaProjectReferenceCatalogSet.IsExternalDefinition(definition)
                 ? definition.ModuleName
                 : null);
-
-    private static bool IsReferenceTarget(VbaSourceDefinition definition)
-        => definition.Visibility != VbaSourceDefinitionVisibility.Local
-            && definition.Kind != VbaSourceDefinitionKind.Module
-            && definition.Kind != VbaSourceDefinitionKind.Class
-            && definition.Kind != VbaSourceDefinitionKind.Form;
 
     private static bool SameUri(string left, string right)
         => string.Equals(left, right, StringComparison.OrdinalIgnoreCase);

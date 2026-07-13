@@ -25,6 +25,13 @@ public sealed record VbaSyntaxTree(
         => VbaSyntaxTreeParser.ParseModule(uri, source);
 
     /// <summary>
+    /// Creates reusable lexical facts for this syntax tree's source text.
+    /// </summary>
+    /// <returns>The lexical fact query module.</returns>
+    public VbaLexicalFacts GetLexicalFacts()
+        => VbaLexicalFacts.FromSyntaxTree(this);
+
+    /// <summary>
     /// Parses source text and classifies whether the change can be treated as a member-level update.
     /// </summary>
     /// <param name="uri">The document URI associated with the source text.</param>

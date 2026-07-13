@@ -89,6 +89,21 @@ internal sealed class VbaMemberChainResolution
     }
 
     /// <summary>
+    /// Resolves a member-chain completion context and returns its public member candidates.
+    /// </summary>
+    /// <param name="currentDocument">The document that owns the receiver expression.</param>
+    /// <param name="line">The zero-based line where resolution is requested.</param>
+    /// <param name="character">The zero-based character where resolution is requested.</param>
+    /// <param name="context">The parsed member-chain context.</param>
+    /// <returns>The member candidates or an empty set when the receiver is unresolved.</returns>
+    public IReadOnlyList<VbaSourceDefinition> GetMemberCompletions(
+        VbaSourceDocument currentDocument,
+        int line,
+        int character,
+        VbaMemberChainContext context)
+        => GetMemberCompletions(currentDocument, line, character, context.ReceiverExpression);
+
+    /// <summary>
     /// Gets visible members for a resolved receiver type.
     /// </summary>
     /// <param name="resolvedType">The resolved receiver type.</param>
@@ -155,5 +170,37 @@ internal sealed class VbaMemberChainResolution
                 ? VbaMemberChainResolutionStopReason.UnresolvedMember
                 : VbaMemberChainResolutionStopReason.Resolved,
             segments);
+    }
+
+    /// <summary>
+    /// Resolves the member at the end of a parsed member-chain context.
+    /// </summary>
+    /// <param name="currentDocument">The document that owns the member chain.</param>
+    /// <param name="line">The zero-based line where resolution is requested.</param>
+    /// <param name="character">The zero-based character where resolution is requested.</param>
+    /// <param name="context">The parsed member-chain context.</param>
+    /// <returns>The member-chain resolution result.</returns>
+    public VbaMemberChainResolutionResult ResolveMemberChain(
+        VbaSourceDocument currentDocument,
+        int line,
+        int character,
+        VbaMemberChainContext context)
+    {
+        if (context.MemberName is null)
+        {
+            return new VbaMemberChainResolutionResult(
+                null,
+                null,
+                null,
+                VbaMemberChainResolutionStopReason.UnresolvedMember,
+                context.Segments);
+        }
+
+        return ResolveMemberChain(
+            currentDocument,
+            line,
+            character,
+            context.ReceiverExpression,
+            context.MemberName);
     }
 }

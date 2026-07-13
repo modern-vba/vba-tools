@@ -1,5 +1,4 @@
 using VbaLanguageServer.SourceModel;
-using VbaLanguageServer.Workspace;
 
 namespace VbaLanguageServer.Lsp;
 
@@ -8,7 +7,7 @@ namespace VbaLanguageServer.Lsp;
 /// </summary>
 internal sealed class ReferenceCatalogRefreshCoordinator
 {
-    private readonly VbaProjectReferenceCatalogAvailability catalogAvailability;
+    private readonly ReferenceCatalogRefreshSession refreshSession;
     private readonly LspMessageTransport transport;
     private readonly object diagnosticGate = new();
     private readonly HashSet<string> publishedDiagnostics = new(StringComparer.Ordinal);
@@ -22,7 +21,7 @@ internal sealed class ReferenceCatalogRefreshCoordinator
         VbaProjectReferenceCatalogAvailability catalogAvailability,
         LspMessageTransport transport)
     {
-        this.catalogAvailability = catalogAvailability;
+        refreshSession = new ReferenceCatalogRefreshSession(catalogAvailability);
         this.transport = transport;
     }
 
@@ -33,44 +32,17 @@ internal sealed class ReferenceCatalogRefreshCoordinator
     /// <param name="cancellationToken">A cancellation token for message publication.</param>
     public async Task PublishReferenceSelectionTraceAsync(string uri, CancellationToken cancellationToken)
     {
-        if (!LanguageServerManifestResolution.TryCreateReferenceSelectionContext(
-            uri,
-            catalogAvailability.Current,
-            out var context,
-            out var error))
+        foreach (var sessionMessage in refreshSession.CreateReferenceSelectionTraceMessages(uri))
         {
-            if (error is not null)
+            if (sessionMessage.PublishOnce)
             {
-                await transport.WriteLogMessageAsync(
-                    2,
-                    $"Project manifest could not be resolved for reference selection: {error.Message}",
-                    cancellationToken);
-            }
-
-            return;
-        }
-
-        foreach (var message in context.Messages)
-        {
-            await transport.WriteLogMessageAsync(
-                message.Type,
-                message.Text,
-                cancellationToken);
-        }
-
-        foreach (var reference in context.ReferenceSelection?.References ?? [])
-        {
-            var source = catalogAvailability.GetCatalogSource(reference.Name);
-            if (source == VbaProjectReferenceCatalogSource.Unavailable)
-            {
+                await WriteLogMessageOnceAsync(sessionMessage.Message, cancellationToken);
                 continue;
             }
 
-            await WriteLogMessageOnceAsync(
-                ReferenceCatalogRefreshOutcome.CreateAvailabilityMessage(
-                    context.Resolution.DocumentName,
-                    reference.Name,
-                    source),
+            await transport.WriteLogMessageAsync(
+                sessionMessage.Message.Type,
+                sessionMessage.Message.Text,
                 cancellationToken);
         }
     }
@@ -83,21 +55,9 @@ internal sealed class ReferenceCatalogRefreshCoordinator
     /// <param name="cancellationToken">A cancellation token for preload work.</param>
     public async Task PreloadReferenceCatalogsAsync(string uri, string text, CancellationToken cancellationToken)
     {
-        if (!LanguageServerManifestResolution.TryCreateReferenceSelections(uri, text, out var selections))
+        foreach (var refreshEvent in refreshSession.PreloadReferenceCatalogs(uri, text))
         {
-            return;
-        }
-
-        foreach (var selectionContext in selections)
-        {
-            foreach (var result in catalogAvailability.PreloadPersistedCatalogs(selectionContext.Selection))
-            {
-                await PublishCatalogRefreshResultAsync(
-                    uri,
-                    selectionContext.DocumentName,
-                    result,
-                    cancellationToken);
-            }
+            await PublishCatalogRefreshResultAsync(refreshEvent, cancellationToken);
         }
     }
 
@@ -109,39 +69,40 @@ internal sealed class ReferenceCatalogRefreshCoordinator
     /// <param name="cancellationToken">A cancellation token for refresh work.</param>
     public void RefreshReferenceCatalogsInBackground(string uri, string text, CancellationToken cancellationToken)
     {
-        if (LanguageServerManifestResolution.TryCreateReferenceSelections(uri, text, out var selections))
+        if (refreshSession.TryCreateBackgroundRefreshPlan(uri, text, out var plan))
         {
-            _ = RefreshReferenceCatalogsInBackgroundAsync(uri, selections, cancellationToken);
+            _ = RefreshReferenceCatalogsInBackgroundAsync(plan, cancellationToken);
         }
     }
 
     private async Task RefreshReferenceCatalogsInBackgroundAsync(
-        string uri,
-        IReadOnlyList<VbaProjectReferenceSelectionContext> selections,
+        ReferenceCatalogRefreshPlan plan,
         CancellationToken cancellationToken)
     {
-        foreach (var selectionContext in selections)
+        IReadOnlyList<ReferenceCatalogRefreshEvent> refreshEvents;
+        try
         {
-            IReadOnlyList<VbaProjectReferenceCatalogRefreshResult> results;
-            try
-            {
-                results = await catalogAvailability.RefreshAsync(selectionContext.Selection, cancellationToken);
-            }
-            catch (OperationCanceledException)
-            {
-                return;
-            }
+            refreshEvents = await refreshSession.RefreshAsync(plan, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
 
-            foreach (var result in results)
-            {
-                await PublishCatalogRefreshResultAsync(
-                    uri,
-                    selectionContext.DocumentName,
-                    result,
-                    cancellationToken);
-            }
+        foreach (var refreshEvent in refreshEvents)
+        {
+            await PublishCatalogRefreshResultAsync(refreshEvent, cancellationToken);
         }
     }
+
+    private Task PublishCatalogRefreshResultAsync(
+        ReferenceCatalogRefreshEvent refreshEvent,
+        CancellationToken cancellationToken)
+        => PublishCatalogRefreshResultAsync(
+            refreshEvent.Uri,
+            refreshEvent.DocumentName,
+            refreshEvent.Result,
+            cancellationToken);
 
     private async Task PublishCatalogRefreshResultAsync(
         string uri,
