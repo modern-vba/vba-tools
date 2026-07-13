@@ -68,6 +68,49 @@ public sealed class VbaSemanticTokenTests
     }
 
     [Fact]
+    public void SemanticTokensSkipVbaKeywordsWhenReferenceCatalogContainsMatchingNames()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Option Explicit",
+            "Public Function BuildValue() As String",
+            "End Function",
+            "Public Property Get Value() As String",
+            "End Property",
+            "Public Sub Run()",
+            "    If True Then",
+            "    End If",
+            "End Sub"
+        ]);
+        const string referenceName = "Keyword Collision Library";
+        var referenceCatalogs = VbaProjectReferenceCatalogSet.Empty.WithCatalog(new VbaProjectReferenceCatalog(
+            referenceName,
+            ["KeywordCollision"],
+            [
+                KeywordCollisionDefinition(referenceName, "End"),
+                KeywordCollisionDefinition(referenceName, "Function"),
+                KeywordCollisionDefinition(referenceName, "If"),
+                KeywordCollisionDefinition(referenceName, "Property"),
+                KeywordCollisionDefinition(referenceName, "Sub")
+            ]));
+        var index = VbaSourceIndex.Build(
+            new Dictionary<string, string> { [uri] = text },
+            VbaProjectReferenceSelection.Create(
+                "keyword-collision",
+                [new VbaProjectReference(referenceName)]),
+            referenceCatalogs);
+
+        var tokens = index.GetSemanticTokens(uri);
+
+        Assert.DoesNotContain(tokens, token => token.Text == "End");
+        Assert.DoesNotContain(tokens, token => token.Text == "Function");
+        Assert.DoesNotContain(tokens, token => token.Text == "If");
+        Assert.DoesNotContain(tokens, token => token.Text == "Property");
+        Assert.DoesNotContain(tokens, token => token.Text == "Sub");
+    }
+
+    [Fact]
     public void SemanticTokenDataIsCachedWithinSourceIndexSnapshot()
     {
         const string uri = "file:///C:/work/Worker.bas";
@@ -195,4 +238,12 @@ public sealed class VbaSemanticTokenTests
             && token.TokenType == "field"
             && !token.TokenModifiers.Contains("declaration"));
     }
+
+    private static VbaProjectReferenceDefinition KeywordCollisionDefinition(string referenceName, string name)
+        => new(
+            referenceName,
+            name,
+            VbaSourceDefinitionKind.Property,
+            $"Reference member named {name}.",
+            ParentTypeName: "Application");
 }

@@ -215,11 +215,18 @@ test('VBA TextMate grammar has lexical scopes for representative VBA fixtures', 
   assertPatternMatches(patterns, 'string.quoted.double.vba', '"a ""quoted"" value"');
   assertPatternMatches(patterns, 'keyword.control.vba', 'If value Then');
   assertPatternMatches(patterns, 'keyword.control.vba', 'End If');
+  assertPatternMatches(patterns, 'keyword.control.vba', 'End With');
+  assertPatternMatches(patterns, 'keyword.control.vba', 'End Select');
   assertPatternDoesNotMatch(patterns, 'keyword.control.vba', 'End Sub');
+  assertPatternDoesNotMatch(patterns, 'keyword.control.vba', 'End Function');
+  assertPatternDoesNotMatch(patterns, 'keyword.control.vba', 'End Property');
   assertPatternMatches(patterns, 'keyword.vba', 'Public Function BuildValue() As String');
   assertPatternMatches(patterns, 'keyword.vba', 'End Sub');
   assertPatternMatches(patterns, 'keyword.vba', 'End Function');
   assertPatternMatches(patterns, 'keyword.vba', 'End Property');
+  assertPatternDoesNotMatch(patterns, 'keyword.vba', 'End If');
+  assertPatternDoesNotMatch(patterns, 'keyword.vba', 'End With');
+  assertPatternDoesNotMatch(patterns, 'keyword.vba', 'End Select');
   assertPatternMatches(patterns, 'storage.type.intrinsic.vba', 'Dim value As String');
   assertPatternMatches(patterns, 'constant.language.vba', 'Set target = Nothing');
   assertPatternMatches(patterns, 'constant.numeric.vba', 'value = &HFF');

@@ -62,6 +62,11 @@ internal sealed class VbaResolvedIdentifierOccurrenceIndex
         {
             foreach (var occurrence in VbaSourceText.FindIdentifierOccurrences(lines[lineIndex]))
             {
+                if (VbaLanguageVocabulary.IsKeyword(occurrence.Name))
+                {
+                    continue;
+                }
+
                 var definition = resolutionTable.ResolveSourceDefinition(document.Uri, lineIndex, occurrence.Start);
                 if (definition is null)
                 {
