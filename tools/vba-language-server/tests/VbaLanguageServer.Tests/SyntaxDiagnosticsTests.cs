@@ -159,6 +159,27 @@ public sealed class SyntaxDiagnosticsTests
             diagnostic.Range);
     }
 
+    [Fact]
+    public void Document_diagnostics_report_duplicate_array_callable_parameter_names()
+    {
+        const string declarationLine = "Public Sub Run(ByVal Name() As String, ByVal name As Long)";
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            declarationLine,
+            "End Sub"
+        ]);
+
+        var diagnostic = Assert.Single(VbaDocumentDiagnostics.Collect(source, "Worker.bas"));
+
+        Assert.Equal("validation.duplicateCallableParameterName", diagnostic.Code);
+        Assert.Equal("Duplicate callable parameter name 'name'.", diagnostic.Message);
+        Assert.Equal(
+            new VbaRange(
+                new VbaPosition(1, declarationLine.LastIndexOf("name", StringComparison.Ordinal)),
+                new VbaPosition(1, declarationLine.LastIndexOf("name", StringComparison.Ordinal) + "name".Length)),
+            diagnostic.Range);
+    }
+
     [Theory]
     [InlineData("Public Function Build(ByVal value As String, ByVal VALUE As Long) As String", "End Function")]
     [InlineData("Public Property Get DisplayName(ByVal value As String, ByVal VALUE As Long) As String", "End Property")]

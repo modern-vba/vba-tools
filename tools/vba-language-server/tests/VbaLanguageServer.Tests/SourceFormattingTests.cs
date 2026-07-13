@@ -166,6 +166,28 @@ public sealed class SourceFormattingTests
     }
 
     [Fact]
+    public void FormatDocumentNormalizesArrayParameterAndLaterParameterReferences()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var source = string.Join('\n', [
+            "public sub run(ByRef Values() as string, ByVal Fallback as string)",
+            "values(0) = fallback",
+            "end sub"
+        ]);
+        var expected = string.Join('\n', [
+            "Public Sub run(ByRef Values() As String, ByVal Fallback As String)",
+            "    Values(0) = Fallback",
+            "End Sub"
+        ]);
+        var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = source });
+
+        var edit = index.FormatDocument(uri, tabSize: 4);
+
+        Assert.NotNull(edit);
+        Assert.Equal(expected, edit.NewText);
+    }
+
+    [Fact]
     public void FormatDocumentNormalizesSiblingReferencesAndLeavesAmbiguousOrShadowedReferencesClosed()
     {
         const string builderUri = "file:///C:/work/Builder.bas";

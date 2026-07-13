@@ -150,6 +150,37 @@ public sealed class VbaSyntaxTreeProjectionTests
     }
 
     [Fact]
+    public void SourceIndexProjectsArrayCallableParametersAsParameterDefinitions()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run(ByRef Values() As String, ByVal Fallback As String)",
+            "End Sub"
+        ]);
+        var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = source });
+
+        var definitions = index.GetDocumentDefinitions(uri);
+
+        var run = Assert.Single(definitions, definition =>
+            definition.Name == "Run"
+            && definition.Kind == VbaSourceDefinitionKind.Procedure);
+        Assert.Equal("Run(Values, Fallback)", run.Signature?.Label);
+        Assert.Equal(["Values", "Fallback"], run.Signature!.Parameters.Select(parameter => parameter.Name).ToArray());
+
+        Assert.Contains(definitions, definition =>
+            definition.Name == "Values"
+            && definition.Kind == VbaSourceDefinitionKind.Parameter
+            && definition.ParentProcedureName == "Run"
+            && definition.TypeReference?.Name == "String");
+        Assert.Contains(definitions, definition =>
+            definition.Name == "Fallback"
+            && definition.Kind == VbaSourceDefinitionKind.Parameter
+            && definition.ParentProcedureName == "Run"
+            && definition.TypeReference?.Name == "String");
+    }
+
+    [Fact]
     public void ParserReadsClassAndFormCallableDeclarationsAfterExportHeaders()
     {
         var classModule = VbaSyntaxTree.ParseModule(

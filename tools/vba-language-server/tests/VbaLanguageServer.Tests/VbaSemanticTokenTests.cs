@@ -239,6 +239,42 @@ public sealed class VbaSemanticTokenTests
             && !token.TokenModifiers.Contains("declaration"));
     }
 
+    [Fact]
+    public void SemanticTokensCoverArrayParameterDeclarationsAndReferences()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Option Explicit",
+            "Public Sub Run( _",
+            "    ByRef Values() As String, _",
+            "    ByVal Fallback As String _",
+            ")",
+            "    Values(0) = Fallback",
+            "End Sub"
+        ]);
+        var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = text });
+
+        var tokens = index.GetSemanticTokens(uri);
+
+        Assert.Contains(tokens, token =>
+            token.Text == "Values"
+            && token.TokenType == "parameter"
+            && token.TokenModifiers.Contains("declaration"));
+        Assert.Contains(tokens, token =>
+            token.Text == "Values"
+            && token.TokenType == "parameter"
+            && !token.TokenModifiers.Contains("declaration"));
+        Assert.Contains(tokens, token =>
+            token.Text == "Fallback"
+            && token.TokenType == "parameter"
+            && token.TokenModifiers.Contains("declaration"));
+        Assert.Contains(tokens, token =>
+            token.Text == "Fallback"
+            && token.TokenType == "parameter"
+            && !token.TokenModifiers.Contains("declaration"));
+    }
+
     private static VbaProjectReferenceDefinition KeywordCollisionDefinition(string referenceName, string name)
         => new(
             referenceName,

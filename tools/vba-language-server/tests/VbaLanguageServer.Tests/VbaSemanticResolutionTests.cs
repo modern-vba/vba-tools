@@ -218,6 +218,26 @@ public sealed class VbaSemanticResolutionTests
         Assert.Equal(1, signatureHelp?.ActiveParameter);
     }
 
+    [Fact]
+    public void SignatureHelpIncludesArrayParametersAndLaterParametersInOrder()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Function Search(ByRef Values() As String, ByVal Fallback As String) As Long",
+            "End Function",
+            "Public Sub Run()",
+            "    Search(",
+            "End Sub"
+        ]);
+        var index = BuildIndex(uri, text);
+
+        var signatureHelp = index.GetSignatureHelp(uri, 4, "    Search(".Length);
+
+        Assert.Equal("Search(Values, Fallback) As Long", signatureHelp?.Signature.Label);
+        Assert.Equal(["Values", "Fallback"], signatureHelp!.Signature.Parameters.Select(parameter => parameter.Name).ToArray());
+    }
+
     private static VbaSourceIndex BuildIndex(string uri, string text)
         => BuildIndex(new Dictionary<string, string> { [uri] = text });
 

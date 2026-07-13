@@ -16,15 +16,15 @@ internal static class VbaSyntaxTreeParser
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex ProcedurePattern = new(
-        "^\\s*(?:(?<visibility>Public|Private|Friend)\\s+)?(?:(?<static>Static)\\s+)?(?:(?<kind>Sub|Function)|Property\\s+(?<propertyKind>Get|Let|Set))\\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\\s*(?:\\((?<parameters>[^)]*)\\))?",
+        "^\\s*(?:(?<visibility>Public|Private|Friend)\\s+)?(?:(?<static>Static)\\s+)?(?:(?<kind>Sub|Function)|Property\\s+(?<propertyKind>Get|Let|Set))\\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\\s*(?:\\((?<parameters>.*)\\))?",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex DeclarePattern = new(
-        "^\\s*(?:(?<visibility>Public|Private)\\s+)?Declare\\s+(?:PtrSafe\\s+)?(?<kind>Sub|Function)\\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\\s+Lib\\s+\"[^\"]+\"(?:\\s+Alias\\s+\"[^\"]+\")?\\s*(?:\\((?<parameters>[^)]*)\\))?",
+        "^\\s*(?:(?<visibility>Public|Private)\\s+)?Declare\\s+(?:PtrSafe\\s+)?(?<kind>Sub|Function)\\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\\s+Lib\\s+\"[^\"]+\"(?:\\s+Alias\\s+\"[^\"]+\")?\\s*(?:\\((?<parameters>.*)\\))?",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex EventPattern = new(
-        "^\\s*(?:(?<visibility>Public|Private|Friend)\\s+)?Event\\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\\s*(?:\\((?<parameters>[^)]*)\\))?",
+        "^\\s*(?:(?<visibility>Public|Private|Friend)\\s+)?Event\\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\\s*(?:\\((?<parameters>.*)\\))?",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex EnumPattern = new(
@@ -1213,8 +1213,8 @@ internal static class VbaSyntaxTreeParser
         var name = match.Groups["name"].Value;
         var documentation = ParseDocumentationComment(sourceText.Lines, lineIndex);
         var parameters = ParseParameterSyntax(sourceText, match, line, documentation);
-        var signature = CreateSignature(name, parameters, line.Text, documentation);
-        var typeReference = ParseReturnTypeReference(line.Text);
+        var typeReference = ParseReturnTypeReference(match, line.Text);
+        var signature = CreateSignature(name, parameters, typeReference, documentation);
         var kind = match.Groups["kind"].Success && !match.Groups["propertyKind"].Success
             ? VbaDeclarationKind.Procedure
             : VbaDeclarationKind.Property;
@@ -1253,8 +1253,8 @@ internal static class VbaSyntaxTreeParser
         var name = match.Groups["name"].Value;
         var documentation = ParseDocumentationComment(sourceText.Lines, lineIndex);
         var parameters = ParseParameterSyntax(match, statement, documentation);
-        var signature = CreateSignature(name, parameters, statement.Text, documentation);
-        var typeReference = ParseReturnTypeReference(statement.Text);
+        var typeReference = ParseReturnTypeReference(match, statement.Text);
+        var signature = CreateSignature(name, parameters, typeReference, documentation);
         var kind = match.Groups["kind"].Success && !match.Groups["propertyKind"].Success
             ? VbaDeclarationKind.Procedure
             : VbaDeclarationKind.Property;
@@ -1529,10 +1529,10 @@ internal static class VbaSyntaxTreeParser
     private static VbaCallableSignatureSyntax CreateSignature(
         string name,
         IReadOnlyList<VbaCallableParameterSyntax> parameters,
-        string line,
+        VbaTypeReferenceSyntax? returnTypeReference,
         DocumentationComment? documentation)
     {
-        var returnTypeName = ParseReturnTypeReference(line)?.Name;
+        var returnTypeName = returnTypeReference?.Name;
         var label = $"{name}({string.Join(", ", parameters.Select(parameter => parameter.Name))})";
         if (!string.IsNullOrWhiteSpace(returnTypeName))
         {
@@ -1712,10 +1712,21 @@ internal static class VbaSyntaxTreeParser
         return match.Success ? match.Value : null;
     }
 
-    private static VbaTypeReferenceSyntax? ParseReturnTypeReference(string line)
+    private static VbaTypeReferenceSyntax? ParseReturnTypeReference(Match match, string line)
+    {
+        var parametersGroup = match.Groups["parameters"];
+        if (parametersGroup.Success)
+        {
+            return ParseReturnTypeReference(line[(parametersGroup.Index + parametersGroup.Length)..]);
+        }
+
+        return ParseReturnTypeReference(line);
+    }
+
+    private static VbaTypeReferenceSyntax? ParseReturnTypeReference(string text)
     {
         var match = Regex.Match(
-            line,
+            text,
             "\\)\\s+As\\s+(?<new>New\\s+)?(?:(?<qualifier>[A-Za-z_][A-Za-z0-9_]*)\\.)?(?<type>[A-Za-z_][A-Za-z0-9_]*)\\b",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         return CreateTypeReference(match);

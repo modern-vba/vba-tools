@@ -81,4 +81,50 @@ public sealed class VbaSyntaxTreeDeclarationTests
             && declaration.Kind == VbaDeclarationKind.Property
             && declaration.IsStatic);
     }
+
+    [Fact]
+    public void ParserReadsCallableArrayParametersWithoutStoppingAtArrayParentheses()
+    {
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Declare PtrSafe Function ReadFile Lib \"kernel32\" (ByRef Buffer() As Byte, ByVal Count As Long) As Long",
+            "Public Event Saved(ByRef ChangedNames() As String, ByVal Count As Long)",
+            "Public Sub Run(ByRef Values() As String, ByVal Destination As String)",
+            "End Sub",
+            "Public Function Build( _",
+            "    ByRef SourceNames() As String, _",
+            "    ByVal Fallback As String _",
+            ") As Long",
+            "End Function"
+        ]);
+
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.bas", source);
+
+        var readFile = Assert.Single(tree.Module.CallableDeclarations, declaration => declaration.Name == "ReadFile");
+        Assert.Equal("ReadFile(Buffer, Count) As Long", readFile.Signature.Label);
+        Assert.Equal(["Buffer", "Count"], readFile.Signature.Parameters.Select(parameter => parameter.Name).ToArray());
+
+        Assert.Contains(tree.Module.Declarations, declaration =>
+            declaration.Name == "Saved"
+            && declaration.Kind == VbaDeclarationKind.Event);
+        Assert.Contains(tree.Module.Declarations, declaration =>
+            declaration.Name == "ChangedNames"
+            && declaration.Kind == VbaDeclarationKind.Parameter
+            && declaration.Range.Start.Line == 2
+            && declaration.TypeReference?.Name == "String");
+        Assert.Contains(tree.Module.Declarations, declaration =>
+            declaration.Name == "Count"
+            && declaration.Kind == VbaDeclarationKind.Parameter
+            && declaration.Range.Start.Line == 2
+            && declaration.TypeReference?.Name == "Long");
+
+        var run = Assert.Single(tree.Module.CallableDeclarations, declaration => declaration.Name == "Run");
+        Assert.Equal("Run(Values, Destination)", run.Signature.Label);
+        Assert.Equal(["Values", "Destination"], run.Signature.Parameters.Select(parameter => parameter.Name).ToArray());
+
+        var build = Assert.Single(tree.Module.CallableDeclarations, declaration => declaration.Name == "Build");
+        Assert.Equal("Build(SourceNames, Fallback) As Long", build.Signature.Label);
+        Assert.Equal("Long", build.TypeReference?.Name);
+        Assert.Equal(["SourceNames", "Fallback"], build.Signature.Parameters.Select(parameter => parameter.Name).ToArray());
+    }
 }
