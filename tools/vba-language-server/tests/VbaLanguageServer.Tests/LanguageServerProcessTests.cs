@@ -971,11 +971,14 @@ public sealed class LanguageServerProcessTests
             "'* @return The configured value.",
             "Public Function ReadValue(ByVal Key As String, Optional ByVal Fallback As String) As String",
             "End Function",
+            "Public Sub PlainSub(ByVal Arg1 As String)",
+            "End Sub",
             "",
             "Public Sub Run()",
             "    ReadValue(\"id\", ",
             "    ReadValue ",
             "    ReadValue \"id\", ",
+            "    PlainSub(",
             "End Sub"
         ]);
         await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, text));
@@ -1010,7 +1013,18 @@ public sealed class LanguageServerProcessTests
         var statementSecondParameter = await SendPositionRequestAsync(stdin, stdout, 5, "textDocument/signatureHelp", uri, text, "ReadValue \"id\", ", "ReadValue \"id\", ".Length);
         Assert.Equal(1, statementSecondParameter.GetProperty("result").GetProperty("activeParameter").GetInt32());
 
-        await SendRequestAsync(stdin, stdout, 6, "shutdown", null);
+        var undocumentedSignature = await SendPositionRequestAsync(stdin, stdout, 6, "textDocument/signatureHelp", uri, text, "PlainSub(", "PlainSub(".Length);
+        var undocumentedFirstSignature = undocumentedSignature
+            .GetProperty("result")
+            .GetProperty("signatures")
+            .EnumerateArray()
+            .Single();
+        Assert.False(undocumentedFirstSignature.TryGetProperty("documentation", out _));
+        Assert.DoesNotContain(
+            undocumentedFirstSignature.GetProperty("parameters").EnumerateArray(),
+            parameter => parameter.TryGetProperty("documentation", out _));
+
+        await SendRequestAsync(stdin, stdout, 7, "shutdown", null);
         await SendNotificationAsync(stdin, "exit", null);
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await process.WaitForExitAsync(cancellation.Token);

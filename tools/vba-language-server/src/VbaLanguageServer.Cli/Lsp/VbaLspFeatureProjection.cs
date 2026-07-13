@@ -161,24 +161,41 @@ internal static class VbaLspFeatureProjection
             return null;
         }
 
+        var signature = new Dictionary<string, object?>
+        {
+            ["label"] = signatureHelp.Signature.Label,
+            ["parameters"] = signatureHelp.Signature.Parameters.Select(CreateSignatureParameter).ToArray()
+        };
+        var documentation = ToMarkup(signatureHelp.Signature.Documentation);
+        if (documentation is not null)
+        {
+            signature["documentation"] = documentation;
+        }
+
         return new
         {
             signatures = new[]
             {
-                new
-                {
-                    label = signatureHelp.Signature.Label,
-                    documentation = ToMarkup(signatureHelp.Signature.Documentation),
-                    parameters = signatureHelp.Signature.Parameters.Select(parameter => new
-                    {
-                        label = parameter.Name,
-                        documentation = ToMarkup(parameter.Documentation)
-                    }).ToArray()
-                }
+                signature
             },
             activeSignature = 0,
             activeParameter = signatureHelp.ActiveParameter
         };
+    }
+
+    private static IReadOnlyDictionary<string, object?> CreateSignatureParameter(VbaCallableParameter parameter)
+    {
+        var projected = new Dictionary<string, object?>
+        {
+            ["label"] = parameter.Name
+        };
+        var documentation = ToMarkup(parameter.Documentation);
+        if (documentation is not null)
+        {
+            projected["documentation"] = documentation;
+        }
+
+        return projected;
     }
 
     public static object? CreateWorkspaceEdit(IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>>? changes)
