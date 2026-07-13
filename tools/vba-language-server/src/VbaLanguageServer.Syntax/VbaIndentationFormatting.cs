@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+
 namespace VbaLanguageServer.Syntax;
 
 /// <summary>
@@ -49,6 +51,17 @@ public sealed class VbaIndentationFormatting
             return text;
         }
 
+        if (StartsWithLineLabel(line.TrimmedCodeText))
+        {
+            return text.TrimStart();
+        }
+
         return $"{new string(' ', Math.Max(1, tabSize) * line.IndentationDepth)}{text.TrimStart()}";
     }
+
+    private static bool StartsWithLineLabel(string trimmedCodeText)
+        => Regex.IsMatch(
+            trimmedCodeText,
+            "^(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+)\\s*:",
+            RegexOptions.CultureInvariant);
 }

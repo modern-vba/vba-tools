@@ -531,6 +531,40 @@ public sealed class SourceFormattingTests
     }
 
     [Fact]
+    public void FormatDocumentKeepsLineLabelsAtColumnZero()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var source = string.Join('\n', [
+            "public sub Run()",
+            "if true then",
+            "EXIT_SUBFUNC:",
+            "10: call Cleanup",
+            "value = 1: call Cleanup",
+            "end if",
+            "end sub",
+            "private sub Cleanup()",
+            "end sub"
+        ]);
+        var expected = string.Join('\n', [
+            "Public Sub Run()",
+            "    If True Then",
+            "EXIT_SUBFUNC:",
+            "10: Call Cleanup",
+            "        value = 1: Call Cleanup",
+            "    End If",
+            "End Sub",
+            "Private Sub Cleanup()",
+            "End Sub"
+        ]);
+        var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = source });
+
+        var edit = index.FormatDocument(uri, tabSize: 4);
+
+        Assert.NotNull(edit);
+        Assert.Equal(expected, edit.NewText);
+    }
+
+    [Fact]
     public void FormatDocumentLeavesIncompleteBlockIndentationFailClosed()
     {
         const string uri = "file:///C:/work/Worker.bas";
