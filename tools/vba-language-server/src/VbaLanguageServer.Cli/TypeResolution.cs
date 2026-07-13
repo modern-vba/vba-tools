@@ -64,7 +64,7 @@ internal sealed class VbaTypeResolution
 
             foreach (var memberName in parts)
             {
-                var member = ResolveMember(resolvedType, memberName);
+                var member = ResolveMember(currentDocument, resolvedType, memberName);
                 if (member?.TypeReference is null || !TryResolveTypeReference(currentDocument, member.TypeReference, out resolvedType))
                 {
                     return false;
@@ -83,7 +83,7 @@ internal sealed class VbaTypeResolution
         {
             for (var index = 2; index < parts.Length; index++)
             {
-                var member = ResolveMember(resolvedType, parts[index]);
+                var member = ResolveMember(currentDocument, resolvedType, parts[index]);
                 if (member?.TypeReference is null || !TryResolveTypeReference(currentDocument, member.TypeReference, out resolvedType))
                 {
                     return false;
@@ -116,7 +116,7 @@ internal sealed class VbaTypeResolution
 
         for (var index = 1; index < parts.Length; index++)
         {
-            var member = ResolveMember(resolvedType, parts[index]);
+            var member = ResolveMember(currentDocument, resolvedType, parts[index]);
             if (member?.TypeReference is null || !TryResolveTypeReference(currentDocument, member.TypeReference, out resolvedType))
             {
                 return false;
@@ -205,25 +205,25 @@ internal sealed class VbaTypeResolution
         return true;
     }
 
-    public IReadOnlyList<VbaSourceDefinition> GetMembersOfType(VbaResolvedType resolvedType)
-        => GetMemberCandidates(resolvedType)
+    public IReadOnlyList<VbaSourceDefinition> GetMembersOfType(VbaSourceDocument currentDocument, VbaResolvedType resolvedType)
+        => GetMemberCandidates(currentDocument, resolvedType)
             .GroupBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
             .Where(group => group.Count() == 1)
             .Select(group => group.Single())
             .OrderBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-    public VbaSourceDefinition? ResolveMember(VbaResolvedType resolvedType, string memberName)
+    public VbaSourceDefinition? ResolveMember(VbaSourceDocument currentDocument, VbaResolvedType resolvedType, string memberName)
     {
-        var candidates = GetMemberCandidates(resolvedType)
+        var candidates = GetMemberCandidates(currentDocument, resolvedType)
             .Where(definition => SameName(definition.Name, memberName))
             .ToArray();
         return candidates.Length == 1 ? candidates[0] : null;
     }
 
-    public VbaSourceDefinition? ResolveEvent(VbaResolvedType resolvedType, string eventName)
+    public VbaSourceDefinition? ResolveEvent(VbaSourceDocument currentDocument, VbaResolvedType resolvedType, string eventName)
     {
-        var candidates = GetMemberCandidates(resolvedType)
+        var candidates = GetMemberCandidates(currentDocument, resolvedType)
             .Where(definition => definition.Kind == VbaSourceDefinitionKind.Event)
             .Where(definition => SameName(definition.Name, eventName))
             .ToArray();
@@ -329,7 +329,7 @@ internal sealed class VbaTypeResolution
         return true;
     }
 
-    private IEnumerable<VbaSourceDefinition> GetMemberCandidates(VbaResolvedType resolvedType)
+    private IEnumerable<VbaSourceDefinition> GetMemberCandidates(VbaSourceDocument currentDocument, VbaResolvedType resolvedType)
     {
         if (resolvedType.ReferenceName is not null)
         {
@@ -341,8 +341,11 @@ internal sealed class VbaTypeResolution
 
         return documents
             .Where(document => SameName(document.ModuleName, resolvedType.Name))
-            .SelectMany(document => document.Definitions)
-            .Where(resolutionPolicy.IsReferenceTarget);
+            .SelectMany(document => document.Definitions
+                .Where(resolutionPolicy.IsReferenceTarget)
+                .Where(definition =>
+                    SameUri(document.Uri, currentDocument.Uri)
+                    || definition.Visibility == VbaSourceDefinitionVisibility.Public));
     }
 
     private VbaSourceDefinition? ResolveReferenceTypeDefinition(string qualifier, string typeName)

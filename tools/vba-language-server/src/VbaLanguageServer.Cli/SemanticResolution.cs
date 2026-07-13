@@ -270,7 +270,7 @@ internal sealed class VbaSemanticResolution
             return true;
         }
 
-        definitions = memberChainResolution.GetMembersOfType(receiverType);
+        definitions = memberChainResolution.GetMembersOfType(currentDocument, receiverType);
         return true;
     }
 
@@ -339,7 +339,7 @@ internal sealed class VbaSemanticResolution
             return context.IsWithReceiver;
         }
 
-        definition = memberChainResolution.ResolveMember(receiverType, memberName);
+        definition = memberChainResolution.ResolveMember(currentDocument, receiverType, memberName);
         return true;
     }
 
@@ -366,7 +366,7 @@ internal sealed class VbaSemanticResolution
                 return true;
             }
 
-            eventDefinition = memberChainResolution.ResolveEvent(receiverType, eventName);
+            eventDefinition = memberChainResolution.ResolveEvent(currentDocument, receiverType, eventName);
             return true;
         }
 
@@ -398,7 +398,10 @@ internal sealed class VbaSemanticResolution
                 context.MemberChain.ReceiverExpression,
                 out var receiverType))
             {
-                definition = memberChainResolution.ResolveMember(receiverType, context.MemberChain.MemberName!);
+                definition = memberChainResolution.ResolveMember(
+                    currentDocument,
+                    receiverType,
+                    context.MemberChain.MemberName!);
                 return true;
             }
 
@@ -441,7 +444,10 @@ internal sealed class VbaSemanticResolution
                 context.MemberChain.ReceiverExpression,
                 out var receiverType))
             {
-                definition = memberChainResolution.ResolveMember(receiverType, context.MemberChain.MemberName!);
+                definition = memberChainResolution.ResolveMember(
+                    currentDocument,
+                    receiverType,
+                    context.MemberChain.MemberName!);
                 return true;
             }
 
@@ -479,7 +485,7 @@ internal sealed class VbaSemanticResolution
                 return false;
             }
 
-            var member = memberChainResolution.ResolveMember(receiverType, occurrence.Name);
+            var member = memberChainResolution.ResolveMember(document, receiverType, occurrence.Name);
             canonicalName = member?.Name;
             return canonicalName is not null;
         }

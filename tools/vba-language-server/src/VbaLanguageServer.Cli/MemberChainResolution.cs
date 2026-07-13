@@ -84,7 +84,7 @@ internal sealed class VbaMemberChainResolution
         string receiverExpression)
     {
         return TryResolveExpressionType(currentDocument, line, character, receiverExpression, out var receiverType)
-            ? GetMembersOfType(receiverType)
+            ? GetMembersOfType(currentDocument, receiverType)
             : [];
     }
 
@@ -108,8 +108,10 @@ internal sealed class VbaMemberChainResolution
     /// </summary>
     /// <param name="resolvedType">The resolved receiver type.</param>
     /// <returns>The visible member definitions.</returns>
-    public IReadOnlyList<VbaSourceDefinition> GetMembersOfType(VbaResolvedType resolvedType)
-        => typeResolution.GetMembersOfType(resolvedType);
+    public IReadOnlyList<VbaSourceDefinition> GetMembersOfType(
+        VbaSourceDocument currentDocument,
+        VbaResolvedType resolvedType)
+        => typeResolution.GetMembersOfType(currentDocument, resolvedType);
 
     /// <summary>
     /// Resolves a named member from a receiver type.
@@ -117,8 +119,11 @@ internal sealed class VbaMemberChainResolution
     /// <param name="resolvedType">The resolved receiver type.</param>
     /// <param name="memberName">The member name to resolve.</param>
     /// <returns>The resolved member, or null when unresolved or ambiguous.</returns>
-    public VbaSourceDefinition? ResolveMember(VbaResolvedType resolvedType, string memberName)
-        => typeResolution.ResolveMember(resolvedType, memberName);
+    public VbaSourceDefinition? ResolveMember(
+        VbaSourceDocument currentDocument,
+        VbaResolvedType resolvedType,
+        string memberName)
+        => typeResolution.ResolveMember(currentDocument, resolvedType, memberName);
 
     /// <summary>
     /// Resolves a named event from a receiver type.
@@ -126,8 +131,11 @@ internal sealed class VbaMemberChainResolution
     /// <param name="resolvedType">The resolved receiver type.</param>
     /// <param name="eventName">The event name to resolve.</param>
     /// <returns>The resolved event, or null when unresolved or ambiguous.</returns>
-    public VbaSourceDefinition? ResolveEvent(VbaResolvedType resolvedType, string eventName)
-        => typeResolution.ResolveEvent(resolvedType, eventName);
+    public VbaSourceDefinition? ResolveEvent(
+        VbaSourceDocument currentDocument,
+        VbaResolvedType resolvedType,
+        string eventName)
+        => typeResolution.ResolveEvent(currentDocument, resolvedType, eventName);
 
     /// <summary>
     /// Resolves the member at the end of a receiver expression and member name pair.
@@ -158,7 +166,7 @@ internal sealed class VbaMemberChainResolution
                 segments);
         }
 
-        var member = ResolveMember(receiverType, memberName);
+        var member = ResolveMember(currentDocument, receiverType, memberName);
         return new VbaMemberChainResolutionResult(
             receiverType,
             member,

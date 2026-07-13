@@ -199,6 +199,54 @@ public sealed class VbaSemanticResolutionTests
     }
 
     [Fact]
+    public void MemberCompletionUsesPublicMembersOfGlobalVariableTypeFromOtherModule()
+    {
+        const string workerUri = "file:///C:/work/Mod_Search.bas";
+        const string commonUri = "file:///C:/work/common-modules/Lib_Common.bas";
+        const string worksheetServiceUri = "file:///C:/work/common-modules/IWorksheetService.cls";
+        var workerText = string.Join('\n', [
+            "Attribute VB_Name = \"Mod_Search\"",
+            "Option Explicit",
+            "Public Sub Run()",
+            "    WsSrv.",
+            "End Sub"
+        ]);
+        var commonText = string.Join('\n', [
+            "Attribute VB_Name = \"Lib_Common\"",
+            "Option Explicit",
+            "Public WsSrv As IWorksheetService"
+        ]);
+        var worksheetServiceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IWorksheetService\"",
+            "Private Sub Class_Initialize()",
+            "End Sub",
+            "Public Function Find() As Object",
+            "End Function",
+            "Public Sub ClearRange()",
+            "End Sub",
+            "Public Sub SetRangeColor()",
+            "End Sub"
+        ]);
+        var index = BuildIndex(
+            new Dictionary<string, string>
+            {
+                [workerUri] = workerText,
+                [commonUri] = commonText,
+                [worksheetServiceUri] = worksheetServiceText
+            });
+
+        var labels = index.GetCompletionDefinitions(workerUri, 3, "    WsSrv.".Length)
+            .Select(definition => definition.Name)
+            .ToArray();
+
+        Assert.Contains("Find", labels);
+        Assert.Contains("ClearRange", labels);
+        Assert.Contains("SetRangeColor", labels);
+        Assert.DoesNotContain("Class_Initialize", labels);
+    }
+
+    [Fact]
     public void SignatureHelpUsesActiveNamedArgumentWhenParameterNameMatches()
     {
         const string uri = "file:///C:/work/Worker.bas";
