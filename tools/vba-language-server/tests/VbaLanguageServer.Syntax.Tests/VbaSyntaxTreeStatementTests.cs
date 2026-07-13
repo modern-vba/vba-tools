@@ -73,4 +73,35 @@ public sealed class VbaSyntaxTreeStatementTests
         Assert.Equal(4, malformed.Range.Start.Line);
         Assert.True(malformed.Range.End.Character > malformed.Range.Start.Character);
     }
+
+    [Fact]
+    public void FormattingInputExposesBlockBranchAndContinuationDepths()
+    {
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "If ready Then",
+            "value = 1 _",
+            "+ 2",
+            "Else",
+            "value = 3",
+            "End If",
+            "End Sub"
+        ]);
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.bas", source);
+
+        var formattingInput = VbaFormattingInput.FromSyntaxTree(tree);
+
+        Assert.True(formattingInput.CanApplyIndentation);
+        Assert.Equal("End Sub", formattingInput.Lines[1].BlockTransition.OpenTerminator);
+        Assert.Equal(0, formattingInput.Lines[1].IndentationDepth);
+        Assert.Equal("End If", formattingInput.Lines[2].BlockTransition.OpenTerminator);
+        Assert.Equal(1, formattingInput.Lines[2].IndentationDepth);
+        Assert.True(formattingInput.Lines[4].IsContinuationLine);
+        Assert.Equal(3, formattingInput.Lines[4].IndentationDepth);
+        Assert.Equal("End If", formattingInput.Lines[5].BlockTransition.BranchTerminator);
+        Assert.Equal(1, formattingInput.Lines[5].IndentationDepth);
+        Assert.Equal("End If", formattingInput.Lines[7].BlockTransition.CloseTerminator);
+        Assert.Equal(1, formattingInput.Lines[7].IndentationDepth);
+    }
 }

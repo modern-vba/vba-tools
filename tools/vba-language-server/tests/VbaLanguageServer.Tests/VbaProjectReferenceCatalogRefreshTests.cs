@@ -249,6 +249,43 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
     }
 
     [Fact]
+    public async Task CatalogAvailabilityOwnsBestAvailableCatalogAndRefreshPolicy()
+    {
+        var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
+        var discovery = new TypeLibReferenceCatalogDiscovery(
+            new FakeTypeLibRegistryReader(
+                new TypeLibRegistryEntry(
+                    "Generated Library",
+                    "{33333333-3333-3333-3333-333333333333}",
+                    1,
+                    0,
+                    0,
+                    @"C:\TypeLibs\Generated.tlb")),
+            new FakeTypeLibCatalogMetadataReader(
+                new TypeLibCatalogMetadata(
+                    "Generated",
+                    [
+                        new TypeLibCatalogType(
+                            "GeneratedType",
+                            VbaSourceDefinitionKind.Class,
+                            "Generated metadata.",
+                            [])
+                    ])));
+        var service = new VbaProjectReferenceCatalogRefreshService(cache, discovery);
+        var availability = new VbaProjectReferenceCatalogAvailability(cache, service);
+        var selection = VbaProjectReferenceSelection.Create(
+            ProjectDocument.ExcelKind,
+            [new VbaProjectReference("Generated Library")]);
+
+        Assert.Equal(VbaProjectReferenceCatalogSource.Unavailable, availability.GetCatalogSource("Generated Library"));
+
+        await availability.RefreshAsync(selection);
+
+        Assert.Equal(VbaProjectReferenceCatalogSource.Generated, availability.GetCatalogSource("Generated Library"));
+        Assert.Contains("Generated Library", availability.Current.ReferenceNames);
+    }
+
+    [Fact]
     public async Task CatalogRefreshCoalescesConcurrentDiscoveryForSameReference()
     {
         var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);

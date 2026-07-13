@@ -122,6 +122,33 @@ public sealed class VbaWorkspaceSymbolAndReferenceTests
         }
     }
 
+    [Fact]
+    public void PrepareRenameRejectsExternalReferenceDefinitions()
+    {
+        const string uri = "file:///C:/work/Caller.bas";
+        var index = VbaSourceIndex.Build(
+            new Dictionary<string, string>
+            {
+                [uri] = string.Join('\n', [
+                    "Attribute VB_Name = \"Caller\"",
+                    "Public Sub Run()",
+                    "    Application",
+                    "End Sub"
+                ])
+            },
+            VbaProjectReferenceSelection.Create(
+                ProjectDocument.ExcelKind,
+                [new VbaProjectReference("Microsoft Excel 16.0 Object Library")]),
+            VbaProjectReferenceCatalogSet.CreateBundled());
+
+        var definition = index.ResolveSourceDefinition(uri, 2, "    ".Length);
+
+        Assert.NotNull(definition);
+        Assert.Equal("Microsoft Excel 16.0 Object Library", definition.ModuleName);
+        Assert.Null(index.PrepareRename(uri, 2, "    ".Length));
+        Assert.Null(index.CreateRenamePlan(uri, 2, "    ".Length, "RenamedApplication"));
+    }
+
     private static string ToFileUri(string path)
         => new Uri(path).AbsoluteUri;
 

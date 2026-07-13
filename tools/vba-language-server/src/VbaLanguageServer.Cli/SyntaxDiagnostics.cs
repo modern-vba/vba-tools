@@ -100,18 +100,7 @@ public static class VbaDocumentDiagnostics
     /// <param name="uri">The document URI.</param>
     /// <returns>The combined syntax and validation diagnostics.</returns>
     public static IReadOnlyList<VbaDiagnostic> Collect(VbaSyntaxTree tree, string uri)
-    {
-        return VbaSyntaxDiagnosticCollector.Collect(tree, uri)
-            .Select(ToDocumentDiagnostic)
-            .Concat(VbaDocumentValidationDiagnosticCollector.Collect(tree, uri).Select(ToDocumentDiagnostic))
-            .ToArray();
-    }
-
-    private static VbaDiagnostic ToDocumentDiagnostic(VbaSyntaxDiagnostic diagnostic)
-        => new(diagnostic.Code, diagnostic.Message, diagnostic.Range, diagnostic.Severity, diagnostic.Source);
-
-    private static VbaDiagnostic ToDocumentDiagnostic(VbaValidationDiagnostic diagnostic)
-        => new(diagnostic.Code, diagnostic.Message, diagnostic.Range, diagnostic.Severity, diagnostic.Source);
+        => VbaDiagnosticPipeline.CollectDocument(tree, uri).Diagnostics;
 }
 
 /// <summary>

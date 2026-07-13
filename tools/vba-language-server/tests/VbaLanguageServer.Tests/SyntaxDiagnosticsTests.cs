@@ -114,6 +114,29 @@ public sealed class SyntaxDiagnosticsTests
     }
 
     [Fact]
+    public void Diagnostic_pipeline_preserves_syntax_and_document_validation_categories()
+    {
+        const string invalidLine = "    value = \"unterminated";
+        const string declarationLine = "Public Sub Run(ByVal name As String, ByVal name As Long)";
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            declarationLine,
+            invalidLine,
+            "End Sub"
+        ]);
+        var tree = VbaSyntaxTree.ParseModule("Worker.bas", source);
+
+        var result = VbaDiagnosticPipeline.CollectDocument(tree, "Worker.bas");
+
+        var syntaxDiagnostic = Assert.Single(result.SyntaxDiagnostics);
+        Assert.Equal("syntax.unterminatedStringLiteral", syntaxDiagnostic.Code);
+        var validationDiagnostic = Assert.Single(result.DocumentValidationDiagnostics);
+        Assert.Equal("validation.duplicateCallableParameterName", validationDiagnostic.Code);
+        Assert.Empty(result.ProjectValidationDiagnostics);
+        Assert.Equal(2, result.Diagnostics.Count);
+    }
+
+    [Fact]
     public void Document_diagnostics_report_duplicate_callable_parameter_names()
     {
         const string declarationLine = "Public Sub Run(ByVal name As String, ByVal name As Long)";

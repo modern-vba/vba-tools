@@ -186,8 +186,7 @@ internal sealed class VbaLanguageFeatureService
         }
 
         var snapshot = workspace.CreateProjectSnapshot(uri, cancellationToken);
-        var definition = snapshot.SourceIndex.ResolveSourceDefinition(uri, line, character);
-        return definition is null ? null : definition.Range;
+        return snapshot.SourceIndex.PrepareRename(uri, line, character);
     }
 
     /// <summary>
@@ -210,8 +209,8 @@ internal sealed class VbaLanguageFeatureService
         }
 
         var snapshot = workspace.CreateProjectSnapshot(uri, cancellationToken);
-        var changes = snapshot.SourceIndex.CreateRenameChanges(uri, line, character, newName);
-        return VbaLspFeatureProjection.CreateWorkspaceEdit(changes);
+        var renamePlan = snapshot.SourceIndex.CreateRenamePlan(uri, line, character, newName);
+        return VbaLspFeatureProjection.CreateWorkspaceEdit(renamePlan?.Changes);
     }
 
     /// <summary>

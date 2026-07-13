@@ -8,8 +8,7 @@ namespace VbaLanguageServer.Lsp;
 /// </summary>
 internal sealed class ReferenceCatalogRefreshCoordinator
 {
-    private readonly VbaProjectReferenceCatalogCache referenceCatalogCache;
-    private readonly VbaProjectReferenceCatalogRefreshService catalogRefreshService;
+    private readonly VbaProjectReferenceCatalogAvailability catalogAvailability;
     private readonly LspMessageTransport transport;
     private readonly object diagnosticGate = new();
     private readonly HashSet<string> publishedDiagnostics = new(StringComparer.Ordinal);
@@ -17,16 +16,13 @@ internal sealed class ReferenceCatalogRefreshCoordinator
     /// <summary>
     /// Creates a reference catalog refresh coordinator.
     /// </summary>
-    /// <param name="referenceCatalogCache">The current reference catalog cache.</param>
-    /// <param name="catalogRefreshService">The refresh service for missing catalogs.</param>
+    /// <param name="catalogAvailability">The current catalog availability module.</param>
     /// <param name="transport">The transport used to publish log messages.</param>
     public ReferenceCatalogRefreshCoordinator(
-        VbaProjectReferenceCatalogCache referenceCatalogCache,
-        VbaProjectReferenceCatalogRefreshService catalogRefreshService,
+        VbaProjectReferenceCatalogAvailability catalogAvailability,
         LspMessageTransport transport)
     {
-        this.referenceCatalogCache = referenceCatalogCache;
-        this.catalogRefreshService = catalogRefreshService;
+        this.catalogAvailability = catalogAvailability;
         this.transport = transport;
     }
 
@@ -39,7 +35,7 @@ internal sealed class ReferenceCatalogRefreshCoordinator
     {
         if (!LanguageServerManifestResolution.TryCreateReferenceSelectionContext(
             uri,
-            referenceCatalogCache.Current,
+            catalogAvailability.Current,
             out var context,
             out var error))
         {
@@ -64,7 +60,7 @@ internal sealed class ReferenceCatalogRefreshCoordinator
 
         foreach (var reference in context.ReferenceSelection?.References ?? [])
         {
-            var source = referenceCatalogCache.GetCatalogSource(reference.Name);
+            var source = catalogAvailability.GetCatalogSource(reference.Name);
             if (source == VbaProjectReferenceCatalogSource.Unavailable)
             {
                 continue;
@@ -94,7 +90,7 @@ internal sealed class ReferenceCatalogRefreshCoordinator
 
         foreach (var selectionContext in selections)
         {
-            foreach (var result in catalogRefreshService.PreloadPersistedCatalogs(selectionContext.Selection))
+            foreach (var result in catalogAvailability.PreloadPersistedCatalogs(selectionContext.Selection))
             {
                 await PublishCatalogRefreshResultAsync(
                     uri,
@@ -129,7 +125,7 @@ internal sealed class ReferenceCatalogRefreshCoordinator
             IReadOnlyList<VbaProjectReferenceCatalogRefreshResult> results;
             try
             {
-                results = await catalogRefreshService.RefreshAsync(selectionContext.Selection, cancellationToken);
+                results = await catalogAvailability.RefreshAsync(selectionContext.Selection, cancellationToken);
             }
             catch (OperationCanceledException)
             {

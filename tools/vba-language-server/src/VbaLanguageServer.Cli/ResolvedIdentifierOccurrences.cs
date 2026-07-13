@@ -10,7 +10,8 @@ internal sealed record VbaResolvedIdentifierOccurrence(
     string Uri,
     VbaIdentifierOccurrence Occurrence,
     VbaRange Range,
-    VbaSourceDefinition Definition);
+    VbaSourceDefinition Definition,
+    VbaDefinitionIdentity DefinitionIdentity);
 
 /// <summary>
 /// Finds resolved identifier occurrences for references, rename, semantic tokens, and formatting-like traversals.
@@ -18,14 +19,14 @@ internal sealed record VbaResolvedIdentifierOccurrence(
 internal sealed class VbaResolvedIdentifierOccurrenceIndex
 {
     private readonly IReadOnlyList<VbaSourceDocument> documents;
-    private readonly Func<string, int, int, VbaSourceDefinition?> resolveSourceDefinition;
+    private readonly VbaResolutionTable resolutionTable;
 
     public VbaResolvedIdentifierOccurrenceIndex(
         IReadOnlyList<VbaSourceDocument> documents,
-        Func<string, int, int, VbaSourceDefinition?> resolveSourceDefinition)
+        VbaResolutionTable resolutionTable)
     {
         this.documents = documents;
-        this.resolveSourceDefinition = resolveSourceDefinition;
+        this.resolutionTable = resolutionTable;
     }
 
     public IReadOnlyList<VbaResolvedIdentifierOccurrence> GetDocumentOccurrences(string uri)
@@ -35,23 +36,23 @@ internal sealed class VbaResolvedIdentifierOccurrenceIndex
     }
 
     public IReadOnlyList<VbaResolvedIdentifierOccurrence> FindMatching(VbaSourceDefinition target)
+    {
+        var targetIdentity = resolutionTable.GetIdentity(target);
+        return FindMatching(targetIdentity);
+    }
+
+    public IReadOnlyList<VbaResolvedIdentifierOccurrence> FindMatching(VbaDefinitionIdentity targetIdentity)
         => documents
             .SelectMany(GetDocumentOccurrences)
-            .Where(occurrence => SameDefinition(occurrence.Definition, target))
+            .Where(occurrence => resolutionTable.SameIdentity(occurrence.DefinitionIdentity, targetIdentity))
             .GroupBy(
-                occurrence => $"{occurrence.Uri}:{GetRangeKey(occurrence.Range)}:{GetRangeKey(occurrence.Definition.Range)}",
+                occurrence => $"{occurrence.Uri}:{GetRangeKey(occurrence.Range)}:{GetRangeKey(occurrence.DefinitionIdentity.Range)}",
                 StringComparer.OrdinalIgnoreCase)
             .Select(group => group.First())
             .OrderBy(occurrence => occurrence.Uri, StringComparer.OrdinalIgnoreCase)
             .ThenBy(occurrence => occurrence.Range.Start.Line)
             .ThenBy(occurrence => occurrence.Range.Start.Character)
             .ToArray();
-
-    public static bool SameDefinition(VbaSourceDefinition left, VbaSourceDefinition right)
-        => SameUri(left.Uri, right.Uri)
-            && SameName(left.Name, right.Name)
-            && ComparePosition(left.Range.Start, right.Range.Start) == 0
-            && ComparePosition(left.Range.End, right.Range.End) == 0;
 
     private IReadOnlyList<VbaResolvedIdentifierOccurrence> GetDocumentOccurrences(VbaSourceDocument document)
     {
@@ -61,7 +62,7 @@ internal sealed class VbaResolvedIdentifierOccurrenceIndex
         {
             foreach (var occurrence in VbaSourceText.FindIdentifierOccurrences(lines[lineIndex]))
             {
-                var definition = resolveSourceDefinition(document.Uri, lineIndex, occurrence.Start);
+                var definition = resolutionTable.ResolveSourceDefinition(document.Uri, lineIndex, occurrence.Start);
                 if (definition is null)
                 {
                     continue;
@@ -73,7 +74,8 @@ internal sealed class VbaResolvedIdentifierOccurrenceIndex
                     new VbaRange(
                         new VbaPosition(lineIndex, occurrence.Start),
                         new VbaPosition(lineIndex, occurrence.End)),
-                    definition));
+                    definition,
+                    resolutionTable.GetIdentity(definition)));
             }
         }
 
@@ -86,12 +88,4 @@ internal sealed class VbaResolvedIdentifierOccurrenceIndex
     private static bool SameUri(string left, string right)
         => string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
 
-    private static bool SameName(string left, string right)
-        => string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
-
-    private static int ComparePosition(VbaPosition left, VbaPosition right)
-    {
-        var lineComparison = left.Line.CompareTo(right.Line);
-        return lineComparison != 0 ? lineComparison : left.Character.CompareTo(right.Character);
-    }
 }

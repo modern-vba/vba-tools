@@ -47,11 +47,13 @@ internal sealed class VbaLanguageServerRuntime
             referenceCatalogCache,
             catalogDiscovery,
             VbaProjectReferenceCatalogPersistentStore.CreateDefault());
+        var catalogAvailability = new VbaProjectReferenceCatalogAvailability(
+            referenceCatalogCache,
+            catalogRefreshService);
         var workspace = new VbaLanguageWorkspace(referenceCatalogCache);
         var features = new VbaLanguageFeatureService(workspace);
         var catalogRefresh = new ReferenceCatalogRefreshCoordinator(
-            referenceCatalogCache,
-            catalogRefreshService,
+            catalogAvailability,
             transport);
         var documentLifecycle = new VbaDocumentLifecycle(transport, workspace, catalogRefresh);
         return new VbaLanguageServerRuntime(transport, features, documentLifecycle);

@@ -9,9 +9,7 @@ namespace VbaLanguageServer.Lsp;
 /// </summary>
 internal sealed class VbaDocumentLifecycle
 {
-    private readonly LspMessageTransport transport;
-    private readonly VbaLanguageWorkspace workspace;
-    private readonly ReferenceCatalogRefreshCoordinator catalogRefresh;
+    private readonly VbaDocumentChangePipeline pipeline;
 
     /// <summary>
     /// Creates a document lifecycle handler.
@@ -24,9 +22,10 @@ internal sealed class VbaDocumentLifecycle
         VbaLanguageWorkspace workspace,
         ReferenceCatalogRefreshCoordinator catalogRefresh)
     {
-        this.transport = transport;
-        this.workspace = workspace;
-        this.catalogRefresh = catalogRefresh;
+        pipeline = new VbaDocumentChangePipeline(
+            workspace,
+            catalogRefresh,
+            new VbaDiagnosticsPublisher(transport, workspace));
     }
 
     /// <summary>
@@ -41,15 +40,9 @@ internal sealed class VbaDocumentLifecycle
         var text = textDocument?["text"]?.GetValue<string>();
         if (!string.IsNullOrEmpty(uri) && text is not null)
         {
-            if (IsVbaSourceUri(uri))
-            {
-                workspace.UpdateDocument(uri, text, cancellationToken);
-                await catalogRefresh.PreloadReferenceCatalogsAsync(uri, text, cancellationToken);
-                await PublishTrackedDiagnosticsAsync(uri, cancellationToken);
-                await catalogRefresh.PublishReferenceSelectionTraceAsync(uri, cancellationToken);
-            }
-
-            catalogRefresh.RefreshReferenceCatalogsInBackground(uri, text, cancellationToken);
+            await pipeline.ApplyAsync(
+                new VbaDocumentChange(VbaDocumentChangeKind.Opened, uri, text),
+                cancellationToken);
         }
     }
 
@@ -66,14 +59,9 @@ internal sealed class VbaDocumentLifecycle
         var text = changes?.LastOrDefault()?["text"]?.GetValue<string>();
         if (!string.IsNullOrEmpty(uri) && text is not null)
         {
-            if (IsVbaSourceUri(uri))
-            {
-                workspace.UpdateDocument(uri, text, cancellationToken);
-                await catalogRefresh.PreloadReferenceCatalogsAsync(uri, text, cancellationToken);
-                await PublishTrackedDiagnosticsAsync(uri, cancellationToken);
-            }
-
-            catalogRefresh.RefreshReferenceCatalogsInBackground(uri, text, cancellationToken);
+            await pipeline.ApplyAsync(
+                new VbaDocumentChange(VbaDocumentChangeKind.Changed, uri, text),
+                cancellationToken);
         }
     }
 
@@ -90,10 +78,9 @@ internal sealed class VbaDocumentLifecycle
             return;
         }
 
-        if (workspace.RemoveDocument(uri, cancellationToken))
-        {
-            await PublishEmptyDiagnosticsAsync(uri, cancellationToken);
-        }
+        await pipeline.ApplyAsync(
+            new VbaDocumentChange(VbaDocumentChangeKind.Closed, uri),
+            cancellationToken);
     }
 
     /// <summary>
@@ -126,11 +113,9 @@ internal sealed class VbaDocumentLifecycle
                     await ReloadChangedFileAsync(uri, cancellationToken);
                     break;
                 case 3:
-                    if (workspace.RemoveSourceDocument(uri, cancellationToken))
-                    {
-                        await PublishEmptyDiagnosticsAsync(uri, cancellationToken);
-                    }
-
+                    await pipeline.ApplyAsync(
+                        new VbaDocumentChange(VbaDocumentChangeKind.SourceFileDeleted, uri),
+                        cancellationToken);
                     break;
             }
         }
@@ -145,65 +130,21 @@ internal sealed class VbaDocumentLifecycle
         }
 
         var text = await File.ReadAllTextAsync(localPath, cancellationToken);
-        if (IsVbaSourcePath(localPath))
+        if (VbaDocumentChangePipeline.IsVbaSourcePath(localPath))
         {
-            workspace.UpdateDocument(uri, text, cancellationToken);
-            await PublishTrackedDiagnosticsAsync(uri, cancellationToken);
-            await catalogRefresh.PublishReferenceSelectionTraceAsync(uri, cancellationToken);
-            catalogRefresh.RefreshReferenceCatalogsInBackground(uri, text, cancellationToken);
+            await pipeline.ApplyAsync(
+                new VbaDocumentChange(VbaDocumentChangeKind.SourceFileChanged, uri, text),
+                cancellationToken);
             return;
         }
 
         if (IsProjectManifestPath(localPath))
         {
-            catalogRefresh.RefreshReferenceCatalogsInBackground(uri, text, cancellationToken);
-            foreach (var documentUri in workspace.GetDocumentUris(cancellationToken))
-            {
-                await catalogRefresh.PublishReferenceSelectionTraceAsync(documentUri, cancellationToken);
-            }
+            await pipeline.ApplyAsync(
+                new VbaDocumentChange(VbaDocumentChangeKind.ProjectManifestChanged, uri, text),
+                cancellationToken);
         }
     }
-
-    private Task PublishTrackedDiagnosticsAsync(string uri, CancellationToken cancellationToken)
-    {
-        var syntaxTree = workspace.GetDocumentSyntaxTree(uri, cancellationToken);
-        if (syntaxTree is null)
-        {
-            return PublishEmptyDiagnosticsAsync(uri, cancellationToken);
-        }
-
-        return transport.WriteNotificationAsync(
-            "textDocument/publishDiagnostics",
-            new
-            {
-                uri,
-                diagnostics = VbaLanguageFeatureService.CreateDiagnostics(uri, syntaxTree)
-            },
-            cancellationToken);
-    }
-
-    private Task PublishEmptyDiagnosticsAsync(string uri, CancellationToken cancellationToken)
-    {
-        return transport.WriteNotificationAsync(
-            "textDocument/publishDiagnostics",
-            new
-            {
-                uri,
-                diagnostics = Array.Empty<object>()
-            },
-            cancellationToken);
-    }
-
-    private static bool IsVbaSourceUri(string uri)
-    {
-        var localPath = VbaProjectResolver.TryGetLocalPath(uri);
-        return localPath is not null && IsVbaSourcePath(localPath);
-    }
-
-    private static bool IsVbaSourcePath(string path)
-        => path.EndsWith(".bas", StringComparison.OrdinalIgnoreCase)
-            || path.EndsWith(".cls", StringComparison.OrdinalIgnoreCase)
-            || path.EndsWith(".frm", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsProjectManifestPath(string path)
         => Path.GetFileName(path).Equals("project.json", StringComparison.OrdinalIgnoreCase);

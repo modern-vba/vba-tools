@@ -220,6 +220,15 @@ public sealed record VbaDefinitionLocation(string Uri, VbaRange Range);
 public sealed record VbaTextEdit(VbaRange Range, string NewText);
 
 /// <summary>
+/// Represents a validated rename operation and its resulting edits.
+/// </summary>
+/// <param name="TargetRange">The range that should be highlighted for prepareRename.</param>
+/// <param name="Changes">The source edits keyed by document URI.</param>
+public sealed record VbaRenamePlan(
+    VbaRange TargetRange,
+    IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> Changes);
+
+/// <summary>
 /// Represents a workspace symbol projected from a source definition.
 /// </summary>
 /// <param name="Name">The symbol name.</param>
@@ -299,6 +308,7 @@ public sealed class VbaSourceIndex
 
     private readonly IReadOnlyList<VbaSourceDocument> documents;
     private readonly VbaSemanticResolution semanticResolution;
+    private readonly VbaResolutionTable resolutionTable;
     private readonly VbaResolvedIdentifierOccurrenceIndex resolvedOccurrences;
     private readonly VbaSourceFormatter sourceFormatter;
     private readonly object semanticTokenCacheGate = new();
@@ -312,7 +322,8 @@ public sealed class VbaSourceIndex
     {
         this.documents = documents;
         semanticResolution = new VbaSemanticResolution(documents, referenceSelection, referenceCatalogs);
-        resolvedOccurrences = new VbaResolvedIdentifierOccurrenceIndex(documents, semanticResolution.ResolveSourceDefinition);
+        resolutionTable = new VbaResolutionTable(semanticResolution.ResolveSourceDefinition);
+        resolvedOccurrences = new VbaResolvedIdentifierOccurrenceIndex(documents, resolutionTable);
         sourceFormatter = new VbaSourceFormatter(semanticResolution);
     }
 
@@ -536,7 +547,7 @@ public sealed class VbaSourceIndex
     /// <param name="character">The zero-based character.</param>
     /// <returns>The resolved definition, or null when unresolved or ambiguous.</returns>
     public VbaSourceDefinition? ResolveSourceDefinition(string uri, int line, int character)
-        => semanticResolution.ResolveSourceDefinition(uri, line, character);
+        => resolutionTable.ResolveSourceDefinition(uri, line, character);
 
     /// <summary>
     /// Gets signature help for the call site at a document position.
@@ -547,6 +558,21 @@ public sealed class VbaSourceIndex
     /// <returns>The signature help result, or null when no callable target resolves.</returns>
     public VbaSignatureHelp? GetSignatureHelp(string uri, int line, int character)
         => semanticResolution.GetSignatureHelp(uri, line, character);
+
+    /// <summary>
+    /// Gets the rename target range when the symbol at a document position can be renamed.
+    /// </summary>
+    /// <param name="uri">The document URI containing the rename position.</param>
+    /// <param name="line">The zero-based line.</param>
+    /// <param name="character">The zero-based character.</param>
+    /// <returns>The rename target range, or null when rename is unavailable.</returns>
+    public VbaRange? PrepareRename(string uri, int line, int character)
+    {
+        var target = ResolveSourceDefinition(uri, line, character);
+        return target is null || !resolutionTable.IsRenameTarget(target)
+            ? null
+            : target.Range;
+    }
 
     /// <summary>
     /// Creates workspace edits for renaming the source definition at a document position.
@@ -561,6 +587,21 @@ public sealed class VbaSourceIndex
         int line,
         int character,
         string newName)
+        => CreateRenamePlan(uri, line, character, newName)?.Changes;
+
+    /// <summary>
+    /// Creates a validated rename plan for the source definition at a document position.
+    /// </summary>
+    /// <param name="uri">The document URI containing the rename position.</param>
+    /// <param name="line">The zero-based line.</param>
+    /// <param name="character">The zero-based character.</param>
+    /// <param name="newName">The requested new identifier name.</param>
+    /// <returns>The rename plan, or null when rename is not valid.</returns>
+    public VbaRenamePlan? CreateRenamePlan(
+        string uri,
+        int line,
+        int character,
+        string newName)
     {
         if (!IsIdentifierName(newName))
         {
@@ -568,7 +609,7 @@ public sealed class VbaSourceIndex
         }
 
         var target = ResolveSourceDefinition(uri, line, character);
-        if (target is null || !IsRenameTarget(target))
+        if (target is null || !resolutionTable.IsRenameTarget(target))
         {
             return null;
         }
@@ -582,7 +623,7 @@ public sealed class VbaSourceIndex
                     .ToArray(),
                 StringComparer.OrdinalIgnoreCase);
 
-        return changes.Count == 0 ? null : changes;
+        return changes.Count == 0 ? null : new VbaRenamePlan(target.Range, changes);
     }
 
     /// <summary>
@@ -694,16 +735,6 @@ public sealed class VbaSourceIndex
 
     private static VbaTypeReference MapTypeReference(VbaTypeReferenceSyntax typeReference)
         => new(typeReference.Name, typeReference.Qualifier);
-
-    private static bool IsReferenceTarget(VbaSourceDefinition definition)
-        => definition.Visibility != VbaSourceDefinitionVisibility.Local
-            && definition.Kind != VbaSourceDefinitionKind.Module
-            && definition.Kind != VbaSourceDefinitionKind.Class
-            && definition.Kind != VbaSourceDefinitionKind.Form;
-
-    private static bool IsRenameTarget(VbaSourceDefinition definition)
-        => !VbaProjectReferenceCatalogSet.IsExternalDefinition(definition)
-            && (definition.Visibility == VbaSourceDefinitionVisibility.Local || IsReferenceTarget(definition));
 
     private static bool IsIdentifierName(string value)
         => Regex.IsMatch(

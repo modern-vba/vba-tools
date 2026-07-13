@@ -208,35 +208,33 @@ internal sealed class VbaSourceFormatter
             .Select(definition => GetRangeKey(definition.Range))
             .ToHashSet(StringComparer.Ordinal);
         var syntaxTree = document.SyntaxTree ?? VbaSyntaxTree.ParseModule(document.Uri, document.Text);
-        var formDesignerRange = syntaxTree.Module.FormDesignerBlock?.Range;
-        var lines = SourceFormatting.SplitLogicalLines(document.Text);
-        var indentationDepths = CreateIndentationDepths(lines, formDesignerRange);
-        var formattedLines = new List<string>(lines.Count);
+        var formattingInput = VbaFormattingInput.FromSyntaxTree(syntaxTree);
+        var formattedLines = new List<string>(formattingInput.Lines.Count);
 
-        for (var lineIndex = 0; lineIndex < lines.Count; lineIndex++)
+        foreach (var formattingLine in formattingInput.Lines)
         {
-            var line = lines[lineIndex];
-            if (IsLineInRange(formDesignerRange, lineIndex))
+            var line = formattingLine.Text;
+            if (formattingLine.IsFormDesigner)
             {
                 formattedLines.Add(line);
                 continue;
             }
 
-            if (string.IsNullOrWhiteSpace(line))
+            if (formattingLine.IsBlankOrComment && string.IsNullOrWhiteSpace(line))
             {
                 formattedLines.Add("");
                 continue;
             }
 
-            var casedLine = FormatLineCasing(line, document, lineIndex, declarationRanges);
-            if (indentationDepths is null)
+            var casedLine = FormatLineCasing(line, document, formattingLine.LineNumber, declarationRanges);
+            if (!formattingInput.CanApplyIndentation)
             {
                 formattedLines.Add(casedLine);
                 continue;
             }
 
             var trimmed = casedLine.TrimStart();
-            formattedLines.Add($"{new string(' ', tabSize * indentationDepths[lineIndex])}{trimmed}");
+            formattedLines.Add($"{new string(' ', tabSize * formattingLine.IndentationDepth)}{trimmed}");
         }
 
         var formattedText = string.Join(SourceFormatting.DetectDominantLineEnding(document.Text), formattedLines);
@@ -282,240 +280,6 @@ internal sealed class VbaSourceFormatter
         }
 
         return edits.Apply(codePart) + commentPart;
-    }
-
-    private static int[]? CreateIndentationDepths(
-        IReadOnlyList<string> lines,
-        VbaSyntaxRange? formDesignerRange)
-    {
-        var depths = new int[lines.Count];
-        var blockStack = new Stack<string>();
-        var inContinuation = false;
-        var continuationDepth = 0;
-
-        for (var lineIndex = 0; lineIndex < lines.Count; lineIndex++)
-        {
-            if (IsLineInRange(formDesignerRange, lineIndex))
-            {
-                continue;
-            }
-
-            var codePart = VbaSourceText.StripApostropheComment(lines[lineIndex]);
-            var trimmed = codePart.TrimStart();
-            if (string.IsNullOrWhiteSpace(trimmed)
-                || IsFormattingIgnoredCodeLine(trimmed))
-            {
-                depths[lineIndex] = inContinuation ? continuationDepth : blockStack.Count;
-                inContinuation = VbaSourceText.HasLineContinuation(codePart);
-                continue;
-            }
-
-            if (inContinuation)
-            {
-                depths[lineIndex] = continuationDepth;
-                inContinuation = VbaSourceText.HasLineContinuation(codePart);
-                continue;
-            }
-
-            var closeTerminator = GetIndentationCloseTerminator(trimmed);
-            var branchTerminator = GetIndentationBranchTerminator(trimmed);
-            if (closeTerminator is not null)
-            {
-                if (blockStack.Count == 0
-                    || !blockStack.Peek().Equals(closeTerminator, StringComparison.OrdinalIgnoreCase))
-                {
-                    return null;
-                }
-
-                blockStack.Pop();
-                depths[lineIndex] = blockStack.Count;
-            }
-            else if (branchTerminator is not null)
-            {
-                if (blockStack.Count == 0
-                    || !blockStack.Peek().Equals(branchTerminator, StringComparison.OrdinalIgnoreCase))
-                {
-                    return null;
-                }
-
-                depths[lineIndex] = Math.Max(0, blockStack.Count - 1);
-            }
-            else
-            {
-                depths[lineIndex] = blockStack.Count;
-            }
-
-            var openTerminator = GetIndentationOpenTerminator(trimmed);
-            if (openTerminator is not null)
-            {
-                blockStack.Push(openTerminator);
-            }
-
-            if (VbaSourceText.HasLineContinuation(codePart))
-            {
-                inContinuation = true;
-                continuationDepth = depths[lineIndex] + 1;
-            }
-        }
-
-        return blockStack.Count == 0 && !inContinuation ? depths : null;
-    }
-
-    private static bool IsLineInRange(VbaSyntaxRange? range, int line)
-        => range is not null
-            && line >= range.Start.Line
-            && line <= range.End.Line
-            && (line != range.End.Line || range.End.Character > 0);
-
-    private static bool IsFormattingIgnoredCodeLine(string trimmedLine)
-        => Regex.IsMatch(trimmedLine, "^Attribute\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)
-            || Regex.IsMatch(trimmedLine, "^Option\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)
-            || trimmedLine.StartsWith("#", StringComparison.Ordinal);
-
-    private static string? GetIndentationOpenTerminator(string trimmedLine)
-    {
-        if (Regex.IsMatch(
-            trimmedLine,
-            "^((Public|Private|Friend)\\s+)?(Static\\s+)?Sub\\b",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Sub";
-        }
-
-        if (Regex.IsMatch(
-            trimmedLine,
-            "^((Public|Private|Friend)\\s+)?(Static\\s+)?Function\\b",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Function";
-        }
-
-        if (Regex.IsMatch(
-            trimmedLine,
-            "^((Public|Private|Friend)\\s+)?(Static\\s+)?Property\\b",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Property";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^If\\b.*\\bThen\\s*$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End If";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^Select\\s+Case\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Select";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^With\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End With";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^For\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)
-            && !Regex.IsMatch(trimmedLine, ":\\s*Next\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "Next";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^Do\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)
-            && !Regex.IsMatch(trimmedLine, ":\\s*Loop\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "Loop";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^While\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "Wend";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^((Public|Private|Friend)\\s+)?Enum\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Enum";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^((Public|Private|Friend)\\s+)?Type\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Type";
-        }
-
-        return null;
-    }
-
-    private static string? GetIndentationCloseTerminator(string trimmedLine)
-    {
-        if (Regex.IsMatch(trimmedLine, "^End\\s+Sub\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Sub";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^End\\s+Function\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Function";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^End\\s+Property\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Property";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^End\\s+If\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End If";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^End\\s+Select\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Select";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^End\\s+With\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End With";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^Next\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "Next";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^Loop\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "Loop";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^Wend\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "Wend";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^End\\s+Enum\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Enum";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^End\\s+Type\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Type";
-        }
-
-        return null;
-    }
-
-    private static string? GetIndentationBranchTerminator(string trimmedLine)
-    {
-        if (Regex.IsMatch(trimmedLine, "^(Else|ElseIf)\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End If";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^Case\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Select";
-        }
-
-        return null;
     }
 
     private static string GetRangeKey(VbaRange range)
