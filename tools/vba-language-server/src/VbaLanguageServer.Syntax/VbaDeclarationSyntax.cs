@@ -174,11 +174,13 @@ public sealed record VbaCallableDeclarationSyntax(
 /// <param name="Range">The source range of the parameter name.</param>
 /// <param name="Documentation">The parameter documentation from an attached documentation comment.</param>
 /// <param name="TypeReference">The parsed explicit parameter type annotation.</param>
+/// <param name="IsOptional">Whether the parameter is declared Optional.</param>
 public sealed record VbaCallableParameterSyntax(
     string Name,
     VbaSyntaxRange Range,
     string? Documentation,
-    VbaTypeReferenceSyntax? TypeReference);
+    VbaTypeReferenceSyntax? TypeReference,
+    bool IsOptional = false);
 
 /// <summary>
 /// Represents the display signature for a callable definition.

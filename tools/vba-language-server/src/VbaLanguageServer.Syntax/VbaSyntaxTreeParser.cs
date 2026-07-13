@@ -1486,7 +1486,8 @@ internal static class VbaSyntaxTreeParser
                 documentation?.ParameterDocs.TryGetValue(name, out var parameterDocumentation) == true
                     ? parameterDocumentation
                     : null,
-                ParseTypeReference(segment.Text)));
+                ParseTypeReference(segment.Text),
+                IsOptionalParameter(segment.Text)));
         }
 
         return parameters;
@@ -1520,7 +1521,8 @@ internal static class VbaSyntaxTreeParser
                 documentation?.ParameterDocs.TryGetValue(name, out var parameterDocumentation) == true
                     ? parameterDocumentation
                     : null,
-                ParseTypeReference(segment.Text)));
+                ParseTypeReference(segment.Text),
+                IsOptionalParameter(segment.Text)));
         }
 
         return parameters;
@@ -1533,7 +1535,7 @@ internal static class VbaSyntaxTreeParser
         DocumentationComment? documentation)
     {
         var returnTypeName = returnTypeReference?.Name;
-        var label = $"{name}({string.Join(", ", parameters.Select(parameter => parameter.Name))})";
+        var label = $"{name}({string.Join(", ", parameters.Select(CreateSignatureParameterLabel))})";
         if (!string.IsNullOrWhiteSpace(returnTypeName))
         {
             label = $"{label} As {returnTypeName}";
@@ -1560,6 +1562,15 @@ internal static class VbaSyntaxTreeParser
             parameters.Select(parameter => new VbaCallableParameterInfoSyntax(parameter.Name, parameter.Documentation)).ToArray(),
             documentationLines.Count == 0 ? null : string.Join('\n', documentationLines));
     }
+
+    private static string CreateSignatureParameterLabel(VbaCallableParameterSyntax parameter)
+        => parameter.IsOptional ? $"[{parameter.Name}]" : parameter.Name;
+
+    private static bool IsOptionalParameter(string text)
+        => Regex.IsMatch(
+            text,
+            "^\\s*Optional\\b",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static IReadOnlyList<DeclarationSegment> SplitDeclarationSegments(string text)
     {

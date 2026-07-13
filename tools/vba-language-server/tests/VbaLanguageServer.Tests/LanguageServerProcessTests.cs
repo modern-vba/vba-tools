@@ -962,7 +962,7 @@ public sealed class LanguageServerProcessTests
             "'* @param Key Key to read.",
             "'* @param Fallback Value used when the key is missing.",
             "'* @return The configured value.",
-            "Public Function ReadValue(ByVal Key As String, ByVal Fallback As String) As String",
+            "Public Function ReadValue(ByVal Key As String, Optional ByVal Fallback As String) As String",
             "End Function",
             "",
             "Public Sub Run()",
@@ -978,13 +978,13 @@ public sealed class LanguageServerProcessTests
             .GetProperty("value")
             .GetString();
         Assert.Contains("Reads a value.", hoverValue);
-        Assert.Contains("ReadValue(Key, Fallback) As String", hoverValue);
+        Assert.Contains("ReadValue(Key, [Fallback]) As String", hoverValue);
 
         var signature = await SendPositionRequestAsync(stdin, stdout, 3, "textDocument/signatureHelp", uri, text, "ReadValue(\"id\", ", "ReadValue(\"id\", ".Length);
         var result = signature.GetProperty("result");
         Assert.Equal(1, result.GetProperty("activeParameter").GetInt32());
         var firstSignature = result.GetProperty("signatures").EnumerateArray().Single();
-        Assert.Equal("ReadValue(Key, Fallback) As String", firstSignature.GetProperty("label").GetString());
+        Assert.Equal("ReadValue(Key, [Fallback]) As String", firstSignature.GetProperty("label").GetString());
         var parameters = firstSignature.GetProperty("parameters").EnumerateArray().ToArray();
         Assert.Equal("Key", parameters[0].GetProperty("label").GetString());
         Assert.Contains("Key to read.", parameters[0].GetProperty("documentation").GetProperty("value").GetString());

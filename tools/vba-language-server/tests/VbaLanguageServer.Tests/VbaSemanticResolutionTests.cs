@@ -219,6 +219,74 @@ public sealed class VbaSemanticResolutionTests
     }
 
     [Fact]
+    public void SignatureHelpFormatsSourceOptionalParametersAndTracksArgumentForms()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Function ExampleFunc(ByVal Arg1 As String, Optional Arg2 As Long, Optional ByVal Arg3 As Variant) As String",
+            "End Function",
+            "Public Sub Run()",
+            "    value = ExampleFunc(",
+            "    value = ExampleFunc(\"a\", ",
+            "    value = ExampleFunc(Arg2:=",
+            "    value = ExampleFunc(,, ",
+            "    value = ExampleFunc( _",
+            "        \"a\", _",
+            "        ",
+            "End Sub"
+        ]);
+        var index = BuildIndex(uri, text);
+
+        var opening = index.GetSignatureHelp(uri, 4, "    value = ExampleFunc(".Length);
+        var positional = index.GetSignatureHelp(uri, 5, "    value = ExampleFunc(\"a\", ".Length);
+        var named = index.GetSignatureHelp(uri, 6, "    value = ExampleFunc(Arg2:=".Length);
+        var omitted = index.GetSignatureHelp(uri, 7, "    value = ExampleFunc(,, ".Length);
+        var continued = index.GetSignatureHelp(uri, 10, "        ".Length);
+
+        Assert.Equal("ExampleFunc(Arg1, [Arg2], [Arg3]) As String", opening?.Signature.Label);
+        Assert.Equal(["Arg1", "Arg2", "Arg3"], opening!.Signature.Parameters.Select(parameter => parameter.Name).ToArray());
+        Assert.Equal(0, opening.ActiveParameter);
+        Assert.Equal(1, positional?.ActiveParameter);
+        Assert.Equal(1, named?.ActiveParameter);
+        Assert.Equal(2, omitted?.ActiveParameter);
+        Assert.Equal(1, continued?.ActiveParameter);
+    }
+
+    [Fact]
+    public void SignatureHelpReturnsSourceMemberCallableSignaturesAndStaysSilentForNonCallables()
+    {
+        const string workerUri = "file:///C:/work/Worker.bas";
+        const string helperUri = "file:///C:/work/HelperClass.cls";
+        var workerText = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    Dim helper As HelperClass",
+            "    helper.BuildValue(",
+            "    Dim value As String",
+            "    value(",
+            "End Sub"
+        ]);
+        var helperText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"HelperClass\"",
+            "Public Function BuildValue(ByVal Arg1 As String, Optional Arg2 As Long) As String",
+            "End Function"
+        ]);
+        var index = BuildIndex(new Dictionary<string, string>
+        {
+            [workerUri] = workerText,
+            [helperUri] = helperText
+        });
+
+        var sourceMember = index.GetSignatureHelp(workerUri, 3, "    helper.BuildValue(".Length);
+        var nonCallable = index.GetSignatureHelp(workerUri, 5, "    value(".Length);
+
+        Assert.Equal("BuildValue(Arg1, [Arg2]) As String", sourceMember?.Signature.Label);
+        Assert.Null(nonCallable);
+    }
+
+    [Fact]
     public void SignatureHelpIncludesArrayParametersAndLaterParametersInOrder()
     {
         const string uri = "file:///C:/work/Worker.bas";

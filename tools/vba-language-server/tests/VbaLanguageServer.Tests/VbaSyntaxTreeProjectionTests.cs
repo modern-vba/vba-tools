@@ -356,7 +356,7 @@ public sealed class VbaSyntaxTreeProjectionTests
             && declaration.Visibility == VbaDeclarationVisibility.Private);
 
         var buildValue = Assert.Single(index.GetDocumentDefinitions(uri), definition => definition.Name == "BuildValue");
-        Assert.Equal("BuildValue(Prefix) As String", buildValue.Signature?.Label);
+        Assert.Equal("BuildValue([Prefix]) As String", buildValue.Signature?.Label);
         Assert.Contains(index.GetWorkspaceSymbols("shared"), symbol => symbol.Name == "SharedName");
         Assert.Contains(index.GetSemanticTokens(uri), token =>
             token.Text == "SharedName"
