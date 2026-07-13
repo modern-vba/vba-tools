@@ -3,7 +3,7 @@
   "displayName": "VBA Tools",
   "description": "Visual Studio Code tooling for VBA projects.",
   "version": "0.0.1",
-  "publisher": "tkmr-akhs",
+  "publisher": "modern-vba",
   "repository": {
     "type": "git",
     "url": "https://github.com/modern-vba/vba-tools.git"

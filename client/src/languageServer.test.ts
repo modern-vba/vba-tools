@@ -60,7 +60,7 @@ test('VbaLanguageServer reference catalog cache root is derived from VS Code glo
     'Code',
     'User',
     'globalStorage',
-    'tkmr-akhs.vba-tools'
+    'modern-vba.vba-tools'
   );
 
   assert.equal(

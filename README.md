@@ -34,8 +34,12 @@ build, test, publish, export, and validate Excel macro workbooks from a
 Launch VS Code Quick Open (`Ctrl+P`), paste this command, and press Enter:
 
 ```text
-ext install tkmr-akhs.vba-tools
+ext install modern-vba.vba-tools
 ```
+
+If you previously installed `tkmr-akhs.vba-tools`, uninstall it before using
+`modern-vba.vba-tools`. VS Code treats the new publisher ID as a separate
+extension, so both extensions can otherwise remain installed side by side.
 
 ### 1 - Open exported VBA source
 
@@ -140,7 +144,7 @@ Set VBA Tools as the default formatter for VBA files and enable format on save:
 ```json
 {
   "[vba]": {
-    "editor.defaultFormatter": "tkmr-akhs.vba-tools",
+    "editor.defaultFormatter": "modern-vba.vba-tools",
     "editor.formatOnSave": true
   }
 }
@@ -170,7 +174,7 @@ declarations, edit sibling files, or rewrite comments and strings.
 | Workbook commands fail before opening Excel | Run `VBA Tools: Doctor` and confirm that the workspace contains `project.json`. |
 | Excel blocks workbook automation | Enable trusted access to the VBA project object model in Excel Trust Center settings. |
 | Tests do not appear in Test Explorer | Confirm that `project.json` is in the opened workspace and reload the VS Code window after changing project layout. |
-| Format on save does not run | Set `editor.defaultFormatter` for `[vba]` to `tkmr-akhs.vba-tools`. |
+| Format on save does not run | Set `editor.defaultFormatter` for `[vba]` to `modern-vba.vba-tools`. |
 | You need to test a custom CLI build | Set `vbaTools.devtool.path` to the full path of the replacement `vba-dev.exe`. |
 
 ---
