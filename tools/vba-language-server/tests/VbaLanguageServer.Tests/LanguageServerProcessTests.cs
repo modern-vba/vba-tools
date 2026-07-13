@@ -48,6 +48,13 @@ public sealed class LanguageServerProcessTests
         Assert.True(capabilities.GetProperty("referencesProvider").GetBoolean());
         Assert.True(capabilities.GetProperty("workspaceSymbolProvider").GetBoolean());
         Assert.True(capabilities.GetProperty("documentFormattingProvider").GetBoolean());
+        var signatureTriggers = capabilities
+            .GetProperty("signatureHelpProvider")
+            .GetProperty("triggerCharacters")
+            .EnumerateArray()
+            .Select(trigger => trigger.GetString())
+            .ToArray();
+        Assert.Contains(" ", signatureTriggers);
         Assert.False(capabilities.TryGetProperty("documentRangeFormattingProvider", out _));
         Assert.False(capabilities.TryGetProperty("documentOnTypeFormattingProvider", out _));
 
@@ -967,6 +974,8 @@ public sealed class LanguageServerProcessTests
             "",
             "Public Sub Run()",
             "    ReadValue(\"id\", ",
+            "    ReadValue ",
+            "    ReadValue \"id\", ",
             "End Sub"
         ]);
         await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, text));
@@ -991,7 +1000,17 @@ public sealed class LanguageServerProcessTests
         Assert.Equal("Fallback", parameters[1].GetProperty("label").GetString());
         Assert.Contains("Value used when the key is missing.", parameters[1].GetProperty("documentation").GetProperty("value").GetString());
 
-        await SendRequestAsync(stdin, stdout, 4, "shutdown", null);
+        var statementSignature = await SendPositionRequestAsync(stdin, stdout, 4, "textDocument/signatureHelp", uri, text, "ReadValue ", "ReadValue ".Length);
+        var statementResult = statementSignature.GetProperty("result");
+        Assert.Equal(0, statementResult.GetProperty("activeParameter").GetInt32());
+        Assert.Equal(
+            "ReadValue(Key, [Fallback]) As String",
+            statementResult.GetProperty("signatures").EnumerateArray().Single().GetProperty("label").GetString());
+
+        var statementSecondParameter = await SendPositionRequestAsync(stdin, stdout, 5, "textDocument/signatureHelp", uri, text, "ReadValue \"id\", ", "ReadValue \"id\", ".Length);
+        Assert.Equal(1, statementSecondParameter.GetProperty("result").GetProperty("activeParameter").GetInt32());
+
+        await SendRequestAsync(stdin, stdout, 6, "shutdown", null);
         await SendNotificationAsync(stdin, "exit", null);
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await process.WaitForExitAsync(cancellation.Token);

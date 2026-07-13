@@ -167,7 +167,8 @@ internal sealed class VbaSemanticResolution
             return null;
         }
 
-        if (!TryResolveCalleeDefinition(currentDocument, line, character, logicalPrefix, out var definition, out var arguments))
+        if (!TryResolveCalleeDefinition(currentDocument, line, character, logicalPrefix, out var definition, out var arguments)
+            && !TryResolveStatementFormCalleeDefinition(currentDocument, line, character, logicalPrefix, out definition, out arguments))
         {
             return null;
         }
@@ -383,6 +384,49 @@ internal sealed class VbaSemanticResolution
         definition = null;
         arguments = "";
         if (!memberChainContextProvider.TryGetCallExpressionContext(logicalPrefix, out var context))
+        {
+            return false;
+        }
+
+        arguments = context.Arguments;
+        if (context.MemberChain is not null)
+        {
+            if (memberChainResolution.TryResolveExpressionType(
+                currentDocument,
+                line,
+                character,
+                context.MemberChain.ReceiverExpression,
+                out var receiverType))
+            {
+                definition = memberChainResolution.ResolveMember(receiverType, context.MemberChain.MemberName!);
+                return true;
+            }
+
+            if (context.MemberChain.IsWithReceiver)
+            {
+                return true;
+            }
+        }
+
+        definition = nameResolution.Resolve(
+            currentDocument.Uri,
+            new VbaPosition(line, character),
+            context.Qualifier,
+            context.UnqualifiedName);
+        return true;
+    }
+
+    private bool TryResolveStatementFormCalleeDefinition(
+        VbaSourceDocument currentDocument,
+        int line,
+        int character,
+        string logicalPrefix,
+        out VbaSourceDefinition? definition,
+        out string arguments)
+    {
+        definition = null;
+        arguments = "";
+        if (!memberChainContextProvider.TryGetStatementFormCallContext(logicalPrefix, out var context))
         {
             return false;
         }

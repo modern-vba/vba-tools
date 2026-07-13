@@ -404,6 +404,10 @@ _Avoid_: argument, call argument, local variable
 A value slot supplied at a call site, such as `"x"` or `Arg1:="x"` in `Example("x")` or `Example Arg1:="x"`. `CallArgument`s are distinct from `CallableParameter`s and may be positional, named, or omitted.
 _Avoid_: parameter, callable parameter, argument text
 
+**StatementFormCall**:
+A VBA call form that invokes a callable at statement level without the `Call` keyword and without wrapping the argument list in parentheses, such as `ExampleSub Arg1:=1` or `ModuleName.ExampleSub "x"`. It is distinct from a parenthesized call and from expression uses of a callable name.
+_Avoid_: bare call, implicit call, call expression
+
 **NamedCallArgument**:
 A `CallArgument` that explicitly names the target `CallableParameter`, such as `Arg1:="x"`.
 _Avoid_: named parameter, named callable parameter

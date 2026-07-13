@@ -27,7 +27,7 @@ internal static class VbaLspFeatureProjection
                 },
                 signatureHelpProvider = new
                 {
-                    triggerCharacters = new[] { "(", "," }
+                    triggerCharacters = new[] { "(", ",", " " }
                 },
                 completionProvider = new
                 {

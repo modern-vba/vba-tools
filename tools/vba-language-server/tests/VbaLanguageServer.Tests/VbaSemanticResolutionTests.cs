@@ -345,6 +345,49 @@ public sealed class VbaSemanticResolutionTests
     }
 
     [Fact]
+    public void SignatureHelpSupportsStatementFormCallsOnlyAtStatementLevel()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub ExampleSub(ByVal Arg1 As String, Optional Arg2 As Long)",
+            "End Sub",
+            "Public Function ExampleFunc(ByVal Arg1 As String, Optional Arg2 As Long) As String",
+            "End Function",
+            "Public Sub Run()",
+            "    ExampleSub ",
+            "    Worker.ExampleSub ",
+            "    ExampleFunc ",
+            "    ExampleSub \"a\", ",
+            "    ExampleSub Arg2:=",
+            "    value = ExampleFunc ",
+            "    If ExampleFunc Then",
+            "    Dim localValue As String",
+            "End Sub"
+        ]);
+        var index = BuildIndex(uri, text);
+
+        var statementSub = index.GetSignatureHelp(uri, 6, "    ExampleSub ".Length);
+        var qualifiedSub = index.GetSignatureHelp(uri, 7, "    Worker.ExampleSub ".Length);
+        var discardedFunction = index.GetSignatureHelp(uri, 8, "    ExampleFunc ".Length);
+        var positional = index.GetSignatureHelp(uri, 9, "    ExampleSub \"a\", ".Length);
+        var named = index.GetSignatureHelp(uri, 10, "    ExampleSub Arg2:=".Length);
+        var assignment = index.GetSignatureHelp(uri, 11, "    value = ExampleFunc ".Length);
+        var ifExpression = index.GetSignatureHelp(uri, 12, "    If ExampleFunc ".Length);
+        var declaration = index.GetSignatureHelp(uri, 13, "    Dim localValue As ".Length);
+
+        Assert.Equal("ExampleSub(Arg1, [Arg2])", statementSub?.Signature.Label);
+        Assert.Equal("ExampleSub(Arg1, [Arg2])", qualifiedSub?.Signature.Label);
+        Assert.Equal("ExampleFunc(Arg1, [Arg2]) As String", discardedFunction?.Signature.Label);
+        Assert.Equal(0, statementSub?.ActiveParameter);
+        Assert.Equal(1, positional?.ActiveParameter);
+        Assert.Equal(1, named?.ActiveParameter);
+        Assert.Null(assignment);
+        Assert.Null(ifExpression);
+        Assert.Null(declaration);
+    }
+
+    [Fact]
     public void SignatureHelpIncludesArrayParametersAndLaterParametersInOrder()
     {
         const string uri = "file:///C:/work/Worker.bas";

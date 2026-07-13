@@ -128,6 +128,36 @@ internal sealed class VbaMemberChainContextProvider
         return true;
     }
 
+    public bool TryGetStatementFormCallContext(string logicalPrefix, out VbaCallExpressionContext context)
+    {
+        context = default!;
+        var callMatch = Regex.Match(
+            logicalPrefix,
+            "^\\s*(?<callee>[A-Za-z_][A-Za-z0-9_]*(?:\\s*\\.\\s*[A-Za-z_][A-Za-z0-9_]*)*)\\s+(?<arguments>.*)$",
+            RegexOptions.CultureInvariant);
+        if (!callMatch.Success)
+        {
+            return false;
+        }
+
+        var arguments = callMatch.Groups["arguments"].Value;
+        var trimmedArguments = arguments.TrimStart();
+        if (trimmedArguments.StartsWith("=", StringComparison.Ordinal)
+            || trimmedArguments.StartsWith("(", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var callee = VbaMemberExpressionSyntax.NormalizeMemberExpression(callMatch.Groups["callee"].Value);
+        var memberChain = VbaMemberExpressionSyntax.TrySplitMemberExpression(callee, out var receiverExpression, out var memberName)
+            ? CreateContext(receiverExpression, memberName)
+            : null;
+        var qualifier = VbaMemberExpressionSyntax.GetQualifierFromCallee(callee);
+        var unqualifiedName = qualifier is null ? callee : callee[(qualifier.Length + 1)..];
+        context = new VbaCallExpressionContext(callee, arguments, memberChain, qualifier, unqualifiedName);
+        return true;
+    }
+
     private static bool TryGetLogicalPrefix(
         string[] lines,
         int line,
