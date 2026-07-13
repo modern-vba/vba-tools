@@ -2642,6 +2642,7 @@ public sealed class LanguageServerProcessTests
             var callerUri = ToFileUri(callerPath);
             var helperUri = ToFileUri(helperPath);
             var renamedHelperUri = ToFileUri(renamedHelperPath);
+            const string documentation = "\u65e5\u672c\u8a9e\u306e\u8aac\u660e";
             var callerText = string.Join('\n', [
                 "Attribute VB_Name = \"Caller\"",
                 "Public Sub Run()",
@@ -2650,6 +2651,12 @@ public sealed class LanguageServerProcessTests
             ]);
             var helperText = string.Join('\n', [
                 "Attribute VB_Name = \"Helper\"",
+                "Public Function BuildValue() As String",
+                "End Function"
+            ]);
+            var renamedHelperText = string.Join('\n', [
+                "Attribute VB_Name = \"Helper\"",
+                $"'* @brief {documentation}",
                 "Public Function BuildValue() As String",
                 "End Function"
             ]);
@@ -2692,7 +2699,8 @@ public sealed class LanguageServerProcessTests
             var removedDefinition = await SendDefinitionRequestAsync(stdin, stdout, 3, callerUri, callerText, "BuildValue");
             Assert.Equal(JsonValueKind.Null, removedDefinition.ValueKind);
 
-            File.WriteAllText(renamedHelperPath, helperText);
+            Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+            File.WriteAllBytes(renamedHelperPath, Encoding.GetEncoding(932).GetBytes(renamedHelperText));
             await SendNotificationAsync(
                 stdin,
                 "workspace/didChangeWatchedFiles",
@@ -2705,8 +2713,12 @@ public sealed class LanguageServerProcessTests
                 });
             var renamedDefinition = await RequestDefinitionAsync(stdin, stdout, 4, callerUri, callerText, "BuildValue");
             Assert.Equal(renamedHelperUri, renamedDefinition.GetProperty("uri").GetString());
+            var hover = await SendPositionRequestAsync(stdin, stdout, 5, "textDocument/hover", callerUri, callerText, "BuildValue");
+            Assert.Contains(
+                documentation,
+                hover.GetProperty("result").GetProperty("contents").GetProperty("value").GetString());
 
-            await SendRequestAsync(stdin, stdout, 5, "shutdown", null);
+            await SendRequestAsync(stdin, stdout, 6, "shutdown", null);
             await SendNotificationAsync(stdin, "exit", null);
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await process.WaitForExitAsync(cancellation.Token);

@@ -129,7 +129,7 @@ internal sealed class VbaDocumentLifecycle
             return;
         }
 
-        var text = await File.ReadAllTextAsync(localPath, cancellationToken);
+        var text = await VbaSourceFileTextReader.ReadAllTextAsync(localPath, cancellationToken);
         if (VbaDocumentChangePipeline.IsVbaSourcePath(localPath))
         {
             await pipeline.ApplyAsync(

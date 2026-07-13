@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.SourceModel;
@@ -170,6 +171,95 @@ public sealed class VbaLanguageWorkspaceTests
             Assert.Contains(
                 overlaySnapshot.SourceIndex.GetWorkspaceSymbols("BuildReplacement"),
                 symbol => symbol.Uri == helperUri);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(BomAndUtf8EncodedSourceCases))]
+    public void ProjectSnapshotDecodesBomAndUtf8DiskSourceDocumentation(byte[] helperBytes)
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-utf-source-").FullName;
+        try
+        {
+            WriteProjectManifest(projectRoot);
+            var helperPath = Path.Combine(projectRoot, "src", "Book1", "Helper.bas");
+            var helperUri = ToFileUri(helperPath);
+            const string documentation = "\u65e5\u672c\u8a9e\u306e\u8aac\u660e";
+            File.WriteAllBytes(helperPath, helperBytes);
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.CreateBundled()));
+
+            var definition = workspace
+                .CreateProjectSnapshot(helperUri)
+                .SourceIndex
+                .GetDocumentDefinitions(helperUri)
+                .Single(definition => definition.Name == "BuildValue");
+
+            Assert.Equal(documentation, definition.Documentation);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ProjectSnapshotDecodesCp932DiskSourceDocumentation()
+    {
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-cp932-").FullName;
+        try
+        {
+            WriteProjectManifest(projectRoot);
+            var helperPath = Path.Combine(projectRoot, "src", "Book1", "Helper.bas");
+            var classPath = Path.Combine(projectRoot, "src", "Book1", "HelperClass.cls");
+            var classUri = ToFileUri(classPath);
+            var callerUri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Caller.bas"));
+            const string documentation = "\u65e5\u672c\u8a9e\u306e\u8aac\u660e";
+            const string classDocumentation = "\u30af\u30e9\u30b9\u306e\u8aac\u660e";
+            var helperText = string.Join('\n', [
+                "Attribute VB_Name = \"Helper\"",
+                $"'* @brief {documentation}",
+                "Public Function BuildValue() As String",
+                "End Function"
+            ]);
+            var classText = string.Join('\n', [
+                "VERSION 1.0 CLASS",
+                "BEGIN",
+                "  MultiUse = -1",
+                "END",
+                "Attribute VB_Name = \"HelperClass\"",
+                $"'* @brief {classDocumentation}",
+                "Public Function BuildClassValue() As String",
+                "End Function"
+            ]);
+            File.WriteAllBytes(helperPath, Encoding.GetEncoding(932).GetBytes(helperText));
+            File.WriteAllBytes(classPath, Encoding.GetEncoding(932).GetBytes(classText));
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.CreateBundled()));
+            workspace.UpdateDocument(callerUri, string.Join('\n', [
+                "Attribute VB_Name = \"Caller\"",
+                "Public Sub Run()",
+                "    BuildValue",
+                "End Sub"
+            ]));
+
+            var sourceIndex = workspace
+                .CreateProjectSnapshot(callerUri)
+                .SourceIndex;
+            var definition = sourceIndex.ResolveSourceDefinition(callerUri, line: 2, character: "    ".Length);
+            var classDefinition = sourceIndex
+                .GetDocumentDefinitions(classUri)
+                .Single(definition => definition.Name == "BuildClassValue");
+
+            Assert.NotNull(definition);
+            Assert.Equal(documentation, definition.Documentation);
+            Assert.Equal("BuildValue() As String", definition.Signature?.Label);
+            Assert.Equal(classDocumentation, classDefinition.Documentation);
         }
         finally
         {
@@ -518,4 +608,21 @@ public sealed class VbaLanguageWorkspaceTests
             ? $"file:///{char.ToLowerInvariant(fullPath[0])}%3A{fullPath[2..]}"
             : new Uri(path).AbsoluteUri;
     }
+
+    public static IEnumerable<object[]> BomAndUtf8EncodedSourceCases()
+    {
+        const string documentation = "\u65e5\u672c\u8a9e\u306e\u8aac\u660e";
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Helper\"",
+            $"'* @brief {documentation}",
+            "Public Function BuildValue() As String",
+            "End Function"
+        ]);
+        yield return [AddPreamble(Encoding.UTF8.GetPreamble(), Encoding.UTF8.GetBytes(source))];
+        yield return [AddPreamble(Encoding.Unicode.GetPreamble(), Encoding.Unicode.GetBytes(source))];
+        yield return [new UTF8Encoding(encoderShouldEmitUTF8Identifier: false).GetBytes(source)];
+    }
+
+    private static byte[] AddPreamble(byte[] preamble, byte[] bytes)
+        => preamble.Concat(bytes).ToArray();
 }

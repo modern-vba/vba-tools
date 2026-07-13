@@ -134,7 +134,7 @@ internal static class VbaProjectSourceInventory
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var text = File.ReadAllText(localPath);
+        var text = VbaSourceFileTextReader.ReadAllText(localPath);
         var syntaxTree = VbaSyntaxTree.ParseModule(uri, text);
         return new VbaTrackedDocument(
             uri,

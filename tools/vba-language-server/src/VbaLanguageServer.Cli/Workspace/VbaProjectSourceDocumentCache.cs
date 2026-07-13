@@ -41,7 +41,7 @@ internal sealed class VbaProjectSourceDocumentCache
             }
         }
 
-        var text = File.ReadAllText(fullPath);
+        var text = VbaSourceFileTextReader.ReadAllText(fullPath);
         cancellationToken.ThrowIfCancellationRequested();
         var syntaxTree = VbaSyntaxTree.ParseModule(uri, text);
         var document = new VbaTrackedDocument(
