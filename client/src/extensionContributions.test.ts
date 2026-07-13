@@ -215,20 +215,35 @@ test('VBA TextMate grammar has lexical scopes for representative VBA fixtures', 
   assertPatternMatches(patterns, 'string.quoted.double.vba', '"a ""quoted"" value"');
   assertPatternMatches(patterns, 'keyword.control.vba', 'If value Then');
   assertPatternMatches(patterns, 'keyword.control.vba', 'End If');
+  assertPatternMatches(patterns, 'keyword.control.vba', 'end if');
+  assertPatternMatches(patterns, 'keyword.control.vba', 'eLsE');
+  assertPatternMatches(patterns, 'keyword.control.vba', 'select case value');
   assertPatternMatches(patterns, 'keyword.control.vba', 'End With');
   assertPatternMatches(patterns, 'keyword.control.vba', 'End Select');
   assertPatternDoesNotMatch(patterns, 'keyword.control.vba', 'End Sub');
   assertPatternDoesNotMatch(patterns, 'keyword.control.vba', 'End Function');
   assertPatternDoesNotMatch(patterns, 'keyword.control.vba', 'End Property');
+  assertPatternDoesNotMatch(patterns, 'keyword.control.vba', 'end sub');
+  assertPatternDoesNotMatch(patterns, 'keyword.control.vba', 'eNd fUnCtIoN');
+  assertPatternDoesNotMatch(patterns, 'keyword.control.vba', 'END PROPERTY');
   assertPatternMatches(patterns, 'keyword.vba', 'Public Function BuildValue() As String');
+  assertPatternMatches(patterns, 'keyword.vba', 'private function BuildValue() as string');
+  assertPatternMatches(patterns, 'keyword.vba', 'pUbLiC pRoPeRtY Get Value() As Long');
   assertPatternMatches(patterns, 'keyword.vba', 'End Sub');
   assertPatternMatches(patterns, 'keyword.vba', 'End Function');
   assertPatternMatches(patterns, 'keyword.vba', 'End Property');
+  assertPatternMatches(patterns, 'keyword.vba', 'end sub');
+  assertPatternMatches(patterns, 'keyword.vba', 'eNd fUnCtIoN');
+  assertPatternMatches(patterns, 'keyword.vba', 'END PROPERTY');
   assertPatternDoesNotMatch(patterns, 'keyword.vba', 'End If');
   assertPatternDoesNotMatch(patterns, 'keyword.vba', 'End With');
   assertPatternDoesNotMatch(patterns, 'keyword.vba', 'End Select');
+  assertPatternDoesNotMatch(patterns, 'keyword.vba', 'end if');
   assertPatternMatches(patterns, 'storage.type.intrinsic.vba', 'Dim value As String');
+  assertPatternMatches(patterns, 'storage.type.intrinsic.vba', 'dim value as long');
   assertPatternMatches(patterns, 'constant.language.vba', 'Set target = Nothing');
+  assertPatternMatches(patterns, 'constant.language.vba', 'set ready = true');
+  assertPatternMatches(patterns, 'constant.language.vba', 'Set ready = FALSE');
   assertPatternMatches(patterns, 'constant.numeric.vba', 'value = &HFF');
   assertPatternMatches(patterns, 'keyword.operator.vba', 'If left_value <> right_value Then');
   assertPatternMatches(patterns, 'meta.attribute.vba', 'Attribute VB_Name = "Module1"');
@@ -278,5 +293,13 @@ function patternMatches(pattern: GrammarPattern, scopeName: string, fixture: str
   }
 
   const expression = pattern.match ?? pattern.begin;
-  return expression !== undefined && new RegExp(expression).test(fixture);
+  return expression !== undefined && createGrammarRegExp(expression).test(fixture);
+}
+
+function createGrammarRegExp(expression: string): RegExp {
+  if (expression.startsWith('(?i)')) {
+    return new RegExp(expression.slice(4), 'i');
+  }
+
+  return new RegExp(expression);
 }

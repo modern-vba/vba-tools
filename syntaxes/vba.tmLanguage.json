@@ -58,27 +58,27 @@
     },
     "attribute": {
       "name": "meta.attribute.vba",
-      "match": "^\\s*Attribute\\s+VB_Name\\b"
+      "match": "(?i)^\\s*Attribute\\s+VB_Name\\b"
     },
     "intrinsic-type": {
       "name": "storage.type.intrinsic.vba",
-      "match": "\\b(?:String|Long|Integer|Boolean|Variant|Object|Date|Double|Single|Currency|Byte|Decimal|LongLong|LongPtr|PtrSafe)\\b"
+      "match": "(?i)\\b(?:String|Long|Integer|Boolean|Variant|Object|Date|Double|Single|Currency|Byte|Decimal|LongLong|LongPtr|PtrSafe)\\b"
     },
     "language-constant": {
       "name": "constant.language.vba",
-      "match": "\\b(?:True|False|Nothing|Null|Empty)\\b"
+      "match": "(?i)\\b(?:True|False|Nothing|Null|Empty)\\b"
     },
     "declaration-end-keyword": {
       "name": "keyword.vba",
-      "match": "\\bEnd\\s+(?:Sub|Function|Property)\\b"
+      "match": "(?i)\\bEnd\\s+(?:Sub|Function|Property)\\b"
     },
     "control-keyword": {
       "name": "keyword.control.vba",
-      "match": "\\b(?:End(?!\\s+(?:Sub|Function|Property)\\b)|If|Then|Else|ElseIf|For|Each|In|Next|Do|Loop|While|Wend|Select|Case|With|Exit)\\b"
+      "match": "(?i)\\b(?:End(?!\\s+(?:Sub|Function|Property)\\b)|If|Then|Else|ElseIf|For|Each|In|Next|Do|Loop|While|Wend|Select|Case|With|Exit)\\b"
     },
     "keyword": {
       "name": "keyword.vba",
-      "match": "\\b(?:Public|Private|Friend|Global|Dim|Static|Const|Sub|Function|Property|Get|Let|Set|Enum|Type|Event|RaiseEvent|Implements|Option|Explicit|Base|Module|As|ByVal|ByRef|Optional|ParamArray|Call|New|Declare|PtrSafe|Lib|Alias|WithEvents)\\b"
+      "match": "(?i)\\b(?:Public|Private|Friend|Global|Dim|Static|Const|Sub|Function|Property|Get|Let|Set|Enum|Type|Event|RaiseEvent|Implements|Option|Explicit|Base|Module|As|ByVal|ByRef|Optional|ParamArray|Call|New|Declare|PtrSafe|Lib|Alias|WithEvents)\\b"
     },
     "number": {
       "name": "constant.numeric.vba",
