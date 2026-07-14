@@ -57,9 +57,11 @@ Expected capabilities:
   incompatible explicit CLI path overrides;
 - obtain CLI `toolVersion`, `contractVersion`, and per-command schema versions
   from `vba-dev capabilities --format json`;
-- avoid implicit `PATH` discovery for the companion CLI;
+- avoid implicit `PATH` discovery for the companion CLI, while allowing an
+  explicit terminal command to prepend the resolved CLI directory to that
+  terminal's environment;
 - register VS Code commands for `doctor`, `build`, `test`, `publish`, `export`,
-  CommonModules actions, and reference actions;
+  CommonModules actions, reference actions, and opening a `vba-dev` terminal;
 - keep Excel COM, VBIDE, workbook import/export, workbook save, and
   workbook-backed test execution inside `vba-dev`; the extension must not
   automate Excel directly;
@@ -69,9 +71,12 @@ Expected capabilities:
   prevent commands from finding the active `WorkbookBackedProject`;
 - expose initial Command Palette entries for `Doctor`, `Build`, `Test`,
   `Publish`, `Export`, `Add Common Module`, `Update Common Modules`,
-  `Add Reference`, `Remove Reference`, and `List References`;
+  `Add Reference`, `Remove Reference`, `List References`, and
+  `Open vba-dev Terminal`;
 - keep project creation, future restore commands, internal capabilities checks,
-  and no-build test runs out of the initial user-facing command palette;
+  and no-build test runs out of the initial user-facing command palette; users
+  who need project creation can run `vba-dev new excel` explicitly from the
+  `vba-dev` terminal;
 - show command output in a dedicated Output Channel;
 - surface clear errors when Excel, VBIDE trust access, workbook locks, or
   project manifest problems block automation.

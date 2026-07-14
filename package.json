@@ -17,6 +17,7 @@
   "activationEvents": [
     "onLanguage:vba",
     "onCommand:vbaTools.doctor",
+    "onCommand:vbaTools.openVbaDevTerminal",
     "onCommand:vbaTools.build",
     "onCommand:vbaTools.test",
     "onCommand:vbaTools.publish",
@@ -103,6 +104,10 @@
       {
         "command": "vbaTools.doctor",
         "title": "VBA Tools: Doctor"
+      },
+      {
+        "command": "vbaTools.openVbaDevTerminal",
+        "title": "VBA Tools: Open vba-dev Terminal"
       },
       {
         "command": "vbaTools.build",

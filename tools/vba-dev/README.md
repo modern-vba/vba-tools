@@ -71,6 +71,8 @@ Options:
 
 `--output` selects the project root directory. `--name` selects the generated project and document base name; when omitted, it is derived from the output directory.
 
+The initial manifest includes the references already present in the generated workbook plus `Microsoft Scripting Runtime` and `Microsoft VBScript Regular Expressions 5.5`, which support the standard CommonModules and unit-test foundation.
+
 When a CommonModules repository is available, initial CommonModules are copied under the generated document source set's `common-modules` directory using each entry's file name.
 
 ### common-module add

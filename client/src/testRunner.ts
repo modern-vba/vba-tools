@@ -4,6 +4,8 @@ import './languageServer.test';
 import './extensionContributions.test';
 import './projectDiscovery.test';
 import './devtoolCommand.test';
+import './vbaDevTerminalCommand.test';
+import './testExplorerRefresh.test';
 import './doctorCommand.test';
 import './projectCommand.test';
 import './commonModulesCommand.test';

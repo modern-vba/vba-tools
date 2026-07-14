@@ -11,6 +11,12 @@ namespace VbaDev.App.Projects;
 /// </summary>
 public sealed class NewProjectCommand
 {
+    private static readonly string[] StandardInitialReferenceNames =
+    [
+        "Microsoft Scripting Runtime",
+        "Microsoft VBScript Regular Expressions 5.5"
+    ];
+
     private readonly IProjectManifestStore manifestStore;
     private readonly IInitialWorkbookCreator initialWorkbookCreator;
     private readonly CommonModulesManifestReader commonModulesManifestReader;
@@ -69,7 +75,9 @@ public sealed class NewProjectCommand
         }
 
         var workbookPath = Path.Combine(sourceSetPath, $"{documentName}.xlsm");
-        var referenceNames = initialWorkbookCreator.CreateInitialWorkbook(workbookPath);
+        var referenceNames = initialWorkbookCreator.CreateInitialWorkbook(workbookPath)
+            .Concat(StandardInitialReferenceNames)
+            .ToArray();
         var references = CreateReferenceEntries(referenceNames);
         var commonModules = Array.Empty<InstalledCommonModule>();
 

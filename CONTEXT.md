@@ -34,6 +34,12 @@ A user-facing or automation-facing `VbaDev` command. It should have explicit
 inputs, outputs, side effects, and verification behavior.
 _Avoid_: script, helper, task
 
+**VbaDevTerminal**:
+A VS Code integrated terminal session opened by `VscodeExtension` for direct
+`VbaDev` use. It scopes command availability to that terminal environment
+rather than treating `VbaDev` as a machine-level PATH installation.
+_Avoid_: global CLI install, project command, automatic project creation
+
 **ConsoleEntryPoint**:
 The C# entry point that parses command-line arguments, invokes a
 `ToolingCommand`, and returns a meaningful process exit code.

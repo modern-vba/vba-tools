@@ -43,7 +43,38 @@ public sealed class NewProjectCommandTests
         Assert.Null(manifest.CommonModulesRepository);
         Assert.Empty(manifest.Documents["SampleProject"].CommonModules);
         Assert.Equal(
-            ["Visual Basic For Applications", "Microsoft Excel 16.0 Object Library"],
+            [
+                "Visual Basic For Applications",
+                "Microsoft Excel 16.0 Object Library",
+                "Microsoft Scripting Runtime",
+                "Microsoft VBScript Regular Expressions 5.5"
+            ],
+            manifest.Documents["SampleProject"].References.Select(reference => reference.Name));
+    }
+
+    [Fact]
+    public void NewExcelDoesNotDuplicateStandardInitialReferences()
+    {
+        using var temp = TempDirectory.Create();
+        var workbookCreator = new FakeInitialWorkbookCreator(
+            "Visual Basic For Applications",
+            "Microsoft Scripting Runtime",
+            "Microsoft VBScript Regular Expressions 5.5");
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+            temp.Path,
+            initialWorkbookCreator: workbookCreator);
+
+        var result = application.Run(["new", "excel", "--name", "SampleProject"]);
+
+        Assert.Equal(0, result.ExitCode);
+        var manifestPath = Path.Combine(temp.Path, "SampleProject", ProjectManifest.ManifestFileName);
+        var manifest = new JsonProjectManifestStore().Load(manifestPath);
+        Assert.Equal(
+            [
+                "Visual Basic For Applications",
+                "Microsoft Scripting Runtime",
+                "Microsoft VBScript Regular Expressions 5.5"
+            ],
             manifest.Documents["SampleProject"].References.Select(reference => reference.Name));
     }
 

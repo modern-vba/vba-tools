@@ -24,6 +24,8 @@ build, test, publish, export, and validate Excel macro workbooks from a
 - Run workbook-backed VBA tests from VS Code Test Explorer.
 - Run project commands from the Command Palette: Doctor, Build, Test, Publish,
   Export, CommonModules, and VBA project reference operations.
+- Open an integrated terminal with `vba-dev` on `PATH` for direct CLI workflows
+  such as project creation.
 - Keep `project.json` as the manifest for templates, source folders, generated
   workbooks, publish output, CommonModules, references, and command defaults.
 
@@ -73,11 +75,117 @@ as VS Code diagnostics where applicable.
 
 ---
 
+## Create a Workbook-Backed Project
+
+Before creating or running workbook-backed projects, enable Excel's trusted
+VBIDE access:
+
+1. Open Microsoft Excel.
+2. Go to **File** > **Options**.
+3. Select **Trust Center**.
+4. Click **Trust Center Settings...**.
+5. Select **Macro Settings**.
+6. Check **Trust access to the VBA project object model**.
+
+To create a project with the standard CommonModules and unit-test foundation:
+
+1. Download `common_modules_repo.zip` from the
+   [xls-common-modules releases](https://github.com/modern-vba/xls-common-modules/releases/).
+2. Extract it next to the project folder you plan to create:
+
+   ```text
+   workspace/
+     common_modules_repo/
+     example_name/
+   ```
+
+3. Press `Ctrl+Shift+P` and run `VBA Tools: Open vba-dev Terminal`.
+4. Run `vba-dev new excel -n example_book`.
+
+   The project name should usually match the `.xlsm` basename. When
+   `common_modules_repo` is present next to the generated project folder,
+   `vba-dev new excel` copies the initial CommonModules into the project.
+
+5. Add any extra external references needed by the workbook:
+
+   ```text
+   vba-dev reference add "Microsoft PowerPoint 16.0 Object Library"
+   ```
+
+6. Run `vba-dev doctor` to check the generated project setup.
+
+---
+
+## Write Unit Tests
+
+Unit tests live in the same document source set as the production VBA source.
+Create standard modules named `Test_*.bas`; `UnitTestMain` discovers public
+procedures whose names start with `Test_` and whose first argument is
+`UnitTestAssert`.
+
+Use this procedure shape:
+
+```vb
+Attribute VB_Name = "Test_Sample"
+Option Explicit
+
+'#ExcludePublish
+
+Public Sub Test_Target_Condition_ExpectedResult(ByVal Assert As UnitTestAssert)
+    On Error Resume Next
+
+    ' --- Arrange ---
+    Dim expected_value As String
+    expected_value = "expected"
+
+    ' --- Act ---
+    Dim actual_value As String
+    actual_value = "expected"
+
+    ' --- Assert ---
+    If Not Assert.ErrorNotRaised(0, Err.Number, Err.Source, Err.Description) Then Exit Sub
+    Assert.Equals expected_value, actual_value
+End Sub
+```
+
+Keep each test procedure focused on one condition and one expected result.
+Prefer `Arrange`, `Act`, and `Assert` blocks so failures are easy to read in the
+unit-test output. Use `Assert.ErrorRaised` for expected errors and
+`Assert.ErrorNotRaised` before continuing with value assertions when no error is
+expected.
+
+Mark project-local test modules with `'#ExcludePublish` near the top of the
+file when they should not be included in published workbooks. Test-only
+CommonModules are excluded from publish output automatically through the
+CommonModules manifest.
+
+The Test Explorer view shows workbook-backed projects and documents after the
+extension discovers `project.json`. Select a project or document and click the
+run button to execute tests. Procedure-level test nodes appear after a test run
+reports them.
+![Run test from GUI](docs/imgs/run_test.png)
+
+Run tests from the Command Palette with `VBA Tools: Test`, from Test Explorer,
+or from the `vba-dev` terminal:
+
+```text
+vba-dev test
+vba-dev test --module Test_Sample
+vba-dev test --module Test_Sample --procedure Test_Target_Condition_ExpectedResult
+```
+
+`vba-dev test` builds the selected document before running tests by default. Use
+`--no-build` only when you intentionally want to rerun tests against the
+existing bin workbook.
+
+---
+
 ## Command Palette Commands
 
 | Command | Description |
 | --- | --- |
 | `VBA Tools: Doctor` | Check workbook project and machine prerequisites. |
+| `VBA Tools: Open vba-dev Terminal` | Open a VS Code terminal with the resolved `vba-dev` command on `PATH`. |
 | `VBA Tools: Build` | Generate the selected workbook document from template and source. |
 | `VBA Tools: Test` | Build, then run VBA unit tests for the selected workbook document. |
 | `VBA Tools: Publish` | Generate the publish workbook for the selected document. |
@@ -91,6 +199,21 @@ as VS Code diagnostics where applicable.
 
 ---
 
+## vba-dev Terminal
+
+Run `VBA Tools: Open vba-dev Terminal` from the Command Palette to open an
+integrated terminal whose `PATH` starts with the bundled or configured
+`vba-dev` directory. The PATH change is scoped to that terminal only; it does
+not install `vba-dev` globally.
+
+Use this terminal for direct CLI workflows, including creating a project:
+
+```text
+vba-dev new excel -o <project-dir> -n <project-name>
+```
+
+---
+
 ## Workbook Project Workflow
 
 ### Build
@@ -98,6 +221,16 @@ as VS Code diagnostics where applicable.
 `VBA Tools: Build` creates the configured bin workbook from the template
 workbook, applies manifest-defined references, imports exported source files,
 and writes the generated workbook output.
+
+From the `vba-dev` terminal, run:
+
+```text
+vba-dev build
+```
+
+Use build when you want a generated workbook for manual inspection or when a
+project has no unit tests. Close the target workbook before building so Excel
+can replace the generated output.
 
 ### Test
 
@@ -108,6 +241,17 @@ default, tests build first so the workbook under test matches the source tree.
 
 `VBA Tools: Publish` creates the publish workbook and excludes test-only
 CommonModules and source files marked for publish exclusion.
+
+From the `vba-dev` terminal, run:
+
+```text
+vba-dev publish
+```
+
+Publish is the command for producing the distributable workbook. It uses the
+same source import and reference normalization path as build, but writes to the
+document's publish output and omits test-only CommonModules plus project-local
+files marked with `'#ExcludePublish`.
 
 ### Export
 

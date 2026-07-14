@@ -43,6 +43,9 @@ import {
   createWorkbookBackedTestExplorer
 } from './testExplorer';
 import {
+  registerWorkbookBackedTestExplorerRefresh
+} from './testExplorerRefresh';
+import {
   VbaDevDiagnosticReporter
 } from './toolDiagnostics';
 import {
@@ -53,6 +56,9 @@ import {
   createVscodeDiagnosticCollectionAdapter,
   createVscodeTestControllerAdapter
 } from './vscodeAdapters';
+import {
+  openVbaDevTerminal
+} from './vbaDevTerminalCommand';
 
 let client: LanguageClient | undefined;
 let outputChannel: OutputChannel | undefined;
@@ -111,8 +117,19 @@ export async function activate(context: ExtensionContext): Promise<void> {
     outputChannel,
     showErrorMessage: (message: string) => window.showErrorMessage(message)
   });
+  const projectManifestWatcher = workspace.createFileSystemWatcher('**/project.json');
+  context.subscriptions.push(projectManifestWatcher);
+  registerWorkbookBackedTestExplorerRefresh({
+    watcher: projectManifestWatcher,
+    subscriptions: context.subscriptions,
+    explorer: workbookBackedTestExplorer,
+    showErrorMessage: (message) => window.showErrorMessage(message)
+  });
   context.subscriptions.push(commands.registerCommand('vbaTools.doctor', async () => {
     await runDoctorWithProgress(context);
+  }));
+  context.subscriptions.push(commands.registerCommand('vbaTools.openVbaDevTerminal', async () => {
+    await openVbaDevTerminalCommand(context);
   }));
   for (const command of WorkbookBackedProjectCommands) {
     context.subscriptions.push(commands.registerCommand(command.commandId, async () => {
@@ -219,6 +236,18 @@ async function runDoctorWithProgress(context: ExtensionContext): Promise<void> {
       });
     }
   );
+}
+
+async function openVbaDevTerminalCommand(context: ExtensionContext): Promise<void> {
+  await openVbaDevTerminal({
+    extensionRoot: context.extensionPath,
+    configuredDevToolPath: getConfiguredDevToolPath(),
+    activeFilePath: getActiveFilePath(),
+    workspaceRoots: workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [],
+    chooseWorkspaceRoot,
+    createTerminal: (options) => window.createTerminal(options),
+    showErrorMessage: (message) => window.showErrorMessage(message)
+  });
 }
 
 async function runWorkbookBackedProjectCommandWithProgress(
@@ -428,4 +457,19 @@ async function chooseProject(
   );
 
   return selected?.candidate;
+}
+
+async function chooseWorkspaceRoot(workspaceRoots: readonly string[]): Promise<string | undefined> {
+  const selected = await window.showQuickPick(
+    workspaceRoots.map((workspaceRoot) => ({
+      label: path.basename(workspaceRoot) || workspaceRoot,
+      description: workspaceRoot,
+      workspaceRoot
+    })),
+    {
+      title: 'Select vba-dev Terminal Folder'
+    }
+  );
+
+  return selected?.workspaceRoot;
 }

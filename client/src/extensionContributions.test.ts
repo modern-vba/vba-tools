@@ -125,6 +125,24 @@ test('extension contributes the Doctor command', () => {
   assert.ok(packageJson.activationEvents?.includes('onCommand:vbaTools.doctor'));
 });
 
+test('extension contributes the vba-dev Terminal command', () => {
+  const packageJson = readPackageJson<{
+    activationEvents?: string[];
+    contributes?: {
+      commands?: Array<{
+        command?: string;
+        title?: string;
+      }>;
+    };
+  }>();
+
+  assert.deepEqual(packageJson.contributes?.commands?.find((command) => command.command === 'vbaTools.openVbaDevTerminal'), {
+    command: 'vbaTools.openVbaDevTerminal',
+    title: 'VBA Tools: Open vba-dev Terminal'
+  });
+  assert.ok(packageJson.activationEvents?.includes('onCommand:vbaTools.openVbaDevTerminal'));
+});
+
 test('extension contributes daily WorkbookBackedProject commands only', () => {
   const packageJson = readPackageJson<{
     activationEvents?: string[];
