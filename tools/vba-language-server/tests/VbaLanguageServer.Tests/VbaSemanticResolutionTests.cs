@@ -434,6 +434,28 @@ public sealed class VbaSemanticResolutionTests
     }
 
     [Fact]
+    public void SignatureHelpTracksNamedArgumentParameterWhenCursorIsOnArgumentName()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Function ExampleFunc(ByVal Arg1 As String, Optional Arg2 As String) As String",
+            "End Function",
+            "Public Sub Run()",
+            "    value = ExampleFunc(Arg2:=\"Alice\")",
+            "End Sub"
+        ]);
+        var index = BuildIndex(uri, text);
+
+        var onNamedArgumentName = index.GetSignatureHelp(uri, 4, "    value = ExampleFunc(Arg2".Length);
+
+        Assert.Equal(
+            "Function ExampleFunc(Arg1 As String, [ByRef Arg2 As String]) As String",
+            onNamedArgumentName?.Signature.Label);
+        Assert.Equal(1, onNamedArgumentName?.ActiveParameter);
+    }
+
+    [Fact]
     public void SignatureHelpFormatsRichSourceCallableSignatures()
     {
         const string uri = "file:///C:/work/Worker.bas";

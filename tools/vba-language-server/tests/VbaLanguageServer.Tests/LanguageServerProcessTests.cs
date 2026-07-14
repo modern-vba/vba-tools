@@ -995,21 +995,24 @@ public sealed class LanguageServerProcessTests
             .GetProperty("value")
             .GetString();
         Assert.Contains("Reads a value.", hoverValue);
-        Assert.Contains("Static Function ReadValue(Key, [Fallback]) As String", hoverValue);
+        Assert.Contains(
+            "Reads a value.\n\n@param Key Key to read.\n\n@param Fallback Value used when the key is missing.\n\n@return The configured value.\n\n---\n\n```vba\nFunction ReadValue(Key As String, [Fallback As String]) As String\n```",
+            hoverValue);
+        Assert.Contains("Function ReadValue(Key As String, [Fallback As String]) As String", hoverValue);
 
         var subHover = await SendPositionRequestAsync(stdin, stdout, 8, "textDocument/hover", uri, text, "PlainSub(ByVal");
         Assert.Contains(
-            "Sub PlainSub(Arg1)",
+            "Sub PlainSub(Arg1 As String)",
             subHover.GetProperty("result").GetProperty("contents").GetProperty("value").GetString());
 
         var propertyHover = await SendPositionRequestAsync(stdin, stdout, 9, "textDocument/hover", uri, text, "DisplayName(Optional");
         var propertyHoverValue = propertyHover.GetProperty("result").GetProperty("contents").GetProperty("value").GetString();
-        Assert.Contains("Property DisplayName([Fallback]) As String", propertyHoverValue);
+        Assert.Contains("Property DisplayName([Fallback As String]) As String", propertyHoverValue);
         Assert.DoesNotContain("Property Get", propertyHoverValue, StringComparison.Ordinal);
 
         var eventHover = await SendPositionRequestAsync(stdin, stdout, 10, "textDocument/hover", uri, text, "Saved(ByVal");
         Assert.Contains(
-            "Event Saved(Name, [RetryCount])",
+            "Event Saved(Name As String, [RetryCount As Long])",
             eventHover.GetProperty("result").GetProperty("contents").GetProperty("value").GetString());
 
         var signature = await SendPositionRequestAsync(stdin, stdout, 3, "textDocument/signatureHelp", uri, text, "ReadValue(\"id\", ", "ReadValue(\"id\", ".Length);
@@ -1110,6 +1113,7 @@ public sealed class LanguageServerProcessTests
             "End Type",
             "Public Sub Run()",
             "    Static localCount As Long",
+            "    Dim header_names() As String",
             "    Dim implicitLocal",
             "End Sub"
         ]);
@@ -1132,6 +1136,7 @@ public sealed class LanguageServerProcessTests
         Assert.Contains("Type CustomerRecord", await HoverValueAsync("CustomerRecord"));
         Assert.Contains("Id As Long", await HoverValueAsync("Id As"));
         Assert.Contains("Static localCount As Long", await HoverValueAsync("localCount"));
+        Assert.Contains("header_names() As String", await HoverValueAsync("header_names"));
         Assert.DoesNotContain("As Variant", await HoverValueAsync("implicitLocal"), StringComparison.Ordinal);
 
         await SendRequestAsync(stdin, stdout, requestId, "shutdown", null);
@@ -1178,7 +1183,7 @@ public sealed class LanguageServerProcessTests
         }
 
         Assert.Contains(
-            "Sub Run(ExplicitByRef, ImplicitByRef, ExplicitByVal, UntypedValue)",
+            "Sub Run(ByRef ExplicitByRef As String, ByRef ImplicitByRef As Long, ExplicitByVal As String, ByRef UntypedValue)",
             await HoverValueAsync("Run(ByRef"));
         Assert.Contains("ByRef ExplicitByRef As String", await HoverValueAsync("ExplicitByRef"));
         Assert.Contains("ByRef ImplicitByRef As Long", await HoverValueAsync("ImplicitByRef"));
@@ -1345,11 +1350,13 @@ public sealed class LanguageServerProcessTests
                                 "Generated Library",
                                 "RichMethod",
                                 VbaSourceDefinitionKind.Procedure,
+                                Documentation: "Runs a generated rich method.",
                                 Signature: new VbaCallableSignature(
                                     "RichMethod(Required, OptionalValue)",
                                     [
                                         new VbaCallableParameter(
                                             "Required",
+                                            "Required argument documentation.",
                                             TypeReference: new VbaTypeReference("Variant"),
                                             IsByRef: true),
                                         new VbaCallableParameter(
@@ -1395,10 +1402,19 @@ public sealed class LanguageServerProcessTests
             Assert.Contains("Returns a generated value.", hoverValue, StringComparison.Ordinal);
             Assert.Contains("Property GeneratedValue As Variant", hoverValue, StringComparison.Ordinal);
 
+            var methodHover = await SendPositionRequestAsync(stdin, stdout, 3, "textDocument/hover", uri, text, "RichMethod(");
+            var methodHoverValue = methodHover.GetProperty("result").GetProperty("contents").GetProperty("value").GetString();
+            Assert.Contains("Runs a generated rich method.", methodHoverValue, StringComparison.Ordinal);
+            Assert.Contains(
+                "Function RichMethod(ByRef Required As Variant, [OptionalValue As String]) As String",
+                methodHoverValue,
+                StringComparison.Ordinal);
+            Assert.DoesNotContain("Required argument documentation.", methodHoverValue, StringComparison.Ordinal);
+
             var signatureHelp = await SendPositionRequestAsync(
                 stdin,
                 stdout,
-                3,
+                4,
                 "textDocument/signatureHelp",
                 uri,
                 text,
@@ -1420,7 +1436,7 @@ public sealed class LanguageServerProcessTests
                     .Select(parameter => parameter.GetProperty("label").GetString() ?? "")
                     .ToArray());
 
-            await SendRequestAsync(stdin, stdout, 4, "shutdown", null);
+            await SendRequestAsync(stdin, stdout, 5, "shutdown", null);
             await SendNotificationAsync(stdin, "exit", null);
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await process.WaitForExitAsync(cancellation.Token);

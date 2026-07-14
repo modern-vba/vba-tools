@@ -1390,7 +1390,11 @@ internal static class VbaSyntaxTreeParser
                 visibility,
                 sourceText.RangeForLine(line, match.Index, match.Index + match.Length),
                 lineIndex,
-                DeclarationLabel: CreateValueDeclarationLabel(kind, match.Value, typeReference),
+                DeclarationLabel: CreateValueDeclarationLabel(
+                    kind,
+                    match.Value,
+                    typeReference,
+                    isArray: IsArrayParameter(codeLine, match.Value)),
                 TypeReference: typeReference));
         }
     }
@@ -1457,6 +1461,7 @@ internal static class VbaSyntaxTreeParser
             var nameStart = segmentStart + nameMatch.Groups["name"].Index;
             var isWithEvents = isWithEventsDefault
                 || Regex.IsMatch(segment.Text, "\\bWithEvents\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            var isArray = IsArrayParameter(segment.Text, name);
             var typeReference = ParseTypeReference(segment.Text);
             declarations.Add(new VbaDeclarationSyntax(
                 name,
@@ -1465,7 +1470,7 @@ internal static class VbaSyntaxTreeParser
                 sourceText.RangeForLine(line, nameStart, nameStart + name.Length),
                 line.LineNumber,
                 Documentation: documentation,
-                DeclarationLabel: CreateValueDeclarationLabel(kind, name, typeReference, isWithEvents, isStaticDefault),
+                DeclarationLabel: CreateValueDeclarationLabel(kind, name, typeReference, isWithEvents, isStaticDefault, isArray),
                 ParentProcedureName: parentProcedureName,
                 ParentProcedureRange: parentProcedureRange,
                 TypeReference: typeReference,
@@ -1620,7 +1625,8 @@ internal static class VbaSyntaxTreeParser
         string name,
         VbaTypeReferenceSyntax? typeReference,
         bool isWithEvents = false,
-        bool isStatic = false)
+        bool isStatic = false,
+        bool isArray = false)
     {
         var parts = new List<string>();
         if (isStatic)
@@ -1638,7 +1644,7 @@ internal static class VbaSyntaxTreeParser
             parts.Add("Const");
         }
 
-        parts.Add(name);
+        parts.Add(isArray ? $"{name}()" : name);
         var label = string.Join(" ", parts);
         return typeReference is null ? label : $"{label} As {typeReference.Name}";
     }

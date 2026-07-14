@@ -190,7 +190,14 @@ internal sealed class VbaSemanticResolution
             return null;
         }
 
-        var activeParameter = GetActiveSignatureParameter(definition.Signature, arguments);
+        var activeParameter = TryGetNamedArgumentSignatureParameter(
+            currentDocument,
+            line,
+            character,
+            definition.Signature,
+            out var namedArgumentParameter)
+                ? namedArgumentParameter
+                : GetActiveSignatureParameter(definition.Signature, arguments);
         return new VbaSignatureHelp(definition.Signature, activeParameter);
     }
 
@@ -608,6 +615,72 @@ internal sealed class VbaSemanticResolution
             ?.index;
         return parameterIndex ?? fallbackParameter;
     }
+
+    private static bool TryGetNamedArgumentSignatureParameter(
+        VbaSourceDocument document,
+        int line,
+        int character,
+        VbaCallableSignature signature,
+        out int activeParameter)
+    {
+        activeParameter = 0;
+        if (document.SyntaxTree is null)
+        {
+            return false;
+        }
+
+        var sourceText = VbaSourceText.From(document.Text);
+        if (line < 0 || line >= sourceText.Lines.Count)
+        {
+            return false;
+        }
+
+        var sourceLine = sourceText.Lines[line];
+        var clampedCharacter = Math.Clamp(character, 0, sourceLine.Text.Length);
+        var position = new VbaSyntaxPosition(
+            line,
+            clampedCharacter,
+            sourceLine.StartOffset + clampedCharacter);
+        var argumentList = document.SyntaxTree.Module.ArgumentLists
+            .Where(argumentList => Contains(argumentList.Range, position))
+            .OrderBy(argumentList => argumentList.Range.End.Offset - argumentList.Range.Start.Offset)
+            .FirstOrDefault();
+        if (argumentList is null)
+        {
+            return false;
+        }
+
+        var activeArgumentIndex = argumentList.GetActiveArgumentIndex(position);
+        if (activeArgumentIndex < 0 || activeArgumentIndex >= argumentList.Arguments.Count)
+        {
+            return false;
+        }
+
+        var activeArgument = argumentList.Arguments[activeArgumentIndex];
+        if (activeArgument.Kind != VbaArgumentKind.Named
+            || string.IsNullOrWhiteSpace(activeArgument.Name)
+            || !Contains(activeArgument.Range, position))
+        {
+            return false;
+        }
+
+        var parameterIndex = signature.Parameters
+            .Select((parameter, index) => new { parameter, index })
+            .FirstOrDefault(item => item.parameter.Name.Equals(
+                activeArgument.Name,
+                StringComparison.OrdinalIgnoreCase))
+            ?.index;
+        if (parameterIndex is null)
+        {
+            return false;
+        }
+
+        activeParameter = parameterIndex.Value;
+        return true;
+    }
+
+    private static bool Contains(VbaSyntaxRange range, VbaSyntaxPosition position)
+        => position.Offset >= range.Start.Offset && position.Offset < range.End.Offset;
 
     private static bool IsTypeAnnotationCompletionPrefix(string logicalPrefix)
     {

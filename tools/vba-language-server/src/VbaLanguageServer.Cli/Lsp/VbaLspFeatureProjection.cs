@@ -139,10 +139,10 @@ internal static class VbaLspFeatureProjection
             return null;
         }
 
-        var declaration = definition.DeclarationLabel ?? definition.Signature?.Label ?? definition.Name;
+        var declaration = CreateHoverDeclarationBlock(definition.Signature?.Label ?? definition.DeclarationLabel ?? definition.Name);
         var value = string.IsNullOrWhiteSpace(definition.Documentation)
             ? declaration
-            : $"{definition.Documentation}\n\n{declaration}";
+            : $"{definition.Documentation}\n\n---\n\n{declaration}";
         return new
         {
             contents = new
@@ -153,6 +153,9 @@ internal static class VbaLspFeatureProjection
             range = definition.Range
         };
     }
+
+    private static string CreateHoverDeclarationBlock(string declaration)
+        => $"```vba\n{declaration}\n```";
 
     public static object? CreateSignatureHelp(VbaSignatureHelp? signatureHelp)
     {
