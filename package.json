@@ -1,0 +1,202 @@
+{
+  "name": "vba-tools",
+  "displayName": "VBA Tools",
+  "description": "Visual Studio Code tooling for VBA projects.",
+  "version": "0.0.1",
+  "publisher": "modern-vba",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/modern-vba/vba-tools.git"
+  },
+  "engines": {
+    "vscode": "^1.125.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:vba",
+    "onCommand:vbaTools.doctor",
+    "onCommand:vbaTools.openVbaDevTerminal",
+    "onCommand:vbaTools.build",
+    "onCommand:vbaTools.test",
+    "onCommand:vbaTools.publish",
+    "onCommand:vbaTools.export",
+    "onCommand:vbaTools.commonModules.add",
+    "onCommand:vbaTools.commonModules.list",
+    "onCommand:vbaTools.commonModules.update",
+    "onCommand:vbaTools.references.list",
+    "onCommand:vbaTools.references.add",
+    "onCommand:vbaTools.references.remove"
+  ],
+  "main": "./client/out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "vba",
+        "aliases": [
+          "VBA",
+          "Visual Basic for Applications"
+        ],
+        "extensions": [
+          ".bas",
+          ".cls",
+          ".frm"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "vba",
+        "scopeName": "source.vba",
+        "path": "./syntaxes/vba.tmLanguage.json"
+      }
+    ],
+    "semanticTokenTypes": [
+      {
+        "id": "field",
+        "superType": "property",
+        "description": "A definition or reference to a module-level variable or user-defined type member."
+      }
+    ],
+    "semanticTokenScopes": [
+      {
+        "language": "vba",
+        "scopes": {
+          "class": [
+            "entity.name.type.class.vba"
+          ],
+          "struct": [
+            "entity.name.type.struct.vba"
+          ],
+          "enum": [
+            "entity.name.type.enum.vba"
+          ],
+          "enumMember": [
+            "variable.other.enummember.vba"
+          ],
+          "parameter": [
+            "variable.parameter.vba"
+          ],
+          "variable": [
+            "variable.other.readwrite.vba"
+          ],
+          "property": [
+            "variable.other.property.vba"
+          ],
+          "field": [
+            "entity.name.variable.field.vba"
+          ],
+          "event": [
+            "variable.other.event.vba"
+          ],
+          "function": [
+            "entity.name.function.vba"
+          ],
+          "method": [
+            "entity.name.function.member.vba"
+          ]
+        }
+      }
+    ],
+    "commands": [
+      {
+        "command": "vbaTools.doctor",
+        "title": "VBA Tools: Doctor"
+      },
+      {
+        "command": "vbaTools.openVbaDevTerminal",
+        "title": "VBA Tools: Open vba-dev Terminal"
+      },
+      {
+        "command": "vbaTools.build",
+        "title": "VBA Tools: Build"
+      },
+      {
+        "command": "vbaTools.test",
+        "title": "VBA Tools: Test"
+      },
+      {
+        "command": "vbaTools.publish",
+        "title": "VBA Tools: Publish"
+      },
+      {
+        "command": "vbaTools.export",
+        "title": "VBA Tools: Export"
+      },
+      {
+        "command": "vbaTools.commonModules.add",
+        "title": "VBA Tools: Add Common Module"
+      },
+      {
+        "command": "vbaTools.commonModules.list",
+        "title": "VBA Tools: List Common Modules"
+      },
+      {
+        "command": "vbaTools.commonModules.update",
+        "title": "VBA Tools: Update Common Modules"
+      },
+      {
+        "command": "vbaTools.references.list",
+        "title": "VBA Tools: List References"
+      },
+      {
+        "command": "vbaTools.references.add",
+        "title": "VBA Tools: Add Reference"
+      },
+      {
+        "command": "vbaTools.references.remove",
+        "title": "VBA Tools: Remove Reference"
+      }
+    ],
+    "configuration": {
+      "title": "VBA Tools",
+      "properties": {
+        "vbaLanguageServer.trace.server": {
+          "scope": "window",
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Controls LSP trace output for the VBA language server."
+        },
+        "vbaTools.devtool.path": {
+          "scope": "machine-overridable",
+          "type": "string",
+          "default": "",
+          "description": "Overrides the bundled vba-dev executable path for development or diagnostics."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -b",
+    "test": "npm run test:extension && npm run test:devtool && npm run test:language-server && npm run test:packaging",
+    "test:extension": "npm run compile && node client/out/testRunner.js",
+    "test:devtool": "dotnet test tools/vba-dev/tests/VbaDev.Tests/VbaDev.Tests.csproj -m:1 -p:UseSharedCompilation=false",
+    "test:language-server": "dotnet test tools/vba-language-server/tests/VbaLanguageServer.Tests/VbaLanguageServer.Tests.csproj -m:1 -p:UseSharedCompilation=false",
+    "test:packaging": "node --test scripts/*.test.mjs",
+    "build:devtool": "dotnet build tools/vba-dev/src/VbaDev.Cli/VbaDev.Cli.csproj -m:1 -p:UseSharedCompilation=false",
+    "publish:devtool": "dotnet publish tools/vba-dev/src/VbaDev.Cli/VbaDev.Cli.csproj -c Release -o bin/vba-dev/win-x64 -m:1 -p:UseSharedCompilation=false",
+    "publish:language-server": "dotnet publish tools/vba-language-server/src/VbaLanguageServer.Cli/VbaLanguageServer.Cli.csproj -c Release -o bin/vba-language-server/win-x64 -m:1 -p:UseSharedCompilation=false",
+    "verify:vsix": "node scripts/vsixPackagingRules.mjs",
+    "package:verify": "npm run publish:devtool && npm run publish:language-server && npm run compile && npm run verify:vsix",
+    "watch": "tsc -b -w",
+    "vscode:prepublish": "npm run compile",
+    "package": "npm run package:verify && vsce package"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/vscode": "^1.125.0",
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.6.0",
+    "typescript": "^5.9.0"
+  }
+}

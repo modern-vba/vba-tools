@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/VbaDev.App/VbaDev.App.csproj" />
+    <Project Path="src/VbaDev.Cli/VbaDev.Cli.csproj" />
+    <Project Path="src/VbaDev.Composition/VbaDev.Composition.csproj" />
+    <Project Path="src/VbaDev.Domain/VbaDev.Domain.csproj" />
+    <Project Path="src/VbaDev.Infrastructure/VbaDev.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/VbaDev.Tests/VbaDev.Tests.csproj" />
+  </Folder>
+</Solution>

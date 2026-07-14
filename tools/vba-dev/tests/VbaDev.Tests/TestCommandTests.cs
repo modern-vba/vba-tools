@@ -1,0 +1,321 @@
+using System.Text;
+using System.Runtime.InteropServices;
+using VbaDev.App.Testing;
+using VbaDev.App.Workbooks;
+using VbaDev.Composition;
+using VbaDev.Domain;
+using VbaDev.Infrastructure.Projects;
+using Xunit;
+
+namespace VbaDev.Tests;
+
+public sealed class TestCommandTests
+{
+    [Fact]
+    public void NdjsonFormatEmitsEventRecordsForWorkbookTestRun()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        var binPath = Path.Combine(root, "bin", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
+        File.WriteAllText(binPath, "bin", Encoding.UTF8);
+        var runner = new FakeWorkbookTestRunner(
+            new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", "", TimeSpan.FromMilliseconds(12.5)),
+            new WorkbookTestResultRow("Test_Module", "Test_Fails", "NG", "Expected 1 but was 2"),
+            new WorkbookTestResultRow("Test_Module", "Test_Errors", "ERR", "Runtime error"));
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
+
+        var result = application.Run(["test", "--no-build", "--format", "ndjson"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Equal(
+            "{\"type\":\"runStarted\",\"project\":\"Project\",\"document\":\"Book1\"}\n" +
+            "{\"type\":\"testStarted\",\"project\":\"Project\",\"document\":\"Book1\",\"module\":\"Test_Module\",\"procedure\":\"Test_Passes\"}\n" +
+            "{\"type\":\"testFinished\",\"project\":\"Project\",\"document\":\"Book1\",\"module\":\"Test_Module\",\"procedure\":\"Test_Passes\",\"outcome\":\"passed\",\"message\":\"\",\"durationMilliseconds\":12.5}\n" +
+            "{\"type\":\"testStarted\",\"project\":\"Project\",\"document\":\"Book1\",\"module\":\"Test_Module\",\"procedure\":\"Test_Fails\"}\n" +
+            "{\"type\":\"testFinished\",\"project\":\"Project\",\"document\":\"Book1\",\"module\":\"Test_Module\",\"procedure\":\"Test_Fails\",\"outcome\":\"failed\",\"message\":\"Expected 1 but was 2\"}\n" +
+            "{\"type\":\"testStarted\",\"project\":\"Project\",\"document\":\"Book1\",\"module\":\"Test_Module\",\"procedure\":\"Test_Errors\"}\n" +
+            "{\"type\":\"testFinished\",\"project\":\"Project\",\"document\":\"Book1\",\"module\":\"Test_Module\",\"procedure\":\"Test_Errors\",\"outcome\":\"error\",\"message\":\"Runtime error\"}\n" +
+            "{\"type\":\"runFinished\",\"project\":\"Project\",\"document\":\"Book1\",\"outcome\":\"failed\",\"total\":3,\"passed\":1,\"failed\":1,\"errors\":1}\n",
+            result.StandardOutput);
+        Assert.Equal(string.Empty, result.StandardError);
+    }
+
+    [Fact]
+    public void TextFormatEmitsReadableStableTerminalOutput()
+    {
+        var formatter = new TestResultOutputFormatter();
+
+        var output = formatter.Format("text", "Project", "Book1", SampleResults());
+
+        Assert.Equal(
+            "Book1: 1 passed, 1 failed, 1 errors, 3 total\n" +
+            "[passed] Test_Module.Test_Passes\n" +
+            "[failed] Test_Module.Test_Fails - Expected 1 but was 2\n" +
+            "[error] Test_Module.Test_Errors - Runtime error\n",
+            output);
+    }
+
+    [Fact]
+    public void TestRunsAgainstManifestResolvedBinWorkbookWhenBuildIsDisabled()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        var binPath = Path.Combine(root, "bin", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
+        File.WriteAllText(binPath, "bin", Encoding.UTF8);
+        var runner = new FakeWorkbookTestRunner(new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
+        var buildAutomation = new FakeWorkbookBuildAutomation();
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+            root,
+            workbookBuildAutomation: buildAutomation,
+            workbookTestRunner: runner);
+
+        var result = application.Run(["test", "--no-build", "--format", "text"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal([binPath], runner.Workbooks);
+        Assert.Empty(buildAutomation.OpenedWorkbooks);
+        Assert.Contains("Book1: 1 passed, 0 failed, 0 errors, 1 total", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TestForwardsModuleAndProcedureSelectorsWhenBuildIsDisabled()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        var binPath = Path.Combine(root, "bin", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
+        File.WriteAllText(binPath, "bin", Encoding.UTF8);
+        var runner = new FakeWorkbookTestRunner(new WorkbookTestResultRow("Test_Foo", "Test_Bar", "OK", ""));
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
+
+        var result = application.Run(["test", "--no-build", "--module", "Test_Foo", "--procedure", "Test_Bar", "--format", "ndjson"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal([new WorkbookTestSelector("Test_Foo", "Test_Bar")], runner.Selectors);
+        Assert.Contains("\"module\":\"Test_Foo\"", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("\"procedure\":\"Test_Bar\"", result.StandardOutput, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"category\"", result.StandardOutput, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"testName\"", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TestForwardsModuleSelectorThroughDefaultBuildFlow()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
+        var runner = new FakeWorkbookTestRunner(new WorkbookTestResultRow("Test_Foo", "Test_Bar", "OK", ""));
+        var buildAutomation = new FakeWorkbookBuildAutomation();
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+            root,
+            workbookBuildAutomation: buildAutomation,
+            workbookTestRunner: runner);
+
+        var result = application.Run(["test", "--module", "Test_Foo", "--format", "text"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.NotEmpty(buildAutomation.OpenedWorkbooks);
+        Assert.Equal([new WorkbookTestSelector("Test_Foo", null)], runner.Selectors);
+    }
+
+    [Fact]
+    public void TestRejectsProcedureSelectorWithoutModuleSelector()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
+
+        var result = ToolingCompositionRoot
+            .CreateCommandLineApplication(root, workbookTestRunner: new FakeWorkbookTestRunner())
+            .Run(["test", "--procedure", "Test_Bar"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("--procedure requires --module.", result.StandardError, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TestReportsSelectorRunnerErrorsAsUsageErrors()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        var binPath = Path.Combine(root, "bin", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
+        File.WriteAllText(binPath, "bin", Encoding.UTF8);
+        var runner = new FakeWorkbookTestRunner
+        {
+            Error = new InvalidOperationException("Test module was not found: MissingModule")
+        };
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
+
+        var result = application.Run(["test", "--no-build", "--module", "MissingModule"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("Test module was not found: MissingModule", result.StandardError, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TestReportsComRunnerErrorsAsUsageErrors()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        var binPath = Path.Combine(root, "bin", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
+        File.WriteAllText(binPath, "bin", Encoding.UTF8);
+        var runner = new FakeWorkbookTestRunner
+        {
+            Error = new COMException("0x800A801C", unchecked((int)0x800A801C))
+        };
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
+
+        var result = application.Run(["test", "--no-build"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("Excel COM test automation failed", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("coding agent", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("outside the sandbox", result.StandardError, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TestBuildsBeforeRunningTestsByDefault()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
+        var runner = new FakeWorkbookTestRunner(new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
+        var buildAutomation = new FakeWorkbookBuildAutomation();
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+            root,
+            workbookBuildAutomation: buildAutomation,
+            workbookTestRunner: runner);
+
+        var result = application.Run(["test", "--format", "text"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.NotEmpty(buildAutomation.OpenedWorkbooks);
+        Assert.Equal([Path.Combine(root, "bin", "Book1.xlsm")], runner.Workbooks);
+        Assert.DoesNotContain("Built ", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TestNormalizesSuccessFailureAndErrorOutcomesAndReturnsFailureExitCode()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        var binPath = Path.Combine(root, "bin", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
+        File.WriteAllText(binPath, "bin", Encoding.UTF8);
+        var runner = new FakeWorkbookTestRunner(
+            new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""),
+            new WorkbookTestResultRow("Test_Module", "Test_Fails", "NG", "failed"),
+            new WorkbookTestResultRow("Test_Module", "Test_Errors", "ERR", "errored"));
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
+
+        var result = application.Run(["test", "--no-build", "--format", "ndjson"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("\"outcome\":\"passed\"", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("\"outcome\":\"failed\"", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("\"outcome\":\"error\"", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Equal(string.Empty, result.StandardError);
+    }
+
+    [Fact]
+    public void TestUsesManifestDefaultFormatWhenFormatOptionIsOmitted()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null) with
+        {
+            CommandDefaults = new CommandDefaults(Test: new TestCommandDefaults(Format: "text"))
+        };
+        new JsonProjectManifestStore().Save(root, manifest);
+        var binPath = Path.Combine(root, "bin", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
+        File.WriteAllText(binPath, "bin", Encoding.UTF8);
+        var runner = new FakeWorkbookTestRunner(new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
+
+        var result = application.Run(["test", "--no-build"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.StartsWith("Book1: 1 passed", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TestUsesTextOutputWhenNoFormatOptionOrManifestDefaultExists()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null) with
+        {
+            CommandDefaults = null
+        };
+        new JsonProjectManifestStore().Save(root, manifest);
+        var binPath = Path.Combine(root, "bin", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
+        File.WriteAllText(binPath, "bin", Encoding.UTF8);
+        var runner = new FakeWorkbookTestRunner(new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
+
+        var result = application.Run(["test", "--no-build"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.StartsWith("Book1: 1 passed", result.StandardOutput, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"type\":\"summary\"", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    private static IReadOnlyList<TestResultRecord> SampleResults()
+        =>
+        [
+            new("Book1", "Test_Module", "Test_Passes", TestOutcome.Passed, "", TimeSpan.FromMilliseconds(12.5)),
+            new("Book1", "Test_Module", "Test_Fails", TestOutcome.Failed, "Expected 1 but was 2"),
+            new("Book1", "Test_Module", "Test_Errors", TestOutcome.Error, "Runtime error")
+        ];
+
+    private static void CreateWorkbookSource(string root, string documentName, params (string FileName, string Content)[] sources)
+    {
+        var sourceDirectory = Path.Combine(root, "src", documentName);
+        Directory.CreateDirectory(sourceDirectory);
+        File.WriteAllText(Path.Combine(sourceDirectory, $"{documentName}.xlsm"), $"template:{documentName}", Encoding.UTF8);
+        foreach (var source in sources)
+        {
+            File.WriteAllText(Path.Combine(sourceDirectory, source.FileName), source.Content, Encoding.UTF8);
+        }
+    }
+}
+
+internal sealed class FakeWorkbookTestRunner : IWorkbookTestRunner
+{
+    private readonly IReadOnlyList<WorkbookTestResultRow> results;
+
+    public FakeWorkbookTestRunner(params WorkbookTestResultRow[] results)
+    {
+        this.results = results;
+    }
+
+    public List<string> Workbooks { get; } = [];
+    public List<WorkbookTestSelector> Selectors { get; } = [];
+    public Exception? Error { get; init; }
+
+    public IReadOnlyList<WorkbookTestResultRow> RunTests(string workbookPath, WorkbookTestSelector selector)
+    {
+        if (Error is not null)
+        {
+            throw Error;
+        }
+
+        Workbooks.Add(workbookPath);
+        Selectors.Add(selector);
+        return results;
+    }
+}

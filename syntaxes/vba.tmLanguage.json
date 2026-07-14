@@ -1,0 +1,92 @@
+{
+  "name": "VBA",
+  "scopeName": "source.vba",
+  "patterns": [
+    {
+      "include": "#documentation-comment"
+    },
+    {
+      "include": "#comment"
+    },
+    {
+      "include": "#string"
+    },
+    {
+      "include": "#attribute"
+    },
+    {
+      "include": "#intrinsic-type"
+    },
+    {
+      "include": "#language-constant"
+    },
+    {
+      "include": "#declaration-end-keyword"
+    },
+    {
+      "include": "#control-keyword"
+    },
+    {
+      "include": "#keyword"
+    },
+    {
+      "include": "#number"
+    },
+    {
+      "include": "#operator"
+    }
+  ],
+  "repository": {
+    "documentation-comment": {
+      "name": "comment.block.documentation.vba",
+      "match": "^\\s*'\\*.*$"
+    },
+    "comment": {
+      "name": "comment.line.apostrophe.vba",
+      "match": "'[^\\r\\n]*$"
+    },
+    "string": {
+      "name": "string.quoted.double.vba",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.vba",
+          "match": "\"\""
+        }
+      ]
+    },
+    "attribute": {
+      "name": "meta.attribute.vba",
+      "match": "(?i)^\\s*Attribute\\s+VB_Name\\b"
+    },
+    "intrinsic-type": {
+      "name": "storage.type.intrinsic.vba",
+      "match": "(?i)\\b(?:String|Long|Integer|Boolean|Variant|Object|Date|Double|Single|Currency|Byte|Decimal|LongLong|LongPtr|PtrSafe)\\b"
+    },
+    "language-constant": {
+      "name": "constant.language.vba",
+      "match": "(?i)\\b(?:True|False|Nothing|Null|Empty)\\b"
+    },
+    "declaration-end-keyword": {
+      "name": "keyword.vba",
+      "match": "(?i)\\bEnd\\s+(?:Sub|Function|Property)\\b"
+    },
+    "control-keyword": {
+      "name": "keyword.control.vba",
+      "match": "(?i)\\b(?:End(?!\\s+(?:Sub|Function|Property)\\b)|If|Then|Else|ElseIf|For|Each|In|Next|Do|Loop|While|Wend|Select|Case|With|Exit)\\b"
+    },
+    "keyword": {
+      "name": "keyword.vba",
+      "match": "(?i)\\b(?:Public|Private|Friend|Global|Dim|Static|Const|Sub|Function|Property|Get|Let|Set|Enum|Type|Event|RaiseEvent|Implements|Option|Explicit|Base|Module|As|ByVal|ByRef|Optional|ParamArray|Call|New|Declare|PtrSafe|Lib|Alias|WithEvents)\\b"
+    },
+    "number": {
+      "name": "constant.numeric.vba",
+      "match": "(?:&H[0-9A-Fa-f]+|\\b\\d+(?:\\.\\d+)?\\b)"
+    },
+    "operator": {
+      "name": "keyword.operator.vba",
+      "match": "[-+*/=<>:&]"
+    }
+  }
+}

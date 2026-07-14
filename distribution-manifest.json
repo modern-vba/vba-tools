@@ -1,0 +1,50 @@
+{
+  "manifestVersion": 1,
+  "runtimes": {
+    "vbaDev": {
+      "label": "vba-dev",
+      "executablePath": "bin/vba-dev/win-x64/vba-dev.exe",
+      "projectPath": "tools/vba-dev/src/VbaDev.Cli/VbaDev.Cli.csproj",
+      "assemblyName": "vba-dev",
+      "runtimeIdentifier": "win-x64",
+      "selfContained": true,
+      "publishSingleFile": true,
+      "smokeCommand": [
+        "capabilities",
+        "--format",
+        "json"
+      ],
+      "contractPath": "vba-dev-contract.json"
+    },
+    "vbaLanguageServer": {
+      "label": "VbaLanguageServer",
+      "executablePath": "bin/vba-language-server/win-x64/vba-language-server.exe",
+      "projectPath": "tools/vba-language-server/src/VbaLanguageServer.Cli/VbaLanguageServer.Cli.csproj",
+      "assemblyName": "vba-language-server",
+      "runtimeIdentifier": "win-x64",
+      "selfContained": true,
+      "publishSingleFile": true,
+      "smokeCommand": [
+        "--version"
+      ],
+      "versionOutputPrefix": "vba-language-server "
+    }
+  },
+  "vsix": {
+    "requiredFiles": [
+      "distribution-manifest.json"
+    ],
+    "excludedSourcePrefixes": [
+      "tools/vba-dev/",
+      "tools/vba-language-server/",
+      "client/src/",
+      "server/"
+    ],
+    "forbiddenRuntimeSidecarSuffixes": [
+      ".deps.json",
+      ".dll",
+      ".pdb",
+      ".runtimeconfig.json"
+    ]
+  }
+}

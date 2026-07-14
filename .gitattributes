@@ -1,0 +1,47 @@
+* text=auto eol=lf
+
+# TypeScript / JavaScript source
+*.ts text eol=lf
+*.tsx text eol=lf
+*.js text eol=lf
+*.jsx text eol=lf
+*.mjs text eol=lf
+*.cjs text eol=lf
+
+# Documentation and configuration
+*.md text eol=lf
+*.json text eol=lf
+*.jsonc text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+*.lock text eol=lf
+*.code-workspace text eol=lf
+
+# Web assets commonly used by VS Code extensions
+*.html text eol=lf
+*.css text eol=lf
+*.scss text eol=lf
+*.svg text eol=lf
+
+# Scripts
+*.ps1 text eol=lf
+*.sh text eol=lf
+
+# Test fixtures for VBA language behavior
+*.bas text eol=lf
+*.cls text eol=lf
+*.frm text eol=lf
+
+# Binary assets and packages
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.tgz binary
+*.vsix binary
+*.wasm binary

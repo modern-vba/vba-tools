@@ -1,0 +1,601 @@
+using VbaLanguageServer.ProjectModel;
+using VbaLanguageServer.SourceModel;
+using Xunit;
+
+namespace VbaLanguageServer.Tests;
+
+public sealed class VbaSemanticResolutionTests
+{
+    [Fact]
+    public void ResolvesTypedReferenceMembersAndMissingMetadataFailsClosed()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Option Explicit",
+            "Public Sub Run()",
+            "    Dim app As Excel.Application",
+            "    app.",
+            "    app.Run(",
+            "    Dim dict As Scripting.Dictionary",
+            "    dict.",
+            "    Dim unknown As MissingType",
+            "    unknown.",
+            "End Sub"
+        ]);
+        var index = BuildIndex(uri, text);
+
+        var appCompletionLabels = index.GetCompletionDefinitions(uri, 4, "    app.".Length)
+            .Select(definition => definition.Name)
+            .ToArray();
+        Assert.Contains("Run", appCompletionLabels);
+        Assert.Contains("Workbooks", appCompletionLabels);
+        Assert.DoesNotContain("Dictionary", appCompletionLabels);
+
+        var runDefinition = index.ResolveSourceDefinition(uri, 5, "    app.".Length);
+        Assert.Equal("Microsoft Excel 16.0 Object Library", runDefinition?.ModuleName);
+        Assert.Equal("Application", runDefinition?.ParentTypeName);
+        Assert.Equal("Run(Macro, [Arg1])", index.GetSignatureHelp(uri, 5, "    app.Run(".Length)?.Signature.Label);
+
+        var dictionaryCompletionLabels = index.GetCompletionDefinitions(uri, 7, "    dict.".Length)
+            .Select(definition => definition.Name)
+            .ToArray();
+        Assert.Contains("Exists", dictionaryCompletionLabels);
+        Assert.Empty(index.GetCompletionDefinitions(uri, 9, "    unknown.".Length));
+    }
+
+    [Fact]
+    public void SourceTypesOutrankReferencesUnlessTypeAnnotationIsReferenceQualified()
+    {
+        const string workerUri = "file:///C:/work/Worker.bas";
+        const string applicationUri = "file:///C:/work/Application.cls";
+        var workerText = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Option Explicit",
+            "Public Sub Run()",
+            "    Dim sourceApp As Application",
+            "    sourceApp.",
+            "    Dim excelApp As Excel.Application",
+            "    excelApp.",
+            "End Sub"
+        ]);
+        var sourceApplicationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Application\"",
+            "Public Function SourceOnly() As String",
+            "End Function"
+        ]);
+        var index = BuildIndex(
+            new Dictionary<string, string>
+            {
+                [workerUri] = workerText,
+                [applicationUri] = sourceApplicationText
+            });
+
+        var sourceLabels = index.GetCompletionDefinitions(workerUri, 4, "    sourceApp.".Length)
+            .Select(definition => definition.Name)
+            .ToArray();
+        Assert.Contains("SourceOnly", sourceLabels);
+        Assert.DoesNotContain("Run", sourceLabels);
+
+        var referenceLabels = index.GetCompletionDefinitions(workerUri, 6, "    excelApp.".Length)
+            .Select(definition => definition.Name)
+            .ToArray();
+        Assert.Contains("Run", referenceLabels);
+        Assert.DoesNotContain("SourceOnly", referenceLabels);
+    }
+
+    [Fact]
+    public void ResolvesMemberChainsContinuationsAndNestedWithReceivers()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Option Explicit",
+            "Public Sub Run()",
+            "    Dim app As Excel.Application",
+            "    app.Workbooks.",
+            "    app _",
+            "        .Run(",
+            "    app.Run( _",
+            "        ",
+            "    With app",
+            "        With .Workbooks",
+            "            .Open(",
+            "        End With",
+            "    End With",
+            "    With app _",
+            "        .Workbooks",
+            "        .Open(",
+            "    End With",
+            "End Sub"
+        ]);
+        var index = BuildIndex(uri, text);
+
+        var workbookLabels = index.GetCompletionDefinitions(uri, 4, "    app.Workbooks.".Length)
+            .Select(definition => definition.Name)
+            .ToArray();
+        Assert.Contains("Open", workbookLabels);
+
+        Assert.Equal("Run(Macro, [Arg1])", index.GetSignatureHelp(uri, 6, "        .Run(".Length)?.Signature.Label);
+        Assert.Equal("Run(Macro, [Arg1])", index.GetSignatureHelp(uri, 8, "        ".Length)?.Signature.Label);
+        Assert.Equal("Open(FileName)", index.GetSignatureHelp(uri, 11, "            .Open(".Length)?.Signature.Label);
+        Assert.Equal("Open(FileName)", index.GetSignatureHelp(uri, 16, "        .Open(".Length)?.Signature.Label);
+    }
+
+    [Fact]
+    public void MemberAndTypeCompletionUseSourceTypeContext()
+    {
+        const string workerUri = "file:///C:/work/Worker.bas";
+        const string rangeBoundsUri = "file:///C:/work/WorksheetRangeBounds.cls";
+        const string helperUri = "file:///C:/work/Helper.bas";
+        var workerText = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Option Explicit",
+            "Public Sub Run()",
+            "    Dim bare As ",
+            "    Dim typed As WorksheetRan",
+            "    Dim range_obj As WorksheetRangeBounds",
+            "    range_obj.",
+            "    range_obj.Col",
+            "    aaaa = range_obj.Column ",
+            "    aaaa = range_obj. ",
+            "End Sub"
+        ]);
+        var rangeBoundsText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"WorksheetRangeBounds\"",
+            "Public Property Get Column() As Long",
+            "End Property",
+            "Public Property Get ColumnCount() As Long",
+            "End Property"
+        ]);
+        var helperText = string.Join('\n', [
+            "Attribute VB_Name = \"Helper\"",
+            "Public Function BuildValue() As String",
+            "End Function"
+        ]);
+        var index = BuildIndex(
+            new Dictionary<string, string>
+            {
+                [workerUri] = workerText,
+                [rangeBoundsUri] = rangeBoundsText,
+                [helperUri] = helperText
+            });
+
+        var dotCompletion = index.GetCompletionResult(workerUri, 6, "    range_obj.".Length);
+        var dotLabels = dotCompletion.Definitions.Select(definition => definition.Name).ToArray();
+        Assert.Equal(VbaCompletionVocabularyKind.None, dotCompletion.VocabularyKind);
+        Assert.Contains("Column", dotLabels);
+        Assert.Contains("ColumnCount", dotLabels);
+        Assert.DoesNotContain("BuildValue", dotLabels);
+
+        var partialCompletion = index.GetCompletionResult(workerUri, 7, "    range_obj.Col".Length);
+        var partialLabels = partialCompletion.Definitions.Select(definition => definition.Name).ToArray();
+        Assert.Equal(VbaCompletionVocabularyKind.None, partialCompletion.VocabularyKind);
+        Assert.Contains("Column", partialLabels);
+        Assert.Contains("ColumnCount", partialLabels);
+        Assert.DoesNotContain("BuildValue", partialLabels);
+
+        var completedMemberCompletion = index.GetCompletionResult(workerUri, 8, "    aaaa = range_obj.Column ".Length);
+        Assert.Equal(VbaCompletionVocabularyKind.None, completedMemberCompletion.VocabularyKind);
+        Assert.Empty(completedMemberCompletion.Definitions);
+
+        var spacedDotCompletion = index.GetCompletionResult(workerUri, 9, "    aaaa = range_obj. ".Length);
+        Assert.Equal(VbaCompletionVocabularyKind.None, spacedDotCompletion.VocabularyKind);
+        Assert.Empty(spacedDotCompletion.Definitions);
+
+        var bareTypeCompletion = index.GetCompletionResult(workerUri, 3, "    Dim bare As ".Length);
+        Assert.Equal(VbaCompletionVocabularyKind.TypeName, bareTypeCompletion.VocabularyKind);
+        Assert.Contains(
+            bareTypeCompletion.Definitions,
+            definition => definition.Name == "WorksheetRangeBounds" && definition.Kind == VbaSourceDefinitionKind.Class);
+
+        var typeCompletion = index.GetCompletionResult(workerUri, 4, "    Dim typed As WorksheetRan".Length);
+        Assert.Equal(VbaCompletionVocabularyKind.TypeName, typeCompletion.VocabularyKind);
+        Assert.Contains(
+            typeCompletion.Definitions,
+            definition => definition.Name == "WorksheetRangeBounds" && definition.Kind == VbaSourceDefinitionKind.Class);
+    }
+
+    [Fact]
+    public void MemberCompletionUsesPublicMembersOfGlobalVariableTypeFromOtherModule()
+    {
+        const string workerUri = "file:///C:/work/Mod_Search.bas";
+        const string commonUri = "file:///C:/work/common-modules/Lib_Common.bas";
+        const string worksheetServiceUri = "file:///C:/work/common-modules/IWorksheetService.cls";
+        var workerText = string.Join('\n', [
+            "Attribute VB_Name = \"Mod_Search\"",
+            "Option Explicit",
+            "Public Sub Run()",
+            "    WsSrv.",
+            "End Sub"
+        ]);
+        var commonText = string.Join('\n', [
+            "Attribute VB_Name = \"Lib_Common\"",
+            "Option Explicit",
+            "Public WsSrv As IWorksheetService"
+        ]);
+        var worksheetServiceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IWorksheetService\"",
+            "Private Sub Class_Initialize()",
+            "End Sub",
+            "Public Function Find() As Object",
+            "End Function",
+            "Public Sub ClearRange()",
+            "End Sub",
+            "Public Sub SetRangeColor()",
+            "End Sub"
+        ]);
+        var index = BuildIndex(
+            new Dictionary<string, string>
+            {
+                [workerUri] = workerText,
+                [commonUri] = commonText,
+                [worksheetServiceUri] = worksheetServiceText
+            });
+
+        var labels = index.GetCompletionDefinitions(workerUri, 3, "    WsSrv.".Length)
+            .Select(definition => definition.Name)
+            .ToArray();
+
+        Assert.Contains("Find", labels);
+        Assert.Contains("ClearRange", labels);
+        Assert.Contains("SetRangeColor", labels);
+        Assert.DoesNotContain("Class_Initialize", labels);
+    }
+
+    [Fact]
+    public void CompletionStaysSilentInsideApostropheComments()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    ' Call Build",
+            "    Dim value As String",
+            "End Sub"
+        ]);
+        var index = BuildIndex(uri, text);
+
+        var commentCompletion = index.GetCompletionResult(uri, 2, "    ' Call B".Length);
+        var codeCompletion = index.GetCompletionResult(uri, 3, "    Dim value As ".Length);
+
+        Assert.Equal(VbaCompletionVocabularyKind.None, commentCompletion.VocabularyKind);
+        Assert.Empty(commentCompletion.Definitions);
+        Assert.Equal(VbaCompletionVocabularyKind.TypeName, codeCompletion.VocabularyKind);
+        Assert.NotEmpty(codeCompletion.Definitions);
+    }
+
+    [Fact]
+    public void CompletionStaysSilentInsideStringLiterals()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    value = \"Call Build\"",
+            "    Dim value As String",
+            "End Sub"
+        ]);
+        var index = BuildIndex(uri, text);
+
+        var stringCompletion = index.GetCompletionResult(uri, 2, "    value = \"Call B".Length);
+        var codeCompletion = index.GetCompletionResult(uri, 3, "    Dim value As ".Length);
+
+        Assert.Equal(VbaCompletionVocabularyKind.None, stringCompletion.VocabularyKind);
+        Assert.Empty(stringCompletion.Definitions);
+        Assert.Equal(VbaCompletionVocabularyKind.TypeName, codeCompletion.VocabularyKind);
+        Assert.NotEmpty(codeCompletion.Definitions);
+    }
+
+    [Fact]
+    public void CompletionStaysSilentInsideDocumentationComments()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "'* Calls Build",
+            "Public Sub Run()",
+            "    Dim value As String",
+            "End Sub"
+        ]);
+        var index = BuildIndex(uri, text);
+
+        var documentationCompletion = index.GetCompletionResult(uri, 1, "'* Calls B".Length);
+        var codeCompletion = index.GetCompletionResult(uri, 3, "    Dim value As ".Length);
+
+        Assert.Equal(VbaCompletionVocabularyKind.None, documentationCompletion.VocabularyKind);
+        Assert.Empty(documentationCompletion.Definitions);
+        Assert.Equal(VbaCompletionVocabularyKind.TypeName, codeCompletion.VocabularyKind);
+        Assert.NotEmpty(codeCompletion.Definitions);
+    }
+
+    [Fact]
+    public void CompletionStaysSilentInsideRemComments()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    Rem Call Build",
+            "    Dim value As String",
+            "End Sub"
+        ]);
+        var index = BuildIndex(uri, text);
+
+        var remCompletion = index.GetCompletionResult(uri, 2, "    Rem Call B".Length);
+        var codeCompletion = index.GetCompletionResult(uri, 3, "    Dim value As ".Length);
+
+        Assert.Equal(VbaCompletionVocabularyKind.None, remCompletion.VocabularyKind);
+        Assert.Empty(remCompletion.Definitions);
+        Assert.Equal(VbaCompletionVocabularyKind.TypeName, codeCompletion.VocabularyKind);
+        Assert.NotEmpty(codeCompletion.Definitions);
+    }
+
+    [Fact]
+    public void CompletionStaysSilentImmediatelyAfterLineContinuationMarker()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    BuildValue _",
+            "    Dim value As String",
+            "End Sub",
+            "Public Sub BuildValue()",
+            "End Sub"
+        ]);
+        var index = BuildIndex(uri, text);
+
+        var continuationCompletion = index.GetCompletionResult(uri, 2, "    BuildValue _".Length);
+        var codeCompletion = index.GetCompletionResult(uri, 3, "    Dim value As ".Length);
+
+        Assert.Equal(VbaCompletionVocabularyKind.None, continuationCompletion.VocabularyKind);
+        Assert.Empty(continuationCompletion.Definitions);
+        Assert.Equal(VbaCompletionVocabularyKind.TypeName, codeCompletion.VocabularyKind);
+        Assert.NotEmpty(codeCompletion.Definitions);
+    }
+
+    [Fact]
+    public void CompletionContinuesAfterIdentifierUnderscoreWithoutPrecedingSpace()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    value_",
+            "End Sub"
+        ]);
+        var index = BuildIndex(uri, text);
+
+        var completion = index.GetCompletionResult(uri, 2, "    value_".Length);
+
+        Assert.Equal(VbaCompletionVocabularyKind.Keyword, completion.VocabularyKind);
+        Assert.NotEmpty(completion.Definitions);
+    }
+
+    [Fact]
+    public void SignatureHelpUsesActiveNamedArgumentWhenParameterNameMatches()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Function ReadValue(ByVal Key As String, ByVal Fallback As String) As String",
+            "End Function",
+            "Public Sub Run()",
+            "    ReadValue(Fallback:=",
+            "End Sub"
+        ]);
+        var index = BuildIndex(uri, text);
+
+        var signatureHelp = index.GetSignatureHelp(uri, 4, "    ReadValue(Fallback:=".Length);
+
+        Assert.Equal("ReadValue(Key, Fallback) As String", signatureHelp?.Signature.Label);
+        Assert.Equal(1, signatureHelp?.ActiveParameter);
+    }
+
+    [Fact]
+    public void SignatureHelpFormatsSourceOptionalParametersAndTracksArgumentForms()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Function ExampleFunc(ByVal Arg1 As String, Optional Arg2 As Long, Optional ByVal Arg3 As Variant) As String",
+            "End Function",
+            "Public Sub Run()",
+            "    value = ExampleFunc(",
+            "    value = ExampleFunc(\"a\", ",
+            "    value = ExampleFunc(Arg2:=",
+            "    value = ExampleFunc(,, ",
+            "    value = ExampleFunc( _",
+            "        \"a\", _",
+            "        ",
+            "End Sub"
+        ]);
+        var index = BuildIndex(uri, text);
+
+        var opening = index.GetSignatureHelp(uri, 4, "    value = ExampleFunc(".Length);
+        var positional = index.GetSignatureHelp(uri, 5, "    value = ExampleFunc(\"a\", ".Length);
+        var named = index.GetSignatureHelp(uri, 6, "    value = ExampleFunc(Arg2:=".Length);
+        var omitted = index.GetSignatureHelp(uri, 7, "    value = ExampleFunc(,, ".Length);
+        var continued = index.GetSignatureHelp(uri, 10, "        ".Length);
+
+        Assert.Equal("ExampleFunc(Arg1, [Arg2], [Arg3]) As String", opening?.Signature.Label);
+        Assert.Equal(["Arg1", "Arg2", "Arg3"], opening!.Signature.Parameters.Select(parameter => parameter.Name).ToArray());
+        Assert.Equal(0, opening.ActiveParameter);
+        Assert.Equal(1, positional?.ActiveParameter);
+        Assert.Equal(1, named?.ActiveParameter);
+        Assert.Equal(2, omitted?.ActiveParameter);
+        Assert.Equal(1, continued?.ActiveParameter);
+    }
+
+    [Fact]
+    public void SignatureHelpReturnsSourceMemberCallableSignaturesAndStaysSilentForNonCallables()
+    {
+        const string workerUri = "file:///C:/work/Worker.bas";
+        const string helperUri = "file:///C:/work/HelperClass.cls";
+        var workerText = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    Dim helper As HelperClass",
+            "    helper.BuildValue(",
+            "    Dim value As String",
+            "    value(",
+            "End Sub"
+        ]);
+        var helperText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"HelperClass\"",
+            "Public Function BuildValue(ByVal Arg1 As String, Optional Arg2 As Long) As String",
+            "End Function"
+        ]);
+        var index = BuildIndex(new Dictionary<string, string>
+        {
+            [workerUri] = workerText,
+            [helperUri] = helperText
+        });
+
+        var sourceMember = index.GetSignatureHelp(workerUri, 3, "    helper.BuildValue(".Length);
+        var nonCallable = index.GetSignatureHelp(workerUri, 5, "    value(".Length);
+
+        Assert.Equal("BuildValue(Arg1, [Arg2]) As String", sourceMember?.Signature.Label);
+        Assert.Null(nonCallable);
+    }
+
+    [Fact]
+    public void SignatureHelpBracketsReferenceOptionalParametersOnlyWhenMetadataIsAvailable()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    Dim generated As GeneratedType",
+            "    generated.OptionalMethod(",
+            "    generated.PlainMethod(",
+            "End Sub"
+        ]);
+        var selection = VbaProjectReferenceSelection.Create(
+            ProjectDocument.ExcelKind,
+            [new VbaProjectReference("Generated Library")]);
+        var catalog = new VbaProjectReferenceCatalog(
+            "Generated Library",
+            ["Generated"],
+            [
+                new VbaProjectReferenceDefinition(
+                    "Generated Library",
+                    "GeneratedType",
+                    VbaSourceDefinitionKind.Class),
+                new VbaProjectReferenceDefinition(
+                    "Generated Library",
+                    "OptionalMethod",
+                    VbaSourceDefinitionKind.Procedure,
+                    Signature: new VbaCallableSignature(
+                        "OptionalMethod(Required, OptionalValue)",
+                        [
+                            new VbaCallableParameter("Required"),
+                            new VbaCallableParameter("OptionalValue", IsOptional: true)
+                        ]),
+                    ParentTypeName: "GeneratedType"),
+                new VbaProjectReferenceDefinition(
+                    "Generated Library",
+                    "PlainMethod",
+                    VbaSourceDefinitionKind.Procedure,
+                    Signature: new VbaCallableSignature(
+                        "PlainMethod(Required, OptionalValue)",
+                        [
+                            new VbaCallableParameter("Required"),
+                            new VbaCallableParameter("OptionalValue")
+                        ]),
+                    ParentTypeName: "GeneratedType")
+            ]);
+        var index = VbaSourceIndex.Build(
+            new Dictionary<string, string> { [uri] = text },
+            selection,
+            VbaProjectReferenceCatalogSet.Empty.WithCatalog(catalog));
+
+        var optionalSignature = index.GetSignatureHelp(uri, 3, "    generated.OptionalMethod(".Length);
+        var plainSignature = index.GetSignatureHelp(uri, 4, "    generated.PlainMethod(".Length);
+
+        Assert.Equal("OptionalMethod(Required, [OptionalValue])", optionalSignature?.Signature.Label);
+        Assert.Equal("PlainMethod(Required, OptionalValue)", plainSignature?.Signature.Label);
+    }
+
+    [Fact]
+    public void SignatureHelpSupportsStatementFormCallsOnlyAtStatementLevel()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub ExampleSub(ByVal Arg1 As String, Optional Arg2 As Long)",
+            "End Sub",
+            "Public Function ExampleFunc(ByVal Arg1 As String, Optional Arg2 As Long) As String",
+            "End Function",
+            "Public Sub Run()",
+            "    ExampleSub ",
+            "    Worker.ExampleSub ",
+            "    ExampleFunc ",
+            "    ExampleSub \"a\", ",
+            "    ExampleSub Arg2:=",
+            "    value = ExampleFunc ",
+            "    If ExampleFunc Then",
+            "    Dim localValue As String",
+            "End Sub"
+        ]);
+        var index = BuildIndex(uri, text);
+
+        var statementSub = index.GetSignatureHelp(uri, 6, "    ExampleSub ".Length);
+        var qualifiedSub = index.GetSignatureHelp(uri, 7, "    Worker.ExampleSub ".Length);
+        var discardedFunction = index.GetSignatureHelp(uri, 8, "    ExampleFunc ".Length);
+        var positional = index.GetSignatureHelp(uri, 9, "    ExampleSub \"a\", ".Length);
+        var named = index.GetSignatureHelp(uri, 10, "    ExampleSub Arg2:=".Length);
+        var assignment = index.GetSignatureHelp(uri, 11, "    value = ExampleFunc ".Length);
+        var ifExpression = index.GetSignatureHelp(uri, 12, "    If ExampleFunc ".Length);
+        var declaration = index.GetSignatureHelp(uri, 13, "    Dim localValue As ".Length);
+
+        Assert.Equal("ExampleSub(Arg1, [Arg2])", statementSub?.Signature.Label);
+        Assert.Equal("ExampleSub(Arg1, [Arg2])", qualifiedSub?.Signature.Label);
+        Assert.Equal("ExampleFunc(Arg1, [Arg2]) As String", discardedFunction?.Signature.Label);
+        Assert.Equal(0, statementSub?.ActiveParameter);
+        Assert.Equal(1, positional?.ActiveParameter);
+        Assert.Equal(1, named?.ActiveParameter);
+        Assert.Null(assignment);
+        Assert.Null(ifExpression);
+        Assert.Null(declaration);
+    }
+
+    [Fact]
+    public void SignatureHelpIncludesArrayParametersAndLaterParametersInOrder()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Function Search(ByRef Values() As String, ByVal Fallback As String) As Long",
+            "End Function",
+            "Public Sub Run()",
+            "    Search(",
+            "End Sub"
+        ]);
+        var index = BuildIndex(uri, text);
+
+        var signatureHelp = index.GetSignatureHelp(uri, 4, "    Search(".Length);
+
+        Assert.Equal("Search(Values, Fallback) As Long", signatureHelp?.Signature.Label);
+        Assert.Equal(["Values", "Fallback"], signatureHelp!.Signature.Parameters.Select(parameter => parameter.Name).ToArray());
+    }
+
+    private static VbaSourceIndex BuildIndex(string uri, string text)
+        => BuildIndex(new Dictionary<string, string> { [uri] = text });
+
+    private static VbaSourceIndex BuildIndex(IReadOnlyDictionary<string, string> sourceDocuments)
+        => VbaSourceIndex.Build(
+            sourceDocuments,
+            VbaProjectReferenceSelection.Create(
+                ProjectDocument.ExcelKind,
+                [
+                    new VbaProjectReference("Microsoft Excel 16.0 Object Library"),
+                    new VbaProjectReference("Microsoft Scripting Runtime")
+                ]),
+            VbaProjectReferenceCatalogSet.CreateBundled());
+}
