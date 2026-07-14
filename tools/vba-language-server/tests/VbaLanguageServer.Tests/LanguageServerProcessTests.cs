@@ -1204,12 +1204,18 @@ public sealed class LanguageServerProcessTests
             var text = string.Join('\n', [
                 "Attribute VB_Name = \"Worker\"",
                 "Option Explicit",
+                "Private WithEvents app As Excel.Application",
                 "",
                 "Public Sub Run()",
                 "    ",
+                "    Dim books As Excel.Workbooks",
+                "    Set books = app.Workbooks",
                 "    Excel.Application",
                 "    Scripting.Dictionary",
                 "    Excel.Run(",
+                "End Sub",
+                "",
+                "Private Sub app_WorkbookOpen(ByVal Wb As Workbook)",
                 "End Sub"
             ]);
             await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, text));
@@ -1222,7 +1228,7 @@ public sealed class LanguageServerProcessTests
                 new
                 {
                     textDocument = new { uri },
-                    position = new { line = 4, character = 4 }
+                    position = new { line = 5, character = 4 }
                 });
             var completionLabels = completion
                 .GetProperty("result")
@@ -1244,7 +1250,25 @@ public sealed class LanguageServerProcessTests
                 dictionaryHover.GetProperty("result").GetProperty("contents").GetProperty("value").GetString(),
                 StringComparison.Ordinal);
 
-            var signature = await SendPositionRequestAsync(stdin, stdout, 5, "textDocument/signatureHelp", uri, text, "Excel.Run(", "Excel.Run(".Length);
+            var runHover = await SendPositionRequestAsync(stdin, stdout, 5, "textDocument/hover", uri, text, "Excel.Run", "Excel.".Length);
+            Assert.Contains(
+                "Sub Run(Macro, [Arg1])",
+                runHover.GetProperty("result").GetProperty("contents").GetProperty("value").GetString(),
+                StringComparison.Ordinal);
+
+            var workbooksHover = await SendPositionRequestAsync(stdin, stdout, 6, "textDocument/hover", uri, text, "app.Workbooks", "app.".Length);
+            Assert.Contains(
+                "Property Workbooks As Workbooks",
+                workbooksHover.GetProperty("result").GetProperty("contents").GetProperty("value").GetString(),
+                StringComparison.Ordinal);
+
+            var eventHover = await SendPositionRequestAsync(stdin, stdout, 7, "textDocument/hover", uri, text, "WorkbookOpen");
+            Assert.Contains(
+                "Event WorkbookOpen(Wb)",
+                eventHover.GetProperty("result").GetProperty("contents").GetProperty("value").GetString(),
+                StringComparison.Ordinal);
+
+            var signature = await SendPositionRequestAsync(stdin, stdout, 8, "textDocument/signatureHelp", uri, text, "Excel.Run(", "Excel.Run(".Length);
             var firstSignature = signature
                 .GetProperty("result")
                 .GetProperty("signatures")
@@ -1256,7 +1280,7 @@ public sealed class LanguageServerProcessTests
                 firstSignature.GetProperty("parameters").EnumerateArray().First().GetProperty("documentation").GetProperty("value").GetString(),
                 StringComparison.Ordinal);
 
-            await SendRequestAsync(stdin, stdout, 6, "shutdown", null);
+            await SendRequestAsync(stdin, stdout, 9, "shutdown", null);
             await SendNotificationAsync(stdin, "exit", null);
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await process.WaitForExitAsync(cancellation.Token);
@@ -1265,6 +1289,73 @@ public sealed class LanguageServerProcessTests
         finally
         {
             Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_uses_reference_catalog_variant_type_metadata_in_hover_declaration_labels()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-catalog-variant-").FullName;
+        var cacheRoot = Directory.CreateTempSubdirectory("vba-ls-catalog-variant-cache-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(projectRoot, "Generated Library");
+            new VbaProjectReferenceCatalogPersistentStore(cacheRoot).Save(
+                new VbaProjectReferenceCatalogPersistentEntry(
+                    CreateGeneratedReferenceCatalogIdentity("Generated Library"),
+                    new VbaProjectReferenceCatalog(
+                        "Generated Library",
+                        ["Generated"],
+                        [
+                            new VbaProjectReferenceDefinition(
+                                "Generated Library",
+                                "GeneratedValue",
+                                VbaSourceDefinitionKind.Property,
+                                "Returns a generated value.",
+                                TypeReference: new VbaTypeReference("Variant"))
+                        ])));
+
+            var serverProjectPath = Path.GetFullPath(
+                Path.Combine(
+                    AppContext.BaseDirectory,
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "src",
+                    "VbaLanguageServer.Cli",
+                    "VbaLanguageServer.Cli.csproj"));
+
+            using var process = StartLanguageServer(serverProjectPath, cacheRoot);
+            await using var stdin = process.StandardInput.BaseStream;
+            using var stdout = process.StandardOutput.BaseStream;
+
+            await InitializeAsync(stdin, stdout);
+            var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
+            var text = string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Public Sub Run()",
+                "    Generated.GeneratedValue",
+                "End Sub"
+            ]);
+            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, text));
+
+            var hover = await SendPositionRequestAsync(stdin, stdout, 2, "textDocument/hover", uri, text, "Generated.GeneratedValue", "Generated.".Length);
+            var hoverValue = hover.GetProperty("result").GetProperty("contents").GetProperty("value").GetString();
+            Assert.Contains("Returns a generated value.", hoverValue, StringComparison.Ordinal);
+            Assert.Contains("Property GeneratedValue As Variant", hoverValue, StringComparison.Ordinal);
+
+            await SendRequestAsync(stdin, stdout, 3, "shutdown", null);
+            await SendNotificationAsync(stdin, "exit", null);
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await process.WaitForExitAsync(cancellation.Token);
+            Assert.Equal(0, process.ExitCode);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+            Directory.Delete(cacheRoot, recursive: true);
         }
     }
 

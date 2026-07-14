@@ -344,6 +344,7 @@ public sealed class VbaProjectReferenceCatalogSet
 
     private static VbaSourceDefinition ToSourceDefinition(VbaProjectReferenceDefinition definition)
     {
+        var signature = CreateSourceSignature(definition);
         return new VbaSourceDefinition(
             definition.Name,
             definition.Kind,
@@ -352,7 +353,8 @@ public sealed class VbaProjectReferenceCatalogSet
             definition.ReferenceName,
             new VbaRange(new VbaPosition(0, 0), new VbaPosition(0, definition.Name.Length)),
             Documentation: definition.Documentation,
-            Signature: CreateSourceSignature(definition),
+            Signature: signature,
+            DeclarationLabel: CreateDeclarationLabel(definition, signature),
             ParentTypeName: definition.ParentTypeName,
             TypeReference: definition.TypeReference);
     }
@@ -380,6 +382,29 @@ public sealed class VbaProjectReferenceCatalogSet
 
     private static string CreateParameterLabel(VbaCallableParameter parameter)
         => parameter.IsOptional ? $"[{parameter.Name}]" : parameter.Name;
+
+    private static string? CreateDeclarationLabel(
+        VbaProjectReferenceDefinition definition,
+        VbaCallableSignature? signature)
+    {
+        return definition.Kind switch
+        {
+            VbaSourceDefinitionKind.Procedure => $"{(definition.TypeReference is null ? "Sub" : "Function")} {signature?.Label ?? CreateValueLabel(definition)}",
+            VbaSourceDefinitionKind.Property => $"Property {signature?.Label ?? CreateValueLabel(definition)}",
+            VbaSourceDefinitionKind.Event => $"Event {signature?.Label ?? $"{definition.Name}()"}",
+            VbaSourceDefinitionKind.Variable => CreateValueLabel(definition),
+            VbaSourceDefinitionKind.Constant => $"Const {CreateValueLabel(definition)}",
+            VbaSourceDefinitionKind.Enum => $"Enum {definition.Name}",
+            VbaSourceDefinitionKind.Type => $"Type {definition.Name}",
+            VbaSourceDefinitionKind.EnumMember or VbaSourceDefinitionKind.TypeMember => CreateValueLabel(definition),
+            _ => null
+        };
+    }
+
+    private static string CreateValueLabel(VbaProjectReferenceDefinition definition)
+        => definition.TypeReference is null
+            ? definition.Name
+            : $"{definition.Name} As {definition.TypeReference.Name}";
 
     private sealed record ActiveReferenceCatalog(string ManifestReferenceName, VbaProjectReferenceCatalog Catalog);
 }
