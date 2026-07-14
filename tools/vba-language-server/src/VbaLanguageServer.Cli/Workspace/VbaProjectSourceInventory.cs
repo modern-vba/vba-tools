@@ -141,7 +141,7 @@ internal static class VbaProjectSourceInventory
             text,
             syntaxTree,
             VbaSyntaxTreeParseUpdateKind.FullModule,
-            VbaSourceIndex.CreateDocument(uri, syntaxTree));
+            SourceDocument: VbaSourceIndex.CreateDocument(uri, syntaxTree));
     }
 
     private static HashSet<string> CreateLocalPathSet(IEnumerable<string> uris)

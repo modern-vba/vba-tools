@@ -53,4 +53,24 @@ public sealed class VbaLexicalFactsTests
         Assert.Equal("value = \"that's ok\" ", parts.CodePart);
         Assert.Equal("' comment", parts.CommentPart);
     }
+
+    [Fact]
+    public void FromSyntaxTreeReusesParsedTokenStream()
+    {
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    value = \"Run\" ' commentValue",
+            "End Sub"
+        ]);
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.bas", source);
+
+        var facts = tree.GetLexicalFacts();
+
+        Assert.Same(tree.TokenStream, facts.TokenStream);
+        Assert.True(facts.TryGetCodeIdentifierAt(2, "    val".Length, out var identifier));
+        Assert.Equal("value", identifier.Name);
+        Assert.False(facts.TryGetCodeIdentifierAt(2, "    value = \"R".Length, out _));
+        Assert.False(facts.TryGetCodeIdentifierAt(2, "    value = \"Run\" ' comment".Length, out _));
+    }
 }

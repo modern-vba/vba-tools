@@ -44,16 +44,21 @@ public sealed record VbaSyntaxTree(
         VbaSyntaxTree? previousSyntaxTree)
     {
         var syntaxTree = ParseModule(uri, source);
-        var updateKind = CanUpdateSingleModuleMember(previousSyntaxTree, syntaxTree)
+        var memberUpdate = TryCreateModuleMemberUpdate(previousSyntaxTree, syntaxTree, out var update)
+            ? update
+            : null;
+        var updateKind = memberUpdate is not null || HasUnchangedText(previousSyntaxTree, syntaxTree)
             ? VbaSyntaxTreeParseUpdateKind.ModuleMember
             : VbaSyntaxTreeParseUpdateKind.FullModule;
-        return new VbaSyntaxTreeParseResult(syntaxTree, updateKind);
+        return new VbaSyntaxTreeParseResult(syntaxTree, updateKind, memberUpdate);
     }
 
-    private static bool CanUpdateSingleModuleMember(
+    private static bool TryCreateModuleMemberUpdate(
         VbaSyntaxTree? previousSyntaxTree,
-        VbaSyntaxTree nextSyntaxTree)
+        VbaSyntaxTree nextSyntaxTree,
+        out VbaModuleMemberIncrementalUpdate update)
     {
+        update = default!;
         if (previousSyntaxTree is null || nextSyntaxTree.Diagnostics.Count > 0)
         {
             return false;
@@ -74,7 +79,7 @@ public sealed record VbaSyntaxTree(
             out var newStartLine,
             out var newEndLine))
         {
-            return true;
+            return false;
         }
 
         var oldMember = FindSingleContainingMember(previousSyntaxTree.Module.Members, oldStartLine, oldEndLine);
@@ -87,9 +92,25 @@ public sealed record VbaSyntaxTree(
             return false;
         }
 
-        return !TouchesMemberBoundary(oldMember, oldStartLine, oldEndLine)
-            && !TouchesMemberBoundary(newMember, newStartLine, newEndLine);
+        if (TouchesMemberBoundary(oldMember, oldStartLine, oldEndLine)
+            || TouchesMemberBoundary(newMember, newStartLine, newEndLine))
+        {
+            return false;
+        }
+
+        update = new VbaModuleMemberIncrementalUpdate(
+            oldMember,
+            newMember,
+            oldStartLine,
+            oldEndLine,
+            newStartLine,
+            newEndLine);
+        return true;
     }
+
+    private static bool HasUnchangedText(VbaSyntaxTree? previousSyntaxTree, VbaSyntaxTree nextSyntaxTree)
+        => previousSyntaxTree is not null
+            && previousSyntaxTree.Text.Equals(nextSyntaxTree.Text, StringComparison.Ordinal);
 
     private static string[] SplitLines(string source)
         => source.Replace("\r\n", "\n", StringComparison.Ordinal)
@@ -167,10 +188,29 @@ public enum VbaSyntaxTreeParseUpdateKind
 }
 
 /// <summary>
+/// Describes a safe ModuleMember-level update plan produced during parsing.
+/// </summary>
+/// <param name="PreviousMember">The member that contained the previous changed line range.</param>
+/// <param name="CurrentMember">The member that contains the current changed line range.</param>
+/// <param name="PreviousStartLine">The first changed line in the previous text.</param>
+/// <param name="PreviousEndLine">The last changed line in the previous text.</param>
+/// <param name="CurrentStartLine">The first changed line in the current text.</param>
+/// <param name="CurrentEndLine">The last changed line in the current text.</param>
+public sealed record VbaModuleMemberIncrementalUpdate(
+    VbaModuleMemberSyntax PreviousMember,
+    VbaModuleMemberSyntax CurrentMember,
+    int PreviousStartLine,
+    int PreviousEndLine,
+    int CurrentStartLine,
+    int CurrentEndLine);
+
+/// <summary>
 /// Contains a parsed syntax tree and the update granularity inferred during parsing.
 /// </summary>
 /// <param name="SyntaxTree">The parsed syntax tree.</param>
 /// <param name="UpdateKind">The inferred update kind.</param>
+/// <param name="MemberUpdate">The ModuleMember update plan when a single member can be updated safely.</param>
 public sealed record VbaSyntaxTreeParseResult(
     VbaSyntaxTree SyntaxTree,
-    VbaSyntaxTreeParseUpdateKind UpdateKind);
+    VbaSyntaxTreeParseUpdateKind UpdateKind,
+    VbaModuleMemberIncrementalUpdate? MemberUpdate = null);

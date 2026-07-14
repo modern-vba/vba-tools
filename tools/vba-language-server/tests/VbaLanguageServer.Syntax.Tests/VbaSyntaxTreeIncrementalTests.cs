@@ -33,6 +33,11 @@ public sealed class VbaSyntaxTreeIncrementalTests
         var result = VbaSyntaxTree.ParseOrUpdate("file:///C:/work/Worker.bas", updated, previous);
 
         Assert.Equal(VbaSyntaxTreeParseUpdateKind.ModuleMember, result.UpdateKind);
+        Assert.NotNull(result.MemberUpdate);
+        Assert.Equal("BuildValue", result.MemberUpdate.PreviousMember.Name);
+        Assert.Equal("BuildValue", result.MemberUpdate.CurrentMember.Name);
+        Assert.Equal(2, result.MemberUpdate.PreviousStartLine);
+        Assert.Equal(2, result.MemberUpdate.CurrentStartLine);
         Assert.Contains(result.SyntaxTree.Module.CallableDeclarations, declaration => declaration.Name == "BuildValue");
         Assert.Contains(result.SyntaxTree.Module.CallableDeclarations, declaration => declaration.Name == "Run");
     }
@@ -75,7 +80,9 @@ public sealed class VbaSyntaxTreeIncrementalTests
         var recoveryResult = VbaSyntaxTree.ParseOrUpdate("file:///C:/work/Worker.bas", malformed, previous);
 
         Assert.Equal(VbaSyntaxTreeParseUpdateKind.FullModule, boundaryResult.UpdateKind);
+        Assert.Null(boundaryResult.MemberUpdate);
         Assert.Equal(VbaSyntaxTreeParseUpdateKind.FullModule, recoveryResult.UpdateKind);
+        Assert.Null(recoveryResult.MemberUpdate);
         Assert.Contains(recoveryResult.SyntaxTree.Diagnostics, diagnostic => diagnostic.Code == "syntax.unterminatedStringLiteral");
     }
 }

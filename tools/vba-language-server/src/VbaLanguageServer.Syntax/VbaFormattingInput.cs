@@ -89,8 +89,8 @@ public sealed record VbaFormattingInput(
                 }
                 else
                 {
-                    var closeTerminator = GetIndentationCloseTerminator(trimmed);
-                    var branchTerminator = GetIndentationBranchTerminator(trimmed);
+                    var closeTerminator = VbaBlockSyntaxFacts.GetFormattingCloseTerminator(trimmed);
+                    var branchTerminator = VbaBlockSyntaxFacts.GetFormattingBranchTerminator(trimmed);
                     transition = transition with
                     {
                         CloseTerminator = closeTerminator,
@@ -127,7 +127,7 @@ public sealed record VbaFormattingInput(
                         depth = blockStack.Count;
                     }
 
-                    var openTerminator = GetIndentationOpenTerminator(trimmed);
+                    var openTerminator = VbaBlockSyntaxFacts.GetFormattingOpenTerminator(trimmed);
                     transition = transition with { OpenTerminator = openTerminator };
                     if (openTerminator is not null)
                     {
@@ -172,149 +172,4 @@ public sealed record VbaFormattingInput(
             || Regex.IsMatch(trimmedLine, "^Option\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)
             || trimmedLine.StartsWith("#", StringComparison.Ordinal);
 
-    private static string? GetIndentationOpenTerminator(string trimmedLine)
-    {
-        if (Regex.IsMatch(
-            trimmedLine,
-            "^((Public|Private|Friend)\\s+)?(Static\\s+)?Sub\\b",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Sub";
-        }
-
-        if (Regex.IsMatch(
-            trimmedLine,
-            "^((Public|Private|Friend)\\s+)?(Static\\s+)?Function\\b",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Function";
-        }
-
-        if (Regex.IsMatch(
-            trimmedLine,
-            "^((Public|Private|Friend)\\s+)?(Static\\s+)?Property\\b",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Property";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^If\\b.*\\bThen\\s*$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End If";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^Select\\s+Case\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Select";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^With\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End With";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^For\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)
-            && !Regex.IsMatch(trimmedLine, ":\\s*Next\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "Next";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^Do\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)
-            && !Regex.IsMatch(trimmedLine, ":\\s*Loop\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "Loop";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^While\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "Wend";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^((Public|Private|Friend)\\s+)?Enum\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Enum";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^((Public|Private|Friend)\\s+)?Type\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Type";
-        }
-
-        return null;
-    }
-
-    private static string? GetIndentationCloseTerminator(string trimmedLine)
-    {
-        if (Regex.IsMatch(trimmedLine, "^End\\s+Sub\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Sub";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^End\\s+Function\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Function";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^End\\s+Property\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Property";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^End\\s+If\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End If";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^End\\s+Select\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Select";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^End\\s+With\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End With";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^Next\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "Next";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^Loop\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "Loop";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^Wend\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "Wend";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^End\\s+Enum\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Enum";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^End\\s+Type\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Type";
-        }
-
-        return null;
-    }
-
-    private static string? GetIndentationBranchTerminator(string trimmedLine)
-    {
-        if (Regex.IsMatch(trimmedLine, "^(Else|ElseIf)\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End If";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^Case\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Select";
-        }
-
-        return null;
-    }
 }

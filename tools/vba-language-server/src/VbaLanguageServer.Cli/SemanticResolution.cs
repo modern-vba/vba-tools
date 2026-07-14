@@ -16,6 +16,7 @@ internal sealed class VbaSemanticResolution
     private readonly VbaNameResolutionService nameResolution;
     private readonly VbaTypeResolution typeResolution;
     private readonly VbaMemberChainResolution memberChainResolution;
+    private readonly VbaCallSiteResolution callSiteResolution;
     private readonly VbaMemberChainContextProvider memberChainContextProvider = new();
 
     /// <summary>
@@ -51,6 +52,10 @@ internal sealed class VbaSemanticResolution
             nameResolution,
             resolutionPolicy);
         memberChainResolution = new VbaMemberChainResolution(typeResolution);
+        callSiteResolution = new VbaCallSiteResolution(
+            nameResolution,
+            memberChainResolution,
+            memberChainContextProvider);
     }
 
     /// <summary>
@@ -174,24 +179,7 @@ internal sealed class VbaSemanticResolution
         }
 
         var lexicalFacts = VbaLexicalFacts.FromText(currentDocument.Text);
-        if (!lexicalFacts.TryGetLogicalPrefix(line, character, out var logicalPrefix))
-        {
-            return null;
-        }
-
-        if (!TryResolveCalleeDefinition(currentDocument, line, character, logicalPrefix, out var definition, out var arguments)
-            && !TryResolveStatementFormCalleeDefinition(currentDocument, line, character, logicalPrefix, out definition, out arguments))
-        {
-            return null;
-        }
-
-        if (definition?.Signature is null)
-        {
-            return null;
-        }
-
-        var activeParameter = GetActiveSignatureParameter(definition.Signature, arguments);
-        return new VbaSignatureHelp(definition.Signature, activeParameter);
+        return callSiteResolution.GetSignatureHelp(currentDocument, line, character, lexicalFacts);
     }
 
     /// <summary>
@@ -272,17 +260,7 @@ internal sealed class VbaSemanticResolution
             return false;
         }
 
-        if (!memberChainResolution.TryResolveExpressionType(
-            currentDocument,
-            line,
-            character,
-            context.ReceiverExpression,
-            out var receiverType))
-        {
-            return true;
-        }
-
-        definitions = memberChainResolution.GetMembersOfType(currentDocument, receiverType);
+        definitions = memberChainResolution.GetMemberCompletions(currentDocument, line, character, context);
         return true;
     }
 
@@ -362,17 +340,16 @@ internal sealed class VbaSemanticResolution
             return false;
         }
 
-        if (!memberChainResolution.TryResolveExpressionType(
+        if (!memberChainResolution.TryResolveMemberChainDefinition(
             currentDocument,
             line,
             character,
-            context.ReceiverExpression,
-            out var receiverType))
+            context,
+            out definition))
         {
-            return context.IsWithReceiver;
+            return false;
         }
 
-        definition = memberChainResolution.ResolveMember(currentDocument, receiverType, memberName);
         return true;
     }
 
@@ -406,98 +383,6 @@ internal sealed class VbaSemanticResolution
         return false;
     }
 
-    private bool TryResolveCalleeDefinition(
-        VbaSourceDocument currentDocument,
-        int line,
-        int character,
-        string logicalPrefix,
-        out VbaSourceDefinition? definition,
-        out string arguments)
-    {
-        definition = null;
-        arguments = "";
-        if (!memberChainContextProvider.TryGetCallExpressionContext(logicalPrefix, out var context))
-        {
-            return false;
-        }
-
-        arguments = context.Arguments;
-        if (context.MemberChain is not null)
-        {
-            if (memberChainResolution.TryResolveExpressionType(
-                currentDocument,
-                line,
-                character,
-                context.MemberChain.ReceiverExpression,
-                out var receiverType))
-            {
-                definition = memberChainResolution.ResolveMember(
-                    currentDocument,
-                    receiverType,
-                    context.MemberChain.MemberName!);
-                return true;
-            }
-
-            if (context.MemberChain.IsWithReceiver)
-            {
-                return true;
-            }
-        }
-
-        definition = nameResolution.Resolve(
-            currentDocument.Uri,
-            new VbaPosition(line, character),
-            context.Qualifier,
-            context.UnqualifiedName);
-        return true;
-    }
-
-    private bool TryResolveStatementFormCalleeDefinition(
-        VbaSourceDocument currentDocument,
-        int line,
-        int character,
-        string logicalPrefix,
-        out VbaSourceDefinition? definition,
-        out string arguments)
-    {
-        definition = null;
-        arguments = "";
-        if (!memberChainContextProvider.TryGetStatementFormCallContext(logicalPrefix, out var context))
-        {
-            return false;
-        }
-
-        arguments = context.Arguments;
-        if (context.MemberChain is not null)
-        {
-            if (memberChainResolution.TryResolveExpressionType(
-                currentDocument,
-                line,
-                character,
-                context.MemberChain.ReceiverExpression,
-                out var receiverType))
-            {
-                definition = memberChainResolution.ResolveMember(
-                    currentDocument,
-                    receiverType,
-                    context.MemberChain.MemberName!);
-                return true;
-            }
-
-            if (context.MemberChain.IsWithReceiver)
-            {
-                return true;
-            }
-        }
-
-        definition = nameResolution.Resolve(
-            currentDocument.Uri,
-            new VbaPosition(line, character),
-            context.Qualifier,
-            context.UnqualifiedName);
-        return true;
-    }
-
     private bool TryGetMemberChainCanonicalName(
         string codePart,
         VbaIdentifierOccurrence occurrence,
@@ -508,18 +393,16 @@ internal sealed class VbaSemanticResolution
         canonicalName = null;
         if (memberChainContextProvider.TryGetPreviousMemberContext(codePart, occurrence, out var context))
         {
-            if (!memberChainResolution.TryResolveExpressionType(
+            if (!memberChainResolution.TryGetCanonicalMemberName(
                 document,
                 lineIndex,
                 occurrence.Start,
-                context.ReceiverExpression,
-                out var receiverType))
+                context,
+                out canonicalName))
             {
                 return false;
             }
 
-            var member = memberChainResolution.ResolveMember(document, receiverType, occurrence.Name);
-            canonicalName = member?.Name;
             return canonicalName is not null;
         }
 
@@ -582,31 +465,6 @@ internal sealed class VbaSemanticResolution
         return referenceSelection is null
             ? null
             : referenceCatalogs.GetActiveCanonicalQualifierAlias(referenceSelection, definition.ModuleName, qualifier);
-    }
-
-    private static int GetActiveSignatureParameter(VbaCallableSignature signature, string arguments)
-    {
-        var fallbackParameter = Math.Min(
-            arguments.Count(characterValue => characterValue == ','),
-            Math.Max(0, signature.Parameters.Count - 1));
-        var currentArgumentStart = arguments.LastIndexOf(',') + 1;
-        var currentArgument = arguments[currentArgumentStart..];
-        var namedArgumentMatch = Regex.Match(
-            currentArgument,
-            "^\\s*(?<name>[A-Za-z_][A-Za-z0-9_]*)\\s*:=",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-        if (!namedArgumentMatch.Success)
-        {
-            return fallbackParameter;
-        }
-
-        var parameterIndex = signature.Parameters
-            .Select((parameter, index) => new { parameter, index })
-            .FirstOrDefault(item => item.parameter.Name.Equals(
-                namedArgumentMatch.Groups["name"].Value,
-                StringComparison.OrdinalIgnoreCase))
-            ?.index;
-        return parameterIndex ?? fallbackParameter;
     }
 
     private static bool IsTypeAnnotationCompletionPrefix(string logicalPrefix)

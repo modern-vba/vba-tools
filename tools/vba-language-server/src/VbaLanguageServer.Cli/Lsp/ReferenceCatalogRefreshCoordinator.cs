@@ -3,6 +3,21 @@ using VbaLanguageServer.SourceModel;
 namespace VbaLanguageServer.Lsp;
 
 /// <summary>
+/// Describes reference-catalog work caused by one document change.
+/// </summary>
+/// <param name="Uri">The changed document URI.</param>
+/// <param name="Text">The changed document text.</param>
+/// <param name="PreloadPersistedCatalogs">Whether persisted catalogs should be loaded before feature requests continue.</param>
+/// <param name="PublishReferenceTrace">Whether reference-selection trace should be published after diagnostics.</param>
+/// <param name="RefreshInBackground">Whether background type-library discovery should be started.</param>
+internal sealed record ReferenceCatalogDocumentChange(
+    string Uri,
+    string Text,
+    bool PreloadPersistedCatalogs,
+    bool PublishReferenceTrace,
+    bool RefreshInBackground);
+
+/// <summary>
 /// Publishes reference-selection trace messages and starts background catalog refresh work.
 /// </summary>
 internal sealed class ReferenceCatalogRefreshCoordinator
@@ -23,6 +38,55 @@ internal sealed class ReferenceCatalogRefreshCoordinator
     {
         refreshSession = new ReferenceCatalogRefreshSession(catalogAvailability);
         this.transport = transport;
+    }
+
+    /// <summary>
+    /// Applies reference-catalog work for a document change in the required order.
+    /// </summary>
+    /// <param name="change">The catalog-affecting document change.</param>
+    /// <param name="publishDiagnosticsAsync">Diagnostics work that must run after preload and before trace.</param>
+    /// <param name="cancellationToken">A cancellation token for foreground work.</param>
+    public async Task ApplyDocumentChangeAsync(
+        ReferenceCatalogDocumentChange change,
+        Func<CancellationToken, Task> publishDiagnosticsAsync,
+        CancellationToken cancellationToken)
+    {
+        if (change.PreloadPersistedCatalogs)
+        {
+            await PreloadReferenceCatalogsAsync(change.Uri, change.Text, cancellationToken);
+        }
+
+        await publishDiagnosticsAsync(cancellationToken);
+
+        if (change.PublishReferenceTrace)
+        {
+            await PublishReferenceSelectionTraceAsync(change.Uri, cancellationToken);
+        }
+
+        if (change.RefreshInBackground)
+        {
+            RefreshReferenceCatalogsInBackground(change.Uri, change.Text, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Applies reference-catalog work caused by a project manifest change.
+    /// </summary>
+    /// <param name="uri">The manifest URI.</param>
+    /// <param name="text">The manifest text.</param>
+    /// <param name="documentUris">The tracked source document URIs that need refreshed trace.</param>
+    /// <param name="cancellationToken">A cancellation token for foreground work.</param>
+    public async Task ApplyProjectManifestChangeAsync(
+        string uri,
+        string text,
+        IReadOnlyList<string> documentUris,
+        CancellationToken cancellationToken)
+    {
+        RefreshReferenceCatalogsInBackground(uri, text, cancellationToken);
+        foreach (var documentUri in documentUris)
+        {
+            await PublishReferenceSelectionTraceAsync(documentUri, cancellationToken);
+        }
     }
 
     /// <summary>

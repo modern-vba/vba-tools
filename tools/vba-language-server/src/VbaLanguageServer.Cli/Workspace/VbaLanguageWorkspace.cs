@@ -24,12 +24,14 @@ public sealed record VbaProjectSnapshot(
 /// <param name="Text">The latest document text.</param>
 /// <param name="SyntaxTree">The latest parsed syntax tree.</param>
 /// <param name="LastParseUpdateKind">The last parse update granularity.</param>
+/// <param name="LastMemberUpdate">The last safe ModuleMember update plan.</param>
 /// <param name="SourceDocument">The projected source document, when already available.</param>
 public sealed record VbaTrackedDocument(
     string Uri,
     string Text,
     VbaSyntaxTree SyntaxTree,
     VbaSyntaxTreeParseUpdateKind LastParseUpdateKind,
+    VbaModuleMemberIncrementalUpdate? LastMemberUpdate = null,
     VbaSourceDocument? SourceDocument = null);
 
 /// <summary>
@@ -76,6 +78,7 @@ public sealed class VbaLanguageWorkspace
                 text,
                 parseResult.SyntaxTree,
                 parseResult.UpdateKind,
+                parseResult.MemberUpdate,
                 VbaSourceIndex.CreateDocument(uri, parseResult.SyntaxTree));
             workspaceVersion++;
             snapshotProvider.Invalidate();

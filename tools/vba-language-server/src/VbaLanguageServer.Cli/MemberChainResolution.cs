@@ -211,4 +211,63 @@ internal sealed class VbaMemberChainResolution
             context.ReceiverExpression,
             context.MemberName);
     }
+
+    /// <summary>
+    /// Resolves a parsed member-chain context into its target definition when the context can be handled.
+    /// </summary>
+    /// <param name="currentDocument">The document that owns the member chain.</param>
+    /// <param name="line">The zero-based line where resolution is requested.</param>
+    /// <param name="character">The zero-based character where resolution is requested.</param>
+    /// <param name="context">The parsed member-chain context.</param>
+    /// <param name="definition">The resolved member definition, or null when the handled chain is unresolved.</param>
+    /// <returns>True when the member chain should suppress fallback name lookup.</returns>
+    public bool TryResolveMemberChainDefinition(
+        VbaSourceDocument currentDocument,
+        int line,
+        int character,
+        VbaMemberChainContext context,
+        out VbaSourceDefinition? definition)
+    {
+        definition = null;
+        var result = ResolveMemberChain(currentDocument, line, character, context);
+        if (result.StopReason == VbaMemberChainResolutionStopReason.UnresolvedReceiver
+            && !context.IsWithReceiver)
+        {
+            return false;
+        }
+
+        definition = result.Member;
+        return true;
+    }
+
+    /// <summary>
+    /// Resolves the canonical casing for a member-chain occurrence.
+    /// </summary>
+    /// <param name="currentDocument">The document that owns the member chain.</param>
+    /// <param name="line">The zero-based line where resolution is requested.</param>
+    /// <param name="character">The zero-based character where resolution is requested.</param>
+    /// <param name="context">The parsed member-chain context.</param>
+    /// <param name="canonicalName">The canonical member name when resolved.</param>
+    /// <returns>True when a canonical member name resolves.</returns>
+    public bool TryGetCanonicalMemberName(
+        VbaSourceDocument currentDocument,
+        int line,
+        int character,
+        VbaMemberChainContext context,
+        out string? canonicalName)
+    {
+        canonicalName = null;
+        if (!TryResolveMemberChainDefinition(
+            currentDocument,
+            line,
+            character,
+            context,
+            out var definition))
+        {
+            return false;
+        }
+
+        canonicalName = definition?.Name;
+        return canonicalName is not null;
+    }
 }

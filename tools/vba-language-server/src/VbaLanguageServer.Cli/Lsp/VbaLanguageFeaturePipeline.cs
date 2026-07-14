@@ -1,3 +1,4 @@
+using VbaLanguageServer.SourceModel;
 using VbaLanguageServer.Workspace;
 
 namespace VbaLanguageServer.Lsp;
@@ -17,28 +18,28 @@ internal sealed class VbaLanguageFeaturePipeline
     public object[] CreateDocumentSymbols(
         VbaTextDocumentRequest request,
         CancellationToken cancellationToken)
-    {
-        var snapshot = workspace.CreateProjectSnapshot(request.Uri, cancellationToken);
-        return VbaLspFeatureProjection.CreateDocumentSymbols(snapshot.SourceIndex.GetDocumentDefinitions(request.Uri));
-    }
+        => WithSourceIndex(
+            request,
+            cancellationToken,
+            sourceIndex => VbaLspFeatureProjection.CreateDocumentSymbols(sourceIndex.GetDocumentDefinitions(request.Uri)));
 
     public object? CreateDefinitionLocation(
         VbaTextDocumentPositionRequest request,
         CancellationToken cancellationToken)
-    {
-        var snapshot = workspace.CreateProjectSnapshot(request.Uri, cancellationToken);
-        return VbaLspFeatureProjection.CreateLocation(
-            snapshot.SourceIndex.ResolveDefinition(request.Uri, request.Line, request.Character));
-    }
+        => WithSourceIndex(
+            request,
+            cancellationToken,
+            sourceIndex => VbaLspFeatureProjection.CreateLocation(
+                sourceIndex.ResolveDefinition(request.Uri, request.Line, request.Character)));
 
     public object[] CreateReferenceLocations(
         VbaTextDocumentPositionRequest request,
         CancellationToken cancellationToken)
-    {
-        var snapshot = workspace.CreateProjectSnapshot(request.Uri, cancellationToken);
-        return VbaLspFeatureProjection.CreateLocations(
-            snapshot.SourceIndex.FindReferences(request.Uri, request.Line, request.Character));
-    }
+        => WithSourceIndex(
+            request,
+            cancellationToken,
+            sourceIndex => VbaLspFeatureProjection.CreateLocations(
+                sourceIndex.FindReferences(request.Uri, request.Line, request.Character)));
 
     public object[] CreateWorkspaceSymbols(string query, CancellationToken cancellationToken)
     {
@@ -51,65 +52,78 @@ internal sealed class VbaLanguageFeaturePipeline
     public object[] CreateCompletionItems(
         VbaTextDocumentPositionRequest request,
         CancellationToken cancellationToken)
-    {
-        var snapshot = workspace.CreateProjectSnapshot(request.Uri, cancellationToken);
-        var completion = snapshot.SourceIndex.GetCompletionResult(request.Uri, request.Line, request.Character);
-        return VbaLspFeatureProjection.CreateCompletionItems(completion);
-    }
+        => WithSourceIndex(
+            request,
+            cancellationToken,
+            sourceIndex => VbaLspFeatureProjection.CreateCompletionItems(
+                sourceIndex.GetCompletionResult(request.Uri, request.Line, request.Character)));
 
     public object? CreateHover(
         VbaTextDocumentPositionRequest request,
         CancellationToken cancellationToken)
-    {
-        var snapshot = workspace.CreateProjectSnapshot(request.Uri, cancellationToken);
-        var definition = snapshot.SourceIndex.ResolveSourceDefinition(request.Uri, request.Line, request.Character);
-        return VbaLspFeatureProjection.CreateHover(definition);
-    }
+        => WithSourceIndex(
+            request,
+            cancellationToken,
+            sourceIndex => VbaLspFeatureProjection.CreateHover(
+                sourceIndex.ResolveSourceDefinition(request.Uri, request.Line, request.Character)));
 
     public object? CreateSignatureHelp(
         VbaTextDocumentPositionRequest request,
         CancellationToken cancellationToken)
-    {
-        var snapshot = workspace.CreateProjectSnapshot(request.Uri, cancellationToken);
-        var signatureHelp = snapshot.SourceIndex.GetSignatureHelp(request.Uri, request.Line, request.Character);
-        return VbaLspFeatureProjection.CreateSignatureHelp(signatureHelp);
-    }
+        => WithSourceIndex(
+            request,
+            cancellationToken,
+            sourceIndex => VbaLspFeatureProjection.CreateSignatureHelp(
+                sourceIndex.GetSignatureHelp(request.Uri, request.Line, request.Character)));
 
     public object? CreatePrepareRename(
         VbaTextDocumentPositionRequest request,
         CancellationToken cancellationToken)
-    {
-        var snapshot = workspace.CreateProjectSnapshot(request.Uri, cancellationToken);
-        return snapshot.SourceIndex.PrepareRename(request.Uri, request.Line, request.Character);
-    }
+        => WithSourceIndex(
+            request,
+            cancellationToken,
+            sourceIndex => sourceIndex.PrepareRename(request.Uri, request.Line, request.Character));
 
     public object? CreateRenameEdit(
         VbaRenameRequest request,
         CancellationToken cancellationToken)
-    {
-        var snapshot = workspace.CreateProjectSnapshot(request.Uri, cancellationToken);
-        var renamePlan = snapshot.SourceIndex.CreateRenamePlan(
-            request.Uri,
-            request.Line,
-            request.Character,
-            request.NewName);
-        return VbaLspFeatureProjection.CreateWorkspaceEdit(renamePlan?.Changes);
-    }
+        => WithSourceIndex(
+            request,
+            cancellationToken,
+            sourceIndex =>
+            {
+                var renamePlan = sourceIndex.CreateRenamePlan(
+                    request.Uri,
+                    request.Line,
+                    request.Character,
+                    request.NewName);
+                return VbaLspFeatureProjection.CreateWorkspaceEdit(renamePlan?.Changes);
+            });
 
     public object[] CreateFormattingEdits(
         VbaFormattingRequest request,
         CancellationToken cancellationToken)
-    {
-        var snapshot = workspace.CreateProjectSnapshot(request.Uri, cancellationToken);
-        var edit = snapshot.SourceIndex.FormatDocument(request.Uri, request.TabSize);
-        return VbaLspFeatureProjection.CreateFormattingEdits(edit);
-    }
+        => WithSourceIndex(
+            request,
+            cancellationToken,
+            sourceIndex => VbaLspFeatureProjection.CreateFormattingEdits(
+                sourceIndex.FormatDocument(request.Uri, request.TabSize)));
 
     public object CreateSemanticTokens(
         VbaTextDocumentRequest request,
         CancellationToken cancellationToken)
+        => WithSourceIndex(
+            request,
+            cancellationToken,
+            sourceIndex => VbaLspFeatureProjection.CreateSemanticTokens(sourceIndex.GetSemanticTokenData(request.Uri)));
+
+    private TResult WithSourceIndex<TRequest, TResult>(
+        TRequest request,
+        CancellationToken cancellationToken,
+        Func<VbaSourceIndex, TResult> createResult)
+        where TRequest : IVbaTextDocumentRequest
     {
         var snapshot = workspace.CreateProjectSnapshot(request.Uri, cancellationToken);
-        return VbaLspFeatureProjection.CreateSemanticTokens(snapshot.SourceIndex.GetSemanticTokenData(request.Uri));
+        return createResult(snapshot.SourceIndex);
     }
 }

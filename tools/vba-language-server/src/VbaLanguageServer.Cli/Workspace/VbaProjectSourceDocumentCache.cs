@@ -49,7 +49,7 @@ internal sealed class VbaProjectSourceDocumentCache
             text,
             syntaxTree,
             VbaSyntaxTreeParseUpdateKind.FullModule,
-            VbaSourceIndex.CreateDocument(uri, syntaxTree));
+            SourceDocument: VbaSourceIndex.CreateDocument(uri, syntaxTree));
         fileInfo.Refresh();
 
         lock (gate)

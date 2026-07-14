@@ -13,11 +13,13 @@ public sealed record VbaCodeLineParts(string CodePart, string CommentPart);
 public sealed class VbaLexicalFacts
 {
     private readonly string[] lines;
+    private readonly VbaTokenStream tokenStream;
 
-    private VbaLexicalFacts(string text, string[] lines)
+    private VbaLexicalFacts(string text, string[] lines, VbaTokenStream tokenStream)
     {
         Text = text;
         this.lines = lines;
+        this.tokenStream = tokenStream;
     }
 
     /// <summary>
@@ -31,12 +33,17 @@ public sealed class VbaLexicalFacts
     public IReadOnlyList<string> Lines => lines;
 
     /// <summary>
+    /// Gets the token stream used by lexical queries.
+    /// </summary>
+    public VbaTokenStream TokenStream => tokenStream;
+
+    /// <summary>
     /// Creates lexical facts from complete source text.
     /// </summary>
     /// <param name="source">The source text.</param>
     /// <returns>The lexical fact query module.</returns>
     public static VbaLexicalFacts FromText(string source)
-        => new(source, VbaSourceText.SplitLines(source));
+        => new(source, VbaSourceText.SplitLines(source), VbaTokenStream.FromText(source));
 
     /// <summary>
     /// Creates lexical facts from a parsed syntax tree.
@@ -44,7 +51,7 @@ public sealed class VbaLexicalFacts
     /// <param name="syntaxTree">The parsed syntax tree.</param>
     /// <returns>The lexical fact query module.</returns>
     public static VbaLexicalFacts FromSyntaxTree(VbaSyntaxTree syntaxTree)
-        => FromText(syntaxTree.Text);
+        => new(syntaxTree.Text, VbaSourceText.SplitLines(syntaxTree.Text), syntaxTree.TokenStream);
 
     /// <summary>
     /// Gets a source line when the line number is valid.
@@ -96,13 +103,13 @@ public sealed class VbaLexicalFacts
         out VbaIdentifierOccurrence identifier)
     {
         identifier = default!;
-        if (!TryGetLine(line, out var text)
-            || !VbaSourceText.IsCodePosition(text, character))
+        if (!TryGetLine(line, out _)
+            || !IsCodePosition(line, character))
         {
             return false;
         }
 
-        var found = VbaSourceText.GetIdentifierAt(text, character);
+        var found = FindIdentifierTokenAt(line, character);
         if (found is null)
         {
             return false;
@@ -119,9 +126,17 @@ public sealed class VbaLexicalFacts
     /// <param name="character">The zero-based character position.</param>
     /// <returns>True when the position is inside code.</returns>
     public bool IsCodePosition(int line, int character)
-        => TryGetLine(line, out var text)
-            && VbaSourceText.IsCodePosition(text, character)
-            && !IsRemCommentPosition(text, character);
+    {
+        if (!TryGetLine(line, out var text)
+            || IsRemCommentPosition(text, character))
+        {
+            return false;
+        }
+
+        var token = FindTokenAt(line, character);
+        return token is null
+            || token.Kind is not VbaTokenKind.StringLiteral and not VbaTokenKind.Comment;
+    }
 
     private static bool IsRemCommentPosition(string line, int character)
     {
@@ -153,7 +168,26 @@ public sealed class VbaLexicalFacts
     /// <param name="line">The physical line to inspect.</param>
     /// <returns>The identifier occurrences in source order.</returns>
     public static IEnumerable<VbaIdentifierOccurrence> FindCodeIdentifierOccurrences(string line)
-        => VbaSourceText.FindIdentifierOccurrences(line);
+    {
+        var tokens = VbaTokenStream.FromText(line).Tokens;
+        for (var tokenIndex = 0; tokenIndex < tokens.Count; tokenIndex++)
+        {
+            var token = tokens[tokenIndex];
+            if (token.Kind == VbaTokenKind.Comment
+                || IsRemCommentStart(tokens, tokenIndex))
+            {
+                yield break;
+            }
+
+            if (token.Kind is VbaTokenKind.Identifier or VbaTokenKind.Keyword)
+            {
+                yield return new VbaIdentifierOccurrence(
+                    token.Text,
+                    token.Range.Start.Character,
+                    token.Range.End.Character);
+            }
+        }
+    }
 
     /// <summary>
     /// Splits one physical line into code and apostrophe-comment portions.
@@ -162,7 +196,13 @@ public sealed class VbaLexicalFacts
     /// <returns>The code/comment split.</returns>
     public static VbaCodeLineParts SplitCodeAndComment(string line)
     {
-        var commentStart = VbaSourceText.FindApostropheCommentStart(line);
+        var commentStart = VbaTokenStream.FromText(line)
+            .Tokens
+            .FirstOrDefault(token => token.Kind == VbaTokenKind.Comment)
+            ?.Range
+            .Start
+            .Character
+            ?? -1;
         return commentStart < 0
             ? new VbaCodeLineParts(line, "")
             : new VbaCodeLineParts(line[..commentStart], line[commentStart..]);
@@ -174,4 +214,43 @@ public sealed class VbaLexicalFacts
     /// <returns>The normalized physical lines.</returns>
     public string[] ToLineArray()
         => lines;
+
+    private VbaIdentifierOccurrence? FindIdentifierTokenAt(int line, int character)
+    {
+        var token = tokenStream.Tokens
+            .FirstOrDefault(token =>
+                token.Kind is VbaTokenKind.Identifier or VbaTokenKind.Keyword
+                && IsIdentifierPosition(token, line, character));
+        return token is null
+            ? null
+            : new VbaIdentifierOccurrence(token.Text, token.Range.Start.Character, token.Range.End.Character);
+    }
+
+    private VbaToken? FindTokenAt(int line, int character)
+        => tokenStream.Tokens.FirstOrDefault(token => IsTokenPosition(token, line, character));
+
+    private static bool IsIdentifierPosition(VbaToken token, int line, int character)
+        => token.Range.Start.Line == line
+            && token.Range.End.Line == line
+            && token.Range.Start.Character <= character
+            && character <= token.Range.End.Character;
+
+    private static bool IsTokenPosition(VbaToken token, int line, int character)
+        => token.Range.Start.Line == line
+            && token.Range.End.Line == line
+            && token.Range.Start.Character <= character
+            && character < token.Range.End.Character;
+
+    private static bool IsRemCommentStart(IReadOnlyList<VbaToken> tokens, int tokenIndex)
+    {
+        var token = tokens[tokenIndex];
+        if (!token.Text.Equals("Rem", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return tokens
+            .Take(tokenIndex)
+            .All(previous => previous.Kind == VbaTokenKind.Whitespace);
+    }
 }

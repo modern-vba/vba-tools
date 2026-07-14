@@ -15,6 +15,23 @@ internal sealed record VbaWorkspaceSnapshotState(
     long Version);
 
 /// <summary>
+/// Represents the stable cache identity for one project snapshot scope.
+/// </summary>
+internal sealed record VbaProjectSnapshotIdentity(string Key)
+{
+    public static VbaProjectSnapshotIdentity Create(string activeUri, VbaProjectResolution resolution)
+        => new(string.Join(
+            "\u001e",
+            activeUri,
+            resolution.Kind.ToString(),
+            resolution.RootPath,
+            resolution.ManifestPath ?? "",
+            resolution.DocumentName ?? "",
+            resolution.DocumentKind ?? "",
+            string.Join("\u001f", resolution.ReferenceEntries.Select(reference => reference.Name))));
+}
+
+/// <summary>
 /// Creates and caches immutable project snapshots from workspace state.
 /// </summary>
 internal sealed class VbaProjectSnapshotProvider
@@ -47,9 +64,9 @@ internal sealed class VbaProjectSnapshotProvider
             workspaceState.ExcludedSourceUris,
             cancellationToken);
 
-        var cacheKey = CreateSnapshotCacheKey(activeUri, resolution);
+        var cacheIdentity = VbaProjectSnapshotIdentity.Create(activeUri, resolution);
         if (TryGetCachedSnapshot(
-            cacheKey,
+            cacheIdentity,
             workspaceState.Version,
             referenceCatalogState.Version,
             inventorySnapshot.Stamp,
@@ -63,7 +80,7 @@ internal sealed class VbaProjectSnapshotProvider
             inventorySnapshot.Documents,
             referenceCatalogState.CatalogSet);
         StoreCachedSnapshot(
-            cacheKey,
+            cacheIdentity,
             workspaceState.Version,
             referenceCatalogState.Version,
             inventorySnapshot.Stamp,
@@ -80,7 +97,7 @@ internal sealed class VbaProjectSnapshotProvider
     }
 
     private bool TryGetCachedSnapshot(
-        string cacheKey,
+        VbaProjectSnapshotIdentity cacheIdentity,
         long expectedWorkspaceVersion,
         long expectedReferenceCatalogVersion,
         string expectedInventoryStamp,
@@ -88,7 +105,7 @@ internal sealed class VbaProjectSnapshotProvider
     {
         lock (gate)
         {
-            if (cache.TryGetValue(cacheKey, out var cached)
+            if (cache.TryGetValue(cacheIdentity.Key, out var cached)
                 && cached.WorkspaceVersion == expectedWorkspaceVersion
                 && cached.ReferenceCatalogVersion == expectedReferenceCatalogVersion
                 && cached.InventoryStamp.Equals(expectedInventoryStamp, StringComparison.Ordinal))
@@ -103,7 +120,7 @@ internal sealed class VbaProjectSnapshotProvider
     }
 
     private void StoreCachedSnapshot(
-        string cacheKey,
+        VbaProjectSnapshotIdentity cacheIdentity,
         long snapshotWorkspaceVersion,
         long snapshotReferenceCatalogVersion,
         string snapshotInventoryStamp,
@@ -111,24 +128,13 @@ internal sealed class VbaProjectSnapshotProvider
     {
         lock (gate)
         {
-            cache[cacheKey] = new CachedProjectSnapshot(
+            cache[cacheIdentity.Key] = new CachedProjectSnapshot(
                 snapshotWorkspaceVersion,
                 snapshotReferenceCatalogVersion,
                 snapshotInventoryStamp,
                 snapshot);
         }
     }
-
-    private static string CreateSnapshotCacheKey(string activeUri, VbaProjectResolution resolution)
-        => string.Join(
-            "\u001e",
-            activeUri,
-            resolution.Kind.ToString(),
-            resolution.RootPath,
-            resolution.ManifestPath ?? "",
-            resolution.DocumentName ?? "",
-            resolution.DocumentKind ?? "",
-            string.Join("\u001f", resolution.ReferenceEntries.Select(reference => reference.Name)));
 
     private sealed record CachedProjectSnapshot(
         long WorkspaceVersion,

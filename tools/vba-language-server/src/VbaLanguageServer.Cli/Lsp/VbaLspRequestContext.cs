@@ -2,11 +2,16 @@ using System.Text.Json.Nodes;
 
 namespace VbaLanguageServer.Lsp;
 
+internal interface IVbaTextDocumentRequest
+{
+    string Uri { get; }
+}
+
 /// <summary>
 /// Represents a request that targets a text document.
 /// </summary>
 /// <param name="Uri">The document URI.</param>
-internal sealed record VbaTextDocumentRequest(string Uri);
+internal sealed record VbaTextDocumentRequest(string Uri) : IVbaTextDocumentRequest;
 
 /// <summary>
 /// Represents a request that targets a text document position.
@@ -14,7 +19,7 @@ internal sealed record VbaTextDocumentRequest(string Uri);
 /// <param name="Uri">The document URI.</param>
 /// <param name="Line">The zero-based line.</param>
 /// <param name="Character">The zero-based character.</param>
-internal sealed record VbaTextDocumentPositionRequest(string Uri, int Line, int Character);
+internal sealed record VbaTextDocumentPositionRequest(string Uri, int Line, int Character) : IVbaTextDocumentRequest;
 
 /// <summary>
 /// Represents a textDocument/rename request.
@@ -23,14 +28,14 @@ internal sealed record VbaTextDocumentPositionRequest(string Uri, int Line, int 
 /// <param name="Line">The zero-based line.</param>
 /// <param name="Character">The zero-based character.</param>
 /// <param name="NewName">The requested new name.</param>
-internal sealed record VbaRenameRequest(string Uri, int Line, int Character, string NewName);
+internal sealed record VbaRenameRequest(string Uri, int Line, int Character, string NewName) : IVbaTextDocumentRequest;
 
 /// <summary>
 /// Represents a textDocument/formatting request.
 /// </summary>
 /// <param name="Uri">The document URI.</param>
 /// <param name="TabSize">The requested tab size.</param>
-internal sealed record VbaFormattingRequest(string Uri, int TabSize);
+internal sealed record VbaFormattingRequest(string Uri, int TabSize) : IVbaTextDocumentRequest;
 
 /// <summary>
 /// Decodes LSP JSON request parameters into language-server request models.

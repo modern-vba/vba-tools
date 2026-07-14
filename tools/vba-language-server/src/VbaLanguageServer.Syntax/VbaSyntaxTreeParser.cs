@@ -913,7 +913,7 @@ internal static class VbaSyntaxTreeParser
                 continue;
             }
 
-            var statementKind = ClassifyStatement(trimmed);
+            var statementKind = VbaBlockSyntaxFacts.ClassifyStatement(trimmed, ProcedurePattern.IsMatch(trimmed));
             statements.Add(new VbaStatementSyntax(
                 statementKind,
                 statementText,
@@ -930,7 +930,7 @@ internal static class VbaSyntaxTreeParser
                 continue;
             }
 
-            var expectedTerminator = GetExpectedBlockTerminator(trimmed, statementKind);
+            var expectedTerminator = VbaBlockSyntaxFacts.GetExpectedStatementTerminator(trimmed, statementKind);
             if (expectedTerminator is not null)
             {
                 blockStack.Push(new BlockFrame(statementKind, expectedTerminator, statementRange));
@@ -1057,7 +1057,7 @@ internal static class VbaSyntaxTreeParser
     private static bool TryCloseBlock(string trimmedLine, Stack<BlockFrame> blockStack, out string? unexpectedClose)
     {
         unexpectedClose = null;
-        var closeTerminator = GetCloseTerminator(trimmedLine);
+        var closeTerminator = VbaBlockSyntaxFacts.GetStatementCloseTerminator(trimmedLine);
         if (closeTerminator is null)
         {
             return false;
@@ -1077,116 +1077,6 @@ internal static class VbaSyntaxTreeParser
 
         blockStack.Pop();
         return true;
-    }
-
-    private static VbaStatementKind ClassifyStatement(string trimmedLine)
-    {
-        if (ProcedurePattern.IsMatch(trimmedLine))
-        {
-            return VbaStatementKind.ProcedureBody;
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^If\\b.*\\bThen\\s*$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return VbaStatementKind.IfBlock;
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^With\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return VbaStatementKind.WithBlock;
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^Select\\s+Case\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return VbaStatementKind.SelectBlock;
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^For\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return VbaStatementKind.ForBlock;
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^Do\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return VbaStatementKind.DoLoopBlock;
-        }
-
-        if (trimmedLine.StartsWith("@", StringComparison.Ordinal))
-        {
-            return VbaStatementKind.Malformed;
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^[A-Za-z_][A-Za-z0-9_]*\\s*=", RegexOptions.CultureInvariant))
-        {
-            return VbaStatementKind.Assignment;
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^(Call\\s+)?[A-Za-z_][A-Za-z0-9_]*(?:\\.|\\b)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)
-            || trimmedLine.StartsWith(".", StringComparison.Ordinal))
-        {
-            return VbaStatementKind.Call;
-        }
-
-        return VbaStatementKind.Unknown;
-    }
-
-    private static string? GetExpectedBlockTerminator(string trimmedLine, VbaStatementKind statementKind)
-        => statementKind switch
-        {
-            VbaStatementKind.ProcedureBody when Regex.IsMatch(trimmedLine, "\\bSub\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant) => "End Sub",
-            VbaStatementKind.ProcedureBody when Regex.IsMatch(trimmedLine, "\\bFunction\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant) => "End Function",
-            VbaStatementKind.ProcedureBody when Regex.IsMatch(trimmedLine, "\\bProperty\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant) => "End Property",
-            VbaStatementKind.IfBlock => "End If",
-            VbaStatementKind.WithBlock => "End With",
-            VbaStatementKind.SelectBlock => "End Select",
-            VbaStatementKind.ForBlock => "Next",
-            VbaStatementKind.DoLoopBlock => "Loop",
-            _ => null
-        };
-
-    private static string? GetCloseTerminator(string trimmedLine)
-    {
-        if (Regex.IsMatch(trimmedLine, "^End\\s+Sub\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Sub";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^End\\s+Function\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Function";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^End\\s+Property\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Property";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^End\\s+If\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End If";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^End\\s+With\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End With";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^End\\s+Select\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "End Select";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^Next\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "Next";
-        }
-
-        if (Regex.IsMatch(trimmedLine, "^Loop\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-        {
-            return "Loop";
-        }
-
-        return null;
     }
 
     private static bool IsMalformedDeclarationHeader(string trimmedLine)
