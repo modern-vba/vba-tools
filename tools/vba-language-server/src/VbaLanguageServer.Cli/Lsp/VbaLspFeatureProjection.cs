@@ -139,7 +139,7 @@ internal static class VbaLspFeatureProjection
             return null;
         }
 
-        var declaration = definition.Signature?.Label ?? definition.Name;
+        var declaration = definition.DeclarationLabel ?? definition.Signature?.Label ?? definition.Name;
         var value = string.IsNullOrWhiteSpace(definition.Documentation)
             ? declaration
             : $"{definition.Documentation}\n\n{declaration}";

@@ -117,6 +117,7 @@ public sealed record VbaTypeReference(string Name, string? Qualifier = null);
 /// <param name="ParentProcedureRange">The containing procedure range for local definitions.</param>
 /// <param name="Documentation">The documentation text shown by hover and signature help.</param>
 /// <param name="Signature">The callable signature, when the definition is callable.</param>
+/// <param name="DeclarationLabel">The editor-facing declaration summary for hover display.</param>
 /// <param name="ParentTypeName">The containing enum or user-defined type name for members.</param>
 /// <param name="TypeReference">The explicit result or variable type reference.</param>
 /// <param name="IsWithEvents">Whether the definition declares WithEvents.</param>
@@ -131,6 +132,7 @@ public sealed record VbaSourceDefinition(
     VbaRange? ParentProcedureRange = null,
     string? Documentation = null,
     VbaCallableSignature? Signature = null,
+    string? DeclarationLabel = null,
     string? ParentTypeName = null,
     VbaTypeReference? TypeReference = null,
     bool IsWithEvents = false);
@@ -687,6 +689,7 @@ public sealed class VbaSourceIndex
             declaration.ParentProcedureRange is null ? null : MapRange(declaration.ParentProcedureRange),
             declaration.Documentation,
             declaration.Signature is null ? null : MapSignature(declaration.Signature),
+            declaration.DeclarationLabel,
             declaration.ParentTypeName,
             declaration.TypeReference is null ? null : MapTypeReference(declaration.TypeReference),
             declaration.IsWithEvents);

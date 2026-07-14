@@ -396,6 +396,10 @@ _Avoid_: comment, note, description
 The structured call shape for a callable `VbaDefinition` or `VbaProjectReferenceDefinition`. It includes the displayed signature label, ordered parameters, optional parameter metadata, parameter passing metadata, parameter type names, default values, return type names, and parameter documentation when that documentation is available from source comments or reference catalog metadata.
 _Avoid_: parameter list, call text, method shape
 
+**DeclarationLabel**:
+The editor-facing declaration summary for any `VbaDefinition` or `VbaProjectReferenceDefinition`. It includes the declaration name, declared parameter names when applicable, and type metadata when available. It does not require synthesizing implicit VBA default types that are not already represented. Callable and event parameter lists show parameter names only, with optional parameter names wrapped in brackets. Callable labels include `Sub`, `Function`, or `Property`; property labels do not include the accessor form. Constant, event, enum, and user-defined type labels include `Const`, `Event`, `Enum`, or `Type`. Variable, parameter, enum member, and user-defined type member labels use the declaration form, such as `Name As Type`, without scope or category words. Parameter labels include the declared type and effective `ByRef` passing metadata when relevant, including parameters without an explicit passing keyword; `ByVal` is omitted. `Static` and `WithEvents` are included when they apply, but visibility modifiers such as `Public`, `Private`, and `Friend` are omitted.
+_Avoid_: signature, display name, hover text, owner-qualified name
+
 **CallableParameter**:
 A declared input slot on a callable definition, such as `Arg1` in `Sub Example(ByVal Arg1 As String)`. It is matched by name or position from a `CallArgument`.
 _Avoid_: argument, call argument, local variable

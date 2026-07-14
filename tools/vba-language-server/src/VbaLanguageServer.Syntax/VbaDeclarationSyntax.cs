@@ -113,6 +113,7 @@ public sealed record VbaModuleMemberSyntax(
 /// <param name="LineIndex">The zero-based physical line containing the declaration.</param>
 /// <param name="Documentation">The attached Doxygen-style documentation comment text.</param>
 /// <param name="Signature">The callable signature when the declaration is callable.</param>
+/// <param name="DeclarationLabel">The editor-facing declaration summary for hover display.</param>
 /// <param name="ParentProcedureName">The containing procedure name for local declarations.</param>
 /// <param name="ParentProcedureRange">The containing procedure block range for local declarations.</param>
 /// <param name="ParentTypeName">The containing enum or user-defined type name for members.</param>
@@ -128,6 +129,7 @@ public sealed record VbaDeclarationSyntax(
     int LineIndex,
     string? Documentation = null,
     VbaCallableSignatureSyntax? Signature = null,
+    string? DeclarationLabel = null,
     string? ParentProcedureName = null,
     VbaSyntaxRange? ParentProcedureRange = null,
     string? ParentTypeName = null,
@@ -150,6 +152,7 @@ public sealed record VbaDeclarationSyntax(
 /// <param name="TypeReference">The callable return type, when present.</param>
 /// <param name="LineIndex">The zero-based physical line containing the callable declaration.</param>
 /// <param name="OriginalLine">The original declaration line text.</param>
+/// <param name="DeclarationKeyword">The declaration keyword shown for callable declaration labels.</param>
 /// <param name="IsExternal">Whether the callable is an external Declare member.</param>
 /// <param name="IsStatic">Whether the callable includes Static.</param>
 public sealed record VbaCallableDeclarationSyntax(
@@ -164,6 +167,7 @@ public sealed record VbaCallableDeclarationSyntax(
     VbaTypeReferenceSyntax? TypeReference,
     int LineIndex,
     string OriginalLine,
+    string DeclarationKeyword,
     bool IsExternal = false,
     bool IsStatic = false);
 

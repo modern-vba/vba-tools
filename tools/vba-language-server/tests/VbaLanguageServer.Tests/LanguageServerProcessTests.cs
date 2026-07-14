@@ -969,10 +969,13 @@ public sealed class LanguageServerProcessTests
             "'* @param Key Key to read.",
             "'* @param Fallback Value used when the key is missing.",
             "'* @return The configured value.",
-            "Public Function ReadValue(ByVal Key As String, Optional ByVal Fallback As String) As String",
+            "Public Static Function ReadValue(ByVal Key As String, Optional ByVal Fallback As String) As String",
             "End Function",
             "Public Sub PlainSub(ByVal Arg1 As String)",
             "End Sub",
+            "Private Property Get DisplayName(Optional ByVal Fallback As String) As String",
+            "End Property",
+            "Public Event Saved(ByVal Name As String, Optional ByVal RetryCount As Long)",
             "",
             "Public Sub Run()",
             "    ReadValue(\"id\", ",
@@ -990,7 +993,22 @@ public sealed class LanguageServerProcessTests
             .GetProperty("value")
             .GetString();
         Assert.Contains("Reads a value.", hoverValue);
-        Assert.Contains("ReadValue(Key, [Fallback]) As String", hoverValue);
+        Assert.Contains("Static Function ReadValue(Key, [Fallback]) As String", hoverValue);
+
+        var subHover = await SendPositionRequestAsync(stdin, stdout, 8, "textDocument/hover", uri, text, "PlainSub(ByVal");
+        Assert.Contains(
+            "Sub PlainSub(Arg1)",
+            subHover.GetProperty("result").GetProperty("contents").GetProperty("value").GetString());
+
+        var propertyHover = await SendPositionRequestAsync(stdin, stdout, 9, "textDocument/hover", uri, text, "DisplayName(Optional");
+        var propertyHoverValue = propertyHover.GetProperty("result").GetProperty("contents").GetProperty("value").GetString();
+        Assert.Contains("Property DisplayName([Fallback]) As String", propertyHoverValue);
+        Assert.DoesNotContain("Property Get", propertyHoverValue, StringComparison.Ordinal);
+
+        var eventHover = await SendPositionRequestAsync(stdin, stdout, 10, "textDocument/hover", uri, text, "Saved(ByVal");
+        Assert.Contains(
+            "Event Saved(Name, [RetryCount])",
+            eventHover.GetProperty("result").GetProperty("contents").GetProperty("value").GetString());
 
         var signature = await SendPositionRequestAsync(stdin, stdout, 3, "textDocument/signatureHelp", uri, text, "ReadValue(\"id\", ", "ReadValue(\"id\", ".Length);
         var result = signature.GetProperty("result");

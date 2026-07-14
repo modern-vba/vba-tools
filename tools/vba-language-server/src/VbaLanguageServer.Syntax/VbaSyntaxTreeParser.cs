@@ -687,6 +687,7 @@ internal static class VbaSyntaxTreeParser
             if (eventMatch.Success)
             {
                 var documentation = ParseDocumentationComment(sourceText.Lines, lineIndex);
+                var parameters = ParseParameterSyntax(sourceText, eventMatch, line, documentation);
                 members.Add(CreateSingleLineMember(
                     sourceText,
                     eventMatch,
@@ -700,8 +701,9 @@ internal static class VbaSyntaxTreeParser
                     VbaDeclarationKind.Event,
                     GetVisibility(eventMatch.Groups["visibility"].Value, defaultPublic: true),
                     line,
-                    documentation: documentation?.HoverText));
-                foreach (var parameter in ParseParameterSyntax(sourceText, eventMatch, line, documentation))
+                    documentation: documentation?.HoverText,
+                    declarationLabel: CreateDeclarationLabel("Event", eventMatch.Groups["name"].Value, parameters)));
+                foreach (var parameter in parameters)
                 {
                     declarations.Add(CreateParameterDeclaration(parameter, parameter.Range.Start.Line));
                 }
@@ -1239,6 +1241,7 @@ internal static class VbaSyntaxTreeParser
             typeReference,
             lineIndex,
             line.Text,
+            GetDeclarationKeyword(match),
             IsExternal: isExternal,
             IsStatic: isStatic);
     }
@@ -1275,6 +1278,7 @@ internal static class VbaSyntaxTreeParser
             typeReference,
             lineIndex,
             statement.Text,
+            GetDeclarationKeyword(match),
             IsStatic: isStatic);
     }
 
@@ -1287,6 +1291,7 @@ internal static class VbaSyntaxTreeParser
             declaration.LineIndex,
             Documentation: declaration.Documentation,
             Signature: declaration.Signature,
+            DeclarationLabel: CreateDeclarationLabel(declaration),
             TypeReference: declaration.TypeReference,
             IsExternal: declaration.IsExternal,
             IsStatic: declaration.IsStatic);
@@ -1316,6 +1321,7 @@ internal static class VbaSyntaxTreeParser
         VbaSourceLine line,
         string? documentation = null,
         VbaCallableSignatureSyntax? signature = null,
+        string? declarationLabel = null,
         string? parentProcedureName = null,
         VbaSyntaxRange? parentProcedureRange = null,
         string? parentTypeName = null,
@@ -1333,6 +1339,7 @@ internal static class VbaSyntaxTreeParser
             line.LineNumber,
             Documentation: documentation,
             Signature: signature,
+            DeclarationLabel: declarationLabel,
             ParentProcedureName: parentProcedureName,
             ParentProcedureRange: parentProcedureRange,
             ParentTypeName: parentTypeName,
@@ -1570,6 +1577,28 @@ internal static class VbaSyntaxTreeParser
 
     private static string CreateSignatureParameterLabel(VbaCallableParameterSyntax parameter)
         => parameter.IsOptional ? $"[{parameter.Name}]" : parameter.Name;
+
+    private static string CreateDeclarationLabel(VbaCallableDeclarationSyntax declaration)
+    {
+        var prefix = declaration.IsStatic ? "Static " : "";
+        return $"{prefix}{declaration.DeclarationKeyword} {declaration.Signature.Label}";
+    }
+
+    private static string CreateDeclarationLabel(
+        string keyword,
+        string name,
+        IReadOnlyList<VbaCallableParameterSyntax> parameters)
+        => $"{keyword} {name}({string.Join(", ", parameters.Select(CreateSignatureParameterLabel))})";
+
+    private static string GetDeclarationKeyword(Match match)
+    {
+        if (match.Groups["propertyKind"].Success)
+        {
+            return "Property";
+        }
+
+        return match.Groups["kind"].Value;
+    }
 
     private static bool IsOptionalParameter(string text)
         => Regex.IsMatch(
