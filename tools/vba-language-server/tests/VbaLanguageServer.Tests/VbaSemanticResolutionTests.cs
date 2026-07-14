@@ -392,7 +392,7 @@ public sealed class VbaSemanticResolutionTests
 
         var signatureHelp = index.GetSignatureHelp(uri, 4, "    ReadValue(Fallback:=".Length);
 
-        Assert.Equal("ReadValue(Key, Fallback) As String", signatureHelp?.Signature.Label);
+        Assert.Equal("Function ReadValue(Key As String, Fallback As String) As String", signatureHelp?.Signature.Label);
         Assert.Equal(1, signatureHelp?.ActiveParameter);
     }
 
@@ -422,13 +422,64 @@ public sealed class VbaSemanticResolutionTests
         var omitted = index.GetSignatureHelp(uri, 7, "    value = ExampleFunc(,, ".Length);
         var continued = index.GetSignatureHelp(uri, 10, "        ".Length);
 
-        Assert.Equal("ExampleFunc(Arg1, [Arg2], [Arg3]) As String", opening?.Signature.Label);
+        Assert.Equal(
+            "Function ExampleFunc(Arg1 As String, [ByRef Arg2 As Long], [Arg3 As Variant]) As String",
+            opening?.Signature.Label);
         Assert.Equal(["Arg1", "Arg2", "Arg3"], opening!.Signature.Parameters.Select(parameter => parameter.Name).ToArray());
         Assert.Equal(0, opening.ActiveParameter);
         Assert.Equal(1, positional?.ActiveParameter);
         Assert.Equal(1, named?.ActiveParameter);
         Assert.Equal(2, omitted?.ActiveParameter);
         Assert.Equal(1, continued?.ActiveParameter);
+    }
+
+    [Fact]
+    public void SignatureHelpFormatsRichSourceCallableSignatures()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub ExampleSub(ByRef Values() As String, ByVal Fallback As String, Optional RetryCount As Long, ParamArray Rest() As Variant)",
+            "End Sub",
+            "Public Function ExampleFunc(ByVal Key As String, Optional Fallback As Variant) As String",
+            "End Function",
+            "Friend Property Get DisplayName(Optional Name As String) As String",
+            "End Property",
+            "Public Event Saved(ByVal Name As String, Optional RetryCount As Long)",
+            "Public Sub Run()",
+            "    ExampleSub(",
+            "    result = ExampleFunc(",
+            "    value = DisplayName(",
+            "    RaiseEvent Saved(",
+            "End Sub"
+        ]);
+        var index = BuildIndex(uri, text);
+
+        var subHelp = index.GetSignatureHelp(uri, 9, "    ExampleSub(".Length);
+        var functionHelp = index.GetSignatureHelp(uri, 10, "    result = ExampleFunc(".Length);
+        var propertyHelp = index.GetSignatureHelp(uri, 11, "    value = DisplayName(".Length);
+        var eventHelp = index.GetSignatureHelp(uri, 12, "    RaiseEvent Saved(".Length);
+
+        Assert.Equal(
+            "Sub ExampleSub(ByRef Values() As String, Fallback As String, [ByRef RetryCount As Long], ParamArray Rest() As Variant)",
+            subHelp?.Signature.Label);
+        Assert.Equal(
+            [
+                "ByRef Values() As String",
+                "Fallback As String",
+                "[ByRef RetryCount As Long]",
+                "ParamArray Rest() As Variant"
+            ],
+            subHelp!.Signature.Parameters.Select(parameter => parameter.Label).ToArray());
+        Assert.Equal(
+            "Function ExampleFunc(Key As String, [ByRef Fallback As Variant]) As String",
+            functionHelp?.Signature.Label);
+        Assert.Equal(
+            "Property DisplayName([ByRef Name As String]) As String",
+            propertyHelp?.Signature.Label);
+        Assert.Equal(
+            "Event Saved(Name As String, [ByRef RetryCount As Long])",
+            eventHelp?.Signature.Label);
     }
 
     [Fact]
@@ -460,7 +511,7 @@ public sealed class VbaSemanticResolutionTests
         var sourceMember = index.GetSignatureHelp(workerUri, 3, "    helper.BuildValue(".Length);
         var nonCallable = index.GetSignatureHelp(workerUri, 5, "    value(".Length);
 
-        Assert.Equal("BuildValue(Arg1, [Arg2]) As String", sourceMember?.Signature.Label);
+        Assert.Equal("Function BuildValue(Arg1 As String, [ByRef Arg2 As Long]) As String", sourceMember?.Signature.Label);
         Assert.Null(nonCallable);
     }
 
@@ -554,9 +605,9 @@ public sealed class VbaSemanticResolutionTests
         var ifExpression = index.GetSignatureHelp(uri, 12, "    If ExampleFunc ".Length);
         var declaration = index.GetSignatureHelp(uri, 13, "    Dim localValue As ".Length);
 
-        Assert.Equal("ExampleSub(Arg1, [Arg2])", statementSub?.Signature.Label);
-        Assert.Equal("ExampleSub(Arg1, [Arg2])", qualifiedSub?.Signature.Label);
-        Assert.Equal("ExampleFunc(Arg1, [Arg2]) As String", discardedFunction?.Signature.Label);
+        Assert.Equal("Sub ExampleSub(Arg1 As String, [ByRef Arg2 As Long])", statementSub?.Signature.Label);
+        Assert.Equal("Sub ExampleSub(Arg1 As String, [ByRef Arg2 As Long])", qualifiedSub?.Signature.Label);
+        Assert.Equal("Function ExampleFunc(Arg1 As String, [ByRef Arg2 As Long]) As String", discardedFunction?.Signature.Label);
         Assert.Equal(0, statementSub?.ActiveParameter);
         Assert.Equal(1, positional?.ActiveParameter);
         Assert.Equal(1, named?.ActiveParameter);
@@ -581,7 +632,7 @@ public sealed class VbaSemanticResolutionTests
 
         var signatureHelp = index.GetSignatureHelp(uri, 4, "    Search(".Length);
 
-        Assert.Equal("Search(Values, Fallback) As Long", signatureHelp?.Signature.Label);
+        Assert.Equal("Function Search(ByRef Values() As String, Fallback As String) As Long", signatureHelp?.Signature.Label);
         Assert.Equal(["Values", "Fallback"], signatureHelp!.Signature.Parameters.Select(parameter => parameter.Name).ToArray());
     }
 

@@ -187,7 +187,7 @@ internal static class VbaLspFeatureProjection
     {
         var projected = new Dictionary<string, object?>
         {
-            ["label"] = parameter.Name
+            ["label"] = parameter.Label
         };
         var documentation = ToMarkup(parameter.Documentation);
         if (documentation is not null)

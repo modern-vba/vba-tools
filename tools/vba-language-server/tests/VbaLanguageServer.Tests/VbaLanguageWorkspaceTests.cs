@@ -258,7 +258,7 @@ public sealed class VbaLanguageWorkspaceTests
 
             Assert.NotNull(definition);
             Assert.Equal(documentation, definition.Documentation);
-            Assert.Equal("BuildValue() As String", definition.Signature?.Label);
+            Assert.Equal("Function BuildValue() As String", definition.Signature?.Label);
             Assert.Equal(classDocumentation, classDefinition.Documentation);
         }
         finally

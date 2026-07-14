@@ -180,13 +180,17 @@ public sealed record VbaCallableDeclarationSyntax(
 /// <param name="TypeReference">The parsed explicit parameter type annotation.</param>
 /// <param name="IsOptional">Whether the parameter is declared Optional.</param>
 /// <param name="IsByRef">Whether the parameter is effectively passed ByRef.</param>
+/// <param name="IsParamArray">Whether the parameter is declared ParamArray.</param>
+/// <param name="IsArray">Whether the parameter name carries a VBA array marker.</param>
 public sealed record VbaCallableParameterSyntax(
     string Name,
     VbaSyntaxRange Range,
     string? Documentation,
     VbaTypeReferenceSyntax? TypeReference,
     bool IsOptional = false,
-    bool IsByRef = true);
+    bool IsByRef = true,
+    bool IsParamArray = false,
+    bool IsArray = false);
 
 /// <summary>
 /// Represents the display signature for a callable definition.
@@ -205,7 +209,15 @@ public sealed record VbaCallableSignatureSyntax(
 /// <param name="Name">The parameter name.</param>
 /// <param name="Documentation">The parameter documentation text.</param>
 /// <param name="IsOptional">Whether the parameter is declared Optional.</param>
+/// <param name="TypeReference">The parsed explicit parameter type annotation.</param>
+/// <param name="IsByRef">Whether the parameter is effectively passed ByRef.</param>
+/// <param name="IsParamArray">Whether the parameter is declared ParamArray.</param>
+/// <param name="IsArray">Whether the parameter name carries a VBA array marker.</param>
 public sealed record VbaCallableParameterInfoSyntax(
     string Name,
     string? Documentation = null,
-    bool IsOptional = false);
+    bool IsOptional = false,
+    VbaTypeReferenceSyntax? TypeReference = null,
+    bool IsByRef = true,
+    bool IsParamArray = false,
+    bool IsArray = false);

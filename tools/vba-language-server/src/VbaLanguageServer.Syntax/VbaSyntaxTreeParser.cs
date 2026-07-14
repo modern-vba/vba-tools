@@ -688,6 +688,7 @@ internal static class VbaSyntaxTreeParser
             {
                 var documentation = ParseDocumentationComment(sourceText.Lines, lineIndex);
                 var parameters = ParseParameterSyntax(sourceText, eventMatch, line, documentation);
+                var name = eventMatch.Groups["name"].Value;
                 members.Add(CreateSingleLineMember(
                     sourceText,
                     eventMatch,
@@ -702,7 +703,8 @@ internal static class VbaSyntaxTreeParser
                     GetVisibility(eventMatch.Groups["visibility"].Value, defaultPublic: true),
                     line,
                     documentation: documentation?.HoverText,
-                    declarationLabel: CreateDeclarationLabel("Event", eventMatch.Groups["name"].Value, parameters)));
+                    signature: CreateSignature(name, parameters, null, documentation),
+                    declarationLabel: CreateDeclarationLabel("Event", name, parameters)));
                 foreach (var parameter in parameters)
                 {
                     declarations.Add(CreateParameterDeclaration(parameter, parameter.Range.Start.Line));
@@ -1505,7 +1507,9 @@ internal static class VbaSyntaxTreeParser
                     : null,
                 ParseTypeReference(segment.Text),
                 IsOptionalParameter(segment.Text),
-                IsByRefParameter(segment.Text)));
+                IsByRefParameter(segment.Text),
+                IsParamArrayParameter(segment.Text),
+                IsArrayParameter(segment.Text, name)));
         }
 
         return parameters;
@@ -1541,7 +1545,9 @@ internal static class VbaSyntaxTreeParser
                     : null,
                 ParseTypeReference(segment.Text),
                 IsOptionalParameter(segment.Text),
-                IsByRefParameter(segment.Text)));
+                IsByRefParameter(segment.Text),
+                IsParamArrayParameter(segment.Text),
+                IsArrayParameter(segment.Text, name)));
         }
 
         return parameters;
@@ -1582,7 +1588,11 @@ internal static class VbaSyntaxTreeParser
                 .Select(parameter => new VbaCallableParameterInfoSyntax(
                     parameter.Name,
                     parameter.Documentation,
-                    parameter.IsOptional))
+                    parameter.IsOptional,
+                    parameter.TypeReference,
+                    parameter.IsByRef,
+                    parameter.IsParamArray,
+                    parameter.IsArray))
                 .ToArray(),
             documentationLines.Count == 0 ? null : string.Join('\n', documentationLines));
     }
@@ -1659,6 +1669,18 @@ internal static class VbaSyntaxTreeParser
         => !Regex.IsMatch(
             text,
             "\\bByVal\\b",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static bool IsParamArrayParameter(string text)
+        => Regex.IsMatch(
+            text,
+            "^\\s*ParamArray\\b",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static bool IsArrayParameter(string text, string name)
+        => Regex.IsMatch(
+            text,
+            $"\\b{Regex.Escape(name)}\\s*\\(",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static IReadOnlyList<DeclarationSegment> SplitDeclarationSegments(string text)

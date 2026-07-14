@@ -982,6 +982,8 @@ public sealed class LanguageServerProcessTests
             "    ReadValue ",
             "    ReadValue \"id\", ",
             "    PlainSub(",
+            "    value = DisplayName(",
+            "    RaiseEvent Saved(",
             "End Sub"
         ]);
         await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, text));
@@ -1014,18 +1016,18 @@ public sealed class LanguageServerProcessTests
         var result = signature.GetProperty("result");
         Assert.Equal(1, result.GetProperty("activeParameter").GetInt32());
         var firstSignature = result.GetProperty("signatures").EnumerateArray().Single();
-        Assert.Equal("ReadValue(Key, [Fallback]) As String", firstSignature.GetProperty("label").GetString());
+        Assert.Equal("Function ReadValue(Key As String, [Fallback As String]) As String", firstSignature.GetProperty("label").GetString());
         var parameters = firstSignature.GetProperty("parameters").EnumerateArray().ToArray();
-        Assert.Equal("Key", parameters[0].GetProperty("label").GetString());
+        Assert.Equal("Key As String", parameters[0].GetProperty("label").GetString());
         Assert.Contains("Key to read.", parameters[0].GetProperty("documentation").GetProperty("value").GetString());
-        Assert.Equal("Fallback", parameters[1].GetProperty("label").GetString());
+        Assert.Equal("[Fallback As String]", parameters[1].GetProperty("label").GetString());
         Assert.Contains("Value used when the key is missing.", parameters[1].GetProperty("documentation").GetProperty("value").GetString());
 
         var statementSignature = await SendPositionRequestAsync(stdin, stdout, 4, "textDocument/signatureHelp", uri, text, "ReadValue ", "ReadValue ".Length);
         var statementResult = statementSignature.GetProperty("result");
         Assert.Equal(0, statementResult.GetProperty("activeParameter").GetInt32());
         Assert.Equal(
-            "ReadValue(Key, [Fallback]) As String",
+            "Function ReadValue(Key As String, [Fallback As String]) As String",
             statementResult.GetProperty("signatures").EnumerateArray().Single().GetProperty("label").GetString());
 
         var statementSecondParameter = await SendPositionRequestAsync(stdin, stdout, 5, "textDocument/signatureHelp", uri, text, "ReadValue \"id\", ", "ReadValue \"id\", ".Length);
@@ -1042,7 +1044,29 @@ public sealed class LanguageServerProcessTests
             undocumentedFirstSignature.GetProperty("parameters").EnumerateArray(),
             parameter => parameter.TryGetProperty("documentation", out _));
 
-        await SendRequestAsync(stdin, stdout, 7, "shutdown", null);
+        var propertySignature = await SendPositionRequestAsync(stdin, stdout, 7, "textDocument/signatureHelp", uri, text, "DisplayName(", "DisplayName(".Length);
+        Assert.Equal(
+            "Property DisplayName([Fallback As String]) As String",
+            propertySignature
+                .GetProperty("result")
+                .GetProperty("signatures")
+                .EnumerateArray()
+                .Single()
+                .GetProperty("label")
+                .GetString());
+
+        var eventSignature = await SendPositionRequestAsync(stdin, stdout, 8, "textDocument/signatureHelp", uri, text, "Saved(", "Saved(".Length);
+        Assert.Equal(
+            "Event Saved(Name As String, [RetryCount As Long])",
+            eventSignature
+                .GetProperty("result")
+                .GetProperty("signatures")
+                .EnumerateArray()
+                .Single()
+                .GetProperty("label")
+                .GetString());
+
+        await SendRequestAsync(stdin, stdout, 9, "shutdown", null);
         await SendNotificationAsync(stdin, "exit", null);
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await process.WaitForExitAsync(cancellation.Token);
