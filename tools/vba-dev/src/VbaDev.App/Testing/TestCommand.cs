@@ -54,13 +54,13 @@ public sealed class TestCommand
                 return CommandResult.UsageError($"Bin workbook was not found: {context.BinDocumentPath}");
             }
 
-            var results = workbookTestRunner
-                .RunTests(context.BinDocumentPath, request.Selector)
-                .Select(row => TestResultRecord.FromWorkbookRow(context.DocumentName, row))
-                .ToArray();
-            var output = outputFormatter.Format(request.Format, context.Manifest.ProjectName, context.DocumentName, results);
+            var testRun = TestRun.FromWorkbookRows(
+                context.Manifest.ProjectName,
+                context.DocumentName,
+                workbookTestRunner.RunTests(context.BinDocumentPath, request.Selector));
+            var output = outputFormatter.Format(request.Format, testRun);
 
-            return results.Any(result => !result.Outcome.Equals(TestOutcome.Passed, StringComparison.OrdinalIgnoreCase))
+            return testRun.HasFailures
                 ? CommandResult.Failure(output)
                 : CommandResult.Success(output);
         }

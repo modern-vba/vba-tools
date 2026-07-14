@@ -18,60 +18,8 @@ public sealed class ExcelComWorkbookModuleExporter : IWorkbookModuleExporter
     /// <param name="destinationDirectory">The destination directory for exported sources.</param>
     public void ExportModules(string workbookPath, string destinationDirectory)
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            throw new InvalidOperationException("Excel COM export automation is supported only on Windows.");
-        }
-
-        var excelType = Type.GetTypeFromProgID("Excel.Application")
-            ?? throw new InvalidOperationException("Excel COM automation is not available.");
-        object? excelObject = null;
-        object? workbooksObject = null;
-        object? workbookObject = null;
-
-        try
-        {
-            excelObject = Activator.CreateInstance(excelType)
-                ?? throw new InvalidOperationException("Excel COM automation could not be started.");
-            dynamic excel = excelObject;
-            excel.Visible = false;
-            excel.DisplayAlerts = false;
-            workbooksObject = excel.Workbooks;
-            dynamic workbooks = workbooksObject;
-            workbookObject = workbooks.Open(workbookPath, 0, false);
-            ExportImportableComponents(workbookObject, destinationDirectory);
-        }
-        finally
-        {
-            ComObjectReleaser.Release(workbooksObject);
-            if (workbookObject is not null)
-            {
-                try
-                {
-                    dynamic workbook = workbookObject;
-                    workbook.Close(false);
-                }
-                finally
-                {
-                    ComObjectReleaser.Release(workbookObject);
-                }
-            }
-
-            if (excelObject is not null)
-            {
-                try
-                {
-                    dynamic excel = excelObject;
-                    excel.Quit();
-                }
-                finally
-                {
-                    ComObjectReleaser.Release(excelObject);
-                }
-            }
-
-            ComObjectReleaser.CollectReleasedComObjects();
-        }
+        using var session = ExcelComWorkbookSession.Open(workbookPath);
+        ExportImportableComponents(session.WorkbookObject, destinationDirectory);
     }
 
     private static void ExportImportableComponents(object workbookObject, string destinationDirectory)

@@ -68,6 +68,24 @@ public sealed class ProjectManifestTests
     }
 
     [Fact]
+    public void ProjectManifestEditorWritesRecoveryFileWhenSaveFails()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        var editor = new ProjectManifestEditor(new FailingProjectManifestStore());
+
+        var error = Assert.Throws<ProjectManifestEditException>(() => editor.SaveWithRecovery(root, manifest));
+
+        var recoveryFile = Assert.Single(Directory.EnumerateFiles(root, "vba-project.failed-*.json"));
+        Assert.Equal(recoveryFile, error.Message);
+        var recoveryBytes = File.ReadAllBytes(recoveryFile);
+        Assert.Equal(0xff, recoveryBytes[0]);
+        Assert.Equal(0xfe, recoveryBytes[1]);
+        Assert.Contains("\"Project\"", File.ReadAllText(recoveryFile, Encoding.Unicode), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void UnknownSchemaVersionIsRejectedAsUsageError()
     {
         using var temp = TempDirectory.Create();
@@ -254,6 +272,15 @@ internal static class ProjectManifestTestData
                 ["SecondBook"] = ProjectDocument.CreateExcel("SecondBook")
             }
         };
+}
+
+internal sealed class FailingProjectManifestStore : IProjectManifestStore
+{
+    public ProjectManifest Load(string manifestPath)
+        => throw new NotSupportedException();
+
+    public void Save(string projectRoot, ProjectManifest manifest)
+        => throw new IOException("manifest save failed");
 }
 
 internal sealed class TempDirectory : IDisposable

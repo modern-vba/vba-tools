@@ -46,7 +46,7 @@ public sealed class CommonModulesService
     /// <returns>The formatted command result.</returns>
     public CommandResult List(ResolvedProjectContext context, string format)
     {
-        var document = GetDocument(context.Manifest, context.DocumentName);
+        var document = ProjectManifestEditor.GetDocument(context.Manifest, context.DocumentName);
         if (format.Equals("json", StringComparison.OrdinalIgnoreCase))
         {
             var output = new CommonModuleListOutput(context.DocumentName, document.CommonModules);
@@ -93,18 +93,6 @@ public sealed class CommonModulesService
         {
             return CommandResult.UsageError(ex.Message);
         }
-    }
-
-    private static ProjectDocument GetDocument(ProjectManifest manifest, string documentName)
-    {
-        if (manifest.Documents.TryGetValue(documentName, out var document))
-        {
-            return document;
-        }
-
-        return manifest.Documents
-            .First(item => item.Key.Equals(documentName, StringComparison.OrdinalIgnoreCase))
-            .Value;
     }
 
     private sealed record CommonModuleListOutput(

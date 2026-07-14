@@ -18,68 +18,19 @@ public sealed class ExcelComWorkbookBuildAutomation : IWorkbookBuildAutomation
     /// <param name="workbookPath">The workbook path to open.</param>
     /// <returns>An Excel COM-backed workbook build session.</returns>
     public IWorkbookBuildSession OpenWorkbook(string workbookPath)
-    {
-        if (!OperatingSystem.IsWindows())
-        {
-            throw new InvalidOperationException("Excel COM build automation is supported only on Windows.");
-        }
-
-        var excelType = Type.GetTypeFromProgID("Excel.Application")
-            ?? throw new InvalidOperationException("Excel COM automation is not available.");
-        object? excelObject = null;
-        object? workbooksObject = null;
-        object? workbookObject = null;
-
-        try
-        {
-            excelObject = Activator.CreateInstance(excelType)
-                ?? throw new InvalidOperationException("Excel COM automation could not be started.");
-            dynamic excel = excelObject;
-            excel.Visible = false;
-            excel.DisplayAlerts = false;
-            workbooksObject = excel.Workbooks;
-            dynamic workbooks = workbooksObject;
-            workbookObject = workbooks.Open(workbookPath, 0, false);
-            return new ExcelComWorkbookBuildSession(excelObject, workbookObject);
-        }
-        catch
-        {
-            try
-            {
-                CloseWorkbook(workbookObject);
-                QuitExcel(excelObject);
-            }
-            finally
-            {
-                ComObjectReleaser.CollectReleasedComObjects();
-            }
-
-            throw;
-        }
-        finally
-        {
-            ComObjectReleaser.Release(workbooksObject);
-            if (workbookObject is null || excelObject is null)
-            {
-                ComObjectReleaser.CollectReleasedComObjects();
-            }
-        }
-    }
+        => new ExcelComWorkbookBuildSession(ExcelComWorkbookSession.Open(workbookPath));
 
     private sealed class ExcelComWorkbookBuildSession : IWorkbookBuildSession
     {
-        private readonly object excelObject;
-        private readonly object workbookObject;
+        private readonly ExcelComWorkbookSession session;
 
         /// <summary>
         /// Initializes a build session over an Excel application and workbook COM object.
         /// </summary>
-        /// <param name="excelObject">The Excel application COM object.</param>
-        /// <param name="workbookObject">The workbook COM object.</param>
-        public ExcelComWorkbookBuildSession(object excelObject, object workbookObject)
+        /// <param name="session">The Excel COM workbook session.</param>
+        public ExcelComWorkbookBuildSession(ExcelComWorkbookSession session)
         {
-            this.excelObject = excelObject;
-            this.workbookObject = workbookObject;
+            this.session = session;
         }
 
         /// <summary>
@@ -88,7 +39,7 @@ public sealed class ExcelComWorkbookBuildAutomation : IWorkbookBuildAutomation
         /// <returns>The workbook module descriptors.</returns>
         public IReadOnlyList<WorkbookModule> GetModules()
         {
-            dynamic workbook = workbookObject;
+            dynamic workbook = session.WorkbookObject;
             object? vbProjectObject = null;
             object? componentsObject = null;
             var modules = new List<WorkbookModule>();
@@ -129,7 +80,7 @@ public sealed class ExcelComWorkbookBuildAutomation : IWorkbookBuildAutomation
         /// <returns>The reference names and whether each reference can be removed.</returns>
         public IReadOnlyList<WorkbookReference> GetReferences()
         {
-            dynamic workbook = workbookObject;
+            dynamic workbook = session.WorkbookObject;
             object? vbProjectObject = null;
             object? referencesObject = null;
             var result = new List<WorkbookReference>();
@@ -176,7 +127,7 @@ public sealed class ExcelComWorkbookBuildAutomation : IWorkbookBuildAutomation
         /// <returns><see langword="true"/> when a reference was removed; otherwise, <see langword="false"/>.</returns>
         public bool RemoveReference(string referenceName)
         {
-            dynamic workbook = workbookObject;
+            dynamic workbook = session.WorkbookObject;
             object? vbProjectObject = null;
             object? referencesObject = null;
             try
@@ -228,7 +179,7 @@ public sealed class ExcelComWorkbookBuildAutomation : IWorkbookBuildAutomation
         /// <param name="reference">The resolved reference to add.</param>
         public void AddReference(ResolvedVbaProjectReference reference)
         {
-            dynamic workbook = workbookObject;
+            dynamic workbook = session.WorkbookObject;
             object? vbProjectObject = null;
             object? referencesObject = null;
             object? referenceObject = null;
@@ -254,7 +205,7 @@ public sealed class ExcelComWorkbookBuildAutomation : IWorkbookBuildAutomation
         /// <param name="moduleName">The module name to remove.</param>
         public void RemoveModule(string moduleName)
         {
-            dynamic workbook = workbookObject;
+            dynamic workbook = session.WorkbookObject;
             object? vbProjectObject = null;
             object? componentsObject = null;
             object? componentObject = null;
@@ -281,7 +232,7 @@ public sealed class ExcelComWorkbookBuildAutomation : IWorkbookBuildAutomation
         /// <param name="sourceFile">The source file to import.</param>
         public void ImportModule(VbaSourceFile sourceFile)
         {
-            dynamic workbook = workbookObject;
+            dynamic workbook = session.WorkbookObject;
             object? vbProjectObject = null;
             object? componentsObject = null;
             object? importedComponent = null;
@@ -306,7 +257,7 @@ public sealed class ExcelComWorkbookBuildAutomation : IWorkbookBuildAutomation
         /// </summary>
         public void Save()
         {
-            dynamic workbook = workbookObject;
+            dynamic workbook = session.WorkbookObject;
             workbook.Save();
         }
 
@@ -314,23 +265,7 @@ public sealed class ExcelComWorkbookBuildAutomation : IWorkbookBuildAutomation
         /// Closes the workbook, quits Excel, and releases collected COM references.
         /// </summary>
         public void Dispose()
-        {
-            try
-            {
-                CloseWorkbook(workbookObject);
-            }
-            finally
-            {
-                try
-                {
-                    QuitExcel(excelObject);
-                }
-                finally
-                {
-                    ComObjectReleaser.CollectReleasedComObjects();
-                }
-            }
-        }
+            => session.Dispose();
 
         private static WorkbookModuleKind MapComponentType(int type)
             => type switch
@@ -343,39 +278,4 @@ public sealed class ExcelComWorkbookBuildAutomation : IWorkbookBuildAutomation
             };
     }
 
-    private static void CloseWorkbook(object? workbookObject)
-    {
-        if (workbookObject is null)
-        {
-            return;
-        }
-
-        try
-        {
-            dynamic workbook = workbookObject;
-            workbook.Close(false);
-        }
-        finally
-        {
-            ComObjectReleaser.Release(workbookObject);
-        }
-    }
-
-    private static void QuitExcel(object? excelObject)
-    {
-        if (excelObject is null)
-        {
-            return;
-        }
-
-        try
-        {
-            dynamic excel = excelObject;
-            excel.Quit();
-        }
-        finally
-        {
-            ComObjectReleaser.Release(excelObject);
-        }
-    }
 }

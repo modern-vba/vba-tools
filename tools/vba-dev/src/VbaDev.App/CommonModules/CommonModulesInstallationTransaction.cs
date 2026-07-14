@@ -1,5 +1,4 @@
 using System.Text;
-using System.Text.Json;
 using VbaDev.App.Projects;
 using VbaDev.App.Workbooks;
 using VbaDev.Domain;
@@ -13,16 +12,8 @@ public sealed class CommonModulesInstallationTransaction
 {
     private const string CommonModulesDirectoryName = "common-modules";
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        WriteIndented = true
-    };
-
-    private static readonly UnicodeEncoding Utf16LeWithBom = new(bigEndian: false, byteOrderMark: true);
-
     private readonly CommonModulesManifestReader manifestReader;
-    private readonly IProjectManifestStore manifestStore;
+    private readonly ProjectManifestEditor manifestEditor;
 
     /// <summary>
     /// Creates a transaction coordinator for CommonModules installation operations.
@@ -32,9 +23,21 @@ public sealed class CommonModulesInstallationTransaction
     public CommonModulesInstallationTransaction(
         CommonModulesManifestReader manifestReader,
         IProjectManifestStore manifestStore)
+        : this(manifestReader, new ProjectManifestEditor(manifestStore))
+    {
+    }
+
+    /// <summary>
+    /// Creates a transaction coordinator for CommonModules installation operations.
+    /// </summary>
+    /// <param name="manifestReader">The manifest reader for the configured CommonModulesRepository.</param>
+    /// <param name="manifestEditor">The manifest editor used to clone and persist installed entries.</param>
+    public CommonModulesInstallationTransaction(
+        CommonModulesManifestReader manifestReader,
+        ProjectManifestEditor manifestEditor)
     {
         this.manifestReader = manifestReader;
-        this.manifestStore = manifestStore;
+        this.manifestEditor = manifestEditor;
     }
 
     /// <summary>
@@ -61,8 +64,8 @@ public sealed class CommonModulesInstallationTransaction
         var requestedNames = normalizedRequestedModules
             .Select(GetCommonModuleName)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var plannedManifest = CloneManifest(context.Manifest);
-        var document = GetDocument(plannedManifest, context.DocumentName);
+        var plannedManifest = ProjectManifestEditor.Clone(context.Manifest);
+        var document = ProjectManifestEditor.GetDocument(plannedManifest, context.DocumentName);
         var installedByName = document.CommonModules.ToDictionary(
             module => module.Name,
             StringComparer.OrdinalIgnoreCase);
@@ -94,7 +97,7 @@ public sealed class CommonModulesInstallationTransaction
     {
         var repositoryPath = GetRepositoryPath(project);
         var entries = manifestReader.Load(repositoryPath);
-        var plannedManifest = CloneManifest(project.Manifest);
+        var plannedManifest = ProjectManifestEditor.Clone(project.Manifest);
         var copyPlans = new List<CommonModuleCopyPlan>();
         var manifestChanged = false;
 
@@ -246,47 +249,16 @@ public sealed class CommonModulesInstallationTransaction
     {
         try
         {
-            manifestStore.Save(projectRoot, manifest);
+            manifestEditor.SaveWithRecovery(projectRoot, manifest);
         }
-        catch (IOException ex)
+        catch (ProjectManifestEditException ex)
         {
-            throw new CommonModulesTransactionException(WriteManifestRecovery(projectRoot, manifest, ex));
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            throw new CommonModulesTransactionException(WriteManifestRecovery(projectRoot, manifest, ex));
-        }
-        catch (ProjectManifestException ex)
-        {
-            throw new CommonModulesTransactionException(WriteManifestRecovery(projectRoot, manifest, ex));
+            throw new CommonModulesTransactionException(ex.Message);
         }
     }
 
     private static string FileOperationFailureMessage(Exception ex)
         => $"CommonModules file operation failed before manifest save; manifest was not saved and source files may have been partially updated. {ex.Message}";
-
-    private static string WriteManifestRecovery(string projectRoot, ProjectManifest manifest, Exception manifestSaveException)
-    {
-        try
-        {
-            Directory.CreateDirectory(projectRoot);
-            var recoveryPath = Path.Combine(projectRoot, $"vba-project.failed-{DateTime.Now:yyyyMMdd-HHmmss-fff}.json");
-            var json = JsonSerializer.Serialize(manifest, JsonOptions);
-            File.WriteAllText(recoveryPath, json + Environment.NewLine, Utf16LeWithBom);
-            return recoveryPath;
-        }
-        catch (IOException ex)
-        {
-            return RecoveryFailureMessage(manifestSaveException, ex);
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            return RecoveryFailureMessage(manifestSaveException, ex);
-        }
-    }
-
-    private static string RecoveryFailureMessage(Exception manifestSaveException, Exception recoveryException)
-        => $"Project manifest could not be saved ({manifestSaveException.Message}), and recovery file could not be written: {recoveryException.Message}";
 
     private static string BuildCopyOutput(IReadOnlyList<CommonModuleCopyPlan> copyPlan)
     {
@@ -297,13 +269,6 @@ public sealed class CommonModulesInstallationTransaction
         }
 
         return output.ToString();
-    }
-
-    private static ProjectManifest CloneManifest(ProjectManifest manifest)
-    {
-        var json = JsonSerializer.Serialize(manifest, JsonOptions);
-        return JsonSerializer.Deserialize<ProjectManifest>(json, JsonOptions)
-            ?? throw new CommonModulesManifestException("Project manifest could not be cloned.");
     }
 
     private static bool ApplyInstalledEntries(
@@ -334,18 +299,6 @@ public sealed class CommonModulesInstallationTransaction
         }
 
         return changed;
-    }
-
-    private static ProjectDocument GetDocument(ProjectManifest manifest, string documentName)
-    {
-        if (manifest.Documents.TryGetValue(documentName, out var document))
-        {
-            return document;
-        }
-
-        return manifest.Documents
-            .First(item => item.Key.Equals(documentName, StringComparison.OrdinalIgnoreCase))
-            .Value;
     }
 
     private static string GetCommonModuleName(string moduleFile)

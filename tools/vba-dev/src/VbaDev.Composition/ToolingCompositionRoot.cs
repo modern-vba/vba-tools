@@ -49,20 +49,27 @@ public static class ToolingCompositionRoot
         IProjectManifestStore? projectManifestStore = null)
     {
         var manifestStore = projectManifestStore ?? new JsonProjectManifestStore();
+        var manifestEditor = new ProjectManifestEditor(manifestStore);
         var commonModulesManifestReader = new CommonModulesManifestReader();
-        var commonModulesInstallationTransaction = new CommonModulesInstallationTransaction(commonModulesManifestReader, manifestStore);
+        var commonModulesInstallationTransaction = new CommonModulesInstallationTransaction(commonModulesManifestReader, manifestEditor);
         var commonModulesService = new CommonModulesService(commonModulesInstallationTransaction);
         var referenceResolver = vbaProjectReferenceResolver ?? new RegistryVbaProjectReferenceResolver();
         var referencePlanner = new VbaProjectReferencePlanner(referenceResolver);
-        var referenceService = new VbaProjectReferenceService(manifestStore, referencePlanner);
+        var referenceService = new VbaProjectReferenceService(manifestEditor, referencePlanner);
         var projectContextResolver = new ProjectContextResolver(manifestStore);
         var buildAutomation = workbookBuildAutomation ?? new ExcelComWorkbookBuildAutomation();
-        var doctorCommand = new DoctorCommand(
+        var doctorPipeline = new DoctorDiagnosticPipeline(
             projectContextResolver,
-            commonModulesManifestReader,
-            referencePlanner,
-            buildAutomation,
+            [
+                new ProjectConfigurationDiagnosticProvider(),
+                new CommonModulesDiagnosticProvider(commonModulesManifestReader),
+                new VbaProjectReferenceDiagnosticProvider(referencePlanner, buildAutomation),
+                new CommandDefaultsDiagnosticProvider()
+            ],
             environmentDiagnosticPort ?? new SkippedEnvironmentDiagnosticPort());
+        var doctorCommand = new DoctorCommand(
+            doctorPipeline,
+            new DoctorReportRenderer());
         var newProjectCommand = new NewProjectCommand(
             manifestStore,
             initialWorkbookCreator ?? new ExcelComInitialWorkbookCreator(),
@@ -72,8 +79,9 @@ public static class ToolingCompositionRoot
         var generationPipeline = new WorkbookGenerationPipeline(
             buildAutomation,
             new WorkbookReferenceNormalizer(referencePlanner));
-        var buildCommand = new BuildCommand(sourcePlanner, generationPipeline);
-        var publishCommand = new PublishCommand(sourcePlanner, generationPipeline);
+        var workbookOutputCommand = new WorkbookOutputCommand(sourcePlanner, generationPipeline);
+        var buildCommand = new BuildCommand(workbookOutputCommand);
+        var publishCommand = new PublishCommand(workbookOutputCommand);
         var testCommand = new TestCommand(
             buildCommand,
             workbookTestRunner ?? new ExcelComWorkbookTestRunner(),

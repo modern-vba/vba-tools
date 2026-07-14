@@ -43,6 +43,43 @@ public sealed class TestCommandTests
     }
 
     [Fact]
+    public void TestRunCreatesEventSequenceAsInternalModel()
+    {
+        var testRun = TestRun.FromResults("Project", "Book1", SampleResults());
+
+        var events = testRun.CreateEvents();
+
+        Assert.Collection(
+            events,
+            item => Assert.IsType<RunStartedTestRunEvent>(item),
+            item =>
+            {
+                var started = Assert.IsType<TestStartedTestRunEvent>(item);
+                Assert.Equal("Test_Module", started.Module);
+                Assert.Equal("Test_Passes", started.Procedure);
+            },
+            item =>
+            {
+                var finished = Assert.IsType<TestFinishedTestRunEvent>(item);
+                Assert.Equal(TestOutcome.Passed, finished.Outcome);
+                Assert.Equal(12.5, finished.DurationMilliseconds);
+            },
+            item => Assert.IsType<TestStartedTestRunEvent>(item),
+            item => Assert.IsType<TestFinishedTestRunEvent>(item),
+            item => Assert.IsType<TestStartedTestRunEvent>(item),
+            item => Assert.IsType<TestFinishedTestRunEvent>(item),
+            item =>
+            {
+                var finished = Assert.IsType<RunFinishedTestRunEvent>(item);
+                Assert.Equal(TestOutcome.Failed, finished.Outcome);
+                Assert.Equal(3, finished.Total);
+                Assert.Equal(1, finished.Passed);
+                Assert.Equal(1, finished.Failed);
+                Assert.Equal(1, finished.Errors);
+            });
+    }
+
+    [Fact]
     public void TextFormatEmitsReadableStableTerminalOutput()
     {
         var formatter = new TestResultOutputFormatter();

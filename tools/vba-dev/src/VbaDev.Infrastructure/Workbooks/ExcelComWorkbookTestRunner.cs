@@ -8,7 +8,6 @@ namespace VbaDev.Infrastructure.Workbooks;
 /// </summary>
 public sealed class ExcelComWorkbookTestRunner : IWorkbookTestRunner
 {
-    private const int MsoAutomationSecurityLow = 1;
     private const int XlUp = -4162;
     private const string UnitTestEntryPoint = "UnitTestMain";
     private const string UnitTestSheetName = "UNIT_TEST_SHEET";
@@ -21,35 +20,15 @@ public sealed class ExcelComWorkbookTestRunner : IWorkbookTestRunner
     /// <returns>The raw workbook test result rows.</returns>
     public IReadOnlyList<WorkbookTestResultRow> RunTests(string workbookPath, WorkbookTestSelector selector)
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            throw new InvalidOperationException("Excel COM test automation is supported only on Windows.");
-        }
-
-        var excelType = Type.GetTypeFromProgID("Excel.Application")
-            ?? throw new InvalidOperationException("Excel COM automation is not available.");
-        object? excelObject = null;
-        object? workbooksObject = null;
-        object? workbookObject = null;
+        ExcelComWorkbookSession? session = null;
         object? worksheetsObject = null;
         object? sheetObject = null;
-        ExcelComApplicationProcess? excelProcess = null;
-        var safeToTerminateOrphanedExcel = false;
-        var existingExcelProcesses = ExcelComApplicationProcess.CaptureRunningExcelProcesses();
 
         try
         {
-            excelObject = Activator.CreateInstance(excelType)
-                ?? throw new InvalidOperationException("Excel COM automation could not be started.");
-            excelProcess = ExcelComApplicationProcess.TryCaptureOwned(excelObject, existingExcelProcesses);
-            dynamic excel = excelObject;
-            excel.Visible = false;
-            excel.DisplayAlerts = false;
-            excel.AutomationSecurity = MsoAutomationSecurityLow;
-            workbooksObject = excel.Workbooks;
-            dynamic workbooks = workbooksObject;
-            workbookObject = workbooks.Open(workbookPath, 0, false);
-            dynamic workbook = workbookObject;
+            session = ExcelComWorkbookSession.Open(workbookPath, enableAutomationSecurityLow: true);
+            dynamic excel = session.ExcelObject;
+            dynamic workbook = session.WorkbookObject;
             var entryPoint = $"'{workbook.Name}'!{UnitTestEntryPoint}";
             if (!string.IsNullOrWhiteSpace(selector.ProcedureName))
             {
@@ -77,59 +56,7 @@ public sealed class ExcelComWorkbookTestRunner : IWorkbookTestRunner
         {
             ComObjectReleaser.Release(sheetObject);
             ComObjectReleaser.Release(worksheetsObject);
-            if (workbookObject is not null)
-            {
-                try
-                {
-                    dynamic workbook = workbookObject;
-                    workbook.Close(false);
-                }
-                finally
-                {
-                    ComObjectReleaser.Release(workbookObject);
-                }
-            }
-
-            ComObjectReleaser.Release(workbooksObject);
-            if (excelObject is not null)
-            {
-                try
-                {
-                    dynamic excel = excelObject;
-                    safeToTerminateOrphanedExcel = HasNoOpenWorkbooks(excelObject);
-                    excel.Quit();
-                }
-                finally
-                {
-                    ComObjectReleaser.Release(excelObject);
-                }
-            }
-
-            ComObjectReleaser.CollectReleasedComObjects();
-            if (safeToTerminateOrphanedExcel)
-            {
-                excelProcess?.TerminateIfStillRunning();
-            }
-        }
-    }
-
-    private static bool HasNoOpenWorkbooks(object excelObject)
-    {
-        object? workbooksObject = null;
-        try
-        {
-            dynamic excel = excelObject;
-            workbooksObject = excel.Workbooks;
-            dynamic workbooks = workbooksObject;
-            return (int)workbooks.Count == 0;
-        }
-        catch (COMException)
-        {
-            return false;
-        }
-        finally
-        {
-            ComObjectReleaser.Release(workbooksObject);
+            session?.Dispose();
         }
     }
 

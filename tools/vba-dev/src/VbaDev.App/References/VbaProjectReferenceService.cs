@@ -18,7 +18,7 @@ public sealed class VbaProjectReferenceService
         WriteIndented = true
     };
 
-    private readonly IProjectManifestStore manifestStore;
+    private readonly ProjectManifestEditor manifestEditor;
     private readonly VbaProjectReferencePlanner referencePlanner;
 
     /// <summary>
@@ -29,8 +29,20 @@ public sealed class VbaProjectReferenceService
     public VbaProjectReferenceService(
         IProjectManifestStore manifestStore,
         VbaProjectReferencePlanner referencePlanner)
+        : this(new ProjectManifestEditor(manifestStore), referencePlanner)
     {
-        this.manifestStore = manifestStore;
+    }
+
+    /// <summary>
+    /// Creates the reference command service.
+    /// </summary>
+    /// <param name="manifestEditor">The editor used to persist reference changes to vba-project.json.</param>
+    /// <param name="referencePlanner">The planner used to validate and resolve requested references.</param>
+    public VbaProjectReferenceService(
+        ProjectManifestEditor manifestEditor,
+        VbaProjectReferencePlanner referencePlanner)
+    {
+        this.manifestEditor = manifestEditor;
         this.referencePlanner = referencePlanner;
     }
 
@@ -58,7 +70,7 @@ public sealed class VbaProjectReferenceService
             return CommandResult.UsageError(ex.Message);
         }
 
-        var document = GetDocument(context.Manifest, context.DocumentName);
+        var document = ProjectManifestEditor.GetDocument(context.Manifest, context.DocumentName);
         var output = new StringBuilder();
         var changed = false;
         foreach (var reference in resolvedReferences)
@@ -75,7 +87,7 @@ public sealed class VbaProjectReferenceService
 
         if (changed)
         {
-            manifestStore.Save(context.ProjectRoot, context.Manifest);
+            manifestEditor.Save(context.ProjectRoot, context.Manifest);
         }
 
         return output.Length == 0
@@ -97,7 +109,7 @@ public sealed class VbaProjectReferenceService
             return CommandResult.UsageError("reference remove requires at least one reference name.");
         }
 
-        var document = GetDocument(context.Manifest, context.DocumentName);
+        var document = ProjectManifestEditor.GetDocument(context.Manifest, context.DocumentName);
         var output = new StringBuilder();
         var changed = false;
         foreach (var referenceName in normalizedNames)
@@ -112,7 +124,7 @@ public sealed class VbaProjectReferenceService
 
         if (changed)
         {
-            manifestStore.Save(context.ProjectRoot, context.Manifest);
+            manifestEditor.Save(context.ProjectRoot, context.Manifest);
         }
 
         return output.Length == 0
@@ -128,7 +140,7 @@ public sealed class VbaProjectReferenceService
     /// <returns>The formatted command result.</returns>
     public CommandResult List(ResolvedProjectContext context, string format)
     {
-        var document = GetDocument(context.Manifest, context.DocumentName);
+        var document = ProjectManifestEditor.GetDocument(context.Manifest, context.DocumentName);
         if (format.Equals("json", StringComparison.OrdinalIgnoreCase))
         {
             var output = new VbaProjectReferenceListOutput(context.DocumentName, document.References);
@@ -159,18 +171,6 @@ public sealed class VbaProjectReferenceService
             .Where(referenceName => !string.IsNullOrWhiteSpace(referenceName))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
-
-    private static ProjectDocument GetDocument(ProjectManifest manifest, string documentName)
-    {
-        if (manifest.Documents.TryGetValue(documentName, out var document))
-        {
-            return document;
-        }
-
-        return manifest.Documents
-            .First(item => item.Key.Equals(documentName, StringComparison.OrdinalIgnoreCase))
-            .Value;
-    }
 
     private sealed record VbaProjectReferenceListOutput(
         string Document,

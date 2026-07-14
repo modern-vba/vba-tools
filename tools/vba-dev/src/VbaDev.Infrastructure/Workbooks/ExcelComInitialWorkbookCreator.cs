@@ -16,64 +16,12 @@ public sealed class ExcelComInitialWorkbookCreator : IInitialWorkbookCreator
     /// <returns>The default VBA project reference descriptions.</returns>
     public IReadOnlyList<string> CreateInitialWorkbook(string workbookPath)
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            throw new InvalidOperationException("Excel COM workbook creation is supported only on Windows.");
-        }
-
         Directory.CreateDirectory(Path.GetDirectoryName(workbookPath)!);
-        var excelType = Type.GetTypeFromProgID("Excel.Application")
-            ?? throw new InvalidOperationException("Excel COM automation is not available.");
-        object? excelObject = null;
-        object? workbooksObject = null;
-        object? workbookObject = null;
-
-        try
-        {
-            excelObject = Activator.CreateInstance(excelType)
-                ?? throw new InvalidOperationException("Excel COM automation could not be started.");
-            dynamic excel = excelObject;
-            excel.Visible = false;
-            excel.DisplayAlerts = false;
-            workbooksObject = excel.Workbooks;
-            dynamic workbooks = workbooksObject;
-            workbookObject = workbooks.Add();
-            dynamic workbook = workbookObject;
-            var referenceDescriptions = ReadReferenceDescriptions(workbookObject);
-            workbook.SaveAs(workbookPath, XlOpenXmlWorkbookMacroEnabled);
-            return referenceDescriptions;
-        }
-        finally
-        {
-            if (workbookObject is not null)
-            {
-                try
-                {
-                    dynamic workbook = workbookObject;
-                    workbook.Close(false);
-                }
-                finally
-                {
-                    ComObjectReleaser.Release(workbookObject);
-                }
-            }
-
-            ComObjectReleaser.Release(workbooksObject);
-            if (excelObject is not null)
-            {
-                try
-                {
-                    dynamic excel = excelObject;
-                    excel.Quit();
-                }
-                finally
-                {
-                    ComObjectReleaser.Release(excelObject);
-                }
-            }
-
-            ComObjectReleaser.CollectReleasedComObjects();
-        }
+        using var session = ExcelComWorkbookSession.Create();
+        dynamic workbook = session.WorkbookObject;
+        var referenceDescriptions = ReadReferenceDescriptions(session.WorkbookObject);
+        workbook.SaveAs(workbookPath, XlOpenXmlWorkbookMacroEnabled);
+        return referenceDescriptions;
     }
 
     private static IReadOnlyList<string> ReadReferenceDescriptions(object workbookObject)

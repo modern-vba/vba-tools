@@ -24,29 +24,31 @@ public sealed class TestResultOutputFormatter
     /// <param name="results">The normalized test results.</param>
     /// <returns>The formatted test output.</returns>
     public string Format(string format, string project, string document, IReadOnlyList<TestResultRecord> results)
+        => Format(format, TestRun.FromResults(project, document, results));
+
+    /// <summary>
+    /// Formats a normalized test run.
+    /// </summary>
+    /// <param name="format">The requested output format.</param>
+    /// <param name="testRun">The normalized test run.</param>
+    /// <returns>The formatted test output.</returns>
+    public string Format(string format, TestRun testRun)
         => format.ToLowerInvariant() switch
         {
-            "ndjson" => FormatNdjson(project, document, results),
-            "text" => FormatText(results),
+            "ndjson" => FormatNdjson(testRun),
+            "text" => FormatText(testRun.Results),
             _ => throw new InvalidOperationException($"Unsupported test output format: {format}")
         };
 
-    private static string FormatNdjson(string project, string document, IReadOnlyList<TestResultRecord> results)
+    private static string FormatNdjson(TestRun testRun)
     {
         var builder = new StringBuilder();
-        builder.Append(JsonSerializer.Serialize(new RunStartedJsonRecord("runStarted", project, document), JsonOptions));
-        builder.Append('\n');
-
-        foreach (var result in results)
+        foreach (var testRunEvent in testRun.CreateEvents())
         {
-            builder.Append(JsonSerializer.Serialize(TestStartedJsonRecord.FromResult(project, result), JsonOptions));
-            builder.Append('\n');
-            builder.Append(JsonSerializer.Serialize(TestFinishedJsonRecord.FromResult(project, result), JsonOptions));
+            builder.Append(JsonSerializer.Serialize(ToJsonRecord(testRunEvent), JsonOptions));
             builder.Append('\n');
         }
 
-        builder.Append(JsonSerializer.Serialize(RunFinishedJsonRecord.FromResults(project, document, results), JsonOptions));
-        builder.Append('\n');
         return builder.ToString();
     }
 
@@ -67,6 +69,37 @@ public sealed class TestResultOutputFormatter
         return builder.ToString();
     }
 
+    private static object ToJsonRecord(TestRunEvent testRunEvent)
+        => testRunEvent switch
+        {
+            RunStartedTestRunEvent item => new RunStartedJsonRecord(item.Type, item.Project, item.Document),
+            TestStartedTestRunEvent item => new TestStartedJsonRecord(
+                item.Type,
+                item.Project,
+                item.Document,
+                item.Module,
+                item.Procedure),
+            TestFinishedTestRunEvent item => new TestFinishedJsonRecord(
+                item.Type,
+                item.Project,
+                item.Document,
+                item.Module,
+                item.Procedure,
+                item.Outcome,
+                item.Message,
+                item.DurationMilliseconds),
+            RunFinishedTestRunEvent item => new RunFinishedJsonRecord(
+                item.Type,
+                item.Project,
+                item.Document,
+                item.Outcome,
+                item.Total,
+                item.Passed,
+                item.Failed,
+                item.Errors),
+            _ => throw new InvalidOperationException($"Unsupported test event type: {testRunEvent.Type}")
+        };
+
     private sealed record RunStartedJsonRecord(
         string Type,
         string Project,
@@ -77,22 +110,7 @@ public sealed class TestResultOutputFormatter
         string Project,
         string Document,
         string Module,
-        string Procedure)
-    {
-        /// <summary>
-        /// Creates a JSON record that marks the start of a single workbook test.
-        /// </summary>
-        /// <param name="project">The project that produced the test result.</param>
-        /// <param name="result">The test result to describe.</param>
-        /// <returns>The JSON output record.</returns>
-        public static TestStartedJsonRecord FromResult(string project, TestResultRecord result)
-            => new(
-                "testStarted",
-                project,
-                result.Document,
-                result.Category,
-                result.TestName);
-    }
+        string Procedure);
 
     private sealed record TestFinishedJsonRecord(
         string Type,
@@ -102,25 +120,7 @@ public sealed class TestResultOutputFormatter
         string Procedure,
         string Outcome,
         string Message,
-        double? DurationMilliseconds)
-    {
-        /// <summary>
-        /// Creates a JSON record that reports the completion of a single workbook test.
-        /// </summary>
-        /// <param name="project">The project that produced the test result.</param>
-        /// <param name="result">The completed test result.</param>
-        /// <returns>The JSON output record.</returns>
-        public static TestFinishedJsonRecord FromResult(string project, TestResultRecord result)
-            => new(
-                "testFinished",
-                project,
-                result.Document,
-                result.Category,
-                result.TestName,
-                result.Outcome,
-                result.Message,
-                result.Duration?.TotalMilliseconds);
-    }
+        double? DurationMilliseconds);
 
     private sealed record RunFinishedJsonRecord(
         string Type,
@@ -130,23 +130,6 @@ public sealed class TestResultOutputFormatter
         int Total,
         int Passed,
         int Failed,
-        int Errors)
-    {
-        /// <summary>
-        /// Creates a JSON record that summarizes the completed workbook test run.
-        /// </summary>
-        /// <param name="project">The project that produced the test results.</param>
-        /// <param name="document">The workbook document that was tested.</param>
-        /// <param name="results">The completed test results.</param>
-        /// <returns>The JSON output record.</returns>
-        public static RunFinishedJsonRecord FromResults(string project, string document, IReadOnlyList<TestResultRecord> results)
-        {
-            var summary = TestResultSummary.FromResults(results);
-            var outcome = summary.Failed == 0 && summary.Errors == 0
-                ? TestOutcome.Passed
-                : TestOutcome.Failed;
-            return new("runFinished", project, document, outcome, summary.Total, summary.Passed, summary.Failed, summary.Errors);
-        }
-    }
+        int Errors);
 
 }
