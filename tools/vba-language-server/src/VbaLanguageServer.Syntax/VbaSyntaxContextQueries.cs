@@ -1,17 +1,11 @@
 using System.Text.RegularExpressions;
-using VbaLanguageServer.Syntax;
 
-namespace VbaLanguageServer.SourceModel;
+namespace VbaLanguageServer.Syntax;
 
 /// <summary>
-/// Represents a parsed member-chain expression context at an editor position.
+/// Represents a parsed member-chain context at an editor position.
 /// </summary>
-/// <param name="ReceiverExpression">The receiver expression before the target member or completion dot.</param>
-/// <param name="MemberName">The target member name, when the context targets a known member.</param>
-/// <param name="NormalizedExpression">The whitespace-free chain expression.</param>
-/// <param name="Segments">The normalized expression segments.</param>
-/// <param name="IsWithReceiver">Whether the receiver is the implicit leading-dot WithReceiver.</param>
-internal sealed record VbaMemberChainContext(
+public sealed record VbaMemberChainContext(
     string ReceiverExpression,
     string? MemberName,
     string NormalizedExpression,
@@ -19,34 +13,25 @@ internal sealed record VbaMemberChainContext(
     bool IsWithReceiver);
 
 /// <summary>
-/// Represents a call expression context used by signature help.
+/// Represents a parsed call-site context used by signature help.
 /// </summary>
-/// <param name="Callee">The normalized callable expression.</param>
-/// <param name="Arguments">The argument text after the opening parenthesis.</param>
-/// <param name="MemberChain">The member-chain context when the callable is a member expression.</param>
-/// <param name="Qualifier">The optional qualifier for a non-member-chain callee.</param>
-/// <param name="UnqualifiedName">The callable name without the qualifier.</param>
-internal sealed record VbaCallExpressionContext(
+public sealed record VbaCallExpressionContext(
     string Callee,
     string Arguments,
     VbaMemberChainContext? MemberChain,
     string? Qualifier,
     string UnqualifiedName);
 
-/// <summary>
-/// Extracts source-text member-chain contexts for semantic features.
-/// </summary>
-internal sealed class VbaMemberChainContextProvider
+internal static class VbaSyntaxContextQueries
 {
-    public bool TryGetCompletionContext(
-        VbaSourceDocument document,
+    public static bool TryGetCompletionContext(
+        VbaSyntaxTree tree,
         int line,
         int character,
         out VbaMemberChainContext context)
     {
         context = default!;
-        var lines = VbaSourceText.SplitLines(document.Text);
-        if (!TryGetLogicalPrefix(lines, line, character, out var logicalPrefix)
+        if (!TryGetLogicalPrefix(tree, line, character, out var logicalPrefix)
             || !VbaMemberExpressionSyntax.TryGetMemberReceiverExpression(logicalPrefix, out var receiverExpression))
         {
             return false;
@@ -56,26 +41,22 @@ internal sealed class VbaMemberChainContextProvider
         return true;
     }
 
-    public bool IsCompletedMemberAccessWithTrailingWhitespace(
-        VbaSourceDocument document,
+    public static bool IsCompletedMemberAccessWithTrailingWhitespace(
+        VbaSyntaxTree tree,
         int line,
         int character)
-    {
-        var lines = VbaSourceText.SplitLines(document.Text);
-        return TryGetLogicalPrefix(lines, line, character, out var logicalPrefix)
+        => TryGetLogicalPrefix(tree, line, character, out var logicalPrefix)
             && VbaMemberExpressionSyntax.IsCompletedMemberAccessWithTrailingWhitespace(logicalPrefix);
-    }
 
-    public bool TryGetMemberReferenceContext(
-        VbaSourceDocument document,
+    public static bool TryGetMemberReferenceContext(
+        VbaSyntaxTree tree,
         int line,
         int character,
         string memberName,
         out VbaMemberChainContext context)
     {
         context = default!;
-        var lines = VbaSourceText.SplitLines(document.Text);
-        if (!TryGetLogicalPrefix(lines, line, character, out var logicalPrefix)
+        if (!TryGetLogicalPrefix(tree, line, character, out var logicalPrefix)
             || !VbaMemberExpressionSyntax.TryGetMemberReceiverExpression(logicalPrefix, out var receiverExpression))
         {
             return false;
@@ -85,7 +66,7 @@ internal sealed class VbaMemberChainContextProvider
         return true;
     }
 
-    public bool TryGetPreviousMemberContext(
+    public static bool TryGetPreviousMemberContext(
         string codePart,
         VbaIdentifierOccurrence occurrence,
         out VbaMemberChainContext context)
@@ -103,7 +84,21 @@ internal sealed class VbaMemberChainContextProvider
         return true;
     }
 
-    public bool TryGetCallExpressionContext(string logicalPrefix, out VbaCallExpressionContext context)
+    public static bool TryGetCallExpressionContext(
+        VbaSyntaxTree tree,
+        int line,
+        int character,
+        out VbaCallExpressionContext context)
+    {
+        context = default!;
+        return TryGetLogicalPrefix(tree, line, character, out var logicalPrefix)
+            && (TryGetParenthesizedCallContext(logicalPrefix, out context)
+                || TryGetStatementFormCallContext(logicalPrefix, out context));
+    }
+
+    private static bool TryGetParenthesizedCallContext(
+        string logicalPrefix,
+        out VbaCallExpressionContext context)
     {
         context = default!;
         var callMatch = Regex.Matches(
@@ -112,23 +107,12 @@ internal sealed class VbaMemberChainContextProvider
                 RegexOptions.CultureInvariant)
             .Cast<Match>()
             .LastOrDefault();
-        if (callMatch is null)
-        {
-            return false;
-        }
-
-        var arguments = callMatch.Groups["arguments"].Value;
-        var callee = VbaMemberExpressionSyntax.NormalizeMemberExpression(callMatch.Groups["callee"].Value);
-        var memberChain = VbaMemberExpressionSyntax.TrySplitMemberExpression(callee, out var receiverExpression, out var memberName)
-            ? CreateContext(receiverExpression, memberName)
-            : null;
-        var qualifier = VbaMemberExpressionSyntax.GetQualifierFromCallee(callee);
-        var unqualifiedName = qualifier is null ? callee : callee[(qualifier.Length + 1)..];
-        context = new VbaCallExpressionContext(callee, arguments, memberChain, qualifier, unqualifiedName);
-        return true;
+        return callMatch is not null && TryCreateCallContext(callMatch, out context);
     }
 
-    public bool TryGetStatementFormCallContext(string logicalPrefix, out VbaCallExpressionContext context)
+    private static bool TryGetStatementFormCallContext(
+        string logicalPrefix,
+        out VbaCallExpressionContext context)
     {
         context = default!;
         var callMatch = Regex.Match(
@@ -140,18 +124,22 @@ internal sealed class VbaMemberChainContextProvider
             return false;
         }
 
-        var arguments = callMatch.Groups["arguments"].Value;
-        var trimmedArguments = arguments.TrimStart();
-        if (trimmedArguments.StartsWith("=", StringComparison.Ordinal)
-            || trimmedArguments.StartsWith("(", StringComparison.Ordinal))
-        {
-            return false;
-        }
+        var trimmedArguments = callMatch.Groups["arguments"].Value.TrimStart();
+        return !trimmedArguments.StartsWith("=", StringComparison.Ordinal)
+            && !trimmedArguments.StartsWith("(", StringComparison.Ordinal)
+            && TryCreateCallContext(callMatch, out context);
+    }
 
+    private static bool TryCreateCallContext(Match callMatch, out VbaCallExpressionContext context)
+    {
+        var arguments = callMatch.Groups["arguments"].Value;
         var callee = VbaMemberExpressionSyntax.NormalizeMemberExpression(callMatch.Groups["callee"].Value);
-        var memberChain = VbaMemberExpressionSyntax.TrySplitMemberExpression(callee, out var receiverExpression, out var memberName)
-            ? CreateContext(receiverExpression, memberName)
-            : null;
+        var memberChain = VbaMemberExpressionSyntax.TrySplitMemberExpression(
+            callee,
+            out var receiverExpression,
+            out var memberName)
+                ? CreateContext(receiverExpression, memberName)
+                : null;
         var qualifier = VbaMemberExpressionSyntax.GetQualifierFromCallee(callee);
         var unqualifiedName = qualifier is null ? callee : callee[(qualifier.Length + 1)..];
         context = new VbaCallExpressionContext(callee, arguments, memberChain, qualifier, unqualifiedName);
@@ -159,11 +147,12 @@ internal sealed class VbaMemberChainContextProvider
     }
 
     private static bool TryGetLogicalPrefix(
-        string[] lines,
+        VbaSyntaxTree tree,
         int line,
         int character,
         out string logicalPrefix)
     {
+        var lines = VbaSourceText.SplitLines(tree.Text);
         logicalPrefix = "";
         if (line < 0 || line >= lines.Length)
         {

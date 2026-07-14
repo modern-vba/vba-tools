@@ -57,23 +57,23 @@ internal sealed class VbaProjectSnapshotProvider
         cancellationToken.ThrowIfCancellationRequested();
         var resolution = VbaProjectResolver.Resolve(activeUri);
         var referenceCatalogState = referenceCatalogCache.State;
+        var cacheIdentity = VbaProjectSnapshotIdentity.Create(activeUri, resolution);
+        if (TryGetCachedSnapshot(
+            cacheIdentity,
+            workspaceState.Version,
+            referenceCatalogState.Version,
+            cancellationToken,
+            out var cachedSnapshot))
+        {
+            return cachedSnapshot;
+        }
+
         var inventorySnapshot = snapshotBuilder.CreateInventorySnapshot(
             activeUri,
             resolution,
             workspaceState.Documents,
             workspaceState.ExcludedSourceUris,
             cancellationToken);
-
-        var cacheIdentity = VbaProjectSnapshotIdentity.Create(activeUri, resolution);
-        if (TryGetCachedSnapshot(
-            cacheIdentity,
-            workspaceState.Version,
-            referenceCatalogState.Version,
-            inventorySnapshot.Stamp,
-            out var cachedSnapshot))
-        {
-            return cachedSnapshot;
-        }
 
         var snapshot = snapshotBuilder.BuildSnapshot(
             resolution,
@@ -83,7 +83,7 @@ internal sealed class VbaProjectSnapshotProvider
             cacheIdentity,
             workspaceState.Version,
             referenceCatalogState.Version,
-            inventorySnapshot.Stamp,
+            inventorySnapshot.SourceFiles,
             snapshot);
         return snapshot;
     }
@@ -100,7 +100,7 @@ internal sealed class VbaProjectSnapshotProvider
         VbaProjectSnapshotIdentity cacheIdentity,
         long expectedWorkspaceVersion,
         long expectedReferenceCatalogVersion,
-        string expectedInventoryStamp,
+        CancellationToken cancellationToken,
         out VbaProjectSnapshot snapshot)
     {
         lock (gate)
@@ -108,7 +108,7 @@ internal sealed class VbaProjectSnapshotProvider
             if (cache.TryGetValue(cacheIdentity.Key, out var cached)
                 && cached.WorkspaceVersion == expectedWorkspaceVersion
                 && cached.ReferenceCatalogVersion == expectedReferenceCatalogVersion
-                && cached.InventoryStamp.Equals(expectedInventoryStamp, StringComparison.Ordinal))
+                && AreKnownSourcesCurrent(cached.SourceFiles, cancellationToken))
             {
                 snapshot = cached.Snapshot;
                 return true;
@@ -123,7 +123,7 @@ internal sealed class VbaProjectSnapshotProvider
         VbaProjectSnapshotIdentity cacheIdentity,
         long snapshotWorkspaceVersion,
         long snapshotReferenceCatalogVersion,
-        string snapshotInventoryStamp,
+        IReadOnlyList<VbaProjectSourceFileState> sourceFiles,
         VbaProjectSnapshot snapshot)
     {
         lock (gate)
@@ -131,14 +131,30 @@ internal sealed class VbaProjectSnapshotProvider
             cache[cacheIdentity.Key] = new CachedProjectSnapshot(
                 snapshotWorkspaceVersion,
                 snapshotReferenceCatalogVersion,
-                snapshotInventoryStamp,
+                sourceFiles,
                 snapshot);
         }
+    }
+
+    private static bool AreKnownSourcesCurrent(
+        IReadOnlyList<VbaProjectSourceFileState> sourceFiles,
+        CancellationToken cancellationToken)
+    {
+        foreach (var sourceFile in sourceFiles)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!sourceFile.IsCurrent())
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private sealed record CachedProjectSnapshot(
         long WorkspaceVersion,
         long ReferenceCatalogVersion,
-        string InventoryStamp,
+        IReadOnlyList<VbaProjectSourceFileState> SourceFiles,
         VbaProjectSnapshot Snapshot);
 }

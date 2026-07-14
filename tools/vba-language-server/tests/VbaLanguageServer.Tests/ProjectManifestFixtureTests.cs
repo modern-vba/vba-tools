@@ -34,7 +34,7 @@ public sealed class ProjectManifestFixtureTests
         string fixtureName,
         string expectedMessage)
     {
-        var ex = Assert.Throws<ProjectManifestException>(() =>
+        var ex = Assert.Throws<VbaProjectManifestException>(() =>
             ProjectManifestReader.Parse(File.ReadAllText(ProjectManifestFixturePath(fixtureName)), fixtureName));
 
         Assert.Contains(expectedMessage, ex.Message, StringComparison.OrdinalIgnoreCase);

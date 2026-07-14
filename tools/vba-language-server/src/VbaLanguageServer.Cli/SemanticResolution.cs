@@ -17,7 +17,6 @@ internal sealed class VbaSemanticResolution
     private readonly VbaTypeResolution typeResolution;
     private readonly VbaMemberChainResolution memberChainResolution;
     private readonly VbaCallSiteResolution callSiteResolution;
-    private readonly VbaMemberChainContextProvider memberChainContextProvider = new();
 
     /// <summary>
     /// Creates the semantic resolution service.
@@ -52,10 +51,7 @@ internal sealed class VbaSemanticResolution
             nameResolution,
             resolutionPolicy);
         memberChainResolution = new VbaMemberChainResolution(typeResolution);
-        callSiteResolution = new VbaCallSiteResolution(
-            nameResolution,
-            memberChainResolution,
-            memberChainContextProvider);
+        callSiteResolution = new VbaCallSiteResolution(nameResolution, memberChainResolution);
     }
 
     /// <summary>
@@ -128,7 +124,7 @@ internal sealed class VbaSemanticResolution
             return null;
         }
 
-        var lexicalFacts = VbaLexicalFacts.FromText(currentDocument.Text);
+        var lexicalFacts = GetSyntaxTree(currentDocument).GetLexicalFacts();
         if (!lexicalFacts.TryGetCodeIdentifierAt(line, character, out var identifier))
         {
             return null;
@@ -178,8 +174,11 @@ internal sealed class VbaSemanticResolution
             return null;
         }
 
-        var lexicalFacts = VbaLexicalFacts.FromText(currentDocument.Text);
-        return callSiteResolution.GetSignatureHelp(currentDocument, line, character, lexicalFacts);
+        return callSiteResolution.GetSignatureHelp(
+            currentDocument,
+            line,
+            character,
+            GetSyntaxTree(currentDocument));
     }
 
     /// <summary>
@@ -251,11 +250,7 @@ internal sealed class VbaSemanticResolution
         out IReadOnlyList<VbaSourceDefinition> definitions)
     {
         definitions = [];
-        if (!memberChainContextProvider.TryGetCompletionContext(
-            currentDocument,
-            line,
-            character,
-            out var context))
+        if (!GetSyntaxTree(currentDocument).TryGetMemberCompletionContext(line, character, out var context))
         {
             return false;
         }
@@ -268,23 +263,20 @@ internal sealed class VbaSemanticResolution
         VbaSourceDocument currentDocument,
         int line,
         int character)
-        => memberChainContextProvider.IsCompletedMemberAccessWithTrailingWhitespace(
-            currentDocument,
-            line,
-            character);
+        => GetSyntaxTree(currentDocument).IsCompletedMemberAccessWithTrailingWhitespace(line, character);
 
     private static bool IsCompletionSuppressedInNonCodeText(
         VbaSourceDocument currentDocument,
         int line,
         int character)
-        => !VbaLexicalFacts.FromText(currentDocument.Text).IsCodePosition(line, character);
+        => !GetSyntaxTree(currentDocument).GetLexicalFacts().IsCodePosition(line, character);
 
     private static bool IsCompletionSuppressedAfterLineContinuationMarker(
         VbaSourceDocument currentDocument,
         int line,
         int character)
     {
-        var lexicalFacts = VbaLexicalFacts.FromText(currentDocument.Text);
+        var lexicalFacts = GetSyntaxTree(currentDocument).GetLexicalFacts();
         if (!lexicalFacts.TryGetLine(line, out var text))
         {
             return false;
@@ -301,7 +293,7 @@ internal sealed class VbaSemanticResolution
         out IReadOnlyList<VbaSourceDefinition> definitions)
     {
         definitions = [];
-        var lexicalFacts = VbaLexicalFacts.FromText(currentDocument.Text);
+        var lexicalFacts = GetSyntaxTree(currentDocument).GetLexicalFacts();
         if (!lexicalFacts.TryGetLogicalPrefix(line, character, out var logicalPrefix))
         {
             return false;
@@ -330,8 +322,7 @@ internal sealed class VbaSemanticResolution
         out VbaSourceDefinition? definition)
     {
         definition = null;
-        if (!memberChainContextProvider.TryGetMemberReferenceContext(
-            currentDocument,
+        if (!GetSyntaxTree(currentDocument).TryGetMemberReferenceContext(
             line,
             character,
             memberName,
@@ -391,7 +382,7 @@ internal sealed class VbaSemanticResolution
         out string? canonicalName)
     {
         canonicalName = null;
-        if (memberChainContextProvider.TryGetPreviousMemberContext(codePart, occurrence, out var context))
+        if (VbaSyntaxTree.TryGetPreviousMemberContext(codePart, occurrence, out var context))
         {
             if (!memberChainResolution.TryGetCanonicalMemberName(
                 document,
@@ -510,6 +501,9 @@ internal sealed class VbaSemanticResolution
 
     private static string GetRangeKey(VbaRange range)
         => $"{range.Start.Line}:{range.Start.Character}:{range.End.Line}:{range.End.Character}";
+
+    private static VbaSyntaxTree GetSyntaxTree(VbaSourceDocument document)
+        => document.SyntaxTree ?? VbaSyntaxTree.ParseModule(document.Uri, document.Text);
 
     private static bool SameUri(string left, string right)
         => string.Equals(left, right, StringComparison.OrdinalIgnoreCase);

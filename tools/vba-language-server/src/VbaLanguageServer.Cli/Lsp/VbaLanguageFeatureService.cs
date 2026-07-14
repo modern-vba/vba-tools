@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using VbaLanguageServer.Diagnostics;
+using VbaLanguageServer.SourceModel;
 using VbaLanguageServer.Syntax;
 using VbaLanguageServer.Workspace;
 
@@ -10,7 +11,7 @@ namespace VbaLanguageServer.Lsp;
 /// </summary>
 internal sealed class VbaLanguageFeatureService
 {
-    private readonly VbaLanguageFeaturePipeline pipeline;
+    private readonly VbaLanguageWorkspace workspace;
 
     /// <summary>
     /// Creates a feature service over a language workspace.
@@ -18,7 +19,7 @@ internal sealed class VbaLanguageFeatureService
     /// <param name="workspace">The workspace used to build project snapshots.</param>
     public VbaLanguageFeatureService(VbaLanguageWorkspace workspace)
     {
-        pipeline = new VbaLanguageFeaturePipeline(workspace);
+        this.workspace = workspace;
     }
 
     /// <summary>
@@ -55,7 +56,13 @@ internal sealed class VbaLanguageFeatureService
     public object[] CreateDocumentSymbols(JsonNode? parameters, CancellationToken cancellationToken = default)
     {
         var request = VbaLspRequestContext.CreateTextDocumentRequest(parameters);
-        return request is null ? [] : pipeline.CreateDocumentSymbols(request, cancellationToken);
+        return request is null
+            ? []
+            : WithSourceIndex(
+                request,
+                cancellationToken,
+                sourceIndex => VbaLspFeatureProjection.CreateDocumentSymbols(
+                    sourceIndex.GetDocumentDefinitions(request.Uri)));
     }
 
     /// <summary>
@@ -67,7 +74,13 @@ internal sealed class VbaLanguageFeatureService
     public object? CreateDefinitionLocation(JsonNode? parameters, CancellationToken cancellationToken = default)
     {
         var request = VbaLspRequestContext.CreateTextDocumentPositionRequest(parameters);
-        return request is null ? null : pipeline.CreateDefinitionLocation(request, cancellationToken);
+        return request is null
+            ? null
+            : WithSourceIndex(
+                request,
+                cancellationToken,
+                sourceIndex => VbaLspFeatureProjection.CreateLocation(
+                    sourceIndex.ResolveDefinition(request.Uri, request.Line, request.Character)));
     }
 
     /// <summary>
@@ -79,7 +92,13 @@ internal sealed class VbaLanguageFeatureService
     public object[] CreateReferenceLocations(JsonNode? parameters, CancellationToken cancellationToken = default)
     {
         var request = VbaLspRequestContext.CreateTextDocumentPositionRequest(parameters);
-        return request is null ? [] : pipeline.CreateReferenceLocations(request, cancellationToken);
+        return request is null
+            ? []
+            : WithSourceIndex(
+                request,
+                cancellationToken,
+                sourceIndex => VbaLspFeatureProjection.CreateLocations(
+                    sourceIndex.FindReferences(request.Uri, request.Line, request.Character)));
     }
 
     /// <summary>
@@ -90,9 +109,11 @@ internal sealed class VbaLanguageFeatureService
     /// <returns>The workspace symbol payload objects.</returns>
     public object[] CreateWorkspaceSymbols(JsonNode? parameters, CancellationToken cancellationToken = default)
     {
-        return pipeline.CreateWorkspaceSymbols(
-            VbaLspRequestContext.CreateWorkspaceSymbolQuery(parameters),
-            cancellationToken);
+        var query = VbaLspRequestContext.CreateWorkspaceSymbolQuery(parameters);
+        var symbols = workspace.CreateProjectSnapshots(cancellationToken)
+            .SelectMany(snapshot => snapshot.SourceIndex.GetWorkspaceSymbols(query))
+            .ToArray();
+        return VbaLspFeatureProjection.CreateWorkspaceSymbols(symbols);
     }
 
     /// <summary>
@@ -104,7 +125,13 @@ internal sealed class VbaLanguageFeatureService
     public object[] CreateCompletionItems(JsonNode? parameters, CancellationToken cancellationToken = default)
     {
         var request = VbaLspRequestContext.CreateTextDocumentPositionRequest(parameters);
-        return request is null ? [] : pipeline.CreateCompletionItems(request, cancellationToken);
+        return request is null
+            ? []
+            : WithSourceIndex(
+                request,
+                cancellationToken,
+                sourceIndex => VbaLspFeatureProjection.CreateCompletionItems(
+                    sourceIndex.GetCompletionResult(request.Uri, request.Line, request.Character)));
     }
 
     /// <summary>
@@ -116,7 +143,13 @@ internal sealed class VbaLanguageFeatureService
     public object? CreateHover(JsonNode? parameters, CancellationToken cancellationToken = default)
     {
         var request = VbaLspRequestContext.CreateTextDocumentPositionRequest(parameters);
-        return request is null ? null : pipeline.CreateHover(request, cancellationToken);
+        return request is null
+            ? null
+            : WithSourceIndex(
+                request,
+                cancellationToken,
+                sourceIndex => VbaLspFeatureProjection.CreateHover(
+                    sourceIndex.ResolveSourceDefinition(request.Uri, request.Line, request.Character)));
     }
 
     /// <summary>
@@ -128,7 +161,13 @@ internal sealed class VbaLanguageFeatureService
     public object? CreateSignatureHelp(JsonNode? parameters, CancellationToken cancellationToken = default)
     {
         var request = VbaLspRequestContext.CreateTextDocumentPositionRequest(parameters);
-        return request is null ? null : pipeline.CreateSignatureHelp(request, cancellationToken);
+        return request is null
+            ? null
+            : WithSourceIndex(
+                request,
+                cancellationToken,
+                sourceIndex => VbaLspFeatureProjection.CreateSignatureHelp(
+                    sourceIndex.GetSignatureHelp(request.Uri, request.Line, request.Character)));
     }
 
     /// <summary>
@@ -140,7 +179,12 @@ internal sealed class VbaLanguageFeatureService
     public object? CreatePrepareRename(JsonNode? parameters, CancellationToken cancellationToken = default)
     {
         var request = VbaLspRequestContext.CreateTextDocumentPositionRequest(parameters);
-        return request is null ? null : pipeline.CreatePrepareRename(request, cancellationToken);
+        return request is null
+            ? null
+            : WithSourceIndex(
+                request,
+                cancellationToken,
+                sourceIndex => sourceIndex.PrepareRename(request.Uri, request.Line, request.Character));
     }
 
     /// <summary>
@@ -152,7 +196,20 @@ internal sealed class VbaLanguageFeatureService
     public object? CreateRenameEdit(JsonNode? parameters, CancellationToken cancellationToken = default)
     {
         var request = VbaLspRequestContext.CreateRenameRequest(parameters);
-        return request is null ? null : pipeline.CreateRenameEdit(request, cancellationToken);
+        return request is null
+            ? null
+            : WithSourceIndex(
+                request,
+                cancellationToken,
+                sourceIndex =>
+                {
+                    var renamePlan = sourceIndex.CreateRenamePlan(
+                        request.Uri,
+                        request.Line,
+                        request.Character,
+                        request.NewName);
+                    return VbaLspFeatureProjection.CreateWorkspaceEdit(renamePlan?.Changes);
+                });
     }
 
     /// <summary>
@@ -164,7 +221,13 @@ internal sealed class VbaLanguageFeatureService
     public object[] CreateFormattingEdits(JsonNode? parameters, CancellationToken cancellationToken = default)
     {
         var request = VbaLspRequestContext.CreateFormattingRequest(parameters);
-        return request is null ? [] : pipeline.CreateFormattingEdits(request, cancellationToken);
+        return request is null
+            ? []
+            : WithSourceIndex(
+                request,
+                cancellationToken,
+                sourceIndex => VbaLspFeatureProjection.CreateFormattingEdits(
+                    sourceIndex.FormatDocument(request.Uri, request.TabSize)));
     }
 
     /// <summary>
@@ -178,7 +241,21 @@ internal sealed class VbaLanguageFeatureService
         var request = VbaLspRequestContext.CreateTextDocumentRequest(parameters);
         return request is null
             ? VbaLspFeatureProjection.CreateSemanticTokens([])
-            : pipeline.CreateSemanticTokens(request, cancellationToken);
+            : WithSourceIndex(
+                request,
+                cancellationToken,
+                sourceIndex => VbaLspFeatureProjection.CreateSemanticTokens(
+                    sourceIndex.GetSemanticTokenData(request.Uri)));
+    }
+
+    private TResult WithSourceIndex<TRequest, TResult>(
+        TRequest request,
+        CancellationToken cancellationToken,
+        Func<VbaSourceIndex, TResult> createResult)
+        where TRequest : IVbaTextDocumentRequest
+    {
+        var snapshot = workspace.CreateProjectSnapshot(request.Uri, cancellationToken);
+        return createResult(snapshot.SourceIndex);
     }
 
 }

@@ -18,6 +18,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\VbaLanguageServer.Cli\VbaLanguageServer.Cli.csproj" />
+    <ProjectReference Include="..\..\..\vba-dev\src\VbaDev.Domain\VbaDev.Domain.csproj" />
   </ItemGroup>
 
 </Project>

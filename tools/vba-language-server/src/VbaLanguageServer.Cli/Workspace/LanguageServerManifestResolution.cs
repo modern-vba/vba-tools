@@ -71,7 +71,7 @@ internal static class LanguageServerManifestResolution
         string uri,
         VbaProjectReferenceCatalogSet catalogSet,
         out VbaLanguageServerManifestContext context,
-        out ProjectManifestException? error)
+        out VbaProjectManifestException? error)
     {
         context = new VbaLanguageServerManifestContext(
             new VbaProjectResolution(VbaProjectResolutionKind.AdHoc, ""),
@@ -85,7 +85,7 @@ internal static class LanguageServerManifestResolution
             context = Create(resolution, catalogSet);
             return context.ReferenceSelection is not null;
         }
-        catch (ProjectManifestException ex)
+        catch (VbaProjectManifestException ex)
         {
             error = ex;
             return false;
@@ -119,7 +119,7 @@ internal static class LanguageServerManifestResolution
                     .ToArray();
                 return selections.Count > 0;
             }
-            catch (ProjectManifestException)
+            catch (VbaProjectManifestException)
             {
                 return false;
             }
@@ -130,7 +130,7 @@ internal static class LanguageServerManifestResolution
         {
             resolution = VbaProjectResolver.Resolve(uri);
         }
-        catch (ProjectManifestException)
+        catch (VbaProjectManifestException)
         {
             return false;
         }

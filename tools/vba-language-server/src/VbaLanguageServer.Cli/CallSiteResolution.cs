@@ -11,30 +11,26 @@ internal sealed class VbaCallSiteResolution
 {
     private readonly VbaNameResolutionService nameResolution;
     private readonly VbaMemberChainResolution memberChainResolution;
-    private readonly VbaMemberChainContextProvider contextProvider;
 
     public VbaCallSiteResolution(
         VbaNameResolutionService nameResolution,
-        VbaMemberChainResolution memberChainResolution,
-        VbaMemberChainContextProvider contextProvider)
+        VbaMemberChainResolution memberChainResolution)
     {
         this.nameResolution = nameResolution;
         this.memberChainResolution = memberChainResolution;
-        this.contextProvider = contextProvider;
     }
 
     public VbaSignatureHelp? GetSignatureHelp(
         VbaSourceDocument currentDocument,
         int line,
         int character,
-        VbaLexicalFacts lexicalFacts)
+        VbaSyntaxTree syntaxTree)
     {
-        if (!lexicalFacts.TryGetLogicalPrefix(line, character, out var logicalPrefix)
-            || !TryResolveCallableTarget(
+        if (!TryResolveCallableTarget(
                 currentDocument,
                 line,
                 character,
-                logicalPrefix,
+                syntaxTree,
                 out var definition,
                 out var arguments)
             || definition?.Signature is null)
@@ -51,28 +47,17 @@ internal sealed class VbaCallSiteResolution
         VbaSourceDocument currentDocument,
         int line,
         int character,
-        string logicalPrefix,
+        VbaSyntaxTree syntaxTree,
         out VbaSourceDefinition? definition,
         out string arguments)
     {
-        if (contextProvider.TryGetCallExpressionContext(logicalPrefix, out var parenthesizedContext))
+        if (syntaxTree.TryGetCallExpressionContext(line, character, out var context))
         {
             return TryResolveCallExpression(
                 currentDocument,
                 line,
                 character,
-                parenthesizedContext,
-                out definition,
-                out arguments);
-        }
-
-        if (contextProvider.TryGetStatementFormCallContext(logicalPrefix, out var statementFormContext))
-        {
-            return TryResolveCallExpression(
-                currentDocument,
-                line,
-                character,
-                statementFormContext,
+                context,
                 out definition,
                 out arguments);
         }

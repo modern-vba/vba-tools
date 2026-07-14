@@ -1,12 +1,11 @@
 using System.Text.RegularExpressions;
-using VbaLanguageServer.Syntax;
 
-namespace VbaLanguageServer.SourceModel;
+namespace VbaLanguageServer.Syntax;
 
 /// <summary>
-/// Parses lightweight member-expression shapes used by completion, definition, and formatting.
+/// Owns lightweight member-expression syntax queries used by editor features.
 /// </summary>
-internal static class VbaMemberExpressionSyntax
+public static class VbaMemberExpressionSyntax
 {
     public static bool TryGetMemberReceiverExpression(string logicalPrefix, out string receiverExpression)
     {
@@ -17,10 +16,7 @@ internal static class VbaMemberExpressionSyntax
             return false;
         }
 
-        var partialMatch = Regex.Match(
-            trimmed,
-            "[A-Za-z_][A-Za-z0-9_]*$",
-            RegexOptions.CultureInvariant);
+        var partialMatch = Regex.Match(trimmed, "[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.CultureInvariant);
         if (partialMatch.Success)
         {
             trimmed = trimmed[..partialMatch.Index].TrimEnd();
@@ -116,10 +112,8 @@ internal static class VbaMemberExpressionSyntax
     }
 
     public static bool IsQualifiedIdentifierOccurrence(string codePart, VbaIdentifierOccurrence occurrence)
-    {
-        return TryGetPreviousQualifier(codePart, occurrence, out _)
+        => TryGetPreviousQualifier(codePart, occurrence, out _)
             || TryGetNextMember(codePart, occurrence, out _);
-    }
 
     public static bool TryGetPreviousQualifier(
         string codePart,

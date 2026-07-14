@@ -32,6 +32,49 @@ public sealed record VbaSyntaxTree(
         => VbaLexicalFacts.FromSyntaxTree(this);
 
     /// <summary>
+    /// Resolves a member-chain completion context from this syntax tree.
+    /// </summary>
+    public bool TryGetMemberCompletionContext(
+        int line,
+        int character,
+        out VbaMemberChainContext context)
+        => VbaSyntaxContextQueries.TryGetCompletionContext(this, line, character, out context);
+
+    /// <summary>
+    /// Determines whether a completed member access is followed by whitespace.
+    /// </summary>
+    public bool IsCompletedMemberAccessWithTrailingWhitespace(int line, int character)
+        => VbaSyntaxContextQueries.IsCompletedMemberAccessWithTrailingWhitespace(this, line, character);
+
+    /// <summary>
+    /// Resolves a member-chain reference context from this syntax tree.
+    /// </summary>
+    public bool TryGetMemberReferenceContext(
+        int line,
+        int character,
+        string memberName,
+        out VbaMemberChainContext context)
+        => VbaSyntaxContextQueries.TryGetMemberReferenceContext(this, line, character, memberName, out context);
+
+    /// <summary>
+    /// Resolves a callable context from this syntax tree.
+    /// </summary>
+    public bool TryGetCallExpressionContext(
+        int line,
+        int character,
+        out VbaCallExpressionContext context)
+        => VbaSyntaxContextQueries.TryGetCallExpressionContext(this, line, character, out context);
+
+    /// <summary>
+    /// Resolves the member chain immediately preceding an identifier occurrence.
+    /// </summary>
+    public static bool TryGetPreviousMemberContext(
+        string codePart,
+        VbaIdentifierOccurrence occurrence,
+        out VbaMemberChainContext context)
+        => VbaSyntaxContextQueries.TryGetPreviousMemberContext(codePart, occurrence, out context);
+
+    /// <summary>
     /// Parses source text and classifies whether the change can be treated as a member-level update.
     /// </summary>
     /// <param name="uri">The document URI associated with the source text.</param>
@@ -43,132 +86,29 @@ public sealed record VbaSyntaxTree(
         string source,
         VbaSyntaxTree? previousSyntaxTree)
     {
-        var syntaxTree = ParseModule(uri, source);
-        var memberUpdate = TryCreateModuleMemberUpdate(previousSyntaxTree, syntaxTree, out var update)
-            ? update
-            : null;
-        var updateKind = memberUpdate is not null || HasUnchangedText(previousSyntaxTree, syntaxTree)
-            ? VbaSyntaxTreeParseUpdateKind.ModuleMember
-            : VbaSyntaxTreeParseUpdateKind.FullModule;
-        return new VbaSyntaxTreeParseResult(syntaxTree, updateKind, memberUpdate);
+        if (previousSyntaxTree is not null
+            && previousSyntaxTree.Uri.Equals(uri, StringComparison.OrdinalIgnoreCase)
+            && previousSyntaxTree.Text.Equals(source, StringComparison.Ordinal))
+        {
+            return new VbaSyntaxTreeParseResult(
+                previousSyntaxTree,
+                VbaSyntaxTreeParseUpdateKind.ModuleMember);
+        }
+
+        if (previousSyntaxTree is not null
+            && VbaSyntaxTreeIncrementalParser.TryParseModuleMember(
+                uri,
+                source,
+                previousSyntaxTree,
+                out var incrementalResult))
+        {
+            return incrementalResult;
+        }
+
+        return new VbaSyntaxTreeParseResult(
+            ParseModule(uri, source),
+            VbaSyntaxTreeParseUpdateKind.FullModule);
     }
-
-    private static bool TryCreateModuleMemberUpdate(
-        VbaSyntaxTree? previousSyntaxTree,
-        VbaSyntaxTree nextSyntaxTree,
-        out VbaModuleMemberIncrementalUpdate update)
-    {
-        update = default!;
-        if (previousSyntaxTree is null || nextSyntaxTree.Diagnostics.Count > 0)
-        {
-            return false;
-        }
-
-        if (!previousSyntaxTree.Module.Identity.Name.Equals(nextSyntaxTree.Module.Identity.Name, StringComparison.OrdinalIgnoreCase)
-            || previousSyntaxTree.Module.Kind != nextSyntaxTree.Module.Kind
-            || previousSyntaxTree.Module.CodeStartLine != nextSyntaxTree.Module.CodeStartLine)
-        {
-            return false;
-        }
-
-        if (!TryFindChangedLineRange(
-            SplitLines(previousSyntaxTree.Text),
-            SplitLines(nextSyntaxTree.Text),
-            out var oldStartLine,
-            out var oldEndLine,
-            out var newStartLine,
-            out var newEndLine))
-        {
-            return false;
-        }
-
-        var oldMember = FindSingleContainingMember(previousSyntaxTree.Module.Members, oldStartLine, oldEndLine);
-        var newMember = FindSingleContainingMember(nextSyntaxTree.Module.Members, newStartLine, newEndLine);
-        if (oldMember is null
-            || newMember is null
-            || oldMember.Kind != newMember.Kind
-            || !oldMember.Name.Equals(newMember.Name, StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        if (TouchesMemberBoundary(oldMember, oldStartLine, oldEndLine)
-            || TouchesMemberBoundary(newMember, newStartLine, newEndLine))
-        {
-            return false;
-        }
-
-        update = new VbaModuleMemberIncrementalUpdate(
-            oldMember,
-            newMember,
-            oldStartLine,
-            oldEndLine,
-            newStartLine,
-            newEndLine);
-        return true;
-    }
-
-    private static bool HasUnchangedText(VbaSyntaxTree? previousSyntaxTree, VbaSyntaxTree nextSyntaxTree)
-        => previousSyntaxTree is not null
-            && previousSyntaxTree.Text.Equals(nextSyntaxTree.Text, StringComparison.Ordinal);
-
-    private static string[] SplitLines(string source)
-        => source.Replace("\r\n", "\n", StringComparison.Ordinal)
-            .Replace('\r', '\n')
-            .Split('\n');
-
-    private static bool TryFindChangedLineRange(
-        IReadOnlyList<string> oldLines,
-        IReadOnlyList<string> newLines,
-        out int oldStartLine,
-        out int oldEndLine,
-        out int newStartLine,
-        out int newEndLine)
-    {
-        var prefix = 0;
-        while (prefix < oldLines.Count
-            && prefix < newLines.Count
-            && oldLines[prefix].Equals(newLines[prefix], StringComparison.Ordinal))
-        {
-            prefix++;
-        }
-
-        if (prefix == oldLines.Count && prefix == newLines.Count)
-        {
-            oldStartLine = oldEndLine = newStartLine = newEndLine = 0;
-            return false;
-        }
-
-        var oldSuffix = oldLines.Count - 1;
-        var newSuffix = newLines.Count - 1;
-        while (oldSuffix >= prefix
-            && newSuffix >= prefix
-            && oldLines[oldSuffix].Equals(newLines[newSuffix], StringComparison.Ordinal))
-        {
-            oldSuffix--;
-            newSuffix--;
-        }
-
-        oldStartLine = prefix;
-        oldEndLine = Math.Max(prefix, oldSuffix);
-        newStartLine = prefix;
-        newEndLine = Math.Max(prefix, newSuffix);
-        return true;
-    }
-
-    private static VbaModuleMemberSyntax? FindSingleContainingMember(
-        IReadOnlyList<VbaModuleMemberSyntax> members,
-        int startLine,
-        int endLine)
-    {
-        var containingMembers = members
-            .Where(member => member.BlockRange.Start.Line <= startLine && member.BlockRange.End.Line >= endLine)
-            .ToArray();
-        return containingMembers.Length == 1 ? containingMembers[0] : null;
-    }
-
-    private static bool TouchesMemberBoundary(VbaModuleMemberSyntax member, int startLine, int endLine)
-        => startLine <= member.BlockRange.Start.Line || endLine >= member.BlockRange.End.Line;
 }
 
 /// <summary>

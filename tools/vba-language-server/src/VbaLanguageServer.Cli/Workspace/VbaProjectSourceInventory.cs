@@ -51,7 +51,7 @@ internal static class VbaProjectSourceInventory
         CancellationToken cancellationToken = default)
     {
         var documents = new Dictionary<string, VbaTrackedDocument>(StringComparer.OrdinalIgnoreCase);
-        var fileStates = new List<string>();
+        var fileStates = new List<VbaProjectSourceFileState>();
         var excludedPaths = CreateLocalPathSet(excludedUris);
         var trackedDocumentsByPath = CreateTrackedDocumentPathMap(trackedDocuments.Values);
         foreach (var uri in EnumerateSourceUris(resolution, cancellationToken))
@@ -69,7 +69,7 @@ internal static class VbaProjectSourceInventory
                 continue;
             }
 
-            fileStates.Add(CreateFileState(fileInfo));
+            fileStates.Add(VbaProjectSourceFileState.From(fileInfo));
 
             if (trackedDocuments.TryGetValue(uri, out var trackedDocument))
             {
@@ -102,7 +102,7 @@ internal static class VbaProjectSourceInventory
 
         return new VbaProjectSourceInventorySnapshot(
             documents,
-            CreateInventoryStamp(fileStates));
+            fileStates);
     }
 
     private static IEnumerable<string> EnumerateSourceUris(
@@ -175,24 +175,36 @@ internal static class VbaProjectSourceInventory
         return map;
     }
 
-    private static string CreateFileState(FileInfo fileInfo)
-        => string.Join(
-            "|",
-            Path.GetFullPath(fileInfo.FullName),
-            fileInfo.Length.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            fileInfo.LastWriteTimeUtc.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture));
-
-    private static string CreateInventoryStamp(IEnumerable<string> fileStates)
-        => string.Join(
-            "\n",
-            fileStates.OrderBy(state => state, StringComparer.OrdinalIgnoreCase));
 }
 
 /// <summary>
-/// Represents a scoped project source inventory and its disk source stamp.
+/// Represents the metadata needed to detect changes to a known project source without enumerating the project again.
+/// </summary>
+internal sealed record VbaProjectSourceFileState(
+    string FullPath,
+    long Length,
+    long LastWriteTimeUtcTicks)
+{
+    public static VbaProjectSourceFileState From(FileInfo fileInfo)
+        => new(
+            Path.GetFullPath(fileInfo.FullName),
+            fileInfo.Length,
+            fileInfo.LastWriteTimeUtc.Ticks);
+
+    public bool IsCurrent()
+    {
+        var fileInfo = new FileInfo(FullPath);
+        return fileInfo.Exists
+            && fileInfo.Length == Length
+            && fileInfo.LastWriteTimeUtc.Ticks == LastWriteTimeUtcTicks;
+    }
+}
+
+/// <summary>
+/// Represents a scoped project source inventory and its known disk source state.
 /// </summary>
 /// <param name="Documents">The tracked documents that belong to the resolved project scope.</param>
-/// <param name="Stamp">The deterministic source-file stamp for cache invalidation.</param>
+/// <param name="SourceFiles">The known disk source state used by the cache fast path.</param>
 internal sealed record VbaProjectSourceInventorySnapshot(
     Dictionary<string, VbaTrackedDocument> Documents,
-    string Stamp);
+    IReadOnlyList<VbaProjectSourceFileState> SourceFiles);

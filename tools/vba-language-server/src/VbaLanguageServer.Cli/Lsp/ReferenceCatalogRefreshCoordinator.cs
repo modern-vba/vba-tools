@@ -1,4 +1,5 @@
 using VbaLanguageServer.SourceModel;
+using VbaLanguageServer.Workspace;
 
 namespace VbaLanguageServer.Lsp;
 
@@ -17,12 +18,26 @@ internal sealed record ReferenceCatalogDocumentChange(
     bool PublishReferenceTrace,
     bool RefreshInBackground);
 
+internal sealed record ReferenceCatalogRefreshEvent(
+    string Uri,
+    string DocumentName,
+    VbaProjectReferenceCatalogRefreshResult Result);
+
+internal sealed record ReferenceCatalogRefreshSessionMessage(
+    ReferenceCatalogRefreshLogMessage Message,
+    bool PublishOnce);
+
+internal sealed record ReferenceCatalogRefreshPlan(
+    string Uri,
+    IReadOnlyList<VbaProjectReferenceSelectionContext> Selections);
+
 /// <summary>
 /// Publishes reference-selection trace messages and starts background catalog refresh work.
 /// </summary>
 internal sealed class ReferenceCatalogRefreshCoordinator
 {
-    private readonly ReferenceCatalogRefreshSession refreshSession;
+    private readonly VbaProjectReferenceCatalogCache catalogCache;
+    private readonly VbaProjectReferenceCatalogRefreshService refreshService;
     private readonly LspMessageTransport transport;
     private readonly object diagnosticGate = new();
     private readonly HashSet<string> publishedDiagnostics = new(StringComparer.Ordinal);
@@ -30,13 +45,16 @@ internal sealed class ReferenceCatalogRefreshCoordinator
     /// <summary>
     /// Creates a reference catalog refresh coordinator.
     /// </summary>
-    /// <param name="catalogAvailability">The current catalog availability module.</param>
+    /// <param name="catalogCache">The current reference catalog state.</param>
+    /// <param name="refreshService">The service that preloads and refreshes reference catalogs.</param>
     /// <param name="transport">The transport used to publish log messages.</param>
     public ReferenceCatalogRefreshCoordinator(
-        VbaProjectReferenceCatalogAvailability catalogAvailability,
+        VbaProjectReferenceCatalogCache catalogCache,
+        VbaProjectReferenceCatalogRefreshService refreshService,
         LspMessageTransport transport)
     {
-        refreshSession = new ReferenceCatalogRefreshSession(catalogAvailability);
+        this.catalogCache = catalogCache;
+        this.refreshService = refreshService;
         this.transport = transport;
     }
 
@@ -96,7 +114,7 @@ internal sealed class ReferenceCatalogRefreshCoordinator
     /// <param name="cancellationToken">A cancellation token for message publication.</param>
     public async Task PublishReferenceSelectionTraceAsync(string uri, CancellationToken cancellationToken)
     {
-        foreach (var sessionMessage in refreshSession.CreateReferenceSelectionTraceMessages(uri))
+        foreach (var sessionMessage in CreateReferenceSelectionTraceMessages(uri))
         {
             if (sessionMessage.PublishOnce)
             {
@@ -119,7 +137,7 @@ internal sealed class ReferenceCatalogRefreshCoordinator
     /// <param name="cancellationToken">A cancellation token for preload work.</param>
     public async Task PreloadReferenceCatalogsAsync(string uri, string text, CancellationToken cancellationToken)
     {
-        foreach (var refreshEvent in refreshSession.PreloadReferenceCatalogs(uri, text))
+        foreach (var refreshEvent in PreloadReferenceCatalogs(uri, text))
         {
             await PublishCatalogRefreshResultAsync(refreshEvent, cancellationToken);
         }
@@ -133,7 +151,7 @@ internal sealed class ReferenceCatalogRefreshCoordinator
     /// <param name="cancellationToken">A cancellation token for refresh work.</param>
     public void RefreshReferenceCatalogsInBackground(string uri, string text, CancellationToken cancellationToken)
     {
-        if (refreshSession.TryCreateBackgroundRefreshPlan(uri, text, out var plan))
+        if (TryCreateBackgroundRefreshPlan(uri, text, out var plan))
         {
             _ = RefreshReferenceCatalogsInBackgroundAsync(plan, cancellationToken);
         }
@@ -146,7 +164,7 @@ internal sealed class ReferenceCatalogRefreshCoordinator
         IReadOnlyList<ReferenceCatalogRefreshEvent> refreshEvents;
         try
         {
-            refreshEvents = await refreshSession.RefreshAsync(plan, cancellationToken);
+            refreshEvents = await RefreshAsync(plan, cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -216,5 +234,101 @@ internal sealed class ReferenceCatalogRefreshCoordinator
 
         await transport.WriteLogMessageAsync(type, message, cancellationToken);
     }
+
+    private IReadOnlyList<ReferenceCatalogRefreshSessionMessage> CreateReferenceSelectionTraceMessages(string uri)
+    {
+        if (!LanguageServerManifestResolution.TryCreateReferenceSelectionContext(
+            uri,
+            catalogCache.Current,
+            out var context,
+            out var error))
+        {
+            return error is null
+                ? []
+                : [CreateDirectMessage(
+                    2,
+                    $"Project manifest could not be resolved for reference selection: {error.Message}",
+                    $"manifest-error\u001f{uri}\u001f{error.Message}")];
+        }
+
+        var messages = new List<ReferenceCatalogRefreshSessionMessage>();
+        messages.AddRange(context.Messages.Select(message => CreateDirectMessage(
+            message.Type,
+            message.Text,
+            $"selection\u001f{uri}\u001f{message.Type}\u001f{message.Text}")));
+
+        foreach (var reference in context.ReferenceSelection?.References ?? [])
+        {
+            var source = catalogCache.GetCatalogSource(reference.Name);
+            if (source == VbaProjectReferenceCatalogSource.Unavailable)
+            {
+                continue;
+            }
+
+            messages.Add(new ReferenceCatalogRefreshSessionMessage(
+                ReferenceCatalogRefreshOutcome.CreateAvailabilityMessage(
+                    context.Resolution.DocumentName,
+                    reference.Name,
+                    source),
+                PublishOnce: true));
+        }
+
+        return messages;
+    }
+
+    private IReadOnlyList<ReferenceCatalogRefreshEvent> PreloadReferenceCatalogs(string uri, string text)
+    {
+        if (!LanguageServerManifestResolution.TryCreateReferenceSelections(uri, text, out var selections))
+        {
+            return [];
+        }
+
+        return selections
+            .SelectMany(selectionContext => refreshService
+                .PreloadPersistedCatalogs(selectionContext.Selection)
+                .Select(result => new ReferenceCatalogRefreshEvent(
+                    uri,
+                    selectionContext.DocumentName,
+                    result)))
+            .ToArray();
+    }
+
+    private static bool TryCreateBackgroundRefreshPlan(
+        string uri,
+        string text,
+        out ReferenceCatalogRefreshPlan plan)
+    {
+        plan = default!;
+        if (!LanguageServerManifestResolution.TryCreateReferenceSelections(uri, text, out var selections))
+        {
+            return false;
+        }
+
+        plan = new ReferenceCatalogRefreshPlan(uri, selections);
+        return true;
+    }
+
+    private async Task<IReadOnlyList<ReferenceCatalogRefreshEvent>> RefreshAsync(
+        ReferenceCatalogRefreshPlan plan,
+        CancellationToken cancellationToken)
+    {
+        var events = new List<ReferenceCatalogRefreshEvent>();
+        foreach (var selectionContext in plan.Selections)
+        {
+            var results = await refreshService.RefreshAsync(selectionContext.Selection, cancellationToken);
+            events.AddRange(results.Select(result => new ReferenceCatalogRefreshEvent(
+                plan.Uri,
+                selectionContext.DocumentName,
+                result)));
+        }
+
+        return events;
+    }
+
+    private static ReferenceCatalogRefreshSessionMessage CreateDirectMessage(
+        int type,
+        string text,
+        string key)
+        => new(new ReferenceCatalogRefreshLogMessage(type, text, key), PublishOnce: false);
 
 }

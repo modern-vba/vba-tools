@@ -1,3 +1,5 @@
+using VbaLanguageServer.Syntax;
+
 namespace VbaLanguageServer.SourceModel;
 
 /// <summary>
