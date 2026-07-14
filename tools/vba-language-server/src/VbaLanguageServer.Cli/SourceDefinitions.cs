@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using VbaLanguageServer.Diagnostics;
 using VbaLanguageServer.ProjectModel;
@@ -144,12 +145,21 @@ public sealed record VbaSourceDefinition(
 /// <param name="Documentation">The parameter documentation text.</param>
 /// <param name="IsOptional">Whether the parameter is optional when the source metadata provides it.</param>
 /// <param name="DisplayLabel">The displayed parameter segment in the containing signature label.</param>
+/// <param name="TypeReference">The parameter type reference, when supplied by the source or catalog.</param>
+/// <param name="IsByRef">Whether the parameter is known to be passed ByRef. Null means the metadata is unavailable.</param>
+/// <param name="IsParamArray">Whether the parameter is declared ParamArray.</param>
+/// <param name="IsArray">Whether the parameter name carries a VBA array marker.</param>
 public sealed record VbaCallableParameter(
     string Name,
     string? Documentation = null,
     bool IsOptional = false,
-    string? DisplayLabel = null)
+    string? DisplayLabel = null,
+    VbaTypeReference? TypeReference = null,
+    bool? IsByRef = null,
+    bool IsParamArray = false,
+    bool IsArray = false)
 {
+    [JsonIgnore]
     public string Label => DisplayLabel ?? Name;
 }
 

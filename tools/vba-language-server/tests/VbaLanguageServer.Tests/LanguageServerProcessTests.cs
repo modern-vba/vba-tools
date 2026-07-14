@@ -1298,7 +1298,7 @@ public sealed class LanguageServerProcessTests
                 .GetProperty("signatures")
                 .EnumerateArray()
                 .Single();
-            Assert.Equal("Run(Macro, [Arg1])", firstSignature.GetProperty("label").GetString());
+            Assert.Equal("Sub Run(Macro, [Arg1])", firstSignature.GetProperty("label").GetString());
             Assert.Contains(
                 "The macro or function to run.",
                 firstSignature.GetProperty("parameters").EnumerateArray().First().GetProperty("documentation").GetProperty("value").GetString(),
@@ -1333,10 +1333,33 @@ public sealed class LanguageServerProcessTests
                         [
                             new VbaProjectReferenceDefinition(
                                 "Generated Library",
+                                "GeneratedType",
+                                VbaSourceDefinitionKind.Class),
+                            new VbaProjectReferenceDefinition(
+                                "Generated Library",
                                 "GeneratedValue",
                                 VbaSourceDefinitionKind.Property,
                                 "Returns a generated value.",
-                                TypeReference: new VbaTypeReference("Variant"))
+                                TypeReference: new VbaTypeReference("Variant")),
+                            new VbaProjectReferenceDefinition(
+                                "Generated Library",
+                                "RichMethod",
+                                VbaSourceDefinitionKind.Procedure,
+                                Signature: new VbaCallableSignature(
+                                    "RichMethod(Required, OptionalValue)",
+                                    [
+                                        new VbaCallableParameter(
+                                            "Required",
+                                            TypeReference: new VbaTypeReference("Variant"),
+                                            IsByRef: true),
+                                        new VbaCallableParameter(
+                                            "OptionalValue",
+                                            IsOptional: true,
+                                            TypeReference: new VbaTypeReference("String"),
+                                            IsByRef: false)
+                                    ]),
+                                ParentTypeName: "GeneratedType",
+                                TypeReference: new VbaTypeReference("String"))
                         ])));
 
             var serverProjectPath = Path.GetFullPath(
@@ -1361,6 +1384,8 @@ public sealed class LanguageServerProcessTests
                 "Attribute VB_Name = \"Worker\"",
                 "Public Sub Run()",
                 "    Generated.GeneratedValue",
+                "    Dim generatedObject As GeneratedType",
+                "    generatedObject.RichMethod(",
                 "End Sub"
             ]);
             await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, text));
@@ -1370,7 +1395,32 @@ public sealed class LanguageServerProcessTests
             Assert.Contains("Returns a generated value.", hoverValue, StringComparison.Ordinal);
             Assert.Contains("Property GeneratedValue As Variant", hoverValue, StringComparison.Ordinal);
 
-            await SendRequestAsync(stdin, stdout, 3, "shutdown", null);
+            var signatureHelp = await SendPositionRequestAsync(
+                stdin,
+                stdout,
+                3,
+                "textDocument/signatureHelp",
+                uri,
+                text,
+                "RichMethod(",
+                "RichMethod(".Length);
+            var signature = signatureHelp
+                .GetProperty("result")
+                .GetProperty("signatures")
+                .EnumerateArray()
+                .Single();
+            Assert.Equal(
+                "Function RichMethod(ByRef Required As Variant, [OptionalValue As String]) As String",
+                signature.GetProperty("label").GetString());
+            Assert.Equal(
+                ["ByRef Required As Variant", "[OptionalValue As String]"],
+                signature
+                    .GetProperty("parameters")
+                    .EnumerateArray()
+                    .Select(parameter => parameter.GetProperty("label").GetString() ?? "")
+                    .ToArray());
+
+            await SendRequestAsync(stdin, stdout, 4, "shutdown", null);
             await SendNotificationAsync(stdin, "exit", null);
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await process.WaitForExitAsync(cancellation.Token);
@@ -1673,7 +1723,7 @@ public sealed class LanguageServerProcessTests
                 .GetProperty("signatures")
                 .EnumerateArray()
                 .Single();
-            Assert.Equal("Range(Cell1, Cell2) As Range", signature.GetProperty("label").GetString());
+            Assert.Equal("Property Range(Cell1, Cell2) As Range", signature.GetProperty("label").GetString());
             Assert.Contains(semanticTokens, token =>
                 token.Text == "Workbook"
                 && token.TokenType == "class"
@@ -2004,13 +2054,16 @@ public sealed class LanguageServerProcessTests
                 .GetProperty("signatures")
                 .EnumerateArray()
                 .Single();
-            Assert.Equal("Range(Cell1, [Cell2]) As Range", firstSignature.GetProperty("label").GetString());
+            Assert.StartsWith("Property Range(", firstSignature.GetProperty("label").GetString());
+            Assert.EndsWith(") As Range", firstSignature.GetProperty("label").GetString());
             var parameterLabels = firstSignature
                 .GetProperty("parameters")
                 .EnumerateArray()
                 .Select(parameter => parameter.GetProperty("label").GetString() ?? "")
                 .ToArray();
-            Assert.Equal(["Cell1", "Cell2"], parameterLabels);
+            Assert.Equal(2, parameterLabels.Length);
+            Assert.Contains("Cell1", parameterLabels[0], StringComparison.Ordinal);
+            Assert.Contains("Cell2", parameterLabels[1], StringComparison.Ordinal);
 
             var secondParameterHelp = await SendPositionRequestAsync(
                 stdin,
@@ -2027,7 +2080,8 @@ public sealed class LanguageServerProcessTests
                 .GetProperty("signatures")
                 .EnumerateArray()
                 .Single();
-            Assert.Equal("Range(Cell1, [Cell2]) As Range", secondSignature.GetProperty("label").GetString());
+            Assert.StartsWith("Property Range(", secondSignature.GetProperty("label").GetString());
+            Assert.EndsWith(") As Range", secondSignature.GetProperty("label").GetString());
 
             await SendRequestAsync(stdin, stdout, 4, "shutdown", null);
             await SendNotificationAsync(stdin, "exit", null);

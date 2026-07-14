@@ -366,21 +366,53 @@ public sealed class VbaProjectReferenceCatalogSet
             return null;
         }
 
-        if (!definition.Signature.Parameters.Any(parameter => parameter.IsOptional))
-        {
-            return definition.Signature;
-        }
-
-        var label = $"{definition.Name}({string.Join(", ", definition.Signature.Parameters.Select(CreateParameterLabel))})";
+        var parameterLabels = definition.Signature.Parameters.Select(CreateRichParameterLabel).ToArray();
+        var label = $"{GetCallableKind(definition)} {definition.Name}({string.Join(", ", parameterLabels)})";
         if (definition.TypeReference is not null)
         {
             label = $"{label} As {definition.TypeReference.Name}";
         }
 
-        return definition.Signature with { Label = label };
+        return definition.Signature with
+        {
+            Label = label,
+            Parameters = definition.Signature.Parameters
+                .Select((parameter, index) => parameter with { DisplayLabel = parameterLabels[index] })
+                .ToArray()
+        };
     }
 
-    private static string CreateParameterLabel(VbaCallableParameter parameter)
+    private static string GetCallableKind(VbaProjectReferenceDefinition definition)
+        => definition.Kind switch
+        {
+            VbaSourceDefinitionKind.Property => "Property",
+            VbaSourceDefinitionKind.Event => "Event",
+            _ => definition.TypeReference is null ? "Sub" : "Function"
+        };
+
+    private static string CreateRichParameterLabel(VbaCallableParameter parameter)
+    {
+        var parts = new List<string>();
+        if (parameter.IsParamArray)
+        {
+            parts.Add("ParamArray");
+        }
+        else if (parameter.IsByRef == true)
+        {
+            parts.Add("ByRef");
+        }
+
+        parts.Add(parameter.IsArray ? $"{parameter.Name}()" : parameter.Name);
+        if (parameter.TypeReference is not null)
+        {
+            parts.Add($"As {parameter.TypeReference.Name}");
+        }
+
+        var label = string.Join(" ", parts);
+        return parameter.IsOptional ? $"[{label}]" : label;
+    }
+
+    private static string CreateCompactParameterLabel(VbaCallableParameter parameter)
         => parameter.IsOptional ? $"[{parameter.Name}]" : parameter.Name;
 
     private static string? CreateDeclarationLabel(
@@ -389,9 +421,9 @@ public sealed class VbaProjectReferenceCatalogSet
     {
         return definition.Kind switch
         {
-            VbaSourceDefinitionKind.Procedure => $"{(definition.TypeReference is null ? "Sub" : "Function")} {signature?.Label ?? CreateValueLabel(definition)}",
-            VbaSourceDefinitionKind.Property => $"Property {signature?.Label ?? CreateValueLabel(definition)}",
-            VbaSourceDefinitionKind.Event => $"Event {signature?.Label ?? $"{definition.Name}()"}",
+            VbaSourceDefinitionKind.Procedure => $"{(definition.TypeReference is null ? "Sub" : "Function")} {CreateCompactCallableLabel(definition, signature)}",
+            VbaSourceDefinitionKind.Property => $"Property {CreateCompactCallableLabel(definition, signature)}",
+            VbaSourceDefinitionKind.Event => $"Event {CreateCompactCallableLabel(definition, signature)}",
             VbaSourceDefinitionKind.Variable => CreateValueLabel(definition),
             VbaSourceDefinitionKind.Constant => $"Const {CreateValueLabel(definition)}",
             VbaSourceDefinitionKind.Enum => $"Enum {definition.Name}",
@@ -399,6 +431,23 @@ public sealed class VbaProjectReferenceCatalogSet
             VbaSourceDefinitionKind.EnumMember or VbaSourceDefinitionKind.TypeMember => CreateValueLabel(definition),
             _ => null
         };
+    }
+
+    private static string CreateCompactCallableLabel(
+        VbaProjectReferenceDefinition definition,
+        VbaCallableSignature? signature)
+    {
+        if (signature is null)
+        {
+            return definition.Kind == VbaSourceDefinitionKind.Event
+                ? $"{definition.Name}()"
+                : CreateValueLabel(definition);
+        }
+
+        var label = $"{definition.Name}({string.Join(", ", signature.Parameters.Select(CreateCompactParameterLabel))})";
+        return definition.TypeReference is null
+            ? label
+            : $"{label} As {definition.TypeReference.Name}";
     }
 
     private static string CreateValueLabel(VbaProjectReferenceDefinition definition)
