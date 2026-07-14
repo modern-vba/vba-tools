@@ -10,8 +10,7 @@ internal sealed record VbaResolvedIdentifierOccurrence(
     string Uri,
     VbaIdentifierOccurrence Occurrence,
     VbaRange Range,
-    VbaSourceDefinition Definition,
-    VbaDefinitionIdentity DefinitionIdentity);
+    VbaSourceDefinition Definition);
 
 /// <summary>
 /// Finds resolved identifier occurrences for references, rename, semantic tokens, and formatting-like traversals.
@@ -19,14 +18,14 @@ internal sealed record VbaResolvedIdentifierOccurrence(
 internal sealed class VbaResolvedIdentifierOccurrenceIndex
 {
     private readonly IReadOnlyList<VbaSourceDocument> documents;
-    private readonly VbaResolutionTable resolutionTable;
+    private readonly Func<string, int, int, VbaSourceDefinition?> resolveSourceDefinition;
 
     public VbaResolvedIdentifierOccurrenceIndex(
         IReadOnlyList<VbaSourceDocument> documents,
-        VbaResolutionTable resolutionTable)
+        Func<string, int, int, VbaSourceDefinition?> resolveSourceDefinition)
     {
         this.documents = documents;
-        this.resolutionTable = resolutionTable;
+        this.resolveSourceDefinition = resolveSourceDefinition;
     }
 
     public IReadOnlyList<VbaResolvedIdentifierOccurrence> GetDocumentOccurrences(string uri)
@@ -36,19 +35,13 @@ internal sealed class VbaResolvedIdentifierOccurrenceIndex
     }
 
     public IReadOnlyList<VbaResolvedIdentifierOccurrence> FindMatching(VbaSourceDefinition target)
-    {
-        var targetIdentity = resolutionTable.GetIdentity(target);
-        return FindMatching(targetIdentity);
-    }
+        => FindMatching(target.Identity);
 
     public IReadOnlyList<VbaResolvedIdentifierOccurrence> FindMatching(VbaDefinitionIdentity targetIdentity)
         => documents
             .SelectMany(GetDocumentOccurrences)
-            .Where(occurrence => resolutionTable.SameIdentity(occurrence.DefinitionIdentity, targetIdentity))
-            .GroupBy(
-                occurrence => $"{occurrence.Uri}:{GetRangeKey(occurrence.Range)}:{GetRangeKey(occurrence.DefinitionIdentity.Range)}",
-                StringComparer.OrdinalIgnoreCase)
-            .Select(group => group.First())
+            .Where(occurrence => occurrence.Definition.Identity == targetIdentity)
+            .Distinct(VbaResolvedIdentifierOccurrenceComparer.Instance)
             .OrderBy(occurrence => occurrence.Uri, StringComparer.OrdinalIgnoreCase)
             .ThenBy(occurrence => occurrence.Range.Start.Line)
             .ThenBy(occurrence => occurrence.Range.Start.Character)
@@ -67,7 +60,7 @@ internal sealed class VbaResolvedIdentifierOccurrenceIndex
                     continue;
                 }
 
-                var definition = resolutionTable.ResolveSourceDefinition(document.Uri, lineIndex, occurrence.Start);
+                var definition = resolveSourceDefinition(document.Uri, lineIndex, occurrence.Start);
                 if (definition is null)
                 {
                     continue;
@@ -76,21 +69,38 @@ internal sealed class VbaResolvedIdentifierOccurrenceIndex
                 occurrences.Add(new VbaResolvedIdentifierOccurrence(
                     document.Uri,
                     occurrence,
-                    new VbaRange(
-                        new VbaPosition(lineIndex, occurrence.Start),
-                        new VbaPosition(lineIndex, occurrence.End)),
-                    definition,
-                    resolutionTable.GetIdentity(definition)));
+                        new VbaRange(
+                            new VbaPosition(lineIndex, occurrence.Start),
+                            new VbaPosition(lineIndex, occurrence.End)),
+                    definition));
             }
         }
 
         return occurrences;
     }
 
-    private static string GetRangeKey(VbaRange range)
-        => $"{range.Start.Line}:{range.Start.Character}:{range.End.Line}:{range.End.Character}";
-
     private static bool SameUri(string left, string right)
         => string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
 
+    private sealed class VbaResolvedIdentifierOccurrenceComparer : IEqualityComparer<VbaResolvedIdentifierOccurrence>
+    {
+        public static VbaResolvedIdentifierOccurrenceComparer Instance { get; } = new();
+
+        public bool Equals(VbaResolvedIdentifierOccurrence? left, VbaResolvedIdentifierOccurrence? right)
+            => ReferenceEquals(left, right)
+                || (left is not null
+                    && right is not null
+                    && SameUri(left.Uri, right.Uri)
+                    && left.Range == right.Range
+                    && left.Definition.Identity == right.Definition.Identity);
+
+        public int GetHashCode(VbaResolvedIdentifierOccurrence occurrence)
+        {
+            var hash = new HashCode();
+            hash.Add(occurrence.Uri, StringComparer.OrdinalIgnoreCase);
+            hash.Add(occurrence.Range);
+            hash.Add(occurrence.Definition.Identity);
+            return hash.ToHashCode();
+        }
+    }
 }

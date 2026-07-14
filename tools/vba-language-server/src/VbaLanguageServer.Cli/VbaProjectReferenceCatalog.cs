@@ -224,9 +224,9 @@ public sealed class VbaProjectReferenceCatalogSet
     /// Determines whether a source definition originated from a reference catalog.
     /// </summary>
     /// <param name="definition">The definition to inspect.</param>
-    /// <returns>True when the definition URI uses the external reference URI prefix.</returns>
+    /// <returns>True when the definition identity originates from a project reference.</returns>
     public static bool IsExternalDefinition(VbaSourceDefinition definition)
-        => definition.Uri.StartsWith(ExternalDefinitionUriPrefix, StringComparison.OrdinalIgnoreCase);
+        => definition.Identity.Origin == VbaDefinitionOrigin.ProjectReference;
 
     /// <summary>
     /// Returns a new catalog set with a catalog added or replaced.
@@ -344,13 +344,20 @@ public sealed class VbaProjectReferenceCatalogSet
 
     private static VbaSourceDefinition ToSourceDefinition(VbaProjectReferenceDefinition definition)
     {
+        var location = new VbaDefinitionLocation(
+            $"{ExternalDefinitionUriPrefix}{Uri.EscapeDataString(definition.ReferenceName)}/{Uri.EscapeDataString(definition.Name)}",
+            new VbaRange(new VbaPosition(0, 0), new VbaPosition(0, definition.Name.Length)));
         return new VbaSourceDefinition(
+            VbaDefinitionIdentity.ForProjectReference(
+                definition.ReferenceName,
+                definition.ParentTypeName,
+                definition.Kind,
+                definition.Name),
+            location,
             definition.Name,
             definition.Kind,
             VbaSourceDefinitionVisibility.Public,
-            $"{ExternalDefinitionUriPrefix}{Uri.EscapeDataString(definition.ReferenceName)}/{Uri.EscapeDataString(definition.Name)}",
             definition.ReferenceName,
-            new VbaRange(new VbaPosition(0, 0), new VbaPosition(0, definition.Name.Length)),
             Documentation: definition.Documentation,
             Signature: CreateSourceSignature(definition),
             ParentTypeName: definition.ParentTypeName,

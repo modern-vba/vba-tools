@@ -105,14 +105,199 @@ public enum VbaSourceDefinitionVisibility
 public sealed record VbaTypeReference(string Name, string? Qualifier = null);
 
 /// <summary>
+/// Identifies where a definition originates without relying on its editor presentation.
+/// </summary>
+public enum VbaDefinitionOrigin
+{
+    /// <summary>
+    /// The default value, which is not a valid definition origin.
+    /// </summary>
+    Unknown,
+
+    /// <summary>
+    /// A declaration parsed from VBA source text.
+    /// </summary>
+    Source,
+
+    /// <summary>
+    /// A definition projected from an active VBA project reference catalog.
+    /// </summary>
+    ProjectReference
+}
+
+/// <summary>
+/// Identifies a source or project-reference definition independently from its display location.
+/// </summary>
+public readonly struct VbaDefinitionIdentity : IEquatable<VbaDefinitionIdentity>
+{
+    private static readonly StringComparer NameComparer = StringComparer.OrdinalIgnoreCase;
+
+    private VbaDefinitionIdentity(
+        VbaDefinitionOrigin origin,
+        string name,
+        string? sourceUri,
+        VbaRange? declarationRange,
+        string? referenceName,
+        string? parentTypeName,
+        VbaSourceDefinitionKind? kind)
+    {
+        Origin = origin;
+        Name = name;
+        SourceUri = sourceUri;
+        DeclarationRange = declarationRange;
+        ReferenceName = referenceName;
+        ParentTypeName = parentTypeName;
+        Kind = kind;
+    }
+
+    /// <summary>
+    /// Gets the definition origin.
+    /// </summary>
+    public VbaDefinitionOrigin Origin { get; }
+
+    /// <summary>
+    /// Gets the definition name.
+    /// </summary>
+    public string? Name { get; }
+
+    /// <summary>
+    /// Gets the source URI for a source definition.
+    /// </summary>
+    public string? SourceUri { get; }
+
+    /// <summary>
+    /// Gets the declaration range for a source definition.
+    /// </summary>
+    public VbaRange? DeclarationRange { get; }
+
+    /// <summary>
+    /// Gets the reference name for a project-reference definition.
+    /// </summary>
+    public string? ReferenceName { get; }
+
+    /// <summary>
+    /// Gets the containing type name for a project-reference member.
+    /// </summary>
+    public string? ParentTypeName { get; }
+
+    /// <summary>
+    /// Gets the definition kind for a project-reference definition.
+    /// </summary>
+    public VbaSourceDefinitionKind? Kind { get; }
+
+    /// <summary>
+    /// Creates an identity for a source declaration.
+    /// </summary>
+    public static VbaDefinitionIdentity ForSource(string uri, string name, VbaRange declarationRange)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(uri);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(declarationRange);
+        return new VbaDefinitionIdentity(
+            VbaDefinitionOrigin.Source,
+            name,
+            uri,
+            declarationRange,
+            null,
+            null,
+            null);
+    }
+
+    /// <summary>
+    /// Creates an identity for a project-reference definition.
+    /// </summary>
+    public static VbaDefinitionIdentity ForProjectReference(
+        string referenceName,
+        string? parentTypeName,
+        VbaSourceDefinitionKind kind,
+        string name)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(referenceName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        if (parentTypeName is not null)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(parentTypeName);
+        }
+
+        return new VbaDefinitionIdentity(
+            VbaDefinitionOrigin.ProjectReference,
+            name,
+            null,
+            null,
+            referenceName,
+            parentTypeName,
+            kind);
+    }
+
+    /// <inheritdoc />
+    public bool Equals(VbaDefinitionIdentity other)
+    {
+        if (Origin != other.Origin || !NameComparer.Equals(Name, other.Name))
+        {
+            return false;
+        }
+
+        return Origin switch
+        {
+            VbaDefinitionOrigin.Source =>
+                NameComparer.Equals(SourceUri, other.SourceUri)
+                && Equals(DeclarationRange, other.DeclarationRange),
+            VbaDefinitionOrigin.ProjectReference =>
+                NameComparer.Equals(ReferenceName, other.ReferenceName)
+                && NameComparer.Equals(ParentTypeName, other.ParentTypeName)
+                && Kind == other.Kind,
+            _ => true
+        };
+    }
+
+    /// <inheritdoc />
+    public override bool Equals(object? obj)
+        => obj is VbaDefinitionIdentity other && Equals(other);
+
+    /// <inheritdoc />
+    public override int GetHashCode()
+    {
+        var hash = new HashCode();
+        hash.Add(Origin);
+        hash.Add(Name, NameComparer);
+        switch (Origin)
+        {
+            case VbaDefinitionOrigin.Source:
+                hash.Add(SourceUri, NameComparer);
+                hash.Add(DeclarationRange);
+                break;
+            case VbaDefinitionOrigin.ProjectReference:
+                hash.Add(ReferenceName, NameComparer);
+                hash.Add(ParentTypeName, NameComparer);
+                hash.Add(Kind);
+                break;
+        }
+
+        return hash.ToHashCode();
+    }
+
+    /// <summary>
+    /// Determines whether two definition identities are equal.
+    /// </summary>
+    public static bool operator ==(VbaDefinitionIdentity left, VbaDefinitionIdentity right)
+        => left.Equals(right);
+
+    /// <summary>
+    /// Determines whether two definition identities differ.
+    /// </summary>
+    public static bool operator !=(VbaDefinitionIdentity left, VbaDefinitionIdentity right)
+        => !left.Equals(right);
+}
+
+/// <summary>
 /// Represents one source-defined or reference-catalog definition used by editor features.
 /// </summary>
+/// <param name="Identity">The logical identity used for definition equality.</param>
+/// <param name="Location">The editor-facing definition location.</param>
 /// <param name="Name">The definition name.</param>
 /// <param name="Kind">The editor-facing definition kind.</param>
 /// <param name="Visibility">The definition visibility.</param>
-/// <param name="Uri">The source URI or reference-catalog URI that owns the definition.</param>
 /// <param name="ModuleName">The module or reference root that owns the definition.</param>
-/// <param name="Range">The source range of the definition.</param>
 /// <param name="ParentProcedureName">The containing procedure for local definitions.</param>
 /// <param name="ParentProcedureRange">The containing procedure range for local definitions.</param>
 /// <param name="Documentation">The documentation text shown by hover and signature help.</param>
@@ -121,19 +306,30 @@ public sealed record VbaTypeReference(string Name, string? Qualifier = null);
 /// <param name="TypeReference">The explicit result or variable type reference.</param>
 /// <param name="IsWithEvents">Whether the definition declares WithEvents.</param>
 public sealed record VbaSourceDefinition(
+    VbaDefinitionIdentity Identity,
+    VbaDefinitionLocation Location,
     string Name,
     VbaSourceDefinitionKind Kind,
     VbaSourceDefinitionVisibility Visibility,
-    string Uri,
     string ModuleName,
-    VbaRange Range,
     string? ParentProcedureName = null,
     VbaRange? ParentProcedureRange = null,
     string? Documentation = null,
     VbaCallableSignature? Signature = null,
     string? ParentTypeName = null,
     VbaTypeReference? TypeReference = null,
-    bool IsWithEvents = false);
+    bool IsWithEvents = false)
+{
+    /// <summary>
+    /// Gets the editor-facing definition URI.
+    /// </summary>
+    public string Uri => Location.Uri;
+
+    /// <summary>
+    /// Gets the editor-facing definition range.
+    /// </summary>
+    public VbaRange Range => Location.Range;
+}
 
 /// <summary>
 /// Represents one callable parameter in editor-facing signature metadata.
@@ -309,7 +505,7 @@ public sealed class VbaSourceIndex
 
     private readonly IReadOnlyList<VbaSourceDocument> documents;
     private readonly VbaSemanticResolution semanticResolution;
-    private readonly VbaResolutionTable resolutionTable;
+    private readonly VbaResolutionPolicy resolutionPolicy;
     private readonly VbaResolvedIdentifierOccurrenceIndex resolvedOccurrences;
     private readonly VbaSourceFormatter sourceFormatter;
     private readonly object semanticTokenCacheGate = new();
@@ -322,10 +518,11 @@ public sealed class VbaSourceIndex
         VbaProjectReferenceCatalogSet referenceCatalogs)
     {
         this.documents = documents;
-        var resolutionPolicy = new VbaResolutionPolicy();
+        resolutionPolicy = new VbaResolutionPolicy();
         semanticResolution = new VbaSemanticResolution(documents, referenceSelection, referenceCatalogs, resolutionPolicy);
-        resolutionTable = new VbaResolutionTable(semanticResolution.ResolveSourceDefinition, resolutionPolicy);
-        resolvedOccurrences = new VbaResolvedIdentifierOccurrenceIndex(documents, resolutionTable);
+        resolvedOccurrences = new VbaResolvedIdentifierOccurrenceIndex(
+            documents,
+            semanticResolution.ResolveSourceDefinition);
         sourceFormatter = new VbaSourceFormatter(semanticResolution);
     }
 
@@ -538,7 +735,7 @@ public sealed class VbaSourceIndex
     public VbaDefinitionLocation? ResolveDefinition(string uri, int line, int character)
     {
         var definition = ResolveSourceDefinition(uri, line, character);
-        return definition is null ? null : new VbaDefinitionLocation(definition.Uri, definition.Range);
+        return definition?.Location;
     }
 
     /// <summary>
@@ -549,7 +746,7 @@ public sealed class VbaSourceIndex
     /// <param name="character">The zero-based character.</param>
     /// <returns>The resolved definition, or null when unresolved or ambiguous.</returns>
     public VbaSourceDefinition? ResolveSourceDefinition(string uri, int line, int character)
-        => resolutionTable.ResolveSourceDefinition(uri, line, character);
+        => semanticResolution.ResolveSourceDefinition(uri, line, character);
 
     /// <summary>
     /// Gets signature help for the call site at a document position.
@@ -571,7 +768,7 @@ public sealed class VbaSourceIndex
     public VbaRange? PrepareRename(string uri, int line, int character)
     {
         var target = ResolveSourceDefinition(uri, line, character);
-        return target is null || !resolutionTable.IsRenameTarget(target)
+        return target is null || !resolutionPolicy.IsRenameTarget(target)
             ? null
             : target.Range;
     }
@@ -611,7 +808,7 @@ public sealed class VbaSourceIndex
         }
 
         var target = ResolveSourceDefinition(uri, line, character);
-        if (target is null || !resolutionTable.IsRenameTarget(target))
+        if (target is null || !resolutionPolicy.IsRenameTarget(target))
         {
             return null;
         }
@@ -662,13 +859,14 @@ public sealed class VbaSourceIndex
 
     private static VbaSourceDefinition CreateModuleDefinition(string uri, VbaModuleSyntax module)
     {
+        var range = MapRange(module.Identity.Range);
         return new VbaSourceDefinition(
+            VbaDefinitionIdentity.ForSource(uri, module.Identity.Name, range),
+            new VbaDefinitionLocation(uri, range),
             module.Identity.Name,
             MapModuleKind(module.Kind),
             VbaSourceDefinitionVisibility.Public,
-            uri,
-            module.Identity.Name,
-            MapRange(module.Identity.Range));
+            module.Identity.Name);
     }
 
     private static VbaSourceDefinition CreateSourceDefinition(
@@ -676,13 +874,14 @@ public sealed class VbaSourceIndex
         string moduleName,
         VbaDeclarationSyntax declaration)
     {
+        var range = MapRange(declaration.Range);
         return new VbaSourceDefinition(
+            VbaDefinitionIdentity.ForSource(uri, declaration.Name, range),
+            new VbaDefinitionLocation(uri, range),
             declaration.Name,
             MapDeclarationKind(declaration.Kind),
             MapVisibility(declaration.Visibility),
-            uri,
             moduleName,
-            MapRange(declaration.Range),
             declaration.ParentProcedureName,
             declaration.ParentProcedureRange is null ? null : MapRange(declaration.ParentProcedureRange),
             declaration.Documentation,

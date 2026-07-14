@@ -129,13 +129,16 @@ public sealed class VbaNameResolutionServiceTests
         int line,
         string? parentProcedureName = null,
         VbaRange? parentProcedureRange = null)
-        => new(
+    {
+        var range = new VbaRange(new VbaPosition(line, 0), new VbaPosition(line, name.Length));
+        return new VbaSourceDefinition(
+            VbaDefinitionIdentity.ForSource(uri, name, range),
+            new VbaDefinitionLocation(uri, range),
             name,
             kind,
             visibility,
-            uri,
             moduleName,
-            new VbaRange(new VbaPosition(line, 0), new VbaPosition(line, name.Length)),
             parentProcedureName,
             parentProcedureRange);
+    }
 }

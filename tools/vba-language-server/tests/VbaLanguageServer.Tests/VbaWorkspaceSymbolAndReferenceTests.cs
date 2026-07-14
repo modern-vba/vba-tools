@@ -1,3 +1,4 @@
+using VbaLanguageServer.Diagnostics;
 using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.SourceModel;
 using VbaLanguageServer.Workspace;
@@ -7,6 +8,48 @@ namespace VbaLanguageServer.Tests;
 
 public sealed class VbaWorkspaceSymbolAndReferenceTests
 {
+    [Fact]
+    public void DefinitionIdentityEqualityIsCaseInsensitiveAndPreservesDiscriminators()
+    {
+        var range = new VbaRange(new VbaPosition(1, 2), new VbaPosition(1, 6));
+        var source = VbaDefinitionIdentity.ForSource("file:///C:/work/Module.bas", "Run", range);
+        var equivalentSource = VbaDefinitionIdentity.ForSource("FILE:///c:/WORK/module.bas", "run", range);
+        var movedSource = VbaDefinitionIdentity.ForSource(
+            "file:///C:/work/Module.bas",
+            "Run",
+            new VbaRange(new VbaPosition(2, 2), new VbaPosition(2, 6)));
+        var reference = VbaDefinitionIdentity.ForProjectReference(
+            "Generated Library",
+            "FirstType",
+            VbaSourceDefinitionKind.Property,
+            "Name");
+        var equivalentReference = VbaDefinitionIdentity.ForProjectReference(
+            "generated library",
+            "firsttype",
+            VbaSourceDefinitionKind.Property,
+            "name");
+        var differentParent = VbaDefinitionIdentity.ForProjectReference(
+            "Generated Library",
+            "SecondType",
+            VbaSourceDefinitionKind.Property,
+            "Name");
+        var differentKind = VbaDefinitionIdentity.ForProjectReference(
+            "Generated Library",
+            "FirstType",
+            VbaSourceDefinitionKind.Procedure,
+            "Name");
+
+        Assert.Equal(source, equivalentSource);
+        Assert.Equal(source.GetHashCode(), equivalentSource.GetHashCode());
+        Assert.NotEqual(source, movedSource);
+        Assert.Equal(reference, equivalentReference);
+        Assert.Equal(reference.GetHashCode(), equivalentReference.GetHashCode());
+        Assert.NotEqual(reference, differentParent);
+        Assert.NotEqual(reference, differentKind);
+        Assert.Equal(default, default(VbaDefinitionIdentity));
+        Assert.Equal(2, new HashSet<VbaDefinitionIdentity> { source, equivalentSource, movedSource }.Count);
+    }
+
     [Fact]
     public void WorkspaceSymbolsReturnSourceDefinitionsMatchingTheQuery()
     {
@@ -77,6 +120,83 @@ public sealed class VbaWorkspaceSymbolAndReferenceTests
         var externalReference = Assert.Single(externalReferences);
         Assert.Equal(callerUri, externalReference.Uri);
         Assert.Empty(ambiguousReferences);
+    }
+
+    [Fact]
+    public void ReferenceIdentitySeparatesSameNamedMembersOwnedByDifferentTypes()
+    {
+        const string uri = "file:///C:/work/Caller.bas";
+        var selection = VbaProjectReferenceSelection.Create(
+            ProjectDocument.ExcelKind,
+            [new VbaProjectReference("Generated Library")]);
+        var catalog = new VbaProjectReferenceCatalog(
+            "Generated Library",
+            ["Generated"],
+            [
+                new VbaProjectReferenceDefinition(
+                    "Generated Library",
+                    "FirstType",
+                    VbaSourceDefinitionKind.Class),
+                new VbaProjectReferenceDefinition(
+                    "Generated Library",
+                    "SecondType",
+                    VbaSourceDefinitionKind.Class),
+                new VbaProjectReferenceDefinition(
+                    "Generated Library",
+                    "Name",
+                    VbaSourceDefinitionKind.Property,
+                    ParentTypeName: "FirstType"),
+                new VbaProjectReferenceDefinition(
+                    "Generated Library",
+                    "Name",
+                    VbaSourceDefinitionKind.Property,
+                    ParentTypeName: "SecondType")
+            ]);
+        var index = VbaSourceIndex.Build(
+            new Dictionary<string, string>
+            {
+                [uri] = string.Join('\n', [
+                    "Attribute VB_Name = \"Caller\"",
+                    "Public Sub Run()",
+                    "    Dim first As FirstType",
+                    "    Dim second As SecondType",
+                    "    first.Name",
+                    "    first.Name",
+                    "    second.Name",
+                    "    first.",
+                    "End Sub"
+                ])
+            },
+            selection,
+            VbaProjectReferenceCatalogSet.Empty.WithCatalog(catalog));
+
+        var firstDefinition = Assert.IsType<VbaSourceDefinition>(
+            index.ResolveSourceDefinition(uri, 4, "    first.".Length));
+        var secondDefinition = Assert.IsType<VbaSourceDefinition>(
+            index.ResolveSourceDefinition(uri, 6, "    second.".Length));
+        var completionDefinition = Assert.Single(
+            index.GetCompletionDefinitions(uri, 7, "    first.".Length),
+            definition => definition.Name == "Name");
+
+        Assert.Equal(firstDefinition.Location, secondDefinition.Location);
+        Assert.NotEqual(firstDefinition.Identity, secondDefinition.Identity);
+        Assert.Equal(
+            firstDefinition.Identity,
+            VbaDefinitionIdentity.ForProjectReference(
+                "generated library",
+                "firsttype",
+                VbaSourceDefinitionKind.Property,
+                "name"));
+        Assert.NotEqual(
+            firstDefinition.Identity,
+            VbaDefinitionIdentity.ForProjectReference(
+                "Generated Library",
+                "FirstType",
+                VbaSourceDefinitionKind.Procedure,
+                "Name"));
+        Assert.Equal(firstDefinition.Identity, completionDefinition.Identity);
+        Assert.Equal(2, index.FindReferences(uri, 4, "    first.".Length).Count);
+        Assert.Single(index.FindReferences(uri, 6, "    second.".Length));
     }
 
     [Fact]
