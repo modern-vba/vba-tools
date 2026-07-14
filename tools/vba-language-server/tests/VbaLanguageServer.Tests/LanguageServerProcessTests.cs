@@ -1050,6 +1050,74 @@ public sealed class LanguageServerProcessTests
     }
 
     [Fact]
+    public async Task Server_returns_hover_declaration_labels_for_source_values()
+    {
+        var serverProjectPath = Path.GetFullPath(
+            Path.Combine(
+                AppContext.BaseDirectory,
+                "..",
+                "..",
+                "..",
+                "..",
+                "..",
+                "src",
+                "VbaLanguageServer.Cli",
+                "VbaLanguageServer.Cli.csproj"));
+
+        using var process = StartLanguageServer(serverProjectPath);
+        await using var stdin = process.StandardInput.BaseStream;
+        using var stdout = process.StandardOutput.BaseStream;
+
+        await InitializeAsync(stdin, stdout);
+        const string uri = "file:///C:/work/Worker.cls";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Option Explicit",
+            "Private WithEvents App As Excel.Application",
+            "Private Const MaxCount As Long = 10, DefaultName = \"fallback\"",
+            "Private pName As String",
+            "Dim implicitValue",
+            "Public Enum Status",
+            "    StatusReady = 1",
+            "End Enum",
+            "Public Type CustomerRecord",
+            "    Id As Long",
+            "    DisplayName",
+            "End Type",
+            "Public Sub Run()",
+            "    Static localCount As Long",
+            "    Dim implicitLocal",
+            "End Sub"
+        ]);
+        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, text));
+
+        var requestId = 2;
+        async Task<string> HoverValueAsync(string needle, int offset = 0)
+        {
+            var hover = await SendPositionRequestAsync(stdin, stdout, requestId++, "textDocument/hover", uri, text, needle, offset);
+            return hover.GetProperty("result").GetProperty("contents").GetProperty("value").GetString() ?? "";
+        }
+
+        Assert.Contains("WithEvents App As Application", await HoverValueAsync("App As"));
+        Assert.Contains("Const MaxCount As Long", await HoverValueAsync("MaxCount"));
+        Assert.Contains("Const DefaultName", await HoverValueAsync("DefaultName"));
+        Assert.Contains("pName As String", await HoverValueAsync("pName"));
+        Assert.DoesNotContain("As Variant", await HoverValueAsync("implicitValue"), StringComparison.Ordinal);
+        Assert.Contains("Enum Status", await HoverValueAsync("Enum Status", "Enum ".Length));
+        Assert.Contains("StatusReady", await HoverValueAsync("StatusReady"));
+        Assert.Contains("Type CustomerRecord", await HoverValueAsync("CustomerRecord"));
+        Assert.Contains("Id As Long", await HoverValueAsync("Id As"));
+        Assert.Contains("Static localCount As Long", await HoverValueAsync("localCount"));
+        Assert.DoesNotContain("As Variant", await HoverValueAsync("implicitLocal"), StringComparison.Ordinal);
+
+        await SendRequestAsync(stdin, stdout, requestId, "shutdown", null);
+        await SendNotificationAsync(stdin, "exit", null);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await process.WaitForExitAsync(cancellation.Token);
+        Assert.Equal(0, process.ExitCode);
+    }
+
+    [Fact]
     public async Task Server_uses_active_reference_catalog_for_completion_hover_and_signature_help()
     {
         var projectRoot = Directory.CreateTempSubdirectory("vba-ls-catalog-").FullName;
