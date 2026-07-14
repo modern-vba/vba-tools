@@ -1118,6 +1118,61 @@ public sealed class LanguageServerProcessTests
     }
 
     [Fact]
+    public async Task Server_returns_hover_declaration_labels_for_source_parameters()
+    {
+        var serverProjectPath = Path.GetFullPath(
+            Path.Combine(
+                AppContext.BaseDirectory,
+                "..",
+                "..",
+                "..",
+                "..",
+                "..",
+                "src",
+                "VbaLanguageServer.Cli",
+                "VbaLanguageServer.Cli.csproj"));
+
+        using var process = StartLanguageServer(serverProjectPath);
+        await using var stdin = process.StandardInput.BaseStream;
+        using var stdout = process.StandardOutput.BaseStream;
+
+        await InitializeAsync(stdin, stdout);
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Option Explicit",
+            "Public Sub Run(ByRef ExplicitByRef As String, ImplicitByRef As Long, ByVal ExplicitByVal As String, UntypedValue)",
+            "End Sub"
+        ]);
+        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, text));
+
+        var requestId = 2;
+        async Task<string> HoverValueAsync(string needle)
+        {
+            var hover = await SendPositionRequestAsync(stdin, stdout, requestId++, "textDocument/hover", uri, text, needle);
+            return hover.GetProperty("result").GetProperty("contents").GetProperty("value").GetString() ?? "";
+        }
+
+        Assert.Contains(
+            "Sub Run(ExplicitByRef, ImplicitByRef, ExplicitByVal, UntypedValue)",
+            await HoverValueAsync("Run(ByRef"));
+        Assert.Contains("ByRef ExplicitByRef As String", await HoverValueAsync("ExplicitByRef"));
+        Assert.Contains("ByRef ImplicitByRef As Long", await HoverValueAsync("ImplicitByRef"));
+        var byValHover = await HoverValueAsync("ExplicitByVal");
+        Assert.Contains("ExplicitByVal As String", byValHover);
+        Assert.DoesNotContain("ByVal ExplicitByVal", byValHover, StringComparison.Ordinal);
+        var untypedHover = await HoverValueAsync("UntypedValue");
+        Assert.Contains("ByRef UntypedValue", untypedHover);
+        Assert.DoesNotContain("As Variant", untypedHover, StringComparison.Ordinal);
+
+        await SendRequestAsync(stdin, stdout, requestId, "shutdown", null);
+        await SendNotificationAsync(stdin, "exit", null);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await process.WaitForExitAsync(cancellation.Token);
+        Assert.Equal(0, process.ExitCode);
+    }
+
+    [Fact]
     public async Task Server_uses_active_reference_catalog_for_completion_hover_and_signature_help()
     {
         var projectRoot = Directory.CreateTempSubdirectory("vba-ls-catalog-").FullName;

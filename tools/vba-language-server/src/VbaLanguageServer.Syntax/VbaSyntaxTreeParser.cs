@@ -1310,6 +1310,7 @@ internal static class VbaSyntaxTreeParser
             parameter.Range,
             lineIndex,
             Documentation: parameter.Documentation,
+            DeclarationLabel: CreateParameterDeclarationLabel(parameter),
             ParentProcedureName: parentProcedureName,
             ParentProcedureRange: parentProcedureRange,
             TypeReference: parameter.TypeReference);
@@ -1503,7 +1504,8 @@ internal static class VbaSyntaxTreeParser
                     ? parameterDocumentation
                     : null,
                 ParseTypeReference(segment.Text),
-                IsOptionalParameter(segment.Text)));
+                IsOptionalParameter(segment.Text),
+                IsByRefParameter(segment.Text)));
         }
 
         return parameters;
@@ -1538,7 +1540,8 @@ internal static class VbaSyntaxTreeParser
                     ? parameterDocumentation
                     : null,
                 ParseTypeReference(segment.Text),
-                IsOptionalParameter(segment.Text)));
+                IsOptionalParameter(segment.Text),
+                IsByRefParameter(segment.Text)));
         }
 
         return parameters;
@@ -1630,6 +1633,12 @@ internal static class VbaSyntaxTreeParser
         return typeReference is null ? label : $"{label} As {typeReference.Name}";
     }
 
+    private static string CreateParameterDeclarationLabel(VbaCallableParameterSyntax parameter)
+    {
+        var label = parameter.IsByRef ? $"ByRef {parameter.Name}" : parameter.Name;
+        return parameter.TypeReference is null ? label : $"{label} As {parameter.TypeReference.Name}";
+    }
+
     private static string GetDeclarationKeyword(Match match)
     {
         if (match.Groups["propertyKind"].Success)
@@ -1644,6 +1653,12 @@ internal static class VbaSyntaxTreeParser
         => Regex.IsMatch(
             text,
             "^\\s*Optional\\b",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static bool IsByRefParameter(string text)
+        => !Regex.IsMatch(
+            text,
+            "\\bByVal\\b",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static IReadOnlyList<DeclarationSegment> SplitDeclarationSegments(string text)
