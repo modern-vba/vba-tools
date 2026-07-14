@@ -4,6 +4,7 @@
   "description": "Visual Studio Code tooling for VBA projects.",
   "version": "0.0.1",
   "publisher": "modern-vba",
+  "icon": "assets/icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/modern-vba/vba-tools.git"

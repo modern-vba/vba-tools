@@ -19,10 +19,13 @@ import {
   verifyVsixPackaging
 } from './vsixPackagingRules.mjs';
 
+const marketplaceIconPath = 'assets/icon.png';
+
 test('VSIX content rules require the bundled CLI artifact and exclude source tree files', () => {
   assert.doesNotThrow(() => assertVsixContents([
     'README.md',
     distributionManifestPath,
+    marketplaceIconPath,
     requiredBundledCliPath,
     requiredBundledLanguageServerPath,
     requiredVbaDevContractPath,
@@ -33,6 +36,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
     () => assertVsixContents([
       'README.md',
       distributionManifestPath,
+      marketplaceIconPath,
       'tools/vba-dev/src/VbaDev.Cli/Program.cs',
       requiredBundledCliPath,
       requiredBundledLanguageServerPath,
@@ -45,6 +49,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
     () => assertVsixContents([
       'README.md',
       distributionManifestPath,
+      marketplaceIconPath,
       'tools/vba-language-server/src/VbaLanguageServer.Cli/Program.cs',
       requiredBundledCliPath,
       requiredBundledLanguageServerPath,
@@ -57,6 +62,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
     () => assertVsixContents([
       'README.md',
       distributionManifestPath,
+      marketplaceIconPath,
       requiredBundledCliPath,
       'client/out/extension.js'
     ]),
@@ -67,6 +73,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
     () => assertVsixContents([
       'README.md',
       distributionManifestPath,
+      marketplaceIconPath,
       requiredBundledCliPath,
       requiredBundledLanguageServerPath,
       requiredVbaDevContractPath,
@@ -79,6 +86,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
     () => assertVsixContents([
       'README.md',
       distributionManifestPath,
+      marketplaceIconPath,
       requiredBundledCliPath,
       requiredBundledLanguageServerPath,
       requiredVbaDevContractPath,
@@ -91,6 +99,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
     () => assertVsixContents([
       'README.md',
       distributionManifestPath,
+      marketplaceIconPath,
       requiredBundledCliPath,
       requiredBundledLanguageServerPath,
       requiredVbaDevContractPath,
@@ -103,6 +112,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
     () => assertVsixContents([
       'README.md',
       distributionManifestPath,
+      marketplaceIconPath,
       requiredBundledCliPath,
       requiredBundledLanguageServerPath,
       requiredVbaDevContractPath,
@@ -253,7 +263,7 @@ test('packaging verification checks file contents publish settings and bundled C
       calls.push({ file: path.basename(file), args });
       if (args.includes('ls')) {
         return {
-          stdout: `${distributionManifestPath}\n${requiredBundledCliPath}\n${requiredBundledLanguageServerPath}\n${requiredVbaDevContractPath}\nREADME.md\n`,
+          stdout: `${distributionManifestPath}\n${marketplaceIconPath}\n${requiredBundledCliPath}\n${requiredBundledLanguageServerPath}\n${requiredVbaDevContractPath}\nREADME.md\n`,
           stderr: ''
         };
       }
