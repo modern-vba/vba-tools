@@ -31,9 +31,11 @@ build, test, publish, export, and validate Excel macro workbooks from a
 
 ---
 
-## Installation
+## Getting Started
 
-Launch VS Code Quick Open (`Ctrl+P`), paste this command, and press Enter:
+### 1 - Install the extension
+
+Launch VS Code Quick Open (`Ctrl+P`), paste this command, and press `Enter`:
 
 ```text
 ext install modern-vba.vba-tools
@@ -43,42 +45,10 @@ If you previously installed `tkmr-akhs.vba-tools`, uninstall it before using
 `modern-vba.vba-tools`. VS Code treats the new publisher ID as a separate
 extension, so both extensions can otherwise remain installed side by side.
 
-### 1 - Open exported VBA source
+### 2 - Prepare Excel
 
-Open a folder that contains `.bas`, `.cls`, or `.frm` files. Language features
-activate when a VBA file is opened.
-
-### 2 - Prepare Excel for workbook-backed commands
-
-Workbook automation requires desktop Excel and trusted access to the VBA project
-object model:
-
-```text
-Excel -> File -> Options -> Trust Center -> Trust Center Settings -> Macro Settings
-```
-
-Enable `Trust access to the VBA project object model`.
-
-### 3 - Open a workbook-backed project
-
-For build, test, publish, export, CommonModules, and reference commands, open a
-workspace containing a `project.json` manifest. The manifest defines the source
-folder, template workbook, generated workbook, publish workbook, references, and
-CommonModules entries for each document.
-
-### 4 - Run Doctor
-
-Run `VBA Tools: Doctor` from the Command Palette. Doctor checks project paths,
-manifest state, CommonModules state, reference declarations, and machine
-prerequisites. Results are written to the VBA Tools output channel and surfaced
-as VS Code diagnostics where applicable.
-
----
-
-## Create a Workbook-Backed Project
-
-Before creating or running workbook-backed projects, enable Excel's trusted
-VBIDE access:
+Workbook-backed commands require desktop Excel and trusted access to the VBA
+project object model:
 
 1. Open Microsoft Excel.
 2. Go to **File** > **Options**.
@@ -87,7 +57,10 @@ VBIDE access:
 5. Select **Macro Settings**.
 6. Check **Trust access to the VBA project object model**.
 
-To create a project with the standard CommonModules and unit-test foundation:
+### 3 - Create a workbook-backed project
+
+To create a new project with the standard CommonModules and unit-test
+foundation:
 
 1. Download `common_modules_repo.zip` from the
    [xls-common-modules releases](https://github.com/modern-vba/xls-common-modules/releases/).
@@ -113,6 +86,45 @@ To create a project with the standard CommonModules and unit-test foundation:
    ```
 
 6. Run `vba-dev doctor` to check the generated project setup.
+
+### 4 - Migrate an existing workbook
+
+To start from an existing `.xlsm`, first create the workbook-backed project
+folder, replace the generated source template workbook with the existing
+workbook, then export that workbook's VBA modules into the generated document
+source set:
+
+```text
+vba-dev new excel -n example_book
+Copy-Item C:\path\to\existing.xlsm .\example_book\src\example_book\example_book.xlsm -Force
+vba-dev export --from .\example_book\src\example_book\example_book.xlsm --to .\example_book\src\example_book
+```
+
+The copied workbook becomes the source template used by `vba-dev build` and
+`vba-dev publish`, so it should contain the sheets, workbook settings, and other
+non-VBA workbook content you want to preserve. The `--to` path should be the
+document source folder defined by `project.json`. Close the source workbook
+before copying or exporting. After export, review the generated source files,
+add any required external references with `vba-dev reference add`, and run
+`vba-dev doctor`.
+
+### 5 - Open a project or VBA source folder
+
+For language features only, open a folder containing `.bas`, `.cls`, or `.frm`
+files and then open a VBA file.
+
+For build, test, publish, export, CommonModules, reference commands, and Test
+Explorer integration, open a workspace containing a `project.json` manifest. The
+manifest defines the source folder, template workbook, generated workbook,
+publish workbook, references, and CommonModules entries for each document.
+
+### 6 - Run Doctor
+
+Run `VBA Tools: Doctor` from the Command Palette, or run `vba-dev doctor` from
+the `vba-dev` terminal. Doctor checks project paths, manifest state,
+CommonModules state, reference declarations, and machine prerequisites. Results
+are written to the VBA Tools output channel and surfaced as VS Code diagnostics
+where applicable.
 
 ---
 
