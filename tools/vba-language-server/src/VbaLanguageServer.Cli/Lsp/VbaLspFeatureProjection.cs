@@ -8,46 +8,46 @@ namespace VbaLanguageServer.Lsp;
 /// </summary>
 internal static class VbaLspFeatureProjection
 {
-    public static object CreateInitializeResult()
+    public static object CreateInitializeResult(VbaLspCapabilityContract contract)
     {
         return new
         {
             capabilities = new
             {
-                textDocumentSync = 1,
-                definitionProvider = true,
-                referencesProvider = true,
-                documentSymbolProvider = true,
-                workspaceSymbolProvider = true,
-                hoverProvider = true,
-                documentFormattingProvider = true,
+                textDocumentSync = contract.TextDocumentSync,
+                definitionProvider = contract.DefinitionProvider,
+                referencesProvider = contract.ReferencesProvider,
+                documentSymbolProvider = contract.DocumentSymbolProvider,
+                workspaceSymbolProvider = contract.WorkspaceSymbolProvider,
+                hoverProvider = contract.HoverProvider,
+                documentFormattingProvider = contract.DocumentFormattingProvider,
                 renameProvider = new
                 {
-                    prepareProvider = true
+                    prepareProvider = contract.RenamePrepareProvider
                 },
                 signatureHelpProvider = new
                 {
-                    triggerCharacters = new[] { "(", ",", " " }
+                    triggerCharacters = contract.SignatureHelpTriggerCharacters
                 },
                 completionProvider = new
                 {
-                    triggerCharacters = new[] { ".", " " }
+                    triggerCharacters = contract.CompletionTriggerCharacters
                 },
                 semanticTokensProvider = new
                 {
                     legend = new
                     {
-                        tokenTypes = VbaSourceIndex.SemanticTokenTypes,
-                        tokenModifiers = VbaSourceIndex.SemanticTokenModifiers
+                        tokenTypes = contract.SemanticTokenTypes,
+                        tokenModifiers = contract.SemanticTokenModifiers
                     },
-                    full = true,
-                    range = false
+                    full = contract.SemanticTokensFull,
+                    range = contract.SemanticTokensRange
                 }
             },
             serverInfo = new
             {
-                name = "vba-language-server",
-                version = "0.1.0"
+                name = contract.ServerName,
+                version = contract.ServerVersion
             }
         };
     }

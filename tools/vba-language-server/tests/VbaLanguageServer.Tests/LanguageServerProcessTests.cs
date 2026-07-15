@@ -2763,6 +2763,104 @@ public sealed class LanguageServerProcessTests
         }
     }
 
+    [Fact]
+    public async Task Server_returns_strict_json_rpc_errors_and_continues_processing_requests()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-request-errors-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(projectRoot, "Module1.bas");
+            var manifestPath = Path.Combine(projectRoot, "vba-project.json");
+            var sourceText = "Public Sub Recover()\nEnd Sub\n";
+            File.WriteAllText(sourcePath, sourceText);
+            File.WriteAllText(manifestPath, "{");
+            var sourceUri = new Uri(sourcePath).AbsoluteUri;
+            var serverProjectPath = Path.GetFullPath(
+                Path.Combine(
+                    AppContext.BaseDirectory,
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "src",
+                    "VbaLanguageServer.Cli",
+                    "VbaLanguageServer.Cli.csproj"));
+
+            using var process = StartLanguageServer(serverProjectPath);
+            await using var stdin = process.StandardInput.BaseStream;
+            using var stdout = process.StandardOutput.BaseStream;
+            await InitializeAsync(stdin, stdout);
+
+            await WriteMessageAsync(
+                stdin,
+                new
+                {
+                    jsonrpc = "2.0",
+                    id = new { invalid = true },
+                    method = "shutdown",
+                    @params = (object?)null
+                });
+            using (var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
+            {
+                var invalidRequest = await ReadMessageAsync(stdout, cancellation.Token);
+                Assert.Equal(JsonValueKind.Null, invalidRequest.GetProperty("id").ValueKind);
+                AssertJsonRpcError(invalidRequest, -32600, "Invalid Request");
+            }
+
+            var methodNotFound = await SendRequestAsync(stdin, stdout, 2, "unknown/method", new { });
+            Assert.Equal(2, methodNotFound.GetProperty("id").GetInt32());
+            AssertJsonRpcError(methodNotFound, -32601, "Method not found");
+
+            var invalidParams = await SendRequestAsync(
+                stdin,
+                stdout,
+                3,
+                "textDocument/completion",
+                new
+                {
+                    textDocument = new { uri = sourceUri },
+                    position = new { line = -1, character = 0 }
+                });
+            AssertJsonRpcError(invalidParams, -32602, "Invalid params");
+
+            var internalError = await SendRequestAsync(
+                stdin,
+                stdout,
+                4,
+                "textDocument/documentSymbol",
+                new
+                {
+                    textDocument = new { uri = sourceUri }
+                });
+            AssertJsonRpcError(internalError, -32603, "Internal error");
+
+            File.Delete(manifestPath);
+            var recovered = await SendRequestAsync(
+                stdin,
+                stdout,
+                5,
+                "textDocument/documentSymbol",
+                new
+                {
+                    textDocument = new { uri = sourceUri }
+                });
+            Assert.Contains(
+                recovered.GetProperty("result").EnumerateArray(),
+                symbol => symbol.GetProperty("name").GetString() == "Recover");
+
+            await SendRequestAsync(stdin, stdout, 6, "shutdown", null);
+            await SendNotificationAsync(stdin, "exit", null);
+            using var exitCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await process.WaitForExitAsync(exitCancellation.Token);
+            Assert.Equal(0, process.ExitCode);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
     private static Process StartLanguageServer(
         string serverProjectPath,
         string? referenceCatalogCacheRoot = null,
@@ -2863,6 +2961,15 @@ public sealed class LanguageServerProcessTests
                 return message;
             }
         }
+    }
+
+    private static void AssertJsonRpcError(JsonElement response, int code, string message)
+    {
+        Assert.Equal("2.0", response.GetProperty("jsonrpc").GetString());
+        var error = response.GetProperty("error");
+        Assert.Equal(code, error.GetProperty("code").GetInt32());
+        Assert.Equal(message, error.GetProperty("message").GetString());
+        Assert.False(response.TryGetProperty("result", out _));
     }
 
     private static Task SendNotificationAsync(Stream stdin, string method, object? parameters)

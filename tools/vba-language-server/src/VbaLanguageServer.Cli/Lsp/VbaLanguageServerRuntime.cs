@@ -10,23 +10,22 @@ namespace VbaLanguageServer.Lsp;
 internal sealed class VbaLanguageServerRuntime
 {
     private readonly LspMessageTransport transport;
-    private readonly VbaLanguageFeatureService features;
+    private readonly VbaLspRequestExecution requestExecution;
     private readonly VbaDocumentLifecycle documentLifecycle;
-    private bool shutdownRequested;
 
     /// <summary>
-    /// Creates a language-server runtime from transport, feature, and lifecycle components.
+    /// Creates a language-server runtime from transport, request, and lifecycle components.
     /// </summary>
     /// <param name="transport">The LSP transport used for JSON-RPC messages.</param>
-    /// <param name="features">The feature service used for request handling.</param>
+    /// <param name="requestExecution">The boundary used for request handling.</param>
     /// <param name="documentLifecycle">The document lifecycle handler used for notifications.</param>
     public VbaLanguageServerRuntime(
         LspMessageTransport transport,
-        VbaLanguageFeatureService features,
+        VbaLspRequestExecution requestExecution,
         VbaDocumentLifecycle documentLifecycle)
     {
         this.transport = transport;
-        this.features = features;
+        this.requestExecution = requestExecution;
         this.documentLifecycle = documentLifecycle;
     }
 
@@ -48,13 +47,13 @@ internal sealed class VbaLanguageServerRuntime
             catalogDiscovery,
             VbaProjectReferenceCatalogPersistentStore.CreateDefault());
         var workspace = new VbaLanguageWorkspace(referenceCatalogCache);
-        var features = new VbaLanguageFeatureService(workspace);
+        var requestExecution = new VbaLspRequestExecution(transport, workspace);
         var catalogRefresh = new ReferenceCatalogRefreshCoordinator(
             referenceCatalogCache,
             catalogRefreshService,
             transport);
         var documentLifecycle = new VbaDocumentLifecycle(transport, workspace, catalogRefresh);
-        return new VbaLanguageServerRuntime(transport, features, documentLifecycle);
+        return new VbaLanguageServerRuntime(transport, requestExecution, documentLifecycle);
     }
 
     /// <summary>
@@ -72,123 +71,47 @@ internal sealed class VbaLanguageServerRuntime
                 return;
             }
 
-            if (!message.TryGetPropertyValue("method", out var methodNode))
+            if (!TryGetNotification(message, out var method, out var parameters))
             {
-                continue;
-            }
-
-            var method = methodNode?.GetValue<string>();
-            var hasId = message.TryGetPropertyValue("id", out var idNode);
-
-            if (hasId)
-            {
-                await HandleRequestAsync(idNode, method, message["params"], cancellationToken);
+                await requestExecution.ExecuteAsync(message, cancellationToken);
                 continue;
             }
 
             if (method == "exit")
             {
-                Environment.ExitCode = shutdownRequested ? 0 : 1;
+                Environment.ExitCode = requestExecution.ShutdownRequested ? 0 : 1;
                 return;
             }
 
-            await HandleNotificationAsync(method, message["params"], cancellationToken);
+            await HandleNotificationAsync(method, parameters, cancellationToken);
         }
     }
 
-    private async Task HandleRequestAsync(
-        JsonNode? idNode,
-        string? method,
-        JsonNode? parameters,
-        CancellationToken cancellationToken)
+    private static bool TryGetNotification(
+        JsonObject message,
+        out string method,
+        out JsonNode? parameters)
     {
-        switch (method)
+        method = "";
+        parameters = null;
+        if (message.ContainsKey("id")
+            || message["jsonrpc"] is not JsonValue jsonRpcNode
+            || !jsonRpcNode.TryGetValue<string>(out var jsonRpc)
+            || !jsonRpc.Equals("2.0", StringComparison.Ordinal)
+            || message["method"] is not JsonValue methodNode
+            || !methodNode.TryGetValue(out method!)
+            || message.TryGetPropertyValue("params", out var parameterNode)
+            && parameterNode is not null and not JsonObject and not JsonArray)
         {
-            case "initialize":
-                await transport.WriteResponseAsync(
-                    idNode,
-                    VbaLanguageFeatureService.CreateInitializeResult(),
-                    cancellationToken);
-                return;
-            case "shutdown":
-                shutdownRequested = true;
-                await transport.WriteResponseAsync(idNode, null, cancellationToken);
-                return;
-            case "textDocument/completion":
-                await transport.WriteResponseAsync(
-                    idNode,
-                    features.CreateCompletionItems(parameters, cancellationToken),
-                    cancellationToken);
-                return;
-            case "textDocument/documentSymbol":
-                await transport.WriteResponseAsync(
-                    idNode,
-                    features.CreateDocumentSymbols(parameters, cancellationToken),
-                    cancellationToken);
-                return;
-            case "textDocument/definition":
-                await transport.WriteResponseAsync(
-                    idNode,
-                    features.CreateDefinitionLocation(parameters, cancellationToken),
-                    cancellationToken);
-                return;
-            case "textDocument/references":
-                await transport.WriteResponseAsync(
-                    idNode,
-                    features.CreateReferenceLocations(parameters, cancellationToken),
-                    cancellationToken);
-                return;
-            case "workspace/symbol":
-                await transport.WriteResponseAsync(
-                    idNode,
-                    features.CreateWorkspaceSymbols(parameters, cancellationToken),
-                    cancellationToken);
-                return;
-            case "textDocument/hover":
-                await transport.WriteResponseAsync(idNode, features.CreateHover(parameters, cancellationToken), cancellationToken);
-                return;
-            case "textDocument/signatureHelp":
-                await transport.WriteResponseAsync(
-                    idNode,
-                    features.CreateSignatureHelp(parameters, cancellationToken),
-                    cancellationToken);
-                return;
-            case "textDocument/prepareRename":
-                await transport.WriteResponseAsync(
-                    idNode,
-                    features.CreatePrepareRename(parameters, cancellationToken),
-                    cancellationToken);
-                return;
-            case "textDocument/rename":
-                await transport.WriteResponseAsync(
-                    idNode,
-                    features.CreateRenameEdit(parameters, cancellationToken),
-                    cancellationToken);
-                return;
-            case "textDocument/formatting":
-                await transport.WriteResponseAsync(
-                    idNode,
-                    features.CreateFormattingEdits(parameters, cancellationToken),
-                    cancellationToken);
-                return;
-            case "textDocument/semanticTokens/full":
-                await transport.WriteResponseAsync(
-                    idNode,
-                    features.CreateSemanticTokens(parameters, cancellationToken),
-                    cancellationToken);
-                return;
-            default:
-                await transport.WriteErrorResponseAsync(
-                    idNode,
-                    -32601,
-                    $"Method not found: {method}",
-                    cancellationToken);
-                return;
+            return false;
         }
+
+        parameters = message["params"];
+        return true;
     }
 
     private async Task HandleNotificationAsync(
-        string? method,
+        string method,
         JsonNode? parameters,
         CancellationToken cancellationToken)
     {

@@ -1,3 +1,4 @@
+using VbaLanguageServer.Diagnostics;
 using VbaLanguageServer.Syntax;
 using VbaLanguageServer.Workspace;
 
@@ -59,7 +60,8 @@ internal sealed class VbaDiagnosticsPublisher
             new
             {
                 uri,
-                diagnostics = VbaLanguageFeatureService.CreateDiagnostics(uri, syntaxTree)
+                diagnostics = VbaLspFeatureProjection.CreateDiagnostics(
+                    VbaDocumentDiagnostics.Collect(syntaxTree, uri))
             },
             cancellationToken);
 }
