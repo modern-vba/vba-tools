@@ -2954,6 +2954,499 @@ public sealed class LanguageServerProcessTests
     }
 
     [Fact]
+    public async Task Server_uses_unsaved_manifest_overlay_ignores_stale_versions_and_restores_disk_on_close()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-manifest-overlay-").FullName;
+        try
+        {
+            var manifestPath = Path.Combine(projectRoot, "vba-project.json");
+            var callerPath = Path.Combine(projectRoot, "src", "live", "caller", "Caller.bas");
+            var helperPath = Path.Combine(projectRoot, "src", "live", "lib", "Helper.bas");
+            Directory.CreateDirectory(Path.GetDirectoryName(callerPath)!);
+            Directory.CreateDirectory(Path.GetDirectoryName(helperPath)!);
+            var callerText = "Public Sub Run()\n    BuildValue\nEnd Sub\n";
+            var helperText = "Public Function BuildValue() As String\nEnd Function\n";
+            File.WriteAllText(callerPath, callerText);
+            File.WriteAllText(helperPath, helperText);
+            var diskManifestText = CreateSingleDocumentManifestText("src/disk");
+            var overlayManifestText = CreateSingleDocumentManifestText("src/live");
+            File.WriteAllText(manifestPath, diskManifestText);
+            var callerUri = ToFileUri(callerPath);
+            var helperUri = ToFileUri(helperPath);
+            var manifestUri = ToFileUri(manifestPath);
+            var serverProjectPath = Path.GetFullPath(
+                Path.Combine(
+                    AppContext.BaseDirectory,
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "src",
+                    "VbaLanguageServer.Cli",
+                    "VbaLanguageServer.Cli.csproj"));
+
+            using var process = StartLanguageServer(serverProjectPath);
+            await using var stdin = process.StandardInput.BaseStream;
+            using var stdout = process.StandardOutput.BaseStream;
+            await InitializeAsync(stdin, stdout);
+            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(callerUri, callerText));
+
+            var beforeOverlay = await SendDefinitionRequestAsync(
+                stdin,
+                stdout,
+                2,
+                callerUri,
+                callerText,
+                "BuildValue");
+            Assert.Equal(JsonValueKind.Null, beforeOverlay.ValueKind);
+
+            await SendNotificationAsync(
+                stdin,
+                "textDocument/didOpen",
+                CreateOpenDocument(manifestUri, overlayManifestText, version: 5));
+            var overlayTrace = await ReadLogMessageAsync(
+                stdout,
+                "VbaProjectReferenceSelection document=Book1");
+            Assert.Contains(
+                "Microsoft Excel 16.0 Object Library",
+                overlayTrace.GetProperty("params").GetProperty("message").GetString(),
+                StringComparison.Ordinal);
+            var overlayDefinition = await RequestDefinitionAsync(
+                stdin,
+                stdout,
+                3,
+                callerUri,
+                callerText,
+                "BuildValue");
+            Assert.Equal(helperUri, overlayDefinition.GetProperty("uri").GetString());
+
+            await SendNotificationAsync(
+                stdin,
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new
+                    {
+                        uri = manifestUri,
+                        version = 4
+                    },
+                    contentChanges = new[]
+                    {
+                        new { text = diskManifestText }
+                    }
+                });
+            var afterStaleManifestChange = await RequestDefinitionAsync(
+                stdin,
+                stdout,
+                4,
+                callerUri,
+                callerText,
+                "BuildValue");
+            Assert.Equal(helperUri, afterStaleManifestChange.GetProperty("uri").GetString());
+
+            await SendNotificationAsync(
+                stdin,
+                "textDocument/didClose",
+                new
+                {
+                    textDocument = new { uri = manifestUri }
+                });
+            var afterManifestClose = await SendDefinitionRequestAsync(
+                stdin,
+                stdout,
+                5,
+                callerUri,
+                callerText,
+                "BuildValue");
+            Assert.Equal(JsonValueKind.Null, afterManifestClose.ValueKind);
+
+            await SendRequestAsync(stdin, stdout, 6, "shutdown", null);
+            await SendNotificationAsync(stdin, "exit", null);
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await process.WaitForExitAsync(cancellation.Token);
+            Assert.Equal(0, process.ExitCode);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_applies_manifest_watcher_events_without_overwriting_open_overlay()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-manifest-watcher-").FullName;
+        try
+        {
+            var manifestPath = Path.Combine(projectRoot, "vba-project.json");
+            var callerPath = Path.Combine(projectRoot, "src", "live", "caller", "Caller.bas");
+            var helperPath = Path.Combine(projectRoot, "src", "live", "lib", "Helper.bas");
+            Directory.CreateDirectory(Path.GetDirectoryName(callerPath)!);
+            Directory.CreateDirectory(Path.GetDirectoryName(helperPath)!);
+            var callerText = "Public Sub Run()\n    BuildValue\nEnd Sub\n";
+            File.WriteAllText(callerPath, callerText);
+            File.WriteAllText(helperPath, "Public Function BuildValue() As String\nEnd Function\n");
+            var liveManifestText = CreateSingleDocumentManifestText("src/live");
+            var otherManifestText = CreateSingleDocumentManifestText("src/other");
+            var callerUri = ToFileUri(callerPath);
+            var helperUri = ToFileUri(helperPath);
+            var manifestUri = ToFileUri(manifestPath);
+            var serverProjectPath = Path.GetFullPath(
+                Path.Combine(
+                    AppContext.BaseDirectory,
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "src",
+                    "VbaLanguageServer.Cli",
+                    "VbaLanguageServer.Cli.csproj"));
+
+            using var process = StartLanguageServer(serverProjectPath);
+            await using var stdin = process.StandardInput.BaseStream;
+            using var stdout = process.StandardOutput.BaseStream;
+            await InitializeAsync(stdin, stdout);
+
+            var withoutManifest = await SendDefinitionRequestAsync(
+                stdin,
+                stdout,
+                2,
+                callerUri,
+                callerText,
+                "BuildValue");
+            Assert.Equal(JsonValueKind.Null, withoutManifest.ValueKind);
+
+            File.WriteAllText(manifestPath, liveManifestText);
+            await SendWatchedFileChangeAsync(stdin, manifestUri, type: 1);
+            var afterCreate = await RequestDefinitionAsync(
+                stdin,
+                stdout,
+                3,
+                callerUri,
+                callerText,
+                "BuildValue");
+            Assert.Equal(helperUri, afterCreate.GetProperty("uri").GetString());
+
+            File.WriteAllText(manifestPath, otherManifestText);
+            await SendWatchedFileChangeAsync(stdin, manifestUri, type: 2);
+            var afterChange = await SendDefinitionRequestAsync(
+                stdin,
+                stdout,
+                4,
+                callerUri,
+                callerText,
+                "BuildValue");
+            Assert.Equal(JsonValueKind.Null, afterChange.ValueKind);
+
+            File.WriteAllText(manifestPath, liveManifestText);
+            await SendWatchedFileChangeAsync(stdin, manifestUri, type: 2);
+            var afterLiveChange = await RequestDefinitionAsync(
+                stdin,
+                stdout,
+                5,
+                callerUri,
+                callerText,
+                "BuildValue");
+            Assert.Equal(helperUri, afterLiveChange.GetProperty("uri").GetString());
+
+            File.Delete(manifestPath);
+            await SendWatchedFileChangeAsync(stdin, manifestUri, type: 3);
+            var afterDelete = await SendDefinitionRequestAsync(
+                stdin,
+                stdout,
+                6,
+                callerUri,
+                callerText,
+                "BuildValue");
+            Assert.Equal(JsonValueKind.Null, afterDelete.ValueKind);
+
+            File.WriteAllText(manifestPath, otherManifestText);
+            await SendWatchedFileChangeAsync(stdin, manifestUri, type: 1);
+            await SendNotificationAsync(
+                stdin,
+                "textDocument/didOpen",
+                CreateOpenDocument(manifestUri, liveManifestText, version: 5));
+            var withOpenOverlay = await RequestDefinitionAsync(
+                stdin,
+                stdout,
+                7,
+                callerUri,
+                callerText,
+                "BuildValue");
+            Assert.Equal(helperUri, withOpenOverlay.GetProperty("uri").GetString());
+
+            File.WriteAllText(manifestPath, otherManifestText);
+            await SendWatchedFileChangeAsync(stdin, manifestUri, type: 2);
+            var afterWatcherUnderOverlay = await RequestDefinitionAsync(
+                stdin,
+                stdout,
+                8,
+                callerUri,
+                callerText,
+                "BuildValue");
+            Assert.Equal(helperUri, afterWatcherUnderOverlay.GetProperty("uri").GetString());
+
+            await SendNotificationAsync(
+                stdin,
+                "textDocument/didClose",
+                new
+                {
+                    textDocument = new { uri = manifestUri }
+                });
+            var afterOverlayClose = await SendDefinitionRequestAsync(
+                stdin,
+                stdout,
+                9,
+                callerUri,
+                callerText,
+                "BuildValue");
+            Assert.Equal(JsonValueKind.Null, afterOverlayClose.ValueKind);
+
+            await SendNotificationAsync(
+                stdin,
+                "textDocument/didOpen",
+                CreateOpenDocument(manifestUri, liveManifestText, version: 6));
+            File.Delete(manifestPath);
+            await SendWatchedFileChangeAsync(stdin, manifestUri, type: 3);
+            var afterDeleteUnderOverlay = await RequestDefinitionAsync(
+                stdin,
+                stdout,
+                10,
+                callerUri,
+                callerText,
+                "BuildValue");
+            Assert.Equal(helperUri, afterDeleteUnderOverlay.GetProperty("uri").GetString());
+
+            await SendNotificationAsync(
+                stdin,
+                "textDocument/didClose",
+                new
+                {
+                    textDocument = new { uri = manifestUri }
+                });
+            var afterDeletedOverlayClose = await SendDefinitionRequestAsync(
+                stdin,
+                stdout,
+                11,
+                callerUri,
+                callerText,
+                "BuildValue");
+            Assert.Equal(JsonValueKind.Null, afterDeletedOverlayClose.ValueKind);
+
+            await SendRequestAsync(stdin, stdout, 12, "shutdown", null);
+            await SendNotificationAsync(stdin, "exit", null);
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await process.WaitForExitAsync(cancellation.Token);
+            Assert.Equal(0, process.ExitCode);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_retains_last_valid_manifest_and_continues_after_invalid_overlay_changes()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-invalid-manifest-overlay-").FullName;
+        try
+        {
+            var manifestPath = Path.Combine(projectRoot, "vba-project.json");
+            var callerPath = Path.Combine(projectRoot, "src", "live", "caller", "Caller.bas");
+            var helperPath = Path.Combine(projectRoot, "src", "live", "lib", "Helper.bas");
+            Directory.CreateDirectory(Path.GetDirectoryName(callerPath)!);
+            Directory.CreateDirectory(Path.GetDirectoryName(helperPath)!);
+            var callerText = "Public Sub Run()\n    BuildValue\nEnd Sub\n";
+            File.WriteAllText(callerPath, callerText);
+            File.WriteAllText(helperPath, "Public Function BuildValue() As String\nEnd Function\n");
+            var liveManifestText = CreateSingleDocumentManifestText("src/live");
+            var otherManifestText = CreateSingleDocumentManifestText("src/other");
+            var invalidSourcePathManifestText = CreateSingleDocumentManifestText("\0");
+            File.WriteAllText(manifestPath, liveManifestText);
+            var callerUri = ToFileUri(callerPath);
+            var helperUri = ToFileUri(helperPath);
+            var manifestUri = ToFileUri(manifestPath);
+            var serverProjectPath = Path.GetFullPath(
+                Path.Combine(
+                    AppContext.BaseDirectory,
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "src",
+                    "VbaLanguageServer.Cli",
+                    "VbaLanguageServer.Cli.csproj"));
+
+            using var process = StartLanguageServer(serverProjectPath);
+            await using var stdin = process.StandardInput.BaseStream;
+            using var stdout = process.StandardOutput.BaseStream;
+            await InitializeAsync(stdin, stdout);
+            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(callerUri, callerText));
+
+            await SendNotificationAsync(
+                stdin,
+                "textDocument/didOpen",
+                CreateOpenDocument(manifestUri, "{", version: 1));
+            var invalidManifestDiagnostics = await ReadDiagnosticsAsync(stdout, manifestUri);
+            var invalidManifestDiagnostic = Assert.Single(
+                invalidManifestDiagnostics.GetProperty("params").GetProperty("diagnostics").EnumerateArray());
+            Assert.Equal(
+                "invalid-project-manifest",
+                invalidManifestDiagnostic.GetProperty("code").GetString());
+            var initialInvalidFallback = await RequestDefinitionAsync(
+                stdin,
+                stdout,
+                2,
+                callerUri,
+                callerText,
+                "BuildValue");
+            Assert.Equal(helperUri, initialInvalidFallback.GetProperty("uri").GetString());
+
+            File.WriteAllText(manifestPath, otherManifestText);
+            await SendNotificationAsync(
+                stdin,
+                "textDocument/didClose",
+                new
+                {
+                    textDocument = new { uri = manifestUri }
+                });
+            var diskFallbackAfterClose = await SendDefinitionRequestAsync(
+                stdin,
+                stdout,
+                3,
+                callerUri,
+                callerText,
+                "BuildValue");
+            Assert.Equal(JsonValueKind.Null, diskFallbackAfterClose.ValueKind);
+
+            await SendNotificationAsync(
+                stdin,
+                "textDocument/didOpen",
+                CreateOpenDocument(manifestUri, liveManifestText, version: 10));
+            var validManifestDiagnostics = await ReadDiagnosticsAsync(stdout, manifestUri);
+            Assert.Empty(
+                validManifestDiagnostics.GetProperty("params").GetProperty("diagnostics").EnumerateArray());
+            var validOverlayDefinition = await RequestDefinitionAsync(
+                stdin,
+                stdout,
+                4,
+                callerUri,
+                callerText,
+                "BuildValue");
+            Assert.Equal(helperUri, validOverlayDefinition.GetProperty("uri").GetString());
+
+            await SendNotificationAsync(
+                stdin,
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new
+                    {
+                        uri = manifestUri,
+                        version = 11
+                    },
+                    contentChanges = new[]
+                    {
+                        new { text = "{" }
+                    }
+                });
+            var afterInvalidJson = await RequestDefinitionAsync(
+                stdin,
+                stdout,
+                5,
+                callerUri,
+                callerText,
+                "BuildValue");
+            Assert.Equal(helperUri, afterInvalidJson.GetProperty("uri").GetString());
+
+            await SendNotificationAsync(
+                stdin,
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new
+                    {
+                        uri = manifestUri,
+                        version = 12
+                    },
+                    contentChanges = new[]
+                    {
+                        new { text = otherManifestText }
+                    }
+                });
+            var afterNewerValidManifest = await SendDefinitionRequestAsync(
+                stdin,
+                stdout,
+                6,
+                callerUri,
+                callerText,
+                "BuildValue");
+            Assert.Equal(JsonValueKind.Null, afterNewerValidManifest.ValueKind);
+
+            await SendNotificationAsync(
+                stdin,
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new
+                    {
+                        uri = manifestUri,
+                        version = 13
+                    },
+                    contentChanges = new[]
+                    {
+                        new { text = invalidSourcePathManifestText }
+                    }
+                });
+            var afterInvalidSourcePath = await SendDefinitionRequestAsync(
+                stdin,
+                stdout,
+                7,
+                callerUri,
+                callerText,
+                "BuildValue");
+            Assert.Equal(JsonValueKind.Null, afterInvalidSourcePath.ValueKind);
+
+            await SendNotificationAsync(
+                stdin,
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new
+                    {
+                        uri = manifestUri,
+                        version = 14
+                    },
+                    contentChanges = new[]
+                    {
+                        new { text = liveManifestText }
+                    }
+                });
+            var recoveredAfterInvalidSourcePath = await RequestDefinitionAsync(
+                stdin,
+                stdout,
+                8,
+                callerUri,
+                callerText,
+                "BuildValue");
+            Assert.Equal(helperUri, recoveredAfterInvalidSourcePath.GetProperty("uri").GetString());
+
+            await SendRequestAsync(stdin, stdout, 9, "shutdown", null);
+            await SendNotificationAsync(stdin, "exit", null);
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await process.WaitForExitAsync(cancellation.Token);
+            Assert.Equal(0, process.ExitCode);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Server_returns_strict_json_rpc_errors_and_continues_processing_requests()
     {
         var projectRoot = Directory.CreateTempSubdirectory("vba-ls-request-errors-").FullName;
@@ -3173,6 +3666,18 @@ public sealed class LanguageServerProcessTests
         });
     }
 
+    private static Task SendWatchedFileChangeAsync(Stream stdin, string uri, int type)
+        => SendNotificationAsync(
+            stdin,
+            "workspace/didChangeWatchedFiles",
+            new
+            {
+                changes = new[]
+                {
+                    new { uri, type }
+                }
+            });
+
     private static object CreateOpenDocument(string uri, string text, int version = 1)
     {
         return new
@@ -3342,6 +3847,37 @@ public sealed class LanguageServerProcessTests
             "fixtures",
             "project-manifest",
             fixtureName)));
+
+    private static string CreateSingleDocumentManifestText(string sourcePath)
+    {
+        var manifest = new
+        {
+            schemaVersion = 1,
+            projectName = "ManifestOverlayProject",
+            primaryDocument = "Book1",
+            documents = new Dictionary<string, object>
+            {
+                ["Book1"] = new
+                {
+                    kind = "excel",
+                    sourcePath,
+                    templatePath = "src/Book1/Book1.xlsm",
+                    binPath = "bin/Book1/Book1.xlsm",
+                    publishPath = "publish/Book1/Book1.xlsm",
+                    references = new[]
+                    {
+                        new { name = "Microsoft Excel 16.0 Object Library" }
+                    }
+                }
+            }
+        };
+        return JsonSerializer.Serialize(
+            manifest,
+            new JsonSerializerOptions
+            {
+                WriteIndented = true
+            });
+    }
 
     private static bool HasRegisteredTypeLib(string referenceName)
         => new RegistryTypeLibRegistryReader()
@@ -3525,6 +4061,21 @@ public sealed class LanguageServerProcessTests
             var message = await ReadMessageAsync(stdout, cancellation.Token);
             if (message.TryGetProperty("method", out var methodElement)
                 && methodElement.GetString() == method)
+            {
+                return message;
+            }
+        }
+    }
+
+    private static async Task<JsonElement> ReadDiagnosticsAsync(Stream stdout, string uri)
+    {
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        while (true)
+        {
+            var message = await ReadMessageAsync(stdout, cancellation.Token);
+            if (message.TryGetProperty("method", out var methodElement)
+                && methodElement.GetString() == "textDocument/publishDiagnostics"
+                && message.GetProperty("params").GetProperty("uri").GetString() == uri)
             {
                 return message;
             }

@@ -82,6 +82,15 @@ test('extension does not contribute obsolete HostApplication settings', () => {
   assert.equal(Object.hasOwn(properties, 'vbaLanguageServer.additionalHostApplications'), false);
 });
 
+test('extension activates for workspaces containing a VBA project manifest', () => {
+  const packageJson = readPackageJson<{
+    activationEvents?: string[];
+  }>();
+
+  assert.ok(packageJson.activationEvents?.includes('workspaceContains:**/vba-project.json'));
+  assert.equal(packageJson.activationEvents?.includes('onLanguage:json'), false);
+});
+
 test('extension contributes VbaDev path override configuration', () => {
   const packageJson = readPackageJson<{
     contributes?: {

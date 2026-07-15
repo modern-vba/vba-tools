@@ -51,6 +51,7 @@ internal sealed class VbaLanguageServerRuntime
         var catalogRefresh = new ReferenceCatalogRefreshCoordinator(
             referenceCatalogCache,
             catalogRefreshService,
+            workspace.ManifestWorkspace,
             transport);
         var documentLifecycle = new VbaDocumentLifecycle(transport, workspace, catalogRefresh);
         return new VbaLanguageServerRuntime(transport, requestExecution, documentLifecycle);

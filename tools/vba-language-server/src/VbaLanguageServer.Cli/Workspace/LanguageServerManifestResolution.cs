@@ -63,12 +63,14 @@ internal static class LanguageServerManifestResolution
     /// Tries to create a reference selection context for a document URI.
     /// </summary>
     /// <param name="uri">The document URI.</param>
+    /// <param name="manifestWorkspace">The effective manifest authority.</param>
     /// <param name="catalogSet">The current reference catalog set.</param>
     /// <param name="context">The created manifest context.</param>
     /// <param name="error">The manifest error when resolution fails.</param>
     /// <returns>True when a manifest-backed reference selection was created.</returns>
     public static bool TryCreateReferenceSelectionContext(
         string uri,
+        VbaProjectManifestWorkspace manifestWorkspace,
         VbaProjectReferenceCatalogSet catalogSet,
         out VbaLanguageServerManifestContext context,
         out VbaProjectManifestException? error)
@@ -81,7 +83,7 @@ internal static class LanguageServerManifestResolution
 
         try
         {
-            var resolution = VbaProjectResolver.Resolve(uri);
+            var resolution = manifestWorkspace.Resolve(uri);
             context = Create(resolution, catalogSet);
             return context.ReferenceSelection is not null;
         }
@@ -97,11 +99,13 @@ internal static class LanguageServerManifestResolution
     /// </summary>
     /// <param name="uri">The changed document URI.</param>
     /// <param name="text">The changed document text.</param>
+    /// <param name="manifestWorkspace">The effective manifest authority.</param>
     /// <param name="selections">The affected reference selections.</param>
     /// <returns>True when one or more reference selections were created.</returns>
     public static bool TryCreateReferenceSelections(
         string uri,
         string text,
+        VbaProjectManifestWorkspace manifestWorkspace,
         out IReadOnlyList<VbaProjectReferenceSelectionContext> selections)
     {
         selections = [];
@@ -128,7 +132,7 @@ internal static class LanguageServerManifestResolution
         VbaProjectResolution resolution;
         try
         {
-            resolution = VbaProjectResolver.Resolve(uri);
+            resolution = manifestWorkspace.Resolve(uri);
         }
         catch (VbaProjectManifestException)
         {

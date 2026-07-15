@@ -39,13 +39,16 @@ internal sealed class VbaProjectSnapshotProvider
     private readonly object gate = new();
     private readonly Dictionary<string, CachedProjectSnapshot> cache = new(StringComparer.OrdinalIgnoreCase);
     private readonly VbaProjectReferenceCatalogCache referenceCatalogCache;
+    private readonly VbaProjectManifestWorkspace manifestWorkspace;
     private readonly VbaProjectSnapshotBuilder snapshotBuilder;
 
     public VbaProjectSnapshotProvider(
         VbaProjectReferenceCatalogCache referenceCatalogCache,
-        VbaProjectSourceDocumentCache diskDocumentCache)
+        VbaProjectSourceDocumentCache diskDocumentCache,
+        VbaProjectManifestWorkspace manifestWorkspace)
     {
         this.referenceCatalogCache = referenceCatalogCache;
+        this.manifestWorkspace = manifestWorkspace;
         snapshotBuilder = new VbaProjectSnapshotBuilder(diskDocumentCache);
     }
 
@@ -55,12 +58,14 @@ internal sealed class VbaProjectSnapshotProvider
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var resolution = VbaProjectResolver.Resolve(activeUri);
+        var resolution = manifestWorkspace.Resolve(activeUri);
+        var manifestVersion = manifestWorkspace.Version;
         var referenceCatalogState = referenceCatalogCache.State;
         var cacheIdentity = VbaProjectSnapshotIdentity.Create(activeUri, resolution);
         if (TryGetCachedSnapshot(
             cacheIdentity,
             workspaceState.Version,
+            manifestVersion,
             referenceCatalogState.Version,
             cancellationToken,
             out var cachedSnapshot))
@@ -82,6 +87,7 @@ internal sealed class VbaProjectSnapshotProvider
         StoreCachedSnapshot(
             cacheIdentity,
             workspaceState.Version,
+            manifestVersion,
             referenceCatalogState.Version,
             inventorySnapshot.SourceFiles,
             snapshot);
@@ -99,6 +105,7 @@ internal sealed class VbaProjectSnapshotProvider
     private bool TryGetCachedSnapshot(
         VbaProjectSnapshotIdentity cacheIdentity,
         long expectedWorkspaceVersion,
+        long expectedManifestVersion,
         long expectedReferenceCatalogVersion,
         CancellationToken cancellationToken,
         out VbaProjectSnapshot snapshot)
@@ -107,6 +114,7 @@ internal sealed class VbaProjectSnapshotProvider
         {
             if (cache.TryGetValue(cacheIdentity.Key, out var cached)
                 && cached.WorkspaceVersion == expectedWorkspaceVersion
+                && cached.ManifestVersion == expectedManifestVersion
                 && cached.ReferenceCatalogVersion == expectedReferenceCatalogVersion
                 && AreKnownSourcesCurrent(cached.SourceFiles, cancellationToken))
             {
@@ -122,6 +130,7 @@ internal sealed class VbaProjectSnapshotProvider
     private void StoreCachedSnapshot(
         VbaProjectSnapshotIdentity cacheIdentity,
         long snapshotWorkspaceVersion,
+        long snapshotManifestVersion,
         long snapshotReferenceCatalogVersion,
         IReadOnlyList<VbaProjectSourceFileState> sourceFiles,
         VbaProjectSnapshot snapshot)
@@ -130,6 +139,7 @@ internal sealed class VbaProjectSnapshotProvider
         {
             cache[cacheIdentity.Key] = new CachedProjectSnapshot(
                 snapshotWorkspaceVersion,
+                snapshotManifestVersion,
                 snapshotReferenceCatalogVersion,
                 sourceFiles,
                 snapshot);
@@ -154,6 +164,7 @@ internal sealed class VbaProjectSnapshotProvider
 
     private sealed record CachedProjectSnapshot(
         long WorkspaceVersion,
+        long ManifestVersion,
         long ReferenceCatalogVersion,
         IReadOnlyList<VbaProjectSourceFileState> SourceFiles,
         VbaProjectSnapshot Snapshot);

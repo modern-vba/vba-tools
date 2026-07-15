@@ -46,6 +46,7 @@ internal sealed record VbaWatchedFileDeletedChange(string Uri) : VbaDocumentChan
 internal sealed class VbaDocumentChangePipeline
 {
     private readonly VbaLanguageWorkspace workspace;
+    private readonly VbaProjectManifestWorkspace manifestWorkspace;
     private readonly ReferenceCatalogRefreshCoordinator catalogRefresh;
     private readonly VbaDiagnosticsPublisher diagnosticsPublisher;
 
@@ -61,6 +62,7 @@ internal sealed class VbaDocumentChangePipeline
         VbaDiagnosticsPublisher diagnosticsPublisher)
     {
         this.workspace = workspace;
+        manifestWorkspace = workspace.ManifestWorkspace;
         this.catalogRefresh = catalogRefresh;
         this.diagnosticsPublisher = diagnosticsPublisher;
     }
@@ -96,6 +98,15 @@ internal sealed class VbaDocumentChangePipeline
         VbaTextDocumentOpenedChange change,
         CancellationToken cancellationToken)
     {
+        if (IsProjectManifestUri(change.Uri))
+        {
+            await ApplyManifestOverlayUpdateAsync(
+                change.Uri,
+                manifestWorkspace.OpenManifest(change.Uri, change.Version, change.Text),
+                cancellationToken);
+            return;
+        }
+
         if (!IsVbaSourceUri(change.Uri))
         {
             catalogRefresh.RefreshReferenceCatalogsInBackground(
@@ -118,6 +129,15 @@ internal sealed class VbaDocumentChangePipeline
         VbaTextDocumentChangedChange change,
         CancellationToken cancellationToken)
     {
+        if (IsProjectManifestUri(change.Uri))
+        {
+            await ApplyManifestOverlayUpdateAsync(
+                change.Uri,
+                manifestWorkspace.ChangeManifest(change.Uri, change.Version, change.Text),
+                cancellationToken);
+            return;
+        }
+
         if (!IsVbaSourceUri(change.Uri))
         {
             catalogRefresh.RefreshReferenceCatalogsInBackground(
@@ -142,6 +162,16 @@ internal sealed class VbaDocumentChangePipeline
 
     private async Task ApplyClosedDocumentAsync(string uri, CancellationToken cancellationToken)
     {
+        if (IsProjectManifestUri(uri))
+        {
+            if (manifestWorkspace.CloseManifest(uri))
+            {
+                await ApplyEffectiveManifestStateAsync(uri, cancellationToken);
+            }
+
+            return;
+        }
+
         if (workspace.CloseDocument(uri, cancellationToken))
         {
             await diagnosticsPublisher.PublishEmptyDiagnosticsAsync(uri, cancellationToken);
@@ -163,34 +193,49 @@ internal sealed class VbaDocumentChangePipeline
             return;
         }
 
-        var text = await VbaSourceFileTextReader.ReadAllTextAsync(localPath, cancellationToken);
-        if (isSource)
+        if (isManifest)
         {
-            if (!workspace.ReloadSourceDocument(uri, text, cancellationToken))
+            if (manifestWorkspace.ReloadManifest(uri))
             {
-                return;
+                await ApplyEffectiveManifestStateAsync(uri, cancellationToken);
             }
 
-            await ApplyAuthoritativeSourceTextAsync(
-                uri,
-                text,
-                preloadPersistedCatalogs: false,
-                publishReferenceTrace: true,
-                cancellationToken);
             return;
         }
 
-        catalogRefresh.RefreshReferenceCatalogsInBackground(uri, text, cancellationToken);
-        foreach (var documentUri in workspace.GetDocumentUris(cancellationToken))
+        var text = await VbaSourceFileTextReader.ReadAllTextAsync(localPath, cancellationToken);
+        if (!workspace.ReloadSourceDocument(uri, text, cancellationToken))
         {
-            await catalogRefresh.PublishReferenceSelectionTraceAsync(documentUri, cancellationToken);
+            return;
         }
+
+        await ApplyAuthoritativeSourceTextAsync(
+            uri,
+            text,
+            preloadPersistedCatalogs: false,
+            publishReferenceTrace: true,
+            cancellationToken);
     }
 
     private async Task ApplyWatchedFileDeletedAsync(string uri, CancellationToken cancellationToken)
     {
         var localPath = VbaProjectResolver.TryGetLocalPath(uri);
-        if (localPath is null || !IsVbaSourcePath(localPath))
+        if (localPath is null)
+        {
+            return;
+        }
+
+        if (IsProjectManifestPath(localPath))
+        {
+            if (manifestWorkspace.DeleteManifest(uri))
+            {
+                await ApplyEffectiveManifestStateAsync(uri, cancellationToken);
+            }
+
+            return;
+        }
+
+        if (!IsVbaSourcePath(localPath))
         {
             return;
         }
@@ -223,6 +268,74 @@ internal sealed class VbaDocumentChangePipeline
         catalogRefresh.RefreshReferenceCatalogsInBackground(uri, text, cancellationToken);
     }
 
+    private async Task ApplyEffectiveManifestStateAsync(
+        string uri,
+        CancellationToken cancellationToken)
+    {
+        if (manifestWorkspace.TryGetEffectiveManifest(
+            uri,
+            out var effectiveUri,
+            out var text,
+            out var error))
+        {
+            await diagnosticsPublisher.PublishManifestValidationDiagnosticAsync(
+                uri,
+                error: null,
+                cancellationToken: cancellationToken);
+            await ApplyManifestTextAsync(effectiveUri, text, cancellationToken);
+            return;
+        }
+
+        await diagnosticsPublisher.PublishManifestValidationDiagnosticAsync(
+            uri,
+            error,
+            cancellationToken);
+        await PublishManifestTracesAsync(cancellationToken);
+    }
+
+    private async Task ApplyManifestOverlayUpdateAsync(
+        string uri,
+        VbaProjectManifestOverlayUpdate update,
+        CancellationToken cancellationToken)
+    {
+        if (!update.Accepted)
+        {
+            return;
+        }
+
+        if (update.Error is not null)
+        {
+            await diagnosticsPublisher.PublishManifestValidationDiagnosticAsync(
+                uri,
+                update.Error,
+                cancellationToken);
+            return;
+        }
+
+        if (update.EffectiveChanged)
+        {
+            await ApplyEffectiveManifestStateAsync(uri, cancellationToken);
+        }
+    }
+
+    private async Task ApplyManifestTextAsync(
+        string uri,
+        string text,
+        CancellationToken cancellationToken)
+    {
+        await catalogRefresh.PreloadReferenceCatalogsAsync(uri, text, cancellationToken);
+        await PublishManifestTracesAsync(cancellationToken);
+        catalogRefresh.RefreshReferenceCatalogsInBackground(uri, text, cancellationToken);
+    }
+
+    private async Task PublishManifestTracesAsync(CancellationToken cancellationToken)
+    {
+        foreach (var documentUri in workspace.GetDocumentUris(cancellationToken))
+        {
+            await catalogRefresh.PublishReferenceSelectionTraceAsync(documentUri, cancellationToken);
+        }
+    }
+
     private static bool IsVbaSourceUri(string uri)
     {
         var localPath = VbaProjectResolver.TryGetLocalPath(uri);
@@ -236,4 +349,10 @@ internal sealed class VbaDocumentChangePipeline
 
     internal static bool IsProjectManifestPath(string path)
         => Path.GetFileName(path).Equals("vba-project.json", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsProjectManifestUri(string uri)
+    {
+        var localPath = VbaProjectResolver.TryGetLocalPath(uri);
+        return localPath is not null && IsProjectManifestPath(localPath);
+    }
 }

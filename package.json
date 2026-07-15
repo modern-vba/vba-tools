@@ -17,6 +17,7 @@
   ],
   "activationEvents": [
     "onLanguage:vba",
+    "workspaceContains:**/vba-project.json",
     "onCommand:vbaTools.doctor",
     "onCommand:vbaTools.openVbaDevTerminal",
     "onCommand:vbaTools.build",

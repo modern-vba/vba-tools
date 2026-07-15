@@ -23,6 +23,7 @@ internal sealed class ReferenceCatalogRefreshCoordinator
 {
     private readonly VbaProjectReferenceCatalogCache catalogCache;
     private readonly VbaProjectReferenceCatalogRefreshService refreshService;
+    private readonly VbaProjectManifestWorkspace manifestWorkspace;
     private readonly LspMessageTransport transport;
     private readonly object diagnosticGate = new();
     private readonly HashSet<string> publishedDiagnostics = new(StringComparer.Ordinal);
@@ -32,14 +33,17 @@ internal sealed class ReferenceCatalogRefreshCoordinator
     /// </summary>
     /// <param name="catalogCache">The current reference catalog state.</param>
     /// <param name="refreshService">The service that preloads and refreshes reference catalogs.</param>
+    /// <param name="manifestWorkspace">The effective manifest authority used for trace resolution.</param>
     /// <param name="transport">The transport used to publish log messages.</param>
     public ReferenceCatalogRefreshCoordinator(
         VbaProjectReferenceCatalogCache catalogCache,
         VbaProjectReferenceCatalogRefreshService refreshService,
+        VbaProjectManifestWorkspace manifestWorkspace,
         LspMessageTransport transport)
     {
         this.catalogCache = catalogCache;
         this.refreshService = refreshService;
+        this.manifestWorkspace = manifestWorkspace;
         this.transport = transport;
     }
 
@@ -175,6 +179,7 @@ internal sealed class ReferenceCatalogRefreshCoordinator
     {
         if (!LanguageServerManifestResolution.TryCreateReferenceSelectionContext(
             uri,
+            manifestWorkspace,
             catalogCache.Current,
             out var context,
             out var error))
@@ -214,7 +219,11 @@ internal sealed class ReferenceCatalogRefreshCoordinator
 
     private IReadOnlyList<ReferenceCatalogRefreshEvent> PreloadReferenceCatalogs(string uri, string text)
     {
-        if (!LanguageServerManifestResolution.TryCreateReferenceSelections(uri, text, out var selections))
+        if (!LanguageServerManifestResolution.TryCreateReferenceSelections(
+            uri,
+            text,
+            manifestWorkspace,
+            out var selections))
         {
             return [];
         }
@@ -229,13 +238,17 @@ internal sealed class ReferenceCatalogRefreshCoordinator
             .ToArray();
     }
 
-    private static bool TryCreateBackgroundRefreshPlan(
+    private bool TryCreateBackgroundRefreshPlan(
         string uri,
         string text,
         out ReferenceCatalogRefreshPlan plan)
     {
         plan = default!;
-        if (!LanguageServerManifestResolution.TryCreateReferenceSelections(uri, text, out var selections))
+        if (!LanguageServerManifestResolution.TryCreateReferenceSelections(
+            uri,
+            text,
+            manifestWorkspace,
+            out var selections))
         {
             return false;
         }

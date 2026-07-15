@@ -52,8 +52,17 @@ public sealed class VbaLanguageWorkspace
     /// <param name="referenceCatalogCache">The reference catalog cache used when building source indexes.</param>
     public VbaLanguageWorkspace(VbaProjectReferenceCatalogCache referenceCatalogCache)
     {
-        snapshotProvider = new VbaProjectSnapshotProvider(referenceCatalogCache, diskDocumentCache);
+        ManifestWorkspace = new VbaProjectManifestWorkspace();
+        snapshotProvider = new VbaProjectSnapshotProvider(
+            referenceCatalogCache,
+            diskDocumentCache,
+            ManifestWorkspace);
     }
+
+    /// <summary>
+    /// Gets the focused manifest authority shared by snapshots, trace resolution, and lifecycle work.
+    /// </summary>
+    internal VbaProjectManifestWorkspace ManifestWorkspace { get; }
 
     /// <summary>
     /// Updates or adds an open document and parses its latest source text.

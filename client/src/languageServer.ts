@@ -1,5 +1,9 @@
 import * as path from 'node:path';
-import type { ServerOptions } from 'vscode-languageclient/node';
+import type { FileSystemWatcher } from 'vscode';
+import type {
+  LanguageClientOptions,
+  ServerOptions
+} from 'vscode-languageclient/node';
 import { resolveBundledRuntimePath } from './distributionManifest';
 
 const stdioTransportKind = 0;
@@ -16,6 +20,21 @@ export interface VbaLanguageServerPathOptions {
 export interface VbaLanguageServerOptions extends VbaLanguageServerPathOptions {
   readonly platform?: PlatformName;
   readonly referenceCatalogCacheRoot?: string;
+}
+
+export function createVbaLanguageClientOptions(
+  sourceFileWatcher: FileSystemWatcher,
+  projectManifestWatcher: FileSystemWatcher
+): LanguageClientOptions {
+  return {
+    documentSelector: [
+      { language: 'vba', scheme: 'file' },
+      { language: 'vba', scheme: 'untitled' }
+    ],
+    synchronize: {
+      fileEvents: [sourceFileWatcher, projectManifestWatcher]
+    }
+  };
 }
 
 export function resolveVbaLanguageServerPath(options: VbaLanguageServerPathOptions): string {

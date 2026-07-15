@@ -51,6 +51,44 @@ internal sealed class VbaDiagnosticsPublisher
             },
             cancellationToken);
 
+    /// <summary>
+    /// Publishes or clears the validation diagnostic for a project manifest.
+    /// </summary>
+    /// <param name="uri">The project manifest URI.</param>
+    /// <param name="error">The current validation error, or null to clear it.</param>
+    /// <param name="cancellationToken">A cancellation token for transport work.</param>
+    public Task PublishManifestValidationDiagnosticAsync(
+        string uri,
+        VbaProjectManifestException? error,
+        CancellationToken cancellationToken)
+    {
+        object[] diagnostics = error is null
+            ? []
+            :
+            [
+                new
+                {
+                    range = new
+                    {
+                        start = new { line = 0, character = 0 },
+                        end = new { line = 0, character = 1 }
+                    },
+                    severity = 1,
+                    code = "invalid-project-manifest",
+                    source = "vba-language-server",
+                    message = error.Message
+                }
+            ];
+        return transport.WriteNotificationAsync(
+            "textDocument/publishDiagnostics",
+            new
+            {
+                uri,
+                diagnostics
+            },
+            cancellationToken);
+    }
+
     private Task PublishDiagnosticsAsync(
         string uri,
         VbaSyntaxTree syntaxTree,

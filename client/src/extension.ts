@@ -13,7 +13,7 @@ import {
 } from 'vscode';
 import {
   LanguageClient,
-  LanguageClientOptions
+  State
 } from 'vscode-languageclient/node';
 import {
   promptForFirstRunDoctor,
@@ -49,9 +49,14 @@ import {
   VbaDevDiagnosticReporter
 } from './toolDiagnostics';
 import {
+  createVbaLanguageClientOptions,
   createVbaLanguageServerOptions,
   createVbaLanguageServerReferenceCatalogCacheRoot
 } from './languageServer';
+import {
+  ProjectManifestLanguageServerSync,
+  registerProjectManifestLanguageServerSync
+} from './projectManifestLanguageServerSync';
 import {
   createVscodeDiagnosticCollectionAdapter,
   createVscodeTestControllerAdapter
@@ -67,6 +72,10 @@ let toolDiagnosticReporter: VbaDevDiagnosticReporter | undefined;
 export async function activate(context: ExtensionContext): Promise<void> {
   outputChannel = window.createOutputChannel('VBA Tools');
   context.subscriptions.push(outputChannel);
+  const sourceFileWatcher = workspace.createFileSystemWatcher('**/*.{bas,cls,frm}');
+  const projectManifestWatcher = workspace.createFileSystemWatcher('**/vba-project.json');
+  context.subscriptions.push(sourceFileWatcher, projectManifestWatcher);
+  let projectManifestLanguageServerSync: ProjectManifestLanguageServerSync | undefined;
   try {
     const serverOptions = createVbaLanguageServerOptions({
       extensionRoot: context.extensionPath,
@@ -75,15 +84,10 @@ export async function activate(context: ExtensionContext): Promise<void> {
       )
     });
 
-    const clientOptions: LanguageClientOptions = {
-      documentSelector: [
-        { language: 'vba', scheme: 'file' },
-        { language: 'vba', scheme: 'untitled' }
-      ],
-      synchronize: {
-        fileEvents: workspace.createFileSystemWatcher('**/*.{bas,cls,frm}')
-      }
-    };
+    const clientOptions = createVbaLanguageClientOptions(
+      sourceFileWatcher,
+      projectManifestWatcher
+    );
 
     client = new LanguageClient(
       'vbaLanguageServer',
@@ -93,6 +97,22 @@ export async function activate(context: ExtensionContext): Promise<void> {
     );
 
     context.subscriptions.push(client);
+    const languageClient = client;
+    projectManifestLanguageServerSync = registerProjectManifestLanguageServerSync({
+      getOpenDocuments: () => workspace.textDocuments,
+      onDidOpenTextDocument: (listener) => workspace.onDidOpenTextDocument(listener),
+      onDidChangeTextDocument: (listener) => workspace.onDidChangeTextDocument(listener),
+      onDidCloseTextDocument: (listener) => workspace.onDidCloseTextDocument(listener),
+      isLanguageClientRunning: () => languageClient.state === State.Running,
+      onDidChangeLanguageClientRunning: (listener) => languageClient.onDidChangeState(
+        (event) => listener(event.newState === State.Running)
+      ),
+      sendNotification: (method, parameters) => languageClient.sendNotification(method, parameters),
+      subscriptions: context.subscriptions,
+      reportError: (error) => outputChannel?.appendLine(
+        `VBA Tools could not synchronize vba-project.json: ${error instanceof Error ? error.message : String(error)}`
+      )
+    });
   } catch (error) {
     void window.showWarningMessage(error instanceof Error ? error.message : String(error));
   }
@@ -117,8 +137,6 @@ export async function activate(context: ExtensionContext): Promise<void> {
     outputChannel,
     showErrorMessage: (message: string) => window.showErrorMessage(message)
   });
-  const projectManifestWatcher = workspace.createFileSystemWatcher('**/vba-project.json');
-  context.subscriptions.push(projectManifestWatcher);
   registerWorkbookBackedTestExplorerRefresh({
     watcher: projectManifestWatcher,
     subscriptions: context.subscriptions,
@@ -148,6 +166,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
   }
 
   await client?.start();
+  await projectManifestLanguageServerSync?.flush();
   await workbookBackedTestExplorer.refresh();
   await promptForActiveWorkbookBackedProject(context);
 }

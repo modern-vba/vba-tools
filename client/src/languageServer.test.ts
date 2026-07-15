@@ -1,13 +1,34 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as path from 'node:path';
+import type { FileSystemWatcher } from 'vscode';
 
 import {
+  createVbaLanguageClientOptions,
   createVbaLanguageServerReferenceCatalogCacheRoot,
   createVbaLanguageServerOptions,
   referenceCatalogCacheRootEnvironmentVariable,
   resolveVbaLanguageServerPath
 } from './languageServer';
+
+test('VbaLanguageServer client synchronizes source and project manifest file events', () => {
+  const sourceFileWatcher = {} as FileSystemWatcher;
+  const projectManifestWatcher = {} as FileSystemWatcher;
+
+  const options = createVbaLanguageClientOptions(
+    sourceFileWatcher,
+    projectManifestWatcher
+  );
+
+  assert.deepEqual(options.documentSelector, [
+    { language: 'vba', scheme: 'file' },
+    { language: 'vba', scheme: 'untitled' }
+  ]);
+  assert.deepEqual(
+    options.synchronize?.fileEvents,
+    [sourceFileWatcher, projectManifestWatcher]
+  );
+});
 
 test('VbaLanguageServer resolution uses the bundled Windows executable by default', () => {
   const extensionRoot = path.resolve(__dirname, '..', '..');
