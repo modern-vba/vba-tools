@@ -181,7 +181,7 @@
     "test:extension": "npm run compile && node client/out/testRunner.js",
     "test:devtool": "dotnet test tools/vba-dev/tests/VbaDev.Tests/VbaDev.Tests.csproj -m:1 -p:UseSharedCompilation=false",
     "test:language-server": "dotnet test tools/vba-language-server/VbaLanguageServer.slnx -m:1 -p:UseSharedCompilation=false",
-    "test:packaging": "node --test scripts/*.test.mjs",
+    "test:packaging": "node --test --test-isolation=none scripts/*.test.mjs",
     "build:devtool": "dotnet build tools/vba-dev/src/VbaDev.Cli/VbaDev.Cli.csproj -m:1 -p:UseSharedCompilation=false",
     "publish:devtool": "dotnet publish tools/vba-dev/src/VbaDev.Cli/VbaDev.Cli.csproj -c Release -o bin/vba-dev/win-x64 -m:1 -p:UseSharedCompilation=false",
     "publish:language-server": "dotnet publish tools/vba-language-server/src/VbaLanguageServer.Cli/VbaLanguageServer.Cli.csproj -c Release -o bin/vba-language-server/win-x64 -m:1 -p:UseSharedCompilation=false",

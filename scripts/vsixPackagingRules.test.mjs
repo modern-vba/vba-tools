@@ -308,6 +308,7 @@ test('package scripts publish the bundled CLI and verify VSIX contents before pa
   assert.match(packageJson.scripts['package:verify'], /verify:vsix/);
   assert.match(packageJson.scripts.package, /package:verify/);
   assert.match(packageJson.scripts.test, /test:packaging/);
+  assert.match(packageJson.scripts['test:packaging'], /--test-isolation=none/);
   assert.deepEqual(packageJson.repository, {
     type: 'git',
     url: 'https://github.com/modern-vba/vba-tools.git'
