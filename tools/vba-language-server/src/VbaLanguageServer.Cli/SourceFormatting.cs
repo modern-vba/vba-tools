@@ -170,14 +170,19 @@ internal static class SourceFormatting
 internal sealed class VbaSourceFormatter
 {
     private readonly VbaSemanticResolution semanticResolution;
+    private readonly VbaResolvedIdentifierOccurrenceIndex resolvedOccurrences;
 
     /// <summary>
     /// Creates a source formatter.
     /// </summary>
     /// <param name="semanticResolution">The semantic resolver used for canonical casing decisions.</param>
-    public VbaSourceFormatter(VbaSemanticResolution semanticResolution)
+    /// <param name="resolvedOccurrences">The snapshot-scoped resolved occurrence cache.</param>
+    public VbaSourceFormatter(
+        VbaSemanticResolution semanticResolution,
+        VbaResolvedIdentifierOccurrenceIndex resolvedOccurrences)
     {
         this.semanticResolution = semanticResolution;
+        this.resolvedOccurrences = resolvedOccurrences;
     }
 
     /// <summary>
@@ -210,12 +215,18 @@ internal sealed class VbaSourceFormatter
         var syntaxTree = document.SyntaxTree ?? VbaSyntaxTree.ParseModule(document.Uri, document.Text);
         var formattingInput = VbaFormattingInput.FromSyntaxTree(syntaxTree);
         var indentationFormatting = VbaIndentationFormatting.FromInput(formattingInput);
+        var canonicalNamesByRange = resolvedOccurrences.GetCanonicalNamesByRange(document.Uri);
         var formattedLines = new List<string>(formattingInput.Lines.Count);
 
         foreach (var formattingLine in formattingInput.Lines)
         {
             var line = formattingLine.Text;
-            var casedLine = FormatLineCasing(line, document, formattingLine.LineNumber, declarationRanges);
+            var casedLine = FormatLineCasing(
+                line,
+                document,
+                formattingLine.LineNumber,
+                declarationRanges,
+                canonicalNamesByRange);
             formattedLines.Add(indentationFormatting.Apply(formattingLine, casedLine, tabSize));
         }
 
@@ -233,7 +244,8 @@ internal sealed class VbaSourceFormatter
         string line,
         VbaSourceDocument document,
         int lineIndex,
-        IReadOnlySet<string> declarationRanges)
+        IReadOnlySet<string> declarationRanges,
+        IReadOnlyDictionary<VbaRange, string> canonicalNamesByRange)
     {
         var lineParts = VbaLexicalFacts.SplitCodeAndComment(line);
         var codePart = lineParts.CodePart;
@@ -251,7 +263,8 @@ internal sealed class VbaSourceFormatter
                 occurrence,
                 document,
                 lineIndex,
-                declarationRanges);
+                declarationRanges,
+                canonicalNamesByRange);
             if (canonicalName is not null
                 && !string.Equals(occurrence.Name, canonicalName, StringComparison.Ordinal))
             {

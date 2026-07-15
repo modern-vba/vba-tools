@@ -172,12 +172,14 @@ internal sealed class VbaSemanticResolution
     /// <param name="document">The source document being formatted.</param>
     /// <param name="lineIndex">The zero-based physical line index.</param>
     /// <param name="declarationRanges">The declaration ranges that must not be renamed by formatting.</param>
+    /// <param name="canonicalNamesByRange">Snapshot-cached canonical names keyed by resolved occurrence range.</param>
     /// <returns>The canonical name, or null when formatting should leave the occurrence unchanged.</returns>
     public string? GetCanonicalFormattingName(
         VbaIdentifierOccurrence occurrence,
         VbaSourceDocument document,
         int lineIndex,
-        IReadOnlySet<string> declarationRanges)
+        IReadOnlySet<string> declarationRanges,
+        IReadOnlyDictionary<VbaRange, string> canonicalNamesByRange)
     {
         if (VbaLanguageVocabulary.CanonicalKeywords.TryGetValue(occurrence.Name, out var keyword))
         {
@@ -190,6 +192,11 @@ internal sealed class VbaSemanticResolution
         if (declarationRanges.Contains(GetRangeKey(occurrenceRange)))
         {
             return null;
+        }
+
+        if (canonicalNamesByRange.TryGetValue(occurrenceRange, out var resolvedCanonicalName))
+        {
+            return resolvedCanonicalName;
         }
 
         var positionSyntax = GetSyntaxTree(document).GetPositionSyntax(lineIndex, occurrence.Start);

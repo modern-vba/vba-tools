@@ -523,7 +523,7 @@ public sealed class VbaSourceIndex
         resolvedOccurrences = new VbaResolvedIdentifierOccurrenceIndex(
             documents,
             semanticResolution.ResolveSourceDefinition);
-        sourceFormatter = new VbaSourceFormatter(semanticResolution);
+        sourceFormatter = new VbaSourceFormatter(semanticResolution, resolvedOccurrences);
     }
 
     /// <summary>

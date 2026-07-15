@@ -261,6 +261,61 @@ public sealed class VbaWorkspaceSymbolAndReferenceTests
     }
 
     [Fact]
+    public async Task SemanticOccurrenceFeaturesRemainStableDuringConcurrentFirstUse()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    Dim SharedValue As Long",
+            "    sharedvalue = sharedVALUE + 1",
+            "End Sub"
+        ]);
+        var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = text });
+        var expectedLocations = new[]
+        {
+            LocationKey(uri, new VbaRange(new VbaPosition(2, 8), new VbaPosition(2, 19))),
+            LocationKey(uri, new VbaRange(new VbaPosition(3, 4), new VbaPosition(3, 15))),
+            LocationKey(uri, new VbaRange(new VbaPosition(3, 18), new VbaPosition(3, 29)))
+        }
+            .OrderBy(key => key, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var tasks = Enumerable.Range(0, 24)
+            .Select(iteration => Task.Run(() =>
+            {
+                switch (iteration % 4)
+                {
+                    case 0:
+                        return index.FindReferences(uri, 2, 8)
+                            .Select(reference => LocationKey(reference.Uri, reference.Range))
+                            .OrderBy(key => key, StringComparer.OrdinalIgnoreCase)
+                            .ToArray();
+                    case 1:
+                        return Assert.IsType<VbaRenamePlan>(index.CreateRenamePlan(uri, 2, 8, "CurrentValue"))
+                            .Changes
+                            .SelectMany(change => change.Value.Select(edit => LocationKey(change.Key, edit.Range)))
+                            .OrderBy(key => key, StringComparer.OrdinalIgnoreCase)
+                            .ToArray();
+                    case 2:
+                        return index.GetSemanticTokens(uri)
+                            .Where(token => token.Text.Equals("SharedValue", StringComparison.OrdinalIgnoreCase))
+                            .Select(token => LocationKey(uri, token.Range))
+                            .OrderBy(key => key, StringComparer.OrdinalIgnoreCase)
+                            .ToArray();
+                    default:
+                        var edit = Assert.IsType<VbaTextEdit>(index.FormatDocument(uri, tabSize: 4));
+                        Assert.Contains("    SharedValue = SharedValue + 1", edit.NewText, StringComparison.Ordinal);
+                        return expectedLocations;
+                }
+            }))
+            .ToArray();
+
+        var results = await Task.WhenAll(tasks);
+
+        Assert.All(results, locations => Assert.Equal(expectedLocations, locations));
+    }
+
+    [Fact]
     public void FindReferencesRespectsManifestDocumentBoundaries()
     {
         var projectRoot = Directory.CreateTempSubdirectory("vba-ls-references-").FullName;
