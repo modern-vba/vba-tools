@@ -481,196 +481,29 @@ internal sealed class VbaPositionSyntaxIndex
         VbaSyntaxPosition position)
     {
         var significant = statement.SignificantTokens;
-        var openStack = new Stack<int>();
-        for (var index = 0; index < significant.Count; index++)
-        {
-            var token = significant[index];
-            if (token.Range.Start.Offset >= position.Offset)
-            {
-                break;
-            }
-
-            if (IsPunctuation(token, "("))
-            {
-                openStack.Push(index);
-            }
-            else if (IsPunctuation(token, ")") && openStack.Count > 0)
-            {
-                openStack.Pop();
-            }
-        }
-
-        if (openStack.Count > 0)
-        {
-            var openIndex = openStack.Peek();
-            var callee = TryGetCalleeBefore(significant, openIndex);
-            if (callee is null)
-            {
-                return null;
-            }
-
-            var arguments = CreateArguments(
-                significant,
-                openIndex + 1,
-                position,
-                significant[openIndex].Range.End);
-            return new VbaCallSiteSyntax(
-                VbaCallSyntaxForm.Parenthesized,
-                callee,
-                arguments,
-                arguments[^1].Index,
-                arguments[^1].Name,
-                true);
-        }
-
-        return TryGetStatementCall(statement, position);
-    }
-
-    private VbaCallSiteSyntax? TryGetStatementCall(
-        StatementSpan statement,
-        VbaSyntaxPosition position)
-    {
-        var significant = statement.SignificantTokens;
-        if (significant.Count == 0)
+        var parsed = VbaCallSyntaxParser.TryParsePositionCall(sourceText, significant, position);
+        if (parsed is null)
         {
             return null;
         }
 
-        var start = 0;
-        var leadingDot = IsDot(significant[0]);
-        if (leadingDot)
-        {
-            start++;
-        }
-
-        if (start >= significant.Count || significant[start].Kind != VbaTokenKind.Identifier)
-        {
-            return null;
-        }
-
-        var calleeEnd = start;
-        while (calleeEnd + 2 < significant.Count
-            && IsDot(significant[calleeEnd + 1])
-            && IsNameToken(significant[calleeEnd + 2]))
-        {
-            calleeEnd += 2;
-        }
-
-        if (position.Offset <= significant[calleeEnd].Range.End.Offset
-            || !HasWhitespaceBetween(significant[calleeEnd].Range.End.Offset, position.Offset))
-        {
-            return null;
-        }
-
-        if (calleeEnd + 1 < significant.Count
-            && (significant[calleeEnd + 1].Text is "=" or "("))
-        {
-            return null;
-        }
-
-        var callee = CreateChain(significant, leadingDot ? 0 : start, calleeEnd, calleeEnd);
+        var callee = CreateChain(
+            significant,
+            parsed.CalleeStartIndex,
+            parsed.CalleeEndIndex,
+            parsed.CalleeEndIndex);
         if (callee is null)
         {
             return null;
         }
 
-        var arguments = CreateArguments(
-            significant,
-            calleeEnd + 1,
-            position,
-            significant[calleeEnd].Range.End);
         return new VbaCallSiteSyntax(
-            VbaCallSyntaxForm.Statement,
+            parsed.Form,
             callee,
-            arguments,
-            arguments[^1].Index,
-            arguments[^1].Name,
-            false);
-    }
-
-    private static VbaMemberAccessSyntax? TryGetCalleeBefore(
-        IReadOnlyList<VbaToken> significant,
-        int openIndex)
-    {
-        var end = openIndex - 1;
-        if (end < 0 || !IsNameToken(significant[end]))
-        {
-            return null;
-        }
-
-        var start = end;
-        while (start >= 2 && IsDot(significant[start - 1]) && IsNameToken(significant[start - 2]))
-        {
-            start -= 2;
-        }
-
-        if (start > 0 && IsDot(significant[start - 1]))
-        {
-            start--;
-        }
-
-        return CreateChain(significant, start, end, end);
-    }
-
-    private static IReadOnlyList<VbaCallArgumentSyntax> CreateArguments(
-        IReadOnlyList<VbaToken> significant,
-        int startIndex,
-        VbaSyntaxPosition position,
-        VbaSyntaxPosition argumentStart)
-    {
-        var arguments = new List<VbaCallArgumentSyntax>();
-        var segment = new List<VbaToken>();
-        var segmentStart = argumentStart;
-        var depth = 0;
-        for (var index = startIndex; index < significant.Count; index++)
-        {
-            var token = significant[index];
-            if (token.Range.Start.Offset >= position.Offset)
-            {
-                break;
-            }
-
-            if (IsPunctuation(token, "("))
-            {
-                depth++;
-            }
-            else if (IsPunctuation(token, ")") && depth > 0)
-            {
-                depth--;
-            }
-
-            if (depth == 0 && IsPunctuation(token, ","))
-            {
-                arguments.Add(CreateArgument(arguments.Count, segment, segmentStart, token.Range.Start));
-                segment.Clear();
-                segmentStart = token.Range.End;
-                continue;
-            }
-
-            segment.Add(token);
-        }
-
-        arguments.Add(CreateArgument(arguments.Count, segment, segmentStart, position));
-        return arguments;
-    }
-
-    private static VbaCallArgumentSyntax CreateArgument(
-        int index,
-        IReadOnlyList<VbaToken> tokens,
-        VbaSyntaxPosition start,
-        VbaSyntaxPosition end)
-    {
-        var name = tokens.Count >= 2
-            && IsNameToken(tokens[0])
-            && tokens[1].Kind == VbaTokenKind.Operator
-            && tokens[1].Text == ":="
-                ? tokens[0].Text
-                : null;
-        return new VbaCallArgumentSyntax(
-            index,
-            name,
-            tokens.Count == 0,
-            new VbaSyntaxRange(start, end));
+            parsed.Arguments,
+            parsed.ActiveArgumentIndex,
+            parsed.ActiveNamedArgument,
+            parsed.IsIncomplete);
     }
 
     private VbaCompletionSyntaxKind GetCompletionKind(
@@ -759,39 +592,6 @@ internal sealed class VbaPositionSyntaxIndex
             .OrderBy(scope => scope.Depth)
             .Select(scope => new VbaWithScopeSyntax(scope.Receiver))
             .ToArray();
-    }
-
-    private bool HasWhitespaceBetween(int startOffset, int endOffset)
-    {
-        var low = 0;
-        var high = tokens.Count - 1;
-        var firstCandidate = tokens.Count;
-        while (low <= high)
-        {
-            var middle = low + ((high - low) / 2);
-            if (tokens[middle].Range.End.Offset <= startOffset)
-            {
-                low = middle + 1;
-            }
-            else
-            {
-                firstCandidate = middle;
-                high = middle - 1;
-            }
-        }
-
-        for (var index = firstCandidate;
-             index < tokens.Count && tokens[index].Range.Start.Offset < endOffset;
-             index++)
-        {
-            var token = tokens[index];
-            if (token.Kind is VbaTokenKind.Whitespace or VbaTokenKind.NewLine or VbaTokenKind.LineContinuation)
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     private static IReadOnlyList<int> BuildPrefixMaximumEnds(

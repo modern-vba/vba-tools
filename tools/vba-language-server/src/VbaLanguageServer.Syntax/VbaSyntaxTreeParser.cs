@@ -93,7 +93,7 @@ internal static class VbaSyntaxTreeParser
         var identity = CreateIdentity(uri, sourceText, kind, attributes);
         var parsedMembers = ParseMembersAndDeclarations(sourceText, codeStartLine);
         var parsedStatements = ParseStatementsAndDiagnostics(sourceText, codeStartLine);
-        var parsedExpressions = ParseExpressionsAndCompletionContexts(sourceText, codeStartLine);
+        var parsedExpressions = ParseExpressionsAndCompletionContexts(sourceText, tokenStream, codeStartLine);
         var parsedPreprocessor = VbaPreprocessorParser.Parse(sourceText.Lines, codeStartLine);
         diagnostics.AddRange(parsedStatements.Diagnostics);
         diagnostics.AddRange(parsedPreprocessor.Diagnostics);
@@ -168,10 +168,16 @@ internal static class VbaSyntaxTreeParser
         return options;
     }
 
-    private static ParsedExpressions ParseExpressionsAndCompletionContexts(VbaSourceText sourceText, int codeStartLine)
+    private static ParsedExpressions ParseExpressionsAndCompletionContexts(
+        VbaSourceText sourceText,
+        VbaTokenStream tokenStream,
+        int codeStartLine)
     {
         var expressions = new List<VbaExpressionSyntax>();
-        var argumentLists = new List<VbaArgumentListSyntax>();
+        var argumentLists = VbaCallSyntaxParser.ParseCompleteArgumentLists(
+            sourceText,
+            tokenStream,
+            codeStartLine);
         var completionContexts = new List<VbaCompletionContextSyntax>();
 
         foreach (var statement in CreateLogicalStatements(sourceText, codeStartLine))
@@ -233,9 +239,10 @@ internal static class VbaSyntaxTreeParser
                     statement.IsContinued));
             }
 
-            foreach (var argumentList in ParseArgumentLists(statement))
+            foreach (var argumentList in argumentLists.Where(argumentList =>
+                argumentList.Range.Start.Offset >= statement.Range.Start.Offset
+                && argumentList.Range.End.Offset <= statement.Range.End.Offset))
             {
-                argumentLists.Add(argumentList);
                 expressions.Add(new VbaExpressionSyntax(
                     VbaExpressionKind.ArgumentList,
                     statement.Text,
@@ -303,305 +310,6 @@ internal static class VbaSyntaxTreeParser
                 new VbaSyntaxPosition(startLine.LineNumber, 0, startLine.StartOffset),
                 new VbaSyntaxPosition(endLine.LineNumber, endLine.Text.Length, endLine.EndOffset)),
             isContinued);
-    }
-
-    private static IReadOnlyList<VbaArgumentListSyntax> ParseArgumentLists(LogicalStatement statement)
-    {
-        var argumentLists = new List<VbaArgumentListSyntax>();
-        for (var index = 0; index < statement.Text.Length; index++)
-        {
-            if (statement.Text[index] != '(')
-            {
-                continue;
-            }
-
-            var closeIndex = FindMatchingParenthesis(statement.Text, index);
-            if (closeIndex < 0)
-            {
-                continue;
-            }
-
-            var callee = GetCalleeBeforeParenthesis(statement.Text, index);
-            if (string.IsNullOrWhiteSpace(callee))
-            {
-                continue;
-            }
-
-            var arguments = ParseArguments(statement, index + 1, closeIndex);
-            argumentLists.Add(new VbaArgumentListSyntax(
-                callee,
-                arguments,
-                RangeFromLogicalSpan(statement, index, closeIndex + 1),
-                statement.IsContinued));
-        }
-
-        return argumentLists;
-    }
-
-    private static IReadOnlyList<VbaArgumentSyntax> ParseArguments(
-        LogicalStatement statement,
-        int startIndex,
-        int endIndex)
-    {
-        if (startIndex >= endIndex)
-        {
-            return [];
-        }
-
-        var arguments = new List<VbaArgumentSyntax>();
-        var segmentStart = startIndex;
-        var inString = false;
-        var depth = 0;
-        for (var index = startIndex; index < endIndex; index++)
-        {
-            var current = statement.Text[index];
-            if (current == '"' && inString && index + 1 < endIndex && statement.Text[index + 1] == '"')
-            {
-                index++;
-                continue;
-            }
-
-            if (current == '"')
-            {
-                inString = !inString;
-                continue;
-            }
-
-            if (inString)
-            {
-                continue;
-            }
-
-            if (current == '(')
-            {
-                depth++;
-                continue;
-            }
-
-            if (current == ')' && depth > 0)
-            {
-                depth--;
-                continue;
-            }
-
-            if (current != ',' || depth != 0)
-            {
-                continue;
-            }
-
-            AddArgument(statement, arguments, segmentStart, index);
-            segmentStart = index + 1;
-        }
-
-        AddArgument(statement, arguments, segmentStart, endIndex);
-        return arguments;
-    }
-
-    private static void AddArgument(
-        LogicalStatement statement,
-        ICollection<VbaArgumentSyntax> arguments,
-        int startIndex,
-        int endIndex)
-    {
-        var trimmedStart = startIndex;
-        while (trimmedStart < endIndex && char.IsWhiteSpace(statement.Text[trimmedStart]))
-        {
-            trimmedStart++;
-        }
-
-        var trimmedEnd = endIndex;
-        while (trimmedEnd > trimmedStart && char.IsWhiteSpace(statement.Text[trimmedEnd - 1]))
-        {
-            trimmedEnd--;
-        }
-
-        if (trimmedStart >= trimmedEnd)
-        {
-            arguments.Add(new VbaArgumentSyntax(
-                VbaArgumentKind.Omitted,
-                "",
-                CreateOmittedArgumentRange(statement, startIndex, endIndex)));
-            return;
-        }
-
-        var text = statement.Text[trimmedStart..trimmedEnd];
-        var range = RangeFromLogicalSpan(statement, trimmedStart, trimmedEnd);
-        var separatorIndex = FindNamedArgumentSeparator(statement.Text, trimmedStart, trimmedEnd);
-        if (separatorIndex >= 0)
-        {
-            var nameStart = trimmedStart;
-            var nameEnd = separatorIndex;
-            while (nameEnd > nameStart && char.IsWhiteSpace(statement.Text[nameEnd - 1]))
-            {
-                nameEnd--;
-            }
-
-            if (ReadIdentifierEnd(statement.Text, nameStart) == nameEnd)
-            {
-                var valueStart = separatorIndex + 2;
-                while (valueStart < trimmedEnd && char.IsWhiteSpace(statement.Text[valueStart]))
-                {
-                    valueStart++;
-                }
-
-                var valueEnd = trimmedEnd;
-                var valueText = statement.Text[valueStart..valueEnd];
-                arguments.Add(new VbaArgumentSyntax(
-                    VbaArgumentKind.Named,
-                    text,
-                    range,
-                    statement.Text[nameStart..nameEnd],
-                    RangeFromLogicalSpan(statement, nameStart, nameEnd),
-                    valueText,
-                    valueStart < valueEnd ? RangeFromLogicalSpan(statement, valueStart, valueEnd) : null));
-                return;
-            }
-        }
-
-        arguments.Add(new VbaArgumentSyntax(
-            VbaArgumentKind.Positional,
-            text,
-            range,
-            ValueText: text,
-            ValueRange: range));
-    }
-
-    private static VbaSyntaxRange CreateOmittedArgumentRange(
-        LogicalStatement statement,
-        int startIndex,
-        int endIndex)
-    {
-        var markerIndex =
-            endIndex < statement.Text.Length && statement.Text[endIndex] == ','
-                ? endIndex
-                : Math.Max(0, startIndex - 1);
-        return RangeFromLogicalSpan(statement, markerIndex, Math.Min(markerIndex + 1, statement.Text.Length));
-    }
-
-    private static int FindNamedArgumentSeparator(string text, int startIndex, int endIndex)
-    {
-        var inString = false;
-        var depth = 0;
-        for (var index = startIndex; index < endIndex - 1; index++)
-        {
-            var current = text[index];
-            if (current == '"' && inString && index + 1 < endIndex && text[index + 1] == '"')
-            {
-                index++;
-                continue;
-            }
-
-            if (current == '"')
-            {
-                inString = !inString;
-                continue;
-            }
-
-            if (inString)
-            {
-                continue;
-            }
-
-            if (current == '(')
-            {
-                depth++;
-                continue;
-            }
-
-            if (current == ')' && depth > 0)
-            {
-                depth--;
-                continue;
-            }
-
-            if (depth == 0 && current == ':' && text[index + 1] == '=')
-            {
-                return index;
-            }
-        }
-
-        return -1;
-    }
-
-    private static int FindMatchingParenthesis(string text, int openIndex)
-    {
-        var inString = false;
-        var depth = 0;
-        for (var index = openIndex; index < text.Length; index++)
-        {
-            var current = text[index];
-            if (current == '"' && inString && index + 1 < text.Length && text[index + 1] == '"')
-            {
-                index++;
-                continue;
-            }
-
-            if (current == '"')
-            {
-                inString = !inString;
-                continue;
-            }
-
-            if (inString)
-            {
-                continue;
-            }
-
-            if (current == '(')
-            {
-                depth++;
-                continue;
-            }
-
-            if (current != ')')
-            {
-                continue;
-            }
-
-            depth--;
-            if (depth == 0)
-            {
-                return index;
-            }
-        }
-
-        return -1;
-    }
-
-    private static string GetCalleeBeforeParenthesis(string text, int parenthesisIndex)
-    {
-        var end = parenthesisIndex - 1;
-        while (end >= 0 && char.IsWhiteSpace(text[end]))
-        {
-            end--;
-        }
-
-        if (end < 0 || !VbaSourceText.IsIdentifierCharacter(text[end]))
-        {
-            return "";
-        }
-
-        var start = end;
-        while (start >= 0 && VbaSourceText.IsIdentifierCharacter(text[start]))
-        {
-            start--;
-        }
-
-        if (start >= 0 && text[start] == '.')
-        {
-            start--;
-            while (start >= 0 && char.IsWhiteSpace(text[start]))
-            {
-                start--;
-            }
-
-            while (start >= 0 && (VbaSourceText.IsIdentifierCharacter(text[start]) || text[start] == '.'))
-            {
-                start--;
-            }
-        }
-
-        return text[(start + 1)..(end + 1)].Replace(" ", "", StringComparison.Ordinal);
     }
 
     private static VbaSyntaxRange RangeFromLogicalSpan(LogicalStatement statement, int startIndex, int endIndex)
