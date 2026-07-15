@@ -158,7 +158,7 @@ public sealed class VbaProjectReferenceCatalogPersistentStore
     /// <summary>
     /// The current generated reference catalog metadata version.
     /// </summary>
-    public const string CurrentGeneratorVersion = "typelib-catalog-v3";
+    public const string CurrentGeneratorVersion = "typelib-catalog-v4";
 
     private const string ReferencesDirectoryName = "references";
     private const string CatalogsDirectoryName = "catalogs";

@@ -817,7 +817,8 @@ internal static class VbaSyntaxTreeParser
             line.Text,
             IsExternal: isExternal,
             IsStatic: isStatic,
-            DeclarationKeyword: GetDeclarationKeyword(match));
+            DeclarationKeyword: GetDeclarationKeyword(match),
+            PropertyAccessorKind: GetPropertyAccessorKind(match));
     }
 
     private static VbaCallableDeclarationSyntax CreateCallableDeclaration(
@@ -853,7 +854,8 @@ internal static class VbaSyntaxTreeParser
             lineIndex,
             statement.Text,
             IsStatic: isStatic,
-            DeclarationKeyword: GetDeclarationKeyword(match));
+            DeclarationKeyword: GetDeclarationKeyword(match),
+            PropertyAccessorKind: GetPropertyAccessorKind(match));
     }
 
     private static VbaDeclarationSyntax CreateCallableSourceDeclaration(VbaCallableDeclarationSyntax declaration)
@@ -869,7 +871,8 @@ internal static class VbaSyntaxTreeParser
             IsExternal: declaration.IsExternal,
             IsStatic: declaration.IsStatic,
             DeclarationLabel: CreateDeclarationLabel(declaration),
-            CallableKind: declaration.DeclarationKeyword);
+            CallableKind: declaration.DeclarationKeyword,
+            PropertyAccessorKind: declaration.PropertyAccessorKind);
 
     private static VbaDeclarationSyntax CreateParameterDeclaration(
         VbaCallableParameterSyntax parameter,
@@ -1262,6 +1265,15 @@ internal static class VbaSyntaxTreeParser
         => match.Groups["propertyKind"].Success
             ? "Property"
             : match.Groups["kind"].Value;
+
+    private static VbaPropertyAccessorKind? GetPropertyAccessorKind(Match match)
+        => match.Groups["propertyKind"].Value.ToUpperInvariant() switch
+        {
+            "GET" => VbaPropertyAccessorKind.Get,
+            "LET" => VbaPropertyAccessorKind.Let,
+            "SET" => VbaPropertyAccessorKind.Set,
+            _ => null
+        };
 
     private static bool IsOptionalParameter(string text)
         => Regex.IsMatch(

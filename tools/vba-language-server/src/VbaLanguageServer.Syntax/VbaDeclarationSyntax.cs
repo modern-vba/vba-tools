@@ -57,6 +57,27 @@ public enum VbaDeclarationKind
 }
 
 /// <summary>
+/// Identifies the accessor keyword declared by a VBA Property procedure.
+/// </summary>
+public enum VbaPropertyAccessorKind
+{
+    /// <summary>
+    /// A Property Get accessor.
+    /// </summary>
+    Get,
+
+    /// <summary>
+    /// A Property Let accessor.
+    /// </summary>
+    Let,
+
+    /// <summary>
+    /// A Property Set accessor.
+    /// </summary>
+    Set
+}
+
+/// <summary>
 /// Represents the visibility scope parsed for a VBA declaration.
 /// </summary>
 public enum VbaDeclarationVisibility
@@ -122,6 +143,7 @@ public sealed record VbaModuleMemberSyntax(
 /// <param name="IsStatic">Whether the declaration includes Static.</param>
 /// <param name="DeclarationLabel">The editor-facing declaration summary for hover display.</param>
 /// <param name="CallableKind">The callable kind keyword used in rich signature labels.</param>
+/// <param name="PropertyAccessorKind">The declared Property accessor kind.</param>
 public sealed record VbaDeclarationSyntax(
     string Name,
     VbaDeclarationKind Kind,
@@ -138,7 +160,8 @@ public sealed record VbaDeclarationSyntax(
     bool IsExternal = false,
     bool IsStatic = false,
     string? DeclarationLabel = null,
-    string? CallableKind = null);
+    string? CallableKind = null,
+    VbaPropertyAccessorKind? PropertyAccessorKind = null);
 
 /// <summary>
 /// Represents a parsed callable declaration and its full source block.
@@ -157,6 +180,7 @@ public sealed record VbaDeclarationSyntax(
 /// <param name="IsExternal">Whether the callable is an external Declare member.</param>
 /// <param name="IsStatic">Whether the callable includes Static.</param>
 /// <param name="DeclarationKeyword">The callable keyword used by editor-facing declaration labels.</param>
+/// <param name="PropertyAccessorKind">The declared Property accessor kind.</param>
 public sealed record VbaCallableDeclarationSyntax(
     string Name,
     VbaDeclarationKind Kind,
@@ -171,7 +195,8 @@ public sealed record VbaCallableDeclarationSyntax(
     string OriginalLine,
     bool IsExternal = false,
     bool IsStatic = false,
-    string? DeclarationKeyword = null);
+    string? DeclarationKeyword = null,
+    VbaPropertyAccessorKind? PropertyAccessorKind = null);
 
 /// <summary>
 /// Represents one parsed parameter in a callable declaration.

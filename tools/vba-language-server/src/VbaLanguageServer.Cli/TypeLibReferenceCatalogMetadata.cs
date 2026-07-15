@@ -34,12 +34,14 @@ public sealed record TypeLibCatalogType(
 /// <param name="Documentation">The member documentation.</param>
 /// <param name="Signature">The callable signature, when the member is callable.</param>
 /// <param name="TypeReference">The member result type, when known.</param>
+/// <param name="PropertyAccess">The property operations represented by the TypeLib member.</param>
 public sealed record TypeLibCatalogMember(
     string Name,
     VbaSourceDefinitionKind Kind,
     string? Documentation,
     VbaCallableSignature? Signature = null,
-    VbaTypeReference? TypeReference = null);
+    VbaTypeReference? TypeReference = null,
+    VbaPropertyAccess PropertyAccess = VbaPropertyAccess.Unknown);
 
 /// <summary>
 /// Reads TypeLib metadata from a resolved catalog identity.
@@ -90,7 +92,8 @@ public static class TypeLibReferenceCatalogBuilder
                     member.Documentation,
                     member.Signature,
                     ParentTypeName: type.Name,
-                    TypeReference: member.TypeReference));
+                    TypeReference: member.TypeReference,
+                    PropertyAccess: member.PropertyAccess));
             }
         }
 
@@ -109,10 +112,21 @@ public static class TypeLibReferenceCatalogBuilder
                     definition.Kind.ToString(),
                     definition.ParentTypeName ?? ""),
                 StringComparer.OrdinalIgnoreCase)
-            .Select(group => group
-                .OrderByDescending(definition => definition.TypeReference is not null)
-                .ThenByDescending(definition => definition.Signature is not null)
-                .First())
+            .Select(group =>
+            {
+                var selected = group
+                    .OrderByDescending(definition => definition.TypeReference is not null)
+                    .ThenByDescending(definition => definition.Signature is not null)
+                    .First();
+                return selected with
+                {
+                    PropertyAccess = selected.Kind == VbaSourceDefinitionKind.Property
+                        ? group.Aggregate(
+                            VbaPropertyAccess.Unknown,
+                            (access, definition) => access | definition.PropertyAccess)
+                        : VbaPropertyAccess.Unknown
+                };
+            })
             .ToArray();
     }
 
@@ -278,7 +292,8 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
                             Kind = VbaSourceDefinitionKind.Event,
                             Signature = member.Signature is null
                                 ? null
-                                : member.Signature with { CallableKind = VbaCallableKind.Event }
+                                : member.Signature with { CallableKind = VbaCallableKind.Event },
+                            PropertyAccess = VbaPropertyAccess.Unknown
                         }
                         : member));
                 }
@@ -336,7 +351,8 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
                     memberName,
                     memberKind,
                     EmptyToNull(documentation),
-                    TypeReference: ToTypeReference(typeInfo, varDesc.elemdescVar.tdesc)));
+                    TypeReference: ToTypeReference(typeInfo, varDesc.elemdescVar.tdesc),
+                    PropertyAccess: GetVariablePropertyAccess(memberKind, varDesc)));
             }
             finally
             {
@@ -387,6 +403,7 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
                 var memberKind = IsPropertyInvokeKind(funcDesc.invkind)
                     ? VbaSourceDefinitionKind.Property
                     : VbaSourceDefinitionKind.Procedure;
+                var propertyAccess = GetPropertyAccess(funcDesc.invkind);
                 var callableKind = GetCallableKind(
                     funcDesc.invkind,
                     (VarEnum)funcDesc.elemdescFunc.tdesc.vt,
@@ -401,7 +418,8 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
                     memberKind,
                     EmptyToNull(documentation),
                     signature,
-                    returnType));
+                    returnType,
+                    propertyAccess));
             }
             finally
             {
@@ -513,6 +531,22 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
         return returnVarType is VarEnum.VT_VOID or VarEnum.VT_EMPTY or VarEnum.VT_HRESULT
             ? VbaCallableKind.Sub
             : VbaCallableKind.Function;
+    }
+
+    internal static VbaPropertyAccess GetPropertyAccess(INVOKEKIND invokeKind)
+    {
+        var access = VbaPropertyAccess.Unknown;
+        if ((invokeKind & INVOKEKIND.INVOKE_PROPERTYGET) != 0)
+        {
+            access |= VbaPropertyAccess.Readable;
+        }
+
+        if ((invokeKind & (INVOKEKIND.INVOKE_PROPERTYPUT | INVOKEKIND.INVOKE_PROPERTYPUTREF)) != 0)
+        {
+            access |= VbaPropertyAccess.Writable;
+        }
+
+        return access;
     }
 
     private static string CreateParameterLabel(VbaCallableParameter parameter)
@@ -642,10 +676,22 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
         return definitionKind != VbaSourceDefinitionKind.Variable;
     }
 
+    private static VbaPropertyAccess GetVariablePropertyAccess(
+        VbaSourceDefinitionKind memberKind,
+        VARDESC varDesc)
+    {
+        if (memberKind != VbaSourceDefinitionKind.Property)
+        {
+            return VbaPropertyAccess.Unknown;
+        }
+
+        return (varDesc.wVarFlags & (short)VARFLAGS.VARFLAG_FREADONLY) != 0
+            ? VbaPropertyAccess.Readable
+            : VbaPropertyAccess.Readable | VbaPropertyAccess.Writable;
+    }
+
     private static bool IsPropertyInvokeKind(INVOKEKIND invokeKind)
-        => invokeKind is INVOKEKIND.INVOKE_PROPERTYGET
-            or INVOKEKIND.INVOKE_PROPERTYPUT
-            or INVOKEKIND.INVOKE_PROPERTYPUTREF;
+        => GetPropertyAccess(invokeKind) != VbaPropertyAccess.Unknown;
 
     private static bool HasHiddenOrRestrictedTypeFlags(TYPEATTR attr)
         => ((TYPEFLAGS)attr.wTypeFlags & (TYPEFLAGS.TYPEFLAG_FHIDDEN | TYPEFLAGS.TYPEFLAG_FRESTRICTED)) != 0;

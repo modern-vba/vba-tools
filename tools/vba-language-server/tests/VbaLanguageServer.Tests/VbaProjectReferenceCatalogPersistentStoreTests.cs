@@ -30,7 +30,8 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
             Assert.Contains(entry.Catalog.Definitions, definition =>
                 definition.Name == "GeneratedMember"
                 && definition.Kind == VbaSourceDefinitionKind.Property
-                && definition.ParentTypeName == "GeneratedType");
+                && definition.ParentTypeName == "GeneratedType"
+                && definition.PropertyAccess == (VbaPropertyAccess.Readable | VbaPropertyAccess.Writable));
             Assert.Contains(entry.Catalog.Definitions, definition =>
                 definition.Name == "GeneratedMethod"
                 && definition.Signature?.CallableKind == VbaCallableKind.Function);
@@ -104,6 +105,56 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
             Assert.Equal(
                 "GeneratedMethod(Value) As String",
                 sourceIndex.GetSignatureHelp(uri, 3, "    generated.GeneratedMethod(".Length)?.Signature.Label);
+        }
+        finally
+        {
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void PersistentStoreLoadsV3PropertyMetadataAsStaleUnknownAccess()
+    {
+        var cacheRoot = Directory.CreateTempSubdirectory("vba-ls-catalog-v3-").FullName;
+        try
+        {
+            var identity = CreateIdentity("Generated Library");
+            var store = new VbaProjectReferenceCatalogPersistentStore(cacheRoot);
+            store.Save(new VbaProjectReferenceCatalogPersistentEntry(
+                identity,
+                CreateGeneratedCatalog("Generated Library", "GeneratedType", "GeneratedMember")));
+
+            var entryPath = Path.Combine(
+                cacheRoot,
+                "catalogs",
+                VbaProjectReferenceCatalogPersistentStore.CreateCatalogEntryKey(identity));
+            File.WriteAllText(
+                entryPath,
+                Regex.Replace(
+                    File.ReadAllText(entryPath)
+                        .Replace(
+                            VbaProjectReferenceCatalogPersistentStore.CurrentGeneratorVersion,
+                            "typelib-catalog-v3",
+                            StringComparison.Ordinal),
+                    ",\\s*\"propertyAccess\"\\s*:\\s*\\d+",
+                    "",
+                    RegexOptions.CultureInvariant));
+            var indexPath = store.GetReferenceIndexPath("Generated Library");
+            File.WriteAllText(
+                indexPath,
+                File.ReadAllText(indexPath).Replace(
+                    VbaProjectReferenceCatalogPersistentStore.CurrentGeneratorVersion,
+                    "typelib-catalog-v3",
+                    StringComparison.Ordinal));
+
+            var loadResult = store.Load("Generated Library");
+
+            Assert.Equal(VbaProjectReferenceCatalogPersistentLoadStatus.Stale, loadResult.Status);
+            var entry = Assert.IsType<VbaProjectReferenceCatalogPersistentEntry>(loadResult.Entry);
+            var property = Assert.Single(
+                entry.Catalog.Definitions,
+                definition => definition.Name == "GeneratedMember");
+            Assert.Equal(VbaPropertyAccess.Unknown, property.PropertyAccess);
         }
         finally
         {
@@ -526,7 +577,8 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
                     memberName,
                     VbaSourceDefinitionKind.Property,
                     "Generated member.",
-                    ParentTypeName: typeName),
+                    ParentTypeName: typeName,
+                    PropertyAccess: VbaPropertyAccess.Readable | VbaPropertyAccess.Writable),
                 new VbaProjectReferenceDefinition(
                     referenceName,
                     "GeneratedMethod",

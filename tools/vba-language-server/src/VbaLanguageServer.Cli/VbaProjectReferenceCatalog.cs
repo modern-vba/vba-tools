@@ -13,6 +13,7 @@ namespace VbaLanguageServer.SourceModel;
 /// <param name="Signature">The callable signature supplied by the catalog.</param>
 /// <param name="ParentTypeName">The containing type name for members.</param>
 /// <param name="TypeReference">The result or member type reference supplied by the catalog.</param>
+/// <param name="PropertyAccess">The supported property operations, or Unknown when unavailable.</param>
 public sealed record VbaProjectReferenceDefinition(
     string ReferenceName,
     string Name,
@@ -20,7 +21,8 @@ public sealed record VbaProjectReferenceDefinition(
     string? Documentation = null,
     VbaCallableSignature? Signature = null,
     string? ParentTypeName = null,
-    VbaTypeReference? TypeReference = null);
+    VbaTypeReference? TypeReference = null,
+    VbaPropertyAccess PropertyAccess = VbaPropertyAccess.Unknown);
 
 /// <summary>
 /// Contains reference-catalog definitions and qualifier aliases for one VBA project reference.
@@ -108,7 +110,8 @@ public sealed class VbaProjectReferenceCatalogSet
                         VbaSourceDefinitionKind.Property,
                         "Returns the open Microsoft Excel workbooks.",
                         ParentTypeName: "Application",
-                        TypeReference: new VbaTypeReference("Workbooks", "Excel")),
+                        TypeReference: new VbaTypeReference("Workbooks", "Excel"),
+                        PropertyAccess: VbaPropertyAccess.Readable),
                     new VbaProjectReferenceDefinition(
                         "Microsoft Excel 16.0 Object Library",
                         "Run",
@@ -150,7 +153,8 @@ public sealed class VbaProjectReferenceCatalogSet
                         "Name",
                         VbaSourceDefinitionKind.Property,
                         "Returns the workbook name.",
-                        ParentTypeName: "Workbook"),
+                        ParentTypeName: "Workbook",
+                        PropertyAccess: VbaPropertyAccess.Readable),
                     new VbaProjectReferenceDefinition(
                         "Microsoft Excel 16.0 Object Library",
                         "WorkbookOpen",
@@ -376,7 +380,8 @@ public sealed class VbaProjectReferenceCatalogSet
             Signature: signature,
             ParentTypeName: definition.ParentTypeName,
             TypeReference: definition.TypeReference,
-            DeclarationLabel: CreateDeclarationLabel(definition, signature));
+            DeclarationLabel: CreateDeclarationLabel(definition, signature),
+            PropertyAccess: definition.PropertyAccess);
     }
 
     private static VbaCallableSignature? CreateSourceSignature(VbaProjectReferenceDefinition definition)

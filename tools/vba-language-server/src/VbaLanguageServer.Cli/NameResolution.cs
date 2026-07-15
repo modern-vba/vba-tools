@@ -228,8 +228,9 @@ public sealed class VbaNameResolutionService
     {
         return GetMemberCandidates(currentDocument, typeName, referenceName)
             .GroupBy(candidate => candidate.Name, StringComparer.OrdinalIgnoreCase)
-            .Where(group => group.Count() == 1)
-            .Select(group => group.Single().Definition)
+            .Select(group => ResolveMemberCandidateGroup(group.Select(candidate => candidate.Definition)))
+            .Where(definition => definition is not null)
+            .Select(definition => definition!)
             .OrderBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
             .ToArray();
     }
@@ -246,7 +247,7 @@ public sealed class VbaNameResolutionService
             .Where(candidate => requiredKind is null || candidate.Definition.Kind == requiredKind)
             .Select(candidate => candidate.Definition)
             .ToArray();
-        return matchingCandidates.Length == 1 ? matchingCandidates[0] : null;
+        return ResolveMemberCandidateGroup(matchingCandidates);
     }
 
     internal VbaSourceDefinition? ResolveSourceTypeCompletionGroup(IReadOnlyList<VbaSourceDefinition> definitions)
@@ -289,6 +290,13 @@ public sealed class VbaNameResolutionService
 
     private VbaSourceDefinition? ResolveReferenceCandidates(IEnumerable<VbaSourceDefinition> definitions)
         => resolutionPolicy.ResolveReferenceCandidates(definitions, candidates.ReferenceSelection);
+
+    private static VbaSourceDefinition? ResolveMemberCandidateGroup(
+        IEnumerable<VbaSourceDefinition> definitions)
+    {
+        var coalesced = VbaPropertyAccessorCoalescing.Coalesce(definitions);
+        return coalesced.Count == 1 ? coalesced[0] : null;
+    }
 
     private IEnumerable<VbaNameCandidate> GetMemberCandidates(
         VbaSourceDocument currentDocument,

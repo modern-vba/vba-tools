@@ -389,6 +389,10 @@ _Avoid_: general completion, trigger context
 An editor proposal admitted by a `CompletionExpectation` after semantic resolution. It may originate from a `VbaDefinition`, `VbaProjectReferenceDefinition`, `LanguageVocabulary`, named `CallableParameter`, or `EndStatementCompletion`, and is complete before LSP projection.
 _Avoid_: completion definition, raw vocabulary
 
+**PropertyAccess**:
+The semantic capability retained when complementary `Property Get`, `Property Let`, or `Property Set` declarations are coalesced into one logical property. `Readable` and `Writable` capabilities are derived from source accessor kinds or TypeLib invoke metadata; `Unknown` remains loadable for legacy catalogs but admits no context-specific `CompletionCandidate` until refreshed.
+_Avoid_: getter flag, setter flag, inferred property mode
+
 **IndentationFormatting**:
 A `SourceFormatting` operation that rewrites leading whitespace according to
 VBA block structure. It depends on source ranges, tokens, and syntax block

@@ -307,6 +307,7 @@ public readonly struct VbaDefinitionIdentity : IEquatable<VbaDefinitionIdentity>
 /// <param name="TypeReference">The explicit result or variable type reference.</param>
 /// <param name="IsWithEvents">Whether the definition declares WithEvents.</param>
 /// <param name="DeclarationLabel">The editor-facing declaration summary for hover display.</param>
+/// <param name="PropertyAccess">The supported property operations, or Unknown when unavailable.</param>
 public sealed record VbaSourceDefinition(
     VbaDefinitionIdentity Identity,
     VbaDefinitionLocation Location,
@@ -321,7 +322,8 @@ public sealed record VbaSourceDefinition(
     string? ParentTypeName = null,
     VbaTypeReference? TypeReference = null,
     bool IsWithEvents = false,
-    string? DeclarationLabel = null)
+    string? DeclarationLabel = null,
+    VbaPropertyAccess PropertyAccess = VbaPropertyAccess.Unknown)
 {
     /// <summary>
     /// Gets the editor-facing definition URI.
@@ -940,7 +942,8 @@ public sealed class VbaSourceIndex
             ParentTypeName: declaration.ParentTypeName,
             TypeReference: declaration.TypeReference is null ? null : MapTypeReference(declaration.TypeReference),
             IsWithEvents: declaration.IsWithEvents,
-            DeclarationLabel: declaration.DeclarationLabel);
+            DeclarationLabel: declaration.DeclarationLabel,
+            PropertyAccess: MapPropertyAccess(declaration.PropertyAccessorKind));
     }
 
     private static VbaSourceDefinitionKind MapModuleKind(VbaModuleKind kind)
@@ -1022,6 +1025,14 @@ public sealed class VbaSourceIndex
                 VbaDeclarationKind.Event => VbaCallableKind.Event,
                 _ => declaration.TypeReference is null ? VbaCallableKind.Sub : VbaCallableKind.Function
             }
+        };
+
+    private static VbaPropertyAccess MapPropertyAccess(VbaPropertyAccessorKind? accessorKind)
+        => accessorKind switch
+        {
+            VbaPropertyAccessorKind.Get => VbaPropertyAccess.Readable,
+            VbaPropertyAccessorKind.Let or VbaPropertyAccessorKind.Set => VbaPropertyAccess.Writable,
+            _ => VbaPropertyAccess.Unknown
         };
 
     private static string CreateSignatureParameterLabel(VbaCallableParameterInfoSyntax parameter)

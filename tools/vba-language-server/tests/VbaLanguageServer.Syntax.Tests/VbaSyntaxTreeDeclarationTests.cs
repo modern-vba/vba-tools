@@ -127,4 +127,40 @@ public sealed class VbaSyntaxTreeDeclarationTests
         Assert.Equal("Long", build.TypeReference?.Name);
         Assert.Equal(["SourceNames", "Fallback"], build.Signature.Parameters.Select(parameter => parameter.Name).ToArray());
     }
+
+    [Fact]
+    public void ParserPreservesPropertyGetLetAndSetAccessorKinds()
+    {
+        var source = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Public Property Get Value() As Variant",
+            "End Property",
+            "Public Property Let Value(ByVal AssignedValue As Variant)",
+            "End Property",
+            "Public Property Set Owner(ByVal AssignedOwner As Object)",
+            "End Property"
+        ]);
+
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.cls", source);
+
+        Assert.Contains(tree.Module.CallableDeclarations, declaration =>
+            declaration.Name == "Value"
+            && declaration.PropertyAccessorKind == VbaPropertyAccessorKind.Get);
+        Assert.Contains(tree.Module.CallableDeclarations, declaration =>
+            declaration.Name == "Value"
+            && declaration.PropertyAccessorKind == VbaPropertyAccessorKind.Let);
+        Assert.Contains(tree.Module.CallableDeclarations, declaration =>
+            declaration.Name == "Owner"
+            && declaration.PropertyAccessorKind == VbaPropertyAccessorKind.Set);
+        Assert.Contains(tree.Module.Declarations, declaration =>
+            declaration.Name == "Value"
+            && declaration.PropertyAccessorKind == VbaPropertyAccessorKind.Get);
+        Assert.Contains(tree.Module.Declarations, declaration =>
+            declaration.Name == "Value"
+            && declaration.PropertyAccessorKind == VbaPropertyAccessorKind.Let);
+        Assert.Contains(tree.Module.Declarations, declaration =>
+            declaration.Name == "Owner"
+            && declaration.PropertyAccessorKind == VbaPropertyAccessorKind.Set);
+    }
 }

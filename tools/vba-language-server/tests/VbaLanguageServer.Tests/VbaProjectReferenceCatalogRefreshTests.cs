@@ -375,7 +375,8 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
                     "BundledOnly",
                     VbaSourceDefinitionKind.Property,
                     "Bundled-only member.",
-                    ParentTypeName: "GeneratedType")
+                    ParentTypeName: "GeneratedType",
+                    PropertyAccess: VbaPropertyAccess.Readable)
             ]);
         var cache = new VbaProjectReferenceCatalogCache(
             VbaProjectReferenceCatalogSet.Empty.WithCatalog(bundledCatalog));
@@ -400,7 +401,8 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
                                 new TypeLibCatalogMember(
                                     "GeneratedOnly",
                                     VbaSourceDefinitionKind.Property,
-                                    "Generated-only member.")
+                                    "Generated-only member.",
+                                    PropertyAccess: VbaPropertyAccess.Readable)
                             ])
                     ])));
         var service = new VbaProjectReferenceCatalogRefreshService(cache, discovery);
@@ -589,7 +591,8 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
                                     "Pattern",
                                     VbaSourceDefinitionKind.Property,
                                     "Sets or returns the regular expression pattern.",
-                                    TypeReference: new VbaTypeReference("String")),
+                                    TypeReference: new VbaTypeReference("String"),
+                                    PropertyAccess: VbaPropertyAccess.Readable | VbaPropertyAccess.Writable),
                                 new TypeLibCatalogMember(
                                     "Execute",
                                     VbaSourceDefinitionKind.Procedure,

@@ -41,21 +41,23 @@ internal sealed class VbaResolutionPolicy
         var bestCandidates = rankedCandidates
             .Where(candidate => candidate.Rank == bestRank)
             .ToArray();
-        if (bestCandidates.Length == 1)
+        var bestDefinitions = VbaPropertyAccessorCoalescing.Coalesce(
+            bestCandidates.Select(candidate => candidate.Definition));
+        if (bestDefinitions.Count == 1)
         {
-            return bestCandidates[0].Definition;
+            return bestDefinitions[0];
         }
 
         if (bestRank == ReferenceRank && referenceSelection?.MainVbaProjectReference is not null)
         {
-            var mainReferenceCandidates = bestCandidates
-                .Where(candidate => SameName(
-                    candidate.Definition.ModuleName,
+            var mainReferenceCandidates = bestDefinitions
+                .Where(definition => SameName(
+                    definition.ModuleName,
                     referenceSelection.MainVbaProjectReference.Name))
                 .ToArray();
             if (mainReferenceCandidates.Length == 1)
             {
-                return mainReferenceCandidates[0].Definition;
+                return mainReferenceCandidates[0];
             }
         }
 
