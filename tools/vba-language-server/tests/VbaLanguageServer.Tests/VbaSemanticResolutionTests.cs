@@ -445,6 +445,65 @@ public sealed class VbaSemanticResolutionTests
         Assert.Null(signatureHelp);
     }
 
+    [Theory]
+    [InlineData(7, "    example_var = ExampleFunc(1, ")]
+    [InlineData(7, "    example_var = ExampleFunc(1, Arg")]
+    [InlineData(7, "    example_var = ExampleFunc(1, Arg3:")]
+    [InlineData(7, "    example_var = ExampleFunc(1, Arg3:=Tr")]
+    [InlineData(8, "    ExampleSub 1, ")]
+    [InlineData(8, "    ExampleSub 1, Arg")]
+    [InlineData(8, "    ExampleSub 1, Arg3:")]
+    [InlineData(8, "    ExampleSub 1, Arg3:=Tr")]
+    public void SignatureHelpTracksThirdNamedArgumentAfterPositionalArgument(
+        int line,
+        string cursorPrefix)
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Function ExampleFunc(ByRef Arg1 As Long, Optional Arg2 As Boolean = False, Optional Arg3 As Boolean = False) As String",
+            "End Function",
+            "Public Sub ExampleSub(ByRef Arg1 As Long, Optional Arg2 As Boolean = False, Optional Arg3 As Boolean = False)",
+            "End Sub",
+            "Public Sub Run()",
+            "    Dim example_var As String",
+            "    example_var = ExampleFunc(1, Arg3:=True)",
+            "    ExampleSub 1, Arg3:=True",
+            "End Sub"
+        ]);
+        var index = BuildIndex(uri, text);
+
+        var signatureHelp = index.GetSignatureHelp(uri, line, cursorPrefix.Length);
+
+        Assert.Equal(2, signatureHelp?.ActiveParameter);
+    }
+
+    [Fact]
+    public void SignatureHelpEndsAfterParenthesizedAndStatementFormCallsComplete()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        const string functionCall = "    example_var = ExampleFunc(1, Arg3:=True)";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Function ExampleFunc(ByRef Arg1 As Long, Optional Arg2 As Boolean = False, Optional Arg3 As Boolean = False) As String",
+            "End Function",
+            "Public Sub ExampleSub(ByRef Arg1 As Long, Optional Arg2 As Boolean = False, Optional Arg3 As Boolean = False)",
+            "End Sub",
+            "Public Sub Run()",
+            "    Dim example_var As String",
+            functionCall,
+            "    ExampleSub 1, Arg3:=True",
+            "End Sub"
+        ]);
+        var index = BuildIndex(uri, text);
+
+        var afterFunctionCall = index.GetSignatureHelp(uri, 7, functionCall.Length);
+        var afterStatementCall = index.GetSignatureHelp(uri, 9, 0);
+
+        Assert.Null(afterFunctionCall);
+        Assert.Null(afterStatementCall);
+    }
+
     [Fact]
     public void SignatureHelpFormatsSourceOptionalParametersAndTracksArgumentForms()
     {
