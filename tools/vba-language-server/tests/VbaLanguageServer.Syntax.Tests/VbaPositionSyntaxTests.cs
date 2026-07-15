@@ -105,6 +105,35 @@ public sealed class VbaPositionSyntaxTests
     }
 
     [Fact]
+    public void CompleteAndPositionCallSyntaxAgreeOnArgumentKindsAndNames()
+    {
+        const string callLine = "    Example(1, Arg2:=\"x\", , Arg4:=Nested(5, Name:=6),)";
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            callLine,
+            "End Sub"
+        ]);
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.bas", source);
+
+        var complete = Assert.Single(
+            tree.Module.ArgumentLists,
+            argumentList => argumentList.Callee == "Example");
+        var position = tree.GetPositionSyntax(2, callLine.LastIndexOf(')')).CallSite;
+
+        Assert.NotNull(position);
+        Assert.Equal(VbaCallSyntaxForm.Parenthesized, position.Form);
+        Assert.Equal(complete.Arguments.Count, position.Arguments.Count);
+        Assert.Equal(
+            complete.Arguments.Select(argument => argument.Name),
+            position.Arguments.Select(argument => argument.Name));
+        Assert.Equal(
+            complete.Arguments.Select(argument => argument.Kind == VbaArgumentKind.Omitted),
+            position.Arguments.Select(argument => argument.IsOmitted));
+        Assert.Equal(complete.Arguments.Count - 1, position.ActiveArgumentIndex);
+    }
+
+    [Fact]
     public void PositionSyntaxPreservesNestedWithScopeOrderAcrossContinuations()
     {
         var source = string.Join('\n', [
