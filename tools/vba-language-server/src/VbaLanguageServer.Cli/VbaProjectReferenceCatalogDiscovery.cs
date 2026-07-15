@@ -535,19 +535,18 @@ public sealed class VbaProjectReferenceCatalogCache
     {
         lock (gate)
         {
-            var candidateNames = selection.References
-                .Where(reference => !identities.ContainsKey(reference.Name))
-                .Where(reference => !refreshesInProgress.Contains(reference.Name))
-                .Select(reference => reference.Name)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
-                .ToArray();
-            foreach (var candidateName in candidateNames)
-            {
-                refreshesInProgress.Add(candidateName);
-            }
+            return TakeRefreshCandidateReferenceNamesCore(selection);
+        }
+    }
 
-            return candidateNames;
+    internal VbaProjectReferenceCatalogRefreshBatchReservation ReserveRefreshCandidateBatch(
+        VbaProjectReferenceSelection selection)
+    {
+        lock (gate)
+        {
+            return new VbaProjectReferenceCatalogRefreshBatchReservation(
+                this,
+                TakeRefreshCandidateReferenceNamesCore(selection));
         }
     }
 
@@ -560,17 +559,23 @@ public sealed class VbaProjectReferenceCatalogCache
         lock (gate)
         {
             refreshesInProgress.Remove(result.ReferenceName);
+            StoreCore(result);
+        }
+    }
 
-            if (result.Identities.Count == 1)
+    internal void StoreReservedDiscoveryResult(
+        string reservedReferenceName,
+        VbaProjectReferenceCatalogDiscoveryResult result)
+    {
+        lock (gate)
+        {
+            try
             {
-                identities[result.ReferenceName] = result.Identities[0];
+                StoreCore(result);
             }
-
-            if (result.Catalog is not null)
+            finally
             {
-                catalogSet = catalogSet.WithCatalog(result.Catalog);
-                catalogSources[result.ReferenceName] = VbaProjectReferenceCatalogSource.Generated;
-                version++;
+                refreshesInProgress.Remove(reservedReferenceName);
             }
         }
     }
@@ -614,6 +619,96 @@ public sealed class VbaProjectReferenceCatalogCache
         {
             refreshesInProgress.Remove(referenceName);
         }
+    }
+
+    internal void ReleaseRefreshCandidates(IEnumerable<string> referenceNames)
+    {
+        lock (gate)
+        {
+            foreach (var referenceName in referenceNames)
+            {
+                refreshesInProgress.Remove(referenceName);
+            }
+        }
+    }
+
+    private IReadOnlyList<string> TakeRefreshCandidateReferenceNamesCore(
+        VbaProjectReferenceSelection selection)
+    {
+        var candidateNames = selection.References
+            .Where(reference => !identities.ContainsKey(reference.Name))
+            .Where(reference => !refreshesInProgress.Contains(reference.Name))
+            .Select(reference => reference.Name)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        foreach (var candidateName in candidateNames)
+        {
+            refreshesInProgress.Add(candidateName);
+        }
+
+        return candidateNames;
+    }
+
+    private void StoreCore(VbaProjectReferenceCatalogDiscoveryResult result)
+    {
+        if (result.Identities.Count == 1)
+        {
+            identities[result.ReferenceName] = result.Identities[0];
+        }
+
+        if (result.Catalog is not null)
+        {
+            catalogSet = catalogSet.WithCatalog(result.Catalog);
+            catalogSources[result.ReferenceName] = VbaProjectReferenceCatalogSource.Generated;
+            version++;
+        }
+    }
+}
+
+/// <summary>
+/// Owns one atomically reserved batch of reference catalog refresh candidates.
+/// </summary>
+internal sealed class VbaProjectReferenceCatalogRefreshBatchReservation
+{
+    private readonly VbaProjectReferenceCatalogCache cache;
+    private readonly IReadOnlyList<string> referenceNames;
+    private readonly HashSet<string> remainingReferenceNames;
+
+    internal VbaProjectReferenceCatalogRefreshBatchReservation(
+        VbaProjectReferenceCatalogCache cache,
+        IReadOnlyList<string> referenceNames)
+    {
+        this.cache = cache;
+        this.referenceNames = referenceNames;
+        remainingReferenceNames = new HashSet<string>(referenceNames, StringComparer.OrdinalIgnoreCase);
+    }
+
+    internal IReadOnlyList<string> ReferenceNames => referenceNames;
+
+    internal void StoreDiscoveryResult(
+        string referenceName,
+        VbaProjectReferenceCatalogDiscoveryResult result)
+    {
+        if (!remainingReferenceNames.Remove(referenceName))
+        {
+            throw new InvalidOperationException(
+                $"Reference catalog refresh reservation for '{referenceName}' is not active.");
+        }
+
+        cache.StoreReservedDiscoveryResult(referenceName, result);
+    }
+
+    internal void ReleaseRemaining()
+    {
+        if (remainingReferenceNames.Count == 0)
+        {
+            return;
+        }
+
+        var referenceNamesToRelease = remainingReferenceNames.ToArray();
+        remainingReferenceNames.Clear();
+        cache.ReleaseRefreshCandidates(referenceNamesToRelease);
     }
 }
 
@@ -771,46 +866,48 @@ public sealed class VbaProjectReferenceCatalogRefreshService
     {
         var results = new List<VbaProjectReferenceCatalogRefreshResult>();
         results.AddRange(PreloadPersistedCatalogs(selection));
-        var refreshReferenceNames = cache.TakeRefreshCandidateReferenceNames(selection);
-        foreach (var referenceName in refreshReferenceNames)
+        var reservation = cache.ReserveRefreshCandidateBatch(selection);
+        try
         {
-            VbaProjectReferenceCatalogDiscoveryResult discoveryResult;
-            var sourceBeforeDiscovery = cache.GetCatalogSource(referenceName);
-            var stopwatch = Stopwatch.StartNew();
-            try
+            foreach (var referenceName in reservation.ReferenceNames)
             {
-                discoveryResult = await refreshWorker.DiscoverAsync(discovery, referenceName, cancellationToken);
-            }
-            catch (OperationCanceledException)
-            {
-                cache.ReleaseRefreshCandidate(referenceName);
-                throw;
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                discoveryResult = VbaProjectReferenceCatalogDiscoveryResult.Failure(referenceName, ex.Message);
-            }
-            finally
-            {
-                stopwatch.Stop();
+                VbaProjectReferenceCatalogDiscoveryResult discoveryResult;
+                var sourceBeforeDiscovery = cache.GetCatalogSource(referenceName);
+                var stopwatch = Stopwatch.StartNew();
+                try
+                {
+                    discoveryResult = await refreshWorker.DiscoverAsync(discovery, referenceName, cancellationToken);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    discoveryResult = VbaProjectReferenceCatalogDiscoveryResult.Failure(referenceName, ex.Message);
+                }
+                finally
+                {
+                    stopwatch.Stop();
+                }
+
+                reservation.StoreDiscoveryResult(referenceName, discoveryResult);
+                var saveWarning = SavePersistedCatalog(discoveryResult);
+                var source = discoveryResult.HasUsableCatalog
+                    ? VbaProjectReferenceCatalogSource.Generated
+                    : sourceBeforeDiscovery;
+                results.Add(new VbaProjectReferenceCatalogRefreshResult(
+                    referenceName,
+                    discoveryResult,
+                    Source: source,
+                    Phase: "typelib-discovery",
+                    ExpensiveMetadataRan: true,
+                    Elapsed: stopwatch.Elapsed,
+                    WarningMessage: saveWarning));
             }
 
-            cache.Store(discoveryResult);
-            var saveWarning = SavePersistedCatalog(discoveryResult);
-            var source = discoveryResult.HasUsableCatalog
-                ? VbaProjectReferenceCatalogSource.Generated
-                : sourceBeforeDiscovery;
-            results.Add(new VbaProjectReferenceCatalogRefreshResult(
-                referenceName,
-                discoveryResult,
-                Source: source,
-                Phase: "typelib-discovery",
-                ExpensiveMetadataRan: true,
-                Elapsed: stopwatch.Elapsed,
-                WarningMessage: saveWarning));
+            return results;
         }
-
-        return results;
+        finally
+        {
+            reservation.ReleaseRemaining();
+        }
     }
 
     /// <summary>

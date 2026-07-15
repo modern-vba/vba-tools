@@ -31,7 +31,7 @@ public sealed class VbaProjectReferenceCatalogRefreshReservationTests
     }
 
     [Fact]
-    public async Task CatalogRefreshKeepsCompletedCatalogWhenLaterReferenceIsCanceled()
+    public async Task CatalogRefreshKeepsCompletedCatalogAndReleasesCanceledRemainderForRetry()
     {
         var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
         var discovery = new SuccessfulThenBlockingCatalogDiscovery(
@@ -55,6 +55,123 @@ public sealed class VbaProjectReferenceCatalogRefreshReservationTests
             cache.GetCatalogSource("Library A"));
         Assert.Equal(["Library A", "Library B"], discovery.ReferenceNames);
         Assert.Empty(await service.RefreshAsync(CreateSelection("library a")));
+
+        var retryResults = await service.RefreshAsync(CreateSelection("Library C", "library b"));
+
+        Assert.Equal(["library b", "Library C"], retryResults.Select(result => result.ReferenceName));
+        Assert.Equal(
+            ["Library A", "Library B", "library b", "Library C"],
+            discovery.ReferenceNames);
+    }
+
+    [Fact]
+    public async Task CatalogRefreshReleasesCanceledCurrentAndUnstartedReferencesForRetry()
+    {
+        var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
+        var discovery = new CancelFirstAttemptCatalogDiscovery();
+        var service = CreateService(cache, discovery);
+        var selection = CreateSelection("Library B", "Library A");
+        using var cancellation = new CancellationTokenSource();
+
+        var canceledRefresh = service.RefreshAsync(selection, cancellation.Token);
+        await discovery.FirstAttemptStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await cancellation.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => canceledRefresh);
+
+        var retryResults = await service.RefreshAsync(selection);
+
+        Assert.Equal(["Library A", "Library B"], retryResults.Select(result => result.ReferenceName));
+        Assert.Equal(["Library A", "Library A", "Library B"], discovery.ReferenceNames);
+    }
+
+    [Fact]
+    public async Task CatalogRefreshKeepsStaleCatalogWhenRefreshIsCanceledAndRetried()
+    {
+        var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
+        cache.StoreStaleCatalog(CreateSuccess("Library A").Catalog!);
+        var discovery = new CancelFirstAttemptCatalogDiscovery();
+        var service = CreateService(cache, discovery);
+        var selection = CreateSelection("Library A");
+        using var cancellation = new CancellationTokenSource();
+
+        var canceledRefresh = service.RefreshAsync(selection, cancellation.Token);
+        await discovery.FirstAttemptStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await cancellation.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => canceledRefresh);
+
+        Assert.True(cache.Current.HasCatalog("Library A"));
+        Assert.Equal(
+            VbaProjectReferenceCatalogSource.StalePersisted,
+            cache.GetCatalogSource("Library A"));
+
+        var retryResult = Assert.Single(await service.RefreshAsync(selection));
+
+        Assert.Equal(VbaProjectReferenceCatalogSource.StalePersisted, retryResult.Source);
+        Assert.True(cache.Current.HasCatalog("Library A"));
+        Assert.Equal(
+            VbaProjectReferenceCatalogSource.StalePersisted,
+            cache.GetCatalogSource("Library A"));
+    }
+
+    [Fact]
+    public async Task CatalogRefreshReleasesRequestedNameWhenDiscoveryResultNameDiffers()
+    {
+        var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
+        var discovery = new ResultNameMismatchCatalogDiscovery("Reported Library");
+        var service = CreateService(cache, discovery);
+        var selection = CreateSelection("Requested Library");
+
+        var firstResults = await service.RefreshAsync(selection);
+        var retryResults = await service.RefreshAsync(selection);
+
+        Assert.Equal("Reported Library", Assert.Single(firstResults).DiscoveryResult.ReferenceName);
+        Assert.Equal("Reported Library", Assert.Single(retryResults).DiscoveryResult.ReferenceName);
+        Assert.Equal(["Requested Library", "Requested Library"], discovery.ReferenceNames);
+    }
+
+    [Fact]
+    public async Task CatalogRefreshResultNameMismatchDoesNotReleaseOverlappingReservationOwner()
+    {
+        var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
+        var discovery = new MismatchedOverlapCatalogDiscovery(
+            blockingReferenceName: "Library B",
+            mismatchedResultReferenceName: "Library B");
+        var service = CreateService(cache, discovery);
+
+        var ownerRefresh = service.RefreshAsync(CreateSelection("Library B"));
+        await discovery.BlockingReferenceStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await service.RefreshAsync(CreateSelection("Library A"));
+        var overlappingRefresh = service.RefreshAsync(CreateSelection("library b"));
+
+        try
+        {
+            Assert.Empty(await overlappingRefresh.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.Equal(1, discovery.BlockingReferenceCallCount);
+        }
+        finally
+        {
+            discovery.ReleaseBlockingReference();
+            await ownerRefresh.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
+    [Fact]
+    public async Task CatalogRefreshReleasesCandidatesAfterDiscoveryThrows()
+    {
+        var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
+        var discovery = new ThrowingCatalogDiscovery();
+        var service = CreateService(cache, discovery);
+        var selection = CreateSelection("Library B", "Library A");
+
+        var firstResults = await service.RefreshAsync(selection);
+        var retryResults = await service.RefreshAsync(selection);
+
+        Assert.All(firstResults, result => Assert.True(result.DiscoveryResult.IsFailure));
+        Assert.All(retryResults, result => Assert.True(result.DiscoveryResult.IsFailure));
+        Assert.Equal(
+            ["Library A", "Library B", "Library A", "Library B"],
+            discovery.ReferenceNames);
     }
 
     private static VbaProjectReferenceCatalogRefreshService CreateService(
@@ -77,7 +194,7 @@ public sealed class VbaProjectReferenceCatalogRefreshReservationTests
         => VbaProjectReferenceCatalogDiscoveryResult.Success(
             new VbaProjectReferenceCatalogIdentity(
                 referenceName,
-                $"{{{referenceName.GetHashCode():X8}-3333-3333-3333-333333333333}}",
+                "{33333333-3333-3333-3333-333333333333}",
                 1,
                 0,
                 0,
@@ -153,6 +270,7 @@ public sealed class VbaProjectReferenceCatalogRefreshReservationTests
         private readonly string successfulReferenceName;
         private readonly string blockingReferenceName;
         private readonly List<string> referenceNames = [];
+        private bool hasBlocked;
 
         public SuccessfulThenBlockingCatalogDiscovery(
             string successfulReferenceName,
@@ -177,13 +295,119 @@ public sealed class VbaProjectReferenceCatalogRefreshReservationTests
                 return CreateSuccess(referenceName);
             }
 
-            if (referenceName.Equals(blockingReferenceName, StringComparison.OrdinalIgnoreCase))
+            if (!hasBlocked
+                && referenceName.Equals(blockingReferenceName, StringComparison.OrdinalIgnoreCase))
             {
+                hasBlocked = true;
                 BlockingReferenceStarted.TrySetResult();
                 await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
             }
 
             return VbaProjectReferenceCatalogDiscoveryResult.Failure(referenceName, "Unexpected test call.");
         }
+    }
+
+    private sealed class CancelFirstAttemptCatalogDiscovery : IVbaProjectReferenceCatalogDiscovery
+    {
+        private readonly List<string> referenceNames = [];
+        private bool isFirstAttempt = true;
+
+        public TaskCompletionSource FirstAttemptStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public IReadOnlyList<string> ReferenceNames => referenceNames;
+
+        public async Task<VbaProjectReferenceCatalogDiscoveryResult> DiscoverAsync(
+            string referenceName,
+            CancellationToken cancellationToken = default)
+        {
+            referenceNames.Add(referenceName);
+            if (isFirstAttempt)
+            {
+                isFirstAttempt = false;
+                FirstAttemptStarted.TrySetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+
+            return VbaProjectReferenceCatalogDiscoveryResult.Failure(referenceName, "Expected test result.");
+        }
+    }
+
+    private sealed class ResultNameMismatchCatalogDiscovery : IVbaProjectReferenceCatalogDiscovery
+    {
+        private readonly string resultReferenceName;
+        private readonly List<string> referenceNames = [];
+
+        public ResultNameMismatchCatalogDiscovery(string resultReferenceName)
+        {
+            this.resultReferenceName = resultReferenceName;
+        }
+
+        public IReadOnlyList<string> ReferenceNames => referenceNames;
+
+        public Task<VbaProjectReferenceCatalogDiscoveryResult> DiscoverAsync(
+            string referenceName,
+            CancellationToken cancellationToken = default)
+        {
+            referenceNames.Add(referenceName);
+            return Task.FromResult(VbaProjectReferenceCatalogDiscoveryResult.Failure(
+                resultReferenceName,
+                "Expected mismatched test result."));
+        }
+    }
+
+    private sealed class ThrowingCatalogDiscovery : IVbaProjectReferenceCatalogDiscovery
+    {
+        private readonly List<string> referenceNames = [];
+
+        public IReadOnlyList<string> ReferenceNames => referenceNames;
+
+        public Task<VbaProjectReferenceCatalogDiscoveryResult> DiscoverAsync(
+            string referenceName,
+            CancellationToken cancellationToken = default)
+        {
+            referenceNames.Add(referenceName);
+            throw new InvalidOperationException("Expected discovery exception.");
+        }
+    }
+
+    private sealed class MismatchedOverlapCatalogDiscovery : IVbaProjectReferenceCatalogDiscovery
+    {
+        private readonly string blockingReferenceName;
+        private readonly string mismatchedResultReferenceName;
+        private readonly TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int blockingReferenceCallCount;
+
+        public MismatchedOverlapCatalogDiscovery(
+            string blockingReferenceName,
+            string mismatchedResultReferenceName)
+        {
+            this.blockingReferenceName = blockingReferenceName;
+            this.mismatchedResultReferenceName = mismatchedResultReferenceName;
+        }
+
+        public TaskCompletionSource BlockingReferenceStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int BlockingReferenceCallCount => Volatile.Read(ref blockingReferenceCallCount);
+
+        public async Task<VbaProjectReferenceCatalogDiscoveryResult> DiscoverAsync(
+            string referenceName,
+            CancellationToken cancellationToken = default)
+        {
+            if (referenceName.Equals(blockingReferenceName, StringComparison.OrdinalIgnoreCase))
+            {
+                Interlocked.Increment(ref blockingReferenceCallCount);
+                BlockingReferenceStarted.TrySetResult();
+                await release.Task.WaitAsync(cancellationToken);
+                return VbaProjectReferenceCatalogDiscoveryResult.Failure(referenceName, "Expected test result.");
+            }
+
+            return VbaProjectReferenceCatalogDiscoveryResult.Failure(
+                mismatchedResultReferenceName,
+                "Expected mismatched test result.");
+        }
+
+        public void ReleaseBlockingReference() => release.TrySetResult();
     }
 }
