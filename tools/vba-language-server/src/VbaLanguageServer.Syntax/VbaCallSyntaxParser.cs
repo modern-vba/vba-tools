@@ -28,7 +28,8 @@ internal static class VbaCallSyntaxParser
                 }
 
                 var closeIndex = FindMatchingParenthesis(significant, openIndex);
-                if (closeIndex < 0)
+                if (closeIndex < 0
+                    || IsExcludedParenthesizedCall(significant, openIndex, closeIndex, calleeStart))
                 {
                     continue;
                 }
@@ -49,6 +50,8 @@ internal static class VbaCallSyntaxParser
                         significant[closeIndex].Range.End),
                     statement.IsContinued));
             }
+
+            AddCompleteStatementArgumentList(sourceText, significant, statement.IsContinued, argumentLists);
         }
 
         return argumentLists;
@@ -86,6 +89,12 @@ internal static class VbaCallSyntaxParser
                 return null;
             }
 
+            var closeIndex = FindMatchingParenthesis(significant, openIndex);
+            if (IsExcludedParenthesizedCall(significant, openIndex, closeIndex, calleeStart))
+            {
+                return null;
+            }
+
             var endIndex = FindPositionEndIndex(significant, openIndex + 1, position.Offset);
             var arguments = ParseArguments(
                 sourceText,
@@ -106,6 +115,41 @@ internal static class VbaCallSyntaxParser
         return TryParseStatementPositionCall(sourceText, significant, position);
     }
 
+    private static void AddCompleteStatementArgumentList(
+        VbaSourceText sourceText,
+        IReadOnlyList<VbaToken> significant,
+        bool isContinued,
+        ICollection<VbaArgumentListSyntax> argumentLists)
+    {
+        if (!TryGetStatementCallee(significant, out var calleeStart, out var calleeEnd)
+            || calleeEnd + 1 >= significant.Count
+            || significant[calleeEnd + 1].Text is "=" or "("
+            || IsExcludedStatementFormCall(significant, calleeStart))
+        {
+            return;
+        }
+
+        var listEnd = significant[^1].Range.End;
+        var arguments = ParseArguments(
+            sourceText,
+            significant,
+            calleeEnd + 1,
+            significant.Count,
+            significant[calleeEnd].Range.End,
+            listEnd,
+            includeSingleEmptyArgument: false);
+        if (arguments.Count == 0)
+        {
+            return;
+        }
+
+        argumentLists.Add(new VbaArgumentListSyntax(
+            GetCalleeText(significant, calleeStart, calleeEnd),
+            arguments.Select(argument => argument.Syntax).ToArray(),
+            new VbaSyntaxRange(significant[calleeEnd].Range.End, listEnd),
+            isContinued));
+    }
+
     private static VbaParsedPositionCall? TryParseStatementPositionCall(
         VbaSourceText sourceText,
         IReadOnlyList<VbaToken> significant,
@@ -118,7 +162,8 @@ internal static class VbaCallSyntaxParser
                 significant[calleeEnd].Range.End.Offset,
                 position.Offset)
             || (calleeEnd + 1 < significant.Count
-                && significant[calleeEnd + 1].Text is "=" or "("))
+                && significant[calleeEnd + 1].Text is "=" or "(")
+            || IsExcludedStatementFormCall(significant, calleeStart))
         {
             return null;
         }
@@ -406,6 +451,73 @@ internal static class VbaCallSyntaxParser
         return true;
     }
 
+    private static bool IsExcludedParenthesizedCall(
+        IReadOnlyList<VbaToken> tokens,
+        int openIndex,
+        int closeIndex,
+        int calleeStart)
+    {
+        if (IsCallableDeclaration(tokens)
+            || IsDeclaredArrayStatement(tokens)
+            || IsRemComment(tokens))
+        {
+            return true;
+        }
+
+        return calleeStart == 0
+            && closeIndex >= openIndex
+            && closeIndex + 1 < tokens.Count
+            && TextEquals(tokens[closeIndex + 1], "As");
+    }
+
+    private static bool IsCallableDeclaration(IReadOnlyList<VbaToken> tokens)
+    {
+        var index = 0;
+        while (index < tokens.Count
+            && (TextEquals(tokens[index], "Public")
+                || TextEquals(tokens[index], "Private")
+                || TextEquals(tokens[index], "Friend")
+                || TextEquals(tokens[index], "Static")))
+        {
+            index++;
+        }
+
+        if (index >= tokens.Count)
+        {
+            return false;
+        }
+
+        return TextEquals(tokens[index], "Sub")
+            || TextEquals(tokens[index], "Function")
+            || TextEquals(tokens[index], "Event")
+            || TextEquals(tokens[index], "Declare")
+            || (TextEquals(tokens[index], "Property")
+                && index + 1 < tokens.Count
+                && (TextEquals(tokens[index + 1], "Get")
+                    || TextEquals(tokens[index + 1], "Let")
+                    || TextEquals(tokens[index + 1], "Set")));
+    }
+
+    private static bool IsDeclaredArrayStatement(IReadOnlyList<VbaToken> tokens)
+        => tokens.Count > 0
+            && (TextEquals(tokens[0], "Dim")
+                || TextEquals(tokens[0], "Static")
+                || TextEquals(tokens[0], "Private")
+                || TextEquals(tokens[0], "Public")
+                || TextEquals(tokens[0], "Friend")
+                || TextEquals(tokens[0], "Global")
+                || TextEquals(tokens[0], "ReDim"));
+
+    private static bool IsExcludedStatementFormCall(IReadOnlyList<VbaToken> tokens, int calleeStart)
+        => calleeStart == 0
+            && tokens.Count > 0
+            && (TextEquals(tokens[0], "ReDim")
+                || TextEquals(tokens[0], "Preserve")
+                || TextEquals(tokens[0], "Rem"));
+
+    private static bool IsRemComment(IReadOnlyList<VbaToken> tokens)
+        => tokens.Count > 0 && TextEquals(tokens[0], "Rem");
+
     private static bool TryGetStatementCallee(
         IReadOnlyList<VbaToken> tokens,
         out int start,
@@ -480,6 +592,9 @@ internal static class VbaCallSyntaxParser
 
     private static bool IsPunctuation(VbaToken token, string text)
         => token.Kind == VbaTokenKind.Punctuation && token.Text == text;
+
+    private static bool TextEquals(VbaToken token, string text)
+        => token.Text.Equals(text, StringComparison.OrdinalIgnoreCase);
 
     private sealed record ParsedArgument(VbaArgumentSyntax Syntax, VbaSyntaxRange PositionRange);
 

@@ -267,6 +267,65 @@ public sealed class SyntaxDiagnosticsTests
     }
 
     [Fact]
+    public void Document_diagnostics_report_duplicate_named_statement_form_call_arguments()
+    {
+        const string callLine = "    ExampleSub Arg1:=1, ARG1:=2";
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            callLine,
+            "End Sub"
+        ]);
+
+        var diagnostic = Assert.Single(VbaDocumentDiagnostics.Collect(source, "Worker.bas"));
+
+        Assert.Equal("validation.duplicateNamedCallArgument", diagnostic.Code);
+        Assert.Equal("Duplicate named call argument 'ARG1'.", diagnostic.Message);
+        Assert.Equal(
+            new VbaRange(
+                new VbaPosition(2, callLine.IndexOf("ARG1", StringComparison.Ordinal)),
+                new VbaPosition(2, callLine.IndexOf("ARG1", StringComparison.Ordinal) + "ARG1".Length)),
+            diagnostic.Range);
+    }
+
+    [Theory]
+    [InlineData("    ExampleSub Arg1:=1, 2", "2")]
+    [InlineData("    ExampleSub Arg1:=1, , Arg3:=3", ",")]
+    public void Document_diagnostics_report_positional_or_omitted_statement_arguments_after_named(
+        string callLine,
+        string expectedText)
+    {
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            callLine,
+            "End Sub"
+        ]);
+
+        var diagnostic = Assert.Single(VbaDocumentDiagnostics.Collect(source, "Worker.bas"));
+
+        Assert.Equal("validation.positionalCallArgumentAfterNamed", diagnostic.Code);
+        Assert.Equal(expectedText, SourceTextAtRange(source, diagnostic.Range));
+    }
+
+    [Fact]
+    public void Document_diagnostics_validate_continued_statement_form_calls()
+    {
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    ExampleSub Arg1:=1, _",
+            "        ARG1:=2",
+            "End Sub"
+        ]);
+
+        var diagnostic = Assert.Single(VbaDocumentDiagnostics.Collect(source, "Worker.bas"));
+
+        Assert.Equal("validation.duplicateNamedCallArgument", diagnostic.Code);
+        Assert.Equal(new VbaPosition(3, 8), diagnostic.Range.Start);
+    }
+
+    [Fact]
     public void Document_diagnostics_validate_nested_named_call_argument_lists_independently()
     {
         var source = string.Join('\n', [
