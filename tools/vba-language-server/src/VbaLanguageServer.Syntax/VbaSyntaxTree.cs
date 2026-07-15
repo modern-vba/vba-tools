@@ -15,6 +15,8 @@ public sealed record VbaSyntaxTree(
     VbaModuleSyntax Module,
     IReadOnlyList<VbaSyntaxDiagnostic> Diagnostics)
 {
+    private VbaPositionSyntaxIndex? positionSyntaxIndex;
+
     /// <summary>
     /// Parses a VBA module source document.
     /// </summary>
@@ -25,54 +27,19 @@ public sealed record VbaSyntaxTree(
         => VbaSyntaxTreeParser.ParseModule(uri, source);
 
     /// <summary>
-    /// Creates reusable lexical facts for this syntax tree's source text.
+    /// Gets the token-derived syntax facts at an editor position.
     /// </summary>
-    /// <returns>The lexical fact query module.</returns>
-    public VbaLexicalFacts GetLexicalFacts()
-        => VbaLexicalFacts.FromSyntaxTree(this);
+    public VbaPositionSyntax GetPositionSyntax(int line, int character)
+    {
+        var index = Volatile.Read(ref positionSyntaxIndex);
+        if (index is null)
+        {
+            var created = new VbaPositionSyntaxIndex(this);
+            index = Interlocked.CompareExchange(ref positionSyntaxIndex, created, null) ?? created;
+        }
 
-    /// <summary>
-    /// Resolves a member-chain completion context from this syntax tree.
-    /// </summary>
-    public bool TryGetMemberCompletionContext(
-        int line,
-        int character,
-        out VbaMemberChainContext context)
-        => VbaSyntaxContextQueries.TryGetCompletionContext(this, line, character, out context);
-
-    /// <summary>
-    /// Determines whether a completed member access is followed by whitespace.
-    /// </summary>
-    public bool IsCompletedMemberAccessWithTrailingWhitespace(int line, int character)
-        => VbaSyntaxContextQueries.IsCompletedMemberAccessWithTrailingWhitespace(this, line, character);
-
-    /// <summary>
-    /// Resolves a member-chain reference context from this syntax tree.
-    /// </summary>
-    public bool TryGetMemberReferenceContext(
-        int line,
-        int character,
-        string memberName,
-        out VbaMemberChainContext context)
-        => VbaSyntaxContextQueries.TryGetMemberReferenceContext(this, line, character, memberName, out context);
-
-    /// <summary>
-    /// Resolves a callable context from this syntax tree.
-    /// </summary>
-    public bool TryGetCallExpressionContext(
-        int line,
-        int character,
-        out VbaCallExpressionContext context)
-        => VbaSyntaxContextQueries.TryGetCallExpressionContext(this, line, character, out context);
-
-    /// <summary>
-    /// Resolves the member chain immediately preceding an identifier occurrence.
-    /// </summary>
-    public static bool TryGetPreviousMemberContext(
-        string codePart,
-        VbaIdentifierOccurrence occurrence,
-        out VbaMemberChainContext context)
-        => VbaSyntaxContextQueries.TryGetPreviousMemberContext(codePart, occurrence, out context);
+        return index.GetPositionSyntax(line, character);
+    }
 
     /// <summary>
     /// Parses source text and classifies whether the change can be treated as a member-level update.

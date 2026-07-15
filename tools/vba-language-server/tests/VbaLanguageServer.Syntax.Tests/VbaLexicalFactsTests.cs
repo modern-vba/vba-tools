@@ -6,44 +6,6 @@ namespace VbaLanguageServer.Syntax.Tests;
 public sealed class VbaLexicalFactsTests
 {
     [Fact]
-    public void TryGetCodeIdentifierAtSkipsStringsAndApostropheComments()
-    {
-        var source = string.Join('\n', [
-            "Public Sub Run()",
-            "    value = \"Run\" ' commentValue",
-            "End Sub"
-        ]);
-        var facts = VbaLexicalFacts.FromText(source);
-
-        var findsCodeIdentifier = facts.TryGetCodeIdentifierAt(1, "    val".Length, out var codeIdentifier);
-        var skipsStringIdentifier = facts.TryGetCodeIdentifierAt(1, "    value = \"R".Length, out _);
-        var skipsCommentIdentifier = facts.TryGetCodeIdentifierAt(1, "    value = \"Run\" ' comment".Length, out _);
-
-        Assert.True(findsCodeIdentifier);
-        Assert.Equal("value", codeIdentifier.Name);
-        Assert.False(skipsStringIdentifier);
-        Assert.False(skipsCommentIdentifier);
-    }
-
-    [Fact]
-    public void TryGetLogicalPrefixUsesContinuedPhysicalLines()
-    {
-        var source = string.Join('\n', [
-            "Public Sub Run()",
-            "    Application _",
-            "        .Workbooks _",
-            "        .Open(",
-            "End Sub"
-        ]);
-        var facts = VbaLexicalFacts.FromText(source);
-
-        var found = facts.TryGetLogicalPrefix(3, "        .Open(".Length, out var logicalPrefix);
-
-        Assert.True(found);
-        Assert.Equal("    Application          .Workbooks          .Open(", logicalPrefix);
-    }
-
-    [Fact]
     public void SplitCodeAndCommentPreservesApostrophesInsideStrings()
     {
         const string line = "value = \"that's ok\" ' comment";
@@ -54,23 +16,4 @@ public sealed class VbaLexicalFactsTests
         Assert.Equal("' comment", parts.CommentPart);
     }
 
-    [Fact]
-    public void FromSyntaxTreeReusesParsedTokenStream()
-    {
-        var source = string.Join('\n', [
-            "Attribute VB_Name = \"Worker\"",
-            "Public Sub Run()",
-            "    value = \"Run\" ' commentValue",
-            "End Sub"
-        ]);
-        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.bas", source);
-
-        var facts = tree.GetLexicalFacts();
-
-        Assert.Same(tree.TokenStream, facts.TokenStream);
-        Assert.True(facts.TryGetCodeIdentifierAt(2, "    val".Length, out var identifier));
-        Assert.Equal("value", identifier.Name);
-        Assert.False(facts.TryGetCodeIdentifierAt(2, "    value = \"R".Length, out _));
-        Assert.False(facts.TryGetCodeIdentifierAt(2, "    value = \"Run\" ' comment".Length, out _));
-    }
 }

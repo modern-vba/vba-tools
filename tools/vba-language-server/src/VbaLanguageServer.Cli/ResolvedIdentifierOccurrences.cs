@@ -50,30 +50,37 @@ internal sealed class VbaResolvedIdentifierOccurrenceIndex
     private IReadOnlyList<VbaResolvedIdentifierOccurrence> GetDocumentOccurrences(VbaSourceDocument document)
     {
         var occurrences = new List<VbaResolvedIdentifierOccurrence>();
-        var lines = VbaSourceText.SplitLines(document.Text);
-        for (var lineIndex = 0; lineIndex < lines.Length; lineIndex++)
+        var syntaxTree = document.SyntaxTree ?? VbaSyntaxTree.ParseModule(document.Uri, document.Text);
+        foreach (var token in syntaxTree.TokenStream.Tokens.Where(token => token.Kind == VbaTokenKind.Identifier))
         {
-            foreach (var occurrence in VbaSourceText.FindIdentifierOccurrences(lines[lineIndex]))
+            var positionSyntax = syntaxTree.GetPositionSyntax(
+                token.Range.Start.Line,
+                token.Range.Start.Character);
+            if (positionSyntax.Region != VbaPositionRegion.Code)
             {
-                if (VbaLanguageVocabulary.IsKeyword(occurrence.Name))
-                {
-                    continue;
-                }
-
-                var definition = resolveSourceDefinition(document.Uri, lineIndex, occurrence.Start);
-                if (definition is null)
-                {
-                    continue;
-                }
-
-                occurrences.Add(new VbaResolvedIdentifierOccurrence(
-                    document.Uri,
-                    occurrence,
-                        new VbaRange(
-                            new VbaPosition(lineIndex, occurrence.Start),
-                            new VbaPosition(lineIndex, occurrence.End)),
-                    definition));
+                continue;
             }
+
+            var definition = resolveSourceDefinition(
+                document.Uri,
+                token.Range.Start.Line,
+                token.Range.Start.Character);
+            if (definition is null)
+            {
+                continue;
+            }
+
+            var occurrence = new VbaIdentifierOccurrence(
+                token.Text,
+                token.Range.Start.Character,
+                token.Range.End.Character);
+            occurrences.Add(new VbaResolvedIdentifierOccurrence(
+                document.Uri,
+                occurrence,
+                new VbaRange(
+                    new VbaPosition(token.Range.Start.Line, token.Range.Start.Character),
+                    new VbaPosition(token.Range.End.Line, token.Range.End.Character)),
+                definition));
         }
 
         return occurrences;

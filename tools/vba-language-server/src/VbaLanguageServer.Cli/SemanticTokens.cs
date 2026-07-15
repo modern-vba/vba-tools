@@ -36,12 +36,11 @@ internal static class VbaSemanticTokenBuilder
             return [];
         }
 
-        var lines = VbaSourceText.SplitLines(currentDocument.Text);
         var tokens = new List<VbaSemanticToken>();
         var declarationRanges = new HashSet<string>(StringComparer.Ordinal);
         foreach (var definition in currentDocument.Definitions)
         {
-            if (!TryCreateSemanticToken(lines, definition, isDeclaration: true, out var token))
+            if (!TryCreateSemanticToken(definition, isDeclaration: true, out var token))
             {
                 continue;
             }
@@ -58,7 +57,6 @@ internal static class VbaSemanticTokenBuilder
             }
 
             if (!TryCreateSemanticToken(
-                lines,
                 occurrence.Definition,
                 isDeclaration: false,
                 out var referenceToken,
@@ -108,7 +106,6 @@ internal static class VbaSemanticTokenBuilder
     }
 
     private static bool TryCreateSemanticToken(
-        IReadOnlyList<string> lines,
         VbaSourceDefinition definition,
         bool isDeclaration,
         out VbaSemanticToken token,
@@ -118,16 +115,14 @@ internal static class VbaSemanticTokenBuilder
         token = default!;
         var range = rangeOverride ?? definition.Range;
         if (range.Start.Line < 0 ||
-            range.Start.Line >= lines.Count ||
             range.End.Line != range.Start.Line ||
             range.Start.Character < 0 ||
-            range.End.Character > lines[range.Start.Line].Length ||
             range.End.Character <= range.Start.Character)
         {
             return false;
         }
 
-        var text = textOverride ?? lines[range.Start.Line][range.Start.Character..range.End.Character];
+        var text = textOverride ?? definition.Name;
         var tokenType = GetSemanticTokenType(definition);
         if (tokenType is null)
         {

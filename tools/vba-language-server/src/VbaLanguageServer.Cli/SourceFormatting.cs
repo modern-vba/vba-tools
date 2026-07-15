@@ -248,7 +248,6 @@ internal sealed class VbaSourceFormatter
         foreach (var occurrence in VbaLexicalFacts.FindCodeIdentifierOccurrences(codePart))
         {
             var canonicalName = semanticResolution.GetCanonicalFormattingName(
-                codePart,
                 occurrence,
                 document,
                 lineIndex,

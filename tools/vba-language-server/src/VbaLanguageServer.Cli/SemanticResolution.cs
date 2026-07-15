@@ -1,4 +1,3 @@
-using System.Text.RegularExpressions;
 using VbaLanguageServer.Diagnostics;
 using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.Syntax;
@@ -74,33 +73,33 @@ internal sealed class VbaSemanticResolution
     public VbaCompletionResult GetCompletionResult(string uri, int line, int character)
     {
         var currentDocument = documents.FirstOrDefault(document => SameUri(document.Uri, uri));
-        if (currentDocument is not null
-            && IsCompletionSuppressedInNonCodeText(currentDocument, line, character))
+        if (currentDocument is null)
+        {
+            return new VbaCompletionResult(
+                nameResolution.GetCompletionDefinitions(uri, new VbaPosition(line, character)),
+                VbaCompletionVocabularyKind.Keyword);
+        }
+
+        var positionSyntax = GetSyntaxTree(currentDocument).GetPositionSyntax(line, character);
+        if (positionSyntax.CompletionKind == VbaCompletionSyntaxKind.None)
         {
             return new VbaCompletionResult([], VbaCompletionVocabularyKind.None);
         }
 
-        if (currentDocument is not null
-            && IsCompletionSuppressedAfterLineContinuationMarker(currentDocument, line, character))
-        {
-            return new VbaCompletionResult([], VbaCompletionVocabularyKind.None);
-        }
-
-        if (currentDocument is not null
-            && IsCompletionSuppressedAfterCompletedMemberAccess(currentDocument, line, character))
-        {
-            return new VbaCompletionResult([], VbaCompletionVocabularyKind.None);
-        }
-
-        if (currentDocument is not null
-            && TryGetMemberCompletionDefinitions(currentDocument, line, character, out var memberDefinitions))
+        if (positionSyntax.CompletionKind == VbaCompletionSyntaxKind.Member
+            && TryGetMemberCompletionDefinitions(
+                currentDocument,
+                line,
+                character,
+                positionSyntax,
+                out var memberDefinitions))
         {
             return new VbaCompletionResult(memberDefinitions, VbaCompletionVocabularyKind.None);
         }
 
-        if (currentDocument is not null
-            && TryGetTypeCompletionDefinitions(currentDocument, line, character, out var typeDefinitions))
+        if (positionSyntax.CompletionKind == VbaCompletionSyntaxKind.TypeName)
         {
+            var typeDefinitions = GetTypeCompletionDefinitions(currentDocument);
             return new VbaCompletionResult(typeDefinitions, VbaCompletionVocabularyKind.TypeName);
         }
 
@@ -124,18 +123,19 @@ internal sealed class VbaSemanticResolution
             return null;
         }
 
-        var lexicalFacts = GetSyntaxTree(currentDocument).GetLexicalFacts();
-        if (!lexicalFacts.TryGetCodeIdentifierAt(line, character, out var identifier))
+        var positionSyntax = GetSyntaxTree(currentDocument).GetPositionSyntax(line, character);
+        var identifier = positionSyntax.Identifier;
+        if (positionSyntax.Region != VbaPositionRegion.Code || identifier is null)
         {
             return null;
         }
 
-        if (typeResolution.TryResolveTypeReferenceDefinition(
-            currentDocument,
-            lexicalFacts.ToLineArray(),
-            line,
-            identifier,
-            out var typeDefinition))
+        if (positionSyntax.TypeReference is not null
+            && typeResolution.TryResolveTypeReferenceDefinition(
+                currentDocument,
+                positionSyntax.TypeReference,
+                identifier,
+                out var typeDefinition))
         {
             return typeDefinition;
         }
@@ -145,17 +145,17 @@ internal sealed class VbaSemanticResolution
             return eventDefinition;
         }
 
-        if (TryResolveMemberDefinition(currentDocument, line, identifier.Start, identifier.Name, out var memberDefinition))
+        if (TryResolveMemberDefinition(
+            currentDocument,
+            line,
+            character,
+            positionSyntax,
+            out var memberDefinition))
         {
             return memberDefinition;
         }
 
-        if (!lexicalFacts.TryGetLine(line, out var physicalLine))
-        {
-            return null;
-        }
-
-        var qualifier = GetQualifierBefore(physicalLine, identifier.Start);
+        var qualifier = GetImmediateQualifier(positionSyntax.MemberAccess, identifier);
         return nameResolution.Resolve(uri, new VbaPosition(line, character), qualifier, identifier.Name);
     }
 
@@ -174,24 +174,19 @@ internal sealed class VbaSemanticResolution
             return null;
         }
 
-        return callSiteResolution.GetSignatureHelp(
-            currentDocument,
-            line,
-            character,
-            GetSyntaxTree(currentDocument));
+        var positionSyntax = GetSyntaxTree(currentDocument).GetPositionSyntax(line, character);
+        return callSiteResolution.GetSignatureHelp(currentDocument, line, character, positionSyntax);
     }
 
     /// <summary>
     /// Resolves the canonical casing for an identifier occurrence during formatting.
     /// </summary>
-    /// <param name="codePart">The code portion of the physical source line.</param>
     /// <param name="occurrence">The identifier occurrence to normalize.</param>
     /// <param name="document">The source document being formatted.</param>
     /// <param name="lineIndex">The zero-based physical line index.</param>
     /// <param name="declarationRanges">The declaration ranges that must not be renamed by formatting.</param>
     /// <returns>The canonical name, or null when formatting should leave the occurrence unchanged.</returns>
     public string? GetCanonicalFormattingName(
-        string codePart,
         VbaIdentifierOccurrence occurrence,
         VbaSourceDocument document,
         int lineIndex,
@@ -210,8 +205,9 @@ internal sealed class VbaSemanticResolution
             return null;
         }
 
+        var positionSyntax = GetSyntaxTree(document).GetPositionSyntax(lineIndex, occurrence.Start);
         if (TryGetMemberChainCanonicalName(
-            codePart,
+            positionSyntax,
             occurrence,
             document,
             lineIndex,
@@ -221,7 +217,7 @@ internal sealed class VbaSemanticResolution
         }
 
         if (TryGetQualifiedCanonicalName(
-            codePart,
+            positionSyntax.MemberAccess,
             occurrence,
             document.Uri,
             lineIndex,
@@ -230,7 +226,7 @@ internal sealed class VbaSemanticResolution
             return qualifiedCanonicalName;
         }
 
-        if (VbaMemberExpressionSyntax.IsQualifiedIdentifierOccurrence(codePart, occurrence))
+        if (positionSyntax.MemberAccess is not null)
         {
             return null;
         }
@@ -247,86 +243,43 @@ internal sealed class VbaSemanticResolution
         VbaSourceDocument currentDocument,
         int line,
         int character,
+        VbaPositionSyntax positionSyntax,
         out IReadOnlyList<VbaSourceDefinition> definitions)
     {
         definitions = [];
-        if (!GetSyntaxTree(currentDocument).TryGetMemberCompletionContext(line, character, out var context))
+        if (positionSyntax.MemberAccess is null)
         {
             return false;
         }
 
-        definitions = memberChainResolution.GetMemberCompletions(currentDocument, line, character, context);
+        definitions = memberChainResolution.GetMemberCompletions(
+            currentDocument,
+            line,
+            character,
+            positionSyntax.MemberAccess,
+            positionSyntax.EnclosingWithScopes);
         return true;
     }
 
-    private bool IsCompletionSuppressedAfterCompletedMemberAccess(
-        VbaSourceDocument currentDocument,
-        int line,
-        int character)
-        => GetSyntaxTree(currentDocument).IsCompletedMemberAccessWithTrailingWhitespace(line, character);
-
-    private static bool IsCompletionSuppressedInNonCodeText(
-        VbaSourceDocument currentDocument,
-        int line,
-        int character)
-        => !GetSyntaxTree(currentDocument).GetLexicalFacts().IsCodePosition(line, character);
-
-    private static bool IsCompletionSuppressedAfterLineContinuationMarker(
-        VbaSourceDocument currentDocument,
-        int line,
-        int character)
-    {
-        var lexicalFacts = GetSyntaxTree(currentDocument).GetLexicalFacts();
-        if (!lexicalFacts.TryGetLine(line, out var text))
-        {
-            return false;
-        }
-
-        var prefix = text[..Math.Clamp(character, 0, text.Length)];
-        return prefix.EndsWith(" _", StringComparison.Ordinal);
-    }
-
-    private bool TryGetTypeCompletionDefinitions(
-        VbaSourceDocument currentDocument,
-        int line,
-        int character,
-        out IReadOnlyList<VbaSourceDefinition> definitions)
-    {
-        definitions = [];
-        var lexicalFacts = GetSyntaxTree(currentDocument).GetLexicalFacts();
-        if (!lexicalFacts.TryGetLogicalPrefix(line, character, out var logicalPrefix))
-        {
-            return false;
-        }
-
-        if (!IsTypeAnnotationCompletionPrefix(logicalPrefix))
-        {
-            return false;
-        }
-
-        definitions = typeResolution.GetVisibleTypeDefinitions(currentDocument)
+    private IReadOnlyList<VbaSourceDefinition> GetTypeCompletionDefinitions(
+        VbaSourceDocument currentDocument)
+        => typeResolution.GetVisibleTypeDefinitions(currentDocument)
             .GroupBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
             .Select(group => typeResolution.ResolveSourceTypeCompletionGroup(group.ToArray()))
             .Where(definition => definition is not null)
             .Select(definition => definition!)
             .OrderBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
             .ToArray();
-        return true;
-    }
 
     private bool TryResolveMemberDefinition(
         VbaSourceDocument currentDocument,
         int line,
         int character,
-        string memberName,
+        VbaPositionSyntax positionSyntax,
         out VbaSourceDefinition? definition)
     {
         definition = null;
-        if (!GetSyntaxTree(currentDocument).TryGetMemberReferenceContext(
-            line,
-            character,
-            memberName,
-            out var context))
+        if (positionSyntax.MemberAccess is null)
         {
             return false;
         }
@@ -335,7 +288,8 @@ internal sealed class VbaSemanticResolution
             currentDocument,
             line,
             character,
-            context,
+            positionSyntax.MemberAccess,
+            positionSyntax.EnclosingWithScopes,
             out definition))
         {
             return false;
@@ -375,20 +329,23 @@ internal sealed class VbaSemanticResolution
     }
 
     private bool TryGetMemberChainCanonicalName(
-        string codePart,
+        VbaPositionSyntax positionSyntax,
         VbaIdentifierOccurrence occurrence,
         VbaSourceDocument document,
         int lineIndex,
         out string? canonicalName)
     {
         canonicalName = null;
-        if (VbaSyntaxTree.TryGetPreviousMemberContext(codePart, occurrence, out var context))
+        var access = positionSyntax.MemberAccess;
+        if (access is not null
+            && (access.TargetSegmentIndex > 0 || access.IsLeadingDot))
         {
             if (!memberChainResolution.TryGetCanonicalMemberName(
                 document,
                 lineIndex,
                 occurrence.Start,
-                context,
+                access,
+                positionSyntax.EnclosingWithScopes,
                 out canonicalName))
             {
                 return false;
@@ -397,7 +354,9 @@ internal sealed class VbaSemanticResolution
             return canonicalName is not null;
         }
 
-        if (!VbaMemberExpressionSyntax.TryGetNextMember(codePart, occurrence, out _))
+        if (access is null
+            || access.TargetSegmentIndex != 0
+            || access.Segments.Count < 2)
         {
             return false;
         }
@@ -412,15 +371,16 @@ internal sealed class VbaSemanticResolution
     }
 
     private bool TryGetQualifiedCanonicalName(
-        string codePart,
+        VbaMemberAccessSyntax? access,
         VbaIdentifierOccurrence occurrence,
         string uri,
         int lineIndex,
         out string? canonicalName)
     {
         canonicalName = null;
-        if (VbaMemberExpressionSyntax.TryGetPreviousQualifier(codePart, occurrence, out var qualifier))
+        if (access?.Target is not null && access.TargetSegmentIndex > 0)
         {
+            var qualifier = access.Segments[access.TargetSegmentIndex - 1];
             var definition = nameResolution.Resolve(
                 uri,
                 new VbaPosition(lineIndex, 0),
@@ -430,8 +390,11 @@ internal sealed class VbaSemanticResolution
             return canonicalName is not null;
         }
 
-        if (VbaMemberExpressionSyntax.TryGetNextMember(codePart, occurrence, out var member))
+        if (access?.Target is not null
+            && access.TargetSegmentIndex == 0
+            && access.Segments.Count > 1)
         {
+            var member = access.Segments[1];
             var definition = nameResolution.Resolve(
                 uri,
                 new VbaPosition(lineIndex, 0),
@@ -458,46 +421,12 @@ internal sealed class VbaSemanticResolution
             : referenceCatalogs.GetActiveCanonicalQualifierAlias(referenceSelection, definition.ModuleName, qualifier);
     }
 
-    private static bool IsTypeAnnotationCompletionPrefix(string logicalPrefix)
-    {
-        return Regex.IsMatch(
-            logicalPrefix,
-            "\\bAs\\s+(?:(?:[A-Za-z_][A-Za-z0-9_]*)\\s*\\.\\s*)?[A-Za-z_][A-Za-z0-9_]*$|\\bAs\\s*$",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-    }
-
-    private static string? GetQualifierBefore(string line, int identifierStart)
-    {
-        var dotIndex = identifierStart - 1;
-        while (dotIndex >= 0 && char.IsWhiteSpace(line[dotIndex]))
-        {
-            dotIndex--;
-        }
-
-        if (dotIndex < 0 || line[dotIndex] != '.')
-        {
-            return null;
-        }
-
-        var qualifierEnd = dotIndex - 1;
-        while (qualifierEnd >= 0 && char.IsWhiteSpace(line[qualifierEnd]))
-        {
-            qualifierEnd--;
-        }
-
-        if (qualifierEnd < 0 || !VbaSourceText.IsIdentifierCharacter(line[qualifierEnd]))
-        {
-            return null;
-        }
-
-        var qualifierStart = qualifierEnd;
-        while (qualifierStart > 0 && VbaSourceText.IsIdentifierCharacter(line[qualifierStart - 1]))
-        {
-            qualifierStart--;
-        }
-
-        return line[qualifierStart..(qualifierEnd + 1)];
-    }
+    private static string? GetImmediateQualifier(
+        VbaMemberAccessSyntax? access,
+        VbaPositionIdentifierSyntax identifier)
+        => access?.Target?.Range == identifier.Range && access.TargetSegmentIndex > 0
+            ? access.Segments[access.TargetSegmentIndex - 1].Name
+            : null;
 
     private static string GetRangeKey(VbaRange range)
         => $"{range.Start.Line}:{range.Start.Character}:{range.End.Line}:{range.End.Character}";

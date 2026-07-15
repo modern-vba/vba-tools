@@ -1,4 +1,3 @@
-using System.Text.RegularExpressions;
 using VbaLanguageServer.Diagnostics;
 using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.Syntax;
@@ -39,25 +38,51 @@ internal sealed class VbaTypeResolution
         VbaSourceDocument currentDocument,
         int line,
         int character,
-        string expression,
-        out VbaResolvedType resolvedType,
-        IReadOnlyList<VbaResolvedType>? withReceivers = null)
+        IReadOnlyList<VbaPositionIdentifierSyntax> segments,
+        bool isLeadingDot,
+        IReadOnlyList<VbaWithScopeSyntax> withScopes,
+        out VbaResolvedType resolvedType)
     {
-        resolvedType = default!;
-        var normalized = VbaMemberExpressionSyntax.NormalizeMemberExpression(expression);
-        if (string.IsNullOrWhiteSpace(normalized))
+        if (segments.Count == 0 && !isLeadingDot)
         {
+            resolvedType = default!;
             return false;
         }
 
-        var parts = normalized.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (normalized.StartsWith(".", StringComparison.Ordinal))
+        return TryResolveExpressionType(
+            currentDocument,
+            line,
+            character,
+            segments.Select(segment => segment.Name).ToArray(),
+            isLeadingDot,
+            withScopes,
+            resolvedWithReceivers: null,
+            out resolvedType);
+    }
+
+    private bool TryResolveExpressionType(
+        VbaSourceDocument currentDocument,
+        int line,
+        int character,
+        IReadOnlyList<string> parts,
+        bool isLeadingDot,
+        IReadOnlyList<VbaWithScopeSyntax> withScopes,
+        IReadOnlyList<VbaResolvedType>? resolvedWithReceivers,
+        out VbaResolvedType resolvedType)
+    {
+        resolvedType = default!;
+        if (isLeadingDot)
         {
-            if (withReceivers is { Count: > 0 })
+            if (resolvedWithReceivers is { Count: > 0 })
             {
-                resolvedType = withReceivers[^1];
+                resolvedType = resolvedWithReceivers[^1];
             }
-            else if (!TryGetWithReceiverType(currentDocument, line, character, out resolvedType))
+            else if (!TryResolveWithReceiverType(
+                         currentDocument,
+                         line,
+                         character,
+                         withScopes,
+                         out resolvedType))
             {
                 return false;
             }
@@ -74,14 +99,9 @@ internal sealed class VbaTypeResolution
             return true;
         }
 
-        if (parts.Length == 0)
+        if (parts.Count >= 2 && TryResolveTypeReference(currentDocument, new VbaTypeReference(parts[1], parts[0]), out resolvedType))
         {
-            return false;
-        }
-
-        if (parts.Length >= 2 && TryResolveTypeReference(currentDocument, new VbaTypeReference(parts[1], parts[0]), out resolvedType))
-        {
-            for (var index = 2; index < parts.Length; index++)
+            for (var index = 2; index < parts.Count; index++)
             {
                 var member = ResolveMember(currentDocument, resolvedType, parts[index]);
                 if (member?.TypeReference is null || !TryResolveTypeReference(currentDocument, member.TypeReference, out resolvedType))
@@ -114,7 +134,7 @@ internal sealed class VbaTypeResolution
             return false;
         }
 
-        for (var index = 1; index < parts.Length; index++)
+        for (var index = 1; index < parts.Count; index++)
         {
             var member = ResolveMember(currentDocument, resolvedType, parts[index]);
             if (member?.TypeReference is null || !TryResolveTypeReference(currentDocument, member.TypeReference, out resolvedType))
@@ -144,25 +164,21 @@ internal sealed class VbaTypeResolution
 
     public bool TryResolveTypeReferenceDefinition(
         VbaSourceDocument currentDocument,
-        string[] lines,
-        int line,
-        VbaIdentifierOccurrence identifier,
+        VbaPositionTypeReferenceSyntax typeReference,
+        VbaPositionIdentifierSyntax identifier,
         out VbaSourceDefinition? definition)
     {
         definition = null;
-        if (VbaLanguageVocabulary.IsKeyword(identifier.Name) ||
-            IsFollowedByDot(lines[line], identifier.End))
+        if (typeReference.Name is null
+            || typeReference.Name.Range != identifier.Range)
         {
             return false;
         }
 
-        var logicalPrefix = VbaSourceText.GetLogicalPrefix(lines, line, identifier.End);
-        if (!TryGetTypeReferencePrefix(logicalPrefix, out var typeReference))
-        {
-            return false;
-        }
-
-        TryResolveTypeReferenceDefinition(currentDocument, typeReference, out definition);
+        TryResolveTypeReferenceDefinition(
+            currentDocument,
+            new VbaTypeReference(typeReference.Name.Name, typeReference.Qualifier?.Name),
+            out definition);
         return true;
     }
 
@@ -272,60 +288,40 @@ internal sealed class VbaTypeResolution
         return ResolveReferenceCandidates(candidates);
     }
 
-    private bool TryGetWithReceiverType(
+    private bool TryResolveWithReceiverType(
         VbaSourceDocument currentDocument,
-        int targetLine,
+        int line,
         int character,
+        IReadOnlyList<VbaWithScopeSyntax> withScopes,
         out VbaResolvedType resolvedType)
     {
         resolvedType = default!;
-        var lines = VbaSourceText.SplitLines(currentDocument.Text);
-        var stack = new List<VbaResolvedType>();
-        for (var lineIndex = 0; lineIndex < targetLine && lineIndex < lines.Length; lineIndex++)
-        {
-            var statement = VbaSourceText.GetLogicalStatement(lines, lineIndex, out var endLine);
-            if (endLine >= targetLine)
-            {
-                break;
-            }
-
-            var trimmed = statement.Trim();
-            if (Regex.IsMatch(trimmed, "^End\\s+With\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-            {
-                if (stack.Count > 0)
-                {
-                    stack.RemoveAt(stack.Count - 1);
-                }
-
-                lineIndex = endLine;
-                continue;
-            }
-
-            var withMatch = Regex.Match(
-                trimmed,
-                "^With\\s+(?<expression>.+)$",
-                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-            if (withMatch.Success
-                && TryResolveExpressionType(
-                    currentDocument,
-                    endLine,
-                    lines[Math.Min(endLine, lines.Length - 1)].Length,
-                    withMatch.Groups["expression"].Value,
-                    out var withType,
-                    stack))
-            {
-                stack.Add(withType);
-            }
-
-            lineIndex = endLine;
-        }
-
-        if (stack.Count == 0)
+        if (withScopes.Count == 0)
         {
             return false;
         }
 
-        resolvedType = stack[^1];
+        var resolvedScopes = new List<VbaResolvedType>();
+        foreach (var scope in withScopes)
+        {
+            if (scope.Receiver is null
+                || !TryResolveExpressionType(
+                    currentDocument,
+                    line,
+                    character,
+                    scope.Receiver.Segments.Select(segment => segment.Name).ToArray(),
+                    scope.Receiver.IsLeadingDot,
+                    [],
+                    resolvedScopes,
+                    out var scopeType))
+            {
+                return false;
+            }
+
+            resolvedScopes.Add(scopeType);
+        }
+
+        resolvedType = resolvedScopes[^1];
         return true;
     }
 
@@ -376,43 +372,6 @@ internal sealed class VbaTypeResolution
 
     private VbaSourceDefinition? ResolveReferenceCandidates(IEnumerable<VbaSourceDefinition> candidates)
         => resolutionPolicy.ResolveReferenceCandidates(candidates, referenceSelection);
-
-    private static bool TryGetTypeReferencePrefix(string logicalPrefix, out VbaTypeReference typeReference)
-    {
-        typeReference = default!;
-        var match = Regex.Match(
-            logicalPrefix,
-            "\\bAs\\s+(?:New\\s+)?(?:(?<qualifier>[A-Za-z_][A-Za-z0-9_]*)\\s*\\.\\s*)?(?<type>[A-Za-z_][A-Za-z0-9_]*)\\s*$",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-        if (!match.Success)
-        {
-            match = Regex.Match(
-                logicalPrefix,
-                "\\bNew\\s+(?:(?<qualifier>[A-Za-z_][A-Za-z0-9_]*)\\s*\\.\\s*)?(?<type>[A-Za-z_][A-Za-z0-9_]*)\\s*$",
-                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-        }
-
-        if (!match.Success)
-        {
-            return false;
-        }
-
-        var qualifier = match.Groups["qualifier"].Success
-            ? match.Groups["qualifier"].Value
-            : null;
-        typeReference = new VbaTypeReference(match.Groups["type"].Value, qualifier);
-        return true;
-    }
-
-    private static bool IsFollowedByDot(string line, int position)
-    {
-        while (position < line.Length && char.IsWhiteSpace(line[position]))
-        {
-            position++;
-        }
-
-        return position < line.Length && line[position] == '.';
-    }
 
     private static VbaResolvedType ToResolvedType(VbaSourceDefinition definition)
         => new(
