@@ -963,6 +963,123 @@ public sealed class LanguageServerProcessTests
     }
 
     [Fact]
+    public async Task Server_preserves_rich_declarations_for_function_and_statement_sub_calls()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        var uri = ToFileUri(Path.Combine(Path.GetTempPath(), $"vba-ls-rich-calls-{Guid.NewGuid():N}", "Mod_Example.bas"));
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Mod_Example\"",
+            "Option Explicit",
+            "",
+            "Public Sub Main()",
+            "    Dim example_var As String",
+            "    example_var = ExampleFunc(1, Arg3:=True)",
+            "    ExampleSub 1, Arg3:=True",
+            "End Sub",
+            "",
+            "'* Example of a function.",
+            "'*",
+            "'* @param Arg1 Example of a required argument.",
+            "'* @param Arg2 Example of an optional argument.",
+            "'* @param Arg3 Example of another optional argument.",
+            "'* @return Example of a return value.",
+            "'*",
+            "'* @details",
+            "'* This is an example of a function that has a required argument and an optional argument.",
+            "Public Function ExampleFunc(ByVal Arg1 As Long, Optional ByVal Arg2 As Boolean = False, Optional ByVal Arg3 As Boolean = False) As String",
+            "End Function",
+            "",
+            "'* Example of a subroutine.",
+            "'*",
+            "'* @param[out] Arg1 Example of a required argument.",
+            "'* @param[in] Arg2 Example of an optional argument.",
+            "'* @param[in] Arg3 Example of another optional argument.",
+            "'*",
+            "'* @details",
+            "'* This is an example of a subroutine that has a required argument and an optional argument.",
+            "Public Sub ExampleSub(ByRef Arg1 As Long, Optional ByVal Arg2 As Boolean = False, Optional ByVal Arg3 As Boolean = False)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
+
+        const string functionLabel =
+            "Function ExampleFunc(Arg1 As Long, [Arg2 As Boolean], [Arg3 As Boolean]) As String";
+        var functionHover = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/hover",
+            uri,
+            text,
+            "ExampleFunc(1, Arg3:=True");
+        var functionHoverValue = functionHover
+            .GetProperty("result")
+            .GetProperty("contents")
+            .GetProperty("value")
+            .GetString();
+        Assert.Contains("Example of a function.", functionHoverValue, StringComparison.Ordinal);
+        Assert.EndsWith(
+            $"---\n\n```vba\n{functionLabel}\n```",
+            functionHoverValue,
+            StringComparison.Ordinal);
+
+        var functionSignature = await SendPositionRequestAsync(
+            process,
+            3,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "ExampleFunc(1, Arg3:=True",
+            "ExampleFunc(1, Arg3:=True".Length);
+        var firstFunctionSignature = functionSignature
+            .GetProperty("result")
+            .GetProperty("signatures")
+            .EnumerateArray()
+            .Single();
+        Assert.Equal(functionLabel, firstFunctionSignature.GetProperty("label").GetString());
+        Assert.False(firstFunctionSignature.TryGetProperty("documentation", out _));
+
+        const string subLabel =
+            "Sub ExampleSub(ByRef Arg1 As Long, [Arg2 As Boolean], [Arg3 As Boolean])";
+        var subHover = await SendPositionRequestAsync(
+            process,
+            4,
+            "textDocument/hover",
+            uri,
+            text,
+            "ExampleSub 1, Arg3:=True");
+        var subHoverValue = subHover
+            .GetProperty("result")
+            .GetProperty("contents")
+            .GetProperty("value")
+            .GetString();
+        Assert.Contains("Example of a subroutine.", subHoverValue, StringComparison.Ordinal);
+        Assert.EndsWith(
+            $"---\n\n```vba\n{subLabel}\n```",
+            subHoverValue,
+            StringComparison.Ordinal);
+
+        var subSignature = await SendPositionRequestAsync(
+            process,
+            5,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "ExampleSub 1, Arg3:=True",
+            "ExampleSub 1, Arg3:=True".Length);
+        var firstSubSignature = subSignature
+            .GetProperty("result")
+            .GetProperty("signatures")
+            .EnumerateArray()
+            .Single();
+        Assert.Equal(subLabel, firstSubSignature.GetProperty("label").GetString());
+        Assert.False(firstSubSignature.TryGetProperty("documentation", out _));
+
+        await process.ShutdownAsync(6);
+    }
+
+    [Fact]
     public async Task Server_returns_rich_hover_declarations_for_source_definition_kinds()
     {
         await using var process = await LanguageServerProcessHarness.StartAsync();
