@@ -140,10 +140,11 @@ internal static class VbaLspFeatureProjection
             return null;
         }
 
-        var declaration = definition.Signature?.Label ?? definition.Name;
+        var declaration = CreateHoverDeclarationBlock(
+            definition.Signature?.Label ?? definition.DeclarationLabel ?? definition.Name);
         var value = string.IsNullOrWhiteSpace(definition.Documentation)
             ? declaration
-            : $"{definition.Documentation}\n\n{declaration}";
+            : $"{definition.Documentation}\n\n---\n\n{declaration}";
         return new
         {
             contents = new
@@ -154,6 +155,9 @@ internal static class VbaLspFeatureProjection
             range = definition.Range
         };
     }
+
+    private static string CreateHoverDeclarationBlock(string declaration)
+        => $"```vba\n{declaration}\n```";
 
     public static object? CreateSignatureHelp(VbaSignatureHelp? signatureHelp)
     {
@@ -167,12 +171,6 @@ internal static class VbaLspFeatureProjection
             ["label"] = signatureHelp.Signature.Label,
             ["parameters"] = signatureHelp.Signature.Parameters.Select(CreateSignatureParameter).ToArray()
         };
-        var documentation = ToMarkup(signatureHelp.Signature.Documentation);
-        if (documentation is not null)
-        {
-            signature["documentation"] = documentation;
-        }
-
         return new
         {
             signatures = new[]
@@ -188,7 +186,7 @@ internal static class VbaLspFeatureProjection
     {
         var projected = new Dictionary<string, object?>
         {
-            ["label"] = parameter.Name
+            ["label"] = parameter.Label
         };
         var documentation = ToMarkup(parameter.Documentation);
         if (documentation is not null)

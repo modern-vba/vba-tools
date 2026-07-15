@@ -223,7 +223,7 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
             Assert.NotNull(memberDefinition);
             Assert.Equal("Generated member.", memberDefinition.Documentation);
             Assert.NotNull(signatureHelp);
-            Assert.Equal("GeneratedMethod(Value) As String", signatureHelp.Signature.Label);
+            Assert.Equal("Function GeneratedMethod(Value) As String", signatureHelp.Signature.Label);
             Assert.Contains(semanticTokens, token => token.Text == "GeneratedType" && token.TokenType == "class");
             Assert.Contains(semanticTokens, token => token.Text == "GeneratedMember" && token.TokenType == "property");
             Assert.True(cache.Identities.ContainsKey("Generated Library"));

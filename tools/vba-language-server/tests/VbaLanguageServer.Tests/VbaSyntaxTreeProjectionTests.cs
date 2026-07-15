@@ -165,7 +165,7 @@ public sealed class VbaSyntaxTreeProjectionTests
         var run = Assert.Single(definitions, definition =>
             definition.Name == "Run"
             && definition.Kind == VbaSourceDefinitionKind.Procedure);
-        Assert.Equal("Run(Values, Fallback)", run.Signature?.Label);
+        Assert.Equal("Sub Run(ByRef Values() As String, Fallback As String)", run.Signature?.Label);
         Assert.Equal(["Values", "Fallback"], run.Signature!.Parameters.Select(parameter => parameter.Name).ToArray());
 
         Assert.Contains(definitions, definition =>
@@ -356,7 +356,7 @@ public sealed class VbaSyntaxTreeProjectionTests
             && declaration.Visibility == VbaDeclarationVisibility.Private);
 
         var buildValue = Assert.Single(index.GetDocumentDefinitions(uri), definition => definition.Name == "BuildValue");
-        Assert.Equal("BuildValue([Prefix]) As String", buildValue.Signature?.Label);
+        Assert.Equal("Function BuildValue([Prefix As String]) As String", buildValue.Signature?.Label);
         Assert.Contains(index.GetWorkspaceSymbols("shared"), symbol => symbol.Name == "SharedName");
         Assert.Contains(index.GetSemanticTokens(uri), token =>
             token.Text == "SharedName"

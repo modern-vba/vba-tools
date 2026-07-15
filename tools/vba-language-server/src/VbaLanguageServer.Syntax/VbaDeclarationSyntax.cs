@@ -120,6 +120,8 @@ public sealed record VbaModuleMemberSyntax(
 /// <param name="IsWithEvents">Whether the declaration includes WithEvents.</param>
 /// <param name="IsExternal">Whether the declaration is an external Declare member.</param>
 /// <param name="IsStatic">Whether the declaration includes Static.</param>
+/// <param name="DeclarationLabel">The editor-facing declaration summary for hover display.</param>
+/// <param name="CallableKind">The callable kind keyword used in rich signature labels.</param>
 public sealed record VbaDeclarationSyntax(
     string Name,
     VbaDeclarationKind Kind,
@@ -134,7 +136,9 @@ public sealed record VbaDeclarationSyntax(
     VbaTypeReferenceSyntax? TypeReference = null,
     bool IsWithEvents = false,
     bool IsExternal = false,
-    bool IsStatic = false);
+    bool IsStatic = false,
+    string? DeclarationLabel = null,
+    string? CallableKind = null);
 
 /// <summary>
 /// Represents a parsed callable declaration and its full source block.
@@ -152,6 +156,7 @@ public sealed record VbaDeclarationSyntax(
 /// <param name="OriginalLine">The original declaration line text.</param>
 /// <param name="IsExternal">Whether the callable is an external Declare member.</param>
 /// <param name="IsStatic">Whether the callable includes Static.</param>
+/// <param name="DeclarationKeyword">The callable keyword used by editor-facing declaration labels.</param>
 public sealed record VbaCallableDeclarationSyntax(
     string Name,
     VbaDeclarationKind Kind,
@@ -165,7 +170,8 @@ public sealed record VbaCallableDeclarationSyntax(
     int LineIndex,
     string OriginalLine,
     bool IsExternal = false,
-    bool IsStatic = false);
+    bool IsStatic = false,
+    string? DeclarationKeyword = null);
 
 /// <summary>
 /// Represents one parsed parameter in a callable declaration.
@@ -175,12 +181,18 @@ public sealed record VbaCallableDeclarationSyntax(
 /// <param name="Documentation">The parameter documentation from an attached documentation comment.</param>
 /// <param name="TypeReference">The parsed explicit parameter type annotation.</param>
 /// <param name="IsOptional">Whether the parameter is declared Optional.</param>
+/// <param name="IsByRef">Whether the parameter is effectively passed ByRef.</param>
+/// <param name="IsParamArray">Whether the parameter is declared ParamArray.</param>
+/// <param name="IsArray">Whether the parameter name carries a VBA array marker.</param>
 public sealed record VbaCallableParameterSyntax(
     string Name,
     VbaSyntaxRange Range,
     string? Documentation,
     VbaTypeReferenceSyntax? TypeReference,
-    bool IsOptional = false);
+    bool IsOptional = false,
+    bool IsByRef = true,
+    bool IsParamArray = false,
+    bool IsArray = false);
 
 /// <summary>
 /// Represents the display signature for a callable definition.
@@ -199,7 +211,15 @@ public sealed record VbaCallableSignatureSyntax(
 /// <param name="Name">The parameter name.</param>
 /// <param name="Documentation">The parameter documentation text.</param>
 /// <param name="IsOptional">Whether the parameter is declared Optional.</param>
+/// <param name="TypeReference">The parsed explicit parameter type annotation.</param>
+/// <param name="IsByRef">Whether the parameter is effectively passed ByRef.</param>
+/// <param name="IsParamArray">Whether the parameter is declared ParamArray.</param>
+/// <param name="IsArray">Whether the parameter name carries a VBA array marker.</param>
 public sealed record VbaCallableParameterInfoSyntax(
     string Name,
     string? Documentation = null,
-    bool IsOptional = false);
+    bool IsOptional = false,
+    VbaTypeReferenceSyntax? TypeReference = null,
+    bool IsByRef = true,
+    bool IsParamArray = false,
+    bool IsArray = false);

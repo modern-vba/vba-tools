@@ -833,24 +833,30 @@ public sealed class LanguageServerProcessTests
             .GetProperty("value")
             .GetString();
         Assert.Contains("Reads a value.", hoverValue);
-        Assert.Contains("ReadValue(Key, [Fallback]) As String", hoverValue);
+        Assert.EndsWith(
+            "---\n\n```vba\nFunction ReadValue(Key As String, [Fallback As String]) As String\n```",
+            hoverValue,
+            StringComparison.Ordinal);
 
         var signature = await SendPositionRequestAsync(process, 3, "textDocument/signatureHelp", uri, text, "ReadValue(\"id\", ", "ReadValue(\"id\", ".Length);
         var result = signature.GetProperty("result");
         Assert.Equal(1, result.GetProperty("activeParameter").GetInt32());
         var firstSignature = result.GetProperty("signatures").EnumerateArray().Single();
-        Assert.Equal("ReadValue(Key, [Fallback]) As String", firstSignature.GetProperty("label").GetString());
+        Assert.Equal(
+            "Function ReadValue(Key As String, [Fallback As String]) As String",
+            firstSignature.GetProperty("label").GetString());
+        Assert.False(firstSignature.TryGetProperty("documentation", out _));
         var parameters = firstSignature.GetProperty("parameters").EnumerateArray().ToArray();
-        Assert.Equal("Key", parameters[0].GetProperty("label").GetString());
+        Assert.Equal("Key As String", parameters[0].GetProperty("label").GetString());
         Assert.Contains("Key to read.", parameters[0].GetProperty("documentation").GetProperty("value").GetString());
-        Assert.Equal("Fallback", parameters[1].GetProperty("label").GetString());
+        Assert.Equal("[Fallback As String]", parameters[1].GetProperty("label").GetString());
         Assert.Contains("Value used when the key is missing.", parameters[1].GetProperty("documentation").GetProperty("value").GetString());
 
         var statementSignature = await SendPositionRequestAsync(process, 4, "textDocument/signatureHelp", uri, text, "ReadValue ", "ReadValue ".Length);
         var statementResult = statementSignature.GetProperty("result");
         Assert.Equal(0, statementResult.GetProperty("activeParameter").GetInt32());
         Assert.Equal(
-            "ReadValue(Key, [Fallback]) As String",
+            "Function ReadValue(Key As String, [Fallback As String]) As String",
             statementResult.GetProperty("signatures").EnumerateArray().Single().GetProperty("label").GetString());
 
         var statementSecondParameter = await SendPositionRequestAsync(process, 5, "textDocument/signatureHelp", uri, text, "ReadValue \"id\", ", "ReadValue \"id\", ".Length);
@@ -875,6 +881,155 @@ public sealed class LanguageServerProcessTests
             parameter => parameter.TryGetProperty("documentation", out _));
 
         await process.ShutdownAsync(7);
+    }
+
+    [Fact]
+    public async Task Server_preserves_rich_declaration_metadata_for_documented_source_callables()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        var uri = ToFileUri(Path.Combine(Path.GetTempPath(), $"vba-ls-rich-hover-{Guid.NewGuid():N}", "Mod_Example.bas"));
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Mod_Example\"",
+            "Option Explicit",
+            "",
+            "Public Sub ExampleSub()",
+            "    Dim example_var As String",
+            "    example_var = ExampleFunc(Arg2:=True)",
+            "End Sub",
+            "",
+            "'* Example of a function.",
+            "'*",
+            "'* @param Arg1 Example of a required argument.",
+            "'* @param Arg2 Example of an optional argument.",
+            "'* @returns Example of a return value.",
+            "'*",
+            "'* @details",
+            "'* This is an example of a function that has a required argument and an optional argument.",
+            "Public Function ExampleFunc(ByRef Arg1 As Long, Optional Arg2 As Boolean = False) As String",
+            "End Function"
+        ]);
+        await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
+
+        var hover = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/hover",
+            uri,
+            text,
+            "ExampleFunc(Arg2:=True");
+        var hoverValue = hover
+            .GetProperty("result")
+            .GetProperty("contents")
+            .GetProperty("value")
+            .GetString();
+        Assert.Contains("Example of a function.", hoverValue, StringComparison.Ordinal);
+        Assert.EndsWith(
+            "---\n\n```vba\nFunction ExampleFunc(ByRef Arg1 As Long, [ByRef Arg2 As Boolean]) As String\n```",
+            hoverValue,
+            StringComparison.Ordinal);
+
+        var signature = await SendPositionRequestAsync(
+            process,
+            3,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "ExampleFunc(Arg2:=True",
+            "ExampleFunc(Arg2:=True".Length);
+        var firstSignature = signature
+            .GetProperty("result")
+            .GetProperty("signatures")
+            .EnumerateArray()
+            .Single();
+        Assert.Equal(
+            "Function ExampleFunc(ByRef Arg1 As Long, [ByRef Arg2 As Boolean]) As String",
+            firstSignature.GetProperty("label").GetString());
+        Assert.False(firstSignature.TryGetProperty("documentation", out _));
+        var parameters = firstSignature.GetProperty("parameters").EnumerateArray().ToArray();
+        Assert.Equal("ByRef Arg1 As Long", parameters[0].GetProperty("label").GetString());
+        Assert.Equal("[ByRef Arg2 As Boolean]", parameters[1].GetProperty("label").GetString());
+        Assert.Contains(
+            "Example of a required argument.",
+            parameters[0].GetProperty("documentation").GetProperty("value").GetString(),
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Example of an optional argument.",
+            parameters[1].GetProperty("documentation").GetProperty("value").GetString(),
+            StringComparison.Ordinal);
+
+        await process.ShutdownAsync(4);
+    }
+
+    [Fact]
+    public async Task Server_returns_rich_hover_declarations_for_source_definition_kinds()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        var uri = ToFileUri(Path.Combine(Path.GetTempPath(), $"vba-ls-rich-kinds-{Guid.NewGuid():N}", "Worker.cls"));
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Option Explicit",
+            "Private WithEvents App As Excel.Application",
+            "Private Const MaxCount As Long = 10",
+            "Public Enum Status",
+            "    StatusReady = 1",
+            "End Enum",
+            "Public Type CustomerRecord",
+            "    Id As Long",
+            "End Type",
+            "Public Event Saved(ByVal Name As String, Optional RetryCount As Long)",
+            "Public Declare PtrSafe Function GetTickCount Lib \"kernel32\" () As Long",
+            "Public Property Get DisplayName(Optional Fallback As String) As String",
+            "End Property",
+            "Public Sub Run(ByRef ExplicitByRef As String, ByVal ExplicitByVal As Long, ParamArray Values() As Variant)",
+            "    Static localCount As Long",
+            "    Dim header_names() As String",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
+
+        var requestId = 2;
+        async Task<string> HoverValueAsync(string needle, int offset = 0)
+        {
+            var hover = await SendPositionRequestAsync(
+                process,
+                requestId++,
+                "textDocument/hover",
+                uri,
+                text,
+                needle,
+                offset);
+            return hover.GetProperty("result").GetProperty("contents").GetProperty("value").GetString() ?? "";
+        }
+
+        Assert.Equal("```vba\nWithEvents App As Application\n```", await HoverValueAsync("App As"));
+        Assert.Equal("```vba\nConst MaxCount As Long\n```", await HoverValueAsync("MaxCount"));
+        Assert.Equal("```vba\nEnum Status\n```", await HoverValueAsync("Enum Status", "Enum ".Length));
+        Assert.Equal("```vba\nStatusReady\n```", await HoverValueAsync("StatusReady"));
+        Assert.Equal("```vba\nType CustomerRecord\n```", await HoverValueAsync("CustomerRecord"));
+        Assert.Equal("```vba\nId As Long\n```", await HoverValueAsync("Id As"));
+        Assert.Equal(
+            "```vba\nEvent Saved(Name As String, [ByRef RetryCount As Long])\n```",
+            await HoverValueAsync("Saved("));
+        Assert.Equal(
+            "```vba\nDeclare Function GetTickCount() As Long\n```",
+            await HoverValueAsync("GetTickCount"));
+        Assert.Equal(
+            "```vba\nProperty DisplayName([ByRef Fallback As String]) As String\n```",
+            await HoverValueAsync("DisplayName"));
+        Assert.Equal(
+            "```vba\nSub Run(ByRef ExplicitByRef As String, ExplicitByVal As Long, ParamArray Values() As Variant)\n```",
+            await HoverValueAsync("Run(ByRef"));
+        Assert.Equal("```vba\nByRef ExplicitByRef As String\n```", await HoverValueAsync("ExplicitByRef"));
+        Assert.Equal("```vba\nExplicitByVal As Long\n```", await HoverValueAsync("ExplicitByVal"));
+        Assert.Equal("```vba\nParamArray Values() As Variant\n```", await HoverValueAsync("Values()"));
+        Assert.Equal("```vba\nStatic localCount As Long\n```", await HoverValueAsync("localCount"));
+        Assert.Equal("```vba\nheader_names() As String\n```", await HoverValueAsync("header_names"));
+
+        await process.ShutdownAsync(requestId);
     }
 
     [Fact]
@@ -938,7 +1093,7 @@ public sealed class LanguageServerProcessTests
                 .GetProperty("signatures")
                 .EnumerateArray()
                 .Single();
-            Assert.Equal("Run(Macro, [Arg1])", firstSignature.GetProperty("label").GetString());
+            Assert.Equal("Sub Run(Macro, [Arg1])", firstSignature.GetProperty("label").GetString());
             Assert.Contains(
                 "The macro or function to run.",
                 firstSignature.GetProperty("parameters").EnumerateArray().First().GetProperty("documentation").GetProperty("value").GetString(),
@@ -949,6 +1104,123 @@ public sealed class LanguageServerProcessTests
         finally
         {
             Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_preserves_rich_declaration_metadata_from_reference_catalogs()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-catalog-rich-").FullName;
+        var cacheRoot = Directory.CreateTempSubdirectory("vba-ls-catalog-rich-cache-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(projectRoot, "Generated Library");
+            new VbaProjectReferenceCatalogPersistentStore(cacheRoot).Save(
+                new VbaProjectReferenceCatalogPersistentEntry(
+                    CreateGeneratedReferenceCatalogIdentity("Generated Library"),
+                    new VbaProjectReferenceCatalog(
+                        "Generated Library",
+                        ["Generated"],
+                        [
+                            new VbaProjectReferenceDefinition(
+                                "Generated Library",
+                                "GeneratedType",
+                                VbaSourceDefinitionKind.Class),
+                            new VbaProjectReferenceDefinition(
+                                "Generated Library",
+                                "GeneratedValue",
+                                VbaSourceDefinitionKind.Property,
+                                "Returns a generated value.",
+                                TypeReference: new VbaTypeReference("Variant")),
+                            new VbaProjectReferenceDefinition(
+                                "Generated Library",
+                                "RichMethod",
+                                VbaSourceDefinitionKind.Procedure,
+                                Documentation: "Runs a generated rich method.",
+                                Signature: new VbaCallableSignature(
+                                    "RichMethod(Required, OptionalValue)",
+                                    [
+                                        new VbaCallableParameter(
+                                            "Required",
+                                            "Required argument documentation.",
+                                            TypeReference: new VbaTypeReference("Variant"),
+                                            IsByRef: true),
+                                        new VbaCallableParameter(
+                                            "OptionalValue",
+                                            IsOptional: true,
+                                            TypeReference: new VbaTypeReference("String"),
+                                            IsByRef: false)
+                                    ]),
+                                ParentTypeName: "GeneratedType",
+                                TypeReference: new VbaTypeReference("String"))
+                        ])));
+
+            await using var process = await LanguageServerProcessHarness.StartAsync(referenceCatalogCacheRoot: cacheRoot);
+
+            await process.InitializeAsync();
+            var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
+            var text = string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Public Sub Run()",
+                "    Generated.GeneratedValue",
+                "    Dim generatedObject As GeneratedType",
+                "    generatedObject.RichMethod(",
+                "End Sub"
+            ]);
+            await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
+
+            var valueHover = await SendPositionRequestAsync(
+                process,
+                2,
+                "textDocument/hover",
+                uri,
+                text,
+                "Generated.GeneratedValue",
+                "Generated.".Length);
+            Assert.EndsWith(
+                "---\n\n```vba\nProperty GeneratedValue As Variant\n```",
+                valueHover.GetProperty("result").GetProperty("contents").GetProperty("value").GetString(),
+                StringComparison.Ordinal);
+
+            var methodHover = await SendPositionRequestAsync(process, 3, "textDocument/hover", uri, text, "RichMethod(");
+            var methodHoverValue = methodHover.GetProperty("result").GetProperty("contents").GetProperty("value").GetString();
+            Assert.Contains("Runs a generated rich method.", methodHoverValue, StringComparison.Ordinal);
+            Assert.EndsWith(
+                "---\n\n```vba\nFunction RichMethod(ByRef Required As Variant, [OptionalValue As String]) As String\n```",
+                methodHoverValue,
+                StringComparison.Ordinal);
+            Assert.DoesNotContain("Required argument documentation.", methodHoverValue, StringComparison.Ordinal);
+
+            var signatureHelp = await SendPositionRequestAsync(
+                process,
+                4,
+                "textDocument/signatureHelp",
+                uri,
+                text,
+                "RichMethod(",
+                "RichMethod(".Length);
+            var signature = signatureHelp
+                .GetProperty("result")
+                .GetProperty("signatures")
+                .EnumerateArray()
+                .Single();
+            Assert.Equal(
+                "Function RichMethod(ByRef Required As Variant, [OptionalValue As String]) As String",
+                signature.GetProperty("label").GetString());
+            Assert.Equal(
+                ["ByRef Required As Variant", "[OptionalValue As String]"],
+                signature
+                    .GetProperty("parameters")
+                    .EnumerateArray()
+                    .Select(parameter => parameter.GetProperty("label").GetString() ?? "")
+                    .ToArray());
+
+            await process.ShutdownAsync(5);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+            Directory.Delete(cacheRoot, recursive: true);
         }
     }
 
@@ -1156,7 +1428,7 @@ public sealed class LanguageServerProcessTests
                 .GetProperty("signatures")
                 .EnumerateArray()
                 .Single();
-            Assert.Equal("Range(Cell1, Cell2) As Range", signature.GetProperty("label").GetString());
+            Assert.Equal("Property Range(Cell1, Cell2) As Range", signature.GetProperty("label").GetString());
             Assert.Contains(semanticTokens, token =>
                 token.Text == "Workbook"
                 && token.TokenType == "class"
@@ -1393,13 +1665,16 @@ public sealed class LanguageServerProcessTests
                 .GetProperty("signatures")
                 .EnumerateArray()
                 .Single();
-            Assert.Equal("Range(Cell1, [Cell2]) As Range", firstSignature.GetProperty("label").GetString());
+            Assert.StartsWith("Property Range(", firstSignature.GetProperty("label").GetString());
+            Assert.EndsWith(") As Range", firstSignature.GetProperty("label").GetString());
             var parameterLabels = firstSignature
                 .GetProperty("parameters")
                 .EnumerateArray()
                 .Select(parameter => parameter.GetProperty("label").GetString() ?? "")
                 .ToArray();
-            Assert.Equal(["Cell1", "Cell2"], parameterLabels);
+            Assert.Equal(2, parameterLabels.Length);
+            Assert.Contains("Cell1", parameterLabels[0], StringComparison.Ordinal);
+            Assert.Contains("Cell2", parameterLabels[1], StringComparison.Ordinal);
 
             var secondParameterHelp = await SendPositionRequestAsync(process, 3,
                 "textDocument/signatureHelp",
@@ -1413,7 +1688,8 @@ public sealed class LanguageServerProcessTests
                 .GetProperty("signatures")
                 .EnumerateArray()
                 .Single();
-            Assert.Equal("Range(Cell1, [Cell2]) As Range", secondSignature.GetProperty("label").GetString());
+            Assert.StartsWith("Property Range(", secondSignature.GetProperty("label").GetString());
+            Assert.EndsWith(") As Range", secondSignature.GetProperty("label").GetString());
 
             await process.ShutdownAsync(4);
         }

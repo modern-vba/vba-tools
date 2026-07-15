@@ -44,7 +44,7 @@ internal static class VbaSyntaxTreeParser
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex LocalVariablePattern = new(
-        "^\\s*(?:Dim|Static)\\s+(?<declarations>.+)$",
+        "^\\s*(?:Dim|(?<static>Static))\\s+(?<declarations>.+)$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex IdentifierPattern = new(
@@ -395,6 +395,8 @@ internal static class VbaSyntaxTreeParser
             if (eventMatch.Success)
             {
                 var documentation = ParseDocumentationComment(sourceText.Lines, lineIndex);
+                var name = eventMatch.Groups["name"].Value;
+                var parameters = ParseParameterSyntax(sourceText, eventMatch, line, documentation);
                 members.Add(CreateSingleLineMember(
                     sourceText,
                     eventMatch,
@@ -408,8 +410,11 @@ internal static class VbaSyntaxTreeParser
                     VbaDeclarationKind.Event,
                     GetVisibility(eventMatch.Groups["visibility"].Value, defaultPublic: true),
                     line,
-                    documentation: documentation?.HoverText));
-                foreach (var parameter in ParseParameterSyntax(sourceText, eventMatch, line, documentation))
+                    documentation: documentation?.HoverText,
+                    signature: CreateSignature(name, parameters, null, documentation),
+                    declarationLabel: CreateDeclarationLabel("Event", name, parameters),
+                    callableKind: "Event"));
+                foreach (var parameter in parameters)
                 {
                     declarations.Add(CreateParameterDeclaration(parameter, parameter.Range.Start.Line));
                 }
@@ -427,7 +432,8 @@ internal static class VbaSyntaxTreeParser
                     "name",
                     VbaDeclarationKind.Enum,
                     visibility,
-                    line));
+                    line,
+                    declarationLabel: CreateDeclarationLabel("Enum", enumMatch.Groups["name"].Value)));
                 var endLine = FindBlockEndLine(sourceText.Lines, lineIndex + 1, "Enum");
                 AddMemberDeclarations(
                     sourceText,
@@ -454,7 +460,8 @@ internal static class VbaSyntaxTreeParser
                     "name",
                     VbaDeclarationKind.Type,
                     visibility,
-                    line));
+                    line,
+                    declarationLabel: CreateDeclarationLabel("Type", typeMatch.Groups["name"].Value)));
                 var endLine = FindBlockEndLine(sourceText.Lines, lineIndex + 1, "Type");
                 AddMemberDeclarations(
                     sourceText,
@@ -838,7 +845,8 @@ internal static class VbaSyntaxTreeParser
             lineIndex,
             line.Text,
             IsExternal: isExternal,
-            IsStatic: isStatic);
+            IsStatic: isStatic,
+            DeclarationKeyword: GetDeclarationKeyword(match));
     }
 
     private static VbaCallableDeclarationSyntax CreateCallableDeclaration(
@@ -873,7 +881,8 @@ internal static class VbaSyntaxTreeParser
             typeReference,
             lineIndex,
             statement.Text,
-            IsStatic: isStatic);
+            IsStatic: isStatic,
+            DeclarationKeyword: GetDeclarationKeyword(match));
     }
 
     private static VbaDeclarationSyntax CreateCallableSourceDeclaration(VbaCallableDeclarationSyntax declaration)
@@ -887,7 +896,9 @@ internal static class VbaSyntaxTreeParser
             Signature: declaration.Signature,
             TypeReference: declaration.TypeReference,
             IsExternal: declaration.IsExternal,
-            IsStatic: declaration.IsStatic);
+            IsStatic: declaration.IsStatic,
+            DeclarationLabel: CreateDeclarationLabel(declaration),
+            CallableKind: declaration.DeclarationKeyword);
 
     private static VbaDeclarationSyntax CreateParameterDeclaration(
         VbaCallableParameterSyntax parameter,
@@ -903,7 +914,8 @@ internal static class VbaSyntaxTreeParser
             Documentation: parameter.Documentation,
             ParentProcedureName: parentProcedureName,
             ParentProcedureRange: parentProcedureRange,
-            TypeReference: parameter.TypeReference);
+            TypeReference: parameter.TypeReference,
+            DeclarationLabel: CreateParameterDeclarationLabel(parameter));
 
     private static VbaDeclarationSyntax CreateDeclaration(
         VbaSourceText sourceText,
@@ -920,7 +932,9 @@ internal static class VbaSyntaxTreeParser
         VbaTypeReferenceSyntax? typeReference = null,
         bool isWithEvents = false,
         bool isExternal = false,
-        bool isStatic = false)
+        bool isStatic = false,
+        string? declarationLabel = null,
+        string? callableKind = null)
     {
         var name = match.Groups[groupName].Value;
         return new VbaDeclarationSyntax(
@@ -937,7 +951,9 @@ internal static class VbaSyntaxTreeParser
             TypeReference: typeReference,
             IsWithEvents: isWithEvents,
             IsExternal: isExternal,
-            IsStatic: isStatic);
+            IsStatic: isStatic,
+            DeclarationLabel: declarationLabel,
+            CallableKind: callableKind);
     }
 
     private static VbaModuleMemberSyntax CreateSingleLineMember(
@@ -969,13 +985,19 @@ internal static class VbaSyntaxTreeParser
                 continue;
             }
 
+            var typeReference = ParseTypeReference(line.Text);
             declarations.Add(new VbaDeclarationSyntax(
                 match.Value,
                 kind,
                 visibility,
                 sourceText.RangeForLine(line, match.Index, match.Index + match.Length),
                 lineIndex,
-                TypeReference: ParseTypeReference(line.Text)));
+                TypeReference: typeReference,
+                DeclarationLabel: CreateValueDeclarationLabel(
+                    kind,
+                    match.Value,
+                    typeReference,
+                    isArray: IsArrayParameter(codeLine, match.Value))));
         }
     }
 
@@ -1004,7 +1026,8 @@ internal static class VbaSyntaxTreeParser
                 VbaDeclarationKind.Variable,
                 VbaDeclarationVisibility.Local,
                 parentProcedureName: parentProcedureName,
-                parentProcedureRange: parentProcedureRange))
+                parentProcedureRange: parentProcedureRange,
+                isStaticDefault: match.Groups["static"].Success))
             {
                 declarations.Add(declaration);
             }
@@ -1020,7 +1043,8 @@ internal static class VbaSyntaxTreeParser
         string? documentation = null,
         string? parentProcedureName = null,
         VbaSyntaxRange? parentProcedureRange = null,
-        bool isWithEventsDefault = false)
+        bool isWithEventsDefault = false,
+        bool isStaticDefault = false)
     {
         var declarations = new List<VbaDeclarationSyntax>();
         foreach (var segment in SplitDeclarationSegments(declarationsGroup.Value))
@@ -1039,6 +1063,8 @@ internal static class VbaSyntaxTreeParser
             var nameStart = segmentStart + nameMatch.Groups["name"].Index;
             var isWithEvents = isWithEventsDefault
                 || Regex.IsMatch(segment.Text, "\\bWithEvents\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            var isArray = IsArrayParameter(segment.Text, name);
+            var typeReference = ParseTypeReference(segment.Text);
             declarations.Add(new VbaDeclarationSyntax(
                 name,
                 kind,
@@ -1046,10 +1072,18 @@ internal static class VbaSyntaxTreeParser
                 sourceText.RangeForLine(line, nameStart, nameStart + name.Length),
                 line.LineNumber,
                 Documentation: documentation,
+                DeclarationLabel: CreateValueDeclarationLabel(
+                    kind,
+                    name,
+                    typeReference,
+                    isWithEvents,
+                    isStaticDefault,
+                    isArray),
                 ParentProcedureName: parentProcedureName,
                 ParentProcedureRange: parentProcedureRange,
-                TypeReference: ParseTypeReference(segment.Text),
-                IsWithEvents: isWithEvents));
+                TypeReference: typeReference,
+                IsWithEvents: isWithEvents,
+                IsStatic: isStaticDefault));
         }
 
         return declarations;
@@ -1085,7 +1119,10 @@ internal static class VbaSyntaxTreeParser
                     ? parameterDocumentation
                     : null,
                 ParseTypeReference(segment.Text),
-                IsOptionalParameter(segment.Text)));
+                IsOptionalParameter(segment.Text),
+                IsByRefParameter(segment.Text),
+                IsParamArrayParameter(segment.Text),
+                IsArrayParameter(segment.Text, name)));
         }
 
         return parameters;
@@ -1120,7 +1157,10 @@ internal static class VbaSyntaxTreeParser
                     ? parameterDocumentation
                     : null,
                 ParseTypeReference(segment.Text),
-                IsOptionalParameter(segment.Text)));
+                IsOptionalParameter(segment.Text),
+                IsByRefParameter(segment.Text),
+                IsParamArrayParameter(segment.Text),
+                IsArrayParameter(segment.Text, name)));
         }
 
         return parameters;
@@ -1161,7 +1201,11 @@ internal static class VbaSyntaxTreeParser
                 .Select(parameter => new VbaCallableParameterInfoSyntax(
                     parameter.Name,
                     parameter.Documentation,
-                    parameter.IsOptional))
+                    parameter.IsOptional,
+                    parameter.TypeReference,
+                    parameter.IsByRef,
+                    parameter.IsParamArray,
+                    parameter.IsArray))
                 .ToArray(),
             documentationLines.Count == 0 ? null : string.Join('\n', documentationLines));
     }
@@ -1169,10 +1213,107 @@ internal static class VbaSyntaxTreeParser
     private static string CreateSignatureParameterLabel(VbaCallableParameterSyntax parameter)
         => parameter.IsOptional ? $"[{parameter.Name}]" : parameter.Name;
 
+    private static string CreateDeclarationLabel(VbaCallableDeclarationSyntax declaration)
+    {
+        var keyword = declaration.DeclarationKeyword ?? GetCallableKind(declaration.Kind, declaration.TypeReference);
+        var declarePrefix = declaration.IsExternal ? "Declare " : "";
+        var staticPrefix = declaration.IsStatic ? "Static " : "";
+        return $"{staticPrefix}{declarePrefix}{keyword} {declaration.Signature.Label}";
+    }
+
+    private static string CreateDeclarationLabel(
+        string keyword,
+        string name,
+        IReadOnlyList<VbaCallableParameterSyntax> parameters)
+        => $"{keyword} {name}({string.Join(", ", parameters.Select(CreateSignatureParameterLabel))})";
+
+    private static string CreateDeclarationLabel(string keyword, string name)
+        => $"{keyword} {name}";
+
+    private static string CreateValueDeclarationLabel(
+        VbaDeclarationKind kind,
+        string name,
+        VbaTypeReferenceSyntax? typeReference,
+        bool isWithEvents = false,
+        bool isStatic = false,
+        bool isArray = false)
+    {
+        var parts = new List<string>();
+        if (isStatic)
+        {
+            parts.Add("Static");
+        }
+
+        if (isWithEvents)
+        {
+            parts.Add("WithEvents");
+        }
+
+        if (kind == VbaDeclarationKind.Constant)
+        {
+            parts.Add("Const");
+        }
+
+        parts.Add(isArray ? $"{name}()" : name);
+        var label = string.Join(" ", parts);
+        return typeReference is null ? label : $"{label} As {typeReference.Name}";
+    }
+
+    private static string CreateParameterDeclarationLabel(VbaCallableParameterSyntax parameter)
+    {
+        var parts = new List<string>();
+        if (parameter.IsParamArray)
+        {
+            parts.Add("ParamArray");
+        }
+        else if (parameter.IsByRef)
+        {
+            parts.Add("ByRef");
+        }
+
+        parts.Add(parameter.IsArray ? $"{parameter.Name}()" : parameter.Name);
+        if (parameter.TypeReference is not null)
+        {
+            parts.Add($"As {parameter.TypeReference.Name}");
+        }
+
+        return string.Join(" ", parts);
+    }
+
+    private static string GetCallableKind(
+        VbaDeclarationKind kind,
+        VbaTypeReferenceSyntax? typeReference)
+        => kind == VbaDeclarationKind.Property
+            ? "Property"
+            : typeReference is null ? "Sub" : "Function";
+
+    private static string GetDeclarationKeyword(Match match)
+        => match.Groups["propertyKind"].Success
+            ? "Property"
+            : match.Groups["kind"].Value;
+
     private static bool IsOptionalParameter(string text)
         => Regex.IsMatch(
             text,
             "^\\s*Optional\\b",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static bool IsByRefParameter(string text)
+        => !Regex.IsMatch(
+            text,
+            "\\bByVal\\b",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static bool IsParamArrayParameter(string text)
+        => Regex.IsMatch(
+            text,
+            "^\\s*ParamArray\\b",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static bool IsArrayParameter(string text, string name)
+        => Regex.IsMatch(
+            text,
+            $"\\b{Regex.Escape(name)}\\s*\\(",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static IReadOnlyList<DeclarationSegment> SplitDeclarationSegments(string text)

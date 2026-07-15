@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using VbaLanguageServer.Diagnostics;
 using VbaLanguageServer.ProjectModel;
@@ -300,11 +301,12 @@ public readonly struct VbaDefinitionIdentity : IEquatable<VbaDefinitionIdentity>
 /// <param name="ModuleName">The module or reference root that owns the definition.</param>
 /// <param name="ParentProcedureName">The containing procedure for local definitions.</param>
 /// <param name="ParentProcedureRange">The containing procedure range for local definitions.</param>
-/// <param name="Documentation">The documentation text shown by hover and signature help.</param>
+/// <param name="Documentation">The documentation text shown by hover.</param>
 /// <param name="Signature">The callable signature, when the definition is callable.</param>
 /// <param name="ParentTypeName">The containing enum or user-defined type name for members.</param>
 /// <param name="TypeReference">The explicit result or variable type reference.</param>
 /// <param name="IsWithEvents">Whether the definition declares WithEvents.</param>
+/// <param name="DeclarationLabel">The editor-facing declaration summary for hover display.</param>
 public sealed record VbaSourceDefinition(
     VbaDefinitionIdentity Identity,
     VbaDefinitionLocation Location,
@@ -318,7 +320,8 @@ public sealed record VbaSourceDefinition(
     VbaCallableSignature? Signature = null,
     string? ParentTypeName = null,
     VbaTypeReference? TypeReference = null,
-    bool IsWithEvents = false)
+    bool IsWithEvents = false,
+    string? DeclarationLabel = null)
 {
     /// <summary>
     /// Gets the editor-facing definition URI.
@@ -337,14 +340,34 @@ public sealed record VbaSourceDefinition(
 /// <param name="Name">The parameter name.</param>
 /// <param name="Documentation">The parameter documentation text.</param>
 /// <param name="IsOptional">Whether the parameter is optional when the source metadata provides it.</param>
-public sealed record VbaCallableParameter(string Name, string? Documentation = null, bool IsOptional = false);
+/// <param name="DisplayLabel">The displayed parameter segment in the containing signature label.</param>
+/// <param name="TypeReference">The parameter type reference, when supplied by the source or catalog.</param>
+/// <param name="IsByRef">Whether the parameter is known to be passed ByRef. Null means the metadata is unavailable.</param>
+/// <param name="IsParamArray">Whether the parameter is declared ParamArray.</param>
+/// <param name="IsArray">Whether the parameter name carries a VBA array marker.</param>
+public sealed record VbaCallableParameter(
+    string Name,
+    string? Documentation = null,
+    bool IsOptional = false,
+    string? DisplayLabel = null,
+    VbaTypeReference? TypeReference = null,
+    bool? IsByRef = null,
+    bool IsParamArray = false,
+    bool IsArray = false)
+{
+    /// <summary>
+    /// Gets the parameter segment shown inside its callable signature.
+    /// </summary>
+    [JsonIgnore]
+    public string Label => DisplayLabel ?? Name;
+}
 
 /// <summary>
 /// Represents callable signature metadata used by hover and signature help.
 /// </summary>
 /// <param name="Label">The full signature label.</param>
 /// <param name="Parameters">The ordered parameter metadata.</param>
-/// <param name="Documentation">The callable documentation text.</param>
+/// <param name="Documentation">The callable documentation retained for semantic consumers but omitted from LSP Signature Help.</param>
 public sealed record VbaCallableSignature(
     string Label,
     IReadOnlyList<VbaCallableParameter> Parameters,
@@ -876,19 +899,20 @@ public sealed class VbaSourceIndex
     {
         var range = MapRange(declaration.Range);
         return new VbaSourceDefinition(
-            VbaDefinitionIdentity.ForSource(uri, declaration.Name, range),
-            new VbaDefinitionLocation(uri, range),
-            declaration.Name,
-            MapDeclarationKind(declaration.Kind),
-            MapVisibility(declaration.Visibility),
-            moduleName,
-            declaration.ParentProcedureName,
-            declaration.ParentProcedureRange is null ? null : MapRange(declaration.ParentProcedureRange),
-            declaration.Documentation,
-            declaration.Signature is null ? null : MapSignature(declaration.Signature),
-            declaration.ParentTypeName,
-            declaration.TypeReference is null ? null : MapTypeReference(declaration.TypeReference),
-            declaration.IsWithEvents);
+            Identity: VbaDefinitionIdentity.ForSource(uri, declaration.Name, range),
+            Location: new VbaDefinitionLocation(uri, range),
+            Name: declaration.Name,
+            Kind: MapDeclarationKind(declaration.Kind),
+            Visibility: MapVisibility(declaration.Visibility),
+            ModuleName: moduleName,
+            ParentProcedureName: declaration.ParentProcedureName,
+            ParentProcedureRange: declaration.ParentProcedureRange is null ? null : MapRange(declaration.ParentProcedureRange),
+            Documentation: declaration.Documentation,
+            Signature: declaration.Signature is null ? null : MapSignature(declaration),
+            ParentTypeName: declaration.ParentTypeName,
+            TypeReference: declaration.TypeReference is null ? null : MapTypeReference(declaration.TypeReference),
+            IsWithEvents: declaration.IsWithEvents,
+            DeclarationLabel: declaration.DeclarationLabel);
     }
 
     private static VbaSourceDefinitionKind MapModuleKind(VbaModuleKind kind)
@@ -928,16 +952,63 @@ public sealed class VbaSourceIndex
             new VbaPosition(range.Start.Line, range.Start.Character),
             new VbaPosition(range.End.Line, range.End.Character));
 
-    private static VbaCallableSignature MapSignature(VbaCallableSignatureSyntax signature)
-        => new(
-            signature.Label,
+    private static VbaCallableSignature MapSignature(VbaDeclarationSyntax declaration)
+    {
+        var signature = declaration.Signature!;
+        var parameterLabels = signature.Parameters.Select(CreateSignatureParameterLabel).ToArray();
+        var callableKind = declaration.CallableKind ?? GetCallableKind(declaration);
+        var declarePrefix = declaration.IsExternal ? "Declare " : "";
+        var label = $"{declarePrefix}{callableKind} {declaration.Name}({string.Join(", ", parameterLabels)})";
+        if (declaration.TypeReference is not null)
+        {
+            label = $"{label} As {declaration.TypeReference.Name}";
+        }
+
+        return new VbaCallableSignature(
+            label,
             signature.Parameters
-                .Select(parameter => new VbaCallableParameter(
-                    parameter.Name,
-                    parameter.Documentation,
-                    parameter.IsOptional))
+                .Select((parameter, index) => new VbaCallableParameter(
+                    Name: parameter.Name,
+                    Documentation: parameter.Documentation,
+                    IsOptional: parameter.IsOptional,
+                    DisplayLabel: parameterLabels[index],
+                    TypeReference: parameter.TypeReference is null ? null : MapTypeReference(parameter.TypeReference),
+                    IsByRef: parameter.IsByRef,
+                    IsParamArray: parameter.IsParamArray,
+                    IsArray: parameter.IsArray))
                 .ToArray(),
             signature.Documentation);
+    }
+
+    private static string GetCallableKind(VbaDeclarationSyntax declaration)
+        => declaration.Kind switch
+        {
+            VbaDeclarationKind.Property => "Property",
+            VbaDeclarationKind.Event => "Event",
+            _ => declaration.TypeReference is null ? "Sub" : "Function"
+        };
+
+    private static string CreateSignatureParameterLabel(VbaCallableParameterInfoSyntax parameter)
+    {
+        var parts = new List<string>();
+        if (parameter.IsParamArray)
+        {
+            parts.Add("ParamArray");
+        }
+        else if (parameter.IsByRef)
+        {
+            parts.Add("ByRef");
+        }
+
+        parts.Add(parameter.IsArray ? $"{parameter.Name}()" : parameter.Name);
+        if (parameter.TypeReference is not null)
+        {
+            parts.Add($"As {parameter.TypeReference.Name}");
+        }
+
+        var label = string.Join(" ", parts);
+        return parameter.IsOptional ? $"[{label}]" : label;
+    }
 
     private static VbaTypeReference MapTypeReference(VbaTypeReferenceSyntax typeReference)
         => new(typeReference.Name, typeReference.Qualifier);

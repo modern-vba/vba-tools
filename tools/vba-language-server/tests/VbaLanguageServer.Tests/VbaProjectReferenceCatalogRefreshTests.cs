@@ -456,7 +456,7 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
 
         var signatureHelp = index.GetSignatureHelp(uri, 5, "    regex.Execute(".Length);
         Assert.NotNull(signatureHelp);
-        Assert.Equal("Execute(String) As MatchCollection", signatureHelp.Signature.Label);
+        Assert.Equal("Function Execute(String) As MatchCollection", signatureHelp.Signature.Label);
 
         var location = index.ResolveDefinition(uri, 5, "    regex.Execute(".IndexOf("Execute", StringComparison.Ordinal));
         Assert.NotNull(location);

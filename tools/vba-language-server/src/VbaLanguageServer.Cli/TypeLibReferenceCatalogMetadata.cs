@@ -434,7 +434,14 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
                 : $"Arg{parameters.Count + 1}";
             var isOptional = (element.desc.paramdesc.wParamFlags & PARAMFLAG.PARAMFLAG_FOPT) != 0
                 || (element.desc.paramdesc.wParamFlags & PARAMFLAG.PARAMFLAG_FHASDEFAULT) != 0;
-            parameters.Add(new VbaCallableParameter(parameterName, IsOptional: isOptional));
+            var isParamArray = funcDesc.cParamsOpt == -1 && index == funcDesc.cParams - 1;
+            parameters.Add(new VbaCallableParameter(
+                parameterName,
+                IsOptional: isOptional,
+                TypeReference: ToTypeReference(typeInfo, element.tdesc),
+                IsByRef: GetParameterPassing(element),
+                IsParamArray: isParamArray,
+                IsArray: isParamArray || IsArrayType(element.tdesc)));
         }
 
         return parameters;
@@ -465,6 +472,40 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
 
     private static string CreateParameterLabel(VbaCallableParameter parameter)
         => parameter.IsOptional ? $"[{parameter.Name}]" : parameter.Name;
+
+    private static bool? GetParameterPassing(ELEMDESC element)
+    {
+        if ((VarEnum)element.tdesc.vt == VarEnum.VT_PTR)
+        {
+            return true;
+        }
+
+        var flags = element.desc.paramdesc.wParamFlags;
+        if ((flags & PARAMFLAG.PARAMFLAG_FOUT) != 0)
+        {
+            return true;
+        }
+
+        if ((flags & PARAMFLAG.PARAMFLAG_FIN) != 0)
+        {
+            return false;
+        }
+
+        return null;
+    }
+
+    private static bool IsArrayType(TYPEDESC typeDesc)
+    {
+        var varType = (VarEnum)typeDesc.vt;
+        if (varType is VarEnum.VT_SAFEARRAY or VarEnum.VT_CARRAY)
+        {
+            return true;
+        }
+
+        return varType == VarEnum.VT_PTR
+            && TryGetNestedTypeDescription(typeDesc, out var nestedType)
+            && IsArrayType(nestedType);
+    }
 
     [SupportedOSPlatform("windows")]
     private static VbaTypeReference? ToTypeReference(ITypeInfo typeInfo, TYPEDESC typeDesc)
@@ -505,13 +546,24 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
     [SupportedOSPlatform("windows")]
     private static VbaTypeReference? ToNestedTypeReference(ITypeInfo typeInfo, TYPEDESC typeDesc)
     {
-        if (typeDesc.lpValue == IntPtr.Zero)
+        if (!TryGetNestedTypeDescription(typeDesc, out var nested))
         {
             return null;
         }
 
-        var nested = Marshal.PtrToStructure<TYPEDESC>(typeDesc.lpValue);
         return ToTypeReference(typeInfo, nested);
+    }
+
+    private static bool TryGetNestedTypeDescription(TYPEDESC typeDesc, out TYPEDESC nested)
+    {
+        nested = default;
+        if (typeDesc.lpValue == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        nested = Marshal.PtrToStructure<TYPEDESC>(typeDesc.lpValue);
+        return true;
     }
 
     [SupportedOSPlatform("windows")]

@@ -395,12 +395,24 @@ An editor completion that inserts the matching VBA block closer for a block open
 _Avoid_: automatic typing, on-type edit
 
 **DocumentationComment**:
-A structured Doxygen-style VBA comment block attached to a `VbaDefinition` and shown by editor features such as hover and signature help regardless of public or private visibility. Plain apostrophe comments are not `DocumentationComment`s; when an implementation member has no `DocumentationComment`, it may inherit one from the interface member named by its `Implements` relationship.
+A structured Doxygen-style VBA comment block attached to a `VbaDefinition` regardless of public or private visibility. Hover shows the complete rendered comment. Signature Help presents only the active `CallableParameter`'s `@param` documentation; its protocol metadata retains documentation per parameter so the client can select the active one, but callable summary, details, and return documentation are not projected. Plain apostrophe comments are not `DocumentationComment`s; when an implementation member has no `DocumentationComment`, it may inherit one from the interface member named by its `Implements` relationship.
 _Avoid_: comment, note, description
 
 **CallableSignature**:
-The structured call shape for a callable `VbaDefinition` or `VbaProjectReferenceDefinition`. It includes the displayed signature label, ordered parameters, optional parameter metadata, parameter passing metadata, parameter type names, default values, return type names, and parameter documentation when that documentation is available from source comments or reference catalog metadata.
+The structured call shape for a callable `VbaDefinition` or `VbaProjectReferenceDefinition`. It includes the displayed signature label, ordered parameters, optional parameter metadata, parameter passing metadata, parameter type names, default values, return type names, and parameter documentation when that documentation is available from source comments or reference catalog metadata. When shown by Signature Help or as a callable hover declaration, the primary label carries the callable kind (`Sub`, `Function`, `Property`, `Event`, or source `Declare` form), available return type, available parameter type metadata, and effective `ByRef` metadata, including implicit VBA `ByRef`, while `ByVal` is omitted even when explicit. Property accessors are collapsed to `Property`, `ParamArray` is shown when available, array parameters keep their `()` marker, optional parameters are represented with brackets rather than the `Optional` keyword, and visibility modifiers and default values are omitted. Reference catalog signatures follow the same rules but show only metadata supplied by the catalog; missing passing or type metadata is not inferred.
 _Avoid_: parameter list, call text, method shape
+
+**Hover**:
+An editor feature that explains the `VbaDefinition` or `VbaProjectReferenceDefinition` under the cursor. It renders the attached `DocumentationComment`, followed by a horizontal separator and a fenced `vba` declaration block. Callable definitions use their rich `CallableSignature`; other definitions use their `DeclarationLabel`. Hover does not expand per-parameter documentation or track an active `CallableParameter`.
+_Avoid_: SignatureHelp, tooltip, parameter hover
+
+**SignatureHelp**:
+An editor feature that shows the rich `CallableSignature` for a resolved call site and tracks the active `CallableParameter`. It omits callable-level documentation and retains per-parameter documentation. Each LSP parameter label is the complete displayed parameter segment, including brackets, passing metadata, array markers, and type metadata when present.
+_Avoid_: hover, tooltip, parameter hover
+
+**DeclarationLabel**:
+The editor-facing declaration summary for a non-callable `VbaDefinition` or `VbaProjectReferenceDefinition`, or the fallback when no richer `CallableSignature` is available. Constants, enums, and user-defined types include `Const`, `Enum`, or `Type`. Variables, parameters, enum members, and user-defined type members use declaration forms such as `Name As Type`; arrays keep `()` after the name. Parameter labels include effective `ByRef` metadata while omitting `ByVal`. `Static` and `WithEvents` are included when they apply, while visibility modifiers and unavailable implicit types are omitted.
+_Avoid_: signature, display name, hover text, owner-qualified name
 
 **CallableParameter**:
 A declared input slot on a callable definition, such as `Arg1` in `Sub Example(ByVal Arg1 As String)`. It is matched by name or position from a `CallArgument`.
@@ -567,7 +579,7 @@ Dev: "Should typing Enter after `Sub` automatically insert `End Sub`?"
 Domain Expert: "No. `EndStatementCompletion` is an explicit completion item, not an on-type edit."
 
 Dev: "Can a normal apostrophe comment appear in hover?"
-Domain Expert: "No. Hover and signature help use `DocumentationComment`s only, with interface documentation inherited through `Implements` when the implementation has none."
+Domain Expert: "No. Hover uses the complete `DocumentationComment`; Signature Help projects only its `@param` documentation. Interface documentation may be inherited through `Implements` when the implementation has none."
 
 Dev: "Should a private helper with a `DocumentationComment` appear in hover?"
 Domain Expert: "Yes. Visibility does not hide an attached `DocumentationComment`."
