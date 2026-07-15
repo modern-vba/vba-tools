@@ -1245,25 +1245,27 @@ internal static class VbaSyntaxTreeParser
             return null;
         }
 
-        var bodyLines = new List<string>();
+        var summaryLines = new List<string>();
+        var detailsLines = new List<string>();
+        var currentBodyLines = summaryLines;
         var parameterDocs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         string? returnDocumentation = null;
         foreach (var rawLine in rawLines)
         {
             if (rawLine.StartsWith("@brief ", StringComparison.OrdinalIgnoreCase))
             {
-                bodyLines.Add(rawLine["@brief ".Length..].Trim());
+                summaryLines.Add(rawLine["@brief ".Length..].Trim());
                 continue;
             }
 
-            if (rawLine.StartsWith("@details ", StringComparison.OrdinalIgnoreCase))
+            if (TryParseDocumentationCommand(rawLine, "@details", out var details))
             {
-                if (bodyLines.Count > 0 && bodyLines[^1].Length != 0)
+                currentBodyLines = detailsLines;
+                if (details.Length != 0)
                 {
-                    bodyLines.Add("");
+                    detailsLines.Add(details);
                 }
 
-                bodyLines.Add(rawLine["@details ".Length..].Trim());
                 continue;
             }
 
@@ -1278,15 +1280,19 @@ internal static class VbaSyntaxTreeParser
                 continue;
             }
 
-            if (rawLine.StartsWith("@return ", StringComparison.OrdinalIgnoreCase))
+            if (TryParseDocumentationCommand(rawLine, "@return", out var returnText)
+                || TryParseDocumentationCommand(rawLine, "@returns", out returnText))
             {
-                returnDocumentation = rawLine["@return ".Length..].Trim();
+                returnDocumentation = returnText;
                 continue;
             }
 
-            bodyLines.Add(rawLine.Trim());
+            currentBodyLines.Add(rawLine.Trim());
         }
 
+        var bodyLines = new List<string>();
+        AddDocumentationSection(bodyLines, summaryLines);
+        AddDocumentationSection(bodyLines, detailsLines);
         var hoverLines = new List<string>(bodyLines);
         foreach (var parameter in parameterDocs)
         {
@@ -1313,6 +1319,63 @@ internal static class VbaSyntaxTreeParser
             bodyLines.Count == 0 ? null : string.Join('\n', bodyLines).TrimEnd(),
             parameterDocs,
             returnDocumentation);
+    }
+
+    private static bool TryParseDocumentationCommand(
+        string rawLine,
+        string command,
+        out string content)
+    {
+        content = "";
+        if (!rawLine.StartsWith(command, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (rawLine.Length == command.Length)
+        {
+            return true;
+        }
+
+        if (!char.IsWhiteSpace(rawLine[command.Length]))
+        {
+            return false;
+        }
+
+        content = rawLine[command.Length..].Trim();
+        return true;
+    }
+
+    private static void AddDocumentationSection(
+        ICollection<string> bodyLines,
+        IReadOnlyList<string> sectionLines)
+    {
+        var firstContentLine = 0;
+        while (firstContentLine < sectionLines.Count && sectionLines[firstContentLine].Length == 0)
+        {
+            firstContentLine++;
+        }
+
+        var lastContentLine = sectionLines.Count - 1;
+        while (lastContentLine >= firstContentLine && sectionLines[lastContentLine].Length == 0)
+        {
+            lastContentLine--;
+        }
+
+        if (lastContentLine < firstContentLine)
+        {
+            return;
+        }
+
+        if (bodyLines.Count > 0)
+        {
+            bodyLines.Add("");
+        }
+
+        for (var index = firstContentLine; index <= lastContentLine; index++)
+        {
+            bodyLines.Add(sectionLines[index]);
+        }
     }
 
     private static string? ParseParameterName(string parameter)
