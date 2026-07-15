@@ -458,7 +458,7 @@ internal static class VbaCallSyntaxParser
         int calleeStart)
     {
         if (IsCallableDeclaration(tokens)
-            || IsDeclaredArrayStatement(tokens)
+            || IsDeclaredArrayBounds(tokens, openIndex)
             || IsRemComment(tokens))
         {
             return true;
@@ -507,6 +507,31 @@ internal static class VbaCallSyntaxParser
                 || TextEquals(tokens[0], "Friend")
                 || TextEquals(tokens[0], "Global")
                 || TextEquals(tokens[0], "ReDim"));
+
+    private static bool IsDeclaredArrayBounds(
+        IReadOnlyList<VbaToken> tokens,
+        int openIndex)
+    {
+        if (!IsDeclaredArrayStatement(tokens))
+        {
+            return false;
+        }
+
+        var depth = 0;
+        for (var index = 0; index < openIndex; index++)
+        {
+            if (IsPunctuation(tokens[index], "("))
+            {
+                depth++;
+            }
+            else if (IsPunctuation(tokens[index], ")") && depth > 0)
+            {
+                depth--;
+            }
+        }
+
+        return depth == 0;
+    }
 
     private static bool IsExcludedStatementFormCall(IReadOnlyList<VbaToken> tokens, int calleeStart)
         => calleeStart == 0

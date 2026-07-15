@@ -134,6 +134,68 @@ public sealed class VbaPositionSyntaxTests
     }
 
     [Fact]
+    public void CompleteAndPositionCallSyntaxPreserveCallsInsideArrayBounds()
+    {
+        const string declarationLine = "    ReDim values(CalculateSize(1, Minimum:=2))";
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            declarationLine,
+            "End Sub"
+        ]);
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.bas", source);
+
+        var complete = Assert.Single(
+            tree.Module.ArgumentLists,
+            argumentList => argumentList.Callee == "CalculateSize");
+        Assert.DoesNotContain(
+            tree.Module.ArgumentLists,
+            argumentList => argumentList.Callee == "values");
+
+        var innerCloseCharacter = declarationLine.LastIndexOf(')') - 1;
+        var position = tree.GetPositionSyntax(2, innerCloseCharacter).CallSite;
+
+        Assert.NotNull(position);
+        Assert.Equal(VbaCallSyntaxForm.Parenthesized, position.Form);
+        Assert.Equal(complete.Callee, position.Callee.Target?.Name);
+        Assert.Equal(complete.Arguments.Count, position.Arguments.Count);
+        Assert.Equal(
+            complete.Arguments.Select(argument => argument.Name),
+            position.Arguments.Select(argument => argument.Name));
+        Assert.Equal(
+            complete.Arguments.Select(argument => argument.Kind == VbaArgumentKind.Omitted),
+            position.Arguments.Select(argument => argument.IsOmitted));
+    }
+
+    [Fact]
+    public void CompleteAndPositionCallSyntaxPreserveEmptyCallsInsideArrayBounds()
+    {
+        const string declarationLine = "    ReDim values(CalculateSize())";
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            declarationLine,
+            "End Sub"
+        ]);
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.bas", source);
+
+        var complete = Assert.Single(
+            tree.Module.ArgumentLists,
+            argumentList => argumentList.Callee == "CalculateSize");
+        Assert.Empty(complete.Arguments);
+        Assert.DoesNotContain(
+            tree.Module.ArgumentLists,
+            argumentList => argumentList.Callee == "values");
+
+        var innerCloseCharacter = declarationLine.LastIndexOf(')') - 1;
+        var position = tree.GetPositionSyntax(2, innerCloseCharacter).CallSite;
+
+        Assert.NotNull(position);
+        Assert.Equal(VbaCallSyntaxForm.Parenthesized, position.Form);
+        Assert.Equal(complete.Callee, position.Callee.Target?.Name);
+    }
+
+    [Fact]
     public void PositionSyntaxPreservesNestedWithScopeOrderAcrossContinuations()
     {
         var source = string.Join('\n', [
