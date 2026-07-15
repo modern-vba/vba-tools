@@ -1013,7 +1013,15 @@ public sealed class LanguageServerProcessTests
         var statementSecondParameter = await SendPositionRequestAsync(stdin, stdout, 5, "textDocument/signatureHelp", uri, text, "ReadValue \"id\", ", "ReadValue \"id\", ".Length);
         Assert.Equal(1, statementSecondParameter.GetProperty("result").GetProperty("activeParameter").GetInt32());
 
-        var undocumentedSignature = await SendPositionRequestAsync(stdin, stdout, 6, "textDocument/signatureHelp", uri, text, "PlainSub(", "PlainSub(".Length);
+        var undocumentedSignature = await SendPositionRequestAsync(
+            stdin,
+            stdout,
+            6,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    PlainSub(",
+            "    PlainSub(".Length);
         var undocumentedFirstSignature = undocumentedSignature
             .GetProperty("result")
             .GetProperty("signatures")
