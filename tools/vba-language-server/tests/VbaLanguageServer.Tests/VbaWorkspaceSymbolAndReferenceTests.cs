@@ -200,6 +200,67 @@ public sealed class VbaWorkspaceSymbolAndReferenceTests
     }
 
     [Fact]
+    public void ReferencesRenameAndSemanticTokensShareDefinitionIdentityRanges()
+    {
+        const string helperUri = "file:///C:/work/Helpers.bas";
+        const string callerUri = "file:///C:/work/Caller.bas";
+        var helperText = string.Join('\n', [
+            "Attribute VB_Name = \"Helpers\"",
+            "Public Function BuildValue() As String",
+            "    buildvalue = \"value\"",
+            "End Function"
+        ]);
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"Caller\"",
+            "Public Sub Run()",
+            "    BUILDVALUE",
+            "    Helpers.BuildValue",
+            "End Sub"
+        ]);
+        var index = VbaSourceIndex.Build(new Dictionary<string, string>
+        {
+            [helperUri] = helperText,
+            [callerUri] = callerText
+        });
+        var target = Assert.IsType<VbaSourceDefinition>(index.ResolveSourceDefinition(
+            helperUri,
+            1,
+            "Public Function ".Length));
+
+        var references = index.FindReferences(helperUri, 1, "Public Function ".Length);
+        var renamePlan = Assert.IsType<VbaRenamePlan>(index.CreateRenamePlan(
+            helperUri,
+            1,
+            "Public Function ".Length,
+            "CreateValue"));
+        var semanticTokenLocations = new[]
+        {
+            (Uri: helperUri, Tokens: index.GetSemanticTokens(helperUri)),
+            (Uri: callerUri, Tokens: index.GetSemanticTokens(callerUri))
+        }
+            .SelectMany(document => document.Tokens
+                .Where(token => token.Text.Equals("BuildValue", StringComparison.OrdinalIgnoreCase))
+                .Select(token => LocationKey(document.Uri, token.Range)))
+            .OrderBy(key => key, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var referenceLocations = references
+            .Select(reference => LocationKey(reference.Uri, reference.Range))
+            .OrderBy(key => key, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var renameLocations = renamePlan.Changes
+            .SelectMany(change => change.Value.Select(edit => LocationKey(change.Key, edit.Range)))
+            .OrderBy(key => key, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        Assert.Equal(
+            VbaDefinitionIdentity.ForSource(helperUri, "buildvalue", target.Range),
+            target.Identity);
+        Assert.Equal(4, referenceLocations.Length);
+        Assert.Equal(referenceLocations, renameLocations);
+        Assert.Equal(referenceLocations, semanticTokenLocations);
+    }
+
+    [Fact]
     public void FindReferencesRespectsManifestDocumentBoundaries()
     {
         var projectRoot = Directory.CreateTempSubdirectory("vba-ls-references-").FullName;
@@ -271,6 +332,9 @@ public sealed class VbaWorkspaceSymbolAndReferenceTests
 
     private static string ToFileUri(string path)
         => new Uri(path).AbsoluteUri;
+
+    private static string LocationKey(string uri, VbaRange range)
+        => $"{uri}:{range.Start.Line}:{range.Start.Character}:{range.End.Line}:{range.End.Character}";
 
     private static string ProjectManifestFixtureText(string fixtureName)
         => File.ReadAllText(Path.GetFullPath(Path.Combine(
