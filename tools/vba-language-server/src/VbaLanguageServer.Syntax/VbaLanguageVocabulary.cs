@@ -33,6 +33,7 @@ public static class VbaLanguageVocabulary
             ["elseif"] = "ElseIf",
             ["end"] = "End",
             ["enum"] = "Enum",
+            ["eqv"] = "Eqv",
             ["event"] = "Event",
             ["explicit"] = "Explicit",
             ["false"] = "False",
@@ -41,25 +42,40 @@ public static class VbaLanguageVocabulary
             ["function"] = "Function",
             ["get"] = "Get",
             ["global"] = "Global",
+            ["gosub"] = "GoSub",
+            ["goto"] = "GoTo",
             ["if"] = "If",
+            ["imp"] = "Imp",
             ["in"] = "In",
             ["integer"] = "Integer",
+            ["is"] = "Is",
             ["let"] = "Let",
             ["lib"] = "Lib",
+            ["like"] = "Like",
             ["long"] = "Long",
             ["longlong"] = "LongLong",
             ["longptr"] = "LongPtr",
             ["loop"] = "Loop",
+            ["mod"] = "Mod",
             ["new"] = "New",
             ["next"] = "Next",
             ["not"] = "Not",
             ["nothing"] = "Nothing",
             ["object"] = "Object",
             ["option"] = "Option",
+            ["optional"] = "Optional",
             ["or"] = "Or",
+            ["paramarray"] = "ParamArray",
+            ["preserve"] = "Preserve",
             ["private"] = "Private",
             ["property"] = "Property",
+            ["ptrsafe"] = "PtrSafe",
             ["public"] = "Public",
+            ["raiseevent"] = "RaiseEvent",
+            ["redim"] = "ReDim",
+            ["rem"] = "Rem",
+            ["resume"] = "Resume",
+            ["select"] = "Select",
             ["set"] = "Set",
             ["single"] = "Single",
             ["static"] = "Static",
@@ -82,16 +98,75 @@ public static class VbaLanguageVocabulary
     /// Gets the canonical vocabulary words ordered for completion display.
     /// </summary>
     public static readonly IReadOnlyList<string> Keywords =
-        CanonicalKeywords.Values
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(keyword => keyword, StringComparer.OrdinalIgnoreCase)
-            .ToArray();
+        CreateOrderedWords(CanonicalKeywords.Values);
+
+    /// <summary>
+    /// Gets words that can begin a declaration at module scope.
+    /// </summary>
+    public static readonly IReadOnlyList<string> ModuleDeclarationWords = CreateOrderedWords([
+        "Const",
+        "Declare",
+        "Dim",
+        "Enum",
+        "Event",
+        "Friend",
+        "Function",
+        "Global",
+        "Option",
+        "Private",
+        "Property",
+        "Public",
+        "Static",
+        "Sub",
+        "Type"
+    ]);
+
+    /// <summary>
+    /// Gets words that can begin a statement inside a procedure body.
+    /// </summary>
+    public static readonly IReadOnlyList<string> ProcedureStatementWords = CreateOrderedWords([
+        "Call",
+        "Case",
+        "Const",
+        "Dim",
+        "Do",
+        "Else",
+        "ElseIf",
+        "End",
+        "For",
+        "GoSub",
+        "GoTo",
+        "If",
+        "Let",
+        "Loop",
+        "Next",
+        "RaiseEvent",
+        "ReDim",
+        "Rem",
+        "Resume",
+        "Select",
+        "Set",
+        "Static",
+        "Wend",
+        "While",
+        "With"
+    ]);
+
+    /// <summary>
+    /// Gets fixed words that can supply a value where an expression operand is expected.
+    /// </summary>
+    public static readonly IReadOnlyList<string> ExpressionValueWords = CreateOrderedWords([
+        "False",
+        "New",
+        "Not",
+        "Nothing",
+        "True"
+    ]);
 
     /// <summary>
     /// Gets fixed VBA type names that are valid in type annotation completions.
     /// </summary>
-    public static readonly IReadOnlyList<string> TypeNames =
-    [
+    public static readonly IReadOnlyList<string> TypeNames = CreateOrderedWords([
         "Boolean",
         "Byte",
         "Currency",
@@ -105,7 +180,7 @@ public static class VbaLanguageVocabulary
         "Single",
         "String",
         "Variant"
-    ];
+    ]);
 
     /// <summary>
     /// Determines whether a value is known fixed VBA language vocabulary.
@@ -114,4 +189,10 @@ public static class VbaLanguageVocabulary
     /// <returns>True when the word has canonical vocabulary casing.</returns>
     public static bool IsKeyword(string value)
         => CanonicalKeywords.ContainsKey(value);
+
+    private static IReadOnlyList<string> CreateOrderedWords(IEnumerable<string> words)
+        => Array.AsReadOnly(words
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(word => word, StringComparer.OrdinalIgnoreCase)
+            .ToArray());
 }
