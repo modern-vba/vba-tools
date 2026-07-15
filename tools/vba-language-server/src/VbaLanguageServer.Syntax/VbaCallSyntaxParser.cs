@@ -104,11 +104,22 @@ internal static class VbaCallSyntaxParser
                 significant[openIndex].Range.End,
                 position,
                 includeSingleEmptyArgument: true);
+            var completeArguments = closeIndex >= 0
+                ? ParseArguments(
+                    sourceText,
+                    significant,
+                    openIndex + 1,
+                    closeIndex,
+                    significant[openIndex].Range.End,
+                    significant[closeIndex].Range.Start,
+                    includeSingleEmptyArgument: false)
+                : arguments;
             return CreatePositionCall(
                 VbaCallSyntaxForm.Parenthesized,
                 calleeStart,
                 calleeEnd,
                 arguments,
+                GetActiveNamedArgument(arguments, completeArguments, position),
                 isIncomplete: true);
         }
 
@@ -177,11 +188,20 @@ internal static class VbaCallSyntaxParser
             significant[calleeEnd].Range.End,
             position,
             includeSingleEmptyArgument: true);
+        var completeArguments = ParseArguments(
+            sourceText,
+            significant,
+            calleeEnd + 1,
+            significant.Count,
+            significant[calleeEnd].Range.End,
+            significant[^1].Range.End,
+            includeSingleEmptyArgument: false);
         return CreatePositionCall(
             VbaCallSyntaxForm.Statement,
             calleeStart,
             calleeEnd,
             arguments,
+            GetActiveNamedArgument(arguments, completeArguments, position),
             isIncomplete: false);
     }
 
@@ -190,6 +210,7 @@ internal static class VbaCallSyntaxParser
         int calleeStart,
         int calleeEnd,
         IReadOnlyList<ParsedArgument> arguments,
+        string? activeNamedArgument,
         bool isIncomplete)
     {
         var positionArguments = arguments
@@ -205,8 +226,27 @@ internal static class VbaCallSyntaxParser
             calleeEnd,
             positionArguments,
             positionArguments[^1].Index,
-            positionArguments[^1].Name,
+            activeNamedArgument,
             isIncomplete);
+    }
+
+    private static string? GetActiveNamedArgument(
+        IReadOnlyList<ParsedArgument> positionArguments,
+        IReadOnlyList<ParsedArgument> completeArguments,
+        VbaSyntaxPosition position)
+    {
+        var activeIndex = positionArguments.Count - 1;
+        var parsedName = positionArguments[activeIndex].Syntax.Name;
+        if (parsedName is not null || activeIndex >= completeArguments.Count)
+        {
+            return parsedName;
+        }
+
+        var completeArgument = completeArguments[activeIndex].Syntax;
+        return completeArgument.NameRange is not null
+            && position.Offset >= completeArgument.NameRange.Start.Offset
+                ? completeArgument.Name
+                : null;
     }
 
     private static IReadOnlyList<ParsedArgument> ParseArguments(

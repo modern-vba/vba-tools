@@ -27,7 +27,8 @@ internal static class VbaLspFeatureProjection
                 },
                 signatureHelpProvider = new
                 {
-                    triggerCharacters = contract.SignatureHelpTriggerCharacters
+                    triggerCharacters = contract.SignatureHelpTriggerCharacters,
+                    retriggerCharacters = contract.SignatureHelpRetriggerCharacters
                 },
                 completionProvider = new
                 {

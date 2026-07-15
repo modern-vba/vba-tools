@@ -22,13 +22,19 @@ public sealed class LanguageServerProcessTests
         Assert.True(capabilities.GetProperty("referencesProvider").GetBoolean());
         Assert.True(capabilities.GetProperty("workspaceSymbolProvider").GetBoolean());
         Assert.True(capabilities.GetProperty("documentFormattingProvider").GetBoolean());
-        var signatureTriggers = capabilities
-            .GetProperty("signatureHelpProvider")
+        var signatureProvider = capabilities.GetProperty("signatureHelpProvider");
+        var signatureTriggers = signatureProvider
             .GetProperty("triggerCharacters")
             .EnumerateArray()
             .Select(trigger => trigger.GetString())
             .ToArray();
         Assert.Contains(" ", signatureTriggers);
+        var signatureRetriggers = signatureProvider
+            .GetProperty("retriggerCharacters")
+            .EnumerateArray()
+            .Select(trigger => trigger.GetString()!)
+            .ToArray();
+        Assert.Equal(["="], signatureRetriggers);
         Assert.False(capabilities.TryGetProperty("documentRangeFormattingProvider", out _));
         Assert.False(capabilities.TryGetProperty("documentOnTypeFormattingProvider", out _));
 

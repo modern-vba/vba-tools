@@ -396,6 +396,55 @@ public sealed class VbaSemanticResolutionTests
         Assert.Equal(1, signatureHelp?.ActiveParameter);
     }
 
+    [Theory]
+    [InlineData("    example_var = ExampleFunc(", 1)]
+    [InlineData("    example_var = ExampleFunc(Arg", 1)]
+    [InlineData("    example_var = ExampleFunc(Arg2", 1)]
+    [InlineData("    example_var = ExampleFunc(Arg2:", 1)]
+    [InlineData("    example_var = ExampleFunc(Arg2:=", 1)]
+    [InlineData("    example_var = ExampleFunc(Arg2:=Tr", 1)]
+    public void SignatureHelpTracksCompleteNamedArgumentAcrossCursorPositions(
+        string cursorPrefix,
+        int expectedParameter)
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub ExampleSub()",
+            "    Dim example_var As String",
+            "    example_var = ExampleFunc(Arg2:=True)",
+            "End Sub",
+            "Public Function ExampleFunc(ByRef Arg1 As Long, Optional Arg2 As Boolean = False) As String",
+            "End Function"
+        ]);
+        var index = BuildIndex(uri, text);
+
+        var signatureHelp = index.GetSignatureHelp(uri, 3, cursorPrefix.Length);
+
+        Assert.Equal(expectedParameter, signatureHelp?.ActiveParameter);
+    }
+
+    [Fact]
+    public void SignatureHelpEndsAfterCompleteCallClosingParenthesis()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        const string callLine = "    example_var = ExampleFunc(Arg2:=True)";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub ExampleSub()",
+            "    Dim example_var As String",
+            callLine,
+            "End Sub",
+            "Public Function ExampleFunc(ByRef Arg1 As Long, Optional Arg2 As Boolean = False) As String",
+            "End Function"
+        ]);
+        var index = BuildIndex(uri, text);
+
+        var signatureHelp = index.GetSignatureHelp(uri, 3, callLine.Length);
+
+        Assert.Null(signatureHelp);
+    }
+
     [Fact]
     public void SignatureHelpFormatsSourceOptionalParametersAndTracksArgumentForms()
     {

@@ -105,6 +105,42 @@ public sealed class VbaPositionSyntaxTests
     }
 
     [Fact]
+    public void PositionSyntaxUsesCompleteNamedArgumentWhileCursorIsInsideItsName()
+    {
+        const string callLine = "    value = ExampleFunc(Arg2:=True)";
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            callLine,
+            "End Sub"
+        ]);
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.bas", source);
+
+        var position = tree.GetPositionSyntax(
+            2,
+            "    value = ExampleFunc(Arg".Length).CallSite;
+
+        Assert.Equal("Arg2", position?.ActiveNamedArgument);
+    }
+
+    [Fact]
+    public void PositionSyntaxUsesCompleteStatementNamedArgumentWhileCursorIsInsideItsName()
+    {
+        const string callLine = "    ExampleSub Arg2:=True";
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            callLine,
+            "End Sub"
+        ]);
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.bas", source);
+
+        var position = tree.GetPositionSyntax(2, "    ExampleSub Arg".Length).CallSite;
+
+        Assert.Equal("Arg2", position?.ActiveNamedArgument);
+    }
+
+    [Fact]
     public void CompleteAndPositionCallSyntaxAgreeOnArgumentKindsAndNames()
     {
         const string callLine = "    Example(1, Arg2:=\"x\", , Arg4:=Nested(5, Name:=6),)";
