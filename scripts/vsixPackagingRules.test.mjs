@@ -313,3 +313,11 @@ test('package scripts publish the bundled CLI and verify VSIX contents before pa
     url: 'https://github.com/modern-vba/vba-tools.git'
   });
 });
+
+test('language server test script includes CLI and syntax test projects', async () => {
+  const packageJson = JSON.parse(
+    await fs.readFile(new URL('../package.json', import.meta.url), 'utf8')
+  );
+
+  assert.match(packageJson.scripts['test:language-server'], /VbaLanguageServer\.slnx/);
+});
