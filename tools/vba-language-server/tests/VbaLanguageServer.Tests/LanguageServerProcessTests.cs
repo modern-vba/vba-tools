@@ -26,9 +26,10 @@ public sealed class LanguageServerProcessTests
             .ToArray();
         Assert.Equal(
             [
-                ".", " ", "(", ",", ":", "+", "-", "*", "/", "\\", "^", "&", "=", "<", ">"
+                ".", " ", "(", ",", "+", "-", "*", "/", "\\", "^", "&", "=", "<", ">"
             ],
             completionTriggers);
+        Assert.DoesNotContain(":", completionTriggers);
         Assert.DoesNotContain(";", completionTriggers);
         Assert.DoesNotContain("!", completionTriggers);
         Assert.True(capabilities.GetProperty("referencesProvider").GetBoolean());

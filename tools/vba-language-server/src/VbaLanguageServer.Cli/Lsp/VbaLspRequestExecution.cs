@@ -23,7 +23,7 @@ internal sealed class VbaLspRequestExecution
         SignatureHelpRetriggerCharacters: ["="],
         CompletionTriggerCharacters:
         [
-            ".", " ", "(", ",", ":", "+", "-", "*", "/", "\\", "^", "&", "=", "<", ">"
+            ".", " ", "(", ",", "+", "-", "*", "/", "\\", "^", "&", "=", "<", ">"
         ],
         SemanticTokenTypes: VbaSourceIndex.SemanticTokenTypes,
         SemanticTokenModifiers: VbaSourceIndex.SemanticTokenModifiers,
