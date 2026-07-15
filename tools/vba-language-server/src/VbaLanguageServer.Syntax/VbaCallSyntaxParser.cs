@@ -124,7 +124,7 @@ internal static class VbaCallSyntaxParser
         if (!TryGetStatementCallee(significant, out var calleeStart, out var calleeEnd)
             || calleeEnd + 1 >= significant.Count
             || significant[calleeEnd + 1].Text is "=" or "("
-            || IsExcludedStatementFormCall(significant, calleeStart))
+            || IsExcludedStatementFormCall(significant, calleeStart, calleeEnd))
         {
             return;
         }
@@ -163,7 +163,7 @@ internal static class VbaCallSyntaxParser
                 position.Offset)
             || (calleeEnd + 1 < significant.Count
                 && significant[calleeEnd + 1].Text is "=" or "(")
-            || IsExcludedStatementFormCall(significant, calleeStart))
+            || IsExcludedStatementFormCall(significant, calleeStart, calleeEnd))
         {
             return null;
         }
@@ -533,12 +533,18 @@ internal static class VbaCallSyntaxParser
         return depth == 0;
     }
 
-    private static bool IsExcludedStatementFormCall(IReadOnlyList<VbaToken> tokens, int calleeStart)
-        => calleeStart == 0
-            && tokens.Count > 0
-            && (TextEquals(tokens[0], "ReDim")
-                || TextEquals(tokens[0], "Preserve")
-                || TextEquals(tokens[0], "Rem"));
+    private static bool IsExcludedStatementFormCall(
+        IReadOnlyList<VbaToken> tokens,
+        int calleeStart,
+        int calleeEnd)
+        => (calleeStart == 0
+            && calleeEnd + 1 < tokens.Count
+            && TextEquals(tokens[calleeEnd + 1], "As"))
+            || (calleeStart == 0
+                && tokens.Count > 0
+                && (TextEquals(tokens[0], "ReDim")
+                    || TextEquals(tokens[0], "Preserve")
+                    || TextEquals(tokens[0], "Rem")));
 
     private static bool IsRemComment(IReadOnlyList<VbaToken> tokens)
         => tokens.Count > 0 && TextEquals(tokens[0], "Rem");

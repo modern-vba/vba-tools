@@ -172,6 +172,24 @@ public sealed class VbaSyntaxTreeExpressionTests
         Assert.Null(position.CallSite);
     }
 
+    [Fact]
+    public void ParserDoesNotModelUserDefinedTypeFieldAsStatementCall()
+    {
+        const string fieldLine = "    DisplayName As String";
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Type CustomerRecord",
+            fieldLine,
+            "End Type"
+        ]);
+
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.bas", source);
+        var position = tree.GetPositionSyntax(2, fieldLine.Length);
+
+        Assert.Empty(tree.Module.ArgumentLists);
+        Assert.Null(position.CallSite);
+    }
+
     private static int PositionOffset(string source, int line, int character)
     {
         var currentLine = 0;
