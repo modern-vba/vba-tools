@@ -11,33 +11,8 @@ public sealed class LanguageServerProcessTests
     [Fact]
     public async Task Server_handles_initialize_text_sync_completion_and_shutdown()
     {
-        var serverProjectPath = Path.GetFullPath(
-            Path.Combine(
-                AppContext.BaseDirectory,
-                "..",
-                "..",
-                "..",
-                "..",
-                "..",
-                "src",
-                "VbaLanguageServer.Cli",
-                "VbaLanguageServer.Cli.csproj"));
-
-        using var process = StartLanguageServer(serverProjectPath);
-        await using var stdin = process.StandardInput.BaseStream;
-        using var stdout = process.StandardOutput.BaseStream;
-
-        var initialize = await SendRequestAsync(
-            stdin,
-            stdout,
-            1,
-            "initialize",
-            new
-            {
-                processId = Environment.ProcessId,
-                rootUri = (string?)null,
-                capabilities = new { }
-            });
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        var initialize = await server.InitializeAsync();
 
         Assert.Equal(1, initialize.GetProperty("id").GetInt32());
         var capabilities = initialize
@@ -58,9 +33,7 @@ public sealed class LanguageServerProcessTests
         Assert.False(capabilities.TryGetProperty("documentRangeFormattingProvider", out _));
         Assert.False(capabilities.TryGetProperty("documentOnTypeFormattingProvider", out _));
 
-        await SendNotificationAsync(stdin, "initialized", new { });
-        await SendNotificationAsync(
-            stdin,
+        await server.SendNotificationAsync(
             "textDocument/didOpen",
             new
             {
@@ -72,8 +45,7 @@ public sealed class LanguageServerProcessTests
                     text = "Public Sub Hello()\nEnd Sub\n"
                 }
             });
-        await SendNotificationAsync(
-            stdin,
+        await server.SendNotificationAsync(
             "textDocument/didChange",
             new
             {
@@ -91,9 +63,7 @@ public sealed class LanguageServerProcessTests
                 }
             });
 
-        var completion = await SendRequestAsync(
-            stdin,
-            stdout,
+        var completion = await server.SendRequestAsync(
             2,
             "textDocument/completion",
             new
@@ -107,9 +77,7 @@ public sealed class LanguageServerProcessTests
         Assert.Contains("Hello", completionLabels);
         Assert.Contains("Sub", completionLabels);
 
-        var workspaceSymbols = await SendRequestAsync(
-            stdin,
-            stdout,
+        var workspaceSymbols = await server.SendRequestAsync(
             3,
             "workspace/symbol",
             new
@@ -120,8 +88,7 @@ public sealed class LanguageServerProcessTests
         Assert.Equal("Hello", workspaceSymbol.GetProperty("name").GetString());
 
         var references = await SendPositionRequestAsync(
-            stdin,
-            stdout,
+            server,
             4,
             "textDocument/references",
             "file:///C:/work/Module1.bas",
@@ -130,13 +97,8 @@ public sealed class LanguageServerProcessTests
         var reference = Assert.Single(references.GetProperty("result").EnumerateArray());
         Assert.Equal("file:///C:/work/Module1.bas", reference.GetProperty("uri").GetString());
 
-        var shutdown = await SendRequestAsync(stdin, stdout, 5, "shutdown", null);
+        var shutdown = await server.ShutdownAsync(5);
         Assert.Equal(JsonValueKind.Null, shutdown.GetProperty("result").ValueKind);
-        await SendNotificationAsync(stdin, "exit", null);
-
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        await process.WaitForExitAsync(cancellation.Token);
-        Assert.Equal(0, process.ExitCode);
     }
 
     [Fact]
@@ -3466,25 +3428,11 @@ public sealed class LanguageServerProcessTests
             File.WriteAllText(sourcePath, sourceText);
             File.WriteAllText(manifestPath, "{");
             var sourceUri = new Uri(sourcePath).AbsoluteUri;
-            var serverProjectPath = Path.GetFullPath(
-                Path.Combine(
-                    AppContext.BaseDirectory,
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "src",
-                    "VbaLanguageServer.Cli",
-                    "VbaLanguageServer.Cli.csproj"));
+            await using var server = await LanguageServerProcessHarness.StartAsync();
+            await server.InitializeAsync();
 
-            using var process = StartLanguageServer(serverProjectPath);
-            await using var stdin = process.StandardInput.BaseStream;
-            using var stdout = process.StandardOutput.BaseStream;
-            await InitializeAsync(stdin, stdout);
-
-            await WriteMessageAsync(
-                stdin,
+            var checkpoint = server.TranscriptCheckpoint;
+            await server.SendRawMessageAsync(
                 new
                 {
                     jsonrpc = "2.0",
@@ -3492,20 +3440,15 @@ public sealed class LanguageServerProcessTests
                     method = "shutdown",
                     @params = (object?)null
                 });
-            using (var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
-            {
-                var invalidRequest = await ReadMessageAsync(stdout, cancellation.Token);
-                Assert.Equal(JsonValueKind.Null, invalidRequest.GetProperty("id").ValueKind);
-                AssertJsonRpcError(invalidRequest, -32600, "Invalid Request");
-            }
+            var invalidRequest = await server.ReadNextMessageAsync(checkpoint);
+            Assert.Equal(JsonValueKind.Null, invalidRequest.GetProperty("id").ValueKind);
+            AssertJsonRpcError(invalidRequest, -32600, "Invalid Request");
 
-            var methodNotFound = await SendRequestAsync(stdin, stdout, 2, "unknown/method", new { });
+            var methodNotFound = await server.SendRequestAsync(2, "unknown/method", new { });
             Assert.Equal(2, methodNotFound.GetProperty("id").GetInt32());
             AssertJsonRpcError(methodNotFound, -32601, "Method not found");
 
-            var invalidParams = await SendRequestAsync(
-                stdin,
-                stdout,
+            var invalidParams = await server.SendRequestAsync(
                 3,
                 "textDocument/completion",
                 new
@@ -3515,9 +3458,7 @@ public sealed class LanguageServerProcessTests
                 });
             AssertJsonRpcError(invalidParams, -32602, "Invalid params");
 
-            var internalError = await SendRequestAsync(
-                stdin,
-                stdout,
+            var internalError = await server.SendRequestAsync(
                 4,
                 "textDocument/documentSymbol",
                 new
@@ -3527,9 +3468,7 @@ public sealed class LanguageServerProcessTests
             AssertJsonRpcError(internalError, -32603, "Internal error");
 
             File.Delete(manifestPath);
-            var recovered = await SendRequestAsync(
-                stdin,
-                stdout,
+            var recovered = await server.SendRequestAsync(
                 5,
                 "textDocument/documentSymbol",
                 new
@@ -3540,11 +3479,7 @@ public sealed class LanguageServerProcessTests
                 recovered.GetProperty("result").EnumerateArray(),
                 symbol => symbol.GetProperty("name").GetString() == "Recover");
 
-            await SendRequestAsync(stdin, stdout, 6, "shutdown", null);
-            await SendNotificationAsync(stdin, "exit", null);
-            using var exitCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await process.WaitForExitAsync(exitCancellation.Token);
-            Assert.Equal(0, process.ExitCode);
+            await server.ShutdownAsync(6);
         }
         finally
         {
@@ -3741,6 +3676,21 @@ public sealed class LanguageServerProcessTests
                 position = new { line, character }
             });
         return response.GetProperty("result");
+    }
+
+    private static Task<JsonElement> SendPositionRequestAsync(
+        LanguageServerProcessHarness server,
+        int id,
+        string method,
+        string uri,
+        string text,
+        string needle,
+        int offset = 0,
+        object? additionalParameters = null)
+    {
+        var position = FindPosition(text, needle, offset);
+        var parameters = MergePositionParameters(uri, position.Line, position.Character, additionalParameters);
+        return server.SendRequestAsync(id, method, parameters);
     }
 
     private static Task<JsonElement> SendPositionRequestAsync(
