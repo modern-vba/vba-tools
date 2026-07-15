@@ -151,13 +151,6 @@ internal static class VbaSyntaxTreeIncrementalParser
                 argumentList => Shift(argumentList, lineDelta, offsetDelta),
                 oldRange,
                 newRange),
-            CompletionContexts = MergeByRange(
-                previousTree.Module.CompletionContexts,
-                parsedMemberTree.Module.CompletionContexts,
-                context => context.Range,
-                context => context with { Range = Shift(context.Range, lineDelta, offsetDelta) },
-                oldRange,
-                newRange),
             PreprocessorDirectives = MergeByRange(
                 previousTree.Module.PreprocessorDirectives,
                 parsedMemberTree.Module.PreprocessorDirectives,

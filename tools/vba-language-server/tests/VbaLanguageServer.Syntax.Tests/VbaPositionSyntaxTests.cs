@@ -26,7 +26,7 @@ public sealed class VbaPositionSyntaxTests
         Assert.Equal(VbaPositionRegion.Comment, tree.GetPositionSyntax(4, "    ' comment".Length).Region);
         Assert.Equal(VbaPositionRegion.Comment, tree.GetPositionSyntax(5, "    Rem doc".Length).Region);
         Assert.Equal(VbaPositionRegion.Comment, tree.GetPositionSyntax(6, "    Rem first: app.Work".Length).Region);
-        Assert.Equal(VbaCompletionSyntaxKind.None, tree.GetPositionSyntax(6, "    Rem first: app.Workbooks.".Length).CompletionKind);
+        Assert.Equal(VbaCompletionExpectation.None, tree.GetPositionSyntax(6, "    Rem first: app.Workbooks.".Length).CompletionExpectation);
         Assert.Equal(VbaPositionRegion.Outside, tree.GetPositionSyntax(-1, 0).Region);
         Assert.Equal(VbaPositionRegion.Outside, tree.GetPositionSyntax(3, 100).Region);
 
@@ -63,19 +63,111 @@ public sealed class VbaPositionSyntaxTests
         var partialMember = tree.GetPositionSyntax(5, "    app.Work".Length);
         var completedMember = tree.GetPositionSyntax(6, "    app.Workbooks ".Length);
 
-        Assert.Equal(VbaCompletionSyntaxKind.TypeName, blankType.CompletionKind);
+        Assert.Equal(VbaCompletionExpectation.TypeName, blankType.CompletionExpectation);
         Assert.True(blankType.TypeReference?.IsIncomplete);
         Assert.Equal("Excel", qualifiedType.TypeReference?.Qualifier?.Name);
         Assert.Equal("Application", qualifiedType.TypeReference?.Name?.Name);
         Assert.True(qualifiedType.TypeReference?.IsNew);
-        Assert.Equal(VbaCompletionSyntaxKind.Member, missingMember.CompletionKind);
+        Assert.Equal(VbaCompletionExpectation.ProcedureStatement, missingMember.CompletionExpectation);
         Assert.Equal(["app", "Workbooks"], missingMember.MemberAccess!.Segments.Select(segment => segment.Name));
         Assert.Equal(2, missingMember.MemberAccess.TargetSegmentIndex);
         Assert.True(missingMember.MemberAccess.IsIncomplete);
         Assert.Equal(1, partialMember.MemberAccess?.TargetSegmentIndex);
-        Assert.Equal(VbaCompletionSyntaxKind.Member, partialMember.CompletionKind);
+        Assert.Equal(VbaCompletionExpectation.ProcedureStatement, partialMember.CompletionExpectation);
         Assert.True(completedMember.MemberAccess?.HasTrailingWhitespace);
-        Assert.Equal(VbaCompletionSyntaxKind.None, completedMember.CompletionKind);
+        Assert.Equal(VbaCompletionExpectation.None, completedMember.CompletionExpectation);
+    }
+
+    [Fact]
+    public void PositionSyntaxDerivesTriviaStableExpressionExpectations()
+    {
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    value = ExampleFunc(1, Arg3:=True)",
+            "    value = ExampleFunc(1, Arg3:=True) ",
+            "    value = ExampleFunc(1, Arg3:=True) +",
+            "    value = ExampleFunc(1, Arg3:=True) + ",
+            "End Sub"
+        ]);
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.bas", source);
+
+        Assert.Equal(
+            VbaCompletionExpectation.None,
+            tree.GetPositionSyntax(2, "    value = ExampleFunc(1, Arg3:=True)".Length).CompletionExpectation);
+        Assert.Equal(
+            VbaCompletionExpectation.None,
+            tree.GetPositionSyntax(3, "    value = ExampleFunc(1, Arg3:=True) ".Length).CompletionExpectation);
+        Assert.Equal(
+            VbaCompletionExpectation.ExpressionValue,
+            tree.GetPositionSyntax(4, "    value = ExampleFunc(1, Arg3:=True) +".Length).CompletionExpectation);
+        Assert.Equal(
+            VbaCompletionExpectation.ExpressionValue,
+            tree.GetPositionSyntax(5, "    value = ExampleFunc(1, Arg3:=True) + ".Length).CompletionExpectation);
+    }
+
+    [Fact]
+    public void PositionSyntaxDistinguishesStatementArgumentAndNamedValueExpectations()
+    {
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "",
+            "Public Sub Run()",
+            "    ",
+            "    value = ExampleFunc(",
+            "    value = ExampleFunc(1, ",
+            "    value = ExampleFunc(1, Arg3:=",
+            "    ExampleSub ",
+            "    RaiseEvent ",
+            "    GoTo ",
+            "End Sub"
+        ]);
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.bas", source);
+
+        Assert.Equal(VbaCompletionExpectation.ModuleDeclaration, tree.GetPositionSyntax(1, 0).CompletionExpectation);
+        Assert.Equal(VbaCompletionExpectation.ProcedureStatement, tree.GetPositionSyntax(3, 4).CompletionExpectation);
+        Assert.Equal(VbaCompletionExpectation.CallArgument, tree.GetPositionSyntax(4, "    value = ExampleFunc(".Length).CompletionExpectation);
+        Assert.Equal(VbaCompletionExpectation.CallArgument, tree.GetPositionSyntax(5, "    value = ExampleFunc(1, ".Length).CompletionExpectation);
+        Assert.Equal(VbaCompletionExpectation.NamedArgumentValue, tree.GetPositionSyntax(6, "    value = ExampleFunc(1, Arg3:=".Length).CompletionExpectation);
+        Assert.Equal(VbaCompletionExpectation.CallArgument, tree.GetPositionSyntax(7, "    ExampleSub ".Length).CompletionExpectation);
+        Assert.Equal(VbaCompletionExpectation.EventName, tree.GetPositionSyntax(8, "    RaiseEvent ".Length).CompletionExpectation);
+        Assert.Equal(VbaCompletionExpectation.LabelName, tree.GetPositionSyntax(9, "    GoTo ".Length).CompletionExpectation);
+    }
+
+    [Fact]
+    public void PositionSyntaxStopsTypeCompletionAfterACompletedType()
+    {
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    Dim value As ",
+            "    Dim created As New ",
+            "    Dim complete As String ",
+            "End Sub"
+        ]);
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.bas", source);
+
+        Assert.Equal(VbaCompletionExpectation.TypeName, tree.GetPositionSyntax(2, "    Dim value As ".Length).CompletionExpectation);
+        Assert.Equal(VbaCompletionExpectation.CreatableType, tree.GetPositionSyntax(3, "    Dim created As New ".Length).CompletionExpectation);
+        Assert.Equal(VbaCompletionExpectation.None, tree.GetPositionSyntax(4, "    Dim complete As String ".Length).CompletionExpectation);
+    }
+
+    [Fact]
+    public void PositionSyntaxRetainsTheOuterExpectationForMemberAccess()
+    {
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    value = source.",
+            "    Set target.",
+            "    action.",
+            "End Sub"
+        ]);
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.bas", source);
+
+        Assert.Equal(VbaCompletionExpectation.ExpressionValue, tree.GetPositionSyntax(2, "    value = source.".Length).CompletionExpectation);
+        Assert.Equal(VbaCompletionExpectation.AssignmentTarget, tree.GetPositionSyntax(3, "    Set target.".Length).CompletionExpectation);
+        Assert.Equal(VbaCompletionExpectation.ProcedureStatement, tree.GetPositionSyntax(4, "    action.".Length).CompletionExpectation);
     }
 
     [Fact]
@@ -282,7 +374,7 @@ public sealed class VbaPositionSyntaxTests
         var updated = VbaSyntaxTree.ParseOrUpdate(uri, updatedText, previous).SyntaxTree;
         var position = updated.GetPositionSyntax(3, "    app.Work".Length);
 
-        Assert.Equal(VbaCompletionSyntaxKind.Member, position.CompletionKind);
+        Assert.Equal(VbaCompletionExpectation.ProcedureStatement, position.CompletionExpectation);
         Assert.Equal("Work", position.MemberAccess?.Target?.Name);
         Assert.Equal(3, position.MemberAccess?.Target?.Range.Start.Line);
     }

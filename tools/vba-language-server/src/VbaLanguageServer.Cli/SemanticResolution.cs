@@ -68,12 +68,15 @@ internal sealed class VbaSemanticResolution
         }
 
         var positionSyntax = GetSyntaxTree(currentDocument).GetPositionSyntax(line, character);
-        if (positionSyntax.CompletionKind == VbaCompletionSyntaxKind.None)
+        if (positionSyntax.CompletionExpectation == VbaCompletionExpectation.None)
         {
             return new VbaCompletionResult([], VbaCompletionVocabularyKind.None);
         }
 
-        if (positionSyntax.CompletionKind == VbaCompletionSyntaxKind.Member
+        if (positionSyntax.MemberAccess is not null
+            && (positionSyntax.MemberAccess.TargetSegmentIndex > 0
+                || positionSyntax.MemberAccess.IsLeadingDot
+                || positionSyntax.MemberAccess.IsIncomplete)
             && TryGetMemberCompletionDefinitions(
                 currentDocument,
                 line,
@@ -84,7 +87,8 @@ internal sealed class VbaSemanticResolution
             return new VbaCompletionResult(memberDefinitions, VbaCompletionVocabularyKind.None);
         }
 
-        if (positionSyntax.CompletionKind == VbaCompletionSyntaxKind.TypeName)
+        if (positionSyntax.CompletionExpectation is VbaCompletionExpectation.TypeName
+            or VbaCompletionExpectation.CreatableType)
         {
             var typeDefinitions = GetTypeCompletionDefinitions(currentDocument);
             return new VbaCompletionResult(typeDefinitions, VbaCompletionVocabularyKind.TypeName);

@@ -13,7 +13,6 @@ namespace VbaLanguageServer.Syntax;
 /// <param name="Statements">The parsed statement and block nodes.</param>
 /// <param name="Expressions">The parsed expression fragments.</param>
 /// <param name="ArgumentLists">The parsed call argument lists.</param>
-/// <param name="CompletionContexts">The parsed completion contexts.</param>
 /// <param name="PreprocessorDirectives">The parsed preprocessor directive lines.</param>
 /// <param name="PreprocessorBlocks">The parsed preprocessor blocks.</param>
 /// <param name="FormDesignerBlock">The non-code designer block for a form module, when present.</param>
@@ -30,7 +29,6 @@ public sealed record VbaModuleSyntax(
     IReadOnlyList<VbaStatementSyntax> Statements,
     IReadOnlyList<VbaExpressionSyntax> Expressions,
     IReadOnlyList<VbaArgumentListSyntax> ArgumentLists,
-    IReadOnlyList<VbaCompletionContextSyntax> CompletionContexts,
     IReadOnlyList<VbaPreprocessorDirectiveSyntax> PreprocessorDirectives,
     IReadOnlyList<VbaPreprocessorBlockSyntax> PreprocessorBlocks,
     VbaFormDesignerBlock? FormDesignerBlock,

@@ -93,7 +93,7 @@ internal static class VbaSyntaxTreeParser
         var identity = CreateIdentity(uri, sourceText, kind, attributes);
         var parsedMembers = ParseMembersAndDeclarations(sourceText, codeStartLine);
         var parsedStatements = ParseStatementsAndDiagnostics(sourceText, codeStartLine);
-        var parsedExpressions = ParseExpressionsAndCompletionContexts(sourceText, tokenStream, codeStartLine);
+        var parsedExpressions = ParseExpressions(sourceText, tokenStream, codeStartLine);
         var parsedPreprocessor = VbaPreprocessorParser.Parse(sourceText.Lines, codeStartLine);
         diagnostics.AddRange(parsedStatements.Diagnostics);
         diagnostics.AddRange(parsedPreprocessor.Diagnostics);
@@ -108,7 +108,6 @@ internal static class VbaSyntaxTreeParser
             parsedStatements.Statements,
             parsedExpressions.Expressions,
             parsedExpressions.ArgumentLists,
-            parsedExpressions.CompletionContexts,
             parsedPreprocessor.Directives,
             parsedPreprocessor.Blocks,
             designerBlock,
@@ -168,7 +167,7 @@ internal static class VbaSyntaxTreeParser
         return options;
     }
 
-    private static ParsedExpressions ParseExpressionsAndCompletionContexts(
+    private static ParsedExpressions ParseExpressions(
         VbaSourceText sourceText,
         VbaTokenStream tokenStream,
         int codeStartLine)
@@ -178,8 +177,6 @@ internal static class VbaSyntaxTreeParser
             sourceText,
             tokenStream,
             codeStartLine);
-        var completionContexts = new List<VbaCompletionContextSyntax>();
-
         foreach (var statement in CreateLogicalStatements(sourceText, codeStartLine))
         {
             var trimmed = statement.Text.TrimStart();
@@ -191,22 +188,11 @@ internal static class VbaSyntaxTreeParser
                 continue;
             }
 
-            completionContexts.Add(new VbaCompletionContextSyntax(
-                VbaCompletionContextKind.Statement,
-                statement.Text,
-                statement.Range,
-                statement.IsContinued));
-
             if (trimmed.StartsWith("With ", StringComparison.OrdinalIgnoreCase))
             {
                 expressions.Add(new VbaExpressionSyntax(
                     VbaExpressionKind.WithReceiver,
                     trimmed["With ".Length..].Trim(),
-                    statement.Range,
-                    statement.IsContinued));
-                completionContexts.Add(new VbaCompletionContextSyntax(
-                    VbaCompletionContextKind.WithReceiver,
-                    trimmed,
                     statement.Range,
                     statement.IsContinued));
             }
@@ -218,22 +204,12 @@ internal static class VbaSyntaxTreeParser
                     statement.Text,
                     statement.Range,
                     statement.IsContinued));
-                completionContexts.Add(new VbaCompletionContextSyntax(
-                    VbaCompletionContextKind.MemberAccess,
-                    statement.Text,
-                    statement.Range,
-                    statement.IsContinued));
             }
 
             if (statement.Text.Contains('=', StringComparison.Ordinal))
             {
                 expressions.Add(new VbaExpressionSyntax(
                     VbaExpressionKind.AssignmentExpression,
-                    statement.Text,
-                    statement.Range,
-                    statement.IsContinued));
-                completionContexts.Add(new VbaCompletionContextSyntax(
-                    VbaCompletionContextKind.Expression,
                     statement.Text,
                     statement.Range,
                     statement.IsContinued));
@@ -248,15 +224,10 @@ internal static class VbaSyntaxTreeParser
                     statement.Text,
                     argumentList.Range,
                     argumentList.IsContinued));
-                completionContexts.Add(new VbaCompletionContextSyntax(
-                    VbaCompletionContextKind.ArgumentList,
-                    statement.Text,
-                    argumentList.Range,
-                    argumentList.IsContinued));
             }
         }
 
-        return new ParsedExpressions(expressions, argumentLists, completionContexts);
+        return new ParsedExpressions(expressions, argumentLists);
     }
 
     private static IReadOnlyList<LogicalStatement> CreateLogicalStatements(VbaSourceText sourceText, int codeStartLine)
@@ -1842,15 +1813,13 @@ internal sealed record ParsedStatements(
     IReadOnlyList<VbaSyntaxDiagnostic> Diagnostics);
 
 /// <summary>
-/// Contains parsed expressions, argument lists, and completion contexts.
+/// Contains parsed expressions and argument lists.
 /// </summary>
 /// <param name="Expressions">The parsed expression fragments.</param>
 /// <param name="ArgumentLists">The parsed call argument lists.</param>
-/// <param name="CompletionContexts">The parsed completion contexts.</param>
 internal sealed record ParsedExpressions(
     IReadOnlyList<VbaExpressionSyntax> Expressions,
-    IReadOnlyList<VbaArgumentListSyntax> ArgumentLists,
-    IReadOnlyList<VbaCompletionContextSyntax> CompletionContexts);
+    IReadOnlyList<VbaArgumentListSyntax> ArgumentLists);
 
 
 /// <summary>

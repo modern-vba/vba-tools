@@ -32,37 +32,6 @@ public enum VbaExpressionKind
 }
 
 /// <summary>
-/// Identifies the syntactic context used when computing completion candidates.
-/// </summary>
-public enum VbaCompletionContextKind
-{
-    /// <summary>
-    /// Completion is requested at statement level.
-    /// </summary>
-    Statement,
-
-    /// <summary>
-    /// Completion is requested inside a general expression.
-    /// </summary>
-    Expression,
-
-    /// <summary>
-    /// Completion is requested after a member-access separator.
-    /// </summary>
-    MemberAccess,
-
-    /// <summary>
-    /// Completion is requested inside a callable argument list.
-    /// </summary>
-    ArgumentList,
-
-    /// <summary>
-    /// Completion is requested inside a With receiver expression.
-    /// </summary>
-    WithReceiver
-}
-
-/// <summary>
 /// Represents a parsed expression fragment with source range information.
 /// </summary>
 /// <param name="Kind">The expression kind.</param>
@@ -71,19 +40,6 @@ public enum VbaCompletionContextKind
 /// <param name="IsContinued">Whether the expression spans physical lines with continuation markers.</param>
 public sealed record VbaExpressionSyntax(
     VbaExpressionKind Kind,
-    string Text,
-    VbaSyntaxRange Range,
-    bool IsContinued = false);
-
-/// <summary>
-/// Represents the syntactic completion context at a requested source position.
-/// </summary>
-/// <param name="Kind">The completion context kind.</param>
-/// <param name="Text">The source text that forms the completion prefix or receiver.</param>
-/// <param name="Range">The source range covered by the context.</param>
-/// <param name="IsContinued">Whether the context is part of a continued expression.</param>
-public sealed record VbaCompletionContextSyntax(
-    VbaCompletionContextKind Kind,
     string Text,
     VbaSyntaxRange Range,
     bool IsContinued = false);

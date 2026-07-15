@@ -6,7 +6,7 @@ namespace VbaLanguageServer.Syntax.Tests;
 public sealed class VbaSyntaxTreeExpressionTests
 {
     [Fact]
-    public void ParserEmitsExpressionAndCompletionContexts()
+    public void ParserEmitsExpressionsAndArgumentLists()
     {
         var source = string.Join('\n', [
             "Attribute VB_Name = \"Worker\"",
@@ -27,11 +27,10 @@ public sealed class VbaSyntaxTreeExpressionTests
 
         var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.bas", source);
 
-        Assert.Contains(tree.Module.CompletionContexts, context => context.Kind == VbaCompletionContextKind.Statement);
-        Assert.Contains(tree.Module.CompletionContexts, context => context.Kind == VbaCompletionContextKind.Expression && context.Text.Contains("WorksheetFunction", StringComparison.Ordinal));
-        Assert.Contains(tree.Module.CompletionContexts, context => context.Kind == VbaCompletionContextKind.MemberAccess && context.IsContinued && context.Text.Contains(".Worksheets", StringComparison.Ordinal));
-        Assert.Contains(tree.Module.CompletionContexts, context => context.Kind == VbaCompletionContextKind.ArgumentList && context.IsContinued && context.Text.Contains("Sum", StringComparison.Ordinal));
-        Assert.Contains(tree.Module.CompletionContexts, context => context.Kind == VbaCompletionContextKind.WithReceiver && context.IsContinued && context.Text.Contains("ActiveWorkbook", StringComparison.Ordinal));
+        Assert.Contains(tree.Module.Expressions, expression => expression.Kind == VbaExpressionKind.AssignmentExpression && expression.Text.Contains("WorksheetFunction", StringComparison.Ordinal));
+        Assert.Contains(tree.Module.Expressions, expression => expression.Kind == VbaExpressionKind.MemberAccess && expression.IsContinued && expression.Text.Contains(".Worksheets", StringComparison.Ordinal));
+        Assert.Contains(tree.Module.Expressions, expression => expression.Kind == VbaExpressionKind.ArgumentList && expression.IsContinued && expression.Text.Contains("Sum", StringComparison.Ordinal));
+        Assert.Contains(tree.Module.Expressions, expression => expression.Kind == VbaExpressionKind.WithReceiver && expression.IsContinued && expression.Text.Contains("ActiveWorkbook", StringComparison.Ordinal));
 
         var findCall = Assert.Single(tree.Module.ArgumentLists, argumentList => argumentList.Callee.EndsWith(".Find", StringComparison.Ordinal));
         Assert.True(findCall.IsContinued);
