@@ -18,7 +18,19 @@ public sealed class LanguageServerProcessTests
             .GetProperty("result")
             .GetProperty("capabilities");
         Assert.Equal(1, capabilities.GetProperty("textDocumentSync").GetInt32());
-        Assert.True(capabilities.TryGetProperty("completionProvider", out _));
+        var completionTriggers = capabilities
+            .GetProperty("completionProvider")
+            .GetProperty("triggerCharacters")
+            .EnumerateArray()
+            .Select(trigger => trigger.GetString()!)
+            .ToArray();
+        Assert.Equal(
+            [
+                ".", " ", "(", ",", ":", "+", "-", "*", "/", "\\", "^", "&", "=", "<", ">"
+            ],
+            completionTriggers);
+        Assert.DoesNotContain(";", completionTriggers);
+        Assert.DoesNotContain("!", completionTriggers);
         Assert.True(capabilities.GetProperty("referencesProvider").GetBoolean());
         Assert.True(capabilities.GetProperty("workspaceSymbolProvider").GetBoolean());
         Assert.True(capabilities.GetProperty("documentFormattingProvider").GetBoolean());
@@ -104,6 +116,53 @@ public sealed class LanguageServerProcessTests
 
         var shutdown = await server.ShutdownAsync(5);
         Assert.Equal(JsonValueKind.Null, shutdown.GetProperty("result").ValueKind);
+    }
+
+    [Fact]
+    public async Task Completion_invocation_context_does_not_change_candidates_for_the_same_position()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+
+        const string uri = "file:///C:/work/CompletionContext.bas";
+        var text = string.Join('\n',
+        [
+            "Public Sub Run()",
+            "    Dim result As Long",
+            "    result = 1 + ",
+            "End Sub"
+        ]);
+        await server.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
+
+        object?[] invocationContexts =
+        [
+            null,
+            new { context = new { triggerKind = 1 } },
+            new { context = new { triggerKind = 2, triggerCharacter = "+" } },
+            new { context = new { triggerKind = 3 } }
+        ];
+        var responses = new List<JsonElement>();
+        for (var index = 0; index < invocationContexts.Length; index++)
+        {
+            responses.Add(await server.SendRequestAsync(
+                index + 2,
+                "textDocument/completion",
+                MergePositionParameters(
+                    uri,
+                    2,
+                    "    result = 1 + ".Length,
+                    invocationContexts[index])));
+        }
+
+        var expectedResult = responses[0].GetProperty("result");
+        Assert.NotEmpty(expectedResult.EnumerateArray());
+        Assert.All(
+            responses.Skip(1),
+            response => Assert.Equal(
+                expectedResult.GetRawText(),
+                response.GetProperty("result").GetRawText()));
+
+        await server.ShutdownAsync(6);
     }
 
     [Fact]

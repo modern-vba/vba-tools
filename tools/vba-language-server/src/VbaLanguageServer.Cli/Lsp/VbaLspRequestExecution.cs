@@ -21,7 +21,10 @@ internal sealed class VbaLspRequestExecution
         RenamePrepareProvider: true,
         SignatureHelpTriggerCharacters: ["(", ",", " "],
         SignatureHelpRetriggerCharacters: ["="],
-        CompletionTriggerCharacters: [".", " "],
+        CompletionTriggerCharacters:
+        [
+            ".", " ", "(", ",", ":", "+", "-", "*", "/", "\\", "^", "&", "=", "<", ">"
+        ],
         SemanticTokenTypes: VbaSourceIndex.SemanticTokenTypes,
         SemanticTokenModifiers: VbaSourceIndex.SemanticTokenModifiers,
         SemanticTokensFull: true,
