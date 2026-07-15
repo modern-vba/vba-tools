@@ -66,9 +66,6 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
         string? referenceCatalogCacheRoot = null,
         IReadOnlyDictionary<string, string>? environment = null)
     {
-        var ownsCacheRoot = referenceCatalogCacheRoot is null;
-        var cacheRoot = referenceCatalogCacheRoot
-            ?? Directory.CreateTempSubdirectory("vba-ls-process-cache-").FullName;
         var serverProjectPath = Path.GetFullPath(
             Path.Combine(
                 AppContext.BaseDirectory,
@@ -80,6 +77,17 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
                 "src",
                 "VbaLanguageServer.Cli",
                 "VbaLanguageServer.Cli.csproj"));
+        return StartAsync(serverProjectPath, referenceCatalogCacheRoot, environment);
+    }
+
+    public static Task<LanguageServerProcessHarness> StartAsync(
+        string serverProjectPath,
+        string? referenceCatalogCacheRoot = null,
+        IReadOnlyDictionary<string, string>? environment = null)
+    {
+        var ownsCacheRoot = referenceCatalogCacheRoot is null;
+        var cacheRoot = referenceCatalogCacheRoot
+            ?? Directory.CreateTempSubdirectory("vba-ls-process-cache-").FullName;
         var startInfo = new ProcessStartInfo
         {
             FileName = "dotnet",
@@ -294,6 +302,9 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
         }
     }
 
+    public Task WaitForExitAsync(CancellationToken cancellationToken)
+        => WaitForExitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+
     public async ValueTask DisposeAsync()
     {
         if (_disposed)
@@ -483,7 +494,10 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
             }
             catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
             {
-                throw CreateSessionException("Timed out waiting for a language-server message.", exception);
+                var failure = CreateSessionException(
+                    "Timed out waiting for a language-server message.",
+                    exception);
+                throw new TimeoutException(failure.Message, exception);
             }
         }
     }

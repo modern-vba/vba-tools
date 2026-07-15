@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using VbaLanguageServer.SourceModel;
@@ -116,14 +115,9 @@ public sealed class LanguageServerProcessTests
                 "VbaLanguageServer.Cli",
                 "VbaLanguageServer.Cli.csproj"));
 
-        using var process = StartLanguageServer(serverProjectPath);
-        await using var stdin = process.StandardInput.BaseStream;
-        using var stdout = process.StandardOutput.BaseStream;
+        await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
 
-        var initialize = await SendRequestAsync(
-            stdin,
-            stdout,
-            1,
+        var initialize = await process.SendRequestAsync(1,
             "initialize",
             new
             {
@@ -140,18 +134,15 @@ public sealed class LanguageServerProcessTests
             "function",
             semanticProvider.GetProperty("legend").GetProperty("tokenTypes").EnumerateArray().Select(item => item.GetString()));
 
-        await SendNotificationAsync(stdin, "initialized", new { });
+        await process.SendNotificationAsync("initialized", new { });
         const string uri = "file:///C:/work/Module1.bas";
-        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, string.Join('\n', [
+        await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, string.Join('\n', [
             "Attribute VB_Name = \"Module1\"",
             "Option Explicit",
             "Public Sub Run()",
             "End Sub"
         ])));
-        var before = await SendRequestAsync(
-            stdin,
-            stdout,
-            2,
+        var before = await process.SendRequestAsync(2,
             "textDocument/semanticTokens/full",
             new
             {
@@ -159,9 +150,7 @@ public sealed class LanguageServerProcessTests
             });
         var beforeLength = before.GetProperty("result").GetProperty("data").GetArrayLength();
 
-        await SendNotificationAsync(
-            stdin,
-            "textDocument/didChange",
+        await process.SendNotificationAsync("textDocument/didChange",
             new
             {
                 textDocument = new
@@ -185,11 +174,8 @@ public sealed class LanguageServerProcessTests
                     }
                 }
             });
-        await ReadNotificationAsync(stdout, "textDocument/publishDiagnostics");
-        var after = await SendRequestAsync(
-            stdin,
-            stdout,
-            3,
+        await process.WaitForNotificationAsync("textDocument/publishDiagnostics");
+        var after = await process.SendRequestAsync(3,
             "textDocument/semanticTokens/full",
             new
             {
@@ -198,8 +184,8 @@ public sealed class LanguageServerProcessTests
         var afterLength = after.GetProperty("result").GetProperty("data").GetArrayLength();
         Assert.True(afterLength > beforeLength);
 
-        await SendRequestAsync(stdin, stdout, 4, "shutdown", null);
-        await SendNotificationAsync(stdin, "exit", null);
+        await process.SendRequestAsync(4, "shutdown", null);
+        await process.SendNotificationAsync("exit", null);
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await process.WaitForExitAsync(cancellation.Token);
         Assert.Equal(0, process.ExitCode);
@@ -220,11 +206,9 @@ public sealed class LanguageServerProcessTests
                 "VbaLanguageServer.Cli",
                 "VbaLanguageServer.Cli.csproj"));
 
-        using var process = StartLanguageServer(serverProjectPath);
-        await using var stdin = process.StandardInput.BaseStream;
-        using var stdout = process.StandardOutput.BaseStream;
+        await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
 
-        await InitializeAsync(stdin, stdout);
+        await process.InitializeAsync();
         const string rangeBoundsUri = "file:///C:/work/WorksheetRangeBounds.cls";
         var rangeBoundsText = string.Join('\n', [
             "VERSION 1.0 CLASS",
@@ -243,13 +227,10 @@ public sealed class LanguageServerProcessTests
             "    aaaa = range_obj.Column",
             "End Function"
         ]);
-        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(rangeBoundsUri, rangeBoundsText));
-        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(workerUri, workerText));
+        await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(rangeBoundsUri, rangeBoundsText));
+        await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(workerUri, workerText));
 
-        var response = await SendRequestAsync(
-            stdin,
-            stdout,
-            2,
+        var response = await process.SendRequestAsync(2,
             "textDocument/semanticTokens/full",
             new
             {
@@ -274,8 +255,8 @@ public sealed class LanguageServerProcessTests
             && token.TokenType == "property"
             && !token.TokenModifiers.Contains("declaration"));
 
-        await SendRequestAsync(stdin, stdout, 3, "shutdown", null);
-        await SendNotificationAsync(stdin, "exit", null);
+        await process.SendRequestAsync(3, "shutdown", null);
+        await process.SendNotificationAsync("exit", null);
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await process.WaitForExitAsync(cancellation.Token);
         Assert.Equal(0, process.ExitCode);
@@ -296,14 +277,9 @@ public sealed class LanguageServerProcessTests
                 "VbaLanguageServer.Cli",
                 "VbaLanguageServer.Cli.csproj"));
 
-        using var process = StartLanguageServer(serverProjectPath);
-        await using var stdin = process.StandardInput.BaseStream;
-        using var stdout = process.StandardOutput.BaseStream;
+        await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
 
-        await SendRequestAsync(
-            stdin,
-            stdout,
-            1,
+        await process.SendRequestAsync(1,
             "initialize",
             new
             {
@@ -311,12 +287,10 @@ public sealed class LanguageServerProcessTests
                 rootUri = (string?)null,
                 capabilities = new { }
             });
-        await SendNotificationAsync(stdin, "initialized", new { });
+        await process.SendNotificationAsync("initialized", new { });
 
         const string invalidLine = "        \"needle\", _ ' comment";
-        await SendNotificationAsync(
-            stdin,
-            "textDocument/didOpen",
+        await process.SendNotificationAsync("textDocument/didOpen",
             new
             {
                 textDocument = new
@@ -336,7 +310,7 @@ public sealed class LanguageServerProcessTests
                 }
             });
 
-        var invalidDiagnostics = await ReadNotificationAsync(stdout, "textDocument/publishDiagnostics");
+        var invalidDiagnostics = await process.WaitForNotificationAsync("textDocument/publishDiagnostics");
         var firstDiagnostic = invalidDiagnostics
             .GetProperty("params")
             .GetProperty("diagnostics")
@@ -351,9 +325,7 @@ public sealed class LanguageServerProcessTests
         Assert.Equal(5, firstDiagnostic.GetProperty("range").GetProperty("end").GetProperty("line").GetInt32());
         Assert.Equal(invalidLine.Length, firstDiagnostic.GetProperty("range").GetProperty("end").GetProperty("character").GetInt32());
 
-        await SendNotificationAsync(
-            stdin,
-            "textDocument/didChange",
+        await process.SendNotificationAsync("textDocument/didChange",
             new
             {
                 textDocument = new
@@ -378,11 +350,11 @@ public sealed class LanguageServerProcessTests
                 }
             });
 
-        var validDiagnostics = await ReadNotificationAsync(stdout, "textDocument/publishDiagnostics");
+        var validDiagnostics = await process.WaitForNotificationAsync("textDocument/publishDiagnostics");
         Assert.Empty(validDiagnostics.GetProperty("params").GetProperty("diagnostics").EnumerateArray());
 
-        await SendRequestAsync(stdin, stdout, 2, "shutdown", null);
-        await SendNotificationAsync(stdin, "exit", null);
+        await process.SendRequestAsync(2, "shutdown", null);
+        await process.SendNotificationAsync("exit", null);
 
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await process.WaitForExitAsync(cancellation.Token);
@@ -404,14 +376,10 @@ public sealed class LanguageServerProcessTests
                 "VbaLanguageServer.Cli",
                 "VbaLanguageServer.Cli.csproj"));
 
-        using var process = StartLanguageServer(serverProjectPath);
-        await using var stdin = process.StandardInput.BaseStream;
-        using var stdout = process.StandardOutput.BaseStream;
+        await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
 
-        await InitializeAsync(stdin, stdout);
-        await SendNotificationAsync(
-            stdin,
-            "textDocument/didOpen",
+        await process.InitializeAsync();
+        await process.SendNotificationAsync("textDocument/didOpen",
             new
             {
                 textDocument = new
@@ -443,10 +411,7 @@ public sealed class LanguageServerProcessTests
                 }
             });
 
-        var response = await SendRequestAsync(
-            stdin,
-            stdout,
-            2,
+        var response = await process.SendRequestAsync(2,
             "textDocument/documentSymbol",
             new
             {
@@ -472,7 +437,7 @@ public sealed class LanguageServerProcessTests
         Assert.Contains("DisplayName", symbolNames);
 
         const string classUri = "file:///C:/work/Customer.cls";
-        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(classUri, string.Join('\n', [
+        await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(classUri, string.Join('\n', [
             "VERSION 1.0 CLASS",
             "Attribute VB_Name = \"Customer\"",
             "Option Explicit",
@@ -480,10 +445,7 @@ public sealed class LanguageServerProcessTests
             "Public Property Get DisplayName() As String",
             "End Property"
         ])));
-        var classSymbols = await SendRequestAsync(
-            stdin,
-            stdout,
-            3,
+        var classSymbols = await process.SendRequestAsync(3,
             "textDocument/documentSymbol",
             new
             {
@@ -499,7 +461,7 @@ public sealed class LanguageServerProcessTests
         Assert.Contains("DisplayName", classSymbolNames);
 
         const string formUri = "file:///C:/work/Dialog.frm";
-        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(formUri, string.Join('\n', [
+        await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(formUri, string.Join('\n', [
             "VERSION 5.00",
             "Begin VB.Form Dialog",
             "  Caption = \"Designer caption\"",
@@ -509,10 +471,7 @@ public sealed class LanguageServerProcessTests
             "Private Sub CommandButton1_Click()",
             "End Sub"
         ])));
-        var formSymbols = await SendRequestAsync(
-            stdin,
-            stdout,
-            4,
+        var formSymbols = await process.SendRequestAsync(4,
             "textDocument/documentSymbol",
             new
             {
@@ -527,8 +486,8 @@ public sealed class LanguageServerProcessTests
         Assert.Contains("CommandButton1_Click", formSymbolNames);
         Assert.DoesNotContain("Caption", formSymbolNames);
 
-        await SendRequestAsync(stdin, stdout, 5, "shutdown", null);
-        await SendNotificationAsync(stdin, "exit", null);
+        await process.SendRequestAsync(5, "shutdown", null);
+        await process.SendNotificationAsync("exit", null);
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await process.WaitForExitAsync(cancellation.Token);
         Assert.Equal(0, process.ExitCode);
@@ -549,16 +508,14 @@ public sealed class LanguageServerProcessTests
                 "VbaLanguageServer.Cli",
                 "VbaLanguageServer.Cli.csproj"));
 
-        using var process = StartLanguageServer(serverProjectPath);
-        await using var stdin = process.StandardInput.BaseStream;
-        using var stdout = process.StandardOutput.BaseStream;
+        await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
 
-        await InitializeAsync(stdin, stdout);
+        await process.InitializeAsync();
         const string helperUri = "file:///C:/work/Helpers.bas";
         const string workerUri = "file:///C:/work/Worker.bas";
         const string duplicateAUri = "file:///C:/work/DuplicateA.bas";
         const string duplicateBUri = "file:///C:/work/DuplicateB.bas";
-        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(helperUri, string.Join('\n', [
+        await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(helperUri, string.Join('\n', [
             "Attribute VB_Name = \"Helpers\"",
             "Option Explicit",
             "",
@@ -567,12 +524,12 @@ public sealed class LanguageServerProcessTests
             "Private Function HiddenValue() As String",
             "End Function"
         ])));
-        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(duplicateAUri, string.Join('\n', [
+        await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(duplicateAUri, string.Join('\n', [
             "Attribute VB_Name = \"DuplicateA\"",
             "Public Function DuplicateValue() As String",
             "End Function"
         ])));
-        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(duplicateBUri, string.Join('\n', [
+        await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(duplicateBUri, string.Join('\n', [
             "Attribute VB_Name = \"DuplicateB\"",
             "Public Function DuplicateValue() As String",
             "End Function"
@@ -587,31 +544,28 @@ public sealed class LanguageServerProcessTests
             "    localValue = DuplicateValue()",
             "End Sub"
         ]);
-        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(workerUri, workerText));
+        await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(workerUri, workerText));
 
-        var unqualified = await RequestDefinitionAsync(stdin, stdout, 2, workerUri, workerText, "BuildValue()");
+        var unqualified = await RequestDefinitionAsync(process, 2, workerUri, workerText, "BuildValue()");
         Assert.Equal(helperUri, unqualified.GetProperty("uri").GetString());
         Assert.Equal(3, unqualified.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32());
         Assert.Equal("Public Function ".Length, unqualified.GetProperty("range").GetProperty("start").GetProperty("character").GetInt32());
 
-        var qualified = await RequestDefinitionAsync(stdin, stdout, 3, workerUri, workerText, "Helpers.BuildValue()", "Helpers.".Length);
+        var qualified = await RequestDefinitionAsync(process, 3, workerUri, workerText, "Helpers.BuildValue()", "Helpers.".Length);
         Assert.Equal(helperUri, qualified.GetProperty("uri").GetString());
 
-        var privateResult = await SendDefinitionRequestAsync(stdin, stdout, 4, workerUri, workerText, "HiddenValue()");
+        var privateResult = await SendDefinitionRequestAsync(process, 4, workerUri, workerText, "HiddenValue()");
         Assert.Equal(JsonValueKind.Null, privateResult.ValueKind);
 
-        var ambiguousResult = await SendDefinitionRequestAsync(stdin, stdout, 5, workerUri, workerText, "DuplicateValue()");
+        var ambiguousResult = await SendDefinitionRequestAsync(process, 5, workerUri, workerText, "DuplicateValue()");
         Assert.Equal(JsonValueKind.Null, ambiguousResult.ValueKind);
 
-        var localDefinition = await RequestDefinitionAsync(stdin, stdout, 6, workerUri, workerText, "localValue = BuildValue()");
+        var localDefinition = await RequestDefinitionAsync(process, 6, workerUri, workerText, "localValue = BuildValue()");
         Assert.Equal(workerUri, localDefinition.GetProperty("uri").GetString());
         Assert.Equal(2, localDefinition.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32());
         Assert.Equal("    Dim ".Length, localDefinition.GetProperty("range").GetProperty("start").GetProperty("character").GetInt32());
 
-        var fallbackSymbols = await SendRequestAsync(
-            stdin,
-            stdout,
-            7,
+        var fallbackSymbols = await process.SendRequestAsync(7,
             "textDocument/documentSymbol",
             new
             {
@@ -619,8 +573,8 @@ public sealed class LanguageServerProcessTests
             });
         Assert.Equal("Worker", fallbackSymbols.GetProperty("result").EnumerateArray().First().GetProperty("name").GetString());
 
-        await SendRequestAsync(stdin, stdout, 8, "shutdown", null);
-        await SendNotificationAsync(stdin, "exit", null);
+        await process.SendRequestAsync(8, "shutdown", null);
+        await process.SendNotificationAsync("exit", null);
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await process.WaitForExitAsync(cancellation.Token);
         Assert.Equal(0, process.ExitCode);
@@ -641,12 +595,10 @@ public sealed class LanguageServerProcessTests
                 "VbaLanguageServer.Cli",
                 "VbaLanguageServer.Cli.csproj"));
 
-        using var process = StartLanguageServer(serverProjectPath);
-        await using var stdin = process.StandardInput.BaseStream;
-        using var stdout = process.StandardOutput.BaseStream;
+        await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
 
-        await InitializeAsync(stdin, stdout);
-        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument("file:///C:/work/Builder.bas", string.Join('\n', [
+        await process.InitializeAsync();
+        await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument("file:///C:/work/Builder.bas", string.Join('\n', [
             "Attribute VB_Name = \"Builder\"",
             "Option Explicit",
             "",
@@ -671,12 +623,9 @@ public sealed class LanguageServerProcessTests
             "End Sub"
         ]);
         const string callerUri = "file:///C:/work/Caller.bas";
-        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(callerUri, callerText));
+        await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(callerUri, callerText));
 
-        var completion = await SendRequestAsync(
-            stdin,
-            stdout,
-            2,
+        var completion = await process.SendRequestAsync(2,
             "textDocument/completion",
             new
             {
@@ -696,10 +645,7 @@ public sealed class LanguageServerProcessTests
         Assert.Contains("If", labels);
         Assert.Contains("String", labels);
 
-        var publicModuleVariableCompletion = await SendRequestAsync(
-            stdin,
-            stdout,
-            3,
+        var publicModuleVariableCompletion = await process.SendRequestAsync(3,
             "textDocument/completion",
             new
             {
@@ -714,10 +660,7 @@ public sealed class LanguageServerProcessTests
         Assert.Contains("WsSrv", publicModuleVariableLabels);
         Assert.DoesNotContain("HiddenSrv", publicModuleVariableLabels);
 
-        var outsideProcedureCompletion = await SendRequestAsync(
-            stdin,
-            stdout,
-            4,
+        var outsideProcedureCompletion = await process.SendRequestAsync(4,
             "textDocument/completion",
             new
             {
@@ -731,8 +674,8 @@ public sealed class LanguageServerProcessTests
             .ToArray();
         Assert.DoesNotContain("currentValue", outsideLabels);
 
-        await SendRequestAsync(stdin, stdout, 5, "shutdown", null);
-        await SendNotificationAsync(stdin, "exit", null);
+        await process.SendRequestAsync(5, "shutdown", null);
+        await process.SendNotificationAsync("exit", null);
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await process.WaitForExitAsync(cancellation.Token);
         Assert.Equal(0, process.ExitCode);
@@ -753,12 +696,10 @@ public sealed class LanguageServerProcessTests
                 "VbaLanguageServer.Cli",
                 "VbaLanguageServer.Cli.csproj"));
 
-        using var process = StartLanguageServer(serverProjectPath);
-        await using var stdin = process.StandardInput.BaseStream;
-        using var stdout = process.StandardOutput.BaseStream;
+        await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
 
-        await InitializeAsync(stdin, stdout);
-        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument("file:///C:/work/WorksheetRangeBounds.cls", string.Join('\n', [
+        await process.InitializeAsync();
+        await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument("file:///C:/work/WorksheetRangeBounds.cls", string.Join('\n', [
             "VERSION 1.0 CLASS",
             "Attribute VB_Name = \"WorksheetRangeBounds\"",
             "Public Property Get Column() As Long",
@@ -766,7 +707,7 @@ public sealed class LanguageServerProcessTests
             "Public Property Get ColumnCount() As Long",
             "End Property"
         ])));
-        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument("file:///C:/work/Helper.bas", string.Join('\n', [
+        await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument("file:///C:/work/Helper.bas", string.Join('\n', [
             "Attribute VB_Name = \"Helper\"",
             "Public Function BuildValue() As String",
             "End Function"
@@ -785,12 +726,9 @@ public sealed class LanguageServerProcessTests
             "End Sub"
         ]);
         const string workerUri = "file:///C:/work/Worker.bas";
-        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(workerUri, workerText));
+        await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(workerUri, workerText));
 
-        var dotCompletion = await SendRequestAsync(
-            stdin,
-            stdout,
-            2,
+        var dotCompletion = await process.SendRequestAsync(2,
             "textDocument/completion",
             new
             {
@@ -808,10 +746,7 @@ public sealed class LanguageServerProcessTests
         Assert.DoesNotContain("Dim", dotLabels);
         Assert.DoesNotContain("BuildValue", dotLabels);
 
-        var partialCompletion = await SendRequestAsync(
-            stdin,
-            stdout,
-            3,
+        var partialCompletion = await process.SendRequestAsync(3,
             "textDocument/completion",
             new
             {
@@ -829,10 +764,7 @@ public sealed class LanguageServerProcessTests
         Assert.DoesNotContain("Dim", partialLabels);
         Assert.DoesNotContain("BuildValue", partialLabels);
 
-        var bareTypeCompletion = await SendRequestAsync(
-            stdin,
-            stdout,
-            4,
+        var bareTypeCompletion = await process.SendRequestAsync(4,
             "textDocument/completion",
             new
             {
@@ -850,10 +782,7 @@ public sealed class LanguageServerProcessTests
         Assert.DoesNotContain("Sub", bareTypeLabels);
         Assert.DoesNotContain("Then", bareTypeLabels);
 
-        var typeCompletion = await SendRequestAsync(
-            stdin,
-            stdout,
-            5,
+        var typeCompletion = await process.SendRequestAsync(5,
             "textDocument/completion",
             new
             {
@@ -871,10 +800,7 @@ public sealed class LanguageServerProcessTests
         Assert.DoesNotContain("Sub", typeLabels);
         Assert.DoesNotContain("Then", typeLabels);
 
-        var completedMemberCompletion = await SendRequestAsync(
-            stdin,
-            stdout,
-            6,
+        var completedMemberCompletion = await process.SendRequestAsync(6,
             "textDocument/completion",
             new
             {
@@ -883,10 +809,7 @@ public sealed class LanguageServerProcessTests
             });
         Assert.Empty(completedMemberCompletion.GetProperty("result").EnumerateArray());
 
-        var spacedDotCompletion = await SendRequestAsync(
-            stdin,
-            stdout,
-            7,
+        var spacedDotCompletion = await process.SendRequestAsync(7,
             "textDocument/completion",
             new
             {
@@ -895,8 +818,8 @@ public sealed class LanguageServerProcessTests
             });
         Assert.Empty(spacedDotCompletion.GetProperty("result").EnumerateArray());
 
-        await SendRequestAsync(stdin, stdout, 8, "shutdown", null);
-        await SendNotificationAsync(stdin, "exit", null);
+        await process.SendRequestAsync(8, "shutdown", null);
+        await process.SendNotificationAsync("exit", null);
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await process.WaitForExitAsync(cancellation.Token);
         Assert.Equal(0, process.ExitCode);
@@ -917,11 +840,9 @@ public sealed class LanguageServerProcessTests
                 "VbaLanguageServer.Cli",
                 "VbaLanguageServer.Cli.csproj"));
 
-        using var process = StartLanguageServer(serverProjectPath);
-        await using var stdin = process.StandardInput.BaseStream;
-        using var stdout = process.StandardOutput.BaseStream;
+        await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
 
-        await InitializeAsync(stdin, stdout);
+        await process.InitializeAsync();
         const string uri = "file:///C:/work/Worker.bas";
         var text = string.Join('\n', [
             "Attribute VB_Name = \"Worker\"",
@@ -943,9 +864,9 @@ public sealed class LanguageServerProcessTests
             "    PlainSub(",
             "End Sub"
         ]);
-        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, text));
+        await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
 
-        var hover = await SendPositionRequestAsync(stdin, stdout, 2, "textDocument/hover", uri, text, "ReadValue(\"id\"");
+        var hover = await SendPositionRequestAsync(process, 2, "textDocument/hover", uri, text, "ReadValue(\"id\"");
         var hoverValue = hover
             .GetProperty("result")
             .GetProperty("contents")
@@ -954,7 +875,7 @@ public sealed class LanguageServerProcessTests
         Assert.Contains("Reads a value.", hoverValue);
         Assert.Contains("ReadValue(Key, [Fallback]) As String", hoverValue);
 
-        var signature = await SendPositionRequestAsync(stdin, stdout, 3, "textDocument/signatureHelp", uri, text, "ReadValue(\"id\", ", "ReadValue(\"id\", ".Length);
+        var signature = await SendPositionRequestAsync(process, 3, "textDocument/signatureHelp", uri, text, "ReadValue(\"id\", ", "ReadValue(\"id\", ".Length);
         var result = signature.GetProperty("result");
         Assert.Equal(1, result.GetProperty("activeParameter").GetInt32());
         var firstSignature = result.GetProperty("signatures").EnumerateArray().Single();
@@ -965,19 +886,18 @@ public sealed class LanguageServerProcessTests
         Assert.Equal("Fallback", parameters[1].GetProperty("label").GetString());
         Assert.Contains("Value used when the key is missing.", parameters[1].GetProperty("documentation").GetProperty("value").GetString());
 
-        var statementSignature = await SendPositionRequestAsync(stdin, stdout, 4, "textDocument/signatureHelp", uri, text, "ReadValue ", "ReadValue ".Length);
+        var statementSignature = await SendPositionRequestAsync(process, 4, "textDocument/signatureHelp", uri, text, "ReadValue ", "ReadValue ".Length);
         var statementResult = statementSignature.GetProperty("result");
         Assert.Equal(0, statementResult.GetProperty("activeParameter").GetInt32());
         Assert.Equal(
             "ReadValue(Key, [Fallback]) As String",
             statementResult.GetProperty("signatures").EnumerateArray().Single().GetProperty("label").GetString());
 
-        var statementSecondParameter = await SendPositionRequestAsync(stdin, stdout, 5, "textDocument/signatureHelp", uri, text, "ReadValue \"id\", ", "ReadValue \"id\", ".Length);
+        var statementSecondParameter = await SendPositionRequestAsync(process, 5, "textDocument/signatureHelp", uri, text, "ReadValue \"id\", ", "ReadValue \"id\", ".Length);
         Assert.Equal(1, statementSecondParameter.GetProperty("result").GetProperty("activeParameter").GetInt32());
 
         var undocumentedSignature = await SendPositionRequestAsync(
-            stdin,
-            stdout,
+            process,
             6,
             "textDocument/signatureHelp",
             uri,
@@ -994,8 +914,8 @@ public sealed class LanguageServerProcessTests
             undocumentedFirstSignature.GetProperty("parameters").EnumerateArray(),
             parameter => parameter.TryGetProperty("documentation", out _));
 
-        await SendRequestAsync(stdin, stdout, 7, "shutdown", null);
-        await SendNotificationAsync(stdin, "exit", null);
+        await process.SendRequestAsync(7, "shutdown", null);
+        await process.SendNotificationAsync("exit", null);
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await process.WaitForExitAsync(cancellation.Token);
         Assert.Equal(0, process.ExitCode);
@@ -1024,11 +944,9 @@ public sealed class LanguageServerProcessTests
                     "VbaLanguageServer.Cli",
                     "VbaLanguageServer.Cli.csproj"));
 
-            using var process = StartLanguageServer(serverProjectPath);
-            await using var stdin = process.StandardInput.BaseStream;
-            using var stdout = process.StandardOutput.BaseStream;
+            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
 
-            await InitializeAsync(stdin, stdout);
+            await process.InitializeAsync();
             var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
             var text = string.Join('\n', [
                 "Attribute VB_Name = \"Worker\"",
@@ -1041,12 +959,9 @@ public sealed class LanguageServerProcessTests
                 "    Excel.Run(",
                 "End Sub"
             ]);
-            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, text));
+            await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
 
-            var completion = await SendRequestAsync(
-                stdin,
-                stdout,
-                2,
+            var completion = await process.SendRequestAsync(2,
                 "textDocument/completion",
                 new
                 {
@@ -1061,19 +976,19 @@ public sealed class LanguageServerProcessTests
             Assert.Contains("Application", completionLabels);
             Assert.Contains("Dictionary", completionLabels);
 
-            var applicationHover = await SendPositionRequestAsync(stdin, stdout, 3, "textDocument/hover", uri, text, "Application");
+            var applicationHover = await SendPositionRequestAsync(process, 3, "textDocument/hover", uri, text, "Application");
             Assert.Contains(
                 "Microsoft Excel application",
                 applicationHover.GetProperty("result").GetProperty("contents").GetProperty("value").GetString(),
                 StringComparison.Ordinal);
 
-            var dictionaryHover = await SendPositionRequestAsync(stdin, stdout, 4, "textDocument/hover", uri, text, "Dictionary");
+            var dictionaryHover = await SendPositionRequestAsync(process, 4, "textDocument/hover", uri, text, "Dictionary");
             Assert.Contains(
                 "Microsoft Scripting Runtime",
                 dictionaryHover.GetProperty("result").GetProperty("contents").GetProperty("value").GetString(),
                 StringComparison.Ordinal);
 
-            var signature = await SendPositionRequestAsync(stdin, stdout, 5, "textDocument/signatureHelp", uri, text, "Excel.Run(", "Excel.Run(".Length);
+            var signature = await SendPositionRequestAsync(process, 5, "textDocument/signatureHelp", uri, text, "Excel.Run(", "Excel.Run(".Length);
             var firstSignature = signature
                 .GetProperty("result")
                 .GetProperty("signatures")
@@ -1085,8 +1000,8 @@ public sealed class LanguageServerProcessTests
                 firstSignature.GetProperty("parameters").EnumerateArray().First().GetProperty("documentation").GetProperty("value").GetString(),
                 StringComparison.Ordinal);
 
-            await SendRequestAsync(stdin, stdout, 6, "shutdown", null);
-            await SendNotificationAsync(stdin, "exit", null);
+            await process.SendRequestAsync(6, "shutdown", null);
+            await process.SendNotificationAsync("exit", null);
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await process.WaitForExitAsync(cancellation.Token);
             Assert.Equal(0, process.ExitCode);
@@ -1136,25 +1051,21 @@ public sealed class LanguageServerProcessTests
                     "VbaLanguageServer.Cli",
                     "VbaLanguageServer.Cli.csproj"));
 
-            using var process = StartLanguageServer(serverProjectPath, cacheRoot);
-            await using var stdin = process.StandardInput.BaseStream;
-            using var stdout = process.StandardOutput.BaseStream;
+            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath, cacheRoot);
 
-            await InitializeAsync(stdin, stdout);
+            await process.InitializeAsync();
             var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
-            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, string.Join('\n', [
+            await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, string.Join('\n', [
                 "Attribute VB_Name = \"Worker\"",
                 "Public Sub Run()",
                 "End Sub"
             ])));
 
-            var logMessage = await ReadLogMessageContainingAsync(
-                stdout,
-                "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
+            var logMessage = await process.WaitForLogTextAsync("source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
 
             Assert.Contains("Generated Library", logMessage);
-            await SendRequestAsync(stdin, stdout, 2, "shutdown", null);
-            await SendNotificationAsync(stdin, "exit", null);
+            await process.SendRequestAsync(2, "shutdown", null);
+            await process.SendNotificationAsync("exit", null);
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await process.WaitForExitAsync(cancellation.Token);
             Assert.Equal(0, process.ExitCode);
@@ -1185,25 +1096,21 @@ public sealed class LanguageServerProcessTests
                     "VbaLanguageServer.Cli",
                     "VbaLanguageServer.Cli.csproj"));
 
-            using var process = StartLanguageServer(serverProjectPath);
-            await using var stdin = process.StandardInput.BaseStream;
-            using var stdout = process.StandardOutput.BaseStream;
+            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
 
-            await InitializeAsync(stdin, stdout);
+            await process.InitializeAsync();
             var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
-            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, string.Join('\n', [
+            await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, string.Join('\n', [
                 "Attribute VB_Name = \"Worker\"",
                 "Public Sub Run()",
                 "End Sub"
             ])));
 
-            var logMessage = await ReadLogMessageContainingAsync(
-                stdout,
-                "source=bundled outcome=available");
+            var logMessage = await process.WaitForLogTextAsync("source=bundled outcome=available");
 
             Assert.Contains("Microsoft Excel 16.0 Object Library", logMessage);
-            await SendRequestAsync(stdin, stdout, 2, "shutdown", null);
-            await SendNotificationAsync(stdin, "exit", null);
+            await process.SendRequestAsync(2, "shutdown", null);
+            await process.SendNotificationAsync("exit", null);
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await process.WaitForExitAsync(cancellation.Token);
             Assert.Equal(0, process.ExitCode);
@@ -1241,7 +1148,7 @@ public sealed class LanguageServerProcessTests
                     "VbaLanguageServer.Cli",
                     "VbaLanguageServer.Cli.csproj"));
 
-            using var process = StartLanguageServer(
+            await using var process = await LanguageServerProcessHarness.StartAsync(
                 serverProjectPath,
                 cacheRoot,
                 new Dictionary<string, string>
@@ -1249,18 +1156,13 @@ public sealed class LanguageServerProcessTests
                     ["VBA_TOOLS_REFERENCE_CATALOG_DISCOVERY_STARTED_FILE"] = discoveryStartedFile,
                     ["VBA_TOOLS_REFERENCE_CATALOG_DISCOVERY_RELEASE_FILE"] = discoveryReleaseFile
                 });
-            await using var stdin = process.StandardInput.BaseStream;
-            using var stdout = process.StandardOutput.BaseStream;
 
-            await InitializeAsync(stdin, stdout);
+            await process.InitializeAsync();
             var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
             var text = CreateExcelStartupCatalogWorkerText();
-            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, text));
+            await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
 
-            var completion = await SendRequestAsync(
-                stdin,
-                stdout,
-                2,
+            var completion = await process.SendRequestAsync(2,
                 "textDocument/completion",
                 new
                 {
@@ -1284,8 +1186,8 @@ public sealed class LanguageServerProcessTests
             Assert.False(discoveryStarted);
 
             File.WriteAllText(discoveryReleaseFile, "release");
-            await SendRequestAsync(stdin, stdout, 3, "shutdown", null);
-            await SendNotificationAsync(stdin, "exit", null);
+            await process.SendRequestAsync(3, "shutdown", null);
+            await process.SendNotificationAsync("exit", null);
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await process.WaitForExitAsync(cancellation.Token);
             Assert.Equal(0, process.ExitCode);
@@ -1325,7 +1227,7 @@ public sealed class LanguageServerProcessTests
                     "VbaLanguageServer.Cli",
                     "VbaLanguageServer.Cli.csproj"));
 
-            using var process = StartLanguageServer(
+            await using var process = await LanguageServerProcessHarness.StartAsync(
                 serverProjectPath,
                 cacheRoot,
                 new Dictionary<string, string>
@@ -1333,19 +1235,14 @@ public sealed class LanguageServerProcessTests
                     ["VBA_TOOLS_REFERENCE_CATALOG_DISCOVERY_STARTED_FILE"] = discoveryStartedFile,
                     ["VBA_TOOLS_REFERENCE_CATALOG_DISCOVERY_RELEASE_FILE"] = discoveryReleaseFile
                 });
-            await using var stdin = process.StandardInput.BaseStream;
-            using var stdout = process.StandardOutput.BaseStream;
 
-            await InitializeAsync(stdin, stdout);
+            await process.InitializeAsync();
             var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
             var text = CreateExcelStartupCatalogWorkerText();
-            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, text));
+            await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
             await WaitForFileAsync(discoveryStartedFile, TimeSpan.FromSeconds(5));
 
-            var completion = await SendRequestAsync(
-                stdin,
-                stdout,
-                2,
+            var completion = await process.SendRequestAsync(2,
                 "textDocument/completion",
                 new
                 {
@@ -1361,19 +1258,13 @@ public sealed class LanguageServerProcessTests
                 .EnumerateArray()
                 .Select(item => item.GetProperty("label").GetString())
                 .ToArray();
-            var signatureHelp = await SendPositionRequestAsync(
-                stdin,
-                stdout,
-                3,
+            var signatureHelp = await SendPositionRequestAsync(process, 3,
                 "textDocument/signatureHelp",
                 uri,
                 text,
                 "Range(",
                 "Range(".Length);
-            var semanticTokensResponse = await SendRequestAsync(
-                stdin,
-                stdout,
-                4,
+            var semanticTokensResponse = await process.SendRequestAsync(4,
                 "textDocument/semanticTokens/full",
                 new
                 {
@@ -1398,8 +1289,8 @@ public sealed class LanguageServerProcessTests
                 && token.Line == 8);
 
             File.WriteAllText(discoveryReleaseFile, "release");
-            await SendRequestAsync(stdin, stdout, 5, "shutdown", null);
-            await SendNotificationAsync(stdin, "exit", null);
+            await process.SendRequestAsync(5, "shutdown", null);
+            await process.SendNotificationAsync("exit", null);
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await process.WaitForExitAsync(cancellation.Token);
             Assert.Equal(0, process.ExitCode);
@@ -1437,33 +1328,25 @@ public sealed class LanguageServerProcessTests
                     "VbaLanguageServer.Cli",
                     "VbaLanguageServer.Cli.csproj"));
 
-            using var process = StartLanguageServer(serverProjectPath, cacheRoot);
-            await using var stdin = process.StandardInput.BaseStream;
-            using var stdout = process.StandardOutput.BaseStream;
+            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath, cacheRoot);
 
-            await InitializeAsync(stdin, stdout);
+            await process.InitializeAsync();
             var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
             var text = string.Join('\n', [
                 "Attribute VB_Name = \"Worker\"",
                 "Public Sub Run()",
                 "End Sub"
             ]);
-            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, text));
+            await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
 
-            var staleMessage = await ReadLogMessageContainingAsync(
-                stdout,
-                "source=stale-persisted outcome=stale phase=persistent-load expensiveMetadata=false");
-            var failedMessage = await ReadLogMessageContainingAsync(
-                stdout,
-                "source=stale-persisted outcome=failed phase=typelib-discovery expensiveMetadata=true");
+            var staleMessage = await process.WaitForLogTextAsync("source=stale-persisted outcome=stale phase=persistent-load expensiveMetadata=false");
+            var failedMessage = await process.WaitForLogTextAsync("source=stale-persisted outcome=failed phase=typelib-discovery expensiveMetadata=true");
 
             Assert.Contains("Generated Library", staleMessage);
             Assert.Contains("warning=", staleMessage);
             Assert.Contains("No matching TypeLib registry entry", failedMessage);
 
-            await SendNotificationAsync(
-                stdin,
-                "textDocument/didChange",
+            await process.SendNotificationAsync("textDocument/didChange",
                 new
                 {
                     textDocument = new
@@ -1480,15 +1363,13 @@ public sealed class LanguageServerProcessTests
                     }
                 });
 
-            var duplicateFailure = await TryReadLogMessageAsync(
-                stdout,
-                "source=stale-persisted outcome=failed phase=typelib-discovery expensiveMetadata=true",
+            var duplicateFailure = await process.TryWaitForLogMessageAsync("source=stale-persisted outcome=failed phase=typelib-discovery expensiveMetadata=true",
                 TimeSpan.FromMilliseconds(500));
 
             Assert.Null(duplicateFailure);
 
-            await SendRequestAsync(stdin, stdout, 2, "shutdown", null);
-            await SendNotificationAsync(stdin, "exit", null);
+            await process.SendRequestAsync(2, "shutdown", null);
+            await process.SendNotificationAsync("exit", null);
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await process.WaitForExitAsync(cancellation.Token);
             Assert.Equal(0, process.ExitCode);
@@ -1528,31 +1409,25 @@ public sealed class LanguageServerProcessTests
                     "VbaLanguageServer.Cli",
                     "VbaLanguageServer.Cli.csproj"));
 
-            using var process = StartLanguageServer(serverProjectPath, cacheRoot);
-            await using var stdin = process.StandardInput.BaseStream;
-            using var stdout = process.StandardOutput.BaseStream;
+            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath, cacheRoot);
 
-            await InitializeAsync(stdin, stdout);
+            await process.InitializeAsync();
             var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
-            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, string.Join('\n', [
+            await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, string.Join('\n', [
                 "Attribute VB_Name = \"Worker\"",
                 "Public Sub Run()",
                 "End Sub"
             ])));
 
-            var corruptMessage = await ReadLogMessageContainingAsync(
-                stdout,
-                "source=unavailable outcome=cache-read-warning phase=persistent-load expensiveMetadata=false");
-            var failedMessage = await ReadLogMessageContainingAsync(
-                stdout,
-                "source=unavailable outcome=failed phase=typelib-discovery expensiveMetadata=true");
+            var corruptMessage = await process.WaitForLogTextAsync("source=unavailable outcome=cache-read-warning phase=persistent-load expensiveMetadata=false");
+            var failedMessage = await process.WaitForLogTextAsync("source=unavailable outcome=failed phase=typelib-discovery expensiveMetadata=true");
 
             Assert.Contains("non-fatal", corruptMessage);
             Assert.Contains("could not be read", corruptMessage);
             Assert.Contains("No matching TypeLib registry entry", failedMessage);
 
-            await SendRequestAsync(stdin, stdout, 2, "shutdown", null);
-            await SendNotificationAsync(stdin, "exit", null);
+            await process.SendRequestAsync(2, "shutdown", null);
+            await process.SendNotificationAsync("exit", null);
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await process.WaitForExitAsync(cancellation.Token);
             Assert.Equal(0, process.ExitCode);
@@ -1591,11 +1466,9 @@ public sealed class LanguageServerProcessTests
                     "VbaLanguageServer.Cli",
                     "VbaLanguageServer.Cli.csproj"));
 
-            using var process = StartLanguageServer(serverProjectPath);
-            await using var stdin = process.StandardInput.BaseStream;
-            using var stdout = process.StandardOutput.BaseStream;
+            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
 
-            await InitializeAsync(stdin, stdout);
+            await process.InitializeAsync();
             var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
             var text = string.Join('\n', [
                 "Attribute VB_Name = \"Worker\"",
@@ -1607,18 +1480,13 @@ public sealed class LanguageServerProcessTests
                 "    Set target_sheet = target_book.W",
                 "End Sub"
             ]);
-            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, text));
+            await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
 
-            var refresh = await TryReadLogMessageAsync(
-                stdout,
-                "Reference catalog refresh: document 'Book1' reference 'Microsoft Excel 16.0 Object Library' cached",
+            var refresh = await process.TryWaitForLogMessageAsync("Reference catalog refresh: document 'Book1' reference 'Microsoft Excel 16.0 Object Library' cached",
                 TimeSpan.FromSeconds(20));
             Assert.NotNull(refresh);
 
-            var completion = await SendRequestAsync(
-                stdin,
-                stdout,
-                2,
+            var completion = await process.SendRequestAsync(2,
                 "textDocument/completion",
                 new
                 {
@@ -1638,8 +1506,8 @@ public sealed class LanguageServerProcessTests
             Assert.Contains("Worksheets", completionLabels);
             Assert.Equal(10, worksheetsCompletion.GetProperty("kind").GetInt32());
 
-            await SendRequestAsync(stdin, stdout, 3, "shutdown", null);
-            await SendNotificationAsync(stdin, "exit", null);
+            await process.SendRequestAsync(3, "shutdown", null);
+            await process.SendNotificationAsync("exit", null);
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await process.WaitForExitAsync(cancellation.Token);
             Assert.Equal(0, process.ExitCode);
@@ -1677,11 +1545,9 @@ public sealed class LanguageServerProcessTests
                     "VbaLanguageServer.Cli",
                     "VbaLanguageServer.Cli.csproj"));
 
-            using var process = StartLanguageServer(serverProjectPath);
-            await using var stdin = process.StandardInput.BaseStream;
-            using var stdout = process.StandardOutput.BaseStream;
+            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
 
-            await InitializeAsync(stdin, stdout);
+            await process.InitializeAsync();
             var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
             var text = string.Join('\n', [
                 "Attribute VB_Name = \"Worker\"",
@@ -1695,18 +1561,13 @@ public sealed class LanguageServerProcessTests
                 "    Set target_range = target_sheet.Range(first_cell, ",
                 "End Sub"
             ]);
-            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, text));
+            await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
 
-            var refresh = await TryReadLogMessageAsync(
-                stdout,
-                "Reference catalog refresh: document 'Book1' reference 'Microsoft Excel 16.0 Object Library' cached",
+            var refresh = await process.TryWaitForLogMessageAsync("Reference catalog refresh: document 'Book1' reference 'Microsoft Excel 16.0 Object Library' cached",
                 TimeSpan.FromSeconds(20));
             Assert.NotNull(refresh);
 
-            var firstParameterHelp = await SendPositionRequestAsync(
-                stdin,
-                stdout,
-                2,
+            var firstParameterHelp = await SendPositionRequestAsync(process, 2,
                 "textDocument/signatureHelp",
                 uri,
                 text,
@@ -1726,10 +1587,7 @@ public sealed class LanguageServerProcessTests
                 .ToArray();
             Assert.Equal(["Cell1", "Cell2"], parameterLabels);
 
-            var secondParameterHelp = await SendPositionRequestAsync(
-                stdin,
-                stdout,
-                3,
+            var secondParameterHelp = await SendPositionRequestAsync(process, 3,
                 "textDocument/signatureHelp",
                 uri,
                 text,
@@ -1743,8 +1601,8 @@ public sealed class LanguageServerProcessTests
                 .Single();
             Assert.Equal("Range(Cell1, [Cell2]) As Range", secondSignature.GetProperty("label").GetString());
 
-            await SendRequestAsync(stdin, stdout, 4, "shutdown", null);
-            await SendNotificationAsync(stdin, "exit", null);
+            await process.SendRequestAsync(4, "shutdown", null);
+            await process.SendNotificationAsync("exit", null);
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await process.WaitForExitAsync(cancellation.Token);
             Assert.Equal(0, process.ExitCode);
@@ -1775,11 +1633,9 @@ public sealed class LanguageServerProcessTests
                     "VbaLanguageServer.Cli",
                     "VbaLanguageServer.Cli.csproj"));
 
-            using var process = StartLanguageServer(serverProjectPath);
-            await using var stdin = process.StandardInput.BaseStream;
-            using var stdout = process.StandardOutput.BaseStream;
+            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
 
-            await InitializeAsync(stdin, stdout);
+            await process.InitializeAsync();
             var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
             var text = string.Join('\n', [
                 "Attribute VB_Name = \"Worker\"",
@@ -1793,17 +1649,17 @@ public sealed class LanguageServerProcessTests
                 "    Dictionary",
                 "End Sub"
             ]);
-            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, text));
+            await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
 
             var callOffset = text.LastIndexOf("Dictionary", StringComparison.Ordinal)
                 - text.IndexOf("Dictionary", StringComparison.Ordinal);
-            var hover = await SendPositionRequestAsync(stdin, stdout, 2, "textDocument/hover", uri, text, "Dictionary", callOffset);
+            var hover = await SendPositionRequestAsync(process, 2, "textDocument/hover", uri, text, "Dictionary", callOffset);
             var hoverValue = hover.GetProperty("result").GetProperty("contents").GetProperty("value").GetString();
             Assert.Contains("Source dictionary wins.", hoverValue, StringComparison.Ordinal);
             Assert.DoesNotContain("Microsoft Scripting Runtime", hoverValue, StringComparison.Ordinal);
 
-            await SendRequestAsync(stdin, stdout, 3, "shutdown", null);
-            await SendNotificationAsync(stdin, "exit", null);
+            await process.SendRequestAsync(3, "shutdown", null);
+            await process.SendNotificationAsync("exit", null);
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await process.WaitForExitAsync(cancellation.Token);
             Assert.Equal(0, process.ExitCode);
@@ -1837,11 +1693,9 @@ public sealed class LanguageServerProcessTests
                     "VbaLanguageServer.Cli",
                     "VbaLanguageServer.Cli.csproj"));
 
-            using var process = StartLanguageServer(serverProjectPath);
-            await using var stdin = process.StandardInput.BaseStream;
-            using var stdout = process.StandardOutput.BaseStream;
+            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
 
-            await InitializeAsync(stdin, stdout);
+            await process.InitializeAsync();
             var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
             var text = string.Join('\n', [
                 "Attribute VB_Name = \"Worker\"",
@@ -1851,15 +1705,15 @@ public sealed class LanguageServerProcessTests
                 "    Application",
                 "End Sub"
             ]);
-            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, text));
+            await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
 
-            var hover = await SendPositionRequestAsync(stdin, stdout, 2, "textDocument/hover", uri, text, "Application");
+            var hover = await SendPositionRequestAsync(process, 2, "textDocument/hover", uri, text, "Application");
             var hoverValue = hover.GetProperty("result").GetProperty("contents").GetProperty("value").GetString();
             Assert.Contains("Microsoft Excel application", hoverValue, StringComparison.Ordinal);
             Assert.DoesNotContain("Microsoft Office application", hoverValue, StringComparison.Ordinal);
 
-            await SendRequestAsync(stdin, stdout, 3, "shutdown", null);
-            await SendNotificationAsync(stdin, "exit", null);
+            await process.SendRequestAsync(3, "shutdown", null);
+            await process.SendNotificationAsync("exit", null);
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await process.WaitForExitAsync(cancellation.Token);
             Assert.Equal(0, process.ExitCode);
@@ -1893,11 +1747,9 @@ public sealed class LanguageServerProcessTests
                     "VbaLanguageServer.Cli",
                     "VbaLanguageServer.Cli.csproj"));
 
-            using var process = StartLanguageServer(serverProjectPath);
-            await using var stdin = process.StandardInput.BaseStream;
-            using var stdout = process.StandardOutput.BaseStream;
+            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
 
-            await InitializeAsync(stdin, stdout);
+            await process.InitializeAsync();
             var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
             var text = string.Join('\n', [
                 "Attribute VB_Name = \"Worker\"",
@@ -1908,18 +1760,15 @@ public sealed class LanguageServerProcessTests
                 "    Scripting.Dictionary",
                 "End Sub"
             ]);
-            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, text));
+            await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
 
-            var ambiguousHover = await SendPositionRequestAsync(stdin, stdout, 2, "textDocument/hover", uri, text, "Application");
+            var ambiguousHover = await SendPositionRequestAsync(process, 2, "textDocument/hover", uri, text, "Application");
             Assert.Equal(JsonValueKind.Null, ambiguousHover.GetProperty("result").ValueKind);
 
-            var inactiveHover = await SendPositionRequestAsync(stdin, stdout, 3, "textDocument/hover", uri, text, "Dictionary");
+            var inactiveHover = await SendPositionRequestAsync(process, 3, "textDocument/hover", uri, text, "Dictionary");
             Assert.Equal(JsonValueKind.Null, inactiveHover.GetProperty("result").ValueKind);
 
-            var completion = await SendRequestAsync(
-                stdin,
-                stdout,
-                4,
+            var completion = await process.SendRequestAsync(4,
                 "textDocument/completion",
                 new
                 {
@@ -1934,8 +1783,8 @@ public sealed class LanguageServerProcessTests
             Assert.DoesNotContain("Application", completionLabels);
             Assert.DoesNotContain("Dictionary", completionLabels);
 
-            await SendRequestAsync(stdin, stdout, 5, "shutdown", null);
-            await SendNotificationAsync(stdin, "exit", null);
+            await process.SendRequestAsync(5, "shutdown", null);
+            await process.SendNotificationAsync("exit", null);
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await process.WaitForExitAsync(cancellation.Token);
             Assert.Equal(0, process.ExitCode);
@@ -1969,11 +1818,9 @@ public sealed class LanguageServerProcessTests
                     "VbaLanguageServer.Cli",
                     "VbaLanguageServer.Cli.csproj"));
 
-            using var process = StartLanguageServer(serverProjectPath);
-            await using var stdin = process.StandardInput.BaseStream;
-            using var stdout = process.StandardOutput.BaseStream;
+            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
 
-            await InitializeAsync(stdin, stdout);
+            await process.InitializeAsync();
             var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
             var text = string.Join('\n', [
                 "Attribute VB_Name = \"Worker\"",
@@ -1983,17 +1830,17 @@ public sealed class LanguageServerProcessTests
                 "    UncatalogedType",
                 "End Sub"
             ]);
-            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, text));
+            await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
 
-            var diagnostics = await ReadNotificationAsync(stdout, "textDocument/publishDiagnostics");
+            var diagnostics = await process.WaitForNotificationAsync("textDocument/publishDiagnostics");
             Assert.Empty(diagnostics.GetProperty("params").GetProperty("diagnostics").EnumerateArray());
 
-            var selection = await ReadLogMessageAsync(stdout, "VbaProjectReferenceSelection document=Book1");
+            var selection = await process.WaitForLogMessageAsync("VbaProjectReferenceSelection document=Book1");
             Assert.Contains(
                 "Uncataloged Reference Library",
                 selection.GetProperty("params").GetProperty("message").GetString(),
                 StringComparison.Ordinal);
-            var availability = await ReadLogMessageAsync(stdout, "Reference catalog availability");
+            var availability = await process.WaitForLogMessageAsync("Reference catalog availability");
             Assert.Equal(3, availability.GetProperty("params").GetProperty("type").GetInt32());
             var availabilityMessage = availability.GetProperty("params").GetProperty("message").GetString();
             Assert.Contains("Uncataloged Reference Library", availabilityMessage, StringComparison.Ordinal);
@@ -2002,21 +1849,16 @@ public sealed class LanguageServerProcessTests
             Assert.Contains("external editor definitions are unavailable", availabilityMessage, StringComparison.Ordinal);
             Assert.DoesNotContain("warning", availabilityMessage, StringComparison.OrdinalIgnoreCase);
 
-            var discoveryFailure = await ReadLogMessageAsync(
-                stdout,
-                "source=unavailable outcome=failed phase=typelib-discovery expensiveMetadata=true");
+            var discoveryFailure = await process.WaitForLogMessageAsync("source=unavailable outcome=failed phase=typelib-discovery expensiveMetadata=true");
             Assert.Equal(2, discoveryFailure.GetProperty("params").GetProperty("type").GetInt32());
             var discoveryFailureMessage = discoveryFailure.GetProperty("params").GetProperty("message").GetString();
             Assert.Contains("Uncataloged Reference Library", discoveryFailureMessage, StringComparison.Ordinal);
             Assert.Contains("No matching TypeLib registry entry was found.", discoveryFailureMessage, StringComparison.Ordinal);
 
-            var hover = await SendPositionRequestAsync(stdin, stdout, 2, "textDocument/hover", uri, text, "UncatalogedType");
+            var hover = await SendPositionRequestAsync(process, 2, "textDocument/hover", uri, text, "UncatalogedType");
             Assert.Equal(JsonValueKind.Null, hover.GetProperty("result").ValueKind);
 
-            var completion = await SendRequestAsync(
-                stdin,
-                stdout,
-                3,
+            var completion = await process.SendRequestAsync(3,
                 "textDocument/completion",
                 new
                 {
@@ -2030,8 +1872,8 @@ public sealed class LanguageServerProcessTests
                 .ToArray();
             Assert.DoesNotContain("UncatalogedType", completionLabels);
 
-            await SendRequestAsync(stdin, stdout, 4, "shutdown", null);
-            await SendNotificationAsync(stdin, "exit", null);
+            await process.SendRequestAsync(4, "shutdown", null);
+            await process.SendNotificationAsync("exit", null);
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await process.WaitForExitAsync(cancellation.Token);
             Assert.Equal(0, process.ExitCode);
@@ -2057,11 +1899,9 @@ public sealed class LanguageServerProcessTests
                 "VbaLanguageServer.Cli",
                 "VbaLanguageServer.Cli.csproj"));
 
-        using var process = StartLanguageServer(serverProjectPath);
-        await using var stdin = process.StandardInput.BaseStream;
-        using var stdout = process.StandardOutput.BaseStream;
+        await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
 
-        await InitializeAsync(stdin, stdout);
+        await process.InitializeAsync();
         const string uri = "file:///C:/work/Worker.bas";
         var text = string.Join('\n', [
             "Attribute VB_Name = \"Worker\"",
@@ -2076,12 +1916,9 @@ public sealed class LanguageServerProcessTests
             "' BuildValue remains a comment.",
             "End Sub"
         ]);
-        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, text));
+        await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
 
-        var rename = await SendPositionRequestAsync(
-            stdin,
-            stdout,
-            2,
+        var rename = await SendPositionRequestAsync(process, 2,
             "textDocument/rename",
             uri,
             text,
@@ -2099,10 +1936,7 @@ public sealed class LanguageServerProcessTests
         Assert.Contains(edits, edit => edit.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32() == 3);
         Assert.Contains(edits, edit => edit.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32() == 7);
 
-        var stringRename = await SendPositionRequestAsync(
-            stdin,
-            stdout,
-            3,
+        var stringRename = await SendPositionRequestAsync(process, 3,
             "textDocument/rename",
             uri,
             text,
@@ -2111,8 +1945,8 @@ public sealed class LanguageServerProcessTests
             new { newName = "IgnoredValue" });
         Assert.Equal(JsonValueKind.Null, stringRename.GetProperty("result").ValueKind);
 
-        await SendRequestAsync(stdin, stdout, 4, "shutdown", null);
-        await SendNotificationAsync(stdin, "exit", null);
+        await process.SendRequestAsync(4, "shutdown", null);
+        await process.SendNotificationAsync("exit", null);
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await process.WaitForExitAsync(cancellation.Token);
         Assert.Equal(0, process.ExitCode);
@@ -2133,25 +1967,23 @@ public sealed class LanguageServerProcessTests
                 "VbaLanguageServer.Cli",
                 "VbaLanguageServer.Cli.csproj"));
 
-        using var process = StartLanguageServer(serverProjectPath);
-        await using var stdin = process.StandardInput.BaseStream;
-        using var stdout = process.StandardOutput.BaseStream;
+        await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
 
-        await InitializeAsync(stdin, stdout);
+        await process.InitializeAsync();
         const string builderUri = "file:///C:/work/Builder.bas";
-        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(builderUri, string.Join('\n', [
+        await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(builderUri, string.Join('\n', [
             "Attribute VB_Name = \"Builder\"",
             "Option Explicit",
             "",
             "Public Function BuildValue() As String",
             "End Function"
         ])));
-        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument("file:///C:/work/First.bas", string.Join('\n', [
+        await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument("file:///C:/work/First.bas", string.Join('\n', [
             "Attribute VB_Name = \"First\"",
             "Public Sub DuplicateValue()",
             "End Sub"
         ])));
-        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument("file:///C:/work/Second.bas", string.Join('\n', [
+        await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument("file:///C:/work/Second.bas", string.Join('\n', [
             "Attribute VB_Name = \"Second\"",
             "Public Sub DuplicateValue()",
             "End Sub"
@@ -2176,12 +2008,9 @@ public sealed class LanguageServerProcessTests
             "End Sub"
         ];
         var text = string.Join(lineEnding, callerLines);
-        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(callerUri, text));
+        await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(callerUri, text));
 
-        var formatting = await SendRequestAsync(
-            stdin,
-            stdout,
-            2,
+        var formatting = await process.SendRequestAsync(2,
             "textDocument/formatting",
             new
             {
@@ -2213,7 +2042,7 @@ public sealed class LanguageServerProcessTests
         ]), edit.GetProperty("newText").GetString());
 
         const string formattedUri = "file:///C:/work/Formatted.bas";
-        await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(formattedUri, string.Join(lineEnding, [
+        await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(formattedUri, string.Join(lineEnding, [
             "Attribute VB_Name = \"Formatted\"",
             "Option Explicit",
             "",
@@ -2222,10 +2051,7 @@ public sealed class LanguageServerProcessTests
             "    End If",
             "End Sub"
         ])));
-        var noFormatting = await SendRequestAsync(
-            stdin,
-            stdout,
-            3,
+        var noFormatting = await process.SendRequestAsync(3,
             "textDocument/formatting",
             new
             {
@@ -2234,8 +2060,8 @@ public sealed class LanguageServerProcessTests
             });
         Assert.Empty(noFormatting.GetProperty("result").EnumerateArray());
 
-        await SendRequestAsync(stdin, stdout, 4, "shutdown", null);
-        await SendNotificationAsync(stdin, "exit", null);
+        await process.SendRequestAsync(4, "shutdown", null);
+        await process.SendNotificationAsync("exit", null);
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await process.WaitForExitAsync(cancellation.Token);
         Assert.Equal(0, process.ExitCode);
@@ -2263,11 +2089,9 @@ public sealed class LanguageServerProcessTests
                     "VbaLanguageServer.Cli",
                     "VbaLanguageServer.Cli.csproj"));
 
-            using var process = StartLanguageServer(serverProjectPath);
-            await using var stdin = process.StandardInput.BaseStream;
-            using var stdout = process.StandardOutput.BaseStream;
+            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
 
-            await InitializeAsync(stdin, stdout);
+            await process.InitializeAsync();
             var book1CallerUri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Caller.bas"));
             var book1HelperUri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Helper.bas"));
             var secondCallerUri = ToFileUri(Path.Combine(projectRoot, "src", "SecondBook", "Caller.bas"));
@@ -2280,31 +2104,28 @@ public sealed class LanguageServerProcessTests
             ]);
             var secondCallerText = book1CallerText;
 
-            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(book1HelperUri, string.Join('\n', [
+            await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(book1HelperUri, string.Join('\n', [
                 "Attribute VB_Name = \"Book1Helper\"",
                 "Public Function BuildValue() As String",
                 "End Function"
             ])));
-            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(secondHelperUri, string.Join('\n', [
+            await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(secondHelperUri, string.Join('\n', [
                 "Attribute VB_Name = \"SecondHelper\"",
                 "Public Function BuildValue() As String",
                 "End Function",
                 "Public Function SecondOnly() As String",
                 "End Function"
             ])));
-            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(book1CallerUri, book1CallerText));
-            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(secondCallerUri, secondCallerText));
+            await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(book1CallerUri, book1CallerText));
+            await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(secondCallerUri, secondCallerText));
 
-            var book1Definition = await RequestDefinitionAsync(stdin, stdout, 2, book1CallerUri, book1CallerText, "BuildValue");
+            var book1Definition = await RequestDefinitionAsync(process, 2, book1CallerUri, book1CallerText, "BuildValue");
             Assert.Equal(book1HelperUri, book1Definition.GetProperty("uri").GetString());
 
-            var secondDefinition = await RequestDefinitionAsync(stdin, stdout, 3, secondCallerUri, secondCallerText, "BuildValue");
+            var secondDefinition = await RequestDefinitionAsync(process, 3, secondCallerUri, secondCallerText, "BuildValue");
             Assert.Equal(secondHelperUri, secondDefinition.GetProperty("uri").GetString());
 
-            var book1Completion = await SendRequestAsync(
-                stdin,
-                stdout,
-                4,
+            var book1Completion = await process.SendRequestAsync(4,
                 "textDocument/completion",
                 new
                 {
@@ -2319,8 +2140,8 @@ public sealed class LanguageServerProcessTests
             Assert.Contains("BuildValue", book1Labels);
             Assert.DoesNotContain("SecondOnly", book1Labels);
 
-            await SendRequestAsync(stdin, stdout, 5, "shutdown", null);
-            await SendNotificationAsync(stdin, "exit", null);
+            await process.SendRequestAsync(5, "shutdown", null);
+            await process.SendNotificationAsync("exit", null);
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await process.WaitForExitAsync(cancellation.Token);
             Assert.Equal(0, process.ExitCode);
@@ -2352,29 +2173,27 @@ public sealed class LanguageServerProcessTests
                     "VbaLanguageServer.Cli",
                     "VbaLanguageServer.Cli.csproj"));
 
-            using var process = StartLanguageServer(serverProjectPath);
-            await using var stdin = process.StandardInput.BaseStream;
-            using var stdout = process.StandardOutput.BaseStream;
+            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
 
-            await InitializeAsync(stdin, stdout);
+            await process.InitializeAsync();
             var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
-            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, string.Join('\n', [
+            await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, string.Join('\n', [
                 "Attribute VB_Name = \"Worker\"",
                 "Public Sub Run()",
                 "End Sub"
             ])));
 
-            var selection = await ReadLogMessageAsync(stdout, "VbaProjectReferenceSelection document=Book1");
+            var selection = await process.WaitForLogMessageAsync("VbaProjectReferenceSelection document=Book1");
             var selectionMessage = selection.GetProperty("params").GetProperty("message").GetString();
             Assert.Contains("Microsoft Scripting Runtime", selectionMessage, StringComparison.Ordinal);
             Assert.Contains("OLE Automation", selectionMessage, StringComparison.Ordinal);
             Assert.Contains("main=<none>", selectionMessage, StringComparison.Ordinal);
 
-            var warning = await ReadLogMessageAsync(stdout, "missing expected main reference 'Microsoft Excel 16.0 Object Library'");
+            var warning = await process.WaitForLogMessageAsync("missing expected main reference 'Microsoft Excel 16.0 Object Library'");
             Assert.Equal(2, warning.GetProperty("params").GetProperty("type").GetInt32());
 
-            await SendRequestAsync(stdin, stdout, 2, "shutdown", null);
-            await SendNotificationAsync(stdin, "exit", null);
+            await process.SendRequestAsync(2, "shutdown", null);
+            await process.SendNotificationAsync("exit", null);
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await process.WaitForExitAsync(cancellation.Token);
             Assert.Equal(0, process.ExitCode);
@@ -2442,39 +2261,37 @@ public sealed class LanguageServerProcessTests
                     "VbaLanguageServer.Cli",
                     "VbaLanguageServer.Cli.csproj"));
 
-            using var process = StartLanguageServer(serverProjectPath);
-            await using var stdin = process.StandardInput.BaseStream;
-            using var stdout = process.StandardOutput.BaseStream;
+            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
 
-            await InitializeAsync(stdin, stdout);
+            await process.InitializeAsync();
             var book1Uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
-            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(book1Uri, string.Join('\n', [
+            await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(book1Uri, string.Join('\n', [
                 "Attribute VB_Name = \"Worker\"",
                 "Public Sub Run()",
                 "End Sub"
             ])));
 
-            var book1Selection = await ReadLogMessageAsync(stdout, "VbaProjectReferenceSelection document=Book1");
+            var book1Selection = await process.WaitForLogMessageAsync("VbaProjectReferenceSelection document=Book1");
             Assert.Contains(
                 "main=Microsoft Excel 16.0 Object Library",
                 book1Selection.GetProperty("params").GetProperty("message").GetString(),
                 StringComparison.Ordinal);
 
             var secondBookUri = ToFileUri(Path.Combine(projectRoot, "src", "SecondBook", "Worker.bas"));
-            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(secondBookUri, string.Join('\n', [
+            await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(secondBookUri, string.Join('\n', [
                 "Attribute VB_Name = \"Worker\"",
                 "Public Sub Run()",
                 "End Sub"
             ])));
 
-            var secondBookSelection = await ReadLogMessageAsync(stdout, "VbaProjectReferenceSelection document=SecondBook");
+            var secondBookSelection = await process.WaitForLogMessageAsync("VbaProjectReferenceSelection document=SecondBook");
             var secondBookMessage = secondBookSelection.GetProperty("params").GetProperty("message").GetString();
             Assert.Contains("Microsoft Scripting Runtime", secondBookMessage, StringComparison.Ordinal);
             Assert.Contains("main=<none>", secondBookMessage, StringComparison.Ordinal);
-            await ReadLogMessageAsync(stdout, "document 'SecondBook' kind 'excel' is missing expected main reference");
+            await process.WaitForLogMessageAsync("document 'SecondBook' kind 'excel' is missing expected main reference");
 
-            await SendRequestAsync(stdin, stdout, 2, "shutdown", null);
-            await SendNotificationAsync(stdin, "exit", null);
+            await process.SendRequestAsync(2, "shutdown", null);
+            await process.SendNotificationAsync("exit", null);
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await process.WaitForExitAsync(cancellation.Token);
             Assert.Equal(0, process.ExitCode);
@@ -2503,23 +2320,21 @@ public sealed class LanguageServerProcessTests
                     "VbaLanguageServer.Cli",
                     "VbaLanguageServer.Cli.csproj"));
 
-            using var process = StartLanguageServer(serverProjectPath);
-            await using var stdin = process.StandardInput.BaseStream;
-            using var stdout = process.StandardOutput.BaseStream;
+            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
 
-            await InitializeAsync(stdin, stdout);
+            await process.InitializeAsync();
             var uri = ToFileUri(Path.Combine(projectRoot, "Worker.bas"));
-            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(uri, string.Join('\n', [
+            await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, string.Join('\n', [
                 "Attribute VB_Name = \"Worker\"",
                 "Public Sub Run()",
                 "End Sub"
             ])));
 
-            var selection = await TryReadLogMessageAsync(stdout, "VbaProjectReferenceSelection", TimeSpan.FromMilliseconds(500));
+            var selection = await process.TryWaitForLogMessageAsync("VbaProjectReferenceSelection", TimeSpan.FromMilliseconds(500));
             Assert.Null(selection);
 
-            await SendRequestAsync(stdin, stdout, 2, "shutdown", null);
-            await SendNotificationAsync(stdin, "exit", null);
+            await process.SendRequestAsync(2, "shutdown", null);
+            await process.SendNotificationAsync("exit", null);
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await process.WaitForExitAsync(cancellation.Token);
             Assert.Equal(0, process.ExitCode);
@@ -2555,11 +2370,9 @@ public sealed class LanguageServerProcessTests
                     "VbaLanguageServer.Cli",
                     "VbaLanguageServer.Cli.csproj"));
 
-            using var process = StartLanguageServer(serverProjectPath);
-            await using var stdin = process.StandardInput.BaseStream;
-            using var stdout = process.StandardOutput.BaseStream;
+            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
 
-            await InitializeAsync(stdin, stdout);
+            await process.InitializeAsync();
             var manifestHelperUri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Helper.bas"));
             var templateCallerUri = ToFileUri(Path.Combine(projectRoot, "templates", "TemplateModule.bas"));
             var templateCallerText = string.Join('\n', [
@@ -2568,14 +2381,14 @@ public sealed class LanguageServerProcessTests
                 "    BuildValue",
                 "End Sub"
             ]);
-            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(manifestHelperUri, string.Join('\n', [
+            await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(manifestHelperUri, string.Join('\n', [
                 "Attribute VB_Name = \"ManifestHelper\"",
                 "Public Function BuildValue() As String",
                 "End Function"
             ])));
-            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(templateCallerUri, templateCallerText));
+            await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(templateCallerUri, templateCallerText));
 
-            var templateDefinition = await SendDefinitionRequestAsync(stdin, stdout, 2, templateCallerUri, templateCallerText, "BuildValue");
+            var templateDefinition = await SendDefinitionRequestAsync(process, 2, templateCallerUri, templateCallerText, "BuildValue");
             Assert.Equal(JsonValueKind.Null, templateDefinition.ValueKind);
 
             var looseCallerUri = ToFileUri(Path.Combine(looseRoot, "same", "Caller.bas"));
@@ -2587,25 +2400,22 @@ public sealed class LanguageServerProcessTests
                 "    BuildValue",
                 "End Sub"
             ]);
-            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(looseHelperUri, string.Join('\n', [
+            await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(looseHelperUri, string.Join('\n', [
                 "Attribute VB_Name = \"LooseHelper\"",
                 "Public Function BuildValue() As String",
                 "End Function"
             ])));
-            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(otherHelperUri, string.Join('\n', [
+            await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(otherHelperUri, string.Join('\n', [
                 "Attribute VB_Name = \"OtherHelper\"",
                 "Public Function BuildValue() As String",
                 "End Function"
             ])));
-            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(looseCallerUri, looseCallerText));
+            await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(looseCallerUri, looseCallerText));
 
-            var looseDefinition = await RequestDefinitionAsync(stdin, stdout, 3, looseCallerUri, looseCallerText, "BuildValue");
+            var looseDefinition = await RequestDefinitionAsync(process, 3, looseCallerUri, looseCallerText, "BuildValue");
             Assert.Equal(looseHelperUri, looseDefinition.GetProperty("uri").GetString());
 
-            var looseCompletion = await SendRequestAsync(
-                stdin,
-                stdout,
-                4,
+            var looseCompletion = await process.SendRequestAsync(4,
                 "textDocument/completion",
                 new
                 {
@@ -2620,8 +2430,8 @@ public sealed class LanguageServerProcessTests
             Assert.Contains("BuildValue", looseLabels);
             Assert.Contains("String", looseLabels);
 
-            await SendRequestAsync(stdin, stdout, 5, "shutdown", null);
-            await SendNotificationAsync(stdin, "exit", null);
+            await process.SendRequestAsync(5, "shutdown", null);
+            await process.SendNotificationAsync("exit", null);
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await process.WaitForExitAsync(cancellation.Token);
             Assert.Equal(0, process.ExitCode);
@@ -2678,19 +2488,15 @@ public sealed class LanguageServerProcessTests
                     "VbaLanguageServer.Cli",
                     "VbaLanguageServer.Cli.csproj"));
 
-            using var process = StartLanguageServer(serverProjectPath);
-            await using var stdin = process.StandardInput.BaseStream;
-            using var stdout = process.StandardOutput.BaseStream;
+            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
 
-            await InitializeAsync(stdin, stdout);
-            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(callerUri, callerText));
+            await process.InitializeAsync();
+            await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(callerUri, callerText));
 
-            var initialDefinition = await RequestDefinitionAsync(stdin, stdout, 2, callerUri, callerText, "BuildValue");
+            var initialDefinition = await RequestDefinitionAsync(process, 2, callerUri, callerText, "BuildValue");
             Assert.Equal(helperUri, initialDefinition.GetProperty("uri").GetString());
 
-            await SendNotificationAsync(
-                stdin,
-                "workspace/didChangeWatchedFiles",
+            await process.SendNotificationAsync("workspace/didChangeWatchedFiles",
                 new
                 {
                     changes = new[]
@@ -2698,14 +2504,12 @@ public sealed class LanguageServerProcessTests
                         new { uri = helperUri, type = 3 }
                     }
                 });
-            var removedDefinition = await SendDefinitionRequestAsync(stdin, stdout, 3, callerUri, callerText, "BuildValue");
+            var removedDefinition = await SendDefinitionRequestAsync(process, 3, callerUri, callerText, "BuildValue");
             Assert.Equal(JsonValueKind.Null, removedDefinition.ValueKind);
 
             Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
             File.WriteAllBytes(renamedHelperPath, Encoding.GetEncoding(932).GetBytes(renamedHelperText));
-            await SendNotificationAsync(
-                stdin,
-                "workspace/didChangeWatchedFiles",
+            await process.SendNotificationAsync("workspace/didChangeWatchedFiles",
                 new
                 {
                     changes = new[]
@@ -2713,15 +2517,15 @@ public sealed class LanguageServerProcessTests
                         new { uri = renamedHelperUri, type = 1 }
                     }
                 });
-            var renamedDefinition = await RequestDefinitionAsync(stdin, stdout, 4, callerUri, callerText, "BuildValue");
+            var renamedDefinition = await RequestDefinitionAsync(process, 4, callerUri, callerText, "BuildValue");
             Assert.Equal(renamedHelperUri, renamedDefinition.GetProperty("uri").GetString());
-            var hover = await SendPositionRequestAsync(stdin, stdout, 5, "textDocument/hover", callerUri, callerText, "BuildValue");
+            var hover = await SendPositionRequestAsync(process, 5, "textDocument/hover", callerUri, callerText, "BuildValue");
             Assert.Contains(
                 documentation,
                 hover.GetProperty("result").GetProperty("contents").GetProperty("value").GetString());
 
-            await SendRequestAsync(stdin, stdout, 6, "shutdown", null);
-            await SendNotificationAsync(stdin, "exit", null);
+            await process.SendRequestAsync(6, "shutdown", null);
+            await process.SendNotificationAsync("exit", null);
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await process.WaitForExitAsync(cancellation.Token);
             Assert.Equal(0, process.ExitCode);
@@ -2754,14 +2558,10 @@ public sealed class LanguageServerProcessTests
                     "VbaLanguageServer.Cli",
                     "VbaLanguageServer.Cli.csproj"));
 
-            using var process = StartLanguageServer(serverProjectPath);
-            await using var stdin = process.StandardInput.BaseStream;
-            using var stdout = process.StandardOutput.BaseStream;
-            await InitializeAsync(stdin, stdout);
+            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
+            await process.InitializeAsync();
 
-            await SendNotificationAsync(
-                stdin,
-                "textDocument/didOpen",
+            await process.SendNotificationAsync("textDocument/didOpen",
                 new
                 {
                     textDocument = new
@@ -2772,13 +2572,9 @@ public sealed class LanguageServerProcessTests
                     }
                 });
             const string unsavedText = "Public Sub UnsavedBuffer()\nEnd Sub\n";
-            await SendNotificationAsync(
-                stdin,
-                "textDocument/didOpen",
+            await process.SendNotificationAsync("textDocument/didOpen",
                 CreateOpenDocument(encodedUri, unsavedText, version: 5));
-            await SendNotificationAsync(
-                stdin,
-                "textDocument/didChange",
+            await process.SendNotificationAsync("textDocument/didChange",
                 new
                 {
                     textDocument = new
@@ -2795,10 +2591,7 @@ public sealed class LanguageServerProcessTests
                     }
                 });
 
-            var afterStaleChange = await SendRequestAsync(
-                stdin,
-                stdout,
-                2,
+            var afterStaleChange = await process.SendRequestAsync(2,
                 "textDocument/documentSymbol",
                 new
                 {
@@ -2814,9 +2607,7 @@ public sealed class LanguageServerProcessTests
 
             const string latestDiskText = "Public Sub LatestDisk()\nEnd Sub\n";
             File.WriteAllText(sourcePath, latestDiskText);
-            await SendNotificationAsync(
-                stdin,
-                "workspace/didChangeWatchedFiles",
+            await process.SendNotificationAsync("workspace/didChangeWatchedFiles",
                 new
                 {
                     changes = new[]
@@ -2824,10 +2615,7 @@ public sealed class LanguageServerProcessTests
                         new { uri = canonicalUri, type = 2 }
                     }
                 });
-            var afterWatcher = await SendRequestAsync(
-                stdin,
-                stdout,
-                3,
+            var afterWatcher = await process.SendRequestAsync(3,
                 "textDocument/documentSymbol",
                 new
                 {
@@ -2841,17 +2629,12 @@ public sealed class LanguageServerProcessTests
             Assert.Contains("UnsavedBuffer", afterWatcherNames);
             Assert.DoesNotContain("LatestDisk", afterWatcherNames);
 
-            await SendNotificationAsync(
-                stdin,
-                "textDocument/didClose",
+            await process.SendNotificationAsync("textDocument/didClose",
                 new
                 {
                     textDocument = new { uri = encodedUri }
                 });
-            var afterClose = await SendRequestAsync(
-                stdin,
-                stdout,
-                4,
+            var afterClose = await process.SendRequestAsync(4,
                 "textDocument/documentSymbol",
                 new
                 {
@@ -2866,13 +2649,9 @@ public sealed class LanguageServerProcessTests
             Assert.DoesNotContain("UnsavedBuffer", afterCloseNames);
 
             const string openAfterDeleteText = "Public Sub OpenAfterDelete()\nEnd Sub\n";
-            await SendNotificationAsync(
-                stdin,
-                "textDocument/didOpen",
+            await process.SendNotificationAsync("textDocument/didOpen",
                 CreateOpenDocument(encodedUri, openAfterDeleteText, version: 6));
-            await SendNotificationAsync(
-                stdin,
-                "workspace/didChangeWatchedFiles",
+            await process.SendNotificationAsync("workspace/didChangeWatchedFiles",
                 new
                 {
                     changes = new[]
@@ -2880,10 +2659,7 @@ public sealed class LanguageServerProcessTests
                         new { uri = canonicalUri, type = 3 }
                     }
                 });
-            var whileDeletedAndOpen = await SendRequestAsync(
-                stdin,
-                stdout,
-                5,
+            var whileDeletedAndOpen = await process.SendRequestAsync(5,
                 "textDocument/documentSymbol",
                 new
                 {
@@ -2893,17 +2669,12 @@ public sealed class LanguageServerProcessTests
                 whileDeletedAndOpen.GetProperty("result").EnumerateArray(),
                 symbol => symbol.GetProperty("name").GetString() == "OpenAfterDelete");
 
-            await SendNotificationAsync(
-                stdin,
-                "textDocument/didClose",
+            await process.SendNotificationAsync("textDocument/didClose",
                 new
                 {
                     textDocument = new { uri = canonicalUri }
                 });
-            var afterDeletedBufferClose = await SendRequestAsync(
-                stdin,
-                stdout,
-                6,
+            var afterDeletedBufferClose = await process.SendRequestAsync(6,
                 "textDocument/documentSymbol",
                 new
                 {
@@ -2911,8 +2682,8 @@ public sealed class LanguageServerProcessTests
                 });
             Assert.Empty(afterDeletedBufferClose.GetProperty("result").EnumerateArray());
 
-            await SendRequestAsync(stdin, stdout, 7, "shutdown", null);
-            await SendNotificationAsync(stdin, "exit", null);
+            await process.SendRequestAsync(7, "shutdown", null);
+            await process.SendNotificationAsync("exit", null);
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await process.WaitForExitAsync(cancellation.Token);
             Assert.Equal(0, process.ExitCode);
@@ -2956,44 +2727,30 @@ public sealed class LanguageServerProcessTests
                     "VbaLanguageServer.Cli",
                     "VbaLanguageServer.Cli.csproj"));
 
-            using var process = StartLanguageServer(serverProjectPath);
-            await using var stdin = process.StandardInput.BaseStream;
-            using var stdout = process.StandardOutput.BaseStream;
-            await InitializeAsync(stdin, stdout);
-            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(callerUri, callerText));
+            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
+            await process.InitializeAsync();
+            await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(callerUri, callerText));
 
-            var beforeOverlay = await SendDefinitionRequestAsync(
-                stdin,
-                stdout,
-                2,
+            var beforeOverlay = await SendDefinitionRequestAsync(process, 2,
                 callerUri,
                 callerText,
                 "BuildValue");
             Assert.Equal(JsonValueKind.Null, beforeOverlay.ValueKind);
 
-            await SendNotificationAsync(
-                stdin,
-                "textDocument/didOpen",
+            await process.SendNotificationAsync("textDocument/didOpen",
                 CreateOpenDocument(manifestUri, overlayManifestText, version: 5));
-            var overlayTrace = await ReadLogMessageAsync(
-                stdout,
-                "VbaProjectReferenceSelection document=Book1");
+            var overlayTrace = await process.WaitForLogMessageAsync("VbaProjectReferenceSelection document=Book1");
             Assert.Contains(
                 "Microsoft Excel 16.0 Object Library",
                 overlayTrace.GetProperty("params").GetProperty("message").GetString(),
                 StringComparison.Ordinal);
-            var overlayDefinition = await RequestDefinitionAsync(
-                stdin,
-                stdout,
-                3,
+            var overlayDefinition = await RequestDefinitionAsync(process, 3,
                 callerUri,
                 callerText,
                 "BuildValue");
             Assert.Equal(helperUri, overlayDefinition.GetProperty("uri").GetString());
 
-            await SendNotificationAsync(
-                stdin,
-                "textDocument/didChange",
+            await process.SendNotificationAsync("textDocument/didChange",
                 new
                 {
                     textDocument = new
@@ -3006,33 +2763,25 @@ public sealed class LanguageServerProcessTests
                         new { text = diskManifestText }
                     }
                 });
-            var afterStaleManifestChange = await RequestDefinitionAsync(
-                stdin,
-                stdout,
-                4,
+            var afterStaleManifestChange = await RequestDefinitionAsync(process, 4,
                 callerUri,
                 callerText,
                 "BuildValue");
             Assert.Equal(helperUri, afterStaleManifestChange.GetProperty("uri").GetString());
 
-            await SendNotificationAsync(
-                stdin,
-                "textDocument/didClose",
+            await process.SendNotificationAsync("textDocument/didClose",
                 new
                 {
                     textDocument = new { uri = manifestUri }
                 });
-            var afterManifestClose = await SendDefinitionRequestAsync(
-                stdin,
-                stdout,
-                5,
+            var afterManifestClose = await SendDefinitionRequestAsync(process, 5,
                 callerUri,
                 callerText,
                 "BuildValue");
             Assert.Equal(JsonValueKind.Null, afterManifestClose.ValueKind);
 
-            await SendRequestAsync(stdin, stdout, 6, "shutdown", null);
-            await SendNotificationAsync(stdin, "exit", null);
+            await process.SendRequestAsync(6, "shutdown", null);
+            await process.SendNotificationAsync("exit", null);
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await process.WaitForExitAsync(cancellation.Token);
             Assert.Equal(0, process.ExitCode);
@@ -3074,139 +2823,99 @@ public sealed class LanguageServerProcessTests
                     "VbaLanguageServer.Cli",
                     "VbaLanguageServer.Cli.csproj"));
 
-            using var process = StartLanguageServer(serverProjectPath);
-            await using var stdin = process.StandardInput.BaseStream;
-            using var stdout = process.StandardOutput.BaseStream;
-            await InitializeAsync(stdin, stdout);
+            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
+            await process.InitializeAsync();
 
-            var withoutManifest = await SendDefinitionRequestAsync(
-                stdin,
-                stdout,
-                2,
+            var withoutManifest = await SendDefinitionRequestAsync(process, 2,
                 callerUri,
                 callerText,
                 "BuildValue");
             Assert.Equal(JsonValueKind.Null, withoutManifest.ValueKind);
 
             File.WriteAllText(manifestPath, liveManifestText);
-            await SendWatchedFileChangeAsync(stdin, manifestUri, type: 1);
-            var afterCreate = await RequestDefinitionAsync(
-                stdin,
-                stdout,
-                3,
+            await SendWatchedFileChangeAsync(process, manifestUri, type: 1);
+            var afterCreate = await RequestDefinitionAsync(process, 3,
                 callerUri,
                 callerText,
                 "BuildValue");
             Assert.Equal(helperUri, afterCreate.GetProperty("uri").GetString());
 
             File.WriteAllText(manifestPath, otherManifestText);
-            await SendWatchedFileChangeAsync(stdin, manifestUri, type: 2);
-            var afterChange = await SendDefinitionRequestAsync(
-                stdin,
-                stdout,
-                4,
+            await SendWatchedFileChangeAsync(process, manifestUri, type: 2);
+            var afterChange = await SendDefinitionRequestAsync(process, 4,
                 callerUri,
                 callerText,
                 "BuildValue");
             Assert.Equal(JsonValueKind.Null, afterChange.ValueKind);
 
             File.WriteAllText(manifestPath, liveManifestText);
-            await SendWatchedFileChangeAsync(stdin, manifestUri, type: 2);
-            var afterLiveChange = await RequestDefinitionAsync(
-                stdin,
-                stdout,
-                5,
+            await SendWatchedFileChangeAsync(process, manifestUri, type: 2);
+            var afterLiveChange = await RequestDefinitionAsync(process, 5,
                 callerUri,
                 callerText,
                 "BuildValue");
             Assert.Equal(helperUri, afterLiveChange.GetProperty("uri").GetString());
 
             File.Delete(manifestPath);
-            await SendWatchedFileChangeAsync(stdin, manifestUri, type: 3);
-            var afterDelete = await SendDefinitionRequestAsync(
-                stdin,
-                stdout,
-                6,
+            await SendWatchedFileChangeAsync(process, manifestUri, type: 3);
+            var afterDelete = await SendDefinitionRequestAsync(process, 6,
                 callerUri,
                 callerText,
                 "BuildValue");
             Assert.Equal(JsonValueKind.Null, afterDelete.ValueKind);
 
             File.WriteAllText(manifestPath, otherManifestText);
-            await SendWatchedFileChangeAsync(stdin, manifestUri, type: 1);
-            await SendNotificationAsync(
-                stdin,
-                "textDocument/didOpen",
+            await SendWatchedFileChangeAsync(process, manifestUri, type: 1);
+            await process.SendNotificationAsync("textDocument/didOpen",
                 CreateOpenDocument(manifestUri, liveManifestText, version: 5));
-            var withOpenOverlay = await RequestDefinitionAsync(
-                stdin,
-                stdout,
-                7,
+            var withOpenOverlay = await RequestDefinitionAsync(process, 7,
                 callerUri,
                 callerText,
                 "BuildValue");
             Assert.Equal(helperUri, withOpenOverlay.GetProperty("uri").GetString());
 
             File.WriteAllText(manifestPath, otherManifestText);
-            await SendWatchedFileChangeAsync(stdin, manifestUri, type: 2);
-            var afterWatcherUnderOverlay = await RequestDefinitionAsync(
-                stdin,
-                stdout,
-                8,
+            await SendWatchedFileChangeAsync(process, manifestUri, type: 2);
+            var afterWatcherUnderOverlay = await RequestDefinitionAsync(process, 8,
                 callerUri,
                 callerText,
                 "BuildValue");
             Assert.Equal(helperUri, afterWatcherUnderOverlay.GetProperty("uri").GetString());
 
-            await SendNotificationAsync(
-                stdin,
-                "textDocument/didClose",
+            await process.SendNotificationAsync("textDocument/didClose",
                 new
                 {
                     textDocument = new { uri = manifestUri }
                 });
-            var afterOverlayClose = await SendDefinitionRequestAsync(
-                stdin,
-                stdout,
-                9,
+            var afterOverlayClose = await SendDefinitionRequestAsync(process, 9,
                 callerUri,
                 callerText,
                 "BuildValue");
             Assert.Equal(JsonValueKind.Null, afterOverlayClose.ValueKind);
 
-            await SendNotificationAsync(
-                stdin,
-                "textDocument/didOpen",
+            await process.SendNotificationAsync("textDocument/didOpen",
                 CreateOpenDocument(manifestUri, liveManifestText, version: 6));
             File.Delete(manifestPath);
-            await SendWatchedFileChangeAsync(stdin, manifestUri, type: 3);
-            var afterDeleteUnderOverlay = await RequestDefinitionAsync(
-                stdin,
-                stdout,
-                10,
+            await SendWatchedFileChangeAsync(process, manifestUri, type: 3);
+            var afterDeleteUnderOverlay = await RequestDefinitionAsync(process, 10,
                 callerUri,
                 callerText,
                 "BuildValue");
             Assert.Equal(helperUri, afterDeleteUnderOverlay.GetProperty("uri").GetString());
 
-            await SendNotificationAsync(
-                stdin,
-                "textDocument/didClose",
+            await process.SendNotificationAsync("textDocument/didClose",
                 new
                 {
                     textDocument = new { uri = manifestUri }
                 });
-            var afterDeletedOverlayClose = await SendDefinitionRequestAsync(
-                stdin,
-                stdout,
-                11,
+            var afterDeletedOverlayClose = await SendDefinitionRequestAsync(process, 11,
                 callerUri,
                 callerText,
                 "BuildValue");
             Assert.Equal(JsonValueKind.Null, afterDeletedOverlayClose.ValueKind);
 
-            await SendRequestAsync(stdin, stdout, 12, "shutdown", null);
-            await SendNotificationAsync(stdin, "exit", null);
+            await process.SendRequestAsync(12, "shutdown", null);
+            await process.SendNotificationAsync("exit", null);
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await process.WaitForExitAsync(cancellation.Token);
             Assert.Equal(0, process.ExitCode);
@@ -3250,67 +2959,48 @@ public sealed class LanguageServerProcessTests
                     "VbaLanguageServer.Cli",
                     "VbaLanguageServer.Cli.csproj"));
 
-            using var process = StartLanguageServer(serverProjectPath);
-            await using var stdin = process.StandardInput.BaseStream;
-            using var stdout = process.StandardOutput.BaseStream;
-            await InitializeAsync(stdin, stdout);
-            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(callerUri, callerText));
+            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
+            await process.InitializeAsync();
+            await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(callerUri, callerText));
 
-            await SendNotificationAsync(
-                stdin,
-                "textDocument/didOpen",
+            await process.SendNotificationAsync("textDocument/didOpen",
                 CreateOpenDocument(manifestUri, "{", version: 1));
-            var invalidManifestDiagnostics = await ReadDiagnosticsAsync(stdout, manifestUri);
+            var invalidManifestDiagnostics = await process.WaitForDiagnosticsAsync(manifestUri);
             var invalidManifestDiagnostic = Assert.Single(
                 invalidManifestDiagnostics.GetProperty("params").GetProperty("diagnostics").EnumerateArray());
             Assert.Equal(
                 "invalid-project-manifest",
                 invalidManifestDiagnostic.GetProperty("code").GetString());
-            var initialInvalidFallback = await RequestDefinitionAsync(
-                stdin,
-                stdout,
-                2,
+            var initialInvalidFallback = await RequestDefinitionAsync(process, 2,
                 callerUri,
                 callerText,
                 "BuildValue");
             Assert.Equal(helperUri, initialInvalidFallback.GetProperty("uri").GetString());
 
             File.WriteAllText(manifestPath, otherManifestText);
-            await SendNotificationAsync(
-                stdin,
-                "textDocument/didClose",
+            await process.SendNotificationAsync("textDocument/didClose",
                 new
                 {
                     textDocument = new { uri = manifestUri }
                 });
-            var diskFallbackAfterClose = await SendDefinitionRequestAsync(
-                stdin,
-                stdout,
-                3,
+            var diskFallbackAfterClose = await SendDefinitionRequestAsync(process, 3,
                 callerUri,
                 callerText,
                 "BuildValue");
             Assert.Equal(JsonValueKind.Null, diskFallbackAfterClose.ValueKind);
 
-            await SendNotificationAsync(
-                stdin,
-                "textDocument/didOpen",
+            await process.SendNotificationAsync("textDocument/didOpen",
                 CreateOpenDocument(manifestUri, liveManifestText, version: 10));
-            var validManifestDiagnostics = await ReadDiagnosticsAsync(stdout, manifestUri);
+            var validManifestDiagnostics = await process.WaitForDiagnosticsAsync(manifestUri);
             Assert.Empty(
                 validManifestDiagnostics.GetProperty("params").GetProperty("diagnostics").EnumerateArray());
-            var validOverlayDefinition = await RequestDefinitionAsync(
-                stdin,
-                stdout,
-                4,
+            var validOverlayDefinition = await RequestDefinitionAsync(process, 4,
                 callerUri,
                 callerText,
                 "BuildValue");
             Assert.Equal(helperUri, validOverlayDefinition.GetProperty("uri").GetString());
 
-            await SendNotificationAsync(
-                stdin,
-                "textDocument/didChange",
+            await process.SendNotificationAsync("textDocument/didChange",
                 new
                 {
                     textDocument = new
@@ -3323,18 +3013,13 @@ public sealed class LanguageServerProcessTests
                         new { text = "{" }
                     }
                 });
-            var afterInvalidJson = await RequestDefinitionAsync(
-                stdin,
-                stdout,
-                5,
+            var afterInvalidJson = await RequestDefinitionAsync(process, 5,
                 callerUri,
                 callerText,
                 "BuildValue");
             Assert.Equal(helperUri, afterInvalidJson.GetProperty("uri").GetString());
 
-            await SendNotificationAsync(
-                stdin,
-                "textDocument/didChange",
+            await process.SendNotificationAsync("textDocument/didChange",
                 new
                 {
                     textDocument = new
@@ -3347,18 +3032,13 @@ public sealed class LanguageServerProcessTests
                         new { text = otherManifestText }
                     }
                 });
-            var afterNewerValidManifest = await SendDefinitionRequestAsync(
-                stdin,
-                stdout,
-                6,
+            var afterNewerValidManifest = await SendDefinitionRequestAsync(process, 6,
                 callerUri,
                 callerText,
                 "BuildValue");
             Assert.Equal(JsonValueKind.Null, afterNewerValidManifest.ValueKind);
 
-            await SendNotificationAsync(
-                stdin,
-                "textDocument/didChange",
+            await process.SendNotificationAsync("textDocument/didChange",
                 new
                 {
                     textDocument = new
@@ -3371,18 +3051,13 @@ public sealed class LanguageServerProcessTests
                         new { text = invalidSourcePathManifestText }
                     }
                 });
-            var afterInvalidSourcePath = await SendDefinitionRequestAsync(
-                stdin,
-                stdout,
-                7,
+            var afterInvalidSourcePath = await SendDefinitionRequestAsync(process, 7,
                 callerUri,
                 callerText,
                 "BuildValue");
             Assert.Equal(JsonValueKind.Null, afterInvalidSourcePath.ValueKind);
 
-            await SendNotificationAsync(
-                stdin,
-                "textDocument/didChange",
+            await process.SendNotificationAsync("textDocument/didChange",
                 new
                 {
                     textDocument = new
@@ -3395,17 +3070,14 @@ public sealed class LanguageServerProcessTests
                         new { text = liveManifestText }
                     }
                 });
-            var recoveredAfterInvalidSourcePath = await RequestDefinitionAsync(
-                stdin,
-                stdout,
-                8,
+            var recoveredAfterInvalidSourcePath = await RequestDefinitionAsync(process, 8,
                 callerUri,
                 callerText,
                 "BuildValue");
             Assert.Equal(helperUri, recoveredAfterInvalidSourcePath.GetProperty("uri").GetString());
 
-            await SendRequestAsync(stdin, stdout, 9, "shutdown", null);
-            await SendNotificationAsync(stdin, "exit", null);
+            await process.SendRequestAsync(9, "shutdown", null);
+            await process.SendNotificationAsync("exit", null);
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await process.WaitForExitAsync(cancellation.Token);
             Assert.Equal(0, process.ExitCode);
@@ -3487,109 +3159,6 @@ public sealed class LanguageServerProcessTests
         }
     }
 
-    private static Process StartLanguageServer(
-        string serverProjectPath,
-        string? referenceCatalogCacheRoot = null,
-        IReadOnlyDictionary<string, string>? environment = null)
-    {
-        var ownsCacheRoot = referenceCatalogCacheRoot is null;
-        var cacheRoot = referenceCatalogCacheRoot ?? Directory.CreateTempSubdirectory("vba-ls-process-cache-").FullName;
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = "dotnet",
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false
-        };
-        startInfo.Environment[VbaProjectReferenceCatalogPersistentStore.CacheRootEnvironmentVariable] = cacheRoot;
-        foreach (var (name, value) in environment ?? new Dictionary<string, string>())
-        {
-            startInfo.Environment[name] = value;
-        }
-
-        startInfo.ArgumentList.Add("run");
-        startInfo.ArgumentList.Add("--no-build");
-        startInfo.ArgumentList.Add("--project");
-        startInfo.ArgumentList.Add(serverProjectPath);
-
-        var process = Process.Start(startInfo)
-            ?? throw new InvalidOperationException("Failed to start the language server process.");
-
-        process.ErrorDataReceived += (_, args) =>
-        {
-            if (!string.IsNullOrWhiteSpace(args.Data))
-            {
-                Debug.WriteLine(args.Data);
-            }
-        };
-        process.EnableRaisingEvents = true;
-        process.Exited += (_, _) =>
-        {
-            if (!ownsCacheRoot)
-            {
-                return;
-            }
-
-            try
-            {
-                Directory.Delete(cacheRoot, recursive: true);
-            }
-            catch (IOException)
-            {
-            }
-            catch (UnauthorizedAccessException)
-            {
-            }
-        };
-        process.BeginErrorReadLine();
-        return process;
-    }
-
-    private static async Task InitializeAsync(Stream stdin, Stream stdout)
-    {
-        await SendRequestAsync(
-            stdin,
-            stdout,
-            1,
-            "initialize",
-            new
-            {
-                processId = Environment.ProcessId,
-                rootUri = (string?)null,
-                capabilities = new { }
-            });
-        await SendNotificationAsync(stdin, "initialized", new { });
-    }
-
-    private static async Task<JsonElement> SendRequestAsync(
-        Stream stdin,
-        Stream stdout,
-        int id,
-        string method,
-        object? parameters)
-    {
-        await WriteMessageAsync(stdin, new
-        {
-            jsonrpc = "2.0",
-            id,
-            method,
-            @params = parameters
-        });
-
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        while (true)
-        {
-            var message = await ReadMessageAsync(stdout, cancellation.Token);
-            if (message.TryGetProperty("id", out var responseId)
-                && responseId.ValueKind == JsonValueKind.Number
-                && responseId.GetInt32() == id)
-            {
-                return message;
-            }
-        }
-    }
-
     private static void AssertJsonRpcError(JsonElement response, int code, string message)
     {
         Assert.Equal("2.0", response.GetProperty("jsonrpc").GetString());
@@ -3599,19 +3168,8 @@ public sealed class LanguageServerProcessTests
         Assert.False(response.TryGetProperty("result", out _));
     }
 
-    private static Task SendNotificationAsync(Stream stdin, string method, object? parameters)
-    {
-        return WriteMessageAsync(stdin, new
-        {
-            jsonrpc = "2.0",
-            method,
-            @params = parameters
-        });
-    }
-
-    private static Task SendWatchedFileChangeAsync(Stream stdin, string uri, int type)
-        => SendNotificationAsync(
-            stdin,
+    private static Task SendWatchedFileChangeAsync(LanguageServerProcessHarness process, string uri, int type)
+        => process.SendNotificationAsync(
             "workspace/didChangeWatchedFiles",
             new
             {
@@ -3636,22 +3194,20 @@ public sealed class LanguageServerProcessTests
     }
 
     private static async Task<JsonElement> RequestDefinitionAsync(
-        Stream stdin,
-        Stream stdout,
+        LanguageServerProcessHarness process,
         int id,
         string uri,
         string text,
         string needle,
         int offset = 0)
     {
-        var result = await SendDefinitionRequestAsync(stdin, stdout, id, uri, text, needle, offset);
+        var result = await SendDefinitionRequestAsync(process, id, uri, text, needle, offset);
         Assert.Equal(JsonValueKind.Object, result.ValueKind);
         return result;
     }
 
     private static async Task<JsonElement> SendDefinitionRequestAsync(
-        Stream stdin,
-        Stream stdout,
+        LanguageServerProcessHarness process,
         int id,
         string uri,
         string text,
@@ -3665,10 +3221,7 @@ public sealed class LanguageServerProcessTests
         var lineStart = prefix.LastIndexOf('\n');
         var character = lineStart < 0 ? characterOffset : characterOffset - lineStart - 1;
 
-        var response = await SendRequestAsync(
-            stdin,
-            stdout,
-            id,
+        var response = await process.SendRequestAsync(id,
             "textDocument/definition",
             new
             {
@@ -3691,22 +3244,6 @@ public sealed class LanguageServerProcessTests
         var position = FindPosition(text, needle, offset);
         var parameters = MergePositionParameters(uri, position.Line, position.Character, additionalParameters);
         return server.SendRequestAsync(id, method, parameters);
-    }
-
-    private static Task<JsonElement> SendPositionRequestAsync(
-        Stream stdin,
-        Stream stdout,
-        int id,
-        string method,
-        string uri,
-        string text,
-        string needle,
-        int offset = 0,
-        object? additionalParameters = null)
-    {
-        var position = FindPosition(text, needle, offset);
-        var parameters = MergePositionParameters(uri, position.Line, position.Character, additionalParameters);
-        return SendRequestAsync(stdin, stdout, id, method, parameters);
     }
 
     private static object MergePositionParameters(
@@ -3996,156 +3533,4 @@ public sealed class LanguageServerProcessTests
         return File.Exists(path);
     }
 
-    private static async Task WriteMessageAsync(Stream stream, object message)
-    {
-        var json = JsonSerializer.Serialize(
-            message,
-            new JsonSerializerOptions
-            {
-                PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-            });
-        var content = Encoding.UTF8.GetBytes(json);
-        var header = Encoding.ASCII.GetBytes($"Content-Length: {content.Length}\r\n\r\n");
-        await stream.WriteAsync(header);
-        await stream.WriteAsync(content);
-        await stream.FlushAsync();
-    }
-
-    private static async Task<JsonElement> ReadNotificationAsync(Stream stdout, string method)
-    {
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        while (true)
-        {
-            var message = await ReadMessageAsync(stdout, cancellation.Token);
-            if (message.TryGetProperty("method", out var methodElement)
-                && methodElement.GetString() == method)
-            {
-                return message;
-            }
-        }
-    }
-
-    private static async Task<JsonElement> ReadDiagnosticsAsync(Stream stdout, string uri)
-    {
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        while (true)
-        {
-            var message = await ReadMessageAsync(stdout, cancellation.Token);
-            if (message.TryGetProperty("method", out var methodElement)
-                && methodElement.GetString() == "textDocument/publishDiagnostics"
-                && message.GetProperty("params").GetProperty("uri").GetString() == uri)
-            {
-                return message;
-            }
-        }
-    }
-
-    private static async Task<JsonElement> ReadLogMessageAsync(Stream stdout, string expectedMessageFragment)
-        => await TryReadLogMessageAsync(stdout, expectedMessageFragment, TimeSpan.FromSeconds(5))
-            ?? throw new TimeoutException($"Language server did not write a log message containing: {expectedMessageFragment}");
-
-    private static async Task<JsonElement?> TryReadLogMessageAsync(
-        Stream stdout,
-        string expectedMessageFragment,
-        TimeSpan timeout)
-    {
-        using var cancellation = new CancellationTokenSource(timeout);
-        try
-        {
-            while (true)
-            {
-                var message = await ReadMessageAsync(stdout, cancellation.Token);
-                if (!message.TryGetProperty("method", out var methodElement)
-                    || methodElement.GetString() != "window/logMessage")
-                {
-                    continue;
-                }
-
-                var logMessage = message.GetProperty("params").GetProperty("message").GetString();
-                if (logMessage?.Contains(expectedMessageFragment, StringComparison.Ordinal) == true)
-                {
-                    return message;
-                }
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            return null;
-        }
-    }
-
-    private static async Task<JsonElement> ReadMessageAsync(
-        Stream stream,
-        CancellationToken cancellationToken = default)
-    {
-        var headerBytes = new List<byte>();
-        var singleByte = new byte[1];
-        while (!EndsWithHeaderTerminator(headerBytes))
-        {
-            var read = await stream.ReadAsync(singleByte.AsMemory(0, 1), cancellationToken);
-            if (read == 0)
-            {
-                throw new EndOfStreamException("Language server closed stdout before sending a response.");
-            }
-
-            headerBytes.Add(singleByte[0]);
-        }
-
-        var headers = Encoding.ASCII.GetString(headerBytes.ToArray());
-        var contentLength = headers
-            .Split("\r\n", StringSplitOptions.RemoveEmptyEntries)
-            .Select(line => line.Split(':', 2))
-            .Where(parts => parts.Length == 2)
-            .Where(parts => string.Equals(parts[0], "Content-Length", StringComparison.OrdinalIgnoreCase))
-            .Select(parts => int.Parse(parts[1].Trim()))
-            .Single();
-
-        var content = new byte[contentLength];
-        var offset = 0;
-        while (offset < content.Length)
-        {
-            var read = await stream.ReadAsync(content.AsMemory(offset, content.Length - offset), cancellationToken);
-            if (read == 0)
-            {
-                throw new EndOfStreamException("Language server closed stdout mid-message.");
-            }
-
-            offset += read;
-        }
-
-        return JsonDocument.Parse(content).RootElement.Clone();
-    }
-
-    private static bool EndsWithHeaderTerminator(List<byte> bytes)
-    {
-        return bytes.Count >= 4
-            && bytes[^4] == '\r'
-            && bytes[^3] == '\n'
-            && bytes[^2] == '\r'
-            && bytes[^1] == '\n';
-    }
-
-    private static async Task<string> ReadLogMessageContainingAsync(Stream stdout, string expectedText)
-    {
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        while (true)
-        {
-            var message = await ReadMessageAsync(stdout, cancellation.Token);
-            if (!message.TryGetProperty("method", out var methodElement)
-                || methodElement.GetString() != "window/logMessage")
-            {
-                continue;
-            }
-
-            var logMessage = message
-                .GetProperty("params")
-                .GetProperty("message")
-                .GetString()
-                ?? "";
-            if (logMessage.Contains(expectedText, StringComparison.Ordinal))
-            {
-                return logMessage;
-            }
-        }
-    }
 }
