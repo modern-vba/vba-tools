@@ -381,6 +381,14 @@ _Avoid_: rename, spelling correction
 The fixed VBA words whose casing is defined by the language server rather than by a `VbaDefinition` or `VbaProjectReferenceDefinition`. It includes VBA keywords, intrinsic types, intrinsic constants, and literals.
 _Avoid_: host definition, project definition
 
+**CompletionExpectation**:
+The syntax-owned description of what may legally follow at an editor position. It is derived from `VbaSyntaxTree`, remains stable across irrelevant trivia, and fails closed when syntax does not establish a valid continuation; it contains no `VbaDefinition` or LSP trigger metadata.
+_Avoid_: general completion, trigger context
+
+**CompletionCandidate**:
+An editor proposal admitted by a `CompletionExpectation` after semantic resolution. It may originate from a `VbaDefinition`, `VbaProjectReferenceDefinition`, `LanguageVocabulary`, named `CallableParameter`, or `EndStatementCompletion`, and is complete before LSP projection.
+_Avoid_: completion definition, raw vocabulary
+
 **IndentationFormatting**:
 A `SourceFormatting` operation that rewrites leading whitespace according to
 VBA block structure. It depends on source ranges, tokens, and syntax block
@@ -577,6 +585,12 @@ Domain Expert: "No. Intrinsic words such as `String`, `True`, and `Nothing` belo
 
 Dev: "Should typing Enter after `Sub` automatically insert `End Sub`?"
 Domain Expert: "No. `EndStatementCompletion` is an explicit completion item, not an on-type edit."
+
+Dev: "Should a space after a completed expression keep general completion open?"
+Domain Expert: "No. A completed expression has no `CompletionExpectation`, so an LSP trigger cannot manufacture `CompletionCandidate`s for it."
+
+Dev: "Should `+` and `+ ` produce different completion lists?"
+Domain Expert: "No. Irrelevant trivia does not change the `CompletionExpectation`, so semantic resolution must admit the same `CompletionCandidate`s at both positions."
 
 Dev: "Can a normal apostrophe comment appear in hover?"
 Domain Expert: "No. Hover uses the complete `DocumentationComment`; Signature Help projects only its `@param` documentation. Interface documentation may be inherited through `Implements` when the implementation has none."
