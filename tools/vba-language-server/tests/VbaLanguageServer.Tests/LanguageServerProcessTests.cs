@@ -2714,7 +2714,6 @@ public sealed class LanguageServerProcessTests
 
             await InitializeAsync(stdin, stdout);
             await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(callerUri, callerText));
-            await SendNotificationAsync(stdin, "textDocument/didOpen", CreateOpenDocument(helperUri, helperText));
 
             var initialDefinition = await RequestDefinitionAsync(stdin, stdout, 2, callerUri, callerText, "BuildValue");
             Assert.Equal(helperUri, initialDefinition.GetProperty("uri").GetString());
@@ -2752,6 +2751,197 @@ public sealed class LanguageServerProcessTests
                 hover.GetProperty("result").GetProperty("contents").GetProperty("value").GetString());
 
             await SendRequestAsync(stdin, stdout, 6, "shutdown", null);
+            await SendNotificationAsync(stdin, "exit", null);
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await process.WaitForExitAsync(cancellation.Token);
+            Assert.Equal(0, process.ExitCode);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_preserves_versioned_open_buffers_across_watcher_events_and_uses_disk_after_close()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-open-authority-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(projectRoot, "Worker.bas");
+            var canonicalUri = ToFileUri(sourcePath);
+            var encodedUri = ToEncodedDriveFileUri(sourcePath);
+            File.WriteAllText(sourcePath, "Public Sub InitialDisk()\nEnd Sub\n");
+            var serverProjectPath = Path.GetFullPath(
+                Path.Combine(
+                    AppContext.BaseDirectory,
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "src",
+                    "VbaLanguageServer.Cli",
+                    "VbaLanguageServer.Cli.csproj"));
+
+            using var process = StartLanguageServer(serverProjectPath);
+            await using var stdin = process.StandardInput.BaseStream;
+            using var stdout = process.StandardOutput.BaseStream;
+            await InitializeAsync(stdin, stdout);
+
+            await SendNotificationAsync(
+                stdin,
+                "textDocument/didOpen",
+                new
+                {
+                    textDocument = new
+                    {
+                        uri = 42,
+                        version = 1,
+                        text = "ignored"
+                    }
+                });
+            const string unsavedText = "Public Sub UnsavedBuffer()\nEnd Sub\n";
+            await SendNotificationAsync(
+                stdin,
+                "textDocument/didOpen",
+                CreateOpenDocument(encodedUri, unsavedText, version: 5));
+            await SendNotificationAsync(
+                stdin,
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new
+                    {
+                        uri = encodedUri,
+                        version = 4
+                    },
+                    contentChanges = new[]
+                    {
+                        new
+                        {
+                            text = "Public Sub StaleBuffer()\nEnd Sub\n"
+                        }
+                    }
+                });
+
+            var afterStaleChange = await SendRequestAsync(
+                stdin,
+                stdout,
+                2,
+                "textDocument/documentSymbol",
+                new
+                {
+                    textDocument = new { uri = encodedUri }
+                });
+            var afterStaleNames = afterStaleChange
+                .GetProperty("result")
+                .EnumerateArray()
+                .Select(symbol => symbol.GetProperty("name").GetString())
+                .ToArray();
+            Assert.Contains("UnsavedBuffer", afterStaleNames);
+            Assert.DoesNotContain("StaleBuffer", afterStaleNames);
+
+            const string latestDiskText = "Public Sub LatestDisk()\nEnd Sub\n";
+            File.WriteAllText(sourcePath, latestDiskText);
+            await SendNotificationAsync(
+                stdin,
+                "workspace/didChangeWatchedFiles",
+                new
+                {
+                    changes = new[]
+                    {
+                        new { uri = canonicalUri, type = 2 }
+                    }
+                });
+            var afterWatcher = await SendRequestAsync(
+                stdin,
+                stdout,
+                3,
+                "textDocument/documentSymbol",
+                new
+                {
+                    textDocument = new { uri = encodedUri }
+                });
+            var afterWatcherNames = afterWatcher
+                .GetProperty("result")
+                .EnumerateArray()
+                .Select(symbol => symbol.GetProperty("name").GetString())
+                .ToArray();
+            Assert.Contains("UnsavedBuffer", afterWatcherNames);
+            Assert.DoesNotContain("LatestDisk", afterWatcherNames);
+
+            await SendNotificationAsync(
+                stdin,
+                "textDocument/didClose",
+                new
+                {
+                    textDocument = new { uri = encodedUri }
+                });
+            var afterClose = await SendRequestAsync(
+                stdin,
+                stdout,
+                4,
+                "textDocument/documentSymbol",
+                new
+                {
+                    textDocument = new { uri = canonicalUri }
+                });
+            var afterCloseNames = afterClose
+                .GetProperty("result")
+                .EnumerateArray()
+                .Select(symbol => symbol.GetProperty("name").GetString())
+                .ToArray();
+            Assert.Contains("LatestDisk", afterCloseNames);
+            Assert.DoesNotContain("UnsavedBuffer", afterCloseNames);
+
+            const string openAfterDeleteText = "Public Sub OpenAfterDelete()\nEnd Sub\n";
+            await SendNotificationAsync(
+                stdin,
+                "textDocument/didOpen",
+                CreateOpenDocument(encodedUri, openAfterDeleteText, version: 6));
+            await SendNotificationAsync(
+                stdin,
+                "workspace/didChangeWatchedFiles",
+                new
+                {
+                    changes = new[]
+                    {
+                        new { uri = canonicalUri, type = 3 }
+                    }
+                });
+            var whileDeletedAndOpen = await SendRequestAsync(
+                stdin,
+                stdout,
+                5,
+                "textDocument/documentSymbol",
+                new
+                {
+                    textDocument = new { uri = encodedUri }
+                });
+            Assert.Contains(
+                whileDeletedAndOpen.GetProperty("result").EnumerateArray(),
+                symbol => symbol.GetProperty("name").GetString() == "OpenAfterDelete");
+
+            await SendNotificationAsync(
+                stdin,
+                "textDocument/didClose",
+                new
+                {
+                    textDocument = new { uri = canonicalUri }
+                });
+            var afterDeletedBufferClose = await SendRequestAsync(
+                stdin,
+                stdout,
+                6,
+                "textDocument/documentSymbol",
+                new
+                {
+                    textDocument = new { uri = canonicalUri }
+                });
+            Assert.Empty(afterDeletedBufferClose.GetProperty("result").EnumerateArray());
+
+            await SendRequestAsync(stdin, stdout, 7, "shutdown", null);
             await SendNotificationAsync(stdin, "exit", null);
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await process.WaitForExitAsync(cancellation.Token);
@@ -2883,6 +3073,7 @@ public sealed class LanguageServerProcessTests
         }
 
         startInfo.ArgumentList.Add("run");
+        startInfo.ArgumentList.Add("--no-build");
         startInfo.ArgumentList.Add("--project");
         startInfo.ArgumentList.Add(serverProjectPath);
 
@@ -2982,7 +3173,7 @@ public sealed class LanguageServerProcessTests
         });
     }
 
-    private static object CreateOpenDocument(string uri, string text)
+    private static object CreateOpenDocument(string uri, string text, int version = 1)
     {
         return new
         {
@@ -2990,7 +3181,7 @@ public sealed class LanguageServerProcessTests
             {
                 uri,
                 languageId = "vba",
-                version = 1,
+                version,
                 text
             }
         };
@@ -3121,6 +3312,14 @@ public sealed class LanguageServerProcessTests
 
     private static string ToFileUri(string path)
         => new Uri(path).AbsoluteUri;
+
+    private static string ToEncodedDriveFileUri(string path)
+    {
+        var fullPath = Path.GetFullPath(path).Replace(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return fullPath.Length >= 2 && fullPath[1] == Path.VolumeSeparatorChar
+            ? $"file:///{char.ToLowerInvariant(fullPath[0])}%3A{fullPath[2..]}"
+            : new Uri(path).AbsoluteUri;
+    }
 
     private sealed record DecodedSemanticToken(
         string Text,

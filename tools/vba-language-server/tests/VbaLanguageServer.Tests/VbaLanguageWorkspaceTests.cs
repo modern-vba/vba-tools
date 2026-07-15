@@ -554,6 +554,142 @@ public sealed class VbaLanguageWorkspaceTests
         Assert.Throws<OperationCanceledException>(() => workspace.CreateProjectSnapshot(uri, cancellation.Token));
     }
 
+    [Fact]
+    public void OpenDocumentChangesRequireIncreasingVersions()
+    {
+        const string uri = "file:///C:/work/VersionedWorker.bas";
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.CreateBundled()));
+        workspace.OpenDocument(
+            uri,
+            version: 3,
+            "Public Sub CurrentVersion()\nEnd Sub\n");
+        var currentSnapshot = workspace.CreateProjectSnapshot(uri);
+
+        var olderUpdate = workspace.ChangeDocument(
+            uri,
+            version: 2,
+            "Public Sub OlderVersion()\nEnd Sub\n");
+        var equalUpdate = workspace.ChangeDocument(
+            uri,
+            version: 3,
+            "Public Sub EqualVersion()\nEnd Sub\n");
+        var unchangedSnapshot = workspace.CreateProjectSnapshot(uri);
+        var newerUpdate = workspace.ChangeDocument(
+            uri,
+            version: 4,
+            "Public Sub NewerVersion()\nEnd Sub\n");
+        var newerSnapshot = workspace.CreateProjectSnapshot(uri);
+
+        Assert.Null(olderUpdate);
+        Assert.Null(equalUpdate);
+        Assert.Same(currentSnapshot, unchangedSnapshot);
+        Assert.Contains(
+            unchangedSnapshot.SourceIndex.GetDocumentDefinitions(uri),
+            definition => definition.Name == "CurrentVersion");
+        Assert.NotNull(newerUpdate);
+        Assert.Contains(
+            newerSnapshot.SourceIndex.GetDocumentDefinitions(uri),
+            definition => definition.Name == "NewerVersion");
+        Assert.DoesNotContain(
+            newerSnapshot.SourceIndex.GetDocumentDefinitions(uri),
+            definition => definition.Name == "CurrentVersion");
+    }
+
+    [Fact]
+    public void WatchedReloadPreservesEquivalentOpenBufferAndCloseFallsBackToDisk()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-authority-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(projectRoot, "Worker.bas");
+            var canonicalUri = ToFileUri(sourcePath);
+            var encodedUri = ToEncodedDriveFileUri(sourcePath);
+            File.WriteAllText(sourcePath, "Public Sub InitialDisk()\nEnd Sub\n");
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.CreateBundled()));
+            workspace.OpenDocument(
+                encodedUri,
+                version: 1,
+                "Public Sub UnsavedBuffer()\nEnd Sub\n");
+            const string latestDiskText = "Public Sub LatestDisk()\nEnd Sub\n";
+            File.WriteAllText(sourcePath, latestDiskText);
+
+            var diskBecameAuthoritative = workspace.ReloadSourceDocument(canonicalUri, latestDiskText);
+            var openSnapshot = workspace.CreateProjectSnapshot(encodedUri);
+            var closed = workspace.CloseDocument(canonicalUri);
+            var diskSnapshot = workspace.CreateProjectSnapshot(canonicalUri);
+
+            Assert.False(diskBecameAuthoritative);
+            Assert.Contains(
+                openSnapshot.SourceIndex.GetDocumentDefinitions(encodedUri),
+                definition => definition.Name == "UnsavedBuffer");
+            Assert.DoesNotContain(
+                openSnapshot.SourceIndex.GetWorkspaceSymbols("LatestDisk"),
+                symbol => VbaProjectResolver.TryGetLocalPath(symbol.Uri) == Path.GetFullPath(sourcePath));
+            Assert.True(closed);
+            Assert.Contains(
+                diskSnapshot.SourceIndex.GetDocumentDefinitions(canonicalUri),
+                definition => definition.Name == "LatestDisk");
+            Assert.Single(
+                diskSnapshot.SourceDocuments.Keys,
+                uri => string.Equals(
+                    VbaProjectResolver.TryGetLocalPath(uri),
+                    Path.GetFullPath(sourcePath),
+                    StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void WatchedDeletePreservesOpenBufferUntilCloseAndReloadClearsExclusion()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-delete-authority-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(projectRoot, "Worker.bas");
+            var canonicalUri = ToFileUri(sourcePath);
+            var encodedUri = ToEncodedDriveFileUri(sourcePath);
+            File.WriteAllText(sourcePath, "Public Sub DiskVersion()\nEnd Sub\n");
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.CreateBundled()));
+            workspace.OpenDocument(
+                encodedUri,
+                version: 1,
+                "Public Sub OpenAfterDelete()\nEnd Sub\n");
+            File.Delete(sourcePath);
+
+            var shouldClearWhileOpen = workspace.DeleteSourceDocument(canonicalUri);
+            var openSnapshot = workspace.CreateProjectSnapshot(encodedUri);
+            workspace.CloseDocument(canonicalUri);
+            var deletedSnapshot = workspace.CreateProjectSnapshot(canonicalUri);
+            const string recreatedText = "Public Sub RecreatedDisk()\nEnd Sub\n";
+            File.WriteAllText(sourcePath, recreatedText);
+            var reloaded = workspace.ReloadSourceDocument(encodedUri, recreatedText);
+            var recreatedSnapshot = workspace.CreateProjectSnapshot(canonicalUri);
+
+            Assert.False(shouldClearWhileOpen);
+            Assert.Contains(
+                openSnapshot.SourceIndex.GetDocumentDefinitions(encodedUri),
+                definition => definition.Name == "OpenAfterDelete");
+            Assert.Empty(deletedSnapshot.SourceDocuments);
+            Assert.True(reloaded);
+            Assert.Contains(
+                recreatedSnapshot.SourceIndex.GetWorkspaceSymbols("RecreatedDisk"),
+                symbol => string.Equals(
+                    VbaProjectResolver.TryGetLocalPath(symbol.Uri),
+                    Path.GetFullPath(sourcePath),
+                    StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
     private static void WriteProjectManifest(
         string projectRoot,
         string book1SourcePath = "src/Book1",

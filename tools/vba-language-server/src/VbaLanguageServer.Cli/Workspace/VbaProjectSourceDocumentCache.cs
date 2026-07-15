@@ -63,6 +63,19 @@ internal sealed class VbaProjectSourceDocumentCache
         return document;
     }
 
+    /// <summary>
+    /// Invalidates a cached disk document after an explicit watcher event.
+    /// </summary>
+    /// <param name="localPath">The local source path.</param>
+    public void Invalidate(string localPath)
+    {
+        var fullPath = Path.GetFullPath(localPath);
+        lock (gate)
+        {
+            documents.Remove(fullPath);
+        }
+    }
+
     private sealed record CachedDocument(
         long Length,
         DateTime LastWriteTimeUtc,

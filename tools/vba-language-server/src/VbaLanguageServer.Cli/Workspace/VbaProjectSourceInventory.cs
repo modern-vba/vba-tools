@@ -91,10 +91,7 @@ internal static class VbaProjectSourceInventory
         foreach (var trackedDocument in trackedDocuments.Values)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var trackedPath = VbaProjectResolver.TryGetLocalPath(trackedDocument.Uri);
-            if (!excludedUris.Contains(trackedDocument.Uri)
-                && (trackedPath is null || !excludedPaths.Contains(trackedPath))
-                && resolution.ContainsUri(trackedDocument.Uri))
+            if (resolution.ContainsUri(trackedDocument.Uri))
             {
                 documents[trackedDocument.Uri] = trackedDocument;
             }

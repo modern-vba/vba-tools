@@ -1,11 +1,10 @@
 using System.Text.Json.Nodes;
-using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.Workspace;
 
 namespace VbaLanguageServer.Lsp;
 
 /// <summary>
-/// Handles LSP document lifecycle notifications and diagnostic publication.
+/// Safely decodes LSP document notifications into discriminated pipeline changes.
 /// </summary>
 internal sealed class VbaDocumentLifecycle
 {
@@ -15,7 +14,7 @@ internal sealed class VbaDocumentLifecycle
     /// Creates a document lifecycle handler.
     /// </summary>
     /// <param name="transport">The transport used to publish diagnostics.</param>
-    /// <param name="workspace">The workspace that tracks open documents.</param>
+    /// <param name="workspace">The workspace that tracks document authority.</param>
     /// <param name="catalogRefresh">The coordinator used for reference trace and refresh work.</param>
     public VbaDocumentLifecycle(
         LspMessageTransport transport,
@@ -29,123 +28,161 @@ internal sealed class VbaDocumentLifecycle
     }
 
     /// <summary>
-    /// Records a textDocument/didOpen notification and publishes diagnostics for VBA sources.
+    /// Records a valid textDocument/didOpen notification.
     /// </summary>
-    /// <param name="parameters">The LSP notification parameters.</param>
-    /// <param name="cancellationToken">A cancellation token for lifecycle work.</param>
-    public async Task RecordOpenedDocumentAsync(JsonNode? parameters, CancellationToken cancellationToken)
-    {
-        var textDocument = parameters?["textDocument"];
-        var uri = textDocument?["uri"]?.GetValue<string>();
-        var text = textDocument?["text"]?.GetValue<string>();
-        if (!string.IsNullOrEmpty(uri) && text is not null)
-        {
-            await pipeline.ApplyAsync(
-                new VbaDocumentChange(VbaDocumentChangeKind.Opened, uri, text),
-                cancellationToken);
-        }
-    }
+    public Task RecordOpenedDocumentAsync(JsonNode? parameters, CancellationToken cancellationToken)
+        => TryCreateOpenedChange(parameters, out var change)
+            ? pipeline.ApplyAsync(change, cancellationToken)
+            : Task.CompletedTask;
 
     /// <summary>
-    /// Records a textDocument/didChange notification and publishes diagnostics for VBA sources.
+    /// Records a valid full-text textDocument/didChange notification.
     /// </summary>
-    /// <param name="parameters">The LSP notification parameters.</param>
-    /// <param name="cancellationToken">A cancellation token for lifecycle work.</param>
-    public async Task RecordChangedDocumentAsync(JsonNode? parameters, CancellationToken cancellationToken)
-    {
-        var textDocument = parameters?["textDocument"];
-        var uri = textDocument?["uri"]?.GetValue<string>();
-        var changes = parameters?["contentChanges"]?.AsArray();
-        var text = changes?.LastOrDefault()?["text"]?.GetValue<string>();
-        if (!string.IsNullOrEmpty(uri) && text is not null)
-        {
-            await pipeline.ApplyAsync(
-                new VbaDocumentChange(VbaDocumentChangeKind.Changed, uri, text),
-                cancellationToken);
-        }
-    }
+    public Task RecordChangedDocumentAsync(JsonNode? parameters, CancellationToken cancellationToken)
+        => TryCreateChangedChange(parameters, out var change)
+            ? pipeline.ApplyAsync(change, cancellationToken)
+            : Task.CompletedTask;
 
     /// <summary>
-    /// Records a textDocument/didClose notification and clears diagnostics for removed tracked documents.
+    /// Records a valid textDocument/didClose notification.
     /// </summary>
-    /// <param name="parameters">The LSP notification parameters.</param>
-    /// <param name="cancellationToken">A cancellation token for lifecycle work.</param>
-    public async Task RecordClosedDocumentAsync(JsonNode? parameters, CancellationToken cancellationToken)
+    public Task RecordClosedDocumentAsync(JsonNode? parameters, CancellationToken cancellationToken)
+        => TryCreateClosedChange(parameters, out var change)
+            ? pipeline.ApplyAsync(change, cancellationToken)
+            : Task.CompletedTask;
+
+    /// <summary>
+    /// Records valid workspace watched-file changes and ignores malformed entries.
+    /// </summary>
+    public async Task RecordWatchedFilesChangedAsync(
+        JsonNode? parameters,
+        CancellationToken cancellationToken)
     {
-        var uri = parameters?["textDocument"]?["uri"]?.GetValue<string>();
-        if (string.IsNullOrEmpty(uri))
+        if (parameters is not JsonObject parameterObject
+            || parameterObject["changes"] is not JsonArray changes)
         {
             return;
         }
 
-        await pipeline.ApplyAsync(
-            new VbaDocumentChange(VbaDocumentChangeKind.Closed, uri),
-            cancellationToken);
-    }
-
-    /// <summary>
-    /// Records workspace file changes by reloading changed sources and excluding deleted source files.
-    /// </summary>
-    /// <param name="parameters">The LSP notification parameters.</param>
-    /// <param name="cancellationToken">A cancellation token for lifecycle work.</param>
-    public async Task RecordWatchedFilesChangedAsync(JsonNode? parameters, CancellationToken cancellationToken)
-    {
-        var changes = parameters?["changes"]?.AsArray();
-        if (changes is null)
-        {
-            return;
-        }
-
-        foreach (var change in changes)
+        foreach (var item in changes)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var uri = change?["uri"]?.GetValue<string>();
-            var type = change?["type"]?.GetValue<int>();
-            if (string.IsNullOrEmpty(uri) || type is null)
+            if (!TryCreateWatchedFileChange(item, out var change))
             {
                 continue;
             }
 
-            switch (type.Value)
-            {
-                case 1:
-                case 2:
-                    await ReloadChangedFileAsync(uri, cancellationToken);
-                    break;
-                case 3:
-                    await pipeline.ApplyAsync(
-                        new VbaDocumentChange(VbaDocumentChangeKind.SourceFileDeleted, uri),
-                        cancellationToken);
-                    break;
-            }
+            await pipeline.ApplyAsync(change, cancellationToken);
         }
     }
 
-    private async Task ReloadChangedFileAsync(string uri, CancellationToken cancellationToken)
+    private static bool TryCreateOpenedChange(
+        JsonNode? parameters,
+        out VbaTextDocumentOpenedChange change)
     {
-        var localPath = VbaProjectResolver.TryGetLocalPath(uri);
-        if (localPath is null || !File.Exists(localPath))
+        change = default!;
+        if (!TryGetTextDocument(parameters, out var textDocument, out var uri)
+            || !TryGetInt32(textDocument["version"], out var version)
+            || !TryGetString(textDocument["text"], out var text))
         {
-            return;
+            return false;
         }
 
-        var text = await VbaSourceFileTextReader.ReadAllTextAsync(localPath, cancellationToken);
-        if (VbaDocumentChangePipeline.IsVbaSourcePath(localPath))
+        change = new VbaTextDocumentOpenedChange(uri, version, text);
+        return true;
+    }
+
+    private static bool TryCreateChangedChange(
+        JsonNode? parameters,
+        out VbaTextDocumentChangedChange change)
+    {
+        change = default!;
+        if (!TryGetTextDocument(parameters, out var textDocument, out var uri)
+            || !TryGetInt32(textDocument["version"], out var version)
+            || parameters is not JsonObject parameterObject
+            || parameterObject["contentChanges"] is not JsonArray contentChanges
+            || contentChanges.Count == 0
+            || contentChanges[contentChanges.Count - 1] is not JsonObject contentChange
+            || !TryGetString(contentChange["text"], out var text))
         {
-            await pipeline.ApplyAsync(
-                new VbaDocumentChange(VbaDocumentChangeKind.SourceFileChanged, uri, text),
-                cancellationToken);
-            return;
+            return false;
         }
 
-        if (IsProjectManifestPath(localPath))
+        change = new VbaTextDocumentChangedChange(uri, version, text);
+        return true;
+    }
+
+    private static bool TryCreateClosedChange(
+        JsonNode? parameters,
+        out VbaTextDocumentClosedChange change)
+    {
+        change = default!;
+        if (!TryGetTextDocument(parameters, out _, out var uri))
         {
-            await pipeline.ApplyAsync(
-                new VbaDocumentChange(VbaDocumentChangeKind.ProjectManifestChanged, uri, text),
-                cancellationToken);
+            return false;
+        }
+
+        change = new VbaTextDocumentClosedChange(uri);
+        return true;
+    }
+
+    private static bool TryCreateWatchedFileChange(
+        JsonNode? item,
+        out VbaDocumentChange change)
+    {
+        change = default!;
+        if (item is not JsonObject itemObject
+            || !TryGetString(itemObject["uri"], out var uri)
+            || string.IsNullOrWhiteSpace(uri)
+            || !TryGetInt32(itemObject["type"], out var type))
+        {
+            return false;
+        }
+
+        switch (type)
+        {
+            case 1:
+            case 2:
+                change = new VbaWatchedFileReloadChange(uri);
+                return true;
+            case 3:
+                change = new VbaWatchedFileDeletedChange(uri);
+                return true;
+            default:
+                return false;
         }
     }
 
-    private static bool IsProjectManifestPath(string path)
-        => Path.GetFileName(path).Equals("vba-project.json", StringComparison.OrdinalIgnoreCase);
+    private static bool TryGetTextDocument(
+        JsonNode? parameters,
+        out JsonObject textDocument,
+        out string uri)
+    {
+        textDocument = default!;
+        uri = "";
+        if (parameters is not JsonObject parameterObject
+            || parameterObject["textDocument"] is not JsonObject documentObject
+            || !TryGetString(documentObject["uri"], out uri)
+            || string.IsNullOrWhiteSpace(uri))
+        {
+            return false;
+        }
+
+        textDocument = documentObject;
+        return true;
+    }
+
+    private static bool TryGetString(JsonNode? node, out string value)
+    {
+        value = "";
+        return node is JsonValue jsonValue
+            && jsonValue.TryGetValue(out value!);
+    }
+
+    private static bool TryGetInt32(JsonNode? node, out int value)
+    {
+        value = 0;
+        return node is JsonValue jsonValue
+            && jsonValue.TryGetValue(out value);
+    }
 }

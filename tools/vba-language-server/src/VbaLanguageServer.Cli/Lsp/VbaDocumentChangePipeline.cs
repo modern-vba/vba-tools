@@ -4,54 +4,44 @@ using VbaLanguageServer.Workspace;
 namespace VbaLanguageServer.Lsp;
 
 /// <summary>
-/// Identifies document and watched-file changes handled by the language server.
+/// Represents one valid document or watched-file change decoded from LSP parameters.
 /// </summary>
-internal enum VbaDocumentChangeKind
-{
-    /// <summary>
-    /// A text document was opened by the client.
-    /// </summary>
-    Opened,
-
-    /// <summary>
-    /// A text document was changed by the client.
-    /// </summary>
-    Changed,
-
-    /// <summary>
-    /// A text document was closed by the client.
-    /// </summary>
-    Closed,
-
-    /// <summary>
-    /// A watched VBA source file was created or changed.
-    /// </summary>
-    SourceFileChanged,
-
-    /// <summary>
-    /// A watched VBA source file was deleted.
-    /// </summary>
-    SourceFileDeleted,
-
-    /// <summary>
-    /// A project manifest was created or changed.
-    /// </summary>
-    ProjectManifestChanged
-}
+/// <param name="Uri">The document or watched-file URI.</param>
+internal abstract record VbaDocumentChange(string Uri);
 
 /// <summary>
-/// Represents a typed document lifecycle event after LSP JSON parameters have been decoded.
+/// Represents a newly opened versioned client document.
 /// </summary>
-/// <param name="Kind">The lifecycle event kind.</param>
-/// <param name="Uri">The document or file URI.</param>
-/// <param name="Text">The complete document text when the event carries content.</param>
-internal sealed record VbaDocumentChange(
-    VbaDocumentChangeKind Kind,
+internal sealed record VbaTextDocumentOpenedChange(
     string Uri,
-    string? Text = null);
+    int Version,
+    string Text) : VbaDocumentChange(Uri);
 
 /// <summary>
-/// Applies document changes in the required workspace, diagnostics, and reference-catalog order.
+/// Represents a complete-text change to an open client document.
+/// </summary>
+internal sealed record VbaTextDocumentChangedChange(
+    string Uri,
+    int Version,
+    string Text) : VbaDocumentChange(Uri);
+
+/// <summary>
+/// Represents a closed client document.
+/// </summary>
+internal sealed record VbaTextDocumentClosedChange(string Uri) : VbaDocumentChange(Uri);
+
+/// <summary>
+/// Represents a created or changed watched file that must be reloaded from disk.
+/// </summary>
+internal sealed record VbaWatchedFileReloadChange(string Uri) : VbaDocumentChange(Uri);
+
+/// <summary>
+/// Represents a deleted watched file.
+/// </summary>
+internal sealed record VbaWatchedFileDeletedChange(string Uri) : VbaDocumentChange(Uri);
+
+/// <summary>
+/// Applies document changes in the required workspace, diagnostics, trace, and refresh order.
 /// </summary>
 internal sealed class VbaDocumentChangePipeline
 {
@@ -78,119 +68,159 @@ internal sealed class VbaDocumentChangePipeline
     /// <summary>
     /// Applies one decoded document change.
     /// </summary>
-    /// <param name="change">The typed document change.</param>
+    /// <param name="change">The discriminated document change.</param>
     /// <param name="cancellationToken">A cancellation token for pipeline work.</param>
     public async Task ApplyAsync(VbaDocumentChange change, CancellationToken cancellationToken)
     {
-        switch (change.Kind)
+        switch (change)
         {
-            case VbaDocumentChangeKind.Opened:
-            case VbaDocumentChangeKind.Changed:
-                await ApplyTextDocumentChangeAsync(change, cancellationToken);
+            case VbaTextDocumentOpenedChange opened:
+                await ApplyOpenedDocumentAsync(opened, cancellationToken);
                 return;
-            case VbaDocumentChangeKind.Closed:
-                await ApplyClosedDocumentAsync(change.Uri, cancellationToken);
+            case VbaTextDocumentChangedChange changed:
+                await ApplyChangedDocumentAsync(changed, cancellationToken);
                 return;
-            case VbaDocumentChangeKind.SourceFileChanged:
-                await ApplyChangedSourceFileAsync(change, cancellationToken);
+            case VbaTextDocumentClosedChange closed:
+                await ApplyClosedDocumentAsync(closed.Uri, cancellationToken);
                 return;
-            case VbaDocumentChangeKind.SourceFileDeleted:
-                await ApplyDeletedSourceFileAsync(change.Uri, cancellationToken);
+            case VbaWatchedFileReloadChange reload:
+                await ApplyWatchedFileReloadAsync(reload.Uri, cancellationToken);
                 return;
-            case VbaDocumentChangeKind.ProjectManifestChanged:
-                await ApplyProjectManifestChangeAsync(change, cancellationToken);
-                return;
-            default:
+            case VbaWatchedFileDeletedChange deleted:
+                await ApplyWatchedFileDeletedAsync(deleted.Uri, cancellationToken);
                 return;
         }
     }
 
-    private async Task ApplyTextDocumentChangeAsync(
-        VbaDocumentChange change,
+    private async Task ApplyOpenedDocumentAsync(
+        VbaTextDocumentOpenedChange change,
         CancellationToken cancellationToken)
     {
-        if (change.Text is null)
+        if (!IsVbaSourceUri(change.Uri))
         {
-            return;
-        }
-
-        if (IsVbaSourceUri(change.Uri))
-        {
-            workspace.UpdateDocument(change.Uri, change.Text, cancellationToken);
-            await catalogRefresh.ApplyDocumentChangeAsync(
-                new ReferenceCatalogDocumentChange(
-                    change.Uri,
-                    change.Text,
-                    PreloadPersistedCatalogs: true,
-                    PublishReferenceTrace: change.Kind == VbaDocumentChangeKind.Opened,
-                    RefreshInBackground: true),
-                token => diagnosticsPublisher.PublishTrackedDiagnosticsAsync(change.Uri, token),
+            catalogRefresh.RefreshReferenceCatalogsInBackground(
+                change.Uri,
+                change.Text,
                 cancellationToken);
             return;
         }
 
-        await catalogRefresh.ApplyDocumentChangeAsync(
-            new ReferenceCatalogDocumentChange(
+        workspace.OpenDocument(change.Uri, change.Version, change.Text, cancellationToken);
+        await ApplyAuthoritativeSourceTextAsync(
+            change.Uri,
+            change.Text,
+            preloadPersistedCatalogs: true,
+            publishReferenceTrace: true,
+            cancellationToken);
+    }
+
+    private async Task ApplyChangedDocumentAsync(
+        VbaTextDocumentChangedChange change,
+        CancellationToken cancellationToken)
+    {
+        if (!IsVbaSourceUri(change.Uri))
+        {
+            catalogRefresh.RefreshReferenceCatalogsInBackground(
                 change.Uri,
                 change.Text,
-                PreloadPersistedCatalogs: false,
-                PublishReferenceTrace: false,
-                RefreshInBackground: true),
-            _ => Task.CompletedTask,
+                cancellationToken);
+            return;
+        }
+
+        if (workspace.ChangeDocument(change.Uri, change.Version, change.Text, cancellationToken) is null)
+        {
+            return;
+        }
+
+        await ApplyAuthoritativeSourceTextAsync(
+            change.Uri,
+            change.Text,
+            preloadPersistedCatalogs: true,
+            publishReferenceTrace: false,
             cancellationToken);
     }
 
     private async Task ApplyClosedDocumentAsync(string uri, CancellationToken cancellationToken)
     {
-        if (workspace.RemoveDocument(uri, cancellationToken))
+        if (workspace.CloseDocument(uri, cancellationToken))
         {
             await diagnosticsPublisher.PublishEmptyDiagnosticsAsync(uri, cancellationToken);
         }
     }
 
-    private async Task ApplyChangedSourceFileAsync(
-        VbaDocumentChange change,
-        CancellationToken cancellationToken)
+    private async Task ApplyWatchedFileReloadAsync(string uri, CancellationToken cancellationToken)
     {
-        if (change.Text is null)
+        var localPath = VbaProjectResolver.TryGetLocalPath(uri);
+        if (localPath is null || !File.Exists(localPath))
         {
             return;
         }
 
-        workspace.UpdateDocument(change.Uri, change.Text, cancellationToken);
-        await catalogRefresh.ApplyDocumentChangeAsync(
-            new ReferenceCatalogDocumentChange(
-                change.Uri,
-                change.Text,
-                PreloadPersistedCatalogs: false,
-                PublishReferenceTrace: true,
-                RefreshInBackground: true),
-            token => diagnosticsPublisher.PublishTrackedDiagnosticsAsync(change.Uri, token),
-            cancellationToken);
+        var isSource = IsVbaSourcePath(localPath);
+        var isManifest = IsProjectManifestPath(localPath);
+        if (!isSource && !isManifest)
+        {
+            return;
+        }
+
+        var text = await VbaSourceFileTextReader.ReadAllTextAsync(localPath, cancellationToken);
+        if (isSource)
+        {
+            if (!workspace.ReloadSourceDocument(uri, text, cancellationToken))
+            {
+                return;
+            }
+
+            await ApplyAuthoritativeSourceTextAsync(
+                uri,
+                text,
+                preloadPersistedCatalogs: false,
+                publishReferenceTrace: true,
+                cancellationToken);
+            return;
+        }
+
+        catalogRefresh.RefreshReferenceCatalogsInBackground(uri, text, cancellationToken);
+        foreach (var documentUri in workspace.GetDocumentUris(cancellationToken))
+        {
+            await catalogRefresh.PublishReferenceSelectionTraceAsync(documentUri, cancellationToken);
+        }
     }
 
-    private async Task ApplyDeletedSourceFileAsync(string uri, CancellationToken cancellationToken)
+    private async Task ApplyWatchedFileDeletedAsync(string uri, CancellationToken cancellationToken)
     {
-        if (workspace.RemoveSourceDocument(uri, cancellationToken))
+        var localPath = VbaProjectResolver.TryGetLocalPath(uri);
+        if (localPath is null || !IsVbaSourcePath(localPath))
+        {
+            return;
+        }
+
+        if (workspace.DeleteSourceDocument(uri, cancellationToken))
         {
             await diagnosticsPublisher.PublishEmptyDiagnosticsAsync(uri, cancellationToken);
         }
     }
 
-    private async Task ApplyProjectManifestChangeAsync(
-        VbaDocumentChange change,
+    private async Task ApplyAuthoritativeSourceTextAsync(
+        string uri,
+        string fallbackText,
+        bool preloadPersistedCatalogs,
+        bool publishReferenceTrace,
         CancellationToken cancellationToken)
     {
-        if (change.Text is null)
+        var text = workspace.GetDocumentText(uri, cancellationToken) ?? fallbackText;
+        if (preloadPersistedCatalogs)
         {
-            return;
+            await catalogRefresh.PreloadReferenceCatalogsAsync(uri, text, cancellationToken);
         }
 
-        await catalogRefresh.ApplyProjectManifestChangeAsync(
-            change.Uri,
-            change.Text,
-            workspace.GetDocumentUris(cancellationToken),
-            cancellationToken);
+        await diagnosticsPublisher.PublishTrackedDiagnosticsAsync(uri, cancellationToken);
+        if (publishReferenceTrace)
+        {
+            await catalogRefresh.PublishReferenceSelectionTraceAsync(uri, cancellationToken);
+        }
+
+        catalogRefresh.RefreshReferenceCatalogsInBackground(uri, text, cancellationToken);
     }
 
     private static bool IsVbaSourceUri(string uri)
@@ -203,4 +233,7 @@ internal sealed class VbaDocumentChangePipeline
         => path.EndsWith(".bas", StringComparison.OrdinalIgnoreCase)
             || path.EndsWith(".cls", StringComparison.OrdinalIgnoreCase)
             || path.EndsWith(".frm", StringComparison.OrdinalIgnoreCase);
+
+    internal static bool IsProjectManifestPath(string path)
+        => Path.GetFileName(path).Equals("vba-project.json", StringComparison.OrdinalIgnoreCase);
 }
