@@ -49,4 +49,34 @@ public sealed class VbaTokenStreamTests
         Assert.Equal(new VbaSyntaxRange(new VbaSyntaxPosition(1, 12, 29), new VbaSyntaxPosition(1, 25, 42)), stringToken.Range);
         Assert.Contains(stream.Tokens, token => token.Kind == VbaTokenKind.Keyword && token.Text == "End");
     }
+
+    [Fact]
+    public void TokenStreamPreservesLineStartsAfterCrLf()
+    {
+        var source = string.Join("\r\n", [
+            "Option Explicit",
+            "'* @details",
+            "Public Sub Run()",
+            "End Sub"
+        ]);
+
+        var stream = VbaTokenStream.FromText(source);
+
+        var firstNewLine = stream.Tokens.First(token => token.Kind == VbaTokenKind.NewLine);
+        Assert.Equal("\r\n", firstNewLine.Text);
+        Assert.Equal(
+            new VbaSyntaxRange(new VbaSyntaxPosition(0, 15, 15), new VbaSyntaxPosition(1, 0, 17)),
+            firstNewLine.Range);
+
+        var comment = Assert.Single(stream.Tokens, token => token.Kind == VbaTokenKind.Comment);
+        Assert.Equal("'* @details", comment.Text);
+        Assert.Equal(
+            new VbaSyntaxRange(new VbaSyntaxPosition(1, 0, 17), new VbaSyntaxPosition(1, 11, 28)),
+            comment.Range);
+
+        var publicKeyword = Assert.Single(
+            stream.Tokens,
+            token => token.Kind == VbaTokenKind.Keyword && token.Text == "Public");
+        Assert.Equal(new VbaSyntaxPosition(2, 0, 30), publicKeyword.Range.Start);
+    }
 }

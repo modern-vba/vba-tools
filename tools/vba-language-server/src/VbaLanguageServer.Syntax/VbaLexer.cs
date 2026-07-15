@@ -89,7 +89,6 @@ internal static class VbaLexer
         if (state.Current == '\r' && state.Peek(1) == '\n')
         {
             state.Advance();
-            state.Advance();
             return new VbaToken(VbaTokenKind.NewLine, "\r\n", new VbaSyntaxRange(start, state.Position));
         }
 

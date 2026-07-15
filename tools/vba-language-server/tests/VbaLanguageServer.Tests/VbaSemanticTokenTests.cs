@@ -111,6 +111,38 @@ public sealed class VbaSemanticTokenTests
     }
 
     [Fact]
+    public void SemanticTokensSkipCrLfDocumentationCommentIdentifiersThatMatchActiveReferences()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join("\r\n", [
+            "Attribute VB_Name = \"Worker\"",
+            "'* @details",
+            "Public Sub Run()",
+            "    Details",
+            "End Sub"
+        ]);
+        const string referenceName = "Documentation Comment Collision Library";
+        var referenceCatalogs = VbaProjectReferenceCatalogSet.Empty.WithCatalog(new VbaProjectReferenceCatalog(
+            referenceName,
+            ["DocumentationCommentCollision"],
+            [KeywordCollisionDefinition(referenceName, "Details")]));
+        var index = VbaSourceIndex.Build(
+            new Dictionary<string, string> { [uri] = text },
+            VbaProjectReferenceSelection.Create(
+                "documentation-comment-collision",
+                [new VbaProjectReference(referenceName)]),
+            referenceCatalogs);
+
+        var tokens = index.GetSemanticTokens(uri);
+
+        Assert.DoesNotContain(tokens, token => token.Range.Start.Line == 1);
+        var codeReference = Assert.Single(tokens, token => token.Text == "Details");
+        Assert.Equal(3, codeReference.Range.Start.Line);
+        Assert.Equal("property", codeReference.TokenType);
+        Assert.Contains("defaultLibrary", codeReference.TokenModifiers);
+    }
+
+    [Fact]
     public void SemanticTokenDataIsCachedWithinSourceIndexSnapshot()
     {
         const string uri = "file:///C:/work/Worker.bas";
