@@ -1390,6 +1390,7 @@ internal static class VbaSyntaxTreeParser
         var detailsLines = new List<string>();
         var currentBodyLines = summaryLines;
         var parameterDocs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var parameterDirectionQualifiers = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         string? returnDocumentation = null;
         foreach (var rawLine in rawLines)
         {
@@ -1410,12 +1411,16 @@ internal static class VbaSyntaxTreeParser
                 continue;
             }
 
-            if (rawLine.StartsWith("@param ", StringComparison.OrdinalIgnoreCase))
+            if (TryParseParameterDocumentationCommand(
+                rawLine,
+                out var parameterName,
+                out var parameterDocumentation,
+                out var directionQualifier))
             {
-                var parts = rawLine["@param ".Length..].Trim().Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length == 2)
+                if (parameterName is not null && parameterDocumentation is not null)
                 {
-                    parameterDocs[parts[0]] = parts[1].Trim();
+                    parameterDocs[parameterName] = parameterDocumentation;
+                    parameterDirectionQualifiers[parameterName] = directionQualifier;
                 }
 
                 continue;
@@ -1442,7 +1447,8 @@ internal static class VbaSyntaxTreeParser
                 hoverLines.Add("");
             }
 
-            hoverLines.Add($"@param {parameter.Key} {parameter.Value}");
+            parameterDirectionQualifiers.TryGetValue(parameter.Key, out var directionQualifier);
+            hoverLines.Add($"@param{directionQualifier} {parameter.Key} {parameter.Value}");
         }
 
         if (!string.IsNullOrWhiteSpace(returnDocumentation))
@@ -1460,6 +1466,60 @@ internal static class VbaSyntaxTreeParser
             bodyLines.Count == 0 ? null : string.Join('\n', bodyLines).TrimEnd(),
             parameterDocs,
             returnDocumentation);
+    }
+
+    private static bool TryParseParameterDocumentationCommand(
+        string rawLine,
+        out string? parameterName,
+        out string? documentation,
+        out string? directionQualifier)
+    {
+        const string command = "@param";
+        parameterName = null;
+        documentation = null;
+        directionQualifier = null;
+        if (!rawLine.StartsWith(command, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var content = rawLine[command.Length..];
+        if (content.StartsWith("[", StringComparison.Ordinal))
+        {
+            var closingBracket = content.IndexOf(']');
+            if (closingBracket < 0)
+            {
+                return false;
+            }
+
+            var direction = content[1..closingBracket];
+            if (!direction.Equals("in", StringComparison.OrdinalIgnoreCase)
+                && !direction.Equals("out", StringComparison.OrdinalIgnoreCase)
+                && !direction.Equals("in,out", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            directionQualifier = $"[{direction.ToLowerInvariant()}]";
+            content = content[(closingBracket + 1)..];
+        }
+
+        if (content.Length == 0 || !char.IsWhiteSpace(content[0]))
+        {
+            return false;
+        }
+
+        var parts = content.Trim().Split(
+            [' ', '\t'],
+            2,
+            StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 2)
+        {
+            parameterName = parts[0];
+            documentation = parts[1].Trim();
+        }
+
+        return true;
     }
 
     private static bool TryParseDocumentationCommand(

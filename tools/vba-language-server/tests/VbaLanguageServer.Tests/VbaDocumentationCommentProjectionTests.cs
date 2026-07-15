@@ -6,6 +6,47 @@ namespace VbaLanguageServer.Tests;
 public sealed class VbaDocumentationCommentProjectionTests
 {
     [Fact]
+    public void ParserStructuresDoxygenParameterDirectionQualifiers()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Mod_Example.bas",
+            string.Join('\n', [
+                "Attribute VB_Name = \"Mod_Example\"",
+                "'* @brief Updates argument values.",
+                "'* @param[out] Arg1 Example of an output argument.",
+                "'* @param[in] Arg2 Example of an input argument.",
+                "'* @param[in,out] Arg3 Example of an input/output argument.",
+                "Public Sub ExampleSub(ByRef Arg1 As Long, ByVal Arg2 As Boolean, ByRef Arg3 As String)",
+                "End Sub"
+            ]));
+
+        var function = Assert.Single(
+            tree.Module.Declarations,
+            declaration => declaration.Name == "ExampleSub");
+        Assert.Equal(
+            "Updates argument values.\n\n"
+            + "@param[out] Arg1 Example of an output argument.\n\n"
+            + "@param[in] Arg2 Example of an input argument.\n\n"
+            + "@param[in,out] Arg3 Example of an input/output argument.",
+            function.Documentation);
+
+        var arg1 = Assert.Single(
+            tree.Module.Declarations,
+            declaration => declaration.Name == "Arg1");
+        Assert.Equal("Example of an output argument.", arg1.Documentation);
+
+        var arg2 = Assert.Single(
+            tree.Module.Declarations,
+            declaration => declaration.Name == "Arg2");
+        Assert.Equal("Example of an input argument.", arg2.Documentation);
+
+        var arg3 = Assert.Single(
+            tree.Module.Declarations,
+            declaration => declaration.Name == "Arg3");
+        Assert.Equal("Example of an input/output argument.", arg3.Documentation);
+    }
+
+    [Fact]
     public void ParserPreservesInlineDocumentationCommandsAndHoverOrdering()
     {
         var tree = VbaSyntaxTree.ParseModule(
