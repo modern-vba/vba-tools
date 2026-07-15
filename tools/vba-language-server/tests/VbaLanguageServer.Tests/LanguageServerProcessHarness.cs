@@ -47,10 +47,6 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
         _stderrPump = PumpStderrAsync(_lifetime.Token);
     }
 
-    public int ExitCode => _process.ExitCode;
-
-    public bool HasExited => _process.HasExited;
-
     public int TranscriptCheckpoint
     {
         get
@@ -77,10 +73,10 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
                 "src",
                 "VbaLanguageServer.Cli",
                 "VbaLanguageServer.Cli.csproj"));
-        return StartAsync(serverProjectPath, referenceCatalogCacheRoot, environment);
+        return StartFromProjectAsync(serverProjectPath, referenceCatalogCacheRoot, environment);
     }
 
-    public static Task<LanguageServerProcessHarness> StartAsync(
+    private static Task<LanguageServerProcessHarness> StartFromProjectAsync(
         string serverProjectPath,
         string? referenceCatalogCacheRoot = null,
         IReadOnlyDictionary<string, string>? environment = null)
@@ -288,7 +284,7 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
         return response;
     }
 
-    public async Task WaitForExitAsync(
+    private async Task WaitForExitAsync(
         TimeSpan timeout,
         CancellationToken cancellationToken = default)
     {
@@ -302,9 +298,6 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
         }
     }
 
-    public Task WaitForExitAsync(CancellationToken cancellationToken)
-        => WaitForExitAsync(TimeSpan.FromSeconds(5), cancellationToken);
-
     public async ValueTask DisposeAsync()
     {
         if (_disposed)
@@ -312,13 +305,13 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
             return;
         }
 
-        _disposed = true;
         try
         {
             await TryStopProcessAsync();
         }
         finally
         {
+            _disposed = true;
             _lifetime.Cancel();
             await IgnoreFailureAsync(_stdoutPump);
             await IgnoreFailureAsync(_stderrPump);

@@ -101,21 +101,51 @@ public sealed class LanguageServerProcessTests
     }
 
     [Fact]
+    public async Task Harness_retains_interleaved_notifications_and_correlates_concurrent_responses()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/Concurrent.bas";
+        var text = "Public Sub Run()\nEnd Sub\n";
+        await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
+
+        var completionTask = process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri },
+                position = new { line = 0, character = 11 }
+            });
+        var symbolsTask = process.SendRequestAsync(
+            3,
+            "textDocument/documentSymbol",
+            new
+            {
+                textDocument = new { uri }
+            });
+
+        var responses = await Task.WhenAll(completionTask, symbolsTask);
+        var completion = responses[0];
+        var symbols = responses[1];
+        Assert.Equal(2, completion.GetProperty("id").GetInt32());
+        Assert.Equal(3, symbols.GetProperty("id").GetInt32());
+        Assert.Contains(
+            completion.GetProperty("result").EnumerateArray(),
+            item => item.GetProperty("label").GetString() == "Run");
+        Assert.Contains(
+            symbols.GetProperty("result").EnumerateArray(),
+            item => item.GetProperty("name").GetString() == "Run");
+
+        var diagnostics = await process.WaitForDiagnosticsAsync(uri);
+        Assert.Empty(diagnostics.GetProperty("params").GetProperty("diagnostics").EnumerateArray());
+        await process.ShutdownAsync(4);
+    }
+
+    [Fact]
     public async Task Server_advertises_semantic_tokens_and_updates_after_document_change()
     {
-        var serverProjectPath = Path.GetFullPath(
-            Path.Combine(
-                AppContext.BaseDirectory,
-                "..",
-                "..",
-                "..",
-                "..",
-                "..",
-                "src",
-                "VbaLanguageServer.Cli",
-                "VbaLanguageServer.Cli.csproj"));
-
-        await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
+        await using var process = await LanguageServerProcessHarness.StartAsync();
 
         var initialize = await process.SendRequestAsync(1,
             "initialize",
@@ -184,29 +214,13 @@ public sealed class LanguageServerProcessTests
         var afterLength = after.GetProperty("result").GetProperty("data").GetArrayLength();
         Assert.True(afterLength > beforeLength);
 
-        await process.SendRequestAsync(4, "shutdown", null);
-        await process.SendNotificationAsync("exit", null);
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        await process.WaitForExitAsync(cancellation.Token);
-        Assert.Equal(0, process.ExitCode);
+        await process.ShutdownAsync(4);
     }
 
     [Fact]
     public async Task Server_returns_project_symbol_semantic_tokens_for_range_bounds_scenario()
     {
-        var serverProjectPath = Path.GetFullPath(
-            Path.Combine(
-                AppContext.BaseDirectory,
-                "..",
-                "..",
-                "..",
-                "..",
-                "..",
-                "src",
-                "VbaLanguageServer.Cli",
-                "VbaLanguageServer.Cli.csproj"));
-
-        await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
+        await using var process = await LanguageServerProcessHarness.StartAsync();
 
         await process.InitializeAsync();
         const string rangeBoundsUri = "file:///C:/work/WorksheetRangeBounds.cls";
@@ -255,29 +269,13 @@ public sealed class LanguageServerProcessTests
             && token.TokenType == "property"
             && !token.TokenModifiers.Contains("declaration"));
 
-        await process.SendRequestAsync(3, "shutdown", null);
-        await process.SendNotificationAsync("exit", null);
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        await process.WaitForExitAsync(cancellation.Token);
-        Assert.Equal(0, process.ExitCode);
+        await process.ShutdownAsync(3);
     }
 
     [Fact]
     public async Task Server_publishes_diagnostics_after_open_and_change_notifications()
     {
-        var serverProjectPath = Path.GetFullPath(
-            Path.Combine(
-                AppContext.BaseDirectory,
-                "..",
-                "..",
-                "..",
-                "..",
-                "..",
-                "src",
-                "VbaLanguageServer.Cli",
-                "VbaLanguageServer.Cli.csproj"));
-
-        await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
+        await using var process = await LanguageServerProcessHarness.StartAsync();
 
         await process.SendRequestAsync(1,
             "initialize",
@@ -353,30 +351,13 @@ public sealed class LanguageServerProcessTests
         var validDiagnostics = await process.WaitForNotificationAsync("textDocument/publishDiagnostics");
         Assert.Empty(validDiagnostics.GetProperty("params").GetProperty("diagnostics").EnumerateArray());
 
-        await process.SendRequestAsync(2, "shutdown", null);
-        await process.SendNotificationAsync("exit", null);
-
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        await process.WaitForExitAsync(cancellation.Token);
-        Assert.Equal(0, process.ExitCode);
+        await process.ShutdownAsync(2);
     }
 
     [Fact]
     public async Task Server_returns_document_symbols_for_representative_source_definitions()
     {
-        var serverProjectPath = Path.GetFullPath(
-            Path.Combine(
-                AppContext.BaseDirectory,
-                "..",
-                "..",
-                "..",
-                "..",
-                "..",
-                "src",
-                "VbaLanguageServer.Cli",
-                "VbaLanguageServer.Cli.csproj"));
-
-        await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
+        await using var process = await LanguageServerProcessHarness.StartAsync();
 
         await process.InitializeAsync();
         await process.SendNotificationAsync("textDocument/didOpen",
@@ -486,29 +467,13 @@ public sealed class LanguageServerProcessTests
         Assert.Contains("CommandButton1_Click", formSymbolNames);
         Assert.DoesNotContain("Caption", formSymbolNames);
 
-        await process.SendRequestAsync(5, "shutdown", null);
-        await process.SendNotificationAsync("exit", null);
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        await process.WaitForExitAsync(cancellation.Token);
-        Assert.Equal(0, process.ExitCode);
+        await process.ShutdownAsync(5);
     }
 
     [Fact]
     public async Task Server_resolves_representative_source_definitions_and_ambiguity()
     {
-        var serverProjectPath = Path.GetFullPath(
-            Path.Combine(
-                AppContext.BaseDirectory,
-                "..",
-                "..",
-                "..",
-                "..",
-                "..",
-                "src",
-                "VbaLanguageServer.Cli",
-                "VbaLanguageServer.Cli.csproj"));
-
-        await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
+        await using var process = await LanguageServerProcessHarness.StartAsync();
 
         await process.InitializeAsync();
         const string helperUri = "file:///C:/work/Helpers.bas";
@@ -573,29 +538,13 @@ public sealed class LanguageServerProcessTests
             });
         Assert.Equal("Worker", fallbackSymbols.GetProperty("result").EnumerateArray().First().GetProperty("name").GetString());
 
-        await process.SendRequestAsync(8, "shutdown", null);
-        await process.SendNotificationAsync("exit", null);
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        await process.WaitForExitAsync(cancellation.Token);
-        Assert.Equal(0, process.ExitCode);
+        await process.ShutdownAsync(8);
     }
 
     [Fact]
     public async Task Server_returns_source_completion_items_and_language_vocabulary()
     {
-        var serverProjectPath = Path.GetFullPath(
-            Path.Combine(
-                AppContext.BaseDirectory,
-                "..",
-                "..",
-                "..",
-                "..",
-                "..",
-                "src",
-                "VbaLanguageServer.Cli",
-                "VbaLanguageServer.Cli.csproj"));
-
-        await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
+        await using var process = await LanguageServerProcessHarness.StartAsync();
 
         await process.InitializeAsync();
         await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument("file:///C:/work/Builder.bas", string.Join('\n', [
@@ -674,29 +623,13 @@ public sealed class LanguageServerProcessTests
             .ToArray();
         Assert.DoesNotContain("currentValue", outsideLabels);
 
-        await process.SendRequestAsync(5, "shutdown", null);
-        await process.SendNotificationAsync("exit", null);
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        await process.WaitForExitAsync(cancellation.Token);
-        Assert.Equal(0, process.ExitCode);
+        await process.ShutdownAsync(5);
     }
 
     [Fact]
     public async Task Server_returns_member_completion_without_language_vocabulary()
     {
-        var serverProjectPath = Path.GetFullPath(
-            Path.Combine(
-                AppContext.BaseDirectory,
-                "..",
-                "..",
-                "..",
-                "..",
-                "..",
-                "src",
-                "VbaLanguageServer.Cli",
-                "VbaLanguageServer.Cli.csproj"));
-
-        await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
+        await using var process = await LanguageServerProcessHarness.StartAsync();
 
         await process.InitializeAsync();
         await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument("file:///C:/work/WorksheetRangeBounds.cls", string.Join('\n', [
@@ -818,29 +751,13 @@ public sealed class LanguageServerProcessTests
             });
         Assert.Empty(spacedDotCompletion.GetProperty("result").EnumerateArray());
 
-        await process.SendRequestAsync(8, "shutdown", null);
-        await process.SendNotificationAsync("exit", null);
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        await process.WaitForExitAsync(cancellation.Token);
-        Assert.Equal(0, process.ExitCode);
+        await process.ShutdownAsync(8);
     }
 
     [Fact]
     public async Task Server_returns_hover_and_signature_help_for_source_callables()
     {
-        var serverProjectPath = Path.GetFullPath(
-            Path.Combine(
-                AppContext.BaseDirectory,
-                "..",
-                "..",
-                "..",
-                "..",
-                "..",
-                "src",
-                "VbaLanguageServer.Cli",
-                "VbaLanguageServer.Cli.csproj"));
-
-        await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
+        await using var process = await LanguageServerProcessHarness.StartAsync();
 
         await process.InitializeAsync();
         const string uri = "file:///C:/work/Worker.bas";
@@ -914,11 +831,7 @@ public sealed class LanguageServerProcessTests
             undocumentedFirstSignature.GetProperty("parameters").EnumerateArray(),
             parameter => parameter.TryGetProperty("documentation", out _));
 
-        await process.SendRequestAsync(7, "shutdown", null);
-        await process.SendNotificationAsync("exit", null);
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        await process.WaitForExitAsync(cancellation.Token);
-        Assert.Equal(0, process.ExitCode);
+        await process.ShutdownAsync(7);
     }
 
     [Fact]
@@ -932,19 +845,7 @@ public sealed class LanguageServerProcessTests
                 "Microsoft Excel 16.0 Object Library",
                 "Microsoft Scripting Runtime");
 
-            var serverProjectPath = Path.GetFullPath(
-                Path.Combine(
-                    AppContext.BaseDirectory,
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "src",
-                    "VbaLanguageServer.Cli",
-                    "VbaLanguageServer.Cli.csproj"));
-
-            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
 
             await process.InitializeAsync();
             var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
@@ -1000,11 +901,7 @@ public sealed class LanguageServerProcessTests
                 firstSignature.GetProperty("parameters").EnumerateArray().First().GetProperty("documentation").GetProperty("value").GetString(),
                 StringComparison.Ordinal);
 
-            await process.SendRequestAsync(6, "shutdown", null);
-            await process.SendNotificationAsync("exit", null);
-            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await process.WaitForExitAsync(cancellation.Token);
-            Assert.Equal(0, process.ExitCode);
+            await process.ShutdownAsync(6);
         }
         finally
         {
@@ -1039,19 +936,7 @@ public sealed class LanguageServerProcessTests
                                 VbaSourceDefinitionKind.Class)
                         ])));
 
-            var serverProjectPath = Path.GetFullPath(
-                Path.Combine(
-                    AppContext.BaseDirectory,
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "src",
-                    "VbaLanguageServer.Cli",
-                    "VbaLanguageServer.Cli.csproj"));
-
-            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath, cacheRoot);
+            await using var process = await LanguageServerProcessHarness.StartAsync(referenceCatalogCacheRoot: cacheRoot);
 
             await process.InitializeAsync();
             var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
@@ -1064,11 +949,7 @@ public sealed class LanguageServerProcessTests
             var logMessage = await process.WaitForLogTextAsync("source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
 
             Assert.Contains("Generated Library", logMessage);
-            await process.SendRequestAsync(2, "shutdown", null);
-            await process.SendNotificationAsync("exit", null);
-            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await process.WaitForExitAsync(cancellation.Token);
-            Assert.Equal(0, process.ExitCode);
+            await process.ShutdownAsync(2);
         }
         finally
         {
@@ -1084,19 +965,7 @@ public sealed class LanguageServerProcessTests
         try
         {
             WriteReferenceCatalogProjectManifest(projectRoot, "Microsoft Excel 16.0 Object Library");
-            var serverProjectPath = Path.GetFullPath(
-                Path.Combine(
-                    AppContext.BaseDirectory,
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "src",
-                    "VbaLanguageServer.Cli",
-                    "VbaLanguageServer.Cli.csproj"));
-
-            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
 
             await process.InitializeAsync();
             var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
@@ -1109,11 +978,7 @@ public sealed class LanguageServerProcessTests
             var logMessage = await process.WaitForLogTextAsync("source=bundled outcome=available");
 
             Assert.Contains("Microsoft Excel 16.0 Object Library", logMessage);
-            await process.SendRequestAsync(2, "shutdown", null);
-            await process.SendNotificationAsync("exit", null);
-            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await process.WaitForExitAsync(cancellation.Token);
-            Assert.Equal(0, process.ExitCode);
+            await process.ShutdownAsync(2);
         }
         finally
         {
@@ -1136,22 +1001,9 @@ public sealed class LanguageServerProcessTests
             var discoveryStartedFile = Path.Combine(projectRoot, "discovery-started.txt");
             var discoveryReleaseFile = Path.Combine(projectRoot, "discovery-release.txt");
 
-            var serverProjectPath = Path.GetFullPath(
-                Path.Combine(
-                    AppContext.BaseDirectory,
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "src",
-                    "VbaLanguageServer.Cli",
-                    "VbaLanguageServer.Cli.csproj"));
-
             await using var process = await LanguageServerProcessHarness.StartAsync(
-                serverProjectPath,
-                cacheRoot,
-                new Dictionary<string, string>
+                referenceCatalogCacheRoot: cacheRoot,
+                environment: new Dictionary<string, string>
                 {
                     ["VBA_TOOLS_REFERENCE_CATALOG_DISCOVERY_STARTED_FILE"] = discoveryStartedFile,
                     ["VBA_TOOLS_REFERENCE_CATALOG_DISCOVERY_RELEASE_FILE"] = discoveryReleaseFile
@@ -1186,11 +1038,7 @@ public sealed class LanguageServerProcessTests
             Assert.False(discoveryStarted);
 
             File.WriteAllText(discoveryReleaseFile, "release");
-            await process.SendRequestAsync(3, "shutdown", null);
-            await process.SendNotificationAsync("exit", null);
-            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await process.WaitForExitAsync(cancellation.Token);
-            Assert.Equal(0, process.ExitCode);
+            await process.ShutdownAsync(3);
         }
         finally
         {
@@ -1215,22 +1063,9 @@ public sealed class LanguageServerProcessTests
             var discoveryStartedFile = Path.Combine(projectRoot, "discovery-started.txt");
             var discoveryReleaseFile = Path.Combine(projectRoot, "discovery-release.txt");
 
-            var serverProjectPath = Path.GetFullPath(
-                Path.Combine(
-                    AppContext.BaseDirectory,
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "src",
-                    "VbaLanguageServer.Cli",
-                    "VbaLanguageServer.Cli.csproj"));
-
             await using var process = await LanguageServerProcessHarness.StartAsync(
-                serverProjectPath,
-                cacheRoot,
-                new Dictionary<string, string>
+                referenceCatalogCacheRoot: cacheRoot,
+                environment: new Dictionary<string, string>
                 {
                     ["VBA_TOOLS_REFERENCE_CATALOG_DISCOVERY_STARTED_FILE"] = discoveryStartedFile,
                     ["VBA_TOOLS_REFERENCE_CATALOG_DISCOVERY_RELEASE_FILE"] = discoveryReleaseFile
@@ -1289,11 +1124,7 @@ public sealed class LanguageServerProcessTests
                 && token.Line == 8);
 
             File.WriteAllText(discoveryReleaseFile, "release");
-            await process.SendRequestAsync(5, "shutdown", null);
-            await process.SendNotificationAsync("exit", null);
-            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await process.WaitForExitAsync(cancellation.Token);
-            Assert.Equal(0, process.ExitCode);
+            await process.ShutdownAsync(5);
         }
         finally
         {
@@ -1316,19 +1147,7 @@ public sealed class LanguageServerProcessTests
                 CreateGeneratedReferenceCatalog("Generated Library")));
             MarkReferenceCatalogIndexAsStale(store, "Generated Library");
 
-            var serverProjectPath = Path.GetFullPath(
-                Path.Combine(
-                    AppContext.BaseDirectory,
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "src",
-                    "VbaLanguageServer.Cli",
-                    "VbaLanguageServer.Cli.csproj"));
-
-            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath, cacheRoot);
+            await using var process = await LanguageServerProcessHarness.StartAsync(referenceCatalogCacheRoot: cacheRoot);
 
             await process.InitializeAsync();
             var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
@@ -1368,11 +1187,7 @@ public sealed class LanguageServerProcessTests
 
             Assert.Null(duplicateFailure);
 
-            await process.SendRequestAsync(2, "shutdown", null);
-            await process.SendNotificationAsync("exit", null);
-            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await process.WaitForExitAsync(cancellation.Token);
-            Assert.Equal(0, process.ExitCode);
+            await process.ShutdownAsync(2);
         }
         finally
         {
@@ -1397,19 +1212,7 @@ public sealed class LanguageServerProcessTests
                 store.GetReferenceIndexPath("Generated Library"),
                 "{ this is not valid json");
 
-            var serverProjectPath = Path.GetFullPath(
-                Path.Combine(
-                    AppContext.BaseDirectory,
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "src",
-                    "VbaLanguageServer.Cli",
-                    "VbaLanguageServer.Cli.csproj"));
-
-            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath, cacheRoot);
+            await using var process = await LanguageServerProcessHarness.StartAsync(referenceCatalogCacheRoot: cacheRoot);
 
             await process.InitializeAsync();
             var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
@@ -1426,11 +1229,7 @@ public sealed class LanguageServerProcessTests
             Assert.Contains("could not be read", corruptMessage);
             Assert.Contains("No matching TypeLib registry entry", failedMessage);
 
-            await process.SendRequestAsync(2, "shutdown", null);
-            await process.SendNotificationAsync("exit", null);
-            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await process.WaitForExitAsync(cancellation.Token);
-            Assert.Equal(0, process.ExitCode);
+            await process.ShutdownAsync(2);
         }
         finally
         {
@@ -1454,19 +1253,7 @@ public sealed class LanguageServerProcessTests
                 projectRoot,
                 "Microsoft Excel 16.0 Object Library");
 
-            var serverProjectPath = Path.GetFullPath(
-                Path.Combine(
-                    AppContext.BaseDirectory,
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "src",
-                    "VbaLanguageServer.Cli",
-                    "VbaLanguageServer.Cli.csproj"));
-
-            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
 
             await process.InitializeAsync();
             var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
@@ -1506,11 +1293,7 @@ public sealed class LanguageServerProcessTests
             Assert.Contains("Worksheets", completionLabels);
             Assert.Equal(10, worksheetsCompletion.GetProperty("kind").GetInt32());
 
-            await process.SendRequestAsync(3, "shutdown", null);
-            await process.SendNotificationAsync("exit", null);
-            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await process.WaitForExitAsync(cancellation.Token);
-            Assert.Equal(0, process.ExitCode);
+            await process.ShutdownAsync(3);
         }
         finally
         {
@@ -1533,19 +1316,7 @@ public sealed class LanguageServerProcessTests
                 projectRoot,
                 "Microsoft Excel 16.0 Object Library");
 
-            var serverProjectPath = Path.GetFullPath(
-                Path.Combine(
-                    AppContext.BaseDirectory,
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "src",
-                    "VbaLanguageServer.Cli",
-                    "VbaLanguageServer.Cli.csproj"));
-
-            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
 
             await process.InitializeAsync();
             var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
@@ -1601,11 +1372,7 @@ public sealed class LanguageServerProcessTests
                 .Single();
             Assert.Equal("Range(Cell1, [Cell2]) As Range", secondSignature.GetProperty("label").GetString());
 
-            await process.SendRequestAsync(4, "shutdown", null);
-            await process.SendNotificationAsync("exit", null);
-            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await process.WaitForExitAsync(cancellation.Token);
-            Assert.Equal(0, process.ExitCode);
+            await process.ShutdownAsync(4);
         }
         finally
         {
@@ -1621,19 +1388,7 @@ public sealed class LanguageServerProcessTests
         {
             WriteReferenceCatalogProjectManifest(projectRoot, "Microsoft Scripting Runtime");
 
-            var serverProjectPath = Path.GetFullPath(
-                Path.Combine(
-                    AppContext.BaseDirectory,
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "src",
-                    "VbaLanguageServer.Cli",
-                    "VbaLanguageServer.Cli.csproj"));
-
-            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
 
             await process.InitializeAsync();
             var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
@@ -1658,11 +1413,7 @@ public sealed class LanguageServerProcessTests
             Assert.Contains("Source dictionary wins.", hoverValue, StringComparison.Ordinal);
             Assert.DoesNotContain("Microsoft Scripting Runtime", hoverValue, StringComparison.Ordinal);
 
-            await process.SendRequestAsync(3, "shutdown", null);
-            await process.SendNotificationAsync("exit", null);
-            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await process.WaitForExitAsync(cancellation.Token);
-            Assert.Equal(0, process.ExitCode);
+            await process.ShutdownAsync(3);
         }
         finally
         {
@@ -1681,19 +1432,7 @@ public sealed class LanguageServerProcessTests
                 "Microsoft Excel 16.0 Object Library",
                 "Microsoft Office 16.0 Object Library");
 
-            var serverProjectPath = Path.GetFullPath(
-                Path.Combine(
-                    AppContext.BaseDirectory,
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "src",
-                    "VbaLanguageServer.Cli",
-                    "VbaLanguageServer.Cli.csproj"));
-
-            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
 
             await process.InitializeAsync();
             var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
@@ -1712,11 +1451,7 @@ public sealed class LanguageServerProcessTests
             Assert.Contains("Microsoft Excel application", hoverValue, StringComparison.Ordinal);
             Assert.DoesNotContain("Microsoft Office application", hoverValue, StringComparison.Ordinal);
 
-            await process.SendRequestAsync(3, "shutdown", null);
-            await process.SendNotificationAsync("exit", null);
-            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await process.WaitForExitAsync(cancellation.Token);
-            Assert.Equal(0, process.ExitCode);
+            await process.ShutdownAsync(3);
         }
         finally
         {
@@ -1735,19 +1470,7 @@ public sealed class LanguageServerProcessTests
                 "Microsoft Office 16.0 Object Library",
                 "Microsoft Outlook 16.0 Object Library");
 
-            var serverProjectPath = Path.GetFullPath(
-                Path.Combine(
-                    AppContext.BaseDirectory,
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "src",
-                    "VbaLanguageServer.Cli",
-                    "VbaLanguageServer.Cli.csproj"));
-
-            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
 
             await process.InitializeAsync();
             var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
@@ -1783,11 +1506,7 @@ public sealed class LanguageServerProcessTests
             Assert.DoesNotContain("Application", completionLabels);
             Assert.DoesNotContain("Dictionary", completionLabels);
 
-            await process.SendRequestAsync(5, "shutdown", null);
-            await process.SendNotificationAsync("exit", null);
-            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await process.WaitForExitAsync(cancellation.Token);
-            Assert.Equal(0, process.ExitCode);
+            await process.ShutdownAsync(5);
         }
         finally
         {
@@ -1806,19 +1525,7 @@ public sealed class LanguageServerProcessTests
                 "Microsoft Excel 16.0 Object Library",
                 "Uncataloged Reference Library");
 
-            var serverProjectPath = Path.GetFullPath(
-                Path.Combine(
-                    AppContext.BaseDirectory,
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "src",
-                    "VbaLanguageServer.Cli",
-                    "VbaLanguageServer.Cli.csproj"));
-
-            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
 
             await process.InitializeAsync();
             var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
@@ -1872,11 +1579,7 @@ public sealed class LanguageServerProcessTests
                 .ToArray();
             Assert.DoesNotContain("UncatalogedType", completionLabels);
 
-            await process.SendRequestAsync(4, "shutdown", null);
-            await process.SendNotificationAsync("exit", null);
-            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await process.WaitForExitAsync(cancellation.Token);
-            Assert.Equal(0, process.ExitCode);
+            await process.ShutdownAsync(4);
         }
         finally
         {
@@ -1887,19 +1590,7 @@ public sealed class LanguageServerProcessTests
     [Fact]
     public async Task Server_renames_source_targets_and_rejects_non_renameable_inputs()
     {
-        var serverProjectPath = Path.GetFullPath(
-            Path.Combine(
-                AppContext.BaseDirectory,
-                "..",
-                "..",
-                "..",
-                "..",
-                "..",
-                "src",
-                "VbaLanguageServer.Cli",
-                "VbaLanguageServer.Cli.csproj"));
-
-        await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
+        await using var process = await LanguageServerProcessHarness.StartAsync();
 
         await process.InitializeAsync();
         const string uri = "file:///C:/work/Worker.bas";
@@ -1945,29 +1636,13 @@ public sealed class LanguageServerProcessTests
             new { newName = "IgnoredValue" });
         Assert.Equal(JsonValueKind.Null, stringRename.GetProperty("result").ValueKind);
 
-        await process.SendRequestAsync(4, "shutdown", null);
-        await process.SendNotificationAsync("exit", null);
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        await process.WaitForExitAsync(cancellation.Token);
-        Assert.Equal(0, process.ExitCode);
+        await process.ShutdownAsync(4);
     }
 
     [Fact]
     public async Task Server_formats_source_casing_and_indentation()
     {
-        var serverProjectPath = Path.GetFullPath(
-            Path.Combine(
-                AppContext.BaseDirectory,
-                "..",
-                "..",
-                "..",
-                "..",
-                "..",
-                "src",
-                "VbaLanguageServer.Cli",
-                "VbaLanguageServer.Cli.csproj"));
-
-        await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
+        await using var process = await LanguageServerProcessHarness.StartAsync();
 
         await process.InitializeAsync();
         const string builderUri = "file:///C:/work/Builder.bas";
@@ -2060,11 +1735,7 @@ public sealed class LanguageServerProcessTests
             });
         Assert.Empty(noFormatting.GetProperty("result").EnumerateArray());
 
-        await process.SendRequestAsync(4, "shutdown", null);
-        await process.SendNotificationAsync("exit", null);
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        await process.WaitForExitAsync(cancellation.Token);
-        Assert.Equal(0, process.ExitCode);
+        await process.ShutdownAsync(4);
     }
 
     [Fact]
@@ -2077,19 +1748,7 @@ public sealed class LanguageServerProcessTests
             Directory.CreateDirectory(Path.Combine(projectRoot, "src", "Book1"));
             Directory.CreateDirectory(Path.Combine(projectRoot, "src", "SecondBook"));
 
-            var serverProjectPath = Path.GetFullPath(
-                Path.Combine(
-                    AppContext.BaseDirectory,
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "src",
-                    "VbaLanguageServer.Cli",
-                    "VbaLanguageServer.Cli.csproj"));
-
-            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
 
             await process.InitializeAsync();
             var book1CallerUri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Caller.bas"));
@@ -2140,11 +1799,7 @@ public sealed class LanguageServerProcessTests
             Assert.Contains("BuildValue", book1Labels);
             Assert.DoesNotContain("SecondOnly", book1Labels);
 
-            await process.SendRequestAsync(5, "shutdown", null);
-            await process.SendNotificationAsync("exit", null);
-            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await process.WaitForExitAsync(cancellation.Token);
-            Assert.Equal(0, process.ExitCode);
+            await process.ShutdownAsync(5);
         }
         finally
         {
@@ -2161,19 +1816,7 @@ public sealed class LanguageServerProcessTests
             File.WriteAllText(Path.Combine(projectRoot, "vba-project.json"), ProjectManifestFixtureText("references.json"));
             Directory.CreateDirectory(Path.Combine(projectRoot, "src", "Book1"));
 
-            var serverProjectPath = Path.GetFullPath(
-                Path.Combine(
-                    AppContext.BaseDirectory,
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "src",
-                    "VbaLanguageServer.Cli",
-                    "VbaLanguageServer.Cli.csproj"));
-
-            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
 
             await process.InitializeAsync();
             var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
@@ -2192,11 +1835,7 @@ public sealed class LanguageServerProcessTests
             var warning = await process.WaitForLogMessageAsync("missing expected main reference 'Microsoft Excel 16.0 Object Library'");
             Assert.Equal(2, warning.GetProperty("params").GetProperty("type").GetInt32());
 
-            await process.SendRequestAsync(2, "shutdown", null);
-            await process.SendNotificationAsync("exit", null);
-            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await process.WaitForExitAsync(cancellation.Token);
-            Assert.Equal(0, process.ExitCode);
+            await process.ShutdownAsync(2);
         }
         finally
         {
@@ -2249,19 +1888,7 @@ public sealed class LanguageServerProcessTests
             Directory.CreateDirectory(Path.Combine(projectRoot, "src", "Book1"));
             Directory.CreateDirectory(Path.Combine(projectRoot, "src", "SecondBook"));
 
-            var serverProjectPath = Path.GetFullPath(
-                Path.Combine(
-                    AppContext.BaseDirectory,
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "src",
-                    "VbaLanguageServer.Cli",
-                    "VbaLanguageServer.Cli.csproj"));
-
-            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
 
             await process.InitializeAsync();
             var book1Uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
@@ -2290,11 +1917,7 @@ public sealed class LanguageServerProcessTests
             Assert.Contains("main=<none>", secondBookMessage, StringComparison.Ordinal);
             await process.WaitForLogMessageAsync("document 'SecondBook' kind 'excel' is missing expected main reference");
 
-            await process.SendRequestAsync(2, "shutdown", null);
-            await process.SendNotificationAsync("exit", null);
-            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await process.WaitForExitAsync(cancellation.Token);
-            Assert.Equal(0, process.ExitCode);
+            await process.ShutdownAsync(2);
         }
         finally
         {
@@ -2308,19 +1931,7 @@ public sealed class LanguageServerProcessTests
         var projectRoot = Directory.CreateTempSubdirectory("vba-ls-adhoc-references-").FullName;
         try
         {
-            var serverProjectPath = Path.GetFullPath(
-                Path.Combine(
-                    AppContext.BaseDirectory,
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "src",
-                    "VbaLanguageServer.Cli",
-                    "VbaLanguageServer.Cli.csproj"));
-
-            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
 
             await process.InitializeAsync();
             var uri = ToFileUri(Path.Combine(projectRoot, "Worker.bas"));
@@ -2333,11 +1944,7 @@ public sealed class LanguageServerProcessTests
             var selection = await process.TryWaitForLogMessageAsync("VbaProjectReferenceSelection", TimeSpan.FromMilliseconds(500));
             Assert.Null(selection);
 
-            await process.SendRequestAsync(2, "shutdown", null);
-            await process.SendNotificationAsync("exit", null);
-            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await process.WaitForExitAsync(cancellation.Token);
-            Assert.Equal(0, process.ExitCode);
+            await process.ShutdownAsync(2);
         }
         finally
         {
@@ -2358,19 +1965,7 @@ public sealed class LanguageServerProcessTests
             Directory.CreateDirectory(Path.Combine(looseRoot, "same"));
             Directory.CreateDirectory(Path.Combine(looseRoot, "other"));
 
-            var serverProjectPath = Path.GetFullPath(
-                Path.Combine(
-                    AppContext.BaseDirectory,
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "src",
-                    "VbaLanguageServer.Cli",
-                    "VbaLanguageServer.Cli.csproj"));
-
-            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
 
             await process.InitializeAsync();
             var manifestHelperUri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Helper.bas"));
@@ -2430,11 +2025,7 @@ public sealed class LanguageServerProcessTests
             Assert.Contains("BuildValue", looseLabels);
             Assert.Contains("String", looseLabels);
 
-            await process.SendRequestAsync(5, "shutdown", null);
-            await process.SendNotificationAsync("exit", null);
-            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await process.WaitForExitAsync(cancellation.Token);
-            Assert.Equal(0, process.ExitCode);
+            await process.ShutdownAsync(5);
         }
         finally
         {
@@ -2476,19 +2067,7 @@ public sealed class LanguageServerProcessTests
             File.WriteAllText(callerPath, callerText);
             File.WriteAllText(helperPath, helperText);
 
-            var serverProjectPath = Path.GetFullPath(
-                Path.Combine(
-                    AppContext.BaseDirectory,
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "src",
-                    "VbaLanguageServer.Cli",
-                    "VbaLanguageServer.Cli.csproj"));
-
-            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
 
             await process.InitializeAsync();
             await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(callerUri, callerText));
@@ -2524,11 +2103,7 @@ public sealed class LanguageServerProcessTests
                 documentation,
                 hover.GetProperty("result").GetProperty("contents").GetProperty("value").GetString());
 
-            await process.SendRequestAsync(6, "shutdown", null);
-            await process.SendNotificationAsync("exit", null);
-            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await process.WaitForExitAsync(cancellation.Token);
-            Assert.Equal(0, process.ExitCode);
+            await process.ShutdownAsync(6);
         }
         finally
         {
@@ -2546,19 +2121,7 @@ public sealed class LanguageServerProcessTests
             var canonicalUri = ToFileUri(sourcePath);
             var encodedUri = ToEncodedDriveFileUri(sourcePath);
             File.WriteAllText(sourcePath, "Public Sub InitialDisk()\nEnd Sub\n");
-            var serverProjectPath = Path.GetFullPath(
-                Path.Combine(
-                    AppContext.BaseDirectory,
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "src",
-                    "VbaLanguageServer.Cli",
-                    "VbaLanguageServer.Cli.csproj"));
-
-            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
             await process.InitializeAsync();
 
             await process.SendNotificationAsync("textDocument/didOpen",
@@ -2682,11 +2245,7 @@ public sealed class LanguageServerProcessTests
                 });
             Assert.Empty(afterDeletedBufferClose.GetProperty("result").EnumerateArray());
 
-            await process.SendRequestAsync(7, "shutdown", null);
-            await process.SendNotificationAsync("exit", null);
-            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await process.WaitForExitAsync(cancellation.Token);
-            Assert.Equal(0, process.ExitCode);
+            await process.ShutdownAsync(7);
         }
         finally
         {
@@ -2715,19 +2274,7 @@ public sealed class LanguageServerProcessTests
             var callerUri = ToFileUri(callerPath);
             var helperUri = ToFileUri(helperPath);
             var manifestUri = ToFileUri(manifestPath);
-            var serverProjectPath = Path.GetFullPath(
-                Path.Combine(
-                    AppContext.BaseDirectory,
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "src",
-                    "VbaLanguageServer.Cli",
-                    "VbaLanguageServer.Cli.csproj"));
-
-            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
             await process.InitializeAsync();
             await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(callerUri, callerText));
 
@@ -2780,11 +2327,7 @@ public sealed class LanguageServerProcessTests
                 "BuildValue");
             Assert.Equal(JsonValueKind.Null, afterManifestClose.ValueKind);
 
-            await process.SendRequestAsync(6, "shutdown", null);
-            await process.SendNotificationAsync("exit", null);
-            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await process.WaitForExitAsync(cancellation.Token);
-            Assert.Equal(0, process.ExitCode);
+            await process.ShutdownAsync(6);
         }
         finally
         {
@@ -2811,19 +2354,7 @@ public sealed class LanguageServerProcessTests
             var callerUri = ToFileUri(callerPath);
             var helperUri = ToFileUri(helperPath);
             var manifestUri = ToFileUri(manifestPath);
-            var serverProjectPath = Path.GetFullPath(
-                Path.Combine(
-                    AppContext.BaseDirectory,
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "src",
-                    "VbaLanguageServer.Cli",
-                    "VbaLanguageServer.Cli.csproj"));
-
-            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
             await process.InitializeAsync();
 
             var withoutManifest = await SendDefinitionRequestAsync(process, 2,
@@ -2914,11 +2445,7 @@ public sealed class LanguageServerProcessTests
                 "BuildValue");
             Assert.Equal(JsonValueKind.Null, afterDeletedOverlayClose.ValueKind);
 
-            await process.SendRequestAsync(12, "shutdown", null);
-            await process.SendNotificationAsync("exit", null);
-            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await process.WaitForExitAsync(cancellation.Token);
-            Assert.Equal(0, process.ExitCode);
+            await process.ShutdownAsync(12);
         }
         finally
         {
@@ -2947,19 +2474,7 @@ public sealed class LanguageServerProcessTests
             var callerUri = ToFileUri(callerPath);
             var helperUri = ToFileUri(helperPath);
             var manifestUri = ToFileUri(manifestPath);
-            var serverProjectPath = Path.GetFullPath(
-                Path.Combine(
-                    AppContext.BaseDirectory,
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "src",
-                    "VbaLanguageServer.Cli",
-                    "VbaLanguageServer.Cli.csproj"));
-
-            await using var process = await LanguageServerProcessHarness.StartAsync(serverProjectPath: serverProjectPath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
             await process.InitializeAsync();
             await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(callerUri, callerText));
 
@@ -3076,11 +2591,7 @@ public sealed class LanguageServerProcessTests
                 "BuildValue");
             Assert.Equal(helperUri, recoveredAfterInvalidSourcePath.GetProperty("uri").GetString());
 
-            await process.SendRequestAsync(9, "shutdown", null);
-            await process.SendNotificationAsync("exit", null);
-            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await process.WaitForExitAsync(cancellation.Token);
-            Assert.Equal(0, process.ExitCode);
+            await process.ShutdownAsync(9);
         }
         finally
         {
