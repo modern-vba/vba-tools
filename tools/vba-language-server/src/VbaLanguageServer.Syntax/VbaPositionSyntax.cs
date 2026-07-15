@@ -640,20 +640,6 @@ internal sealed class VbaPositionSyntaxIndex
                 VbaCompletionExpectation.ExpressionValue);
         }
 
-        if (IsExplicitAssignmentTarget(prefix))
-        {
-            return VbaCompletionExpectation.AssignmentTarget;
-        }
-
-        var expressionStart = FindExpressionStart(prefix);
-        if (expressionStart >= 0)
-        {
-            return ClassifyExpressionTail(
-                prefix.Skip(expressionStart).ToArray(),
-                position,
-                VbaCompletionExpectation.ExpressionValue);
-        }
-
         if (prefix[^1].Kind == VbaTokenKind.Operator)
         {
             return prefix[^1].Text == ":="
@@ -669,6 +655,20 @@ internal sealed class VbaPositionSyntaxIndex
         if (prefix[^1].Text.Equals("Then", StringComparison.OrdinalIgnoreCase))
         {
             return VbaCompletionExpectation.ProcedureStatement;
+        }
+
+        if (IsExplicitAssignmentTarget(prefix))
+        {
+            return VbaCompletionExpectation.AssignmentTarget;
+        }
+
+        var expressionStart = FindExpressionStart(prefix);
+        if (expressionStart >= 0)
+        {
+            return ClassifyExpressionTail(
+                prefix.Skip(expressionStart).ToArray(),
+                position,
+                VbaCompletionExpectation.ExpressionValue);
         }
 
         if (prefix[^1].Kind == VbaTokenKind.Punctuation
@@ -756,6 +756,13 @@ internal sealed class VbaPositionSyntaxIndex
             return VbaCompletionExpectation.CallArgument;
         }
 
+        if (argumentPrefix.Length == 1
+            && IsNameToken(argumentPrefix[0])
+            && !HasTrailingWhitespace(position, argumentPrefix[0]))
+        {
+            return VbaCompletionExpectation.CallArgument;
+        }
+
         return ClassifyExpressionTail(
             argumentPrefix,
             position,
@@ -784,7 +791,21 @@ internal sealed class VbaPositionSyntaxIndex
             return null;
         }
 
-        return ClassifyNameSlot(prefix.Skip(raiseEventIndex + 1).ToArray(), position, VbaCompletionExpectation.EventName);
+        var slotTokens = prefix.Skip(raiseEventIndex + 1).ToArray();
+        if (slotTokens.Length >= 2
+            && IsNameToken(slotTokens[0])
+            && IsPunctuation(slotTokens[1], "("))
+        {
+            if (slotTokens.Any(token =>
+                token.Kind == VbaTokenKind.Operator && token.Text == ":="))
+            {
+                return VbaCompletionExpectation.None;
+            }
+
+            return null;
+        }
+
+        return ClassifyNameSlot(slotTokens, position, VbaCompletionExpectation.EventName);
     }
 
     private VbaCompletionExpectation? GetLabelNameExpectation(
@@ -916,11 +937,26 @@ internal sealed class VbaPositionSyntaxIndex
     }
 
     private static bool IsExplicitAssignmentTarget(IReadOnlyList<VbaToken> prefix)
-        => prefix.Count > 0
-            && (IsWord(prefix[0], "Set")
-                || IsWord(prefix[0], "Let")
-                || (IsWord(prefix[0], "For")
-                    && (prefix.Count == 1 || IsWord(prefix[1], "Each"))));
+    {
+        if (prefix.Count == 0)
+        {
+            return false;
+        }
+
+        if (IsWord(prefix[0], "Set") || IsWord(prefix[0], "Let"))
+        {
+            return true;
+        }
+
+        if (!IsWord(prefix[0], "For"))
+        {
+            return false;
+        }
+
+        return prefix.Count == 1
+            || (IsWord(prefix[1], "Each")
+                && !prefix.Any(token => IsWord(token, "In")));
+    }
 
     private static int FindExpressionStart(IReadOnlyList<VbaToken> prefix)
     {

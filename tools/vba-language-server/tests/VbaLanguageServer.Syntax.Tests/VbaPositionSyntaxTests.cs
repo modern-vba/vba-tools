@@ -135,6 +135,46 @@ public sealed class VbaPositionSyntaxTests
     }
 
     [Fact]
+    public void PositionSyntaxPreservesExpectationsForPartialArgumentsAndStatementTransitions()
+    {
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    value = ExampleFunc(Ar",
+            "    ExampleSub Ar",
+            "    If condition Then ",
+            "    For Each item In ",
+            "    For Each it",
+            "    RaiseEvent Changed(",
+            "    RaiseEvent Changed(Arg:=",
+            "End Sub"
+        ]);
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.bas", source);
+
+        Assert.Equal(
+            VbaCompletionExpectation.CallArgument,
+            tree.GetPositionSyntax(2, "    value = ExampleFunc(Ar".Length).CompletionExpectation);
+        Assert.Equal(
+            VbaCompletionExpectation.CallArgument,
+            tree.GetPositionSyntax(3, "    ExampleSub Ar".Length).CompletionExpectation);
+        Assert.Equal(
+            VbaCompletionExpectation.ProcedureStatement,
+            tree.GetPositionSyntax(4, "    If condition Then ".Length).CompletionExpectation);
+        Assert.Equal(
+            VbaCompletionExpectation.ExpressionValue,
+            tree.GetPositionSyntax(5, "    For Each item In ".Length).CompletionExpectation);
+        Assert.Equal(
+            VbaCompletionExpectation.AssignmentTarget,
+            tree.GetPositionSyntax(6, "    For Each it".Length).CompletionExpectation);
+        Assert.Equal(
+            VbaCompletionExpectation.CallArgument,
+            tree.GetPositionSyntax(7, "    RaiseEvent Changed(".Length).CompletionExpectation);
+        Assert.Equal(
+            VbaCompletionExpectation.None,
+            tree.GetPositionSyntax(8, "    RaiseEvent Changed(Arg:=".Length).CompletionExpectation);
+    }
+
+    [Fact]
     public void PositionSyntaxStopsTypeCompletionAfterACompletedType()
     {
         var source = string.Join('\n', [
