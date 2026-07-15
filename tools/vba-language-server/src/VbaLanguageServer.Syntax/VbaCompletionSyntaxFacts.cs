@@ -26,7 +26,8 @@ public enum VbaBlockBranchKind
     Then,
     ElseIf,
     Else,
-    Case
+    Case,
+    CaseElse
 }
 
 /// <summary>
@@ -178,6 +179,11 @@ internal static class VbaCompletionSyntaxFactsParser
 
             if (TryGetOpener(tokens, out var kind, out var expectedTerminator, out var initialBranch))
             {
+                if (kind == VbaBlockKind.If && statement.EndsWithColon)
+                {
+                    continue;
+                }
+
                 var branches = initialBranch is null
                     ? []
                     : new List<BranchHeader> { new(initialBranch.Value, statement.Range) };
@@ -411,6 +417,12 @@ internal static class VbaCompletionSyntaxFactsParser
             return true;
         }
 
+        if (Matches(tokens, 0, "Case") && Matches(tokens, 1, "Else"))
+        {
+            kind = VbaBlockBranchKind.CaseElse;
+            return true;
+        }
+
         if (Matches(tokens, 0, "Case"))
         {
             kind = VbaBlockBranchKind.Case;
@@ -423,9 +435,11 @@ internal static class VbaCompletionSyntaxFactsParser
 
     private static bool CanAcceptBranch(OpenBlock block, VbaBlockBranchKind branch)
     {
-        if (branch == VbaBlockBranchKind.Case)
+        if (branch is VbaBlockBranchKind.Case or VbaBlockBranchKind.CaseElse)
         {
-            return block.Kind == VbaBlockKind.Select;
+            return block.Kind == VbaBlockKind.Select
+                && !block.BranchHeaders.Any(header =>
+                    header.Kind == VbaBlockBranchKind.CaseElse);
         }
 
         if (block.Kind != VbaBlockKind.If)

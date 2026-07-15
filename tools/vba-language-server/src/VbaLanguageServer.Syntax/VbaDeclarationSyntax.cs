@@ -144,6 +144,7 @@ public sealed record VbaModuleMemberSyntax(
 /// <param name="DeclarationLabel">The editor-facing declaration summary for hover display.</param>
 /// <param name="CallableKind">The callable kind keyword used in rich signature labels.</param>
 /// <param name="PropertyAccessorKind">The declared Property accessor kind.</param>
+/// <param name="IsArray">Whether the declared name carries a VBA array marker.</param>
 public sealed record VbaDeclarationSyntax(
     string Name,
     VbaDeclarationKind Kind,
@@ -161,7 +162,8 @@ public sealed record VbaDeclarationSyntax(
     bool IsStatic = false,
     string? DeclarationLabel = null,
     string? CallableKind = null,
-    VbaPropertyAccessorKind? PropertyAccessorKind = null);
+    VbaPropertyAccessorKind? PropertyAccessorKind = null,
+    bool IsArray = false);
 
 /// <summary>
 /// Represents a parsed callable declaration and its full source block.

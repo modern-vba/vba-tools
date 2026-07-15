@@ -25,7 +25,8 @@ internal sealed class VbaResolutionPolicy
     public bool IsTypeDefinition(VbaSourceDefinition definition)
         => definition.Kind is VbaSourceDefinitionKind.Class
             or VbaSourceDefinitionKind.Form
-            or VbaSourceDefinitionKind.Type;
+            or VbaSourceDefinitionKind.Type
+            or VbaSourceDefinitionKind.Enum;
 
     public VbaSourceDefinition? ResolveRankedCandidates(
         IEnumerable<VbaRankedDefinition> candidates,

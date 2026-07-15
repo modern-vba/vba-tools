@@ -44,11 +44,14 @@ public sealed class VbaLanguageVocabularyTests
         AssertOrderedSet(VbaLanguageVocabulary.TypeNames);
 
         Assert.Equal(
-            ["False", "New", "Not", "Nothing", "True"],
+            ["Empty", "False", "Me", "New", "Not", "Nothing", "Null", "True"],
             VbaLanguageVocabulary.ExpressionValueWords);
         Assert.DoesNotContain("Public", VbaLanguageVocabulary.ExpressionValueWords);
         Assert.DoesNotContain("Function", VbaLanguageVocabulary.ProcedureStatementWords);
         Assert.DoesNotContain("If", VbaLanguageVocabulary.ModuleDeclarationWords);
+        Assert.Contains("Debug", VbaLanguageVocabulary.ProcedureStatementWords);
+        Assert.Contains("Exit", VbaLanguageVocabulary.ProcedureStatementWords);
+        Assert.Contains("On", VbaLanguageVocabulary.ProcedureStatementWords);
     }
 
     [Fact]
@@ -61,6 +64,19 @@ public sealed class VbaLanguageVocabularyTests
 
         Assert.All(contextWords, word =>
             Assert.Equal(word, VbaLanguageVocabulary.CanonicalKeywords[word]));
+    }
+
+    [Theory]
+    [InlineData("String", true)]
+    [InlineData("Date", true)]
+    [InlineData("If", false)]
+    [InlineData("And", false)]
+    [InlineData("Not", false)]
+    public void BareKeywordCallCapabilityDistinguishesIntrinsicsFromGroupingWords(
+        string word,
+        bool expected)
+    {
+        Assert.Equal(expected, VbaLanguageVocabulary.CanBeBareCallTarget(word));
     }
 
     private static void AssertOrderedSet(IReadOnlyList<string> words)

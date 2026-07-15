@@ -52,7 +52,9 @@ public sealed class VbaCompletionSyntaxFactsTests
             ifBlock.Branches.Select(branch => branch.Kind));
         var select = Assert.Single(tree.Module.Blocks, block => block.Kind == VbaBlockKind.Select);
         Assert.Equal(2, select.Branches.Count);
-        Assert.All(select.Branches, branch => Assert.Equal(VbaBlockBranchKind.Case, branch.Kind));
+        Assert.Equal(
+            [VbaBlockBranchKind.Case, VbaBlockBranchKind.CaseElse],
+            select.Branches.Select(branch => branch.Kind));
         Assert.Contains(tree.Module.Blocks, block => block.Kind == VbaBlockKind.While && block.ExpectedTerminator == "Wend");
         Assert.Contains(tree.Module.Blocks, block => block.Kind == VbaBlockKind.Enum && block.ExpectedTerminator == "End Enum");
         Assert.Contains(tree.Module.Blocks, block => block.Kind == VbaBlockKind.Type && block.ExpectedTerminator == "End Type");
@@ -191,7 +193,8 @@ public sealed class VbaCompletionSyntaxFactsTests
         Assert.Equal([VbaBlockKind.Procedure, VbaBlockKind.If], position.EnclosingBlocks.Select(block => block.Block.Kind));
         Assert.Equal(VbaBlockBranchKind.ElseIf, position.EnclosingBlocks[^1].ActiveBranch);
         Assert.Equal("End If", position.EnclosingBlocks[^1].Block.ExpectedTerminator);
-        Assert.Equal(VbaCompletionExpectation.ProcedureStatement, position.CompletionExpectation);
+        Assert.Equal(VbaCompletionExpectation.ContextualStatement, position.CompletionExpectation);
+        Assert.Equal(["End If"], position.ContextualStatements);
         Assert.Equal("End ", Slice(source, position.CompletionReplacementRange!));
     }
 

@@ -9,6 +9,7 @@ namespace VbaLanguageServer.SourceModel;
 /// </summary>
 internal sealed class VbaSemanticResolution
 {
+    private static readonly VbaCompletionResult EmptyCompletion = new([]);
     private readonly IReadOnlyList<VbaSourceDocument> documents;
     private readonly VbaNameResolutionService nameResolution;
     private readonly VbaTypeResolution typeResolution;
@@ -51,7 +52,7 @@ internal sealed class VbaSemanticResolution
         => GetCompletionResult(uri, line, character).Definitions;
 
     /// <summary>
-    /// Gets completion definitions and vocabulary eligibility for a source position.
+    /// Gets the complete editor-neutral candidates valid at a source position.
     /// </summary>
     /// <param name="uri">The document URI.</param>
     /// <param name="line">The zero-based line.</param>
@@ -62,18 +63,32 @@ internal sealed class VbaSemanticResolution
         var currentDocument = documents.FirstOrDefault(document => SameUri(document.Uri, uri));
         if (currentDocument is null)
         {
-            return new VbaCompletionResult(
-                nameResolution.GetCompletionDefinitions(uri, new VbaPosition(line, character)),
-                VbaCompletionVocabularyKind.Keyword);
+            return EmptyCompletion;
         }
 
-        var positionSyntax = GetSyntaxTree(currentDocument).GetPositionSyntax(line, character);
-        if (positionSyntax.CompletionExpectation == VbaCompletionExpectation.None)
+        var syntaxTree = GetSyntaxTree(currentDocument);
+        var positionSyntax = syntaxTree.GetPositionSyntax(line, character);
+        var expectation = positionSyntax.CompletionExpectation;
+        if (expectation == VbaCompletionExpectation.None)
         {
-            return new VbaCompletionResult([], VbaCompletionVocabularyKind.None);
+            return EmptyCompletion;
         }
 
-        if (positionSyntax.MemberAccess is not null
+        if (!AllowsOperandCompletionInActiveCall(
+                currentDocument,
+                line,
+                character,
+                positionSyntax))
+        {
+            return EmptyCompletion;
+        }
+
+        if (IsMemberCompletionPosition(
+                currentDocument,
+                line,
+                character,
+                positionSyntax)
+            && positionSyntax.MemberAccess is not null
             && (positionSyntax.MemberAccess.TargetSegmentIndex > 0
                 || positionSyntax.MemberAccess.IsLeadingDot
                 || positionSyntax.MemberAccess.IsIncomplete)
@@ -84,19 +99,88 @@ internal sealed class VbaSemanticResolution
                 positionSyntax,
                 out var memberDefinitions))
         {
-            return new VbaCompletionResult(memberDefinitions, VbaCompletionVocabularyKind.None);
+            return Complete(
+                CreateDefinitionCandidates(FilterDefinitions(
+                    memberDefinitions,
+                    expectation,
+                    VbaCallableCompletionContext.None)),
+                positionSyntax.CompletionReplacementRange);
         }
 
-        if (positionSyntax.CompletionExpectation is VbaCompletionExpectation.TypeName
-            or VbaCompletionExpectation.CreatableType)
+        var visibleDefinitions = nameResolution.GetCompletionDefinitions(
+            uri,
+            new VbaPosition(line, character));
+        var callableContext = GetCurrentCallableCompletionContext(syntaxTree, line, character);
+        var typeQualifier = positionSyntax.TypeReference?.Qualifier?.Name;
+        IEnumerable<VbaCompletionCandidate> candidates = expectation switch
         {
-            var typeDefinitions = GetTypeCompletionDefinitions(currentDocument);
-            return new VbaCompletionResult(typeDefinitions, VbaCompletionVocabularyKind.TypeName);
-        }
+            VbaCompletionExpectation.ModuleDeclaration =>
+                CreateModuleDeclarationCandidates(positionSyntax),
+            VbaCompletionExpectation.SyntaxWord =>
+                CreateVocabularyCandidates(positionSyntax.SyntaxWords),
+            VbaCompletionExpectation.ContextualStatement =>
+                CreateContextualStatementCandidates(positionSyntax.ContextualStatements),
+            VbaCompletionExpectation.CallableName =>
+                CreateDefinitionCandidates(FilterDefinitions(
+                    visibleDefinitions,
+                    expectation,
+                    callableContext)),
+            VbaCompletionExpectation.ProcedureStatement =>
+                CreateDefinitionCandidates(FilterDefinitions(
+                    visibleDefinitions,
+                    expectation,
+                    callableContext))
+                    .Concat(CreateVocabularyCandidates(VbaLanguageVocabulary.ProcedureStatementWords))
+                    .Concat(CreateContextualStatementCandidates(positionSyntax.ContextualStatements)),
+            VbaCompletionExpectation.ExpressionValue =>
+                CreateExpressionValueCandidates(
+                    currentDocument,
+                    line,
+                    character,
+                    positionSyntax,
+                    visibleDefinitions),
+            VbaCompletionExpectation.AssignmentTarget =>
+                CreateDefinitionCandidates(FilterDefinitions(
+                    visibleDefinitions,
+                    expectation,
+                    callableContext)),
+            VbaCompletionExpectation.TypeName =>
+                CreateDefinitionCandidates(GetTypeCompletionDefinitions(currentDocument, typeQualifier))
+                    .Concat(typeQualifier is null
+                        ? CreateVocabularyCandidates(VbaLanguageVocabulary.TypeNames)
+                        : []),
+            VbaCompletionExpectation.CreatableType =>
+                CreateDefinitionCandidates(GetTypeCompletionDefinitions(currentDocument, typeQualifier)
+                    .Where(definition => definition.IsCreatable)),
+            VbaCompletionExpectation.ImplementsType =>
+                CreateDefinitionCandidates(GetTypeCompletionDefinitions(currentDocument, typeQualifier)
+                    .Where(definition => definition.Kind == VbaSourceDefinitionKind.Class)
+                    .Where(definition => !SameUri(definition.Uri, currentDocument.Uri))),
+            VbaCompletionExpectation.CallArgument =>
+                CreateCallArgumentCandidates(
+                    currentDocument,
+                    line,
+                    character,
+                    positionSyntax,
+                    visibleDefinitions),
+            VbaCompletionExpectation.NamedArgumentValue =>
+                CreateNamedArgumentValueCandidates(
+                    currentDocument,
+                    line,
+                    character,
+                    positionSyntax,
+                    visibleDefinitions),
+            VbaCompletionExpectation.EventName =>
+                CreateDefinitionCandidates(currentDocument.Definitions
+                    .Where(definition => definition.Kind == VbaSourceDefinitionKind.Event)),
+            VbaCompletionExpectation.LabelName =>
+                CreateLabelCandidates(syntaxTree, positionSyntax),
+            _ => []
+        };
 
-        return new VbaCompletionResult(
-            nameResolution.GetCompletionDefinitions(uri, new VbaPosition(line, character)),
-            VbaCompletionVocabularyKind.Keyword);
+        return Complete(
+            candidates.Concat(CreateVocabularyCandidates(positionSyntax.SupplementalSyntaxWords)),
+            positionSyntax.CompletionReplacementRange);
     }
 
     /// <summary>
@@ -259,15 +343,453 @@ internal sealed class VbaSemanticResolution
         return true;
     }
 
+    private static IEnumerable<VbaCompletionCandidate> CreateModuleDeclarationCandidates(
+        VbaPositionSyntax positionSyntax)
+    {
+        var contextualCandidates = CreateContextualStatementCandidates(
+            positionSyntax.ContextualStatements);
+        var innermostKind = positionSyntax.EnclosingBlocks.LastOrDefault()?.Block.Kind;
+        return innermostKind is VbaBlockKind.Enum or VbaBlockKind.Type
+            ? contextualCandidates
+            : CreateVocabularyCandidates(positionSyntax.StarterWords)
+                .Concat(contextualCandidates);
+    }
+
+    private IEnumerable<VbaCompletionCandidate> CreateCallArgumentCandidates(
+        VbaSourceDocument currentDocument,
+        int line,
+        int character,
+        VbaPositionSyntax positionSyntax,
+        IReadOnlyList<VbaSourceDefinition> visibleDefinitions)
+    {
+        var availability = callSiteResolution.GetCallArgumentAvailability(
+            currentDocument,
+            line,
+            character,
+            positionSyntax);
+        if (availability.CallableDefinition is { IsArray: false }
+            && availability.Signature?.CallableKind is not (VbaCallableKind.Sub
+                or VbaCallableKind.Function
+                or VbaCallableKind.Property
+                or VbaCallableKind.Event))
+        {
+            return [];
+        }
+
+        var candidates = new List<VbaCompletionCandidate>();
+        if (availability.AllowsPositionalExpression)
+        {
+            candidates.AddRange(CreateExpressionCandidates(currentDocument, visibleDefinitions));
+        }
+
+        candidates.AddRange(availability.RemainingNamedParameters.Select(parameter =>
+            new VbaCompletionCandidate(
+                parameter.Name,
+                VbaCompletionCandidateKind.NamedArgument,
+                InsertText: $"{parameter.Name}:=",
+                FilterText: parameter.Name)));
+        return candidates;
+    }
+
+    private IEnumerable<VbaCompletionCandidate> CreateNamedArgumentValueCandidates(
+        VbaSourceDocument currentDocument,
+        int line,
+        int character,
+        VbaPositionSyntax positionSyntax,
+        IReadOnlyList<VbaSourceDefinition> visibleDefinitions)
+    {
+        var availability = callSiteResolution.GetCallArgumentAvailability(
+            currentDocument,
+            line,
+            character,
+            positionSyntax);
+        if (!CanCompleteNamedArgumentValue(availability, positionSyntax))
+        {
+            return [];
+        }
+
+        return CreateExpressionCandidates(currentDocument, visibleDefinitions);
+    }
+
+    private static bool IsKnownCallable(VbaCallArgumentAvailability availability)
+        => availability.CallableDefinition is not null
+            && availability.Signature?.CallableKind is VbaCallableKind.Sub
+                or VbaCallableKind.Function
+                or VbaCallableKind.Property;
+
+    private static bool CanCompleteNamedArgumentValue(
+        VbaCallArgumentAvailability availability,
+        VbaPositionSyntax positionSyntax)
+    {
+        var activeName = positionSyntax.CallSite?.ActiveNamedArgument;
+        return IsKnownCallable(availability)
+            && activeName is not null
+            && availability.RemainingNamedParameters.Any(parameter =>
+                parameter.Name.Equals(activeName, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private bool AllowsOperandCompletionInActiveCall(
+        VbaSourceDocument currentDocument,
+        int line,
+        int character,
+        VbaPositionSyntax positionSyntax)
+    {
+        if (positionSyntax.CompletionExpectation is not (
+                VbaCompletionExpectation.ExpressionValue
+                or VbaCompletionExpectation.TypeName
+                or VbaCompletionExpectation.CreatableType)
+            || !IsInsideActiveCallArgument(positionSyntax.CallSite, line, character))
+        {
+            return true;
+        }
+
+        var availability = callSiteResolution.GetCallArgumentAvailability(
+            currentDocument,
+            line,
+            character,
+            positionSyntax);
+        return positionSyntax.CallSite?.ActiveNamedArgument is null
+            ? availability.AllowsPositionalExpression
+            : CanCompleteNamedArgumentValue(availability, positionSyntax);
+    }
+
+    private static IEnumerable<VbaCompletionCandidate> CreateExpressionCandidates(
+        VbaSourceDocument currentDocument,
+        IEnumerable<VbaSourceDefinition> definitions)
+        => CreateDefinitionCandidates(definitions.Where(IsReadableDefinition))
+            .Concat(CreateVocabularyCandidates(VbaLanguageVocabulary.GetExpressionValueWords(
+                GetSyntaxTree(currentDocument).Module.Kind)));
+
+    private IEnumerable<VbaCompletionCandidate> CreateExpressionValueCandidates(
+        VbaSourceDocument currentDocument,
+        int line,
+        int character,
+        VbaPositionSyntax positionSyntax,
+        IReadOnlyList<VbaSourceDefinition> visibleDefinitions)
+    {
+        if (!IsInsideActiveCallArgument(positionSyntax.CallSite, line, character))
+        {
+            return CreateExpressionCandidates(currentDocument, visibleDefinitions);
+        }
+
+        var availability = callSiteResolution.GetCallArgumentAvailability(
+            currentDocument,
+            line,
+            character,
+            positionSyntax);
+        return availability.AllowsPositionalExpression
+            ? CreateExpressionCandidates(currentDocument, visibleDefinitions)
+            : [];
+    }
+
+    private static bool IsInsideActiveCallArgument(
+        VbaCallSiteSyntax? callSite,
+        int line,
+        int character)
+    {
+        if (callSite is null
+            || !callSite.Callee.AllowsCallTargetSyntax
+            || callSite.ActiveArgumentIndex < 0
+            || callSite.ActiveArgumentIndex >= callSite.Arguments.Count)
+        {
+            return false;
+        }
+
+        var range = callSite.Arguments[callSite.ActiveArgumentIndex].Range;
+        var position = new VbaSyntaxPosition(line, character, 0);
+        return Contains(range, position);
+    }
+
+    private static IEnumerable<VbaSourceDefinition> FilterDefinitions(
+        IEnumerable<VbaSourceDefinition> definitions,
+        VbaCompletionExpectation expectation,
+        VbaCallableCompletionContext callableContext)
+        => definitions.Where(definition => expectation switch
+        {
+            VbaCompletionExpectation.ExpressionValue
+                or VbaCompletionExpectation.CallArgument
+                or VbaCompletionExpectation.NamedArgumentValue => IsReadableDefinition(definition),
+            VbaCompletionExpectation.AssignmentTarget =>
+                (IsWritableDefinition(definition)
+                    && !IsCurrentSetterProperty(definition, callableContext.SetterPropertyName))
+                || IsCurrentResultTarget(definition, callableContext.ResultTargetName),
+            VbaCompletionExpectation.ProcedureStatement =>
+                IsProcedureStatementDefinition(definition),
+            VbaCompletionExpectation.CallableName =>
+                IsCallableDefinition(definition),
+            _ => false
+        });
+
+    private static bool IsReadableDefinition(VbaSourceDefinition definition)
+        => definition.Kind switch
+        {
+            VbaSourceDefinitionKind.Constant
+                or VbaSourceDefinitionKind.Variable
+                or VbaSourceDefinitionKind.Parameter
+                or VbaSourceDefinitionKind.EnumMember
+                or VbaSourceDefinitionKind.TypeMember => true,
+            VbaSourceDefinitionKind.Procedure =>
+                definition.Signature?.CallableKind == VbaCallableKind.Function,
+            VbaSourceDefinitionKind.Property =>
+                definition.PropertyAccess.HasFlag(VbaPropertyAccess.Readable),
+            _ => false
+        };
+
+    private static bool IsWritableDefinition(VbaSourceDefinition definition)
+        => definition.Kind switch
+        {
+            VbaSourceDefinitionKind.Variable
+                or VbaSourceDefinitionKind.Parameter
+                or VbaSourceDefinitionKind.TypeMember => true,
+            VbaSourceDefinitionKind.Property =>
+                definition.PropertyAccess.HasFlag(VbaPropertyAccess.Writable),
+            _ => false
+        };
+
+    private static bool IsProcedureStatementDefinition(VbaSourceDefinition definition)
+        => IsWritableDefinition(definition)
+            || (definition.Kind == VbaSourceDefinitionKind.Property
+                && definition.PropertyAccess.HasFlag(VbaPropertyAccess.Readable))
+            || (definition.Kind == VbaSourceDefinitionKind.Procedure
+                && definition.Signature?.CallableKind is VbaCallableKind.Sub
+                    or VbaCallableKind.Function);
+
+    private static bool IsCallableDefinition(VbaSourceDefinition definition)
+        => definition.Kind == VbaSourceDefinitionKind.Procedure
+            && definition.Signature?.CallableKind is VbaCallableKind.Sub
+                or VbaCallableKind.Function;
+
+    private static bool IsCurrentResultTarget(
+        VbaSourceDefinition definition,
+        string? resultTargetName)
+        => resultTargetName is not null
+            && definition.Kind is VbaSourceDefinitionKind.Procedure
+                or VbaSourceDefinitionKind.Property
+            && definition.Name.Equals(resultTargetName, StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsCurrentSetterProperty(
+        VbaSourceDefinition definition,
+        string? setterPropertyName)
+        => setterPropertyName is not null
+            && definition.Kind == VbaSourceDefinitionKind.Property
+            && definition.Name.Equals(setterPropertyName, StringComparison.OrdinalIgnoreCase);
+
+    private static IEnumerable<VbaCompletionCandidate> CreateDefinitionCandidates(
+        IEnumerable<VbaSourceDefinition> definitions)
+        => definitions.Select(definition => new VbaCompletionCandidate(
+            definition.Name,
+            VbaCompletionCandidateKind.Definition,
+            Definition: definition));
+
+    private static IEnumerable<VbaCompletionCandidate> CreateVocabularyCandidates(
+        IEnumerable<string> words)
+        => words.Select(word => new VbaCompletionCandidate(
+            word,
+            VbaCompletionCandidateKind.LanguageVocabulary));
+
+    private static IEnumerable<VbaCompletionCandidate> CreateContextualStatementCandidates(
+        IEnumerable<string> statements)
+        => statements.Select(statement => new VbaCompletionCandidate(
+            statement,
+            VbaCompletionCandidateKind.ContextualStatement));
+
+    private static IEnumerable<VbaCompletionCandidate> CreateLabelCandidates(
+        VbaSyntaxTree syntaxTree,
+        VbaPositionSyntax positionSyntax)
+    {
+        var reference = positionSyntax.LabelReference;
+        if (reference is null)
+        {
+            return [];
+        }
+
+        var candidates = reference.SyntaxCandidates
+            .Select(label => new VbaCompletionCandidate(
+                label,
+                VbaCompletionCandidateKind.Label))
+            .ToList();
+        if (reference.AllowsProcedureLabels)
+        {
+            candidates.AddRange(syntaxTree.Module.LineLabels
+                .Where(label => label.ProcedureRange == reference.ProcedureRange)
+                .Select(label => new VbaCompletionCandidate(
+                    label.Name,
+                    VbaCompletionCandidateKind.Label)));
+        }
+
+        return candidates;
+    }
+
+    private static VbaCompletionResult Complete(
+        IEnumerable<VbaCompletionCandidate> candidates,
+        VbaSyntaxRange? replacementRange)
+    {
+        var completed = candidates
+            .Select(candidate => AddReplacementEdit(candidate, replacementRange))
+            .GroupBy(GetCandidateIdentity, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group
+                .OrderBy(GetCandidatePrecedence)
+                .ThenBy(candidate => candidate.InsertText, StringComparer.OrdinalIgnoreCase)
+                .First())
+            .OrderBy(candidate => candidate.Label, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(candidate => candidate.Label, StringComparer.Ordinal)
+            .ThenBy(GetEffectiveInsertionText, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(candidate => candidate.Kind)
+            .ToArray();
+        return completed.Length == 0 ? EmptyCompletion : new VbaCompletionResult(completed);
+    }
+
+    private static string GetCandidateIdentity(VbaCompletionCandidate candidate)
+        => $"{candidate.Label}\0{GetEffectiveInsertionText(candidate)}";
+
+    private static string GetEffectiveInsertionText(VbaCompletionCandidate candidate)
+        => candidate.TextEdit?.NewText
+            ?? candidate.InsertText
+            ?? candidate.Label;
+
+    private static VbaCompletionCandidate AddReplacementEdit(
+        VbaCompletionCandidate candidate,
+        VbaSyntaxRange? replacementRange)
+    {
+        if (replacementRange is null || candidate.TextEdit is not null)
+        {
+            return candidate;
+        }
+
+        var range = new VbaRange(
+            new VbaPosition(replacementRange.Start.Line, replacementRange.Start.Character),
+            new VbaPosition(replacementRange.End.Line, replacementRange.End.Character));
+        return candidate with
+        {
+            TextEdit = new VbaTextEdit(range, candidate.InsertText ?? candidate.Label)
+        };
+    }
+
+    private static int GetCandidatePrecedence(VbaCompletionCandidate candidate)
+        => candidate.Kind switch
+        {
+            VbaCompletionCandidateKind.NamedArgument => 0,
+            VbaCompletionCandidateKind.Label => 1,
+            VbaCompletionCandidateKind.ContextualStatement => 1,
+            VbaCompletionCandidateKind.LanguageVocabulary => 2,
+            _ => 3
+        };
+
+    private static bool SupportsMemberCompletion(VbaCompletionExpectation expectation)
+        => expectation is VbaCompletionExpectation.ProcedureStatement
+            or VbaCompletionExpectation.CallableName
+            or VbaCompletionExpectation.ExpressionValue
+            or VbaCompletionExpectation.AssignmentTarget
+            or VbaCompletionExpectation.CallArgument
+            or VbaCompletionExpectation.NamedArgumentValue;
+
+    private bool IsMemberCompletionPosition(
+        VbaSourceDocument currentDocument,
+        int line,
+        int character,
+        VbaPositionSyntax positionSyntax)
+    {
+        var access = positionSyntax.MemberAccess;
+        if (access is null
+            || access.HasTrailingWhitespace
+            || !SupportsMemberCompletion(positionSyntax.CompletionExpectation))
+        {
+            return false;
+        }
+
+        if (positionSyntax.CompletionExpectation is not (VbaCompletionExpectation.ExpressionValue
+            or VbaCompletionExpectation.CallArgument
+            or VbaCompletionExpectation.NamedArgumentValue)
+            || positionSyntax.CallSite is null)
+        {
+            return true;
+        }
+
+        if (access.Range.Start.Offset < positionSyntax.CallSite.Callee.Range.End.Offset)
+        {
+            return false;
+        }
+
+        if (positionSyntax.CompletionExpectation == VbaCompletionExpectation.ExpressionValue
+            && IsInsideActiveCallArgument(positionSyntax.CallSite, line, character))
+        {
+            var positionalAvailability = callSiteResolution.GetCallArgumentAvailability(
+                currentDocument,
+                line,
+                character,
+                positionSyntax);
+            return positionalAvailability.AllowsPositionalExpression;
+        }
+
+        if (positionSyntax.CompletionExpectation != VbaCompletionExpectation.NamedArgumentValue)
+        {
+            return true;
+        }
+
+        var availability = callSiteResolution.GetCallArgumentAvailability(
+            currentDocument,
+            line,
+            character,
+            positionSyntax);
+        return CanCompleteNamedArgumentValue(availability, positionSyntax);
+    }
+
+    private static VbaCallableCompletionContext GetCurrentCallableCompletionContext(
+        VbaSyntaxTree syntaxTree,
+        int line,
+        int character)
+    {
+        var position = new VbaSyntaxPosition(line, character, 0);
+        var declaration = syntaxTree.Module.CallableDeclarations
+            .Where(declaration => !declaration.IsExternal)
+            .Where(declaration => Contains(declaration.BlockRange, position))
+            .OrderBy(declaration => declaration.BlockRange.End.Line - declaration.BlockRange.Start.Line)
+            .FirstOrDefault();
+        if (declaration is null)
+        {
+            return VbaCallableCompletionContext.None;
+        }
+
+        if (declaration.DeclarationKeyword?.Equals("Function", StringComparison.OrdinalIgnoreCase) == true
+            || declaration.PropertyAccessorKind == VbaPropertyAccessorKind.Get)
+        {
+            return new VbaCallableCompletionContext(declaration.Name, null);
+        }
+
+        return declaration.PropertyAccessorKind is VbaPropertyAccessorKind.Let
+                or VbaPropertyAccessorKind.Set
+            ? new VbaCallableCompletionContext(null, declaration.Name)
+            : VbaCallableCompletionContext.None;
+    }
+
+    private static bool Contains(VbaSyntaxRange range, VbaSyntaxPosition position)
+        => Compare(range.Start, position) <= 0 && Compare(position, range.End) <= 0;
+
+    private static int Compare(VbaSyntaxPosition left, VbaSyntaxPosition right)
+    {
+        var lineComparison = left.Line.CompareTo(right.Line);
+        return lineComparison != 0
+            ? lineComparison
+            : left.Character.CompareTo(right.Character);
+    }
+
     private IReadOnlyList<VbaSourceDefinition> GetTypeCompletionDefinitions(
-        VbaSourceDocument currentDocument)
-        => typeResolution.GetVisibleTypeDefinitions(currentDocument)
+        VbaSourceDocument currentDocument,
+        string? qualifier)
+        => nameResolution.GetVisibleTypeDefinitions(currentDocument, qualifier)
             .GroupBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
             .Select(group => typeResolution.ResolveSourceTypeCompletionGroup(group.ToArray()))
             .Where(definition => definition is not null)
             .Select(definition => definition!)
             .OrderBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
             .ToArray();
+
+    private sealed record VbaCallableCompletionContext(
+        string? ResultTargetName,
+        string? SetterPropertyName)
+    {
+        public static VbaCallableCompletionContext None { get; } = new(null, null);
+    }
 
     private bool TryResolveMemberDefinition(
         VbaSourceDocument currentDocument,

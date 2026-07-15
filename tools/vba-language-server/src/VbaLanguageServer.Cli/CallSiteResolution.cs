@@ -58,9 +58,17 @@ internal sealed class VbaCallSiteResolution
             return null;
         }
 
+        var signature = definition.Signature;
+        if (IsExplicitlyWriteOnlyProperty(definition)
+            && (!IsPropertyAssignmentTargetCall(currentDocument, callSite)
+                || !TryCreateSetterInvocationSignature(signature, out signature)))
+        {
+            return null;
+        }
+
         return new VbaSignatureHelp(
-            definition.Signature,
-            GetActiveSignatureParameter(definition.Signature, callSite));
+            signature,
+            GetActiveSignatureParameter(signature, callSite));
     }
 
     /// <summary>
@@ -99,12 +107,239 @@ internal sealed class VbaCallSiteResolution
         var signature = definition.Signature;
         if (signature is null)
         {
-            // A resolved non-callable, array/default-member ambiguity, or callable without
-            // signature metadata must not inherit the permissive unresolved-name behavior.
-            return new VbaCallArgumentAvailability(definition, null, false, []);
+            if (definition.IsArray)
+            {
+                var hasInvalidPriorIndex = GetPriorArguments(callSite)
+                    .Any(argument => argument.Name is not null || argument.IsOmitted);
+                return new VbaCallArgumentAvailability(
+                    definition,
+                    signature,
+                    !hasInvalidPriorIndex,
+                    []);
+            }
+
+            // A resolved scalar, default-member ambiguity, or callable without signature
+            // metadata must not inherit the permissive unresolved-name behavior.
+            return new VbaCallArgumentAvailability(definition, signature, false, []);
+        }
+
+        if (IsExplicitlyWriteOnlyProperty(definition))
+        {
+            if (!IsPropertyAssignmentTargetCall(currentDocument, callSite)
+                || !TryCreateSetterInvocationSignature(signature, out signature))
+            {
+                return new VbaCallArgumentAvailability(definition, signature, false, []);
+            }
+        }
+        else if (!CanSupplyCallArguments(definition))
+        {
+            return new VbaCallArgumentAvailability(definition, signature, false, []);
         }
 
         return AnalyzeResolvedArguments(definition, signature, callSite);
+    }
+
+    private static bool CanSupplyCallArguments(VbaSourceDefinition definition)
+        => definition.Kind != VbaSourceDefinitionKind.Property
+            || definition.PropertyAccess.HasFlag(VbaPropertyAccess.Readable);
+
+    private static bool IsExplicitlyWriteOnlyProperty(VbaSourceDefinition definition)
+        => definition.Kind == VbaSourceDefinitionKind.Property
+            && definition.PropertyAccess.HasFlag(VbaPropertyAccess.Writable)
+            && !definition.PropertyAccess.HasFlag(VbaPropertyAccess.Readable);
+
+    private static bool TryCreateSetterInvocationSignature(
+        VbaCallableSignature signature,
+        out VbaCallableSignature invocationSignature)
+    {
+        invocationSignature = signature;
+        if (signature.Parameters.Count <= 1)
+        {
+            return false;
+        }
+
+        var openParenthesis = signature.Label.IndexOf('(');
+        var closeParenthesis = signature.Label.LastIndexOf(')');
+        if (openParenthesis < 0 || closeParenthesis <= openParenthesis)
+        {
+            return false;
+        }
+
+        var invocationParameters = signature.Parameters
+            .Take(signature.Parameters.Count - 1)
+            .ToArray();
+        var invocationLabel = signature.Label[..(openParenthesis + 1)]
+            + string.Join(", ", invocationParameters.Select(parameter => parameter.Label))
+            + signature.Label[closeParenthesis..];
+        invocationSignature = signature with
+        {
+            Label = invocationLabel,
+            Parameters = invocationParameters
+        };
+        return true;
+    }
+
+    private static bool IsPropertyAssignmentTargetCall(
+        VbaSourceDocument currentDocument,
+        VbaCallSiteSyntax callSite)
+    {
+        if (callSite.Form != VbaCallSyntaxForm.Parenthesized)
+        {
+            return false;
+        }
+
+        var syntaxTree = currentDocument.SyntaxTree
+            ?? VbaSyntaxTree.ParseModule(currentDocument.Uri, currentDocument.Text);
+        if (!HasAssignmentTargetPrefix(
+                syntaxTree.TokenStream.Tokens,
+                callSite.Callee.Range.Start.Offset))
+        {
+            return false;
+        }
+
+        var tokens = GetLogicalTokensAfter(
+            syntaxTree.TokenStream.Tokens,
+            callSite.Callee.Range.End.Offset);
+        if (tokens.Count == 0
+            || tokens[0].Kind != VbaTokenKind.Punctuation
+            || tokens[0].Text != "(")
+        {
+            return false;
+        }
+
+        var depth = 0;
+        for (var index = 0; index < tokens.Count; index++)
+        {
+            var token = tokens[index];
+            if (token.Kind != VbaTokenKind.Punctuation)
+            {
+                continue;
+            }
+
+            if (token.Text == "(")
+            {
+                depth++;
+                continue;
+            }
+
+            if (token.Text != ")")
+            {
+                continue;
+            }
+
+            depth--;
+            if (depth == 0)
+            {
+                return index + 1 < tokens.Count
+                    && tokens[index + 1].Kind == VbaTokenKind.Operator
+                    && tokens[index + 1].Text == "=";
+            }
+        }
+
+        return false;
+    }
+
+    private static bool HasAssignmentTargetPrefix(
+        IReadOnlyList<VbaToken> tokens,
+        int offset)
+    {
+        var prefix = new List<VbaToken>();
+        var continuesOnNextLine = false;
+        foreach (var token in tokens)
+        {
+            if (token.Range.Start.Offset >= offset)
+            {
+                break;
+            }
+
+            if (token.Kind == VbaTokenKind.Whitespace)
+            {
+                continue;
+            }
+
+            if (token.Kind == VbaTokenKind.LineContinuation)
+            {
+                continuesOnNextLine = true;
+                continue;
+            }
+
+            if (token.Kind == VbaTokenKind.NewLine)
+            {
+                if (continuesOnNextLine)
+                {
+                    continuesOnNextLine = false;
+                    continue;
+                }
+
+                prefix.Clear();
+                continue;
+            }
+
+            if (token.Kind == VbaTokenKind.Comment)
+            {
+                prefix.Clear();
+                continue;
+            }
+
+            continuesOnNextLine = false;
+            if (token.Kind == VbaTokenKind.Punctuation && token.Text == ":")
+            {
+                prefix.Clear();
+                continue;
+            }
+
+            prefix.Add(token);
+        }
+
+        return prefix.Count == 0
+            || (prefix.Count == 1
+                && prefix[0].Kind == VbaTokenKind.Keyword
+                && prefix[0].Text.Equals("Let", StringComparison.OrdinalIgnoreCase))
+            || (prefix.Count == 1
+                && prefix[0].Kind == VbaTokenKind.Keyword
+                && prefix[0].Text.Equals("Set", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static IReadOnlyList<VbaToken> GetLogicalTokensAfter(
+        IReadOnlyList<VbaToken> tokens,
+        int offset)
+    {
+        var result = new List<VbaToken>();
+        var continuesOnNextLine = false;
+        foreach (var token in tokens.Where(token => token.Range.End.Offset > offset))
+        {
+            if (token.Kind == VbaTokenKind.Whitespace)
+            {
+                continue;
+            }
+
+            if (token.Kind == VbaTokenKind.LineContinuation)
+            {
+                continuesOnNextLine = true;
+                continue;
+            }
+
+            if (token.Kind == VbaTokenKind.NewLine)
+            {
+                if (continuesOnNextLine)
+                {
+                    continuesOnNextLine = false;
+                    continue;
+                }
+
+                break;
+            }
+
+            if (token.Kind == VbaTokenKind.Comment)
+            {
+                break;
+            }
+
+            continuesOnNextLine = false;
+            result.Add(token);
+        }
+
+        return result;
     }
 
     private bool TryResolveCallableTarget(
@@ -228,7 +463,7 @@ internal sealed class VbaCallSiteResolution
 
         var allowsPositionalExpression = !hasNamedArgument
             && nextPositionalParameter < parameters.Count;
-        var canOfferNamedArguments = definition.Identity.Origin == VbaDefinitionOrigin.Source
+        var canOfferNamedArguments = signature.SupportsNamedArguments
             && definition.Kind != VbaSourceDefinitionKind.Event
             && signature.CallableKind != VbaCallableKind.Event;
         var remainingNamedParameters = canOfferNamedArguments

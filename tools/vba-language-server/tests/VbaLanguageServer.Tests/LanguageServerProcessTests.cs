@@ -26,11 +26,9 @@ public sealed class LanguageServerProcessTests
             .ToArray();
         Assert.Equal(
             [
-                ".", " ", "(", ",", "+", "-", "*", "/", "\\", "^", "&", "=", "<", ">"
+                ".", " ", "(", ",", ":", ";", "+", "-", "*", "/", "\\", "^", "&", "=", "<", ">"
             ],
             completionTriggers);
-        Assert.DoesNotContain(":", completionTriggers);
-        Assert.DoesNotContain(";", completionTriggers);
         Assert.DoesNotContain("!", completionTriggers);
         Assert.True(capabilities.GetProperty("referencesProvider").GetBoolean());
         Assert.True(capabilities.GetProperty("workspaceSymbolProvider").GetBoolean());
@@ -76,7 +74,7 @@ public sealed class LanguageServerProcessTests
                 {
                     new
                     {
-                        text = "Public Sub Hello()\nDebug.Print \"hi\"\nEnd Sub\n"
+                        text = "Public Sub Hello()\n    \nDebug.Print \"hi\"\nEnd Sub\n"
                     }
                 }
             });
@@ -87,13 +85,13 @@ public sealed class LanguageServerProcessTests
             new
             {
                 textDocument = new { uri = "file:///C:/work/Module1.bas" },
-                position = new { line = 1, character = 5 }
+                position = new { line = 1, character = 4 }
             });
 
         var completionItems = completion.GetProperty("result").EnumerateArray().ToArray();
         var completionLabels = completionItems.Select(item => item.GetProperty("label").GetString()).ToArray();
         Assert.Contains("Hello", completionLabels);
-        Assert.Contains("Sub", completionLabels);
+        Assert.Contains("If", completionLabels);
 
         var workspaceSymbols = await server.SendRequestAsync(
             3,
@@ -167,12 +165,160 @@ public sealed class LanguageServerProcessTests
     }
 
     [Fact]
+    public async Task Server_projects_only_candidates_admitted_by_the_active_completion_context()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+        const string uri = "file:///C:/work/ContextualCompletion.bas";
+        var lines = new[]
+        {
+            "Attribute VB_Name = \"ContextualCompletion\"",
+            "Option Explicit",
+            "Public Function ExampleFunc(ByVal Arg1 As Long, Optional ByVal Arg2 As Boolean = False, Optional ByVal Arg3 As Boolean = False) As String",
+            "End Function",
+            "Public Sub Main()",
+            "    Dim result As Variant",
+            "    Dim LocalValue As Long",
+            "    result = ExampleFunc(1, Arg3:=True) ",
+            "    result = ExampleFunc(1, ",
+            "    result = LocalValue +",
+            "    result = LocalValue + ",
+            "    If True Then",
+            "        End ",
+            "    End If",
+            "End Sub"
+        };
+        await server.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, string.Join('\n', lines)));
+        var requestId = 2;
+
+        async Task<JsonElement> CompleteAsync(int line, int character)
+            => (await server.SendRequestAsync(
+                requestId++,
+                "textDocument/completion",
+                new
+                {
+                    textDocument = new { uri },
+                    position = new { line, character }
+                })).GetProperty("result");
+
+        var completedLength = lines[7].Length - 1;
+        Assert.Empty((await CompleteAsync(7, completedLength)).EnumerateArray());
+        Assert.Empty((await CompleteAsync(7, lines[7].Length)).EnumerateArray());
+
+        var arguments = (await CompleteAsync(8, lines[8].Length))
+            .EnumerateArray()
+            .ToArray();
+        var namedArguments = arguments
+            .Where(item => item.GetProperty("kind").GetInt32() == 5)
+            .ToDictionary(item => item.GetProperty("label").GetString()!);
+        Assert.Equal(["Arg2", "Arg3"], namedArguments.Keys.Order(StringComparer.OrdinalIgnoreCase));
+        Assert.Equal("Arg2:=", namedArguments["Arg2"].GetProperty("insertText").GetString());
+        Assert.Equal("Arg2", namedArguments["Arg2"].GetProperty("filterText").GetString());
+        Assert.False(namedArguments["Arg2"].TryGetProperty("documentation", out _));
+
+        var afterOperator = await CompleteAsync(9, lines[9].Length);
+        var afterOperatorSpace = await CompleteAsync(10, lines[10].Length);
+        Assert.NotEmpty(afterOperator.EnumerateArray());
+        Assert.Equal(afterOperator.GetRawText(), afterOperatorSpace.GetRawText());
+
+        var endItem = Assert.Single((await CompleteAsync(12, lines[12].Length)).EnumerateArray());
+        Assert.Equal("End If", endItem.GetProperty("label").GetString());
+        Assert.Equal("End If", endItem.GetProperty("textEdit").GetProperty("newText").GetString());
+
+        await server.ShutdownAsync(requestId);
+    }
+
+    [Fact]
+    public async Task Server_preserves_candidates_across_operator_and_call_separator_whitespace()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+        const string uri = "file:///C:/work/TriggerParity.bas";
+        var lines = new List<string>
+        {
+            "Attribute VB_Name = \"TriggerParity\"",
+            "Option Explicit",
+            "Public Function ExampleFunc(ByVal Arg1 As Long, Optional ByVal Arg2 As Boolean = False) As String",
+            "End Function",
+            "Public Sub Main()",
+            "    Dim result As Variant",
+            "    Dim LocalValue As Long"
+        };
+        var operatorPairs = new List<(int OperatorLine, int SpaceLine)>();
+        foreach (var operation in new[] { "+", "-", "*", "/", "\\", "^", "&", "=", "<", ">" })
+        {
+            var operatorLine = lines.Count;
+            lines.Add($"    result = LocalValue {operation}");
+            var spaceLine = lines.Count;
+            lines.Add($"    result = LocalValue {operation} ");
+            operatorPairs.Add((operatorLine, spaceLine));
+        }
+
+        var wordOperatorPairs = new List<(int OperatorLine, int SpaceLine)>();
+        foreach (var operation in new[] { "And", "Or", "Xor", "Eqv", "Imp", "Mod", "Like", "Is", "Not" })
+        {
+            var operatorLine = lines.Count;
+            lines.Add(operation == "Not"
+                ? "    result = Not"
+                : $"    result = LocalValue {operation}");
+            var spaceLine = lines.Count;
+            lines.Add(lines[operatorLine] + " ");
+            wordOperatorPairs.Add((operatorLine, spaceLine));
+        }
+
+        var commaLine = lines.Count;
+        lines.Add("    result = ExampleFunc(1,");
+        var commaSpaceLine = lines.Count;
+        lines.Add("    result = ExampleFunc(1, ");
+        lines.Add("End Sub");
+        await server.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, string.Join('\n', lines)));
+        var requestId = 2;
+
+        async Task<JsonElement> CompleteAsync(int line)
+            => (await server.SendRequestAsync(
+                requestId++,
+                "textDocument/completion",
+                new
+                {
+                    textDocument = new { uri },
+                    position = new { line, character = lines[line].Length }
+                })).GetProperty("result");
+
+        foreach (var pair in operatorPairs)
+        {
+            var afterOperator = await CompleteAsync(pair.OperatorLine);
+            var afterSpace = await CompleteAsync(pair.SpaceLine);
+            Assert.NotEmpty(afterOperator.EnumerateArray());
+            Assert.Equal(afterOperator.GetRawText(), afterSpace.GetRawText());
+        }
+
+        foreach (var pair in wordOperatorPairs)
+        {
+            var beforeSeparator = await CompleteAsync(pair.OperatorLine);
+            var afterSeparator = await CompleteAsync(pair.SpaceLine);
+            Assert.Empty(beforeSeparator.EnumerateArray());
+            Assert.NotEmpty(afterSeparator.EnumerateArray());
+        }
+
+        var afterComma = await CompleteAsync(commaLine);
+        var afterCommaSpace = await CompleteAsync(commaSpaceLine);
+        Assert.NotEmpty(afterComma.EnumerateArray());
+        Assert.Equal(afterComma.GetRawText(), afterCommaSpace.GetRawText());
+
+        await server.ShutdownAsync(requestId);
+    }
+
+    [Fact]
     public async Task Harness_retains_interleaved_notifications_and_correlates_concurrent_responses()
     {
         await using var process = await LanguageServerProcessHarness.StartAsync();
         await process.InitializeAsync();
         const string uri = "file:///C:/work/Concurrent.bas";
-        var text = "Public Sub Run()\nEnd Sub\n";
+        var text = "Public Sub Run()\n    \nEnd Sub\n";
         await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
 
         var responseCheckpoint = process.TranscriptCheckpoint;
@@ -182,7 +328,7 @@ public sealed class LanguageServerProcessTests
             new
             {
                 textDocument = new { uri },
-                position = new { line = 0, character = 11 }
+                position = new { line = 1, character = 4 }
             });
         var symbolsTask = process.SendRequestAsync(
             3,
@@ -671,6 +817,8 @@ public sealed class LanguageServerProcessTests
             "Public Sub Run()",
             "    Dim currentValue As String",
             "    ",
+            "    currentValue = ",
+            "    Dim typed As ",
             "    WsSr",
             "End Sub"
         ]);
@@ -691,18 +839,52 @@ public sealed class LanguageServerProcessTests
             .ToArray();
 
         Assert.Contains("BuildValue", labels);
-        Assert.Contains("RunMode", labels);
-        Assert.Contains("Automatic", labels);
         Assert.Contains("currentValue", labels);
         Assert.Contains("If", labels);
-        Assert.Contains("String", labels);
+        Assert.DoesNotContain("RunMode", labels);
+        Assert.DoesNotContain("Automatic", labels);
+        Assert.DoesNotContain("String", labels);
 
-        var publicModuleVariableCompletion = await process.SendRequestAsync(3,
+        var expressionCompletion = await process.SendRequestAsync(3,
             "textDocument/completion",
             new
             {
                 textDocument = new { uri = callerUri },
-                position = new { line = 6, character = "    WsSr".Length }
+                position = new { line = 6, character = "    currentValue = ".Length }
+            });
+        var expressionLabels = expressionCompletion
+            .GetProperty("result")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("label").GetString())
+            .ToArray();
+        Assert.Contains("BuildValue", expressionLabels);
+        Assert.Contains("Automatic", expressionLabels);
+        Assert.Contains("currentValue", expressionLabels);
+        Assert.DoesNotContain("RunMode", expressionLabels);
+        Assert.DoesNotContain("String", expressionLabels);
+
+        var typeCompletion = await process.SendRequestAsync(4,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = callerUri },
+                position = new { line = 7, character = "    Dim typed As ".Length }
+            });
+        var typeLabels = typeCompletion
+            .GetProperty("result")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("label").GetString())
+            .ToArray();
+        Assert.Contains("RunMode", typeLabels);
+        Assert.Contains("String", typeLabels);
+        Assert.DoesNotContain("BuildValue", typeLabels);
+
+        var publicModuleVariableCompletion = await process.SendRequestAsync(5,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = callerUri },
+                position = new { line = 8, character = "    WsSr".Length }
             });
         var publicModuleVariableLabels = publicModuleVariableCompletion
             .GetProperty("result")
@@ -712,7 +894,7 @@ public sealed class LanguageServerProcessTests
         Assert.Contains("WsSrv", publicModuleVariableLabels);
         Assert.DoesNotContain("HiddenSrv", publicModuleVariableLabels);
 
-        var outsideProcedureCompletion = await process.SendRequestAsync(4,
+        var outsideProcedureCompletion = await process.SendRequestAsync(6,
             "textDocument/completion",
             new
             {
@@ -726,7 +908,7 @@ public sealed class LanguageServerProcessTests
             .ToArray();
         Assert.DoesNotContain("currentValue", outsideLabels);
 
-        await process.ShutdownAsync(5);
+        await process.ShutdownAsync(7);
     }
 
     [Fact]
@@ -1268,7 +1450,7 @@ public sealed class LanguageServerProcessTests
                 "Option Explicit",
                 "",
                 "Public Sub Run()",
-                "    ",
+                "    Dim target As ",
                 "    Excel.Application",
                 "    Scripting.Dictionary",
                 "    Excel.Run(",
@@ -1281,7 +1463,7 @@ public sealed class LanguageServerProcessTests
                 new
                 {
                     textDocument = new { uri },
-                    position = new { line = 4, character = 4 }
+                    position = new { line = 4, character = "    Dim target As ".Length }
                 });
             var completionLabels = completion
                 .GetProperty("result")
@@ -2559,7 +2741,7 @@ public sealed class LanguageServerProcessTests
                 .Select(item => item.GetProperty("label").GetString())
                 .ToArray();
             Assert.Contains("BuildValue", looseLabels);
-            Assert.Contains("String", looseLabels);
+            Assert.DoesNotContain("String", looseLabels);
 
             await process.ShutdownAsync(5);
         }
@@ -3516,7 +3698,8 @@ public sealed class LanguageServerProcessTests
                     VbaSourceDefinitionKind.Property,
                     "Returns the workbook worksheets.",
                     ParentTypeName: "Workbook",
-                    TypeReference: new VbaTypeReference("Worksheets", "Excel")),
+                    TypeReference: new VbaTypeReference("Worksheets", "Excel"),
+                    PropertyAccess: VbaPropertyAccess.Readable),
                 new VbaProjectReferenceDefinition(
                     "Microsoft Excel 16.0 Object Library",
                     "Range",
@@ -3530,7 +3713,8 @@ public sealed class LanguageServerProcessTests
                         ],
                         "Returns a Range object."),
                     ParentTypeName: "Worksheet",
-                    TypeReference: new VbaTypeReference("Range", "Excel"))
+                    TypeReference: new VbaTypeReference("Range", "Excel"),
+                    PropertyAccess: VbaPropertyAccess.Readable)
             ]);
 
     private static string CreateExcelStartupCatalogWorkerText()

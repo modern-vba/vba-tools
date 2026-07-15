@@ -45,7 +45,7 @@ public sealed class VbaSemanticResolutionTests
             "Option Explicit",
             "Public Sub Run()",
             "    Dim app As Excel.Application",
-            "    app.",
+            "    value = app.",
             "    app.Run(",
             "    Dim dict As Scripting.Dictionary",
             "    dict.",
@@ -55,7 +55,7 @@ public sealed class VbaSemanticResolutionTests
         ]);
         var index = BuildIndex(uri, text);
 
-        var appCompletionLabels = index.GetCompletionDefinitions(uri, 4, "    app.".Length)
+        var appCompletionLabels = index.GetCompletionDefinitions(uri, 4, "    value = app.".Length)
             .Select(definition => definition.Name)
             .ToArray();
         Assert.Contains("Run", appCompletionLabels);
@@ -166,8 +166,8 @@ public sealed class VbaSemanticResolutionTests
             "    Dim bare As ",
             "    Dim typed As WorksheetRan",
             "    Dim range_obj As WorksheetRangeBounds",
-            "    range_obj.",
-            "    range_obj.Col",
+            "    aaaa = range_obj.",
+            "    aaaa = range_obj.Col",
             "    aaaa = range_obj.Column ",
             "    aaaa = range_obj. ",
             "End Sub"
@@ -193,36 +193,40 @@ public sealed class VbaSemanticResolutionTests
                 [helperUri] = helperText
             });
 
-        var dotCompletion = index.GetCompletionResult(workerUri, 6, "    range_obj.".Length);
+        var dotCompletion = index.GetCompletionResult(workerUri, 6, "    aaaa = range_obj.".Length);
         var dotLabels = dotCompletion.Definitions.Select(definition => definition.Name).ToArray();
-        Assert.Equal(VbaCompletionVocabularyKind.None, dotCompletion.VocabularyKind);
+        Assert.All(dotCompletion.Candidates, candidate =>
+            Assert.Equal(VbaCompletionCandidateKind.Definition, candidate.Kind));
         Assert.Contains("Column", dotLabels);
         Assert.Contains("ColumnCount", dotLabels);
         Assert.DoesNotContain("BuildValue", dotLabels);
 
-        var partialCompletion = index.GetCompletionResult(workerUri, 7, "    range_obj.Col".Length);
+        var partialCompletion = index.GetCompletionResult(workerUri, 7, "    aaaa = range_obj.Col".Length);
         var partialLabels = partialCompletion.Definitions.Select(definition => definition.Name).ToArray();
-        Assert.Equal(VbaCompletionVocabularyKind.None, partialCompletion.VocabularyKind);
+        Assert.All(partialCompletion.Candidates, candidate =>
+            Assert.Equal(VbaCompletionCandidateKind.Definition, candidate.Kind));
         Assert.Contains("Column", partialLabels);
         Assert.Contains("ColumnCount", partialLabels);
         Assert.DoesNotContain("BuildValue", partialLabels);
 
         var completedMemberCompletion = index.GetCompletionResult(workerUri, 8, "    aaaa = range_obj.Column ".Length);
-        Assert.Equal(VbaCompletionVocabularyKind.None, completedMemberCompletion.VocabularyKind);
-        Assert.Empty(completedMemberCompletion.Definitions);
+        Assert.Empty(completedMemberCompletion.Candidates);
 
         var spacedDotCompletion = index.GetCompletionResult(workerUri, 9, "    aaaa = range_obj. ".Length);
-        Assert.Equal(VbaCompletionVocabularyKind.None, spacedDotCompletion.VocabularyKind);
-        Assert.Empty(spacedDotCompletion.Definitions);
+        Assert.Empty(spacedDotCompletion.Candidates);
 
         var bareTypeCompletion = index.GetCompletionResult(workerUri, 3, "    Dim bare As ".Length);
-        Assert.Equal(VbaCompletionVocabularyKind.TypeName, bareTypeCompletion.VocabularyKind);
+        Assert.Contains(bareTypeCompletion.Candidates, candidate =>
+            candidate.Kind == VbaCompletionCandidateKind.LanguageVocabulary
+            && candidate.Label == "String");
         Assert.Contains(
             bareTypeCompletion.Definitions,
             definition => definition.Name == "WorksheetRangeBounds" && definition.Kind == VbaSourceDefinitionKind.Class);
 
         var typeCompletion = index.GetCompletionResult(workerUri, 4, "    Dim typed As WorksheetRan".Length);
-        Assert.Equal(VbaCompletionVocabularyKind.TypeName, typeCompletion.VocabularyKind);
+        Assert.Contains(typeCompletion.Candidates, candidate =>
+            candidate.Kind == VbaCompletionCandidateKind.LanguageVocabulary
+            && candidate.Label == "String");
         Assert.Contains(
             typeCompletion.Definitions,
             definition => definition.Name == "WorksheetRangeBounds" && definition.Kind == VbaSourceDefinitionKind.Class);
@@ -292,9 +296,10 @@ public sealed class VbaSemanticResolutionTests
         var commentCompletion = index.GetCompletionResult(uri, 2, "    ' Call B".Length);
         var codeCompletion = index.GetCompletionResult(uri, 3, "    Dim value As ".Length);
 
-        Assert.Equal(VbaCompletionVocabularyKind.None, commentCompletion.VocabularyKind);
-        Assert.Empty(commentCompletion.Definitions);
-        Assert.Equal(VbaCompletionVocabularyKind.TypeName, codeCompletion.VocabularyKind);
+        Assert.Empty(commentCompletion.Candidates);
+        Assert.Contains(codeCompletion.Candidates, candidate =>
+            candidate.Kind == VbaCompletionCandidateKind.LanguageVocabulary
+            && candidate.Label == "String");
         Assert.NotEmpty(codeCompletion.Definitions);
     }
 
@@ -314,9 +319,10 @@ public sealed class VbaSemanticResolutionTests
         var stringCompletion = index.GetCompletionResult(uri, 2, "    value = \"Call B".Length);
         var codeCompletion = index.GetCompletionResult(uri, 3, "    Dim value As ".Length);
 
-        Assert.Equal(VbaCompletionVocabularyKind.None, stringCompletion.VocabularyKind);
-        Assert.Empty(stringCompletion.Definitions);
-        Assert.Equal(VbaCompletionVocabularyKind.TypeName, codeCompletion.VocabularyKind);
+        Assert.Empty(stringCompletion.Candidates);
+        Assert.Contains(codeCompletion.Candidates, candidate =>
+            candidate.Kind == VbaCompletionCandidateKind.LanguageVocabulary
+            && candidate.Label == "String");
         Assert.NotEmpty(codeCompletion.Definitions);
     }
 
@@ -336,9 +342,10 @@ public sealed class VbaSemanticResolutionTests
         var documentationCompletion = index.GetCompletionResult(uri, 1, "'* Calls B".Length);
         var codeCompletion = index.GetCompletionResult(uri, 3, "    Dim value As ".Length);
 
-        Assert.Equal(VbaCompletionVocabularyKind.None, documentationCompletion.VocabularyKind);
-        Assert.Empty(documentationCompletion.Definitions);
-        Assert.Equal(VbaCompletionVocabularyKind.TypeName, codeCompletion.VocabularyKind);
+        Assert.Empty(documentationCompletion.Candidates);
+        Assert.Contains(codeCompletion.Candidates, candidate =>
+            candidate.Kind == VbaCompletionCandidateKind.LanguageVocabulary
+            && candidate.Label == "String");
         Assert.NotEmpty(codeCompletion.Definitions);
     }
 
@@ -358,9 +365,10 @@ public sealed class VbaSemanticResolutionTests
         var remCompletion = index.GetCompletionResult(uri, 2, "    Rem Call B".Length);
         var codeCompletion = index.GetCompletionResult(uri, 3, "    Dim value As ".Length);
 
-        Assert.Equal(VbaCompletionVocabularyKind.None, remCompletion.VocabularyKind);
-        Assert.Empty(remCompletion.Definitions);
-        Assert.Equal(VbaCompletionVocabularyKind.TypeName, codeCompletion.VocabularyKind);
+        Assert.Empty(remCompletion.Candidates);
+        Assert.Contains(codeCompletion.Candidates, candidate =>
+            candidate.Kind == VbaCompletionCandidateKind.LanguageVocabulary
+            && candidate.Label == "String");
         Assert.NotEmpty(codeCompletion.Definitions);
     }
 
@@ -372,19 +380,21 @@ public sealed class VbaSemanticResolutionTests
             "Attribute VB_Name = \"Worker\"",
             "Public Sub Run()",
             "    BuildValue _",
+            "        1",
             "    Dim value As String",
             "End Sub",
-            "Public Sub BuildValue()",
+            "Public Sub BuildValue(ByVal argument As Long)",
             "End Sub"
         ]);
         var index = BuildIndex(uri, text);
 
         var continuationCompletion = index.GetCompletionResult(uri, 2, "    BuildValue _".Length);
-        var codeCompletion = index.GetCompletionResult(uri, 3, "    Dim value As ".Length);
+        var codeCompletion = index.GetCompletionResult(uri, 4, "    Dim value As ".Length);
 
-        Assert.Equal(VbaCompletionVocabularyKind.None, continuationCompletion.VocabularyKind);
-        Assert.Empty(continuationCompletion.Definitions);
-        Assert.Equal(VbaCompletionVocabularyKind.TypeName, codeCompletion.VocabularyKind);
+        Assert.Empty(continuationCompletion.Candidates);
+        Assert.Contains(codeCompletion.Candidates, candidate =>
+            candidate.Kind == VbaCompletionCandidateKind.LanguageVocabulary
+            && candidate.Label == "String");
         Assert.NotEmpty(codeCompletion.Definitions);
     }
 
@@ -402,8 +412,7 @@ public sealed class VbaSemanticResolutionTests
 
         var completion = index.GetCompletionResult(uri, 2, "    value_".Length);
 
-        Assert.Equal(VbaCompletionVocabularyKind.Keyword, completion.VocabularyKind);
-        Assert.NotEmpty(completion.Definitions);
+        Assert.NotEmpty(completion.Candidates);
     }
 
     [Fact]
@@ -620,6 +629,61 @@ public sealed class VbaSemanticResolutionTests
         Assert.Equal(
             "Event Saved(Name As String, [ByRef RetryCount As Long])",
             eventHelp?.Signature.Label);
+    }
+
+    [Fact]
+    public void SignatureHelpRejectsWriteOnlyPropertyCallTargets()
+    {
+        const string uri = "file:///C:/work/Worker.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Public Property Let WriteOnly(ByVal AssignedValue As Long)",
+            "End Property",
+            "Public Sub Run()",
+            "    Dim result As Long",
+            "    result = WriteOnly(",
+            "End Sub"
+        ]);
+        var index = BuildIndex(uri, text);
+
+        var signatureHelp = index.GetSignatureHelp(
+            uri,
+            6,
+            "    result = WriteOnly(".Length);
+
+        Assert.Null(signatureHelp);
+    }
+
+    [Theory]
+    [InlineData("Let", "Long", "    Item() = 42", "    Item(")]
+    [InlineData("Set", "Object", "    Set Item() = Nothing", "    Set Item(")]
+    public void SignatureHelpForIndexedWriteOnlyPropertyAssignmentExcludesTheRhsParameter(
+        string accessorKind,
+        string valueType,
+        string assignment,
+        string callPrefix)
+    {
+        const string uri = "file:///C:/work/Worker.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            $"Public Property {accessorKind} Item(ByVal Index As Long, ByVal AssignedValue As {valueType})",
+            "End Property",
+            "Public Sub Run()",
+            assignment,
+            "End Sub"
+        ]);
+        var index = BuildIndex(uri, text);
+
+        var signatureHelp = Assert.IsType<VbaSignatureHelp>(index.GetSignatureHelp(
+            uri,
+            5,
+            callPrefix.Length));
+
+        Assert.Equal("Property Item(Index As Long)", signatureHelp.Signature.Label);
+        Assert.Equal("Index", Assert.Single(signatureHelp.Signature.Parameters).Name);
+        Assert.Equal(0, signatureHelp.ActiveParameter);
     }
 
     [Fact]

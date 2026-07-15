@@ -236,6 +236,53 @@ public sealed class VbaPositionSyntaxTests
         Assert.Equal(1, statement?.ActiveArgumentIndex);
     }
 
+    [Theory]
+    [InlineData("String", "value")]
+    [InlineData("Date", "")]
+    public void IntrinsicKeywordCallsRemainParenthesizedCallSites(
+        string callee,
+        string argument)
+    {
+        var callLine = $"    value = {callee}({argument})";
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            callLine,
+            "End Sub"
+        ]);
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.bas", source);
+        var character = callLine.IndexOf('(') + 1;
+
+        var callSite = tree.GetPositionSyntax(2, character).CallSite;
+
+        Assert.NotNull(callSite);
+        Assert.Equal(VbaCallSyntaxForm.Parenthesized, callSite.Form);
+        Assert.Equal(callee, callSite.Callee.Target?.Name);
+        Assert.Equal(
+            VbaCompletionExpectation.CallArgument,
+            tree.GetPositionSyntax(2, character).CompletionExpectation);
+    }
+
+    [Theory]
+    [InlineData("    If (")]
+    [InlineData("    If ready And (")]
+    [InlineData("    If Not (")]
+    public void GroupingKeywordsDoNotBecomeParenthesizedCallSites(string statement)
+    {
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            statement,
+            "End Sub"
+        ]);
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.bas", source);
+
+        var position = tree.GetPositionSyntax(2, statement.Length);
+
+        Assert.Null(position.CallSite);
+        Assert.Equal(VbaCompletionExpectation.ExpressionValue, position.CompletionExpectation);
+    }
+
     [Fact]
     public void PositionSyntaxUsesCompleteNamedArgumentWhileCursorIsInsideItsName()
     {

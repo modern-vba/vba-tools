@@ -897,7 +897,8 @@ internal static class VbaSyntaxTreeParser
             ParentProcedureName: parentProcedureName,
             ParentProcedureRange: parentProcedureRange,
             TypeReference: parameter.TypeReference,
-            DeclarationLabel: CreateParameterDeclarationLabel(parameter));
+            DeclarationLabel: CreateParameterDeclarationLabel(parameter),
+            IsArray: parameter.IsArray);
 
     private static VbaDeclarationSyntax CreateDeclaration(
         VbaSourceText sourceText,
@@ -968,6 +969,7 @@ internal static class VbaSyntaxTreeParser
             }
 
             var typeReference = ParseTypeReference(line.Text);
+            var isArray = IsArrayParameter(codeLine, match.Value);
             declarations.Add(new VbaDeclarationSyntax(
                 match.Value,
                 kind,
@@ -979,7 +981,8 @@ internal static class VbaSyntaxTreeParser
                     kind,
                     match.Value,
                     typeReference,
-                    isArray: IsArrayParameter(codeLine, match.Value))));
+                    isArray: isArray),
+                IsArray: isArray));
         }
     }
 
@@ -1065,7 +1068,8 @@ internal static class VbaSyntaxTreeParser
                 ParentProcedureRange: parentProcedureRange,
                 TypeReference: typeReference,
                 IsWithEvents: isWithEvents,
-                IsStatic: isStaticDefault));
+                IsStatic: isStaticDefault,
+                IsArray: isArray));
         }
 
         return declarations;

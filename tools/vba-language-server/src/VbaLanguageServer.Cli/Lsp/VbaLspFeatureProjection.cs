@@ -111,27 +111,9 @@ internal static class VbaLspFeatureProjection
             .ToArray<object>();
 
     public static object[] CreateCompletionItems(VbaCompletionResult completion)
-    {
-        var sourceItems = completion
-            .Definitions
-            .Select(definition => new
-            {
-                label = definition.Name,
-                kind = GetCompletionKind(definition.Kind)
-            });
-        var vocabularyItems = GetCompletionVocabulary(completion.VocabularyKind).Select(label => new
-        {
-            label,
-            kind = 14
-        });
-
-        return sourceItems
-            .Concat(vocabularyItems)
-            .GroupBy(item => item.label, StringComparer.OrdinalIgnoreCase)
-            .Select(group => group.First())
-            .OrderBy(item => item.label, StringComparer.OrdinalIgnoreCase)
+        => completion.Candidates
+            .Select(CreateCompletionItem)
             .ToArray<object>();
-    }
 
     public static object? CreateHover(VbaSourceDefinition? definition)
     {
@@ -239,13 +221,34 @@ internal static class VbaLspFeatureProjection
                 value
             };
 
-    private static IReadOnlyList<string> GetCompletionVocabulary(VbaCompletionVocabularyKind vocabularyKind)
-        => vocabularyKind switch
+    private static IReadOnlyDictionary<string, object?> CreateCompletionItem(
+        VbaCompletionCandidate candidate)
+    {
+        var item = new Dictionary<string, object?>
         {
-            VbaCompletionVocabularyKind.Keyword => VbaSourceIndex.LanguageVocabulary,
-            VbaCompletionVocabularyKind.TypeName => VbaSourceIndex.TypeVocabulary,
-            _ => []
+            ["label"] = candidate.Label,
+            ["kind"] = GetCompletionKind(candidate)
         };
+        if (!string.IsNullOrWhiteSpace(candidate.FilterText))
+        {
+            item["filterText"] = candidate.FilterText;
+        }
+
+        if (candidate.TextEdit is not null)
+        {
+            item["textEdit"] = new
+            {
+                range = candidate.TextEdit.Range,
+                newText = candidate.TextEdit.NewText
+            };
+        }
+        else if (!string.IsNullOrWhiteSpace(candidate.InsertText))
+        {
+            item["insertText"] = candidate.InsertText;
+        }
+
+        return item;
+    }
 
     private static int GetSymbolKind(VbaSourceDefinitionKind kind)
         => kind switch
@@ -266,7 +269,17 @@ internal static class VbaLspFeatureProjection
             _ => 13
         };
 
-    private static int GetCompletionKind(VbaSourceDefinitionKind kind)
+    private static int GetCompletionKind(VbaCompletionCandidate candidate)
+        => candidate.Kind switch
+        {
+            VbaCompletionCandidateKind.Definition when candidate.Definition is not null =>
+                GetDefinitionCompletionKind(candidate.Definition.Kind),
+            VbaCompletionCandidateKind.NamedArgument => 5,
+            VbaCompletionCandidateKind.Label => 18,
+            _ => 14
+        };
+
+    private static int GetDefinitionCompletionKind(VbaSourceDefinitionKind kind)
         => kind switch
         {
             VbaSourceDefinitionKind.Class => 7,

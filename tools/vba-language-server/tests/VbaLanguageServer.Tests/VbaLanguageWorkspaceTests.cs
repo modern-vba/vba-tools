@@ -476,13 +476,18 @@ public sealed class VbaLanguageWorkspaceTests
             var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
             var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
             var workspace = new VbaLanguageWorkspace(cache);
-            workspace.UpdateDocument(uri, "Attribute VB_Name = \"Worker\"\nPublic Sub Run()\nEnd Sub");
+            workspace.UpdateDocument(uri, string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Public Sub Run()",
+                "    Dim value As ",
+                "End Sub"
+            ]));
 
             var beforeRefreshSnapshot = workspace.CreateProjectSnapshot(uri);
             var reusedBeforeRefreshSnapshot = workspace.CreateProjectSnapshot(uri);
             var beforeRefresh = beforeRefreshSnapshot
                 .SourceIndex
-                .GetCompletionDefinitions(uri, line: 1, character: 0)
+                .GetCompletionDefinitions(uri, line: 2, character: "    Dim value As ".Length)
                 .Select(definition => definition.Name)
                 .ToArray();
             cache.Store(VbaProjectReferenceCatalogDiscoveryResult.Success(
@@ -505,7 +510,7 @@ public sealed class VbaLanguageWorkspaceTests
             var afterRefreshSnapshot = workspace.CreateProjectSnapshot(uri);
             var afterRefresh = afterRefreshSnapshot
                 .SourceIndex
-                .GetCompletionDefinitions(uri, line: 1, character: 0)
+                .GetCompletionDefinitions(uri, line: 2, character: "    Dim value As ".Length)
                 .Select(definition => definition.Name)
                 .ToArray();
 

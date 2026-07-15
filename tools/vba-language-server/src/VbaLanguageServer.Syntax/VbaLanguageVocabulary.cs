@@ -5,6 +5,9 @@ namespace VbaLanguageServer.Syntax;
 /// </summary>
 public static class VbaLanguageVocabulary
 {
+    private static readonly IReadOnlySet<string> BareCallableKeywords =
+        new HashSet<string>(["Date", "String"], StringComparer.OrdinalIgnoreCase);
+
     /// <summary>
     /// Maps known VBA vocabulary words to their canonical source formatting spelling.
     /// </summary>
@@ -25,16 +28,19 @@ public static class VbaLanguageVocabulary
             ["currency"] = "Currency",
             ["date"] = "Date",
             ["declare"] = "Declare",
+            ["debug"] = "Debug",
             ["dim"] = "Dim",
             ["do"] = "Do",
             ["double"] = "Double",
             ["each"] = "Each",
+            ["empty"] = "Empty",
             ["else"] = "Else",
             ["elseif"] = "ElseIf",
             ["end"] = "End",
             ["enum"] = "Enum",
             ["eqv"] = "Eqv",
             ["event"] = "Event",
+            ["exit"] = "Exit",
             ["explicit"] = "Explicit",
             ["false"] = "False",
             ["for"] = "For",
@@ -56,12 +62,15 @@ public static class VbaLanguageVocabulary
             ["longlong"] = "LongLong",
             ["longptr"] = "LongPtr",
             ["loop"] = "Loop",
+            ["me"] = "Me",
             ["mod"] = "Mod",
             ["new"] = "New",
             ["next"] = "Next",
             ["not"] = "Not",
             ["nothing"] = "Nothing",
+            ["null"] = "Null",
             ["object"] = "Object",
+            ["on"] = "On",
             ["option"] = "Option",
             ["optional"] = "Optional",
             ["or"] = "Or",
@@ -127,13 +136,16 @@ public static class VbaLanguageVocabulary
     public static readonly IReadOnlyList<string> ProcedureStatementWords = CreateOrderedWords([
         "Call",
         "Const",
+        "Debug",
         "Dim",
         "Do",
+        "Exit",
         "For",
         "GoSub",
         "GoTo",
         "If",
         "Let",
+        "On",
         "RaiseEvent",
         "ReDim",
         "Rem",
@@ -149,12 +161,30 @@ public static class VbaLanguageVocabulary
     /// Gets fixed words that can supply a value where an expression operand is expected.
     /// </summary>
     public static readonly IReadOnlyList<string> ExpressionValueWords = CreateOrderedWords([
+        "Empty",
         "False",
+        "Me",
         "New",
         "Not",
         "Nothing",
+        "Null",
         "True"
     ]);
+
+    private static readonly IReadOnlyList<string> StandardModuleExpressionValueWords =
+        CreateOrderedWords(ExpressionValueWords.Where(word => !word.Equals(
+            "Me",
+            StringComparison.OrdinalIgnoreCase)));
+
+    /// <summary>
+    /// Gets fixed expression values valid for the specified module kind.
+    /// </summary>
+    /// <param name="moduleKind">The parsed VBA module kind.</param>
+    /// <returns>The expression vocabulary valid in the module.</returns>
+    public static IReadOnlyList<string> GetExpressionValueWords(VbaModuleKind moduleKind)
+        => moduleKind == VbaModuleKind.StandardModule
+            ? StandardModuleExpressionValueWords
+            : ExpressionValueWords;
 
     /// <summary>
     /// Gets fixed VBA type names that are valid in type annotation completions.
@@ -182,6 +212,16 @@ public static class VbaLanguageVocabulary
     /// <returns>True when the word has canonical vocabulary casing.</returns>
     public static bool IsKeyword(string value)
         => CanonicalKeywords.ContainsKey(value);
+
+    /// <summary>
+    /// Determines whether a bare word can syntactically identify a call target.
+    /// </summary>
+    /// <param name="value">The unqualified target word.</param>
+    /// <returns>
+    /// True for identifiers and callable intrinsic keywords; false for grouping syntax words.
+    /// </returns>
+    public static bool CanBeBareCallTarget(string value)
+        => !IsKeyword(value) || BareCallableKeywords.Contains(value);
 
     private static IReadOnlyList<string> CreateOrderedWords(IEnumerable<string> words)
         => Array.AsReadOnly(words

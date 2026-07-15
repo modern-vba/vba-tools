@@ -58,7 +58,8 @@ internal static class VbaPropertyAccessorCoalescing
             {
                 PropertyAccess = accessors.Aggregate(
                     VbaPropertyAccess.Unknown,
-                    (access, definition) => access | definition.PropertyAccess)
+                    (access, definition) => access | definition.PropertyAccess),
+                PropertyAccessorKind = null
             });
         }
 
@@ -67,11 +68,31 @@ internal static class VbaPropertyAccessorCoalescing
 
     private static bool CanCoalesce(IReadOnlyList<VbaSourceDefinition> accessors)
     {
+        if (accessors.Any(accessor => accessor.PropertyAccess == VbaPropertyAccess.Unknown))
+        {
+            return false;
+        }
+
+        var declaredAccessorKinds = accessors
+            .Select(accessor => accessor.PropertyAccessorKind)
+            .ToArray();
+        if (declaredAccessorKinds.All(kind => kind is not null))
+        {
+            return declaredAccessorKinds
+                .Select(kind => kind!.Value)
+                .Distinct()
+                .Count() == declaredAccessorKinds.Length;
+        }
+
+        if (declaredAccessorKinds.Any(kind => kind is not null))
+        {
+            return false;
+        }
+
         var combined = VbaPropertyAccess.Unknown;
         foreach (var accessor in accessors)
         {
-            if (accessor.PropertyAccess == VbaPropertyAccess.Unknown
-                || (combined & accessor.PropertyAccess) != 0)
+            if ((combined & accessor.PropertyAccess) != 0)
             {
                 return false;
             }

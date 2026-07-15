@@ -170,7 +170,7 @@ internal sealed class VbaTypeResolution
         VbaTypeReference typeReference,
         out VbaSourceDefinition? definition)
     {
-        definition = nameResolution.ResolveTypeDefinition(typeReference);
+        definition = nameResolution.ResolveTypeDefinition(currentDocument, typeReference);
         return definition is not null;
     }
 

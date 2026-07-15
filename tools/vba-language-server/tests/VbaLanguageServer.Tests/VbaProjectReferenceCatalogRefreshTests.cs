@@ -9,6 +9,36 @@ namespace VbaLanguageServer.Tests;
 public sealed class VbaProjectReferenceCatalogRefreshTests
 {
     [Fact]
+    public void TypeLibCatalogBuilderMarksCallableSignaturesAsSupportingNamedArguments()
+    {
+        var catalog = TypeLibReferenceCatalogBuilder.Build(
+            "Generated Library",
+            new TypeLibCatalogMetadata(
+                "Generated",
+                [
+                    new TypeLibCatalogType(
+                        "GeneratedType",
+                        VbaSourceDefinitionKind.Class,
+                        null,
+                        [
+                            new TypeLibCatalogMember(
+                                "GeneratedMethod",
+                                VbaSourceDefinitionKind.Procedure,
+                                null,
+                                new VbaCallableSignature(
+                                    "GeneratedMethod(Value)",
+                                    [new VbaCallableParameter("Value")],
+                                    CallableKind: VbaCallableKind.Function))
+                        ])
+                ]));
+
+        var callable = Assert.Single(
+            catalog.Definitions,
+            definition => definition.Name == "GeneratedMethod");
+        Assert.True(callable.Signature?.SupportsNamedArguments);
+    }
+
+    [Fact]
     public void TypeLibCallableKindUsesReturnValueParameterPresenceWhenItsTypeIsUnavailable()
     {
         var callableKind = ComTypeLibCatalogMetadataReader.GetCallableKind(
@@ -244,6 +274,7 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
             [uri] = string.Join('\n', [
                 "Attribute VB_Name = \"Worker\"",
                 "Public Sub Run()",
+                "    Dim value As ",
                 "End Sub"
             ])
         };
@@ -253,7 +284,7 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
 
         var beforeRefresh = VbaSourceIndex
             .Build(sourceDocuments, selection, cache.Current)
-            .GetCompletionDefinitions(uri, 1, 0)
+            .GetCompletionDefinitions(uri, 2, "    Dim value As ".Length)
             .Select(definition => definition.Name)
             .ToArray();
         Assert.DoesNotContain("GeneratedType", beforeRefresh);
@@ -263,7 +294,7 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
 
         var afterRefresh = VbaSourceIndex
             .Build(sourceDocuments, selection, cache.Current)
-            .GetCompletionDefinitions(uri, 1, 0)
+            .GetCompletionDefinitions(uri, 2, "    Dim value As ".Length)
             .Select(definition => definition.Name)
             .ToArray();
         Assert.Contains("GeneratedType", afterRefresh);

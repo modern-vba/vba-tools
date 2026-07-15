@@ -81,18 +81,17 @@ internal static class VbaCallSyntaxParser
             }
         }
 
-        if (openStack.Count > 0)
+        while (openStack.TryPop(out var openIndex))
         {
-            var openIndex = openStack.Peek();
             if (!TryGetCalleeBefore(significant, openIndex, out var calleeStart, out var calleeEnd))
             {
-                return null;
+                continue;
             }
 
             var closeIndex = FindMatchingParenthesis(significant, openIndex);
             if (IsExcludedParenthesizedCall(significant, openIndex, closeIndex, calleeStart))
             {
-                return null;
+                continue;
             }
 
             var endIndex = FindPositionEndIndex(significant, openIndex + 1, position.Offset);
@@ -481,6 +480,13 @@ internal static class VbaCallSyntaxParser
         while (start >= 2 && IsDot(tokens[start - 1]) && IsNameToken(tokens[start - 2]))
         {
             start -= 2;
+        }
+
+        if (tokens[end].Kind == VbaTokenKind.Keyword
+            && start == end
+            && !VbaLanguageVocabulary.CanBeBareCallTarget(tokens[end].Text))
+        {
+            return false;
         }
 
         if (start > 0 && IsDot(tokens[start - 1]))

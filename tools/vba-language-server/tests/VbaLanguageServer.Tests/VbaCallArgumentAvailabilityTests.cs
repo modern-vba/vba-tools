@@ -15,6 +15,7 @@ public sealed class VbaCallArgumentAvailabilityTests
 
         Assert.NotNull(availability.CallableDefinition);
         Assert.NotNull(availability.Signature);
+        Assert.True(availability.Signature.SupportsNamedArguments);
         Assert.True(availability.AllowsPositionalExpression);
         Assert.Equal(["Arg2", "Arg3"], RemainingNames(availability));
     }
@@ -170,6 +171,7 @@ public sealed class VbaCallArgumentAvailabilityTests
         var availability = ResolveCall("    RaiseEvent Saved(1, ");
 
         Assert.Equal(VbaSourceDefinitionKind.Event, availability.CallableDefinition?.Kind);
+        Assert.True(availability.Signature?.SupportsNamedArguments);
         Assert.True(availability.AllowsPositionalExpression);
         Assert.Empty(availability.RemainingNamedParameters);
     }
@@ -207,6 +209,57 @@ public sealed class VbaCallArgumentAvailabilityTests
         Assert.Equal(VbaDefinitionOrigin.ProjectReference, availability.CallableDefinition?.Identity.Origin);
         Assert.True(availability.AllowsPositionalExpression);
         Assert.Empty(availability.RemainingNamedParameters);
+    }
+
+    [Fact]
+    public void ReferenceCallableOffersNamedArgumentsWhenCatalogCapabilityIsKnown()
+    {
+        const string referenceName = "Generated Library";
+        var selection = VbaProjectReferenceSelection.Create(
+            "word",
+            [new VbaProjectReference(referenceName)]);
+        var catalogs = VbaProjectReferenceCatalogSet.Empty.WithCatalog(
+            new VbaProjectReferenceCatalog(
+                referenceName,
+                ["Generated"],
+                [
+                    new VbaProjectReferenceDefinition(
+                        referenceName,
+                        "GeneratedMethod",
+                        VbaSourceDefinitionKind.Procedure,
+                        Signature: new VbaCallableSignature(
+                            "GeneratedMethod(Arg1, Arg2)",
+                            [
+                                new VbaCallableParameter("Arg1"),
+                                new VbaCallableParameter("Arg2")
+                            ],
+                            CallableKind: VbaCallableKind.Function,
+                            SupportsNamedArguments: true))
+                ]));
+
+        var availability = ResolveCall(
+            "    result = GeneratedMethod(1, ",
+            selection,
+            catalogs);
+
+        Assert.Equal(VbaDefinitionOrigin.ProjectReference, availability.CallableDefinition?.Identity.Origin);
+        Assert.True(availability.AllowsPositionalExpression);
+        Assert.Equal(["Arg2"], RemainingNames(availability));
+    }
+
+    [Fact]
+    public void BundledReferenceCallableOffersNamedArguments()
+    {
+        const string referenceName = "Visual Basic For Applications";
+        var availability = ResolveCall(
+            "    result = MsgBox(",
+            VbaProjectReferenceSelection.Create(
+                "word",
+                [new VbaProjectReference(referenceName)]),
+            VbaProjectReferenceCatalogSet.CreateBundled());
+
+        Assert.True(availability.Signature?.SupportsNamedArguments);
+        Assert.Equal(["Prompt", "Buttons", "Title"], RemainingNames(availability));
     }
 
     private static VbaCallArgumentAvailability ResolveSourceCall(

@@ -91,7 +91,8 @@ public sealed class VbaProjectReferenceCatalogSet
                                 new VbaCallableParameter("Title", "The dialog box title.")
                             ],
                             "Displays a message in a dialog box.",
-                            CallableKind: VbaCallableKind.Function))
+                            CallableKind: VbaCallableKind.Function,
+                            SupportsNamedArguments: true))
                 ]),
             new VbaProjectReferenceCatalog(
                 "Microsoft Excel 16.0 Object Library",
@@ -131,7 +132,8 @@ public sealed class VbaProjectReferenceCatalogSet
                                     IsOptional: true)
                             ],
                             "Runs a macro or calls a function.",
-                            CallableKind: VbaCallableKind.Function),
+                            CallableKind: VbaCallableKind.Function,
+                            SupportsNamedArguments: true),
                         ParentTypeName: "Application"),
                     new VbaProjectReferenceDefinition(
                         "Microsoft Excel 16.0 Object Library",
@@ -149,7 +151,8 @@ public sealed class VbaProjectReferenceCatalogSet
                                 new VbaCallableParameter("FileName", "The workbook file name.")
                             ],
                             "Opens a workbook.",
-                            CallableKind: VbaCallableKind.Function),
+                            CallableKind: VbaCallableKind.Function,
+                            SupportsNamedArguments: true),
                         ParentTypeName: "Workbooks",
                         TypeReference: new VbaTypeReference("Workbook", "Excel")),
                     new VbaProjectReferenceDefinition(
@@ -170,7 +173,8 @@ public sealed class VbaProjectReferenceCatalogSet
                                 new VbaCallableParameter("Wb", "The opened workbook.")
                             ],
                             "Occurs when a workbook is opened.",
-                            CallableKind: VbaCallableKind.Event),
+                            CallableKind: VbaCallableKind.Event,
+                            SupportsNamedArguments: true),
                         ParentTypeName: "Application")
                 ]),
             new VbaProjectReferenceCatalog(
@@ -194,7 +198,8 @@ public sealed class VbaProjectReferenceCatalogSet
                                 new VbaCallableParameter("Key", "The key to find.")
                             ],
                             "Returns whether a key exists in the dictionary.",
-                            CallableKind: VbaCallableKind.Function),
+                            CallableKind: VbaCallableKind.Function,
+                            SupportsNamedArguments: true),
                         ParentTypeName: "Dictionary",
                         TypeReference: new VbaTypeReference("Boolean"))
                 ]),

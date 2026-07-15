@@ -35,7 +35,8 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
                 && definition.PropertyAccess == (VbaPropertyAccess.Readable | VbaPropertyAccess.Writable));
             Assert.Contains(entry.Catalog.Definitions, definition =>
                 definition.Name == "GeneratedMethod"
-                && definition.Signature?.CallableKind == VbaCallableKind.Function);
+                && definition.Signature?.CallableKind == VbaCallableKind.Function
+                && definition.Signature.SupportsNamedArguments);
         }
         finally
         {
@@ -206,6 +207,56 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
                 entry.Catalog.Definitions,
                 definition => definition.Name == "GeneratedType");
             Assert.False(generatedType.IsCreatable);
+        }
+        finally
+        {
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void PersistentStoreLoadsV5SignaturesAsStaleWithoutNamedArgumentSupport()
+    {
+        var cacheRoot = Directory.CreateTempSubdirectory("vba-ls-catalog-v5-").FullName;
+        try
+        {
+            var identity = CreateIdentity("Generated Library");
+            var store = new VbaProjectReferenceCatalogPersistentStore(cacheRoot);
+            store.Save(new VbaProjectReferenceCatalogPersistentEntry(
+                identity,
+                CreateGeneratedCatalog("Generated Library", "GeneratedType", "GeneratedMember")));
+
+            var entryPath = Path.Combine(
+                cacheRoot,
+                "catalogs",
+                VbaProjectReferenceCatalogPersistentStore.CreateCatalogEntryKey(identity));
+            File.WriteAllText(
+                entryPath,
+                Regex.Replace(
+                    File.ReadAllText(entryPath)
+                        .Replace(
+                            VbaProjectReferenceCatalogPersistentStore.CurrentGeneratorVersion,
+                            "typelib-catalog-v5",
+                            StringComparison.Ordinal),
+                    ",\\s*\"supportsNamedArguments\"\\s*:\\s*(true|false)",
+                    "",
+                    RegexOptions.CultureInvariant));
+            var indexPath = store.GetReferenceIndexPath("Generated Library");
+            File.WriteAllText(
+                indexPath,
+                File.ReadAllText(indexPath).Replace(
+                    VbaProjectReferenceCatalogPersistentStore.CurrentGeneratorVersion,
+                    "typelib-catalog-v5",
+                    StringComparison.Ordinal));
+
+            var loadResult = store.Load("Generated Library");
+
+            Assert.Equal(VbaProjectReferenceCatalogPersistentLoadStatus.Stale, loadResult.Status);
+            var entry = Assert.IsType<VbaProjectReferenceCatalogPersistentEntry>(loadResult.Entry);
+            var generatedMethod = Assert.Single(
+                entry.Catalog.Definitions,
+                definition => definition.Name == "GeneratedMethod");
+            Assert.False(generatedMethod.Signature?.SupportsNamedArguments);
         }
         finally
         {
@@ -640,7 +691,8 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
                         "GeneratedMethod(Value) As String",
                         [new VbaCallableParameter("Value", "The input value.")],
                         "Generated method.",
-                        CallableKind: VbaCallableKind.Function),
+                        CallableKind: VbaCallableKind.Function,
+                        SupportsNamedArguments: true),
                     ParentTypeName: typeName,
                     TypeReference: new VbaTypeReference("String"))
             ]);

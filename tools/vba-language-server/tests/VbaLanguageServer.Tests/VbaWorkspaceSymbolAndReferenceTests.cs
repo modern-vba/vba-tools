@@ -145,12 +145,14 @@ public sealed class VbaWorkspaceSymbolAndReferenceTests
                     "Generated Library",
                     "Name",
                     VbaSourceDefinitionKind.Property,
-                    ParentTypeName: "FirstType"),
+                    ParentTypeName: "FirstType",
+                    PropertyAccess: VbaPropertyAccess.Readable),
                 new VbaProjectReferenceDefinition(
                     "Generated Library",
                     "Name",
                     VbaSourceDefinitionKind.Property,
-                    ParentTypeName: "SecondType")
+                    ParentTypeName: "SecondType",
+                    PropertyAccess: VbaPropertyAccess.Readable)
             ]);
         var index = VbaSourceIndex.Build(
             new Dictionary<string, string>

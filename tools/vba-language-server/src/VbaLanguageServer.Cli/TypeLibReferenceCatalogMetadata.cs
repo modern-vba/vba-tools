@@ -93,7 +93,9 @@ public static class TypeLibReferenceCatalogBuilder
                     member.Name,
                     member.Kind,
                     member.Documentation,
-                    member.Signature,
+                    member.Signature is null
+                        ? null
+                        : member.Signature with { SupportsNamedArguments = true },
                     ParentTypeName: type.Name,
                     TypeReference: member.TypeReference,
                     PropertyAccess: member.PropertyAccess));
@@ -523,7 +525,8 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
             label,
             parameters,
             documentation,
-            CallableKind: callableKind);
+            CallableKind: callableKind,
+            SupportsNamedArguments: true);
     }
 
     internal static VbaCallableKind GetCallableKind(

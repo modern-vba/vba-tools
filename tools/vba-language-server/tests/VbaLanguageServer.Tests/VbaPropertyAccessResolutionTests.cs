@@ -8,6 +8,78 @@ namespace VbaLanguageServer.Tests;
 public sealed class VbaPropertyAccessResolutionTests
 {
     [Fact]
+    public void SourcePropertyGetLetAndSetCoalesceAsOneReadableWritableProperty()
+    {
+        const string classUri = "file:///C:/work/Example.cls";
+        const string workerUri = "file:///C:/work/Worker.bas";
+        var classText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Example\"",
+            "Public Property Get Value() As Object",
+            "End Property",
+            "Public Property Let Value(ByVal AssignedValue As Variant)",
+            "End Property",
+            "Public Property Set Value(ByVal AssignedValue As Object)",
+            "End Property"
+        ]);
+        var workerText = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    Dim item As Example",
+            "    item.",
+            "End Sub"
+        ]);
+        var index = VbaSourceIndex.Build(new Dictionary<string, string>
+        {
+            [classUri] = classText,
+            [workerUri] = workerText
+        });
+
+        var property = Assert.Single(
+            index.GetCompletionDefinitions(workerUri, 3, "    item.".Length),
+            definition => definition.Name == "Value");
+
+        Assert.Equal(
+            VbaPropertyAccess.Readable | VbaPropertyAccess.Writable,
+            property.PropertyAccess);
+        Assert.Equal(2, property.Range.Start.Line);
+        Assert.Equal("Object", property.TypeReference?.Name);
+    }
+
+    [Fact]
+    public void SourcePropertyLetAndSetCoalesceAsOneWritableProperty()
+    {
+        const string classUri = "file:///C:/work/Example.cls";
+        const string workerUri = "file:///C:/work/Worker.bas";
+        var classText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Example\"",
+            "Public Property Let Value(ByVal AssignedValue As Variant)",
+            "End Property",
+            "Public Property Set Value(ByVal AssignedValue As Object)",
+            "End Property"
+        ]);
+        var workerText = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    Dim item As Example",
+            "    item.",
+            "End Sub"
+        ]);
+        var index = VbaSourceIndex.Build(new Dictionary<string, string>
+        {
+            [classUri] = classText,
+            [workerUri] = workerText
+        });
+
+        var property = Assert.Single(
+            index.GetCompletionDefinitions(workerUri, 3, "    item.".Length),
+            definition => definition.Name == "Value");
+
+        Assert.Equal(VbaPropertyAccess.Writable, property.PropertyAccess);
+    }
+
+    [Fact]
     public void SourcePropertyGetAndLetCoalesceForMemberCompletionAndResolution()
     {
         const string classUri = "file:///C:/work/Example.cls";
@@ -87,6 +159,7 @@ public sealed class VbaPropertyAccessResolutionTests
 
     [Theory]
     [InlineData(VbaPropertyAccess.Readable)]
+    [InlineData(VbaPropertyAccess.Writable)]
     [InlineData(VbaPropertyAccess.Unknown)]
     public void DuplicateOrUnknownPropertyAccessorsRemainAmbiguous(VbaPropertyAccess access)
     {

@@ -187,24 +187,50 @@ public sealed class VbaNameResolutionService
     private VbaSourceDefinition? ResolveRankedCandidates(IEnumerable<VbaRankedDefinition> candidates)
         => resolutionPolicy.ResolveRankedCandidates(candidates, this.candidates.ReferenceSelection);
 
-    internal VbaSourceDefinition? ResolveTypeDefinition(VbaTypeReference typeReference)
+    internal VbaSourceDefinition? ResolveTypeDefinition(
+        VbaSourceDocument currentDocument,
+        VbaTypeReference typeReference)
     {
         if (!string.IsNullOrWhiteSpace(typeReference.Qualifier))
         {
-            var referenceDefinition = ResolveReferenceTypeDefinition(typeReference.Qualifier, typeReference.Name);
-            return referenceDefinition
-                ?? ResolveSourceTypeDefinition(typeReference.Name, typeReference.Qualifier);
+            return candidates.HasSourceModule(typeReference.Qualifier)
+                ? ResolveSourceTypeDefinition(currentDocument, typeReference.Name, typeReference.Qualifier)
+                : ResolveReferenceTypeDefinition(typeReference.Qualifier, typeReference.Name);
         }
 
-        return ResolveSourceTypeDefinition(typeReference.Name, qualifier: null)
+        return ResolveSourceTypeDefinition(currentDocument, typeReference.Name, qualifier: null)
             ?? ResolveReferenceCandidates(candidates.GetReferenceCandidates(typeReference.Name)
                 .Where(candidate => resolutionPolicy.IsTypeDefinition(candidate.Definition))
                 .Where(candidate => candidate.ParentTypeName is null)
                 .Select(candidate => candidate.Definition));
     }
 
-    internal IReadOnlyList<VbaSourceDefinition> GetVisibleTypeDefinitions(VbaSourceDocument currentDocument)
+    internal IReadOnlyList<VbaSourceDefinition> GetVisibleTypeDefinitions(
+        VbaSourceDocument currentDocument,
+        string? qualifier = null)
     {
+        if (!string.IsNullOrWhiteSpace(qualifier))
+        {
+            if (candidates.HasSourceModule(qualifier))
+            {
+                return candidates.GetSourceCandidatesByModule(qualifier)
+                    .Where(candidate => resolutionPolicy.IsTypeDefinition(candidate.Definition))
+                    .Where(candidate => candidate.Definition.Kind is not (
+                        VbaSourceDefinitionKind.Class or VbaSourceDefinitionKind.Form))
+                    .Where(candidate => SameUri(candidate.Uri, currentDocument.Uri)
+                        || candidate.Visibility == VbaSourceDefinitionVisibility.Public)
+                    .Select(candidate => candidate.Definition)
+                    .ToArray();
+            }
+
+            return candidates.HasReferenceSelection
+                ? candidates.GetQualifiedReferenceDefinitions(qualifier)
+                    .Where(resolutionPolicy.IsTypeDefinition)
+                    .Where(definition => definition.ParentTypeName is null)
+                    .ToArray()
+                : [];
+        }
+
         var visibleDefinitions = new List<VbaSourceDefinition>();
         visibleDefinitions.AddRange(candidates.GetSourceCandidates(currentDocument)
             .Where(candidate => resolutionPolicy.IsTypeDefinition(candidate.Definition))
@@ -278,14 +304,23 @@ public sealed class VbaNameResolutionService
             .Where(resolutionPolicy.IsTypeDefinition)
             .Where(definition => definition.ParentTypeName is null));
 
-    private VbaSourceDefinition? ResolveSourceTypeDefinition(string typeName, string? qualifier)
+    private VbaSourceDefinition? ResolveSourceTypeDefinition(
+        VbaSourceDocument currentDocument,
+        string typeName,
+        string? qualifier)
     {
         var definitions = candidates.GetSourceCandidates(typeName)
             .Where(candidate => resolutionPolicy.IsTypeDefinition(candidate.Definition))
             .Where(candidate => qualifier is null || SameName(candidate.ModuleName, qualifier))
-            .Select(candidate => candidate.Definition)
+            .Where(candidate => SameUri(candidate.Uri, currentDocument.Uri)
+                || candidate.Visibility == VbaSourceDefinitionVisibility.Public)
+            .Select(candidate => new VbaRankedDefinition(
+                candidate.Definition,
+                SameUri(candidate.Uri, currentDocument.Uri)
+                    ? VbaResolutionPolicy.CurrentModuleRank
+                    : VbaResolutionPolicy.ProjectRank))
             .ToArray();
-        return definitions.Length == 1 ? definitions[0] : null;
+        return ResolveRankedCandidates(definitions);
     }
 
     private VbaSourceDefinition? ResolveReferenceCandidates(IEnumerable<VbaSourceDefinition> definitions)
@@ -405,6 +440,9 @@ internal sealed class VbaNameCandidateInventory
 
     public IEnumerable<VbaNameCandidate> GetSourceCandidatesByModule(string moduleName)
         => sourceCandidatesByModule[moduleName];
+
+    public bool HasSourceModule(string moduleName)
+        => sourceCandidatesByModule[moduleName].Any();
 
     public IEnumerable<VbaNameCandidate> GetReferenceCandidates(string? requestedName)
         => requestedName is null ? referenceCandidates : referenceCandidatesByName[requestedName];

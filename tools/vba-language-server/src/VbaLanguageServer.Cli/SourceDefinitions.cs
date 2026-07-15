@@ -309,6 +309,8 @@ public readonly struct VbaDefinitionIdentity : IEquatable<VbaDefinitionIdentity>
 /// <param name="DeclarationLabel">The editor-facing declaration summary for hover display.</param>
 /// <param name="PropertyAccess">The supported property operations, or Unknown when unavailable.</param>
 /// <param name="IsCreatable">Whether the type can be used as the target of a New expression.</param>
+/// <param name="PropertyAccessorKind">The source accessor kind, or null for a logical or reference property.</param>
+/// <param name="IsArray">Whether the source declaration carries a VBA array marker.</param>
 public sealed record VbaSourceDefinition(
     VbaDefinitionIdentity Identity,
     VbaDefinitionLocation Location,
@@ -325,7 +327,9 @@ public sealed record VbaSourceDefinition(
     bool IsWithEvents = false,
     string? DeclarationLabel = null,
     VbaPropertyAccess PropertyAccess = VbaPropertyAccess.Unknown,
-    bool IsCreatable = false)
+    bool IsCreatable = false,
+    VbaPropertyAccessorKind? PropertyAccessorKind = null,
+    bool IsArray = false)
 {
     /// <summary>
     /// Gets the editor-facing definition URI.
@@ -399,11 +403,13 @@ public enum VbaCallableKind
 /// <param name="Parameters">The ordered parameter metadata.</param>
 /// <param name="Documentation">The callable documentation retained for semantic consumers but omitted from LSP Signature Help.</param>
 /// <param name="CallableKind">The explicit callable kind when supplied by source or catalog metadata.</param>
+/// <param name="SupportsNamedArguments">Whether metadata establishes that call arguments may be supplied by name.</param>
 public sealed record VbaCallableSignature(
     string Label,
     IReadOnlyList<VbaCallableParameter> Parameters,
     string? Documentation = null,
-    VbaCallableKind? CallableKind = null);
+    VbaCallableKind? CallableKind = null,
+    bool SupportsNamedArguments = false);
 
 /// <summary>
 /// Represents the signature help result for a call site.
@@ -413,34 +419,69 @@ public sealed record VbaCallableSignature(
 public sealed record VbaSignatureHelp(VbaCallableSignature Signature, int ActiveParameter);
 
 /// <summary>
-/// Identifies which fixed VBA vocabulary set can be appended to completion definitions.
+/// Identifies the semantic origin of a completed editor-neutral completion candidate.
 /// </summary>
-public enum VbaCompletionVocabularyKind
+public enum VbaCompletionCandidateKind
 {
     /// <summary>
-    /// No fixed VBA vocabulary is valid in the completion context.
+    /// A source or project-reference definition admitted by semantic resolution.
     /// </summary>
-    None,
+    Definition,
 
     /// <summary>
-    /// Fixed VBA type names are valid in the completion context.
+    /// A fixed word from the VBA language vocabulary.
     /// </summary>
-    TypeName,
+    LanguageVocabulary,
 
     /// <summary>
-    /// General fixed VBA language keywords are valid in the completion context.
+    /// An unused callable parameter that can be inserted as a named argument.
     /// </summary>
-    Keyword
+    NamedArgument,
+
+    /// <summary>
+    /// A statement supplied by the enclosing grammar context.
+    /// </summary>
+    ContextualStatement,
+
+    /// <summary>
+    /// A callable-owned line label or a special label destination.
+    /// </summary>
+    Label
 }
 
 /// <summary>
-/// Represents completion definitions and the fixed language vocabulary that should be added.
+/// Represents one complete completion candidate before editor projection.
 /// </summary>
-/// <param name="Definitions">The completion candidate definitions.</param>
-/// <param name="VocabularyKind">The fixed VBA vocabulary set valid in this completion context.</param>
-public sealed record VbaCompletionResult(
-    IReadOnlyList<VbaSourceDefinition> Definitions,
-    VbaCompletionVocabularyKind VocabularyKind);
+/// <param name="Label">The label displayed by the editor.</param>
+/// <param name="Kind">The semantic origin of the candidate.</param>
+/// <param name="InsertText">The text inserted when it differs from the label.</param>
+/// <param name="FilterText">The text used to filter the candidate.</param>
+/// <param name="Definition">The admitted source or project-reference definition.</param>
+/// <param name="TextEdit">The explicit replacement edit, when syntax supplied a replacement range.</param>
+public sealed record VbaCompletionCandidate(
+    string Label,
+    VbaCompletionCandidateKind Kind,
+    string? InsertText = null,
+    string? FilterText = null,
+    VbaSourceDefinition? Definition = null,
+    VbaTextEdit? TextEdit = null);
+
+/// <summary>
+/// Represents the complete editor-neutral candidates valid at a source position.
+/// </summary>
+/// <param name="Candidates">The context-filtered completion candidates.</param>
+public sealed record VbaCompletionResult(IReadOnlyList<VbaCompletionCandidate> Candidates)
+{
+    /// <summary>
+    /// Gets the definition-backed candidates for compatibility with semantic consumers.
+    /// </summary>
+    [JsonIgnore]
+    public IReadOnlyList<VbaSourceDefinition> Definitions
+        => Candidates
+            .Where(candidate => candidate.Definition is not null)
+            .Select(candidate => candidate.Definition!)
+            .ToArray();
+}
 
 /// <summary>
 /// Represents one parsed source document in the source index.
@@ -547,16 +588,6 @@ public sealed class VbaSourceIndex
         "documentation",
         "defaultLibrary"
     ];
-
-    /// <summary>
-    /// Gets the fixed VBA language vocabulary used by completion and formatting features.
-    /// </summary>
-    public static readonly IReadOnlyList<string> LanguageVocabulary = VbaLanguageVocabulary.Keywords;
-
-    /// <summary>
-    /// Gets the fixed VBA type names used by type annotation completion.
-    /// </summary>
-    public static readonly IReadOnlyList<string> TypeVocabulary = VbaLanguageVocabulary.TypeNames;
 
     private readonly IReadOnlyList<VbaSourceDocument> documents;
     private readonly VbaSemanticResolution semanticResolution;
@@ -771,7 +802,7 @@ public sealed class VbaSourceIndex
         => GetCompletionResult(uri, line, character).Definitions;
 
     /// <summary>
-    /// Gets completion definitions and context metadata for a document position.
+    /// Gets the complete editor-neutral candidates valid at a document position.
     /// </summary>
     /// <param name="uri">The document URI.</param>
     /// <param name="line">The zero-based line.</param>
@@ -946,7 +977,9 @@ public sealed class VbaSourceIndex
             TypeReference: declaration.TypeReference is null ? null : MapTypeReference(declaration.TypeReference),
             IsWithEvents: declaration.IsWithEvents,
             DeclarationLabel: declaration.DeclarationLabel,
-            PropertyAccess: MapPropertyAccess(declaration.PropertyAccessorKind));
+            PropertyAccess: MapPropertyAccess(declaration.PropertyAccessorKind),
+            PropertyAccessorKind: declaration.PropertyAccessorKind,
+            IsArray: declaration.IsArray);
     }
 
     private static VbaSourceDefinitionKind MapModuleKind(VbaModuleKind kind)
@@ -1012,7 +1045,8 @@ public sealed class VbaSourceIndex
                     IsArray: parameter.IsArray))
                 .ToArray(),
             signature.Documentation,
-            CallableKind: callableKind);
+            CallableKind: callableKind,
+            SupportsNamedArguments: true);
     }
 
     private static VbaCallableKind GetCallableKind(VbaDeclarationSyntax declaration)
