@@ -1037,8 +1037,16 @@ public sealed class LanguageServerProcessTests
             .GetProperty("signatures")
             .EnumerateArray()
             .Single();
+        Assert.Equal(2, functionSignature.GetProperty("result").GetProperty("activeParameter").GetInt32());
         Assert.Equal(functionLabel, firstFunctionSignature.GetProperty("label").GetString());
         Assert.False(firstFunctionSignature.TryGetProperty("documentation", out _));
+        var functionParameters = firstFunctionSignature.GetProperty("parameters").EnumerateArray().ToArray();
+        Assert.Equal(
+            ["Arg1 As Long", "[Arg2 As Boolean]", "[Arg3 As Boolean]"],
+            functionParameters.Select(parameter => parameter.GetProperty("label").GetString() ?? "").ToArray());
+        Assert.Equal(
+            "Example of another optional argument.",
+            functionParameters[2].GetProperty("documentation").GetProperty("value").GetString());
 
         const string subLabel =
             "Sub ExampleSub(ByRef Arg1 As Long, [Arg2 As Boolean], [Arg3 As Boolean])";
@@ -1055,6 +1063,14 @@ public sealed class LanguageServerProcessTests
             .GetProperty("value")
             .GetString();
         Assert.Contains("Example of a subroutine.", subHoverValue, StringComparison.Ordinal);
+        Assert.Contains(
+            "@param[out] Arg1 Example of a required argument.",
+            subHoverValue,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "@param[in] Arg3 Example of another optional argument.",
+            subHoverValue,
+            StringComparison.Ordinal);
         Assert.EndsWith(
             $"---\n\n```vba\n{subLabel}\n```",
             subHoverValue,
@@ -1073,8 +1089,19 @@ public sealed class LanguageServerProcessTests
             .GetProperty("signatures")
             .EnumerateArray()
             .Single();
+        Assert.Equal(2, subSignature.GetProperty("result").GetProperty("activeParameter").GetInt32());
         Assert.Equal(subLabel, firstSubSignature.GetProperty("label").GetString());
         Assert.False(firstSubSignature.TryGetProperty("documentation", out _));
+        var subParameters = firstSubSignature.GetProperty("parameters").EnumerateArray().ToArray();
+        Assert.Equal(
+            ["ByRef Arg1 As Long", "[Arg2 As Boolean]", "[Arg3 As Boolean]"],
+            subParameters.Select(parameter => parameter.GetProperty("label").GetString() ?? "").ToArray());
+        Assert.Equal(
+            "Example of a required argument.",
+            subParameters[0].GetProperty("documentation").GetProperty("value").GetString());
+        Assert.Equal(
+            "Example of another optional argument.",
+            subParameters[2].GetProperty("documentation").GetProperty("value").GetString());
 
         await process.ShutdownAsync(6);
     }
