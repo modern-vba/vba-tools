@@ -7,6 +7,13 @@ namespace VbaLanguageServer.Tests;
 
 internal sealed class LanguageServerProcessHarness : IAsyncDisposable
 {
+    private enum HarnessState
+    {
+        Active,
+        Disposing,
+        Disposed
+    }
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
@@ -18,6 +25,7 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
     private readonly Stream _stdout;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private readonly CancellationTokenSource _lifetime = new();
+    private readonly CancellationTokenSource _operations = new();
     private readonly Dictionary<int, TaskCompletionSource<JsonElement>> _pendingResponses = [];
     private readonly List<JsonElement> _transcript = [];
     private readonly Dictionary<string, int> _readCursors = new(StringComparer.Ordinal);
@@ -28,9 +36,10 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
     private readonly Task _stderrPump;
     private TaskCompletionSource<bool> _transcriptChanged = CreateSignal();
     private Exception? _sessionFailure;
+    private HarnessState _state = HarnessState.Active;
+    private Task? _disposeTask;
     private bool _initialized;
     private bool _shutdownRequested;
-    private bool _disposed;
     private int _cleanupRequestId = 1_000_000;
 
     private LanguageServerProcessHarness(
@@ -93,20 +102,32 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
             UseShellExecute = false,
             CreateNoWindow = true
         };
-        startInfo.Environment[VbaProjectReferenceCatalogPersistentStore.CacheRootEnvironmentVariable] = cacheRoot;
         foreach (var (name, value) in environment ?? new Dictionary<string, string>())
         {
             startInfo.Environment[name] = value;
         }
+        startInfo.Environment[VbaProjectReferenceCatalogPersistentStore.CacheRootEnvironmentVariable] = cacheRoot;
 
         startInfo.ArgumentList.Add("run");
         startInfo.ArgumentList.Add("--no-build");
         startInfo.ArgumentList.Add("--project");
         startInfo.ArgumentList.Add(serverProjectPath);
 
-        var process = Process.Start(startInfo)
-            ?? throw new InvalidOperationException("Failed to start the language server process.");
-        return Task.FromResult(new LanguageServerProcessHarness(process, cacheRoot, ownsCacheRoot));
+        try
+        {
+            var process = Process.Start(startInfo)
+                ?? throw new InvalidOperationException("Failed to start the language server process.");
+            return Task.FromResult(new LanguageServerProcessHarness(process, cacheRoot, ownsCacheRoot));
+        }
+        catch
+        {
+            if (ownsCacheRoot)
+            {
+                TryDeleteDirectory(cacheRoot);
+            }
+
+            throw;
+        }
     }
 
     public async Task<JsonElement> InitializeAsync(int requestId = 1, CancellationToken cancellationToken = default)
@@ -126,17 +147,55 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
         return response;
     }
 
-    public async Task<JsonElement> SendRequestAsync(
+    public Task<JsonElement> SendRequestAsync(
         int id,
         string method,
         object? parameters,
         TimeSpan? timeout = null,
         CancellationToken cancellationToken = default)
+        => SendRequestCoreAsync(
+            id,
+            method,
+            parameters,
+            timeout ?? TimeSpan.FromSeconds(10),
+            cancellationToken,
+            allowDisposing: false,
+            includeOperationLifetime: true);
+
+    public Task SendNotificationAsync(
+        string method,
+        object? parameters,
+        CancellationToken cancellationToken = default)
+        => SendMessageAsync(
+            new
+            {
+                jsonrpc = "2.0",
+                method,
+                @params = parameters
+            },
+            TimeSpan.FromSeconds(10),
+            cancellationToken);
+
+    public Task SendRawMessageAsync(object message, CancellationToken cancellationToken = default)
+        => SendMessageAsync(message, TimeSpan.FromSeconds(10), cancellationToken);
+
+    private async Task<JsonElement> SendRequestCoreAsync(
+        int id,
+        string method,
+        object? parameters,
+        TimeSpan timeout,
+        CancellationToken cancellationToken,
+        bool allowDisposing,
+        bool includeOperationLifetime)
     {
-        ThrowIfDisposed();
+        using var deadline = includeOperationLifetime
+            ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _operations.Token)
+            : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(timeout);
         var response = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
         lock (_gate)
         {
+            EnsureOperationAllowedLocked(allowDisposing);
             if (!_pendingResponses.TryAdd(id, response))
             {
                 throw new InvalidOperationException($"A language-server request with id {id} is already pending.");
@@ -145,7 +204,7 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
 
         try
         {
-            await WriteMessageAsync(
+            await WriteMessageCoreAsync(
                 new
                 {
                     jsonrpc = "2.0",
@@ -153,12 +212,24 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
                     method,
                     @params = parameters
                 },
-                cancellationToken);
-            return await response.Task.WaitAsync(timeout ?? TimeSpan.FromSeconds(10), cancellationToken);
+                deadline.Token);
+            return await response.Task.WaitAsync(deadline.Token);
         }
-        catch (TimeoutException exception)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            throw CreateSessionException($"Timed out waiting for response {id} ({method}).", exception);
+            throw;
+        }
+        catch (OperationCanceledException exception)
+            when (includeOperationLifetime && _operations.IsCancellationRequested)
+        {
+            throw CreateSessionException("The language-server session is disposing.", exception);
+        }
+        catch (OperationCanceledException exception)
+        {
+            var failure = CreateSessionException(
+                $"Timed out sending or waiting for response {id} ({method}).",
+                exception);
+            throw new TimeoutException(failure.Message, exception);
         }
         finally
         {
@@ -169,29 +240,47 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
         }
     }
 
-    public Task SendNotificationAsync(
-        string method,
-        object? parameters,
-        CancellationToken cancellationToken = default)
-        => WriteMessageAsync(
-            new
-            {
-                jsonrpc = "2.0",
-                method,
-                @params = parameters
-            },
-            cancellationToken);
+    private async Task SendMessageAsync(
+        object message,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            _operations.Token);
+        deadline.CancelAfter(timeout);
+        lock (_gate)
+        {
+            EnsureOperationAllowedLocked(allowDisposing: false);
+        }
 
-    public Task SendRawMessageAsync(object message, CancellationToken cancellationToken = default)
-        => WriteMessageAsync(message, cancellationToken);
+        try
+        {
+            await WriteMessageCoreAsync(message, deadline.Token);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException exception) when (_operations.IsCancellationRequested)
+        {
+            throw CreateSessionException("The language-server session is disposing.", exception);
+        }
+        catch (OperationCanceledException exception)
+        {
+            var failure = CreateSessionException("Timed out sending a language-server message.", exception);
+            throw new TimeoutException(failure.Message, exception);
+        }
+    }
 
-    public Task<JsonElement> ReadNextMessageAsync(
+    public Task<JsonElement> WaitForMessageAsync(
         int afterCheckpoint,
+        Func<JsonElement, bool> predicate,
         TimeSpan? timeout = null,
         CancellationToken cancellationToken = default)
         => WaitForTranscriptMessageAsync(
             $"raw:{afterCheckpoint}",
-            static _ => true,
+            predicate,
             timeout ?? TimeSpan.FromSeconds(10),
             afterCheckpoint,
             cancellationToken);
@@ -264,17 +353,40 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
         return message.GetProperty("params").GetProperty("message").GetString() ?? "";
     }
 
-    public async Task<JsonElement> ShutdownAsync(
+    public Task<JsonElement> ShutdownAsync(
         int requestId,
         CancellationToken cancellationToken = default)
+        => ShutdownCoreAsync(requestId, cancellationToken, allowDisposing: false);
+
+    private async Task<JsonElement> ShutdownCoreAsync(
+        int requestId,
+        CancellationToken cancellationToken,
+        bool allowDisposing)
     {
-        var response = await SendRequestAsync(
+        var response = await SendRequestCoreAsync(
             requestId,
             "shutdown",
             parameters: null,
-            cancellationToken: cancellationToken);
+            TimeSpan.FromSeconds(10),
+            cancellationToken,
+            allowDisposing,
+            includeOperationLifetime: !allowDisposing);
         _shutdownRequested = true;
-        await SendNotificationAsync("exit", parameters: null, cancellationToken);
+        var exitMessage = new
+        {
+            jsonrpc = "2.0",
+            method = "exit",
+            @params = (object?)null
+        };
+        if (allowDisposing)
+        {
+            await WriteMessageCoreAsync(exitMessage, cancellationToken);
+        }
+        else
+        {
+            await SendMessageAsync(exitMessage, TimeSpan.FromSeconds(10), cancellationToken);
+        }
+
         await WaitForExitAsync(TimeSpan.FromSeconds(5), cancellationToken);
         if (_process.ExitCode != 0)
         {
@@ -298,20 +410,55 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
         }
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        if (_disposed)
+        TaskCompletionSource<bool>? owner = null;
+        Task disposal;
+        lock (_gate)
         {
-            return;
+            if (_disposeTask is null)
+            {
+                owner = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                _disposeTask = owner.Task;
+                _state = HarnessState.Disposing;
+            }
+
+            disposal = _disposeTask;
         }
 
+        if (owner is not null)
+        {
+            _ = CompleteDisposalAsync(owner);
+        }
+
+        return new ValueTask(disposal);
+    }
+
+    private async Task CompleteDisposalAsync(TaskCompletionSource<bool> completion)
+    {
+        try
+        {
+            await DisposeCoreAsync();
+            completion.TrySetResult(true);
+        }
+        catch (Exception exception)
+        {
+            completion.TrySetException(exception);
+        }
+    }
+
+    private async Task DisposeCoreAsync()
+    {
+        FaultSession(new ObjectDisposedException(
+            nameof(LanguageServerProcessHarness),
+            "The language-server process harness is disposing."));
+        _operations.Cancel();
         try
         {
             await TryStopProcessAsync();
         }
         finally
         {
-            _disposed = true;
             _lifetime.Cancel();
             await IgnoreFailureAsync(_stdoutPump);
             await IgnoreFailureAsync(_stderrPump);
@@ -319,10 +466,16 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
             _stdout.Dispose();
             _process.Dispose();
             _writeLock.Dispose();
+            _operations.Dispose();
             _lifetime.Dispose();
             if (_ownsCacheRoot)
             {
                 TryDeleteDirectory(_cacheRoot);
+            }
+
+            lock (_gate)
+            {
+                _state = HarnessState.Disposed;
             }
         }
     }
@@ -339,7 +492,10 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
             try
             {
                 using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-                await ShutdownAsync(Interlocked.Increment(ref _cleanupRequestId), cleanup.Token);
+                await ShutdownCoreAsync(
+                    Interlocked.Increment(ref _cleanupRequestId),
+                    cleanup.Token,
+                    allowDisposing: true);
                 return;
             }
             catch (Exception exception) when (exception is not StackOverflowException)
@@ -348,15 +504,34 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
             }
         }
 
-        try
+        Exception? lastFailure = null;
+        for (var attempt = 0; attempt < 2 && !_process.HasExited; attempt++)
         {
-            _process.Kill(entireProcessTree: true);
-            using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await _process.WaitForExitAsync(cleanup.Token);
+            try
+            {
+                _process.Kill(entireProcessTree: true);
+                using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await _process.WaitForExitAsync(cleanup.Token);
+            }
+            catch (InvalidOperationException) when (_process.HasExited)
+            {
+                return;
+            }
+            catch (Exception exception)
+                when (exception is InvalidOperationException
+                    or OperationCanceledException
+                    or System.ComponentModel.Win32Exception)
+            {
+                lastFailure = exception;
+                Debug.WriteLine(exception);
+            }
         }
-        catch (Exception exception) when (exception is InvalidOperationException or OperationCanceledException)
+
+        if (!_process.HasExited)
         {
-            Debug.WriteLine(exception);
+            throw CreateSessionException(
+                "Failed to stop the language-server process tree.",
+                lastFailure);
         }
     }
 
@@ -375,6 +550,9 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
                     if (message.TryGetProperty("id", out var idElement)
                         && idElement.ValueKind == JsonValueKind.Number
                         && idElement.TryGetInt32(out var id)
+                        && !message.TryGetProperty("method", out _)
+                        && (message.TryGetProperty("result", out _)
+                            || message.TryGetProperty("error", out _))
                         && _pendingResponses.Remove(id, out response))
                     {
                     }
@@ -390,7 +568,7 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
         }
-        catch (EndOfStreamException) when (_shutdownRequested || _disposed)
+        catch (EndOfStreamException) when (_shutdownRequested || _state is not HarnessState.Active)
         {
         }
         catch (Exception exception)
@@ -428,9 +606,8 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
         }
     }
 
-    private async Task WriteMessageAsync(object message, CancellationToken cancellationToken)
+    private async Task WriteMessageCoreAsync(object message, CancellationToken cancellationToken)
     {
-        ThrowIfDisposed();
         var content = JsonSerializer.SerializeToUtf8Bytes(message, JsonOptions);
         var header = Encoding.ASCII.GetBytes($"Content-Length: {content.Length}\r\n\r\n");
         await _writeLock.WaitAsync(cancellationToken);
@@ -460,7 +637,10 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
             Task changed;
             lock (_gate)
             {
-                var start = afterCheckpoint ?? _readCursors.GetValueOrDefault(cursorKey);
+                var savedCursor = _readCursors.GetValueOrDefault(cursorKey);
+                var start = afterCheckpoint is null
+                    ? savedCursor
+                    : Math.Max(afterCheckpoint.Value, savedCursor);
                 for (var index = start; index < _transcript.Count; index++)
                 {
                     var message = _transcript[index];
@@ -530,9 +710,15 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
         }
 
         var details = new StringBuilder(message);
-        if (_process.HasExited)
+        try
         {
-            details.Append($" Exit code: {_process.ExitCode}.");
+            if (_process.HasExited)
+            {
+                details.Append($" Exit code: {_process.ExitCode}.");
+            }
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or ObjectDisposedException)
+        {
         }
 
         if (stderr.Length > 0)
@@ -548,9 +734,17 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
         return new InvalidOperationException(details.ToString(), innerException);
     }
 
-    private void ThrowIfDisposed()
+    private void EnsureOperationAllowedLocked(bool allowDisposing)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_state is HarnessState.Active
+            || (allowDisposing && _state is HarnessState.Disposing))
+        {
+            return;
+        }
+
+        throw new ObjectDisposedException(
+            nameof(LanguageServerProcessHarness),
+            $"The language-server process harness is {_state.ToString().ToLowerInvariant()}.");
     }
 
     private static bool IsMatchingLogMessage(JsonElement message, string expectedMessageFragment)

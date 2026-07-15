@@ -109,6 +109,7 @@ public sealed class LanguageServerProcessTests
         var text = "Public Sub Run()\nEnd Sub\n";
         await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
 
+        var responseCheckpoint = process.TranscriptCheckpoint;
         var completionTask = process.SendRequestAsync(
             2,
             "textDocument/completion",
@@ -137,9 +138,45 @@ public sealed class LanguageServerProcessTests
             symbols.GetProperty("result").EnumerateArray(),
             item => item.GetProperty("name").GetString() == "Run");
 
+        static bool IsConcurrentResponse(JsonElement message)
+            => message.TryGetProperty("id", out var id)
+                && id.ValueKind == JsonValueKind.Number
+                && id.GetInt32() is 2 or 3;
+
+        var firstWireResponse = await process.WaitForMessageAsync(
+            responseCheckpoint,
+            IsConcurrentResponse);
+        var secondWireResponse = await process.WaitForMessageAsync(
+            responseCheckpoint,
+            IsConcurrentResponse);
+        Assert.NotEqual(
+            firstWireResponse.GetProperty("id").GetInt32(),
+            secondWireResponse.GetProperty("id").GetInt32());
+
         var diagnostics = await process.WaitForDiagnosticsAsync(uri);
         Assert.Empty(diagnostics.GetProperty("params").GetProperty("diagnostics").EnumerateArray());
         await process.ShutdownAsync(4);
+    }
+
+    [Fact]
+    public async Task Harness_disposal_releases_waiters_and_is_idempotent()
+    {
+        var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+        var unmatchedNotification = process.WaitForNotificationAsync(
+            "test/never-arrives",
+            TimeSpan.FromSeconds(30));
+
+        var firstDisposal = process.DisposeAsync().AsTask();
+        var secondDisposal = process.DisposeAsync().AsTask();
+        Assert.Same(firstDisposal, secondDisposal);
+        await Task.WhenAll(firstDisposal, secondDisposal);
+
+        var waiterFailure = await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await unmatchedNotification);
+        Assert.Contains("session failed", waiterFailure.Message, StringComparison.OrdinalIgnoreCase);
+        await Assert.ThrowsAsync<ObjectDisposedException>(
+            () => process.SendRequestAsync(2, "shutdown", parameters: null));
     }
 
     [Fact]
@@ -2623,7 +2660,12 @@ public sealed class LanguageServerProcessTests
                     method = "shutdown",
                     @params = (object?)null
                 });
-            var invalidRequest = await server.ReadNextMessageAsync(checkpoint);
+            var invalidRequest = await server.WaitForMessageAsync(
+                checkpoint,
+                message => message.TryGetProperty("id", out var id)
+                    && id.ValueKind == JsonValueKind.Null
+                    && message.TryGetProperty("error", out var error)
+                    && error.GetProperty("code").GetInt32() == -32600);
             Assert.Equal(JsonValueKind.Null, invalidRequest.GetProperty("id").ValueKind);
             AssertJsonRpcError(invalidRequest, -32600, "Invalid Request");
 
