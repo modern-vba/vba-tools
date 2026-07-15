@@ -10,8 +10,6 @@ namespace VbaLanguageServer.SourceModel;
 internal sealed class VbaSemanticResolution
 {
     private readonly IReadOnlyList<VbaSourceDocument> documents;
-    private readonly VbaProjectReferenceSelection? referenceSelection;
-    private readonly VbaProjectReferenceCatalogSet referenceCatalogs;
     private readonly VbaNameResolutionService nameResolution;
     private readonly VbaTypeResolution typeResolution;
     private readonly VbaMemberChainResolution memberChainResolution;
@@ -30,25 +28,14 @@ internal sealed class VbaSemanticResolution
         VbaResolutionPolicy? resolutionPolicy = null)
     {
         this.documents = documents;
-        this.referenceSelection = referenceSelection;
-        this.referenceCatalogs = referenceCatalogs;
         resolutionPolicy ??= new VbaResolutionPolicy();
-        var activeReferenceDefinitions = referenceSelection is null
-            ? []
-            : referenceCatalogs.GetActiveDefinitions(referenceSelection);
         nameResolution = new VbaNameResolutionService(
             documents,
             referenceSelection,
             referenceCatalogs,
-            activeReferenceDefinitions,
-            resolutionPolicy);
-        typeResolution = new VbaTypeResolution(
-            documents,
-            referenceSelection,
-            referenceCatalogs,
-            activeReferenceDefinitions,
-            nameResolution,
-            resolutionPolicy);
+            activeReferenceDefinitions: null,
+            resolutionPolicy: resolutionPolicy);
+        typeResolution = new VbaTypeResolution(nameResolution);
         memberChainResolution = new VbaMemberChainResolution(typeResolution);
         callSiteResolution = new VbaCallSiteResolution(nameResolution, memberChainResolution);
     }
@@ -402,23 +389,11 @@ internal sealed class VbaSemanticResolution
                 member.Name);
             canonicalName = definition is null
                 ? null
-                : GetCanonicalQualifierName(definition, occurrence.Name);
+                : nameResolution.GetCanonicalQualifierName(definition, occurrence.Name);
             return canonicalName is not null;
         }
 
         return false;
-    }
-
-    private string? GetCanonicalQualifierName(VbaSourceDefinition definition, string qualifier)
-    {
-        if (!VbaProjectReferenceCatalogSet.IsExternalDefinition(definition))
-        {
-            return definition.ModuleName;
-        }
-
-        return referenceSelection is null
-            ? null
-            : referenceCatalogs.GetActiveCanonicalQualifierAlias(referenceSelection, definition.ModuleName, qualifier);
     }
 
     private static string? GetImmediateQualifier(

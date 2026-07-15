@@ -328,6 +328,14 @@ public sealed class VbaProjectReferenceCatalogSet
             .FirstOrDefault(alias => alias.Equals(qualifier, StringComparison.OrdinalIgnoreCase));
     }
 
+    internal IReadOnlyList<(string ReferenceName, string Qualifier)> GetActiveQualifierAliases(
+        VbaProjectReferenceSelection selection)
+        => GetActiveCatalogs(selection)
+            .SelectMany(catalog => catalog.Catalog.QualifierAliases.Select(alias => (
+                catalog.Catalog.ReferenceName,
+                Qualifier: alias)))
+            .ToArray();
+
     private IEnumerable<VbaProjectReferenceDefinition> GetActiveReferenceDefinitions(VbaProjectReferenceSelection selection)
         => GetActiveCatalogs(selection).SelectMany(catalog => catalog.Catalog.Definitions);
 
