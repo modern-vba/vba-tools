@@ -141,6 +141,42 @@ public sealed class VbaSyntaxTreeIncrementalTests
     }
 
     [Fact]
+    public void ParserFallsBackWhenAnUnchangedSuffixLineEndingWidthChanges()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        const string original =
+            "Attribute VB_Name = \"Worker\"\r\n" +
+            "Public Function BuildValue() As String\r\n" +
+            "    BuildValue = \"old\"\r\n" +
+            "End Function\r\n" +
+            "\r\n" +
+            "Public Sub Run()\r\n" +
+            "    BuildValue\r\n" +
+            "End Sub";
+        const string updated =
+            "Attribute VB_Name = \"Worker\"\r\n" +
+            "Public Function BuildValue() As String\r\n" +
+            "    BuildValue = \"new\"\r\n" +
+            "End Function\r\n" +
+            "\n" +
+            "Public Sub Run()\r\n" +
+            "    BuildValue\r\n" +
+            "End Sub";
+        var previous = VbaSyntaxTree.ParseModule(uri, original);
+
+        var result = VbaSyntaxTree.ParseOrUpdate(uri, updated, previous);
+        var full = VbaSyntaxTree.ParseModule(uri, updated);
+
+        Assert.Equal(VbaSyntaxTreeParseUpdateKind.FullModule, result.UpdateKind);
+        Assert.Equal(
+            full.TokenStream.Tokens.Select(token => (token.Kind, token.Text, token.Range)),
+            result.SyntaxTree.TokenStream.Tokens.Select(token => (token.Kind, token.Text, token.Range)));
+        Assert.Equal(
+            full.Module.Declarations.Select(declaration => (declaration.Name, declaration.Range)),
+            result.SyntaxTree.Module.Declarations.Select(declaration => (declaration.Name, declaration.Range)));
+    }
+
+    [Fact]
     public void ParserFallsBackToFullModuleForBoundaryAndRecoveryCases()
     {
         var original = string.Join('\n', [

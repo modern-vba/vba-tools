@@ -18,8 +18,8 @@ internal static class VbaSyntaxTreeIncrementalParser
             || previousSyntaxTree.Module.Kind == VbaModuleKind.FormModule
             || !previousSyntaxTree.Uri.Equals(uri, StringComparison.OrdinalIgnoreCase)
             || !TryFindChangedLineRange(
-                previousSource.Lines,
-                currentSource.Lines,
+                previousSource,
+                currentSource,
                 out var oldStartLine,
                 out var oldEndLine,
                 out var newStartLine,
@@ -261,17 +261,19 @@ internal static class VbaSyntaxTreeIncrementalParser
     }
 
     private static bool TryFindChangedLineRange(
-        IReadOnlyList<VbaSourceLine> oldLines,
-        IReadOnlyList<VbaSourceLine> newLines,
+        VbaSourceText oldSource,
+        VbaSourceText newSource,
         out int oldStartLine,
         out int oldEndLine,
         out int newStartLine,
         out int newEndLine)
     {
+        var oldLines = oldSource.Lines;
+        var newLines = newSource.Lines;
         var prefix = 0;
         while (prefix < oldLines.Count
             && prefix < newLines.Count
-            && oldLines[prefix].Text.Equals(newLines[prefix].Text, StringComparison.Ordinal))
+            && PhysicalLinesEqual(oldSource, prefix, newSource, prefix))
         {
             prefix++;
         }
@@ -286,7 +288,7 @@ internal static class VbaSyntaxTreeIncrementalParser
         var newSuffix = newLines.Count - 1;
         while (oldSuffix >= prefix
             && newSuffix >= prefix
-            && oldLines[oldSuffix].Text.Equals(newLines[newSuffix].Text, StringComparison.Ordinal))
+            && PhysicalLinesEqual(oldSource, oldSuffix, newSource, newSuffix))
         {
             oldSuffix--;
             newSuffix--;
@@ -297,6 +299,26 @@ internal static class VbaSyntaxTreeIncrementalParser
         newStartLine = prefix;
         newEndLine = Math.Max(prefix, newSuffix);
         return true;
+    }
+
+    private static bool PhysicalLinesEqual(
+        VbaSourceText leftSource,
+        int leftLineIndex,
+        VbaSourceText rightSource,
+        int rightLineIndex)
+    {
+        var leftLine = leftSource.Lines[leftLineIndex];
+        var rightLine = rightSource.Lines[rightLineIndex];
+        var leftEndOffset = leftLineIndex + 1 < leftSource.Lines.Count
+            ? leftSource.Lines[leftLineIndex + 1].StartOffset
+            : leftSource.Text.Length;
+        var rightEndOffset = rightLineIndex + 1 < rightSource.Lines.Count
+            ? rightSource.Lines[rightLineIndex + 1].StartOffset
+            : rightSource.Text.Length;
+        return leftSource.Text.AsSpan(leftLine.StartOffset, leftEndOffset - leftLine.StartOffset)
+            .SequenceEqual(rightSource.Text.AsSpan(
+                rightLine.StartOffset,
+                rightEndOffset - rightLine.StartOffset));
     }
 
     private static VbaModuleMemberSyntax? FindSingleContainingMember(
