@@ -71,3 +71,7 @@ temp/
 #
 /AGENTS.md
 /docs/agents/
+/.agents
+/.codex*
+/.tmp
+/.old
