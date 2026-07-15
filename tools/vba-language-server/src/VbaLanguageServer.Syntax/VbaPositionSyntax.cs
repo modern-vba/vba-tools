@@ -142,7 +142,7 @@ internal sealed class VbaPositionSyntaxIndex
 
     public VbaPositionSyntaxIndex(VbaSyntaxTree tree)
     {
-        sourceText = VbaSourceText.From(tree.Text);
+        sourceText = tree.SourceText;
         tokens = tree.TokenStream.Tokens;
         nonWhitespaceTokensByLine = BuildNonWhitespaceTokensByLine(sourceText.Lines.Count, tokens);
         statements = BuildStatements(tree.Text.Length, tokens);

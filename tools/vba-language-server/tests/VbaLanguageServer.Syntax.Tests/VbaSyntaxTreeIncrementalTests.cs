@@ -85,6 +85,61 @@ public sealed class VbaSyntaxTreeIncrementalTests
             result.SyntaxTree.TokenStream.Tokens.Select(token => (token.Kind, token.Text, token.Range)));
     }
 
+    [Theory]
+    [InlineData("\n", "\n")]
+    [InlineData("\r\n", "\r\n")]
+    [InlineData("\r", "\r")]
+    [InlineData("\r\n", "\n")]
+    public void IncrementalAndFullParsingPreserveTheSameCoordinates(
+        string firstNewLine,
+        string secondNewLine)
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var original = JoinWithAlternatingNewlines(
+            firstNewLine,
+            secondNewLine,
+            "Attribute VB_Name = \"Worker\"",
+            "Public Function BuildValue() As String",
+            "    BuildValue = \"old\"",
+            "End Function",
+            "",
+            "Public Sub Run()",
+            "    Example Arg1:=\"以前\"",
+            "End Sub");
+        var updated = JoinWithAlternatingNewlines(
+            firstNewLine,
+            secondNewLine,
+            "Attribute VB_Name = \"Worker\"",
+            "Public Function BuildValue() As String",
+            "    Dim value As String",
+            "    value = \"新しい😀\"",
+            "    BuildValue = value",
+            "End Function",
+            "",
+            "Public Sub Run()",
+            "    Example Arg1:=\"以前\"",
+            "End Sub");
+        var previous = VbaSyntaxTree.ParseModule(uri, original);
+
+        var incremental = VbaSyntaxTree.ParseOrUpdate(uri, updated, previous);
+        var full = VbaSyntaxTree.ParseModule(uri, updated);
+
+        Assert.Equal(VbaSyntaxTreeParseUpdateKind.ModuleMember, incremental.UpdateKind);
+        Assert.Equal(full.Module.Range, incremental.SyntaxTree.Module.Range);
+        Assert.Equal(
+            full.TokenStream.Tokens.Select(token => (token.Kind, token.Text, token.Range)),
+            incremental.SyntaxTree.TokenStream.Tokens.Select(token => (token.Kind, token.Text, token.Range)));
+        Assert.Equal(
+            full.Module.Declarations.Select(declaration => (declaration.Name, declaration.Range)),
+            incremental.SyntaxTree.Module.Declarations.Select(declaration => (declaration.Name, declaration.Range)));
+        Assert.Equal(
+            full.Module.Statements.Select(statement => (statement.Kind, statement.Range)),
+            incremental.SyntaxTree.Module.Statements.Select(statement => (statement.Kind, statement.Range)));
+        Assert.Equal(
+            full.Module.ArgumentLists.Select(arguments => (arguments.Callee, arguments.Range)),
+            incremental.SyntaxTree.Module.ArgumentLists.Select(arguments => (arguments.Callee, arguments.Range)));
+    }
+
     [Fact]
     public void ParserFallsBackToFullModuleForBoundaryAndRecoveryCases()
     {
@@ -127,5 +182,24 @@ public sealed class VbaSyntaxTreeIncrementalTests
         Assert.Equal(VbaSyntaxTreeParseUpdateKind.FullModule, recoveryResult.UpdateKind);
         Assert.Null(recoveryResult.MemberUpdate);
         Assert.Contains(recoveryResult.SyntaxTree.Diagnostics, diagnostic => diagnostic.Code == "syntax.unterminatedStringLiteral");
+    }
+
+    private static string JoinWithAlternatingNewlines(
+        string firstNewLine,
+        string secondNewLine,
+        params string[] lines)
+    {
+        var source = new System.Text.StringBuilder();
+        for (var index = 0; index < lines.Length; index++)
+        {
+            if (index > 0)
+            {
+                source.Append(index % 2 == 0 ? secondNewLine : firstNewLine);
+            }
+
+            source.Append(lines[index]);
+        }
+
+        return source.ToString();
     }
 }

@@ -12,12 +12,14 @@ internal static class VbaSyntaxTreeIncrementalParser
         out VbaSyntaxTreeParseResult result)
     {
         result = default!;
+        var previousSource = previousSyntaxTree.SourceText;
+        var currentSource = VbaSourceText.From(source);
         if (previousSyntaxTree.Diagnostics.Count > 0
             || previousSyntaxTree.Module.Kind == VbaModuleKind.FormModule
             || !previousSyntaxTree.Uri.Equals(uri, StringComparison.OrdinalIgnoreCase)
             || !TryFindChangedLineRange(
-                VbaSourceText.SplitLines(previousSyntaxTree.Text),
-                VbaSourceText.SplitLines(source),
+                previousSource.Lines,
+                currentSource.Lines,
                 out var oldStartLine,
                 out var oldEndLine,
                 out var newStartLine,
@@ -36,8 +38,6 @@ internal static class VbaSyntaxTreeIncrementalParser
             return false;
         }
 
-        var previousSource = VbaSourceText.From(previousSyntaxTree.Text);
-        var currentSource = VbaSourceText.From(source);
         var lineDelta = currentSource.Lines.Count - previousSource.Lines.Count;
         var currentMemberStartLine = previousMember.BlockRange.Start.Line;
         var currentMemberEndLine = previousMember.BlockRange.End.Line + lineDelta;
@@ -76,12 +76,11 @@ internal static class VbaSyntaxTreeIncrementalParser
 
         var syntaxTree = MergeSyntaxTree(
             uri,
-            source,
             previousSyntaxTree,
             parsedMemberTree,
             previousMember,
             currentMember,
-            currentSource.FullRange);
+            currentSource);
         var update = new VbaModuleMemberIncrementalUpdate(
             previousMember,
             currentMember,
@@ -98,12 +97,11 @@ internal static class VbaSyntaxTreeIncrementalParser
 
     private static VbaSyntaxTree MergeSyntaxTree(
         string uri,
-        string source,
         VbaSyntaxTree previousTree,
         VbaSyntaxTree parsedMemberTree,
         VbaModuleMemberSyntax previousMember,
         VbaModuleMemberSyntax currentMember,
-        VbaSyntaxRange fullRange)
+        VbaSourceText sourceText)
     {
         var oldRange = previousMember.BlockRange;
         var newRange = currentMember.BlockRange;
@@ -174,11 +172,11 @@ internal static class VbaSyntaxTreeIncrementalParser
                 block => Shift(block, lineDelta, offsetDelta),
                 oldRange,
                 newRange),
-            Range = fullRange
+            Range = sourceText.FullRange
         };
         return new VbaSyntaxTree(
             uri,
-            source,
+            sourceText,
             MergeTokenStreams(
                 previousTree.TokenStream,
                 parsedMemberTree.TokenStream,
@@ -263,8 +261,8 @@ internal static class VbaSyntaxTreeIncrementalParser
     }
 
     private static bool TryFindChangedLineRange(
-        IReadOnlyList<string> oldLines,
-        IReadOnlyList<string> newLines,
+        IReadOnlyList<VbaSourceLine> oldLines,
+        IReadOnlyList<VbaSourceLine> newLines,
         out int oldStartLine,
         out int oldEndLine,
         out int newStartLine,
@@ -273,7 +271,7 @@ internal static class VbaSyntaxTreeIncrementalParser
         var prefix = 0;
         while (prefix < oldLines.Count
             && prefix < newLines.Count
-            && oldLines[prefix].Equals(newLines[prefix], StringComparison.Ordinal))
+            && oldLines[prefix].Text.Equals(newLines[prefix].Text, StringComparison.Ordinal))
         {
             prefix++;
         }
@@ -288,7 +286,7 @@ internal static class VbaSyntaxTreeIncrementalParser
         var newSuffix = newLines.Count - 1;
         while (oldSuffix >= prefix
             && newSuffix >= prefix
-            && oldLines[oldSuffix].Equals(newLines[newSuffix], StringComparison.Ordinal))
+            && oldLines[oldSuffix].Text.Equals(newLines[newSuffix].Text, StringComparison.Ordinal))
         {
             oldSuffix--;
             newSuffix--;

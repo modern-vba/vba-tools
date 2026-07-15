@@ -16,6 +16,34 @@ public sealed record VbaSyntaxTree(
     IReadOnlyList<VbaSyntaxDiagnostic> Diagnostics)
 {
     private VbaPositionSyntaxIndex? positionSyntaxIndex;
+    private VbaSourceText? sourceText;
+
+    internal VbaSyntaxTree(
+        string uri,
+        VbaSourceText sourceText,
+        VbaTokenStream tokenStream,
+        VbaModuleSyntax module,
+        IReadOnlyList<VbaSyntaxDiagnostic> diagnostics)
+        : this(uri, sourceText.Text, tokenStream, module, diagnostics)
+    {
+        this.sourceText = sourceText;
+    }
+
+    internal VbaSourceText SourceText
+    {
+        get
+        {
+            var indexed = Volatile.Read(ref sourceText);
+            if (indexed is not null && ReferenceEquals(indexed.Text, Text))
+            {
+                return indexed;
+            }
+
+            var created = VbaSourceText.From(Text);
+            Interlocked.Exchange(ref sourceText, created);
+            return created;
+        }
+    }
 
     /// <summary>
     /// Parses a VBA module source document.

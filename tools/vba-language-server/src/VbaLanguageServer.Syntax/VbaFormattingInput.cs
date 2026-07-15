@@ -56,7 +56,7 @@ public sealed record VbaFormattingInput(
     /// <returns>The syntax-owned formatting input.</returns>
     public static VbaFormattingInput FromSyntaxTree(VbaSyntaxTree syntaxTree)
     {
-        var sourceText = VbaSourceText.From(syntaxTree.Text);
+        var sourceText = syntaxTree.SourceText;
         var lines = sourceText.Lines;
         var formDesignerRange = syntaxTree.Module.FormDesignerBlock?.Range;
         var formattingLines = new List<VbaFormattingLine>(lines.Count);

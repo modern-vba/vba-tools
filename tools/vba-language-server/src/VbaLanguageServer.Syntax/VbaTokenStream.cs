@@ -13,4 +13,7 @@ public sealed record VbaTokenStream(IReadOnlyList<VbaToken> Tokens)
     /// <returns>The token stream for the source text.</returns>
     public static VbaTokenStream FromText(string source)
         => VbaLexer.Tokenize(source);
+
+    internal static VbaTokenStream FromSourceText(VbaSourceText sourceText)
+        => VbaLexer.Tokenize(sourceText);
 }

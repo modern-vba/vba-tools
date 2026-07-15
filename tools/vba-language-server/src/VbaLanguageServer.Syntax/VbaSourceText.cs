@@ -26,14 +26,17 @@ public sealed record VbaSourceLine(
 /// </summary>
 public sealed class VbaSourceText
 {
+    private readonly VbaSourceLine[] indexedLines;
+
     private VbaSourceText(
         string text,
-        IReadOnlyList<VbaSourceLine> lines,
+        VbaSourceLine[] lines,
         VbaSyntaxPosition startPosition,
         VbaSyntaxRange fullRange)
     {
         Text = text;
-        Lines = lines;
+        indexedLines = lines;
+        Lines = Array.AsReadOnly(lines);
         StartPosition = startPosition;
         FullRange = fullRange;
     }
@@ -99,9 +102,15 @@ public sealed class VbaSourceText
             line++;
         }
 
+        var indexedLines = lines.ToArray();
         var startPosition = new VbaSyntaxPosition(0, 0, 0);
-        var endPosition = PositionAt(source, source.Length);
-        return new VbaSourceText(source, lines, startPosition, new VbaSyntaxRange(startPosition, endPosition));
+        var lastLine = indexedLines[^1];
+        var endPosition = new VbaSyntaxPosition(lastLine.LineNumber, lastLine.Text.Length, source.Length);
+        return new VbaSourceText(
+            source,
+            indexedLines,
+            startPosition,
+            new VbaSyntaxRange(startPosition, endPosition));
     }
 
     /// <summary>
@@ -110,7 +119,29 @@ public sealed class VbaSourceText
     /// <param name="offset">The zero-based character offset.</param>
     /// <returns>The corresponding line, character, and offset position.</returns>
     public VbaSyntaxPosition PositionAt(int offset)
-        => PositionAt(Text, offset);
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(offset);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(offset, Text.Length);
+
+        var low = 0;
+        var high = indexedLines.Length - 1;
+        while (low <= high)
+        {
+            var middle = low + ((high - low) / 2);
+            if (indexedLines[middle].StartOffset <= offset)
+            {
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle - 1;
+            }
+        }
+
+        var line = indexedLines[Math.Max(0, high)];
+        var character = Math.Min(offset - line.StartOffset, line.Text.Length);
+        return new VbaSyntaxPosition(line.LineNumber, character, offset);
+    }
 
     /// <summary>
     /// Builds a syntax range for a span on a single source line.
@@ -130,9 +161,7 @@ public sealed class VbaSourceText
     /// <param name="source">The source text to split.</param>
     /// <returns>The physical source lines.</returns>
     public static string[] SplitLines(string source)
-        => source.Replace("\r\n", "\n", StringComparison.Ordinal)
-            .Replace('\r', '\n')
-            .Split('\n');
+        => From(source).Lines.Select(line => line.Text).ToArray();
 
     /// <summary>
     /// Splits source text into physical lines while preserving each line's text without newline characters.
@@ -140,32 +169,26 @@ public sealed class VbaSourceText
     /// <param name="source">The source text to split.</param>
     /// <returns>The source lines in order.</returns>
     public static IReadOnlyList<string> SplitLogicalLines(string source)
+        => From(source).Lines.Select(line => line.Text).ToArray();
+
+    /// <summary>
+    /// Advances a source position by one source character, treating CRLF as one atomic newline.
+    /// </summary>
+    /// <param name="position">The current indexed source position.</param>
+    /// <returns>The next indexed source position.</returns>
+    internal VbaSyntaxPosition Advance(VbaSyntaxPosition position)
     {
-        var lines = new List<string>();
-        var lineStart = 0;
-        for (var index = 0; index < source.Length; index++)
+        if (position.Offset >= Text.Length)
         {
-            if (source[index] == '\r')
-            {
-                lines.Add(source[lineStart..index]);
-                if (index + 1 < source.Length && source[index + 1] == '\n')
-                {
-                    index++;
-                }
-
-                lineStart = index + 1;
-                continue;
-            }
-
-            if (source[index] == '\n')
-            {
-                lines.Add(source[lineStart..index]);
-                lineStart = index + 1;
-            }
+            return FullRange.End;
         }
 
-        lines.Add(source[lineStart..]);
-        return lines;
+        var width = Text[position.Offset] == '\r'
+            && position.Offset + 1 < Text.Length
+            && Text[position.Offset + 1] == '\n'
+                ? 2
+                : 1;
+        return PositionAt(position.Offset + width);
     }
 
     /// <summary>
@@ -248,34 +271,4 @@ public sealed class VbaSourceText
     public static bool IsIdentifierCharacter(char value)
         => char.IsAsciiLetterOrDigit(value) || value == '_';
 
-    private static VbaSyntaxPosition PositionAt(string source, int offset)
-    {
-        var line = 0;
-        var character = 0;
-        for (var index = 0; index < offset; index++)
-        {
-            if (source[index] == '\r')
-            {
-                if (index + 1 < source.Length && source[index + 1] == '\n')
-                {
-                    index++;
-                }
-
-                line++;
-                character = 0;
-                continue;
-            }
-
-            if (source[index] == '\n')
-            {
-                line++;
-                character = 0;
-                continue;
-            }
-
-            character++;
-        }
-
-        return new VbaSyntaxPosition(line, character, offset);
-    }
 }

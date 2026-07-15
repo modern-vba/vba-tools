@@ -11,8 +11,16 @@ internal static class VbaLexer
     /// <param name="source">The source text to tokenize.</param>
     /// <returns>The token stream in source order.</returns>
     public static VbaTokenStream Tokenize(string source)
+        => Tokenize(VbaSourceText.From(source));
+
+    /// <summary>
+    /// Produces the lexical token stream from an indexed source snapshot.
+    /// </summary>
+    /// <param name="sourceText">The indexed source snapshot to tokenize.</param>
+    /// <returns>The token stream in source order.</returns>
+    public static VbaTokenStream Tokenize(VbaSourceText sourceText)
     {
-        var state = new LexerState(source);
+        var state = new LexerState(sourceText);
         var tokens = new List<VbaToken>();
 
         while (!state.IsAtEnd)
@@ -299,16 +307,18 @@ internal static class VbaLexer
         /// Initializes a lexer cursor at the beginning of the supplied source.
         /// </summary>
         /// <param name="source">The source text to tokenize.</param>
-        public LexerState(string source)
+        public LexerState(VbaSourceText sourceText)
         {
-            Source = source;
-            Position = new VbaSyntaxPosition(0, 0, 0);
+            SourceText = sourceText;
+            Position = sourceText.StartPosition;
         }
+
+        private VbaSourceText SourceText { get; }
 
         /// <summary>
         /// Gets the source text being tokenized.
         /// </summary>
-        public string Source { get; }
+        public string Source => SourceText.Text;
 
         /// <summary>
         /// Gets the current line, character, and offset of the lexer cursor.
@@ -355,25 +365,7 @@ internal static class VbaLexer
                 return;
             }
 
-            var current = Source[Position.Offset];
-            if (current == '\r')
-            {
-                if (Peek(1) == '\n')
-                {
-                    Position = Position with { Offset = Position.Offset + 1 };
-                }
-
-                Position = new VbaSyntaxPosition(Position.Line + 1, 0, Position.Offset + 1);
-                return;
-            }
-
-            if (current == '\n')
-            {
-                Position = new VbaSyntaxPosition(Position.Line + 1, 0, Position.Offset + 1);
-                return;
-            }
-
-            Position = new VbaSyntaxPosition(Position.Line, Position.Character + 1, Position.Offset + 1);
+            Position = SourceText.Advance(Position);
         }
 
         /// <summary>

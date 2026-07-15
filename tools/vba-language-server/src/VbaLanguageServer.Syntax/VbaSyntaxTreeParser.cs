@@ -59,8 +59,8 @@ internal static class VbaSyntaxTreeParser
     /// <returns>The parsed syntax tree.</returns>
     public static VbaSyntaxTree ParseModule(string uri, string source)
     {
-        var tokenStream = VbaTokenStream.FromText(source);
         var sourceText = VbaSourceText.From(source);
+        var tokenStream = VbaTokenStream.FromSourceText(sourceText);
         var kind = GetModuleKind(uri);
         var diagnostics = new List<VbaSyntaxDiagnostic>();
         var codeStartLine = 0;
@@ -114,7 +114,7 @@ internal static class VbaSyntaxTreeParser
             designerBlock,
             codeStartLine,
             sourceText.FullRange);
-        return new VbaSyntaxTree(uri, source, tokenStream, module, diagnostics);
+        return new VbaSyntaxTree(uri, sourceText, tokenStream, module, diagnostics);
     }
 
     private static IReadOnlyList<VbaModuleAttributeSyntax> ParseAttributes(VbaSourceText sourceText, int startLine)
