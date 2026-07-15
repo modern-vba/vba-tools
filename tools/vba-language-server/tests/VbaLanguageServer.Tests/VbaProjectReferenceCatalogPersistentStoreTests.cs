@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.SourceModel;
 using Xunit;
@@ -30,6 +31,79 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
                 definition.Name == "GeneratedMember"
                 && definition.Kind == VbaSourceDefinitionKind.Property
                 && definition.ParentTypeName == "GeneratedType");
+            Assert.Contains(entry.Catalog.Definitions, definition =>
+                definition.Name == "GeneratedMethod"
+                && definition.Signature?.CallableKind == VbaCallableKind.Function);
+        }
+        finally
+        {
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void PersistentStoreLoadsV2SignaturesWithoutGuessingMissingCallableKinds()
+    {
+        var cacheRoot = Directory.CreateTempSubdirectory("vba-ls-catalog-v2-").FullName;
+        try
+        {
+            var identity = CreateIdentity("Generated Library");
+            var store = new VbaProjectReferenceCatalogPersistentStore(cacheRoot);
+            store.Save(new VbaProjectReferenceCatalogPersistentEntry(
+                identity,
+                CreateGeneratedCatalog("Generated Library", "GeneratedType", "GeneratedMember")));
+
+            var entryPath = Path.Combine(
+                cacheRoot,
+                "catalogs",
+                VbaProjectReferenceCatalogPersistentStore.CreateCatalogEntryKey(identity));
+            File.WriteAllText(
+                entryPath,
+                Regex.Replace(
+                    File.ReadAllText(entryPath)
+                        .Replace(
+                            VbaProjectReferenceCatalogPersistentStore.CurrentGeneratorVersion,
+                            "typelib-catalog-v2",
+                            StringComparison.Ordinal),
+                    ",\\s*\"callableKind\"\\s*:\\s*\\d+",
+                    "",
+                    RegexOptions.CultureInvariant));
+            var indexPath = store.GetReferenceIndexPath("Generated Library");
+            File.WriteAllText(
+                indexPath,
+                File.ReadAllText(indexPath).Replace(
+                    VbaProjectReferenceCatalogPersistentStore.CurrentGeneratorVersion,
+                    "typelib-catalog-v2",
+                    StringComparison.Ordinal));
+
+            var loadResult = store.Load("Generated Library");
+
+            Assert.Equal(VbaProjectReferenceCatalogPersistentLoadStatus.Stale, loadResult.Status);
+            var entry = Assert.IsType<VbaProjectReferenceCatalogPersistentEntry>(loadResult.Entry);
+            var generatedMethod = Assert.Single(
+                entry.Catalog.Definitions,
+                definition => definition.Name == "GeneratedMethod");
+            Assert.Null(generatedMethod.Signature?.CallableKind);
+
+            const string uri = "file:///C:/work/Worker.bas";
+            var sourceIndex = VbaSourceIndex.Build(
+                new Dictionary<string, string>
+                {
+                    [uri] = string.Join('\n', [
+                        "Attribute VB_Name = \"Worker\"",
+                        "Public Sub Run()",
+                        "    Dim generated As GeneratedType",
+                        "    generated.GeneratedMethod(",
+                        "End Sub"
+                    ])
+                },
+                VbaProjectReferenceSelection.Create(
+                    ProjectDocument.ExcelKind,
+                    [new VbaProjectReference("Generated Library")]),
+                VbaProjectReferenceCatalogSet.Empty.WithCatalog(entry.Catalog));
+            Assert.Equal(
+                "GeneratedMethod(Value) As String",
+                sourceIndex.GetSignatureHelp(uri, 3, "    generated.GeneratedMethod(".Length)?.Signature.Label);
         }
         finally
         {
@@ -461,7 +535,8 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
                     new VbaCallableSignature(
                         "GeneratedMethod(Value) As String",
                         [new VbaCallableParameter("Value", "The input value.")],
-                        "Generated method."),
+                        "Generated method.",
+                        CallableKind: VbaCallableKind.Function),
                     ParentTypeName: typeName,
                     TypeReference: new VbaTypeReference("String"))
             ]);

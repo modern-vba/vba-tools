@@ -18,4 +18,8 @@
     <ProjectReference Include="..\..\..\vba-dev\src\VbaDev.Domain\VbaDev.Domain.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="VbaLanguageServer.Tests" />
+  </ItemGroup>
+
 </Project>

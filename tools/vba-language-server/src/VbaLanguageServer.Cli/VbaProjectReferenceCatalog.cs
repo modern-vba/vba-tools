@@ -85,7 +85,8 @@ public sealed class VbaProjectReferenceCatalogSet
                                 new VbaCallableParameter("Buttons", "The buttons and icon style."),
                                 new VbaCallableParameter("Title", "The dialog box title.")
                             ],
-                            "Displays a message in a dialog box."))
+                            "Displays a message in a dialog box.",
+                            CallableKind: VbaCallableKind.Function))
                 ]),
             new VbaProjectReferenceCatalog(
                 "Microsoft Excel 16.0 Object Library",
@@ -122,7 +123,8 @@ public sealed class VbaProjectReferenceCatalogSet
                                     "The first argument passed to the macro.",
                                     IsOptional: true)
                             ],
-                            "Runs a macro or calls a function."),
+                            "Runs a macro or calls a function.",
+                            CallableKind: VbaCallableKind.Function),
                         ParentTypeName: "Application"),
                     new VbaProjectReferenceDefinition(
                         "Microsoft Excel 16.0 Object Library",
@@ -139,7 +141,8 @@ public sealed class VbaProjectReferenceCatalogSet
                             [
                                 new VbaCallableParameter("FileName", "The workbook file name.")
                             ],
-                            "Opens a workbook."),
+                            "Opens a workbook.",
+                            CallableKind: VbaCallableKind.Function),
                         ParentTypeName: "Workbooks",
                         TypeReference: new VbaTypeReference("Workbook", "Excel")),
                     new VbaProjectReferenceDefinition(
@@ -158,7 +161,8 @@ public sealed class VbaProjectReferenceCatalogSet
                             [
                                 new VbaCallableParameter("Wb", "The opened workbook.")
                             ],
-                            "Occurs when a workbook is opened."),
+                            "Occurs when a workbook is opened.",
+                            CallableKind: VbaCallableKind.Event),
                         ParentTypeName: "Application")
                 ]),
             new VbaProjectReferenceCatalog(
@@ -180,7 +184,8 @@ public sealed class VbaProjectReferenceCatalogSet
                             [
                                 new VbaCallableParameter("Key", "The key to find.")
                             ],
-                            "Returns whether a key exists in the dictionary."),
+                            "Returns whether a key exists in the dictionary.",
+                            CallableKind: VbaCallableKind.Function),
                         ParentTypeName: "Dictionary",
                         TypeReference: new VbaTypeReference("Boolean"))
                 ]),
@@ -382,7 +387,9 @@ public sealed class VbaProjectReferenceCatalogSet
         }
 
         var parameterLabels = definition.Signature.Parameters.Select(CreateRichParameterLabel).ToArray();
-        var label = $"{GetCallableKind(definition)} {definition.Name}({string.Join(", ", parameterLabels)})";
+        var callableKind = GetCallableKindLabel(definition);
+        var callablePrefix = callableKind is null ? "" : $"{callableKind} ";
+        var label = $"{callablePrefix}{definition.Name}({string.Join(", ", parameterLabels)})";
         if (definition.TypeReference is not null)
         {
             label = $"{label} As {definition.TypeReference.Name}";
@@ -397,12 +404,13 @@ public sealed class VbaProjectReferenceCatalogSet
         };
     }
 
-    private static string GetCallableKind(VbaProjectReferenceDefinition definition)
+    private static string? GetCallableKindLabel(VbaProjectReferenceDefinition definition)
         => definition.Kind switch
         {
             VbaSourceDefinitionKind.Property => "Property",
             VbaSourceDefinitionKind.Event => "Event",
-            _ => definition.TypeReference is null ? "Sub" : "Function"
+            VbaSourceDefinitionKind.Procedure => definition.Signature?.CallableKind?.ToString(),
+            _ => null
         };
 
     private static string CreateRichParameterLabel(VbaCallableParameter parameter)
@@ -435,7 +443,7 @@ public sealed class VbaProjectReferenceCatalogSet
         VbaCallableSignature? signature)
         => definition.Kind switch
         {
-            VbaSourceDefinitionKind.Procedure => $"{GetCallableKind(definition)} {CreateCompactCallableLabel(definition, signature)}",
+            VbaSourceDefinitionKind.Procedure => CreateCallableDeclarationLabel(definition, signature),
             VbaSourceDefinitionKind.Property when signature is not null => $"Property {CreateCompactCallableLabel(definition, signature)}",
             VbaSourceDefinitionKind.Property => $"Property {CreateValueLabel(definition)}",
             VbaSourceDefinitionKind.Event => $"Event {CreateCompactCallableLabel(definition, signature)}",
@@ -446,6 +454,15 @@ public sealed class VbaProjectReferenceCatalogSet
             VbaSourceDefinitionKind.EnumMember or VbaSourceDefinitionKind.TypeMember => CreateValueLabel(definition),
             _ => null
         };
+
+    private static string CreateCallableDeclarationLabel(
+        VbaProjectReferenceDefinition definition,
+        VbaCallableSignature? signature)
+    {
+        var callableKind = GetCallableKindLabel(definition);
+        var callableLabel = CreateCompactCallableLabel(definition, signature);
+        return callableKind is null ? callableLabel : $"{callableKind} {callableLabel}";
+    }
 
     private static string CreateCompactCallableLabel(
         VbaProjectReferenceDefinition definition,

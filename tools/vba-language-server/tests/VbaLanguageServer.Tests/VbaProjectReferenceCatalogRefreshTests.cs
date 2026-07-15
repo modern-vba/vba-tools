@@ -1,3 +1,5 @@
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
 using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.SourceModel;
 using Xunit;
@@ -6,6 +8,18 @@ namespace VbaLanguageServer.Tests;
 
 public sealed class VbaProjectReferenceCatalogRefreshTests
 {
+    [Fact]
+    public void TypeLibCallableKindUsesReturnValueParameterPresenceWhenItsTypeIsUnavailable()
+    {
+        var callableKind = ComTypeLibCatalogMetadataReader.GetCallableKind(
+            INVOKEKIND.INVOKE_FUNC,
+            VarEnum.VT_HRESULT,
+            hasResolvedReturnType: false,
+            hasReturnValueParameter: true);
+
+        Assert.Equal(VbaCallableKind.Function, callableKind);
+    }
+
     [Fact]
     public async Task TypeLibDiscoveryResolvesReferenceCatalogIdentity()
     {
@@ -188,6 +202,13 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
             && definition.Signature?.Label == "Range(Cell1, [Cell2]) As Range"
             && definition.Signature.Parameters.Select(parameter => parameter.Name).SequenceEqual(["Cell1", "Cell2"])
             && definition.Signature.Parameters[1].IsOptional);
+        Assert.Contains(catalog.Definitions, definition =>
+            definition.Name == "Activate"
+            && definition.Kind == VbaSourceDefinitionKind.Procedure
+            && definition.Signature?.CallableKind == VbaCallableKind.Sub);
+        Assert.Contains(catalog.Definitions, definition =>
+            definition.Kind == VbaSourceDefinitionKind.Event
+            && definition.Signature?.CallableKind == VbaCallableKind.Event);
     }
 
     [Fact]
@@ -576,7 +597,8 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
                                     new VbaCallableSignature(
                                         "Execute(String) As MatchCollection",
                                         [new VbaCallableParameter("String", "The string to search.")],
-                                        "Executes a regular expression search."),
+                                        "Executes a regular expression search.",
+                                        CallableKind: VbaCallableKind.Function),
                                     new VbaTypeReference("MatchCollection"))
                             ]),
                         new TypeLibCatalogType(

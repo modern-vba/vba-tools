@@ -1237,7 +1237,7 @@ public sealed class LanguageServerProcessTests
                 .GetProperty("signatures")
                 .EnumerateArray()
                 .Single();
-            Assert.Equal("Sub Run(Macro, [Arg1])", firstSignature.GetProperty("label").GetString());
+            Assert.Equal("Function Run(Macro, [Arg1])", firstSignature.GetProperty("label").GetString());
             Assert.Contains(
                 "The macro or function to run.",
                 firstSignature.GetProperty("parameters").EnumerateArray().First().GetProperty("documentation").GetProperty("value").GetString(),
@@ -1294,7 +1294,8 @@ public sealed class LanguageServerProcessTests
                                             IsOptional: true,
                                             TypeReference: new VbaTypeReference("String"),
                                             IsByRef: false)
-                                    ]),
+                                    ],
+                                    CallableKind: VbaCallableKind.Function),
                                 ParentTypeName: "GeneratedType",
                                 TypeReference: new VbaTypeReference("String"))
                         ])));

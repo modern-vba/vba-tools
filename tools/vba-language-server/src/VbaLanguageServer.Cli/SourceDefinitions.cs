@@ -363,15 +363,43 @@ public sealed record VbaCallableParameter(
 }
 
 /// <summary>
+/// Identifies the declared callable form without inferring it from return metadata.
+/// </summary>
+public enum VbaCallableKind
+{
+    /// <summary>
+    /// A Sub procedure that does not return a value.
+    /// </summary>
+    Sub,
+
+    /// <summary>
+    /// A Function procedure that returns a value.
+    /// </summary>
+    Function,
+
+    /// <summary>
+    /// A Property accessor exposed as one callable property.
+    /// </summary>
+    Property,
+
+    /// <summary>
+    /// An Event declaration.
+    /// </summary>
+    Event
+}
+
+/// <summary>
 /// Represents callable signature metadata used by hover and signature help.
 /// </summary>
 /// <param name="Label">The full signature label.</param>
 /// <param name="Parameters">The ordered parameter metadata.</param>
 /// <param name="Documentation">The callable documentation retained for semantic consumers but omitted from LSP Signature Help.</param>
+/// <param name="CallableKind">The explicit callable kind when supplied by source or catalog metadata.</param>
 public sealed record VbaCallableSignature(
     string Label,
     IReadOnlyList<VbaCallableParameter> Parameters,
-    string? Documentation = null);
+    string? Documentation = null,
+    VbaCallableKind? CallableKind = null);
 
 /// <summary>
 /// Represents the signature help result for a call site.
@@ -956,7 +984,7 @@ public sealed class VbaSourceIndex
     {
         var signature = declaration.Signature!;
         var parameterLabels = signature.Parameters.Select(CreateSignatureParameterLabel).ToArray();
-        var callableKind = declaration.CallableKind ?? GetCallableKind(declaration);
+        var callableKind = GetCallableKind(declaration);
         var declarePrefix = declaration.IsExternal ? "Declare " : "";
         var label = $"{declarePrefix}{callableKind} {declaration.Name}({string.Join(", ", parameterLabels)})";
         if (declaration.TypeReference is not null)
@@ -977,15 +1005,23 @@ public sealed class VbaSourceIndex
                     IsParamArray: parameter.IsParamArray,
                     IsArray: parameter.IsArray))
                 .ToArray(),
-            signature.Documentation);
+            signature.Documentation,
+            CallableKind: callableKind);
     }
 
-    private static string GetCallableKind(VbaDeclarationSyntax declaration)
-        => declaration.Kind switch
+    private static VbaCallableKind GetCallableKind(VbaDeclarationSyntax declaration)
+        => declaration.CallableKind?.ToUpperInvariant() switch
         {
-            VbaDeclarationKind.Property => "Property",
-            VbaDeclarationKind.Event => "Event",
-            _ => declaration.TypeReference is null ? "Sub" : "Function"
+            "SUB" => VbaCallableKind.Sub,
+            "FUNCTION" => VbaCallableKind.Function,
+            "PROPERTY" => VbaCallableKind.Property,
+            "EVENT" => VbaCallableKind.Event,
+            _ => declaration.Kind switch
+            {
+                VbaDeclarationKind.Property => VbaCallableKind.Property,
+                VbaDeclarationKind.Event => VbaCallableKind.Event,
+                _ => declaration.TypeReference is null ? VbaCallableKind.Sub : VbaCallableKind.Function
+            }
         };
 
     private static string CreateSignatureParameterLabel(VbaCallableParameterInfoSyntax parameter)

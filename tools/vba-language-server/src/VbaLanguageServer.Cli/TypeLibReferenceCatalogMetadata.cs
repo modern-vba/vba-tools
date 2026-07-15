@@ -273,7 +273,13 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
 
                     var forceEvent = (implFlags & IMPLTYPEFLAGS.IMPLTYPEFLAG_FSOURCE) != 0;
                     members.AddRange(implementedType.Members.Select(member => forceEvent
-                        ? member with { Kind = VbaSourceDefinitionKind.Event, Signature = member.Signature }
+                        ? member with
+                        {
+                            Kind = VbaSourceDefinitionKind.Event,
+                            Signature = member.Signature is null
+                                ? null
+                                : member.Signature with { CallableKind = VbaCallableKind.Event }
+                        }
                         : member));
                 }
 
@@ -371,13 +377,23 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
                 }
 
                 typeInfo.GetDocumentation(funcDesc.memid, out _, out var documentation, out _, out _);
-                var parameters = ReadParameters(typeInfo, funcDesc, names.Skip(1).ToArray(), out var returnType);
+                var parameters = ReadParameters(
+                    typeInfo,
+                    funcDesc,
+                    names.Skip(1).ToArray(),
+                    out var returnType,
+                    out var hasReturnValueParameter);
                 returnType ??= ToTypeReference(typeInfo, funcDesc.elemdescFunc.tdesc);
                 var memberKind = IsPropertyInvokeKind(funcDesc.invkind)
                     ? VbaSourceDefinitionKind.Property
                     : VbaSourceDefinitionKind.Procedure;
+                var callableKind = GetCallableKind(
+                    funcDesc.invkind,
+                    (VarEnum)funcDesc.elemdescFunc.tdesc.vt,
+                    hasResolvedReturnType: returnType is not null,
+                    hasReturnValueParameter);
                 var signature = memberKind == VbaSourceDefinitionKind.Procedure || parameters.Count > 0
-                    ? CreateSignature(memberName, parameters, returnType, EmptyToNull(documentation))
+                    ? CreateSignature(memberName, parameters, returnType, EmptyToNull(documentation), callableKind)
                     : null;
 
                 members.Add(new TypeLibCatalogMember(
@@ -404,9 +420,11 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
         ITypeInfo typeInfo,
         FUNCDESC funcDesc,
         IReadOnlyList<string> names,
-        out VbaTypeReference? returnType)
+        out VbaTypeReference? returnType,
+        out bool hasReturnValueParameter)
     {
         returnType = null;
+        hasReturnValueParameter = false;
         if (funcDesc.cParams <= 0 || funcDesc.lprgelemdescParam == IntPtr.Zero)
         {
             return [];
@@ -420,6 +438,7 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
             var element = Marshal.PtrToStructure<ELEMDESC>(elementPointer);
             if ((element.desc.paramdesc.wParamFlags & PARAMFLAG.PARAMFLAG_FRETVAL) != 0)
             {
+                hasReturnValueParameter = true;
                 returnType = ToTypeReference(typeInfo, element.tdesc);
                 continue;
             }
@@ -459,7 +478,8 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
         string memberName,
         IReadOnlyList<VbaCallableParameter> parameters,
         VbaTypeReference? returnType,
-        string? documentation)
+        string? documentation,
+        VbaCallableKind callableKind)
     {
         var label = $"{memberName}({string.Join(", ", parameters.Select(CreateParameterLabel))})";
         if (returnType is not null)
@@ -467,7 +487,32 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
             label = $"{label} As {returnType.Name}";
         }
 
-        return new VbaCallableSignature(label, parameters, documentation);
+        return new VbaCallableSignature(
+            label,
+            parameters,
+            documentation,
+            CallableKind: callableKind);
+    }
+
+    internal static VbaCallableKind GetCallableKind(
+        INVOKEKIND invokeKind,
+        VarEnum returnVarType,
+        bool hasResolvedReturnType,
+        bool hasReturnValueParameter)
+    {
+        if (IsPropertyInvokeKind(invokeKind))
+        {
+            return VbaCallableKind.Property;
+        }
+
+        if (hasResolvedReturnType || hasReturnValueParameter)
+        {
+            return VbaCallableKind.Function;
+        }
+
+        return returnVarType is VarEnum.VT_VOID or VarEnum.VT_EMPTY or VarEnum.VT_HRESULT
+            ? VbaCallableKind.Sub
+            : VbaCallableKind.Function;
     }
 
     private static string CreateParameterLabel(VbaCallableParameter parameter)
