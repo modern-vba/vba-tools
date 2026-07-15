@@ -151,6 +151,20 @@ internal static class VbaSyntaxTreeIncrementalParser
                 argumentList => Shift(argumentList, lineDelta, offsetDelta),
                 oldRange,
                 newRange),
+            Blocks = MergeByRange(
+                previousTree.Module.Blocks,
+                parsedMemberTree.Module.Blocks,
+                block => block.Range,
+                block => Shift(block, lineDelta, offsetDelta),
+                oldRange,
+                newRange),
+            LineLabels = MergeByRange(
+                previousTree.Module.LineLabels,
+                parsedMemberTree.Module.LineLabels,
+                label => label.Range,
+                label => Shift(label, lineDelta, offsetDelta),
+                oldRange,
+                newRange),
             PreprocessorDirectives = MergeByRange(
                 previousTree.Module.PreprocessorDirectives,
                 parsedMemberTree.Module.PreprocessorDirectives,
@@ -385,6 +399,34 @@ internal static class VbaSyntaxTreeIncrementalParser
                 NameRange = argument.NameRange is null ? null : Shift(argument.NameRange, lineDelta, offsetDelta),
                 ValueRange = argument.ValueRange is null ? null : Shift(argument.ValueRange, lineDelta, offsetDelta)
             }).ToArray()
+        };
+
+    private static VbaBlockSyntax Shift(
+        VbaBlockSyntax block,
+        int lineDelta,
+        int offsetDelta)
+        => block with
+        {
+            OpenerRange = Shift(block.OpenerRange, lineDelta, offsetDelta),
+            CloserRange = block.CloserRange is null
+                ? null
+                : Shift(block.CloserRange, lineDelta, offsetDelta),
+            Branches = block.Branches.Select(branch => branch with
+            {
+                HeaderRange = Shift(branch.HeaderRange, lineDelta, offsetDelta),
+                Range = Shift(branch.Range, lineDelta, offsetDelta)
+            }).ToArray(),
+            Range = Shift(block.Range, lineDelta, offsetDelta)
+        };
+
+    private static VbaLineLabelSyntax Shift(
+        VbaLineLabelSyntax label,
+        int lineDelta,
+        int offsetDelta)
+        => label with
+        {
+            Range = Shift(label.Range, lineDelta, offsetDelta),
+            ProcedureRange = Shift(label.ProcedureRange, lineDelta, offsetDelta)
         };
 
     private static VbaPreprocessorDirectiveSyntax Shift(

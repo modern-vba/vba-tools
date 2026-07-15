@@ -95,6 +95,12 @@ internal static class VbaSyntaxTreeParser
         var parsedStatements = ParseStatementsAndDiagnostics(sourceText, codeStartLine);
         var parsedExpressions = ParseExpressions(sourceText, tokenStream, codeStartLine);
         var parsedPreprocessor = VbaPreprocessorParser.Parse(sourceText.Lines, codeStartLine);
+        var completionFacts = VbaCompletionSyntaxFactsParser.Parse(
+            sourceText,
+            tokenStream,
+            parsedMembers.CallableDeclarations,
+            parsedPreprocessor.Blocks,
+            codeStartLine);
         diagnostics.AddRange(parsedStatements.Diagnostics);
         diagnostics.AddRange(parsedPreprocessor.Diagnostics);
         var module = new VbaModuleSyntax(
@@ -108,6 +114,8 @@ internal static class VbaSyntaxTreeParser
             parsedStatements.Statements,
             parsedExpressions.Expressions,
             parsedExpressions.ArgumentLists,
+            completionFacts.Blocks,
+            completionFacts.LineLabels,
             parsedPreprocessor.Directives,
             parsedPreprocessor.Blocks,
             designerBlock,

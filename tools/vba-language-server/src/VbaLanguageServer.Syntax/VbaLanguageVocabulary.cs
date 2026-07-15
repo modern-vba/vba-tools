@@ -126,20 +126,14 @@ public static class VbaLanguageVocabulary
     /// </summary>
     public static readonly IReadOnlyList<string> ProcedureStatementWords = CreateOrderedWords([
         "Call",
-        "Case",
         "Const",
         "Dim",
         "Do",
-        "Else",
-        "ElseIf",
-        "End",
         "For",
         "GoSub",
         "GoTo",
         "If",
         "Let",
-        "Loop",
-        "Next",
         "RaiseEvent",
         "ReDim",
         "Rem",
@@ -147,7 +141,6 @@ public static class VbaLanguageVocabulary
         "Select",
         "Set",
         "Static",
-        "Wend",
         "While",
         "With"
     ]);

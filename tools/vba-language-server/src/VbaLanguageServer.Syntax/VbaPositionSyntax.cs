@@ -162,7 +162,10 @@ public sealed record VbaPositionSyntax(
     VbaMemberAccessSyntax? MemberAccess,
     VbaPositionTypeReferenceSyntax? TypeReference,
     VbaCallSiteSyntax? CallSite,
-    IReadOnlyList<VbaWithScopeSyntax> EnclosingWithScopes)
+    IReadOnlyList<VbaWithScopeSyntax> EnclosingWithScopes,
+    IReadOnlyList<VbaEnclosingBlockSyntax> EnclosingBlocks,
+    VbaLabelReferenceSyntax? LabelReference,
+    VbaSyntaxRange? CompletionReplacementRange)
 {
     /// <summary>
     /// Gets the result returned for a position outside the source document.
@@ -174,7 +177,10 @@ public sealed record VbaPositionSyntax(
         null,
         null,
         null,
-        []);
+        [],
+        [],
+        null,
+        null);
 }
 
 /// <summary>
@@ -189,6 +195,7 @@ internal sealed class VbaPositionSyntaxIndex
     private readonly IReadOnlyList<WithScopeSpan> withScopes;
     private readonly IReadOnlyList<int> withScopePrefixMaximumEnds;
     private readonly IReadOnlyList<VbaCallableDeclarationSyntax> callableDeclarations;
+    private readonly IReadOnlyList<VbaBlockSyntax> blocks;
     private readonly VbaSyntaxRange? designerRange;
 
     public VbaPositionSyntaxIndex(VbaSyntaxTree tree)
@@ -203,6 +210,7 @@ internal sealed class VbaPositionSyntaxIndex
             .ToArray();
         withScopePrefixMaximumEnds = BuildPrefixMaximumEnds(withScopes);
         callableDeclarations = tree.Module.CallableDeclarations;
+        blocks = tree.Module.Blocks;
         designerRange = tree.Module.FormDesignerBlock?.Range;
     }
 
@@ -224,7 +232,10 @@ internal sealed class VbaPositionSyntaxIndex
                 null,
                 null,
                 null,
-                []);
+                [],
+                [],
+                null,
+                null);
         }
 
         var identifier = FindIdentifier(statement, position);
@@ -232,12 +243,21 @@ internal sealed class VbaPositionSyntaxIndex
         var typeReference = TryGetTypeReference(statement, position);
         var callSite = TryGetCallSite(statement, position);
         var enclosingWithScopes = GetEnclosingWithScopes(position.Offset);
+        var enclosingBlocks = GetEnclosingBlocks(position.Offset);
+        var labelReference = TryGetLabelReference(statement, position);
         var completionExpectation = GetCompletionExpectation(
             statement,
             position,
             memberAccess,
             typeReference,
-            callSite);
+            callSite,
+            enclosingBlocks,
+            labelReference);
+        var completionReplacementRange = GetCompletionReplacementRange(
+            statement,
+            position,
+            identifier,
+            labelReference);
         return new VbaPositionSyntax(
             region,
             identifier,
@@ -245,7 +265,10 @@ internal sealed class VbaPositionSyntaxIndex
             memberAccess,
             typeReference,
             callSite,
-            enclosingWithScopes);
+            enclosingWithScopes,
+            enclosingBlocks,
+            labelReference,
+            completionReplacementRange);
     }
 
     private bool TryGetPosition(int line, int character, out VbaSyntaxPosition position)
@@ -565,9 +588,16 @@ internal sealed class VbaPositionSyntaxIndex
         VbaSyntaxPosition position,
         VbaMemberAccessSyntax? memberAccess,
         VbaPositionTypeReferenceSyntax? typeReference,
-        VbaCallSiteSyntax? callSite)
+        VbaCallSiteSyntax? callSite,
+        IReadOnlyList<VbaEnclosingBlockSyntax> enclosingBlocks,
+        VbaLabelReferenceSyntax? labelReference)
     {
         if (IsAfterLineContinuation(position))
+        {
+            return VbaCompletionExpectation.None;
+        }
+
+        if (enclosingBlocks.Any(block => block.Block.IsMalformedBarrier))
         {
             return VbaCompletionExpectation.None;
         }
@@ -600,10 +630,11 @@ internal sealed class VbaPositionSyntaxIndex
             return eventExpectation.Value;
         }
 
-        var labelExpectation = GetLabelNameExpectation(prefix, position);
-        if (labelExpectation is not null)
+        if (labelReference is not null)
         {
-            return labelExpectation.Value;
+            return labelReference.IsIncomplete
+                ? VbaCompletionExpectation.LabelName
+                : VbaCompletionExpectation.None;
         }
 
         if (memberAccess is not null)
@@ -617,6 +648,16 @@ internal sealed class VbaPositionSyntaxIndex
 
         if (callSite is not null)
         {
+            if (GetDefaultExpectation(statement, position) == VbaCompletionExpectation.ModuleDeclaration)
+            {
+                return VbaCompletionExpectation.None;
+            }
+
+            if (callSite.Callee.Target?.IsKeyword == true)
+            {
+                return VbaCompletionExpectation.None;
+            }
+
             return GetCallArgumentExpectation(prefix, position, callSite);
         }
 
@@ -677,7 +718,9 @@ internal sealed class VbaPositionSyntaxIndex
             return VbaCompletionExpectation.None;
         }
 
-        return defaultExpectation;
+        return IsRecognizedCompletionStarter(prefix, position, defaultExpectation, enclosingBlocks)
+            ? defaultExpectation
+            : VbaCompletionExpectation.None;
     }
 
     private VbaCompletionExpectation GetMemberCompletionExpectation(
@@ -781,6 +824,251 @@ internal sealed class VbaPositionSyntaxIndex
             ? VbaCompletionExpectation.ProcedureStatement
             : VbaCompletionExpectation.ModuleDeclaration;
 
+    private IReadOnlyList<VbaEnclosingBlockSyntax> GetEnclosingBlocks(int offset)
+        => blocks
+            .Where(block => block.IsMalformedBarrier
+                ? offset >= block.Range.Start.Offset && offset <= block.Range.End.Offset
+                : offset >= block.OpenerRange.End.Offset
+                    && offset <= block.Range.End.Offset
+                    && (block.CloserRange is null || offset <= block.CloserRange.Start.Offset))
+            .OrderBy(block => block.OpenerRange.Start.Offset)
+            .ThenByDescending(block => block.Range.End.Offset)
+            .Select(block => new VbaEnclosingBlockSyntax(block, GetActiveBranch(block, offset)))
+            .ToArray();
+
+    private static VbaBlockBranchKind GetActiveBranch(VbaBlockSyntax block, int offset)
+        => block.Branches
+            .Where(branch => branch.HeaderRange.End.Offset <= offset)
+            .OrderBy(branch => branch.HeaderRange.Start.Offset)
+            .Select(branch => branch.Kind)
+            .LastOrDefault(VbaBlockBranchKind.Body);
+
+    private VbaLabelReferenceSyntax? TryGetLabelReference(
+        StatementSpan statement,
+        VbaSyntaxPosition position)
+    {
+        var owner = callableDeclarations
+            .Where(declaration => !declaration.IsExternal)
+            .Where(declaration => declaration.BlockRange.Start.Offset <= position.Offset
+                && position.Offset <= declaration.BlockRange.End.Offset)
+            .OrderBy(declaration => declaration.BlockRange.End.Offset - declaration.BlockRange.Start.Offset)
+            .FirstOrDefault();
+        if (owner is null || position.Line <= owner.LineIndex)
+        {
+            return null;
+        }
+
+        var prefix = statement.SignificantTokens
+            .Where(token => token.Range.Start.Offset < position.Offset)
+            .ToArray();
+        if (!TryFindLabelMarker(
+                prefix,
+                out var markerIndex,
+                out var kind,
+                out var allowsLabels,
+                out var syntaxCandidates))
+        {
+            return null;
+        }
+
+        var destinationTokens = prefix.Skip(markerIndex + 1).ToArray();
+        var destinationIndex = 0;
+        var destinationStart = 0;
+        if (kind is VbaLabelReferenceKind.OnGoTo or VbaLabelReferenceKind.OnGoSub)
+        {
+            for (var index = 0; index < destinationTokens.Length; index++)
+            {
+                if (IsPunctuation(destinationTokens[index], ","))
+                {
+                    destinationIndex++;
+                    destinationStart = index + 1;
+                }
+            }
+        }
+
+        var activeTokens = destinationTokens.Skip(destinationStart).ToArray();
+        var isValidSlot = activeTokens.Length == 0
+            || (activeTokens.Length == 1
+                && (IsNameToken(activeTokens[0])
+                    || activeTokens[0].Kind == VbaTokenKind.NumericLiteral));
+        if (!isValidSlot)
+        {
+            return new VbaLabelReferenceSyntax(
+                kind,
+                destinationIndex,
+                IsIncomplete: false,
+                allowsLabels,
+                syntaxCandidates,
+                owner.Name,
+                owner.BlockRange,
+                new VbaSyntaxRange(position, position));
+        }
+
+        var activeToken = activeTokens.SingleOrDefault();
+        var hasTrailingWhitespace = activeToken is not null && HasTrailingWhitespace(position, activeToken);
+        var replacementRange = activeToken?.Range ?? new VbaSyntaxRange(position, position);
+        return new VbaLabelReferenceSyntax(
+            kind,
+            destinationIndex,
+            IsIncomplete: !hasTrailingWhitespace,
+            allowsLabels,
+            syntaxCandidates,
+            owner.Name,
+            owner.BlockRange,
+            replacementRange);
+    }
+
+    private static bool TryFindLabelMarker(
+        IReadOnlyList<VbaToken> prefix,
+        out int markerIndex,
+        out VbaLabelReferenceKind kind,
+        out bool allowsLabels,
+        out IReadOnlyList<string> syntaxCandidates)
+    {
+        markerIndex = -1;
+        kind = default;
+        allowsLabels = true;
+        syntaxCandidates = [];
+        var onIndex = FindToken(prefix, token => IsWord(token, "On"));
+        if (onIndex >= 0 && onIndex + 2 < prefix.Count && IsWord(prefix[onIndex + 1], "Error"))
+        {
+            if (IsWord(prefix[onIndex + 2], "GoTo"))
+            {
+                markerIndex = onIndex + 2;
+                kind = VbaLabelReferenceKind.OnErrorGoTo;
+                syntaxCandidates = ["0"];
+                return true;
+            }
+
+            if (IsWord(prefix[onIndex + 2], "Resume"))
+            {
+                markerIndex = onIndex + 2;
+                kind = VbaLabelReferenceKind.OnErrorResume;
+                allowsLabels = false;
+                syntaxCandidates = ["Next"];
+                return true;
+            }
+
+            return false;
+        }
+
+        var goToIndex = FindLastToken(prefix, token => IsWord(token, "GoTo"));
+        var goSubIndex = FindLastToken(prefix, token => IsWord(token, "GoSub"));
+        markerIndex = Math.Max(goToIndex, goSubIndex);
+        if (markerIndex >= 0)
+        {
+            var isOnList = onIndex >= 0 && onIndex < markerIndex;
+            kind = markerIndex == goToIndex
+                ? isOnList ? VbaLabelReferenceKind.OnGoTo : VbaLabelReferenceKind.GoTo
+                : isOnList ? VbaLabelReferenceKind.OnGoSub : VbaLabelReferenceKind.GoSub;
+            return true;
+        }
+
+        markerIndex = FindLastToken(prefix, token => IsWord(token, "Resume"));
+        if (markerIndex < 0)
+        {
+            return false;
+        }
+
+        kind = VbaLabelReferenceKind.Resume;
+        syntaxCandidates = ["Next"];
+        return true;
+    }
+
+    private VbaSyntaxRange? GetCompletionReplacementRange(
+        StatementSpan statement,
+        VbaSyntaxPosition position,
+        VbaPositionIdentifierSyntax? identifier,
+        VbaLabelReferenceSyntax? labelReference)
+    {
+        if (labelReference is not null)
+        {
+            return labelReference.ReplacementRange;
+        }
+
+        var prefix = statement.SignificantTokens
+            .Where(token => token.Range.Start.Offset < position.Offset)
+            .ToArray();
+        if (prefix.Length == 1
+            && IsWord(prefix[0], "End")
+            && position.Offset >= prefix[0].Range.End.Offset)
+        {
+            return new VbaSyntaxRange(prefix[0].Range.Start, position);
+        }
+
+        return identifier?.Range;
+    }
+
+    private bool IsRecognizedCompletionStarter(
+        IReadOnlyList<VbaToken> prefix,
+        VbaSyntaxPosition position,
+        VbaCompletionExpectation expectation,
+        IReadOnlyList<VbaEnclosingBlockSyntax> enclosingBlocks)
+    {
+        if (prefix.Count != 1 || !IsNameToken(prefix[0]))
+        {
+            return false;
+        }
+
+        var token = prefix[0];
+        var hasTrailingWhitespace = HasTrailingWhitespace(position, token);
+        var contextualPrefix = GetContextualStarterPrefix(token.Text, enclosingBlocks);
+        if (contextualPrefix)
+        {
+            return !hasTrailingWhitespace
+                || token.Text.Equals("End", StringComparison.OrdinalIgnoreCase)
+                || token.Text.Equals("Else", StringComparison.OrdinalIgnoreCase)
+                || token.Text.Equals("ElseIf", StringComparison.OrdinalIgnoreCase);
+        }
+
+        var words = expectation == VbaCompletionExpectation.ModuleDeclaration
+            ? VbaLanguageVocabulary.ModuleDeclarationWords
+            : VbaLanguageVocabulary.ProcedureStatementWords;
+        var isVocabularyPrefix = words.Any(word =>
+            word.StartsWith(token.Text, StringComparison.OrdinalIgnoreCase));
+        if (!hasTrailingWhitespace)
+        {
+            return isVocabularyPrefix
+                || (expectation == VbaCompletionExpectation.ProcedureStatement
+                    && token.Kind == VbaTokenKind.Identifier);
+        }
+
+        return false;
+    }
+
+    private static bool GetContextualStarterPrefix(
+        string prefix,
+        IReadOnlyList<VbaEnclosingBlockSyntax> enclosingBlocks)
+    {
+        var innermost = enclosingBlocks.LastOrDefault();
+        if (innermost is null || innermost.Block.IsMalformedBarrier)
+        {
+            return false;
+        }
+
+        var block = innermost.Block;
+        if (FirstWord(block.ExpectedTerminator).StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return block.Kind switch
+        {
+            VbaBlockKind.If when innermost.ActiveBranch != VbaBlockBranchKind.Else
+                => "Else".StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                    || "ElseIf".StartsWith(prefix, StringComparison.OrdinalIgnoreCase),
+            VbaBlockKind.Select
+                => "Case".StartsWith(prefix, StringComparison.OrdinalIgnoreCase),
+            _ => false
+        };
+    }
+
+    private static string FirstWord(string value)
+    {
+        var separator = value.IndexOf(' ');
+        return separator < 0 ? value : value[..separator];
+    }
+
     private VbaCompletionExpectation? GetEventNameExpectation(
         IReadOnlyList<VbaToken> prefix,
         VbaSyntaxPosition position)
@@ -806,29 +1094,6 @@ internal sealed class VbaPositionSyntaxIndex
         }
 
         return ClassifyNameSlot(slotTokens, position, VbaCompletionExpectation.EventName);
-    }
-
-    private VbaCompletionExpectation? GetLabelNameExpectation(
-        IReadOnlyList<VbaToken> prefix,
-        VbaSyntaxPosition position)
-    {
-        var labelMarkerIndex = FindToken(prefix, token =>
-            IsWord(token, "GoTo")
-            || IsWord(token, "GoSub")
-            || IsWord(token, "Resume"));
-        if (labelMarkerIndex < 0)
-        {
-            return null;
-        }
-
-        if (IsWord(prefix[labelMarkerIndex], "Resume")
-            && labelMarkerIndex + 1 < prefix.Count
-            && IsWord(prefix[labelMarkerIndex + 1], "Next"))
-        {
-            return VbaCompletionExpectation.None;
-        }
-
-        return ClassifyNameSlot(prefix.Skip(labelMarkerIndex + 1).ToArray(), position, VbaCompletionExpectation.LabelName);
     }
 
     private VbaCompletionExpectation ClassifyNameSlot(
@@ -1034,6 +1299,21 @@ internal sealed class VbaPositionSyntaxIndex
         return -1;
     }
 
+    private static int FindLastToken(
+        IReadOnlyList<VbaToken> tokens,
+        Func<VbaToken, bool> predicate)
+    {
+        for (var index = tokens.Count - 1; index >= 0; index--)
+        {
+            if (predicate(tokens[index]))
+            {
+                return index;
+            }
+        }
+
+        return -1;
+    }
+
     private bool IsAfterLineContinuation(VbaSyntaxPosition position)
     {
         var lineTokens = nonWhitespaceTokensByLine[position.Line];
@@ -1157,66 +1437,13 @@ internal sealed class VbaPositionSyntaxIndex
     private static IReadOnlyList<StatementSpan> BuildStatements(
         int textLength,
         IReadOnlyList<VbaToken> tokens)
-    {
-        var statements = new List<StatementSpan>();
-        var significant = new List<VbaToken>();
-        var startOffset = 0;
-        var continued = false;
-        foreach (var token in tokens)
-        {
-            if (token.Kind == VbaTokenKind.LineContinuation)
-            {
-                continued = true;
-                continue;
-            }
-
-            if (token.Kind == VbaTokenKind.NewLine)
-            {
-                if (continued)
-                {
-                    continued = false;
-                    continue;
-                }
-
-                statements.Add(new StatementSpan(
-                    startOffset,
-                    token.Range.Start.Offset,
-                    token.Range.End.Offset,
-                    significant.ToArray()));
-                significant.Clear();
-                startOffset = token.Range.End.Offset;
-                continue;
-            }
-
-            if (token.Kind == VbaTokenKind.Punctuation && token.Text == ":")
-            {
-                if (significant.Count > 0
-                    && significant[0].Text.Equals("Rem", StringComparison.OrdinalIgnoreCase))
-                {
-                    significant.Add(token);
-                    continue;
-                }
-
-                statements.Add(new StatementSpan(
-                    startOffset,
-                    token.Range.Start.Offset,
-                    token.Range.End.Offset,
-                    significant.ToArray()));
-                significant.Clear();
-                startOffset = token.Range.End.Offset;
-                continued = false;
-                continue;
-            }
-
-            if (token.Kind is not VbaTokenKind.Whitespace and not VbaTokenKind.Comment)
-            {
-                significant.Add(token);
-            }
-        }
-
-        statements.Add(new StatementSpan(startOffset, textLength, textLength, significant.ToArray()));
-        return statements;
-    }
+        => VbaLogicalStatementSpan.Build(textLength, tokens)
+            .Select(statement => new StatementSpan(
+                statement.StartOffset,
+                statement.EndOffset,
+                statement.NextOffset,
+                statement.SignificantTokens))
+            .ToArray();
 
     private static IReadOnlyList<IReadOnlyList<VbaToken>> BuildNonWhitespaceTokensByLine(
         int lineCount,
