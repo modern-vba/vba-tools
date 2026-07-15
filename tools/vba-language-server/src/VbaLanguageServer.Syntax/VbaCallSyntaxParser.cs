@@ -244,7 +244,7 @@ internal static class VbaCallSyntaxParser
 
         var completeArgument = completeArguments[activeIndex].Syntax;
         return completeArgument.NameRange is not null
-            && position.Offset >= completeArgument.NameRange.Start.Offset
+            && position.Offset >= completeArguments[activeIndex].PositionRange.Start.Offset
                 ? completeArgument.Name
                 : null;
     }

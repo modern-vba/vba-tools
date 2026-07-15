@@ -1103,7 +1103,19 @@ public sealed class LanguageServerProcessTests
             "Example of another optional argument.",
             subParameters[2].GetProperty("documentation").GetProperty("value").GetString());
 
-        await process.ShutdownAsync(6);
+        var commaBoundarySignature = await SendPositionRequestAsync(
+            process,
+            6,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "ExampleSub 1, Arg3:=True",
+            "ExampleSub 1,".Length);
+        Assert.Equal(
+            2,
+            commaBoundarySignature.GetProperty("result").GetProperty("activeParameter").GetInt32());
+
+        await process.ShutdownAsync(7);
     }
 
     [Fact]

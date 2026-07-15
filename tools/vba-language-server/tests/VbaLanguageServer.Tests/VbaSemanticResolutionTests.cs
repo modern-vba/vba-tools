@@ -476,10 +476,12 @@ public sealed class VbaSemanticResolutionTests
     }
 
     [Theory]
+    [InlineData(7, "    example_var = ExampleFunc(1,")]
     [InlineData(7, "    example_var = ExampleFunc(1, ")]
     [InlineData(7, "    example_var = ExampleFunc(1, Arg")]
     [InlineData(7, "    example_var = ExampleFunc(1, Arg3:")]
     [InlineData(7, "    example_var = ExampleFunc(1, Arg3:=Tr")]
+    [InlineData(8, "    ExampleSub 1,")]
     [InlineData(8, "    ExampleSub 1, ")]
     [InlineData(8, "    ExampleSub 1, Arg")]
     [InlineData(8, "    ExampleSub 1, Arg3:")]
