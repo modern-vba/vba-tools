@@ -14,6 +14,7 @@ namespace VbaLanguageServer.SourceModel;
 /// <param name="ParentTypeName">The containing type name for members.</param>
 /// <param name="TypeReference">The result or member type reference supplied by the catalog.</param>
 /// <param name="PropertyAccess">The supported property operations, or Unknown when unavailable.</param>
+/// <param name="IsCreatable">Whether the type can be used as the target of a New expression.</param>
 public sealed record VbaProjectReferenceDefinition(
     string ReferenceName,
     string Name,
@@ -22,7 +23,8 @@ public sealed record VbaProjectReferenceDefinition(
     VbaCallableSignature? Signature = null,
     string? ParentTypeName = null,
     VbaTypeReference? TypeReference = null,
-    VbaPropertyAccess PropertyAccess = VbaPropertyAccess.Unknown);
+    VbaPropertyAccess PropertyAccess = VbaPropertyAccess.Unknown,
+    bool IsCreatable = false);
 
 /// <summary>
 /// Contains reference-catalog definitions and qualifier aliases for one VBA project reference.
@@ -74,7 +76,8 @@ public sealed class VbaProjectReferenceCatalogSet
                         "Visual Basic For Applications",
                         "Collection",
                         VbaSourceDefinitionKind.Class,
-                        "Represents an ordered set of items."),
+                        "Represents an ordered set of items.",
+                        IsCreatable: true),
                     new VbaProjectReferenceDefinition(
                         "Visual Basic For Applications",
                         "MsgBox",
@@ -98,7 +101,8 @@ public sealed class VbaProjectReferenceCatalogSet
                         "Microsoft Excel 16.0 Object Library",
                         "Application",
                         VbaSourceDefinitionKind.Class,
-                        "Represents the Microsoft Excel application."),
+                        "Represents the Microsoft Excel application.",
+                        IsCreatable: true),
                     new VbaProjectReferenceDefinition(
                         "Microsoft Excel 16.0 Object Library",
                         "Workbooks",
@@ -177,7 +181,8 @@ public sealed class VbaProjectReferenceCatalogSet
                         "Microsoft Scripting Runtime",
                         "Dictionary",
                         VbaSourceDefinitionKind.Class,
-                        "Represents a key/item collection provided by Microsoft Scripting Runtime."),
+                        "Represents a key/item collection provided by Microsoft Scripting Runtime.",
+                        IsCreatable: true),
                     new VbaProjectReferenceDefinition(
                         "Microsoft Scripting Runtime",
                         "Exists",
@@ -211,7 +216,8 @@ public sealed class VbaProjectReferenceCatalogSet
                         "Microsoft Outlook 16.0 Object Library",
                         "Application",
                         VbaSourceDefinitionKind.Class,
-                        "Represents a Microsoft Outlook application.")
+                        "Represents a Microsoft Outlook application.",
+                        IsCreatable: true)
                 ])
         };
 
@@ -381,7 +387,8 @@ public sealed class VbaProjectReferenceCatalogSet
             ParentTypeName: definition.ParentTypeName,
             TypeReference: definition.TypeReference,
             DeclarationLabel: CreateDeclarationLabel(definition, signature),
-            PropertyAccess: definition.PropertyAccess);
+            PropertyAccess: definition.PropertyAccess,
+            IsCreatable: definition.IsCreatable);
     }
 
     private static VbaCallableSignature? CreateSourceSignature(VbaProjectReferenceDefinition definition)

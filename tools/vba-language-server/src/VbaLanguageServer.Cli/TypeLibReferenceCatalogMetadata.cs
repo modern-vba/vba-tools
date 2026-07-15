@@ -20,11 +20,13 @@ public sealed record TypeLibCatalogMetadata(
 /// <param name="Kind">The editor-facing definition kind.</param>
 /// <param name="Documentation">The type documentation.</param>
 /// <param name="Members">The members exposed by the type.</param>
+/// <param name="IsCreatable">Whether the TypeLib type is a coclass that can be used with New.</param>
 public sealed record TypeLibCatalogType(
     string Name,
     VbaSourceDefinitionKind Kind,
     string? Documentation,
-    IReadOnlyList<TypeLibCatalogMember> Members);
+    IReadOnlyList<TypeLibCatalogMember> Members,
+    bool IsCreatable = false);
 
 /// <summary>
 /// Represents one TypeLib member.
@@ -81,7 +83,8 @@ public static class TypeLibReferenceCatalogBuilder
                 referenceName,
                 type.Name,
                 type.Kind,
-                type.Documentation));
+                type.Documentation,
+                IsCreatable: type.IsCreatable));
 
             foreach (var member in type.Members.Where(member => !string.IsNullOrWhiteSpace(member.Name)))
             {
@@ -124,7 +127,8 @@ public static class TypeLibReferenceCatalogBuilder
                         ? group.Aggregate(
                             VbaPropertyAccess.Unknown,
                             (access, definition) => access | definition.PropertyAccess)
-                        : VbaPropertyAccess.Unknown
+                        : VbaPropertyAccess.Unknown,
+                    IsCreatable = group.Any(definition => definition.IsCreatable)
                 };
             })
             .ToArray();
@@ -240,7 +244,12 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
             var members = new List<TypeLibCatalogMember>();
             members.AddRange(ReadVariableMembers(typeInfo, attr, typeName, definitionKind));
             members.AddRange(ReadFunctionMembers(typeInfo, attr, typeName));
-            return new TypeLibCatalogType(typeName, definitionKind, EmptyToNull(documentation), members);
+            return new TypeLibCatalogType(
+                typeName,
+                definitionKind,
+                EmptyToNull(documentation),
+                members,
+                IsCreatableTypeKind(attr.typekind));
         }
         finally
         {
@@ -300,7 +309,12 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
 
                 if (members.Count > 0)
                 {
-                    forwardedTypes.Add(new TypeLibCatalogType(coClassName, VbaSourceDefinitionKind.Class, null, members));
+                    forwardedTypes.Add(new TypeLibCatalogType(
+                        coClassName,
+                        VbaSourceDefinitionKind.Class,
+                        null,
+                        members,
+                        IsCreatable: true));
                 }
             }
             finally
@@ -548,6 +562,9 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
 
         return access;
     }
+
+    internal static bool IsCreatableTypeKind(TYPEKIND typeKind)
+        => typeKind == TYPEKIND.TKIND_COCLASS;
 
     private static string CreateParameterLabel(VbaCallableParameter parameter)
         => parameter.IsOptional ? $"[{parameter.Name}]" : parameter.Name;

@@ -308,6 +308,7 @@ public readonly struct VbaDefinitionIdentity : IEquatable<VbaDefinitionIdentity>
 /// <param name="IsWithEvents">Whether the definition declares WithEvents.</param>
 /// <param name="DeclarationLabel">The editor-facing declaration summary for hover display.</param>
 /// <param name="PropertyAccess">The supported property operations, or Unknown when unavailable.</param>
+/// <param name="IsCreatable">Whether the type can be used as the target of a New expression.</param>
 public sealed record VbaSourceDefinition(
     VbaDefinitionIdentity Identity,
     VbaDefinitionLocation Location,
@@ -323,7 +324,8 @@ public sealed record VbaSourceDefinition(
     VbaTypeReference? TypeReference = null,
     bool IsWithEvents = false,
     string? DeclarationLabel = null,
-    VbaPropertyAccess PropertyAccess = VbaPropertyAccess.Unknown)
+    VbaPropertyAccess PropertyAccess = VbaPropertyAccess.Unknown,
+    bool IsCreatable = false)
 {
     /// <summary>
     /// Gets the editor-facing definition URI.
@@ -919,7 +921,8 @@ public sealed class VbaSourceIndex
             module.Identity.Name,
             MapModuleKind(module.Kind),
             VbaSourceDefinitionVisibility.Public,
-            module.Identity.Name);
+            module.Identity.Name,
+            IsCreatable: module.Kind is VbaModuleKind.ClassModule or VbaModuleKind.FormModule);
     }
 
     private static VbaSourceDefinition CreateSourceDefinition(

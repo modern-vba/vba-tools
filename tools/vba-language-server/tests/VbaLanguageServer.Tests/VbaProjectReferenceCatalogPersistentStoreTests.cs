@@ -26,7 +26,8 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
             Assert.Equal("Generated Library", entry.Catalog.ReferenceName);
             Assert.Contains(entry.Catalog.Definitions, definition =>
                 definition.Name == "GeneratedType"
-                && definition.Kind == VbaSourceDefinitionKind.Class);
+                && definition.Kind == VbaSourceDefinitionKind.Class
+                && definition.IsCreatable);
             Assert.Contains(entry.Catalog.Definitions, definition =>
                 definition.Name == "GeneratedMember"
                 && definition.Kind == VbaSourceDefinitionKind.Property
@@ -155,6 +156,56 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
                 entry.Catalog.Definitions,
                 definition => definition.Name == "GeneratedMember");
             Assert.Equal(VbaPropertyAccess.Unknown, property.PropertyAccess);
+        }
+        finally
+        {
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void PersistentStoreLoadsV4TypeMetadataAsStaleNonCreatable()
+    {
+        var cacheRoot = Directory.CreateTempSubdirectory("vba-ls-catalog-v4-").FullName;
+        try
+        {
+            var identity = CreateIdentity("Generated Library");
+            var store = new VbaProjectReferenceCatalogPersistentStore(cacheRoot);
+            store.Save(new VbaProjectReferenceCatalogPersistentEntry(
+                identity,
+                CreateGeneratedCatalog("Generated Library", "GeneratedType", "GeneratedMember")));
+
+            var entryPath = Path.Combine(
+                cacheRoot,
+                "catalogs",
+                VbaProjectReferenceCatalogPersistentStore.CreateCatalogEntryKey(identity));
+            File.WriteAllText(
+                entryPath,
+                Regex.Replace(
+                    File.ReadAllText(entryPath)
+                        .Replace(
+                            VbaProjectReferenceCatalogPersistentStore.CurrentGeneratorVersion,
+                            "typelib-catalog-v4",
+                            StringComparison.Ordinal),
+                    ",\\s*\"isCreatable\"\\s*:\\s*(true|false)",
+                    "",
+                    RegexOptions.CultureInvariant));
+            var indexPath = store.GetReferenceIndexPath("Generated Library");
+            File.WriteAllText(
+                indexPath,
+                File.ReadAllText(indexPath).Replace(
+                    VbaProjectReferenceCatalogPersistentStore.CurrentGeneratorVersion,
+                    "typelib-catalog-v4",
+                    StringComparison.Ordinal));
+
+            var loadResult = store.Load("Generated Library");
+
+            Assert.Equal(VbaProjectReferenceCatalogPersistentLoadStatus.Stale, loadResult.Status);
+            var entry = Assert.IsType<VbaProjectReferenceCatalogPersistentEntry>(loadResult.Entry);
+            var generatedType = Assert.Single(
+                entry.Catalog.Definitions,
+                definition => definition.Name == "GeneratedType");
+            Assert.False(generatedType.IsCreatable);
         }
         finally
         {
@@ -571,7 +622,8 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
                     referenceName,
                     typeName,
                     VbaSourceDefinitionKind.Class,
-                    "Generated type."),
+                    "Generated type.",
+                    IsCreatable: true),
                 new VbaProjectReferenceDefinition(
                     referenceName,
                     memberName,
