@@ -918,9 +918,18 @@ public sealed class VbaSourceIndex
     /// <param name="tabSize">The number of spaces used per indentation level.</param>
     /// <returns>The formatting edit, or null when the document is unknown or already formatted.</returns>
     public VbaTextEdit? FormatDocument(string uri, int tabSize)
+        => FormatDocument(uri, VbaIndentationStyle.FromEditorOptions(insertSpaces: true, tabSize));
+
+    /// <summary>
+    /// Formats a document and returns a whole-document replacement edit when formatting changes text.
+    /// </summary>
+    /// <param name="uri">The document URI.</param>
+    /// <param name="indentationStyle">The resolved editor indentation style.</param>
+    /// <returns>The formatting edit, or null when the document is unknown or already formatted.</returns>
+    public VbaTextEdit? FormatDocument(string uri, VbaIndentationStyle indentationStyle)
     {
         var document = documents.FirstOrDefault(candidate => SameUri(candidate.Uri, uri));
-        return document is null ? null : sourceFormatter.FormatDocument(document, tabSize);
+        return document is null ? null : sourceFormatter.FormatDocument(document, indentationStyle);
     }
 
     private static string GetRangeKey(VbaRange range)

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as path from 'node:path';
 import type { FileSystemWatcher } from 'vscode';
+import type { FormattingMiddleware } from 'vscode-languageclient/node';
 
 import {
   createVbaLanguageClientOptions,
@@ -27,6 +28,25 @@ test('VbaLanguageServer client synchronizes source and project manifest file eve
   assert.deepEqual(
     options.synchronize?.fileEvents,
     [sourceFileWatcher, projectManifestWatcher]
+  );
+});
+
+test('VbaLanguageServer client uses the VBA document formatting middleware', () => {
+  const sourceFileWatcher = {} as FileSystemWatcher;
+  const projectManifestWatcher = {} as FileSystemWatcher;
+  const provideDocumentFormattingEdits = (() => null) as NonNullable<
+    FormattingMiddleware['provideDocumentFormattingEdits']
+  >;
+
+  const options = createVbaLanguageClientOptions(
+    sourceFileWatcher,
+    projectManifestWatcher,
+    provideDocumentFormattingEdits
+  );
+
+  assert.strictEqual(
+    options.middleware?.provideDocumentFormattingEdits,
+    provideDocumentFormattingEdits
   );
 });
 

@@ -1,6 +1,7 @@
 import * as path from 'node:path';
 import type { FileSystemWatcher } from 'vscode';
 import type {
+  FormattingMiddleware,
   LanguageClientOptions,
   ServerOptions
 } from 'vscode-languageclient/node';
@@ -24,7 +25,10 @@ export interface VbaLanguageServerOptions extends VbaLanguageServerPathOptions {
 
 export function createVbaLanguageClientOptions(
   sourceFileWatcher: FileSystemWatcher,
-  projectManifestWatcher: FileSystemWatcher
+  projectManifestWatcher: FileSystemWatcher,
+  provideDocumentFormattingEdits?: NonNullable<
+    FormattingMiddleware['provideDocumentFormattingEdits']
+  >
 ): LanguageClientOptions {
   return {
     documentSelector: [
@@ -33,7 +37,10 @@ export function createVbaLanguageClientOptions(
     ],
     synchronize: {
       fileEvents: [sourceFileWatcher, projectManifestWatcher]
-    }
+    },
+    middleware: provideDocumentFormattingEdits === undefined
+      ? undefined
+      : { provideDocumentFormattingEdits }
   };
 }
 

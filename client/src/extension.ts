@@ -12,6 +12,7 @@ import {
   workspace
 } from 'vscode';
 import {
+  DocumentFormattingRequest,
   LanguageClient,
   State
 } from 'vscode-languageclient/node';
@@ -48,6 +49,9 @@ import {
 import {
   VbaDevDiagnosticReporter
 } from './toolDiagnostics';
+import {
+  createVbaDocumentFormattingMiddleware
+} from './documentFormatting';
 import {
   createVbaLanguageClientOptions,
   createVbaLanguageServerOptions,
@@ -86,7 +90,45 @@ export async function activate(context: ExtensionContext): Promise<void> {
 
     const clientOptions = createVbaLanguageClientOptions(
       sourceFileWatcher,
-      projectManifestWatcher
+      projectManifestWatcher,
+      createVbaDocumentFormattingMiddleware({
+        getLanguageClient: () => {
+          const languageClient = client;
+          return languageClient === undefined
+            ? undefined
+            : {
+                asTextDocumentIdentifier: (document) => (
+                  languageClient.code2ProtocolConverter.asTextDocumentIdentifier(document)
+                ),
+                asFormattingOptions: (options, fileOptions) => (
+                  languageClient.code2ProtocolConverter.asFormattingOptions(options, fileOptions)
+                ),
+                sendDocumentFormattingRequest: (parameters, token) => (
+                  languageClient.sendRequest(DocumentFormattingRequest.type, parameters, token)
+                ),
+                asTextEdits: (edits, token) => (
+                  languageClient.protocol2CodeConverter.asTextEdits(edits, token)
+                ),
+                handleFailedDocumentFormattingRequest: (error, token) => (
+                  languageClient.handleFailedRequest(
+                    DocumentFormattingRequest.type,
+                    token,
+                    error,
+                    null
+                  )
+                )
+              };
+        },
+        getTextEditors: () => window.visibleTextEditors,
+        getFileFormattingOptions: (document) => {
+          const filesConfiguration = workspace.getConfiguration('files', document.uri);
+          return {
+            trimTrailingWhitespace: filesConfiguration.get<boolean>('trimTrailingWhitespace'),
+            trimFinalNewlines: filesConfiguration.get<boolean>('trimFinalNewlines'),
+            insertFinalNewline: filesConfiguration.get<boolean>('insertFinalNewline')
+          };
+        }
+      })
     );
 
     client = new LanguageClient(

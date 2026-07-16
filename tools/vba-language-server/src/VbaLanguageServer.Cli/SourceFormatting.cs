@@ -189,11 +189,11 @@ internal sealed class VbaSourceFormatter
     /// Formats a source document and returns a whole-document replacement edit when needed.
     /// </summary>
     /// <param name="document">The source document to format.</param>
-    /// <param name="tabSize">The number of spaces per indentation level.</param>
+    /// <param name="indentationStyle">The resolved editor indentation style.</param>
     /// <returns>The formatting edit, or null when no changes are required.</returns>
-    public VbaTextEdit? FormatDocument(VbaSourceDocument document, int tabSize)
+    public VbaTextEdit? FormatDocument(VbaSourceDocument document, VbaIndentationStyle indentationStyle)
     {
-        var formattedText = FormatText(document, Math.Max(1, tabSize));
+        var formattedText = FormatText(document, indentationStyle);
         if (string.Equals(formattedText, document.Text, StringComparison.Ordinal))
         {
             return null;
@@ -207,7 +207,7 @@ internal sealed class VbaSourceFormatter
             formattedText);
     }
 
-    private string FormatText(VbaSourceDocument document, int tabSize)
+    private string FormatText(VbaSourceDocument document, VbaIndentationStyle indentationStyle)
     {
         var declarationRanges = document.Definitions
             .Select(definition => GetRangeKey(definition.Range))
@@ -227,7 +227,7 @@ internal sealed class VbaSourceFormatter
                 formattingLine.LineNumber,
                 declarationRanges,
                 canonicalNamesByRange);
-            formattedLines.Add(indentationFormatting.Apply(formattingLine, casedLine, tabSize));
+            formattedLines.Add(indentationFormatting.Apply(formattingLine, casedLine, indentationStyle));
         }
 
         var formattedText = string.Join(SourceFormatting.DetectDominantLineEnding(document.Text), formattedLines);

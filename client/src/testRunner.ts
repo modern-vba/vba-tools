@@ -1,6 +1,7 @@
 import './devtool.test';
 import './distributionManifest.test';
 import './languageServer.test';
+import './documentFormatting.test';
 import './extensionContributions.test';
 import './projectDiscovery.test';
 import './devtoolCommand.test';

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using VbaLanguageServer.SourceModel;
+using VbaLanguageServer.Syntax;
 using VbaLanguageServer.Workspace;
 
 namespace VbaLanguageServer.Lsp;
@@ -216,7 +217,7 @@ internal sealed class VbaLspRequestExecution
                         formattingRequest,
                         cancellationToken,
                         sourceIndex => VbaLspFeatureProjection.CreateFormattingEdits(
-                            sourceIndex.FormatDocument(formattingRequest.Uri, formattingRequest.TabSize))))
+                            sourceIndex.FormatDocument(formattingRequest.Uri, formattingRequest.IndentationStyle))))
                     : RequestOutcome.InvalidParams();
             case "textDocument/semanticTokens/full":
                 return TryCreateTextDocumentRequest(parameters, out var semanticTokensRequest)
@@ -342,7 +343,23 @@ internal sealed class VbaLspRequestExecution
             return false;
         }
 
-        request = new FormattingRequest(document.Uri, tabSize);
+        var indentSize = tabSize;
+        if (options["indentSize"] is { } indentSizeNode
+            && (!TryGetInt32(indentSizeNode, out indentSize) || indentSize <= 0))
+        {
+            return false;
+        }
+
+        var insertSpaces = true;
+        if (options["insertSpaces"] is { } insertSpacesNode
+            && !TryGetBoolean(insertSpacesNode, out insertSpaces))
+        {
+            return false;
+        }
+
+        request = new FormattingRequest(
+            document.Uri,
+            VbaIndentationStyle.FromEditorOptions(insertSpaces, indentSize));
         return true;
     }
 
@@ -356,6 +373,13 @@ internal sealed class VbaLspRequestExecution
     private static bool TryGetInt32(JsonNode? node, out int value)
     {
         value = 0;
+        return node is JsonValue jsonValue
+            && jsonValue.TryGetValue(out value);
+    }
+
+    private static bool TryGetBoolean(JsonNode? node, out bool value)
+    {
+        value = false;
         return node is JsonValue jsonValue
             && jsonValue.TryGetValue(out value);
     }
@@ -378,7 +402,9 @@ internal sealed class VbaLspRequestExecution
         int Character,
         string NewName) : ITextDocumentRequest;
 
-    private sealed record FormattingRequest(string Uri, int TabSize) : ITextDocumentRequest;
+    private sealed record FormattingRequest(
+        string Uri,
+        VbaIndentationStyle IndentationStyle) : ITextDocumentRequest;
 
     private sealed record RequestOutcome(object? Result, int? ErrorCode, string? ErrorMessage)
     {

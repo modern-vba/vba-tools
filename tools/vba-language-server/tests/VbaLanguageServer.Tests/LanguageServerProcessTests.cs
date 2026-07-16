@@ -2457,6 +2457,99 @@ public sealed class LanguageServerProcessTests
     }
 
     [Fact]
+    public async Task Server_uses_resolved_indent_size_for_space_formatting()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/IndentSize.bas";
+        await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, string.Join('\n', [
+            "Public Sub Run()",
+            "value = 1",
+            "End Sub"
+        ])));
+
+        var formatting = await process.SendRequestAsync(2,
+            "textDocument/formatting",
+            new
+            {
+                textDocument = new { uri },
+                options = new { tabSize = 4, insertSpaces = true, indentSize = 2 }
+            });
+
+        var edit = formatting.GetProperty("result").EnumerateArray().Single();
+        Assert.Equal(string.Join('\n', [
+            "Public Sub Run()",
+            "  value = 1",
+            "End Sub"
+        ]), edit.GetProperty("newText").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_uses_tabs_when_space_indentation_is_disabled()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/TabIndentation.bas";
+        await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, string.Join('\n', [
+            "Public Sub Run()",
+            "value = 1",
+            "End Sub"
+        ])));
+
+        var formatting = await process.SendRequestAsync(2,
+            "textDocument/formatting",
+            new
+            {
+                textDocument = new { uri },
+                options = new { tabSize = 4, insertSpaces = false, indentSize = 2 }
+            });
+
+        var edit = formatting.GetProperty("result").EnumerateArray().Single();
+        Assert.Equal(string.Join('\n', [
+            "Public Sub Run()",
+            "\tvalue = 1",
+            "End Sub"
+        ]), edit.GetProperty("newText").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_falls_back_to_tab_size_when_indent_size_is_omitted()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/TabSizeFallback.bas";
+        await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, string.Join('\n', [
+            "Public Sub Run()",
+            "value = 1",
+            "End Sub"
+        ])));
+
+        var formatting = await process.SendRequestAsync(2,
+            "textDocument/formatting",
+            new
+            {
+                textDocument = new { uri },
+                options = new { tabSize = 4, insertSpaces = true }
+            });
+
+        var edit = formatting.GetProperty("result").EnumerateArray().Single();
+        Assert.Equal(string.Join('\n', [
+            "Public Sub Run()",
+            "    value = 1",
+            "End Sub"
+        ]), edit.GetProperty("newText").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
     public async Task Server_scopes_source_definitions_to_the_manifest_document_source_set()
     {
         var projectRoot = Directory.CreateTempSubdirectory("vba-ls-manifest-").FullName;

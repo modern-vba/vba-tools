@@ -1,11 +1,46 @@
 using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.SourceModel;
+using VbaLanguageServer.Syntax;
 using Xunit;
 
 namespace VbaLanguageServer.Tests;
 
 public sealed class SourceFormattingTests
 {
+    [Theory]
+    [InlineData(true, 2, "  If True Then", "    value = 1")]
+    [InlineData(false, 2, "\tIf True Then", "\t\tvalue = 1")]
+    public void FormatDocumentUsesResolvedIndentationStyle(
+        bool insertSpaces,
+        int indentSize,
+        string expectedIfLine,
+        string expectedValueLine)
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var source = string.Join('\n', [
+            "Public Sub Run()",
+            "If True Then",
+            "value = 1",
+            "End If",
+            "End Sub"
+        ]);
+        var expected = string.Join('\n', [
+            "Public Sub Run()",
+            expectedIfLine,
+            expectedValueLine,
+            insertSpaces ? "  End If" : "\tEnd If",
+            "End Sub"
+        ]);
+        var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = source });
+
+        var edit = index.FormatDocument(
+            uri,
+            VbaIndentationStyle.FromEditorOptions(insertSpaces, indentSize));
+
+        Assert.NotNull(edit);
+        Assert.Equal(expected, edit.NewText);
+    }
+
     [Theory]
     [InlineData("\r\n")]
     [InlineData("\n")]

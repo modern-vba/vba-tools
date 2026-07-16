@@ -27,9 +27,9 @@ public sealed class VbaIndentationFormatting
     /// </summary>
     /// <param name="line">The syntax-owned line facts.</param>
     /// <param name="text">The already-cased line text.</param>
-    /// <param name="tabSize">The number of spaces per indentation level.</param>
+    /// <param name="indentationStyle">The resolved editor indentation style.</param>
     /// <returns>The line with indentation applied when structurally safe.</returns>
-    public string Apply(VbaFormattingLine line, string text, int tabSize)
+    public string Apply(VbaFormattingLine line, string text, VbaIndentationStyle indentationStyle)
     {
         if (line.IsFormDesigner)
         {
@@ -56,7 +56,7 @@ public sealed class VbaIndentationFormatting
             return text.TrimStart();
         }
 
-        return $"{new string(' ', Math.Max(1, tabSize) * line.IndentationDepth)}{text.TrimStart()}";
+        return $"{indentationStyle.CreateLeadingWhitespace(line.IndentationDepth)}{text.TrimStart()}";
     }
 
     private static bool StartsWithLineLabel(string trimmedCodeText)
