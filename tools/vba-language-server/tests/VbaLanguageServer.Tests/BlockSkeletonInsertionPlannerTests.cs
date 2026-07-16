@@ -11,6 +11,704 @@ namespace VbaLanguageServer.Tests;
 public sealed class BlockSkeletonInsertionPlannerTests
 {
     [Fact]
+    public void Planner_inserts_a_block_if_before_its_callable_terminator()
+    {
+        const string uri = "file:///C:/work/If.bas";
+        const string header = "    If True Then";
+        const string text = "Public Sub Main()\n    If True Then\n    \nEnd Sub";
+        var snapshot = CreateSnapshot(uri, version: 6, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(1, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 2));
+
+        Assert.NotNull(plan);
+        Assert.Equal("\n      ", plan.TextBeforeCursor);
+        Assert.Equal("\n    End If", plan.TextAfterCursor);
+        Assert.Equal(
+            "Public Sub Main()\n    If True Then\n      \n    End If\nEnd Sub",
+            ApplyPlan(text, VbaSourceText.From(text), plan));
+    }
+
+    [Theory]
+    [InlineData("Public Function Ready() As Boolean", "End Function")]
+    [InlineData("Public Function Ready() As Boolean Static", "End Function")]
+    [InlineData("Public Function Values() As Long()", "End Function")]
+    [InlineData("Public Property Get Ready() As Boolean", "End Property")]
+    [InlineData("Public Property Let Ready(ByVal value As Boolean)", "End Property")]
+    [InlineData("Public Property Let Ready(Optional index As Long = 0, ByVal value As Boolean) Static", "End Property")]
+    [InlineData("Public Property Set Ready(ByVal value As Object)", "End Property")]
+    public void Planner_inserts_a_block_if_inside_other_body_owning_callables(
+        string callableHeader,
+        string callableTerminator)
+    {
+        const string uri = "file:///C:/work/CallableIf.bas";
+        const string header = "    If True Then";
+        var text = $"{callableHeader}\n{header}\n    \n{callableTerminator}";
+        var snapshot = CreateSnapshot(uri, version: 6, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(1, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 2));
+
+        Assert.NotNull(plan);
+        Assert.Equal("\n      ", plan.TextBeforeCursor);
+        Assert.Equal("\n    End If", plan.TextAfterCursor);
+    }
+
+    [Fact]
+    public void Planner_keeps_a_shallow_end_if_with_the_ancestor_of_a_fresh_nested_if()
+    {
+        const string uri = "file:///C:/work/NestedIf.bas";
+        const string header = "        If True Then";
+        const string text = "Public Sub Example()\n"
+            + "    If True Then\n"
+            + "        If True Then\n"
+            + "        \n"
+            + "    End If\n"
+            + "End Sub";
+        var snapshot = CreateSnapshot(uri, version: 9, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(2, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 2));
+
+        Assert.NotNull(plan);
+        Assert.Equal("\n          ", plan.TextBeforeCursor);
+        Assert.Equal("\n        End If", plan.TextAfterCursor);
+        var prospectiveText = ApplyPlan(text, VbaSourceText.From(text), plan);
+        Assert.Equal(
+            "Public Sub Example()\n"
+                + "    If True Then\n"
+                + "        If True Then\n"
+                + "          \n"
+                + "        End If\n"
+                + "    End If\n"
+                + "End Sub",
+            prospectiveText);
+        Assert.True(CountErrors(snapshot.Diagnostics) > 0);
+        Assert.Equal(
+            0,
+            CountErrors(VbaDiagnosticPipeline.CollectDocument(
+                VbaSyntaxTree.ParseModule(uri, prospectiveText),
+                uri)));
+    }
+
+    [Theory]
+    [InlineData("    Else")]
+    [InlineData("    ElseIf OtherReady() Then")]
+    public void Planner_preserves_a_proven_ancestor_if_branch(string boundary)
+    {
+        const string uri = "file:///C:/work/AncestorBranch.bas";
+        const string header = "        If Ready() Then";
+        var text = "Public Sub Main()\n"
+            + "    If True Then\n"
+            + $"{header}\n"
+            + "        \n"
+            + $"{boundary}\n"
+            + "    End If\n"
+            + "End Sub";
+        var snapshot = CreateSnapshot(uri, version: 4, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(2, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 2));
+
+        Assert.NotNull(plan);
+        Assert.Contains("        End If\n" + boundary, ApplyPlan(text, VbaSourceText.From(text), plan));
+    }
+
+    [Fact]
+    public void Planner_allows_an_if_at_eof_while_preserving_the_callable_missing_terminator()
+    {
+        const string uri = "file:///C:/work/IfAtEof.bas";
+        const string header = "    If Ready() Then";
+        const string text = "Public Sub Main()\n    If Ready() Then\n        ";
+        var snapshot = CreateSnapshot(uri, version: 3, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(1, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.NotNull(plan);
+        var prospectiveText = ApplyPlan(text, VbaSourceText.From(text), plan);
+        var diagnostics = VbaDiagnosticPipeline.CollectDocument(
+            VbaSyntaxTree.ParseModule(uri, prospectiveText),
+            uri);
+        Assert.Contains(
+            diagnostics.SyntaxDiagnostics,
+            diagnostic => diagnostic.Message == "Block is missing 'End Sub'.");
+        Assert.DoesNotContain(
+            diagnostics.SyntaxDiagnostics,
+            diagnostic => diagnostic.Message == "Block is missing 'End If'.");
+    }
+
+    [Theory]
+    [InlineData("        Else")]
+    [InlineData("        ElseIf Ready() Then")]
+    [InlineData("        End If")]
+    [InlineData("          Debug.Print 1")]
+    [InlineData("        ' existing comment")]
+    [InlineData("        Rem existing comment")]
+    [InlineData("      End If")]
+    public void Planner_rejects_candidate_owned_body_and_ambiguous_if_context(string followingLine)
+    {
+        const string uri = "file:///C:/work/OwnedIfContext.bas";
+        const string header = "        If True Then";
+        var text = "Public Sub Main()\n"
+            + "    If True Then\n"
+            + $"{header}\n"
+            + "        \n"
+            + $"{followingLine}\n"
+            + "    End If\n"
+            + "End Sub";
+        var snapshot = CreateSnapshot(uri, version: 8, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(2, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 2));
+
+        Assert.Null(plan);
+    }
+
+    [Theory]
+    [InlineData(
+        "Public Sub Main()\n    If True Then\n    \n\nEnd Sub",
+        "Public Sub Main()\n    If True Then\n      \n    End If\n\nEnd Sub")]
+    [InlineData(
+        "Public Sub Main()\r\n    If True Then\r\n        \r\n\r\nEnd Sub",
+        "Public Sub Main()\r\n    If True Then\r\n      \r\n    End If\r\n\r\nEnd Sub")]
+    public void Planner_preserves_existing_blank_lines_after_an_if_terminator(
+        string text,
+        string expectedText)
+    {
+        const string uri = "file:///C:/work/IfBlankLines.bas";
+        const string header = "    If True Then";
+        var snapshot = CreateSnapshot(uri, version: 5, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(1, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 2));
+
+        Assert.NotNull(plan);
+        Assert.Equal(expectedText, ApplyPlan(text, VbaSourceText.From(text), plan));
+    }
+
+    [Theory]
+    [InlineData(
+        "Public Sub Main()\n\tIf True Then\n\t\nEnd Sub",
+        1,
+        13,
+        false,
+        8,
+        "\n\t\t",
+        "\n\tEnd If")]
+    [InlineData(
+        "Public Sub Main()\r\n  If first _\r\n      And second Then\r\n      \r\nEnd Sub",
+        2,
+        21,
+        true,
+        2,
+        "\r\n    ",
+        "\r\n  End If")]
+    public void Planner_preserves_if_line_endings_tabs_and_first_line_indentation(
+        string text,
+        int line,
+        int character,
+        bool insertSpaces,
+        int indentSize,
+        string expectedBeforeCursor,
+        string expectedAfterCursor)
+    {
+        const string uri = "file:///C:/work/StyledIf.bas";
+        var snapshot = CreateSnapshot(uri, version: 5, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(line, character),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces, indentSize));
+
+        Assert.NotNull(plan);
+        Assert.Equal(expectedBeforeCursor, plan.TextBeforeCursor);
+        Assert.Equal(expectedAfterCursor, plan.TextAfterCursor);
+    }
+
+    [Fact]
+    public void Planner_rejects_a_visual_only_tabs_and_spaces_ancestry_match()
+    {
+        const string uri = "file:///C:/work/AmbiguousWhitespace.bas";
+        const string header = "        If True Then";
+        const string text = "Public Sub Main()\n"
+            + "\tIf True Then\n"
+            + "        If True Then\n"
+            + "        \n"
+            + "\tEnd If\n"
+            + "End Sub";
+        var snapshot = CreateSnapshot(uri, version: 2, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(2, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.Null(plan);
+    }
+
+    [Fact]
+    public void Planner_rejects_same_indentation_for_nested_if_ownership()
+    {
+        const string uri = "file:///C:/work/SameIndentNestedIf.bas";
+        const string header = "    If False Then";
+        const string text = "Public Sub Main()\n"
+            + "    If True Then\n"
+            + "    If False Then\n"
+            + "    \n"
+            + "    End If\n"
+            + "End Sub";
+        var snapshot = CreateSnapshot(uri, version: 2, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(2, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.Null(plan);
+    }
+
+    [Theory]
+    [InlineData("    Else")]
+    [InlineData("    ElseIf OtherReady() Then")]
+    [InlineData("    End If")]
+    public void Planner_rejects_an_outer_if_boundary_that_skips_an_intervening_if(
+        string outerBoundary)
+    {
+        const string uri = "file:///C:/work/SkippedIfAncestor.bas";
+        const string header = "            If CandidateReady() Then";
+        var text = "Public Sub Main()\n"
+            + "    If OuterReady() Then\n"
+            + "        If MiddleReady() Then\n"
+            + $"{header}\n"
+            + "            \n"
+            + $"{outerBoundary}\n"
+            + "    End If\n"
+            + "End Sub";
+        var snapshot = CreateSnapshot(uri, version: 2, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(3, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.Null(plan);
+    }
+
+    [Fact]
+    public void Planner_fails_closed_for_an_if_in_a_conditional_compilation_document()
+    {
+        const string uri = "file:///C:/work/ConditionalIf.bas";
+        const string header = "    If True Then";
+        const string text = "#If VBA7 Then\n"
+            + "Public Sub Main()\n"
+            + "    If True Then\n"
+            + "    \n"
+            + "End Sub\n"
+            + "#End If";
+        var snapshot = CreateSnapshot(uri, version: 2, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(2, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.Null(plan);
+    }
+
+    [Theory]
+    [InlineData("    If 1.5% Then")]
+    [InlineData("    If &H100000000& Then")]
+    [InlineData("    If 32768% Then")]
+    [InlineData("    If +1 Then")]
+    [InlineData("    If TypeOf target Is Object.Member Then")]
+    [InlineData("    If String(1) Then")]
+    [InlineData("    If Date(1) Then")]
+    [InlineData("    If text$.Length Then")]
+    [InlineData("    If TypeOf count% Is Widget Then")]
+    public void Planner_rejects_invalid_executable_if_conditions(string header)
+    {
+        const string uri = "file:///C:/work/InvalidNumericIf.bas";
+        var text = $"Public Sub Main()\n{header}\n    \nEnd Sub";
+        var snapshot = CreateSnapshot(uri, version: 2, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(1, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.Null(plan);
+    }
+
+    [Theory]
+    [InlineData("Public Sub Main(", "End Sub")]
+    [InlineData("Public Sub Main(value As Long, value As Long)", "End Sub")]
+    [InlineData("Public Function Main() As", "End Function")]
+    [InlineData("Public Function Main(ByVal main As Long) As Boolean", "End Function")]
+    [InlineData("Public Sub Main(Optional value As String = \"unterminated)", "End Sub")]
+    [InlineData("Public Property Set Main(ByVal value As Long)", "End Property")]
+    [InlineData("Public Property Let Main(, ByVal value As Long)", "End Property")]
+    public void Planner_rejects_an_if_owned_by_a_malformed_callable_header(
+        string callableHeader,
+        string callableTerminator)
+    {
+        const string uri = "file:///C:/work/MalformedCallableIf.bas";
+        const string header = "    If True Then";
+        var text = $"{callableHeader}\n{header}\n    \n{callableTerminator}";
+        var snapshot = CreateSnapshot(uri, version: 2, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(1, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.Null(plan);
+    }
+
+    [Theory]
+    [InlineData("    With", "    End With")]
+    [InlineData("    If Then", "    End If")]
+    [InlineData("    For index = To 3", "    Next")]
+    [InlineData("    Select Case", "    End Select")]
+    public void Planner_rejects_an_if_inside_a_malformed_structural_ancestor(
+        string ancestorHeader,
+        string ancestorTerminator)
+    {
+        const string uri = "file:///C:/work/MalformedAncestorIf.bas";
+        const string header = "        If True Then";
+        var text = "Public Sub Main()\n"
+            + $"{ancestorHeader}\n"
+            + $"{header}\n"
+            + "        \n"
+            + $"{ancestorTerminator}\n"
+            + "End Sub";
+        var snapshot = CreateSnapshot(uri, version: 2, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(2, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.Null(plan);
+    }
+
+    [Fact]
+    public void Planner_rejects_an_if_inside_an_ancestor_with_a_malformed_branch()
+    {
+        const string uri = "file:///C:/work/MalformedAncestorBranchIf.bas";
+        const string header = "        If True Then";
+        const string text = "Public Sub Main()\n"
+            + "    If Ready() Then\n"
+            + "    ElseIf Then\n"
+            + "        If True Then\n"
+            + "        \n"
+            + "    End If\n"
+            + "End Sub";
+        var snapshot = CreateSnapshot(uri, version: 2, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(3, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.Null(plan);
+    }
+
+    [Fact]
+    public void Planner_rejects_a_later_malformed_ancestor_branch_after_a_proven_boundary()
+    {
+        const string uri = "file:///C:/work/LaterMalformedAncestorBranchIf.bas";
+        const string header = "        If True Then";
+        const string text = "Public Sub Main()\n"
+            + "    If Ready() Then\n"
+            + "        If True Then\n"
+            + "        \n"
+            + "    ElseIf OtherReady() Then\n"
+            + "    ElseIf Then\n"
+            + "    End If\n"
+            + "End Sub";
+        var snapshot = CreateSnapshot(uri, version: 2, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(2, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.Null(plan);
+    }
+
+    [Fact]
+    public void Planner_rejects_a_later_malformed_barrier_inside_an_ancestor()
+    {
+        const string uri = "file:///C:/work/LaterMalformedAncestorBarrierIf.bas";
+        const string header = "        If True Then";
+        const string text = "Public Sub Main()\n"
+            + "    If Ready() Then\n"
+            + "        If True Then\n"
+            + "        \n"
+            + "    ElseIf OtherReady() Then\n"
+            + "    Else\n"
+            + "    Else\n"
+            + "    End If\n"
+            + "End Sub";
+        var snapshot = CreateSnapshot(uri, version: 2, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(2, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.Null(plan);
+    }
+
+    [Fact]
+    public void Planner_rejects_skipping_an_unclosed_intervening_block()
+    {
+        const string uri = "file:///C:/work/SkippedBoundary.bas";
+        const string header = "            If True Then";
+        const string text = "Public Sub Main()\n"
+            + "    If True Then\n"
+            + "        With target\n"
+            + "            If True Then\n"
+            + "            \n"
+            + "    End If\n"
+            + "End Sub";
+        var snapshot = CreateSnapshot(uri, version: 2, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(3, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.Null(plan);
+    }
+
+    [Fact]
+    public void Planner_fails_closed_for_a_leading_member_if_inside_an_unsupported_with_ancestor()
+    {
+        const string uri = "file:///C:/work/WithMemberIf.bas";
+        const string header = "        If .Enabled Then";
+        const string text = "Public Sub Main()\n"
+            + "    With target\n"
+            + "        If .Enabled Then\n"
+            + "        \n"
+            + "    End With\n"
+            + "End Sub";
+        var snapshot = CreateSnapshot(uri, version: 7, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(2, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.Null(plan);
+    }
+
+    [Theory]
+    [InlineData("    For index = 1 To 3", "    Next")]
+    [InlineData("    Select Case value", "    End Select")]
+    public void Planner_fails_closed_for_an_if_inside_an_unsupported_cross_kind_ancestor(
+        string ancestorHeader,
+        string ancestorTerminator)
+    {
+        const string uri = "file:///C:/work/CrossKindAncestorIf.bas";
+        const string header = "        If True Then";
+        var text = "Public Sub Main()\n"
+            + $"{ancestorHeader}\n"
+            + $"{header}\n"
+            + "        \n"
+            + $"{ancestorTerminator}\n"
+            + "End Sub";
+        var snapshot = CreateSnapshot(uri, version: 7, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(2, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.Null(plan);
+    }
+
+    [Fact]
+    public void Planner_preserves_unrelated_downstream_errors_for_an_if_candidate()
+    {
+        const string uri = "file:///C:/work/IfUnrelatedErrors.bas";
+        const string header = "    If Ready() Then";
+        const string text = "Public Sub Main()\n"
+            + "    If Ready() Then\n"
+            + "    \n"
+            + "End Sub\n"
+            + "\n"
+            + "Public Sub Broken(value As Long, value As Long)\n"
+            + "    value = \"unterminated\n"
+            + "End Sub";
+        var snapshot = CreateSnapshot(uri, version: 5, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(1, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.NotNull(plan);
+        var prospectiveDiagnostics = VbaDiagnosticPipeline.CollectDocument(
+            VbaSyntaxTree.ParseModule(uri, ApplyPlan(text, VbaSourceText.From(text), plan)),
+            uri);
+        Assert.Contains(
+            prospectiveDiagnostics.SyntaxDiagnostics,
+            diagnostic => diagnostic.Code == "syntax.unterminatedStringLiteral");
+        Assert.Contains(
+            prospectiveDiagnostics.DocumentValidationDiagnostics,
+            diagnostic => diagnostic.Code == "validation.duplicateCallableParameterName");
+    }
+
+    [Fact]
+    public void Planner_rejects_an_injected_error_overlapping_an_if_header()
+    {
+        const string uri = "file:///C:/work/IfOverlappingError.bas";
+        const string header = "    If True Then";
+        const string text = "Public Sub Main()\n    If True Then\n    \nEnd Sub";
+        var snapshot = CreateSnapshot(uri, version: 5, text);
+        snapshot = snapshot with
+        {
+            Diagnostics = snapshot.Diagnostics with
+            {
+                SyntaxDiagnostics = snapshot.Diagnostics.SyntaxDiagnostics
+                    .Append(new PublishedSyntaxDiagnostic(
+                        "test.error",
+                        "An error overlapping the If candidate.",
+                        new VbaRange(
+                            new VbaPosition(1, 4),
+                            new VbaPosition(1, header.Length))))
+                    .ToArray()
+            }
+        };
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(1, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.Null(plan);
+    }
+
+    [Fact]
+    public void Planner_ignores_non_error_diagnostics_overlapping_an_if_header()
+    {
+        const string uri = "file:///C:/work/IfNonErrors.bas";
+        const string header = "    If True Then";
+        const string text = "Public Sub Main()\n    If True Then\n    \nEnd Sub";
+        var snapshot = CreateSnapshot(uri, version: 5, text);
+        var range = new VbaRange(new VbaPosition(1, 4), new VbaPosition(1, header.Length));
+        snapshot = snapshot with
+        {
+            Diagnostics = snapshot.Diagnostics with
+            {
+                SyntaxDiagnostics = snapshot.Diagnostics.SyntaxDiagnostics
+                    .Append(new PublishedSyntaxDiagnostic(
+                        "test.warning",
+                        "A warning overlapping the If candidate.",
+                        range,
+                        Severity: "warning"))
+                    .ToArray(),
+                DocumentValidationDiagnostics = snapshot.Diagnostics.DocumentValidationDiagnostics
+                    .Append(new VbaValidationDiagnostic(
+                        "test.information",
+                        "Information overlapping the If candidate.",
+                        range,
+                        Severity: "information"))
+                    .ToArray()
+            }
+        };
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(1, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.NotNull(plan);
+    }
+
+    [Theory]
+    [InlineData("vba-language-server")]
+    [InlineData("another-diagnostic-source")]
+    public void Planner_rejects_an_unproven_duplicate_of_a_direct_if_recovery_diagnostic(
+        string duplicateSource)
+    {
+        const string uri = "file:///C:/work/IfDuplicateRecovery.bas";
+        const string header = "    If True Then";
+        const string text = "Public Sub Main()\n    If True Then\n    \nEnd Sub";
+        var snapshot = CreateSnapshot(uri, version: 5, text);
+        var direct = Assert.Single(snapshot.Diagnostics.SyntaxDiagnostics, diagnostic =>
+            diagnostic.Code == "syntax.missingBlockTerminator"
+            && diagnostic.Message == "Block is missing 'End If'.");
+        snapshot = snapshot with
+        {
+            Diagnostics = snapshot.Diagnostics with
+            {
+                SyntaxDiagnostics = snapshot.Diagnostics.SyntaxDiagnostics
+                    .Append(direct with { Source = duplicateSource })
+                    .ToArray()
+            }
+        };
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(1, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.Null(plan);
+    }
+
+    [Fact]
+    public void Planner_rejects_an_injected_candidate_recovery_diagnostic_not_derived_from_the_snapshot_tree()
+    {
+        const string uri = "file:///C:/work/InjectedCandidateRecovery.bas";
+        const string header = "        If True Then";
+        const string text = "Public Sub Main()\n"
+            + "    If True Then\n"
+            + "        If True Then\n"
+            + "        \n"
+            + "    End If\n"
+            + "End Sub";
+        var snapshot = CreateSnapshot(uri, version: 5, text);
+        snapshot = snapshot with
+        {
+            Diagnostics = snapshot.Diagnostics with
+            {
+                SyntaxDiagnostics = snapshot.Diagnostics.SyntaxDiagnostics
+                    .Append(new PublishedSyntaxDiagnostic(
+                        "syntax.missingBlockTerminator",
+                        "Block is missing 'End If'.",
+                        new VbaRange(
+                            new VbaPosition(2, 0),
+                            new VbaPosition(2, header.Length))))
+                    .ToArray()
+            }
+        };
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(2, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.Null(plan);
+    }
+
+    [Fact]
     public void Planner_inserts_before_a_same_level_sub_and_preserves_existing_blank_lines()
     {
         const string uri = "file:///C:/work/Boundary.bas";

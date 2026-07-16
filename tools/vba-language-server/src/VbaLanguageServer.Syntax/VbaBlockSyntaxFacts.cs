@@ -7,6 +7,17 @@ namespace VbaLanguageServer.Syntax;
 /// </summary>
 internal static class VbaBlockSyntaxFacts
 {
+    public static bool HasEnclosingBlock(
+        VbaSyntaxTree tree,
+        VbaBlockKind kind,
+        int startOffset,
+        int endOffset)
+        => tree.Module.Blocks.Any(block =>
+            block.Kind == kind
+            && !block.IsMalformedBarrier
+            && block.OpenerRange.Start.Offset < startOffset
+            && endOffset <= block.Range.End.Offset);
+
     public static string? GetFormattingOpenTerminator(string trimmedLine)
         => GetProcedureOpenTerminator(trimmedLine)
             ?? GetStructuredStatementOpenTerminator(trimmedLine)

@@ -5,6 +5,117 @@ namespace VbaLanguageServer.Syntax.Tests;
 
 public sealed class VbaBlockHeaderSyntaxTests
 {
+    [Theory]
+    [InlineData("Public Sub Main()\n    If Ready() Then", 1)]
+    [InlineData("Public Function Main() As Boolean\n    If IsReady(value, Flag:=True) Then", 1)]
+    [InlineData("Public Property Get Ready() As Boolean\n    If TypeOf target.Parent Is Excel.Workbook Then", 1)]
+    public void Complete_runtime_block_if_expressions_inside_callable_bodies_are_accepted(
+        string source,
+        int line)
+    {
+        var lines = source.Split('\n');
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(tree, line, lines[line].Length);
+
+        Assert.NotNull(header);
+        Assert.Equal(VbaBlockHeaderKind.If, header.Kind);
+    }
+
+    [Fact]
+    public void Me_expression_is_accepted_only_in_an_object_module()
+    {
+        const string source = "Public Sub Main()\n    If Me.Enabled Then";
+        var line = source.Split('\n')[1];
+
+        var standard = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+        var objectModule = VbaSyntaxTree.ParseModule("file:///C:/work/Class1.cls", source);
+
+        Assert.Null(VbaBlockHeaderSyntax.FindAtPosition(standard, 1, line.Length));
+        Assert.NotNull(VbaBlockHeaderSyntax.FindAtPosition(objectModule, 1, line.Length));
+    }
+
+    [Fact]
+    public void Leading_member_expression_requires_an_enclosing_with_block()
+    {
+        const string outside = "Public Sub Main()\n    If .Enabled Then";
+        const string inside = "Public Sub Main()\n    With target\n        If .Enabled Then";
+
+        var outsideTree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", outside);
+        var insideTree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", inside);
+
+        Assert.Null(VbaBlockHeaderSyntax.FindAtPosition(
+            outsideTree,
+            1,
+            outside.Split('\n')[1].Length));
+        Assert.NotNull(VbaBlockHeaderSyntax.FindAtPosition(
+            insideTree,
+            2,
+            inside.Split('\n')[2].Length));
+    }
+
+    [Fact]
+    public void Complete_continued_block_if_preserves_physical_lines_trivia_and_first_line_indentation()
+    {
+        var lines = new[]
+        {
+            "Public Sub Main()",
+            "    If firstValue > 0 _",
+            "        And secondValue < 10 Then   ' keep: note"
+        };
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Module1.bas",
+            string.Join('\n', lines));
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(
+            tree,
+            line: 2,
+            character: lines[2].Length);
+
+        Assert.NotNull(header);
+        Assert.Equal(VbaBlockHeaderKind.If, header.Kind);
+        Assert.Equal(1, header.FirstPhysicalLine);
+        Assert.Equal(2, header.FinalPhysicalLine);
+        Assert.Equal("    ", header.LeadingWhitespace);
+        Assert.Equal("End If", header.ExpectedTerminator);
+        Assert.Equal(0, header.Range.Start.Character);
+        Assert.Equal(lines[2].Length, header.Range.End.Character);
+    }
+
+    [Theory]
+    [InlineData("If True Then", 0)]
+    [InlineData("Public Sub Main()\n    If True Then Debug.Print 1", 1)]
+    [InlineData("Public Sub Main()\n    If True Then:", 1)]
+    [InlineData("Public Sub Main()\n    Debug.Print 1: If True Then", 1)]
+    [InlineData("Public Sub Main()\n    label: If True Then", 1)]
+    [InlineData("Public Sub Main()\n    If Then", 1)]
+    [InlineData("Public Sub Main()\n    If True And Then", 1)]
+    [InlineData("Public Sub Main()\n    If (True Then", 1)]
+    [InlineData("Public Sub Main()\n    If True() Then", 1)]
+    [InlineData("Public Sub Main()\n    If Ready(,) Then", 1)]
+    [InlineData("Public Sub Main()\n    If 1.5% Then", 1)]
+    [InlineData("Public Sub Main()\n    If 32768% Then", 1)]
+    [InlineData("Public Sub Main()\n    If +1 Then", 1)]
+    [InlineData("Public Sub Main()\n    If TypeOf target Is Object.Member Then", 1)]
+    [InlineData("Public Sub Main()\n    ElseIf True Then", 1)]
+    [InlineData("Public Sub Main()\n    Else", 1)]
+    [InlineData("Public Sub Main()\n    End If", 1)]
+    [InlineData("Public Sub Outer()\n    Public Sub Inner()\n        If True Then", 2)]
+    [InlineData("Public Enum Mode\n    If True Then", 1)]
+    [InlineData("Public Type Item\n    If True Then", 1)]
+    [InlineData("#If VBA7 Then\nPublic Sub Main()\n    If True Then\n#End If", 2)]
+    public void Module_level_single_line_incomplete_and_branch_if_forms_are_rejected(
+        string source,
+        int line)
+    {
+        var lines = source.Split('\n');
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(tree, line, lines[line].Length);
+
+        Assert.Null(header);
+    }
+
     [Fact]
     public void Complete_continued_sub_preserves_physical_lines_trivia_and_first_line_indentation()
     {

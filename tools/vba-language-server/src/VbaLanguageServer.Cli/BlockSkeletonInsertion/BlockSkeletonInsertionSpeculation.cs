@@ -19,6 +19,23 @@ internal static class BlockSkeletonInsertionSpeculation
         int? firstFollowingContentLine,
         string lineEnding)
     {
+        if (originalHeader.Kind == VbaBlockHeaderKind.If)
+        {
+            return IsSafeIf(
+                snapshot,
+                originalHeader,
+                plan,
+                insertionStartOffset,
+                insertionEndOffset,
+                firstFollowingContentLine,
+                lineEnding);
+        }
+
+        if (originalHeader.Kind != VbaBlockHeaderKind.Sub)
+        {
+            return false;
+        }
+
         if (HasDisqualifyingHeaderDiagnostic(snapshot, originalHeader))
         {
             return false;
@@ -85,6 +102,370 @@ internal static class BlockSkeletonInsertionSpeculation
             insertionEndOffset,
             replacementEndOffset,
             delta);
+    }
+
+    private static bool IsSafeIf(
+        VbaVersionedDocumentSnapshot snapshot,
+        VbaBlockHeaderSyntax originalHeader,
+        BlockSkeletonInsertionPlan plan,
+        int insertionStartOffset,
+        int insertionEndOffset,
+        int? firstFollowingContentLine,
+        string lineEnding)
+    {
+        if (HasDisqualifyingHeaderDiagnostic(snapshot, originalHeader)
+            || !BlockSkeletonInsertionPrefixContext.TryCreate(
+                snapshot,
+                originalHeader,
+                insertionStartOffset,
+                out var prefix))
+        {
+            return false;
+        }
+
+        if (HasDisqualifyingAncestorDiagnostic(snapshot, prefix.Ancestors))
+        {
+            return false;
+        }
+
+        var controlText = NeutralizeRange(
+            snapshot.Text,
+            originalHeader.Range.Start.Offset,
+            originalHeader.Range.End.Offset);
+        var controlTree = VbaSyntaxTree.ParseModule(snapshot.Uri, controlText);
+        if (controlTree.Module.Kind != snapshot.ModuleKind
+            || !TryFindPrefixBlocks(controlTree, prefix.Ancestors, out var controlAncestors)
+            || !TryProveControlBoundary(
+                controlTree,
+                prefix,
+                controlAncestors,
+                firstFollowingContentLine,
+                out var boundaryProof))
+        {
+            return false;
+        }
+
+        var replacement = plan.TextBeforeCursor + plan.TextAfterCursor;
+        var prospectiveText = snapshot.Text[..insertionStartOffset]
+            + replacement
+            + snapshot.Text[insertionEndOffset..];
+        var prospectiveTree = VbaSyntaxTree.ParseModule(snapshot.Uri, prospectiveText);
+        if (prospectiveTree.Module.Kind != snapshot.ModuleKind)
+        {
+            return false;
+        }
+
+        var prospectiveSource = VbaSourceText.From(prospectiveText);
+        var prospectiveHeader = VbaBlockHeaderSyntax.FindAtPosition(
+            prospectiveTree,
+            plan.Position.Line,
+            plan.Position.Character);
+        var terminatorStartOffset = insertionStartOffset
+            + plan.TextBeforeCursor.Length
+            + lineEnding.Length
+            + originalHeader.LeadingWhitespace.Length;
+        var insertedTerminatorRange = new VbaSyntaxRange(
+            prospectiveSource.PositionAt(terminatorStartOffset),
+            prospectiveSource.PositionAt(
+                terminatorStartOffset + originalHeader.ExpectedTerminator.Length));
+        var candidateBlock = prospectiveHeader is null
+            ? null
+            : FindUniqueBlock(prospectiveTree.Module.Blocks, block =>
+                block.Kind == VbaBlockKind.If
+                && block.ExpectedTerminator.Equals(
+                    originalHeader.ExpectedTerminator,
+                    StringComparison.OrdinalIgnoreCase)
+                && originalHeader.Range.Start.Offset <= block.OpenerRange.Start.Offset
+                && block.OpenerRange.End.Offset <= originalHeader.Range.End.Offset);
+        if (prospectiveHeader != originalHeader
+            || candidateBlock?.CloserRange != insertedTerminatorRange)
+        {
+            return false;
+        }
+
+        var replacementEndOffset = insertionStartOffset + replacement.Length;
+        var delta = replacement.Length - (insertionEndOffset - insertionStartOffset);
+        if (!TryFindPrefixBlocks(prospectiveTree, prefix.Ancestors, out var prospectiveAncestors)
+            || !PreservesPrefixAncestors(
+                controlAncestors,
+                prospectiveAncestors,
+                prospectiveSource,
+                insertionEndOffset,
+                delta)
+            || !PreservesControlBoundary(
+                boundaryProof,
+                prospectiveTree,
+                prospectiveSource,
+                prospectiveAncestors,
+                candidateBlock,
+                insertionEndOffset,
+                delta))
+        {
+            return false;
+        }
+
+        var controlSource = VbaSourceText.From(controlText);
+        return BlockSkeletonInsertionDiagnosticProof.IsSafe(
+            snapshot,
+            VbaDiagnosticPipeline.CollectDocument(controlTree, snapshot.Uri),
+            controlSource,
+            VbaDiagnosticPipeline.CollectDocument(prospectiveTree, snapshot.Uri),
+            prospectiveSource,
+            prefix,
+            controlAncestors,
+            insertionStartOffset,
+            insertionEndOffset,
+            replacementEndOffset,
+            delta);
+    }
+
+    private static string NeutralizeRange(string text, int startOffset, int endOffset)
+    {
+        var characters = text.ToCharArray();
+        for (var index = startOffset; index < endOffset; index++)
+        {
+            if (characters[index] is not '\r' and not '\n')
+            {
+                characters[index] = ' ';
+            }
+        }
+
+        return new string(characters);
+    }
+
+    private static bool HasDisqualifyingAncestorDiagnostic(
+        VbaVersionedDocumentSnapshot snapshot,
+        IReadOnlyList<BlockSkeletonInsertionPrefixBlock> ancestors)
+        => ancestors.Any(ancestor =>
+            snapshot.Diagnostics.SyntaxDiagnostics.Any(diagnostic =>
+                IsError(diagnostic.Severity)
+                && Overlaps(diagnostic.Range, ancestor.StatementRange)
+                && !IsDirectMissingTerminator(diagnostic, ancestor))
+            || snapshot.Diagnostics.DocumentValidationDiagnostics.Any(diagnostic =>
+                IsError(diagnostic.Severity)
+                && Overlaps(diagnostic.Range, ancestor.StatementRange)));
+
+    private static bool IsDirectMissingTerminator(
+        PublishedSyntaxDiagnostic diagnostic,
+        BlockSkeletonInsertionPrefixBlock block)
+        => diagnostic.Code.Equals("syntax.missingBlockTerminator", StringComparison.Ordinal)
+            && diagnostic.Message.Equals(
+                $"Block is missing '{block.ExpectedTerminator}'.",
+                StringComparison.Ordinal)
+            && diagnostic.Range.Start.Line == block.StatementRange.Start.Line
+            && diagnostic.Range.Start.Character == block.StatementRange.Start.Character
+            && diagnostic.Range.End.Line == block.StatementRange.End.Line
+            && diagnostic.Range.End.Character == block.StatementRange.End.Character;
+
+    private static bool TryFindPrefixBlocks(
+        VbaSyntaxTree tree,
+        IReadOnlyList<BlockSkeletonInsertionPrefixBlock> prefixBlocks,
+        out IReadOnlyList<VbaBlockSyntax> blocks)
+    {
+        var result = new List<VbaBlockSyntax>(prefixBlocks.Count);
+        foreach (var prefixBlock in prefixBlocks)
+        {
+            var block = FindUniqueBlock(tree.Module.Blocks, candidate =>
+                candidate.Kind == prefixBlock.Kind
+                && candidate.ExpectedTerminator.Equals(
+                    prefixBlock.ExpectedTerminator,
+                    StringComparison.OrdinalIgnoreCase)
+                && candidate.OpenerRange == prefixBlock.OpenerRange);
+            if (block is null || !VbaBlockAncestorSyntax.IsComplete(tree, block))
+            {
+                blocks = Array.Empty<VbaBlockSyntax>();
+                return false;
+            }
+
+            result.Add(block);
+        }
+
+        blocks = result;
+        return true;
+    }
+
+    private static bool TryProveControlBoundary(
+        VbaSyntaxTree controlTree,
+        BlockSkeletonInsertionPrefixContext prefix,
+        IReadOnlyList<VbaBlockSyntax> controlAncestors,
+        int? firstFollowingContentLine,
+        out IfBoundaryProof? proof)
+    {
+        proof = null;
+        if (firstFollowingContentLine is null)
+        {
+            return true;
+        }
+
+        var matches = new List<IfBoundaryProof>();
+        for (var index = 0; index < prefix.Ancestors.Count; index++)
+        {
+            var ancestor = prefix.Ancestors[index];
+            var boundary = VbaBlockBoundarySyntax.FindAtFirstPhysicalLine(
+                controlTree,
+                firstFollowingContentLine.Value,
+                ancestor.Kind,
+                ancestor.ExpectedTerminator);
+            if (boundary is null
+                || !boundary.LeadingWhitespace.Equals(
+                    ancestor.LeadingWhitespace,
+                    StringComparison.Ordinal)
+                || !OwnsBoundary(controlAncestors[index], boundary))
+            {
+                continue;
+            }
+
+            matches.Add(new IfBoundaryProof(index, boundary));
+        }
+
+        if (matches.Count != 1)
+        {
+            return false;
+        }
+
+        proof = matches[0];
+        return true;
+    }
+
+    private static bool PreservesPrefixAncestors(
+        IReadOnlyList<VbaBlockSyntax> controlAncestors,
+        IReadOnlyList<VbaBlockSyntax> prospectiveAncestors,
+        VbaSourceText prospectiveSource,
+        int insertionEndOffset,
+        int delta)
+    {
+        if (controlAncestors.Count != prospectiveAncestors.Count)
+        {
+            return false;
+        }
+
+        for (var index = 0; index < controlAncestors.Count; index++)
+        {
+            if (!PreservesBlock(
+                controlAncestors[index],
+                prospectiveAncestors[index],
+                prospectiveSource,
+                insertionEndOffset,
+                delta))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool PreservesControlBoundary(
+        IfBoundaryProof? proof,
+        VbaSyntaxTree prospectiveTree,
+        VbaSourceText prospectiveSource,
+        IReadOnlyList<VbaBlockSyntax> prospectiveAncestors,
+        VbaBlockSyntax candidateBlock,
+        int insertionEndOffset,
+        int delta)
+    {
+        if (proof is null)
+        {
+            return true;
+        }
+
+        var prospectiveLine = prospectiveSource
+            .PositionAt(proof.Boundary.TokenRange.Start.Offset + delta)
+            .Line;
+        var prospectiveBoundary = VbaBlockBoundarySyntax.FindAtFirstPhysicalLine(
+            prospectiveTree,
+            prospectiveLine,
+            proof.Boundary.OwnerBlockKind,
+            proof.Boundary.ExpectedTerminator);
+        return prospectiveBoundary is not null
+            && prospectiveBoundary.Role == proof.Boundary.Role
+            && prospectiveBoundary.BranchKind == proof.Boundary.BranchKind
+            && prospectiveBoundary.TokenRange == ShiftRange(
+                proof.Boundary.TokenRange,
+                prospectiveSource,
+                insertionEndOffset,
+                delta)
+            && prospectiveBoundary.Range == ShiftRange(
+                proof.Boundary.Range,
+                prospectiveSource,
+                insertionEndOffset,
+                delta)
+            && OwnsBoundary(
+                prospectiveAncestors[proof.AncestorIndex],
+                prospectiveBoundary)
+            && candidateBlock.CloserRange!.End.Offset
+                <= prospectiveBoundary.TokenRange.Start.Offset;
+    }
+
+    private static bool OwnsBoundary(
+        VbaBlockSyntax owner,
+        VbaBlockBoundarySyntax boundary)
+        => boundary.Role == VbaBlockBoundaryRole.Closer
+            ? owner.CloserRange == boundary.TokenRange
+            : boundary.BranchKind is { } branchKind
+                && owner.Branches.Any(branch =>
+                    branch.Kind == branchKind
+                    && branch.HeaderRange == boundary.TokenRange);
+
+    private static bool PreservesBlock(
+        VbaBlockSyntax control,
+        VbaBlockSyntax prospective,
+        VbaSourceText prospectiveSource,
+        int insertionEndOffset,
+        int delta)
+    {
+        if (control.Kind != prospective.Kind
+            || control.IsMalformedBarrier != prospective.IsMalformedBarrier
+            || !control.ExpectedTerminator.Equals(
+                prospective.ExpectedTerminator,
+                StringComparison.OrdinalIgnoreCase)
+            || prospective.OpenerRange != ShiftRange(
+                control.OpenerRange,
+                prospectiveSource,
+                insertionEndOffset,
+                delta)
+            || prospective.Range != ShiftRange(
+                control.Range,
+                prospectiveSource,
+                insertionEndOffset,
+                delta)
+            || control.Branches.Count != prospective.Branches.Count)
+        {
+            return false;
+        }
+
+        if (control.CloserRange is null
+            ? prospective.CloserRange is not null
+            : prospective.CloserRange != ShiftRange(
+                control.CloserRange,
+                prospectiveSource,
+                insertionEndOffset,
+                delta))
+        {
+            return false;
+        }
+
+        for (var index = 0; index < control.Branches.Count; index++)
+        {
+            var controlBranch = control.Branches[index];
+            var prospectiveBranch = prospective.Branches[index];
+            if (controlBranch.Kind != prospectiveBranch.Kind
+                || prospectiveBranch.HeaderRange != ShiftRange(
+                    controlBranch.HeaderRange,
+                    prospectiveSource,
+                    insertionEndOffset,
+                    delta)
+                || prospectiveBranch.Range != ShiftRange(
+                    controlBranch.Range,
+                    prospectiveSource,
+                    insertionEndOffset,
+                    delta))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static bool PreservesFollowingBoundary(
@@ -510,4 +891,8 @@ internal static class BlockSkeletonInsertionSpeculation
         string Message,
         int StartOffset,
         int EndOffset);
+
+    private sealed record IfBoundaryProof(
+        int AncestorIndex,
+        VbaBlockBoundarySyntax Boundary);
 }

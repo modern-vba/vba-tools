@@ -84,6 +84,150 @@ public sealed class BlockSkeletonInsertionProcessTests
     }
 
     [Fact]
+    public async Task Complete_block_if_header_returns_a_version_bound_literal_plan()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+
+        const string uri = "file:///C:/work/BlockIf.bas";
+        const string header = "    If True Then";
+        const int version = 11;
+        await server.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(
+                uri,
+                version,
+                text: $"Public Sub Main()\n{header}\n    \nEnd Sub"));
+
+        var response = await SendInsertionRequestAsync(
+            server,
+            2,
+            uri,
+            version,
+            character: header.Length,
+            line: 1);
+
+        var plan = response.GetProperty("result");
+        Assert.Equal(version, plan.GetProperty("documentVersion").GetInt32());
+        Assert.Equal(1, plan.GetProperty("position").GetProperty("line").GetInt32());
+        Assert.Equal(header.Length, plan.GetProperty("position").GetProperty("character").GetInt32());
+        Assert.Equal("\n      ", plan.GetProperty("textBeforeCursor").GetString());
+        Assert.Equal("\n    End If", plan.GetProperty("textAfterCursor").GetString());
+
+        await server.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Nested_block_if_header_preserves_the_ancestor_boundary_and_returns_its_own_terminator()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+
+        const string uri = "file:///C:/work/NestedBlockIf.bas";
+        const string header = "        If True Then";
+        const int version = 12;
+        await server.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(
+                uri,
+                version,
+                text:
+                    $"Public Sub Example()\n" +
+                    "    If True Then\n" +
+                    $"{header}\n" +
+                    "        \n" +
+                    "    End If\n" +
+                    "End Sub"));
+
+        var response = await SendInsertionRequestAsync(
+            server,
+            2,
+            uri,
+            version,
+            character: header.Length,
+            line: 2);
+
+        var plan = response.GetProperty("result");
+        Assert.Equal(version, plan.GetProperty("documentVersion").GetInt32());
+        Assert.Equal(2, plan.GetProperty("position").GetProperty("line").GetInt32());
+        Assert.Equal(header.Length, plan.GetProperty("position").GetProperty("character").GetInt32());
+        Assert.Equal("\n          ", plan.GetProperty("textBeforeCursor").GetString());
+        Assert.Equal("\n        End If", plan.GetProperty("textAfterCursor").GetString());
+
+        await server.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Ineligible_if_headers_and_candidate_owned_boundaries_return_null()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+
+        (string Uri, int Version, string Text, int Line, int Character)[] cases =
+        [
+            CreateIfRefusalCase(
+                "SingleLineIf",
+                version: 21,
+                header: "    If True Then Debug.Print 1"),
+            CreateIfRefusalCase(
+                "IncompleteIf",
+                version: 22,
+                header: "    If value + Then"),
+            CreateIfRefusalCase(
+                "ColonIf",
+                version: 23,
+                header: "    If True Then:"),
+            CreateIfRefusalCase(
+                "LiteralPostfixIf",
+                version: 24,
+                header: "    If True() Then"),
+            (
+                "file:///C:/work/ElseIfBranch.bas",
+                25,
+                "Public Sub Main()\n" +
+                "    If False Then\n" +
+                "    ElseIf True Then\n" +
+                "        \n" +
+                "    End If\n" +
+                "End Sub",
+                2,
+                "    ElseIf True Then".Length),
+            (
+                "file:///C:/work/CandidateOwnedEndIf.bas",
+                26,
+                "Public Sub Main()\n" +
+                "    If True Then\n" +
+                "        \n" +
+                "    End If\n" +
+                "End Sub",
+                1,
+                "    If True Then".Length)
+        ];
+
+        for (var index = 0; index < cases.Length; index++)
+        {
+            var candidate = cases[index];
+            await server.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(candidate.Uri, candidate.Version, candidate.Text));
+
+            var response = await SendInsertionRequestAsync(
+                server,
+                index + 2,
+                candidate.Uri,
+                candidate.Version,
+                candidate.Character,
+                candidate.Line);
+
+            Assert.Equal(
+                System.Text.Json.JsonValueKind.Null,
+                response.GetProperty("result").ValueKind);
+        }
+
+        await server.ShutdownAsync(cases.Length + 2);
+    }
+
+    [Fact]
     public async Task Unsafe_non_eof_sub_contexts_return_null()
     {
         await using var server = await LanguageServerProcessHarness.StartAsync();
@@ -404,12 +548,24 @@ public sealed class BlockSkeletonInsertionProcessTests
             }
         };
 
+    private static (string Uri, int Version, string Text, int Line, int Character) CreateIfRefusalCase(
+        string name,
+        int version,
+        string header)
+        => (
+            $"file:///C:/work/{name}.bas",
+            version,
+            $"Public Sub Main()\n{header}\n    \nEnd Sub",
+            1,
+            header.Length);
+
     private static Task<System.Text.Json.JsonElement> SendInsertionRequestAsync(
         LanguageServerProcessHarness server,
         int id,
         string uri,
         int version,
-        int character)
+        int character,
+        int line = 0)
         => server.SendRequestAsync(
             id,
             "vba/blockSkeletonInsertion",
@@ -417,7 +573,7 @@ public sealed class BlockSkeletonInsertionProcessTests
             {
                 documentUri = uri,
                 documentVersion = version,
-                position = new { line = 0, character },
+                position = new { line, character },
                 options = new
                 {
                     insertSpaces = true,

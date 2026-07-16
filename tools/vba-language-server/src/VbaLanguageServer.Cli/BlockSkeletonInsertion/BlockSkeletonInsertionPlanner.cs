@@ -24,7 +24,7 @@ public sealed record BlockSkeletonInsertionPlan(
 public static class BlockSkeletonInsertionPlanner
 {
     /// <summary>
-    /// Creates a narrow Sub insertion plan at EOF or a proven same-level Sub boundary.
+    /// Creates a narrow insertion plan at EOF or a structurally proven boundary.
     /// </summary>
     public static BlockSkeletonInsertionPlan? CreatePlan(
         VbaVersionedDocumentSnapshot snapshot,
@@ -40,8 +40,8 @@ public static class BlockSkeletonInsertionPlanner
             snapshot.SyntaxTree,
             position.Line,
             position.Character);
-        if (header?.Kind != VbaBlockHeaderKind.Sub
-            || !TryGetPostNativeContext(snapshot.Text, position, header, out var context))
+        if (header is null
+            || !TryGetPostNativeContext(snapshot.Text, position, out var context))
         {
             return null;
         }
@@ -68,7 +68,6 @@ public static class BlockSkeletonInsertionPlanner
     private static bool TryGetPostNativeContext(
         string text,
         BlockSkeletonInsertionPosition position,
-        VbaBlockHeaderSyntax header,
         out PostNativeContext context)
     {
         context = default!;
@@ -115,15 +114,6 @@ public static class BlockSkeletonInsertionPlanner
             if (lineText.All(value => value is ' ' or '\t'))
             {
                 continue;
-            }
-
-            var leadingWhitespaceLength = lineText
-                .TakeWhile(value => value is ' ' or '\t')
-                .Count();
-            if (!lineText.AsSpan(0, leadingWhitespaceLength)
-                .SequenceEqual(header.LeadingWhitespace.AsSpan()))
-            {
-                return false;
             }
 
             firstFollowingContentLine = lineIndex;
