@@ -24,7 +24,7 @@ public sealed record BlockSkeletonInsertionPlan(
 public static class BlockSkeletonInsertionPlanner
 {
     /// <summary>
-    /// Creates the narrow EOF Sub insertion plan admitted by the first production slice.
+    /// Creates a narrow Sub insertion plan at EOF or a proven same-level Sub boundary.
     /// </summary>
     public static BlockSkeletonInsertionPlan? CreatePlan(
         VbaVersionedDocumentSnapshot snapshot,
@@ -41,67 +41,37 @@ public static class BlockSkeletonInsertionPlanner
             position.Line,
             position.Character);
         if (header?.Kind != VbaBlockHeaderKind.Sub
-            || HasDisqualifyingDiagnostics(snapshot, header)
-            || !TryGetPostNativeEofLineEnding(snapshot.Text, position, out var lineEnding))
+            || !TryGetPostNativeContext(snapshot.Text, position, header, out var context))
         {
             return null;
         }
 
         var bodyIndentation = header.LeadingWhitespace
             + indentationStyle.CreateLeadingWhitespace(1);
-        return new BlockSkeletonInsertionPlan(
+        var plan = new BlockSkeletonInsertionPlan(
             snapshot.Version,
             position,
-            lineEnding + bodyIndentation,
-            lineEnding + header.LeadingWhitespace + header.ExpectedTerminator);
+            context.LineEnding + bodyIndentation,
+            context.LineEnding + header.LeadingWhitespace + header.ExpectedTerminator);
+        return BlockSkeletonInsertionSpeculation.IsSafe(
+            snapshot,
+            header,
+            plan,
+            context.InsertionStartOffset,
+            context.InsertionEndOffset,
+            context.FirstFollowingContentLine,
+            context.LineEnding)
+                ? plan
+                : null;
     }
 
-    private static bool HasDisqualifyingDiagnostics(
-        VbaVersionedDocumentSnapshot snapshot,
-        VbaBlockHeaderSyntax header)
-        => snapshot.Diagnostics.SyntaxDiagnostics.Any(diagnostic =>
-                IsError(diagnostic.Severity)
-                && Overlaps(diagnostic.Range, header.Range)
-                && !(diagnostic.Code.Equals(
-                        "syntax.missingBlockTerminator",
-                        StringComparison.Ordinal)
-                    && diagnostic.Message.Contains(
-                        header.ExpectedTerminator,
-                        StringComparison.OrdinalIgnoreCase)))
-            || snapshot.Diagnostics.DocumentValidationDiagnostics.Any(diagnostic =>
-                IsError(diagnostic.Severity)
-                && Overlaps(diagnostic.Range, header.Range));
-
-    private static bool IsError(string severity)
-        => severity.Equals("error", StringComparison.OrdinalIgnoreCase);
-
-    private static bool Overlaps(VbaRange diagnostic, VbaSyntaxRange header)
-        => Compare(
-                diagnostic.Start.Line,
-                diagnostic.Start.Character,
-                header.End.Line,
-                header.End.Character) <= 0
-            && Compare(
-                header.Start.Line,
-                header.Start.Character,
-                diagnostic.End.Line,
-                diagnostic.End.Character) <= 0;
-
-    private static int Compare(
-        int leftLine,
-        int leftCharacter,
-        int rightLine,
-        int rightCharacter)
-        => leftLine != rightLine
-            ? leftLine.CompareTo(rightLine)
-            : leftCharacter.CompareTo(rightCharacter);
-
-    private static bool TryGetPostNativeEofLineEnding(
+    private static bool TryGetPostNativeContext(
         string text,
         BlockSkeletonInsertionPosition position,
-        out string lineEnding)
+        VbaBlockHeaderSyntax header,
+        out PostNativeContext context)
     {
-        lineEnding = string.Empty;
+        context = default!;
         var source = VbaSourceText.From(text);
         if (position.Line < 0
             || position.Line >= source.Lines.Count
@@ -113,14 +83,64 @@ public static class BlockSkeletonInsertionPlanner
 
         var positionOffset = source.Lines[position.Line].StartOffset + position.Character;
         var suffix = text[positionOffset..];
-        lineEnding = suffix.StartsWith("\r\n", StringComparison.Ordinal)
+        var lineEnding = suffix.StartsWith("\r\n", StringComparison.Ordinal)
             ? "\r\n"
             : suffix.StartsWith("\n", StringComparison.Ordinal)
                 ? "\n"
                 : suffix.StartsWith("\r", StringComparison.Ordinal)
                     ? "\r"
                     : string.Empty;
-        return lineEnding.Length > 0
-            && suffix[lineEnding.Length..].All(value => value is ' ' or '\t');
+        if (lineEnding.Length == 0)
+        {
+            return false;
+        }
+
+        var insertionEndOffset = positionOffset + lineEnding.Length;
+        while (insertionEndOffset < text.Length
+            && text[insertionEndOffset] is ' ' or '\t')
+        {
+            insertionEndOffset++;
+        }
+
+        if (insertionEndOffset < text.Length
+            && text[insertionEndOffset] is not '\r' and not '\n')
+        {
+            return false;
+        }
+
+        int? firstFollowingContentLine = null;
+        for (var lineIndex = position.Line + 2; lineIndex < source.Lines.Count; lineIndex++)
+        {
+            var lineText = source.Lines[lineIndex].Text;
+            if (lineText.All(value => value is ' ' or '\t'))
+            {
+                continue;
+            }
+
+            var leadingWhitespaceLength = lineText
+                .TakeWhile(value => value is ' ' or '\t')
+                .Count();
+            if (!lineText.AsSpan(0, leadingWhitespaceLength)
+                .SequenceEqual(header.LeadingWhitespace.AsSpan()))
+            {
+                return false;
+            }
+
+            firstFollowingContentLine = lineIndex;
+            break;
+        }
+
+        context = new PostNativeContext(
+            lineEnding,
+            positionOffset,
+            insertionEndOffset,
+            firstFollowingContentLine);
+        return true;
     }
+
+    private sealed record PostNativeContext(
+        string LineEnding,
+        int InsertionStartOffset,
+        int InsertionEndOffset,
+        int? FirstFollowingContentLine);
 }

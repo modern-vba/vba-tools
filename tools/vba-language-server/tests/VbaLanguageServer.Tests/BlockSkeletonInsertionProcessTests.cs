@@ -53,6 +53,78 @@ public sealed class BlockSkeletonInsertionProcessTests
     }
 
     [Fact]
+    public async Task Safe_non_eof_sub_boundary_returns_the_same_literal_plan()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+
+        const string uri = "file:///C:/work/Boundary.bas";
+        const string header = "Public Sub First()";
+        const int version = 8;
+        await server.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(
+                uri,
+                version,
+                text: $"{header}\n    \n\nPublic Sub Second()\nEnd Sub"));
+
+        var response = await SendInsertionRequestAsync(
+            server,
+            2,
+            uri,
+            version,
+            character: header.Length);
+
+        var plan = response.GetProperty("result");
+        Assert.Equal(version, plan.GetProperty("documentVersion").GetInt32());
+        Assert.Equal("\n  ", plan.GetProperty("textBeforeCursor").GetString());
+        Assert.Equal("\nEnd Sub", plan.GetProperty("textAfterCursor").GetString());
+
+        await server.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Unsafe_non_eof_sub_contexts_return_null()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+
+        const string header = "Public Sub First()";
+        string[] contexts =
+        [
+            "    Debug.Print 1",
+            "    ' existing comment",
+            "End Sub",
+            "Public Function NextValue() As Long\nEnd Function",
+            "    Public Sub Nested()\n    End Sub",
+            "Public Sub Broken("
+        ];
+
+        for (var index = 0; index < contexts.Length; index++)
+        {
+            var uri = $"file:///C:/work/UnsafeBoundary{index}.bas";
+            await server.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(
+                    uri,
+                    version: 1,
+                    text: $"{header}\n    \n\n{contexts[index]}"));
+            var response = await SendInsertionRequestAsync(
+                server,
+                index + 2,
+                uri,
+                version: 1,
+                character: header.Length);
+
+            Assert.Equal(
+                System.Text.Json.JsonValueKind.Null,
+                response.GetProperty("result").ValueKind);
+        }
+
+        await server.ShutdownAsync(contexts.Length + 2);
+    }
+
+    [Fact]
     public async Task CrLf_open_buffer_returns_the_same_eof_plan_used_by_the_extension()
     {
         await using var server = await LanguageServerProcessHarness.StartAsync();

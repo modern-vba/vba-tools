@@ -281,6 +281,321 @@ export async function runGuardedEnterFeasibilityTests(): Promise<void> {
   );
 
   await runTest(
+    'the production language server inserts a Sub skeleton before a same-level Sub boundary',
+    async () => {
+      const lineEnding = '\r\n';
+      const firstHeader = '    Public Sub First()';
+      const originalText = [
+        firstHeader,
+        '',
+        '    Public Sub Second()',
+        '    End Sub'
+      ].join(lineEnding);
+      const documentUri = Uri.file(join(
+        tmpdir(),
+        `vba-tools-block-skeleton-non-eof-${randomUUID()}.bas`
+      ));
+      let fileCreated = false;
+      let openedDocument: TextDocument | undefined;
+      let observer: { dispose(): void } | undefined;
+      try {
+        await workspace.fs.writeFile(documentUri, Buffer.from(originalText, 'utf8'));
+        fileCreated = true;
+        const document = await workspace.openTextDocument(documentUri);
+        openedDocument = document;
+        assert.equal(document.languageId, 'vba');
+        assert.equal(document.eol, EndOfLine.CRLF);
+        const editor = await window.showTextDocument(document);
+        editor.options = {
+          insertSpaces: true,
+          tabSize: 4,
+          indentSize: 2
+        };
+        const initialDocumentVersion = document.version;
+        const end = document.lineAt(0).range.end;
+        editor.selection = new Selection(end, end);
+        await commands.executeCommand('workbench.action.focusActiveEditorGroup');
+        const productionProvider = getBlockSkeletonInsertionPlanProvider();
+        const warmup = productionProvider({
+          documentUri: document.uri.toString(),
+          documentVersion: document.version,
+          position: {
+            line: end.line,
+            character: end.character
+          },
+          options: {
+            insertSpaces: true,
+            indentSize: 2,
+            tabSize: 4
+          }
+        });
+        await warmup.response;
+        let capturedRequest: BlockSkeletonInsertionRequest | undefined;
+        let capturedResponse: BlockSkeletonInsertionPlan | null | undefined;
+        let capturedError: unknown;
+        let responseSettled = false;
+        let cancellationCount = 0;
+        observer = useBlockSkeletonInsertionPlanProviderForTest((request) => {
+          capturedRequest = request;
+          const pending = productionProvider(request);
+          return {
+            response: pending.response.then(
+              (response) => {
+                capturedResponse = response;
+                responseSettled = true;
+                return response;
+              },
+              (error) => {
+                capturedError = error;
+                responseSettled = true;
+                throw error;
+              }
+            ),
+            cancel: () => {
+              cancellationCount++;
+              pending.cancel();
+            }
+          };
+        });
+
+        await executeGuardedEnter();
+
+        const expectedText = [
+          firstHeader,
+          '      ',
+          '    End Sub',
+          '',
+          '    Public Sub Second()',
+          '    End Sub'
+        ].join(lineEnding);
+        await waitFor(
+          () => responseSettled
+            && document.getText() === expectedText
+            && editor.selection.active.isEqual(new Position(1, 6)),
+          2_000,
+          () => [
+            `text=${JSON.stringify(document.getText())}`,
+            `cursor=${formatPosition(editor.selection.active)}`,
+            `request=${JSON.stringify(capturedRequest)}`,
+            `response=${JSON.stringify(capturedResponse)}`,
+            `error=${String(capturedError)}`,
+            `settled=${responseSettled}`,
+            `cancellations=${cancellationCount}`
+          ].join('; ')
+        );
+        assert.equal(capturedError, undefined);
+        assert.equal(cancellationCount, 0);
+        assert.deepEqual(capturedRequest, {
+          documentUri: document.uri.toString(),
+          documentVersion: initialDocumentVersion + 1,
+          position: {
+            line: 0,
+            character: firstHeader.length
+          },
+          options: {
+            insertSpaces: true,
+            tabSize: 4,
+            indentSize: 2
+          }
+        });
+        assert.deepEqual(capturedResponse, {
+          documentVersion: initialDocumentVersion + 1,
+          position: {
+            line: 0,
+            character: firstHeader.length
+          },
+          textBeforeCursor: `${lineEnding}      `,
+          textAfterCursor: `${lineEnding}    End Sub`
+        });
+        assert.equal(document.getText(), expectedText);
+        assert.deepEqual(editor.selection.active, new Position(1, 6));
+
+        await commands.executeCommand('undo');
+        await waitFor(
+          () => document.getText() === originalText
+            && editor.selection.active.isEqual(end)
+        );
+        assert.equal(document.getText(), originalText);
+        assert.deepEqual(editor.selection.active, end);
+      } finally {
+        observer?.dispose();
+        try {
+          if (
+            openedDocument !== undefined
+            && window.activeTextEditor?.document !== openedDocument
+          ) {
+            await window.showTextDocument(openedDocument);
+          }
+          if (openedDocument?.isDirty) {
+            await commands.executeCommand('workbench.action.files.revert');
+          }
+          if (window.activeTextEditor?.document === openedDocument) {
+            await commands.executeCommand('workbench.action.closeActiveEditor');
+          }
+        } finally {
+          if (fileCreated) {
+            await workspace.fs.delete(documentUri, { useTrash: false });
+          }
+        }
+      }
+    }
+  );
+
+  await runTest(
+    'the production language server declines a Sub skeleton before an existing body comment',
+    async () => {
+      const lineEnding = '\n';
+      const firstHeader = '    Public Sub First()';
+      const originalText = [
+        firstHeader,
+        "    ' existing body comment",
+        '',
+        '    Public Sub Second()',
+        '    End Sub'
+      ].join(lineEnding);
+      const documentUri = Uri.file(join(
+        tmpdir(),
+        `vba-tools-block-skeleton-refused-non-eof-${randomUUID()}.bas`
+      ));
+      let fileCreated = false;
+      let openedDocument: TextDocument | undefined;
+      let observer: { dispose(): void } | undefined;
+      try {
+        await workspace.fs.writeFile(documentUri, Buffer.from(originalText, 'utf8'));
+        fileCreated = true;
+        const document = await workspace.openTextDocument(documentUri);
+        openedDocument = document;
+        assert.equal(document.languageId, 'vba');
+        assert.equal(document.eol, EndOfLine.LF);
+        const editor = await window.showTextDocument(document);
+        editor.options = {
+          insertSpaces: true,
+          tabSize: 4,
+          indentSize: 2
+        };
+        const initialDocumentVersion = document.version;
+        const end = document.lineAt(0).range.end;
+        editor.selection = new Selection(end, end);
+        await commands.executeCommand('workbench.action.focusActiveEditorGroup');
+        const productionProvider = getBlockSkeletonInsertionPlanProvider();
+        const warmup = productionProvider({
+          documentUri: document.uri.toString(),
+          documentVersion: document.version,
+          position: {
+            line: end.line,
+            character: end.character
+          },
+          options: {
+            insertSpaces: true,
+            indentSize: 2,
+            tabSize: 4
+          }
+        });
+        await warmup.response;
+        let capturedRequest: BlockSkeletonInsertionRequest | undefined;
+        let capturedResponse: BlockSkeletonInsertionPlan | null | undefined;
+        let capturedError: unknown;
+        let responseSettled = false;
+        let cancellationCount = 0;
+        observer = useBlockSkeletonInsertionPlanProviderForTest((request) => {
+          capturedRequest = request;
+          const pending = productionProvider(request);
+          return {
+            response: pending.response.then(
+              (response) => {
+                capturedResponse = response;
+                responseSettled = true;
+                return response;
+              },
+              (error) => {
+                capturedError = error;
+                responseSettled = true;
+                throw error;
+              }
+            ),
+            cancel: () => {
+              cancellationCount++;
+              pending.cancel();
+            }
+          };
+        });
+
+        await executeGuardedEnter();
+
+        const expectedText = [
+          firstHeader,
+          '    ',
+          "    ' existing body comment",
+          '',
+          '    Public Sub Second()',
+          '    End Sub'
+        ].join(lineEnding);
+        await waitFor(
+          () => responseSettled
+            && document.getText() === expectedText
+            && editor.selection.active.isEqual(new Position(1, 4)),
+          2_000,
+          () => [
+            `text=${JSON.stringify(document.getText())}`,
+            `cursor=${formatPosition(editor.selection.active)}`,
+            `request=${JSON.stringify(capturedRequest)}`,
+            `response=${JSON.stringify(capturedResponse)}`,
+            `error=${String(capturedError)}`,
+            `settled=${responseSettled}`,
+            `cancellations=${cancellationCount}`
+          ].join('; ')
+        );
+        assert.equal(capturedError, undefined);
+        assert.equal(cancellationCount, 0);
+        assert.deepEqual(capturedRequest, {
+          documentUri: document.uri.toString(),
+          documentVersion: initialDocumentVersion + 1,
+          position: {
+            line: 0,
+            character: firstHeader.length
+          },
+          options: {
+            insertSpaces: true,
+            tabSize: 4,
+            indentSize: 2
+          }
+        });
+        assert.equal(capturedResponse, null);
+        assert.equal(document.getText(), expectedText);
+        assert.deepEqual(editor.selection.active, new Position(1, 4));
+
+        await commands.executeCommand('undo');
+        await waitFor(
+          () => document.getText() === originalText
+            && editor.selection.active.isEqual(end)
+        );
+        assert.equal(document.getText(), originalText);
+        assert.deepEqual(editor.selection.active, end);
+      } finally {
+        observer?.dispose();
+        try {
+          if (
+            openedDocument !== undefined
+            && window.activeTextEditor?.document !== openedDocument
+          ) {
+            await window.showTextDocument(openedDocument);
+          }
+          if (openedDocument?.isDirty) {
+            await commands.executeCommand('workbench.action.files.revert');
+          }
+          if (window.activeTextEditor?.document === openedDocument) {
+            await commands.executeCommand('workbench.action.closeActiveEditor');
+          }
+        } finally {
+          if (fileCreated) {
+            await workspace.fs.delete(documentUri, { useTrash: false });
+          }
+        }
+      }
+    }
+  );
+
+  await runTest(
     'rapid text after Enter remains after the native fallback newline',
     async () => {
       const originalText = 'Public Sub Main()';

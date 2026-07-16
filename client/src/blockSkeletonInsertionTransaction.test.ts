@@ -96,6 +96,71 @@ test('the recorded native insertion is revalidated and passed to plan applicatio
   ]);
 });
 
+test('a refused non-EOF plan leaves the native insertion as the declined fallback', async () => {
+  let cancellations = 0;
+  let validations = 0;
+  let applications = 0;
+
+  const result = await runBlockSkeletonInsertionTransaction({
+    nativeInsertion: 'native receipt before following source',
+    beginPlanRequest: () => ({
+      response: Promise.resolve(null),
+      cancel: () => {
+        cancellations += 1;
+      }
+    }),
+    isCurrent: () => {
+      validations += 1;
+      return true;
+    },
+    applyPlan: async () => {
+      applications += 1;
+      return true;
+    },
+    timeoutMilliseconds: 100
+  });
+
+  assert.equal(result, 'declined');
+  assert.equal(cancellations, 0);
+  assert.equal(validations, 0);
+  assert.equal(applications, 0);
+});
+
+test('an accepted non-EOF plan reaches application with the recorded native insertion', async () => {
+  const nativeInsertion = { range: 'native line break before following source' };
+  const plan = {
+    textBeforeCursor: '\n  ',
+    textAfterCursor: '\nEnd Sub'
+  };
+  let validations = 0;
+  let applications = 0;
+
+  const result = await runBlockSkeletonInsertionTransaction({
+    nativeInsertion,
+    beginPlanRequest: () => ({
+      response: Promise.resolve(plan),
+      cancel: () => undefined
+    }),
+    isCurrent: (candidateInsertion, candidatePlan) => {
+      validations += 1;
+      assert.equal(candidateInsertion, nativeInsertion);
+      assert.equal(candidatePlan, plan);
+      return true;
+    },
+    applyPlan: async (candidateInsertion, candidatePlan) => {
+      applications += 1;
+      assert.equal(candidateInsertion, nativeInsertion);
+      assert.equal(candidatePlan, plan);
+      return true;
+    },
+    timeoutMilliseconds: 100
+  });
+
+  assert.equal(result, 'applied');
+  assert.equal(validations, 1);
+  assert.equal(applications, 1);
+});
+
 test('cancellation settled with a plan response still prevents application', async () => {
   let applications = 0;
 
