@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using VbaLanguageServer.BlockSkeletonInsertion;
 using VbaLanguageServer.SourceModel;
 using VbaLanguageServer.Syntax;
 using VbaLanguageServer.Workspace;
@@ -219,6 +220,12 @@ internal sealed class VbaLspRequestExecution
                         sourceIndex => VbaLspFeatureProjection.CreateFormattingEdits(
                             sourceIndex.FormatDocument(formattingRequest.Uri, formattingRequest.IndentationStyle))))
                     : RequestOutcome.InvalidParams();
+            case "vba/blockSkeletonInsertion":
+                return TryCreateBlockSkeletonInsertionRequest(parameters, out var skeletonRequest)
+                    ? RequestOutcome.Success(CreateBlockSkeletonInsertionPlan(
+                        skeletonRequest,
+                        cancellationToken))
+                    : RequestOutcome.InvalidParams();
             case "textDocument/semanticTokens/full":
                 return TryCreateTextDocumentRequest(parameters, out var semanticTokensRequest)
                     ? RequestOutcome.Success(WithSourceIndex(
@@ -240,6 +247,22 @@ internal sealed class VbaLspRequestExecution
     {
         var snapshot = workspace.CreateProjectSnapshot(request.Uri, cancellationToken);
         return createResult(snapshot.SourceIndex);
+    }
+
+    private BlockSkeletonInsertionPlan? CreateBlockSkeletonInsertionPlan(
+        BlockSkeletonInsertionRequest request,
+        CancellationToken cancellationToken)
+    {
+        var snapshot = workspace.GetDocumentSnapshot(
+            request.DocumentUri,
+            request.DocumentVersion,
+            cancellationToken);
+        return snapshot is null
+            ? null
+            : BlockSkeletonInsertionPlanner.CreatePlan(
+                snapshot,
+                request.Position,
+                request.IndentationStyle);
     }
 
     private static bool TryDecodeEnvelope(
@@ -363,6 +386,44 @@ internal sealed class VbaLspRequestExecution
         return true;
     }
 
+    private static bool TryCreateBlockSkeletonInsertionRequest(
+        JsonNode? parameters,
+        out BlockSkeletonInsertionRequest request)
+    {
+        request = default!;
+        if (parameters is not JsonObject parameterObject
+            || !TryGetString(parameterObject["documentUri"], out var documentUri)
+            || string.IsNullOrWhiteSpace(documentUri)
+            || !TryGetInt32(parameterObject["documentVersion"], out var documentVersion)
+            || documentVersion < 0
+            || parameterObject["position"] is not JsonObject position
+            || !TryGetInt32(position["line"], out var line)
+            || !TryGetInt32(position["character"], out var character)
+            || line < 0
+            || character < 0
+            || parameterObject["options"] is not JsonObject options
+            || !TryGetBoolean(options["insertSpaces"], out var insertSpaces)
+            || !TryGetInt32(options["tabSize"], out var tabSize)
+            || tabSize <= 0)
+        {
+            return false;
+        }
+
+        var indentSize = tabSize;
+        if (options["indentSize"] is { } indentSizeNode
+            && (!TryGetInt32(indentSizeNode, out indentSize) || indentSize <= 0))
+        {
+            return false;
+        }
+
+        request = new BlockSkeletonInsertionRequest(
+            documentUri,
+            documentVersion,
+            new BlockSkeletonInsertionPosition(line, character),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces, indentSize));
+        return true;
+    }
+
     private static bool TryGetString(JsonNode? node, out string value)
     {
         value = "";
@@ -405,6 +466,12 @@ internal sealed class VbaLspRequestExecution
     private sealed record FormattingRequest(
         string Uri,
         VbaIndentationStyle IndentationStyle) : ITextDocumentRequest;
+
+    private sealed record BlockSkeletonInsertionRequest(
+        string DocumentUri,
+        int DocumentVersion,
+        BlockSkeletonInsertionPosition Position,
+        VbaIndentationStyle IndentationStyle);
 
     private sealed record RequestOutcome(object? Result, int? ErrorCode, string? ErrorMessage)
     {

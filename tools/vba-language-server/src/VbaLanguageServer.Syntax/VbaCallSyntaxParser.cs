@@ -523,6 +523,7 @@ internal static class VbaCallSyntaxParser
             && (TextEquals(tokens[index], "Public")
                 || TextEquals(tokens[index], "Private")
                 || TextEquals(tokens[index], "Friend")
+                || TextEquals(tokens[index], "Global")
                 || TextEquals(tokens[index], "Static")))
         {
             index++;

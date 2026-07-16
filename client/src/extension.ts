@@ -2,6 +2,7 @@ import * as path from 'node:path';
 import { promises as fs } from 'node:fs';
 
 import {
+  CancellationTokenSource,
   ExtensionContext,
   OutputChannel,
   ProgressLocation,
@@ -71,6 +72,12 @@ import {
 import {
   runBlockSkeletonInsertionAfterNativeEnter
 } from './blockSkeletonInsertionAdapter';
+import {
+  BlockSkeletonInsertionPlan,
+  createLanguageClientBlockSkeletonInsertionPlanProvider,
+  formatBlockSkeletonInsertionFallbackTrace,
+  useBlockSkeletonInsertionPlanProvider
+} from './blockSkeletonInsertion';
 import { NativeLineBreakRecorder } from './nativeLineBreak';
 
 let client: LanguageClient | undefined;
@@ -146,6 +153,16 @@ export async function activate(context: ExtensionContext): Promise<void> {
 
     context.subscriptions.push(client);
     const languageClient = client;
+    context.subscriptions.push(useBlockSkeletonInsertionPlanProvider(
+      createLanguageClientBlockSkeletonInsertionPlanProvider(
+        {
+          sendRequest: (method, parameters, token) => languageClient.sendRequest<
+            BlockSkeletonInsertionPlan | null
+          >(method, parameters, token)
+        },
+        () => new CancellationTokenSource()
+      )
+    ));
     projectManifestLanguageServerSync = registerProjectManifestLanguageServerSync({
       getOpenDocuments: () => workspace.textDocuments,
       onDidOpenTextDocument: (listener) => workspace.onDidOpenTextDocument(listener),
@@ -202,7 +219,22 @@ export async function activate(context: ExtensionContext): Promise<void> {
     () => {
       void runBlockSkeletonInsertionAfterNativeEnter(
         nativeLineBreakRecorder
-      ).catch(() => undefined);
+      ).then((result) => {
+        if (result === undefined) {
+          return;
+        }
+
+        const trace = formatBlockSkeletonInsertionFallbackTrace(
+          result,
+          workspace.getConfiguration('vbaLanguageServer').get<string>(
+            'trace.server',
+            'off'
+          )
+        );
+        if (trace !== undefined) {
+          client?.traceOutputChannel.appendLine(trace);
+        }
+      }).catch(() => undefined);
     }
   ));
   for (const command of WorkbookBackedProjectCommands) {

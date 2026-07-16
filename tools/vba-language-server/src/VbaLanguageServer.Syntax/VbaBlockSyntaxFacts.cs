@@ -103,9 +103,9 @@ internal static class VbaBlockSyntaxFacts
         };
 
     private static string? GetProcedureOpenTerminator(string trimmedLine)
-        => IsMatch(trimmedLine, "^((Public|Private|Friend)\\s+)?(Static\\s+)?Sub\\b") ? "End Sub"
-            : IsMatch(trimmedLine, "^((Public|Private|Friend)\\s+)?(Static\\s+)?Function\\b") ? "End Function"
-            : IsMatch(trimmedLine, "^((Public|Private|Friend)\\s+)?(Static\\s+)?Property\\b") ? "End Property"
+        => IsMatch(trimmedLine, "^((Public|Private|Friend|Global)\\s+)?(Static\\s+)?Sub\\b") ? "End Sub"
+            : IsMatch(trimmedLine, "^((Public|Private|Friend|Global)\\s+)?(Static\\s+)?Function\\b") ? "End Function"
+            : IsMatch(trimmedLine, "^((Public|Private|Friend|Global)\\s+)?(Static\\s+)?Property\\b") ? "End Property"
             : null;
 
     private static string? GetStructuredStatementOpenTerminator(string trimmedLine)

@@ -512,7 +512,8 @@ internal static class VbaCompletionSyntaxFactsParser
     {
         if (Matches(tokens, index, "Public")
             || Matches(tokens, index, "Private")
-            || Matches(tokens, index, "Friend"))
+            || Matches(tokens, index, "Friend")
+            || Matches(tokens, index, "Global"))
         {
             index++;
         }

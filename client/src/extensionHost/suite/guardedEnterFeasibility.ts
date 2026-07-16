@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
+import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   EndOfLine,
   ConfigurationTarget,
   Position,
   Selection,
+  TextDocument,
   Uri,
   commands,
   extensions,
@@ -13,6 +18,8 @@ import {
 } from 'vscode';
 import {
   BlockSkeletonInsertionPlan,
+  BlockSkeletonInsertionRequest,
+  getBlockSkeletonInsertionPlanProvider,
   useBlockSkeletonInsertionPlanProviderForTest
 } from '../../blockSkeletonInsertion';
 
@@ -26,13 +33,7 @@ export async function runGuardedEnterFeasibilityTests(): Promise<void> {
       const extension = extensions.getExtension('modern-vba.vba-tools');
       assert.ok(extension, 'The VBA Tools extension must be installed in the Extension Host.');
       let requests = 0;
-      const provider = useBlockSkeletonInsertionPlanProviderForTest(() => {
-        requests += 1;
-        return {
-          response: Promise.resolve(null),
-          cancel: () => undefined
-        };
-      });
+      let provider: { dispose(): void } | undefined;
 
       const document = await workspace.openTextDocument({
         language: 'vba',
@@ -42,6 +43,14 @@ export async function runGuardedEnterFeasibilityTests(): Promise<void> {
       const end = document.lineAt(0).range.end;
       editor.selection = new Selection(end, end);
       await commands.executeCommand('workbench.action.focusActiveEditorGroup');
+      await waitFor(() => extension.isActive);
+      provider = useBlockSkeletonInsertionPlanProviderForTest(() => {
+        requests += 1;
+        return {
+          response: Promise.resolve(null),
+          cancel: () => undefined
+        };
+      });
       await delay(50);
       const selectionEvents: string[] = [];
       const selectionSubscription = window.onDidChangeTextEditorSelection((event) => {
@@ -75,7 +84,7 @@ export async function runGuardedEnterFeasibilityTests(): Promise<void> {
         assert.deepEqual(window.activeTextEditor?.selection.active, new Position(1, 4));
       } finally {
         selectionSubscription.dispose();
-        provider.dispose();
+        provider?.dispose();
         await commands.executeCommand('workbench.action.closeActiveEditor');
       }
     }
@@ -143,6 +152,130 @@ export async function runGuardedEnterFeasibilityTests(): Promise<void> {
       } finally {
         provider.dispose();
         await commands.executeCommand('workbench.action.closeActiveEditor');
+      }
+    }
+  );
+
+  await runTest(
+    'the production language server inserts a Sub skeleton at EOF',
+    async () => {
+      const originalText = 'Public Sub Main()';
+      const documentUri = Uri.file(join(
+        tmpdir(),
+        `vba-tools-block-skeleton-${randomUUID()}.bas`
+      ));
+      let fileCreated = false;
+      let openedDocument: TextDocument | undefined;
+      let observer: { dispose(): void } | undefined;
+      try {
+        await workspace.fs.writeFile(documentUri, Buffer.from(originalText, 'utf8'));
+        fileCreated = true;
+        const document = await workspace.openTextDocument(documentUri);
+        openedDocument = document;
+        assert.equal(document.languageId, 'vba');
+        const editor = await window.showTextDocument(document);
+        editor.options = {
+          insertSpaces: true,
+          tabSize: 4,
+          indentSize: 2
+        };
+        const end = document.lineAt(0).range.end;
+        editor.selection = new Selection(end, end);
+        await commands.executeCommand('workbench.action.focusActiveEditorGroup');
+        await waitFor(
+          () => languages.getDiagnostics(document.uri).some(
+            (diagnostic) => diagnostic.code === 'syntax.missingBlockTerminator'
+          ),
+          5_000,
+          () => `diagnostics=${JSON.stringify(languages.getDiagnostics(document.uri))}`
+        );
+        const productionProvider = getBlockSkeletonInsertionPlanProvider();
+        const warmup = productionProvider({
+          documentUri: document.uri.toString(),
+          documentVersion: document.version,
+          position: {
+            line: end.line,
+            character: end.character
+          },
+          options: {
+            insertSpaces: true,
+            indentSize: 2,
+            tabSize: 4
+          }
+        });
+        await warmup.response;
+        let capturedRequest: BlockSkeletonInsertionRequest | undefined;
+        let capturedResponse: BlockSkeletonInsertionPlan | null | undefined;
+        let capturedError: unknown;
+        let cancellationCount = 0;
+        observer = useBlockSkeletonInsertionPlanProviderForTest((request) => {
+          capturedRequest = request;
+          const pending = productionProvider(request);
+          return {
+            response: pending.response.then(
+              (response) => {
+                capturedResponse = response;
+                return response;
+              },
+              (error) => {
+                capturedError = error;
+                throw error;
+              }
+            ),
+            cancel: () => {
+              cancellationCount++;
+              pending.cancel();
+            }
+          };
+        });
+
+        await executeGuardedEnter();
+
+        const lineEnding = document.eol === EndOfLine.CRLF ? '\r\n' : '\n';
+        const expectedText = [
+          originalText,
+          '  ',
+          'End Sub'
+        ].join(lineEnding);
+        await waitFor(
+          () => document.getText() === expectedText
+            && editor.selection.active.isEqual(new Position(1, 2)),
+          2_000,
+          () => [
+            `text=${JSON.stringify(document.getText())}`,
+            `cursor=${formatPosition(editor.selection.active)}`,
+            `request=${JSON.stringify(capturedRequest)}`,
+            `response=${JSON.stringify(capturedResponse)}`,
+            `error=${String(capturedError)}`,
+            `cancellations=${cancellationCount}`
+          ].join('; ')
+        );
+        assert.equal(capturedError, undefined);
+        assert.equal(cancellationCount, 0);
+
+        await commands.executeCommand('undo');
+        await waitFor(() => document.getText() === originalText);
+        assert.equal(document.getText(), originalText);
+      } finally {
+        observer?.dispose();
+        try {
+          if (
+            openedDocument !== undefined
+            && window.activeTextEditor?.document !== openedDocument
+          ) {
+            await window.showTextDocument(openedDocument);
+          }
+          if (openedDocument?.isDirty) {
+            await commands.executeCommand('workbench.action.files.revert');
+          }
+          if (window.activeTextEditor?.document === openedDocument) {
+            await commands.executeCommand('workbench.action.closeActiveEditor');
+          }
+        } finally {
+          if (fileCreated) {
+            await workspace.fs.delete(documentUri, { useTrash: false });
+          }
+        }
       }
     }
   );
@@ -354,6 +487,79 @@ export async function runGuardedEnterFeasibilityTests(): Promise<void> {
         assert.equal(document.getText().includes('End Sub'), false);
       } finally {
         resolveCancellation?.();
+        provider.dispose();
+        await commands.executeCommand('workbench.action.closeActiveEditor');
+      }
+    }
+  );
+
+  await runTest(
+    'changing effective editor indentation invalidates a pending plan',
+    async () => {
+      const originalText = 'Public Sub Main()';
+      const document = await workspace.openTextDocument({
+        language: 'vba',
+        content: originalText
+      });
+      const editor = await window.showTextDocument(document);
+      editor.options = {
+        insertSpaces: true,
+        tabSize: 4,
+        indentSize: 2
+      };
+      const end = document.lineAt(0).range.end;
+      editor.selection = new Selection(end, end);
+      await commands.executeCommand('workbench.action.focusActiveEditorGroup');
+      await delay(50);
+      const lineEnding = document.eol === EndOfLine.CRLF ? '\r\n' : '\n';
+      let request: BlockSkeletonInsertionRequest | undefined;
+      let resolvePlan: ((plan: BlockSkeletonInsertionPlan) => void) | undefined;
+      const response = new Promise<BlockSkeletonInsertionPlan>((resolve) => {
+        resolvePlan = resolve;
+      });
+      let cancellations = 0;
+      const provider = useBlockSkeletonInsertionPlanProviderForTest((candidate) => {
+        request = candidate;
+        return {
+          response,
+          cancel: () => {
+            cancellations += 1;
+          }
+        };
+      });
+      let resolveOptionsChanged: (() => void) | undefined;
+      const optionsChanged = new Promise<void>((resolve) => {
+        resolveOptionsChanged = resolve;
+      });
+      const optionsSubscription = window.onDidChangeTextEditorOptions((event) => {
+        if (event.textEditor === editor) {
+          resolveOptionsChanged?.();
+        }
+      });
+
+      try {
+        await executeGuardedEnter();
+        await waitFor(() => request !== undefined);
+        editor.options = {
+          insertSpaces: true,
+          tabSize: 4,
+          indentSize: 3
+        };
+        await optionsChanged;
+
+        assert.ok(request);
+        resolvePlan?.({
+          documentVersion: request.documentVersion,
+          position: request.position,
+          textBeforeCursor: `${lineEnding}  `,
+          textAfterCursor: `${lineEnding}End Sub`
+        });
+        await waitFor(() => cancellations === 1);
+
+        assert.equal(document.getText(), `${originalText}${lineEnding}`);
+        assert.equal(document.getText().includes('End Sub'), false);
+      } finally {
+        optionsSubscription.dispose();
         provider.dispose();
         await commands.executeCommand('workbench.action.closeActiveEditor');
       }

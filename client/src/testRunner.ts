@@ -15,5 +15,6 @@ import './referenceCommand.test';
 import './testExplorer.test';
 import './toolDiagnostics.test';
 import './blockSkeletonInsertionTransaction.test';
+import './blockSkeletonInsertion.test';
 import './extensionHost/configuration.test';
 import './nativeLineBreakText.test';

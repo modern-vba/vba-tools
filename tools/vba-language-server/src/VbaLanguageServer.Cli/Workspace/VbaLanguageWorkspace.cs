@@ -293,6 +293,29 @@ public sealed class VbaLanguageWorkspace
     }
 
     /// <summary>
+    /// Captures one exact-version open document without project, disk, or reference resolution.
+    /// </summary>
+    /// <param name="uri">The document URI.</param>
+    /// <param name="expectedVersion">The required client document version.</param>
+    /// <param name="cancellationToken">A cancellation token for the lookup.</param>
+    /// <returns>The immutable document snapshot, or null when the open version does not match.</returns>
+    public VbaVersionedDocumentSnapshot? GetDocumentSnapshot(
+        string uri,
+        int expectedVersion,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (gate)
+        {
+            var state = GetDocumentState(uri);
+            return state?.Authority == WorkspaceDocumentAuthority.OpenBuffer
+                && state.Version == expectedVersion
+                    ? VbaVersionedDocumentSnapshot.Create(state.Document, expectedVersion)
+                    : null;
+        }
+    }
+
+    /// <summary>
     /// Gets the URIs of currently tracked documents.
     /// </summary>
     /// <param name="cancellationToken">A cancellation token for the lookup.</param>

@@ -1,0 +1,333 @@
+using VbaLanguageServer.Syntax;
+using Xunit;
+
+namespace VbaLanguageServer.Syntax.Tests;
+
+public sealed class VbaBlockHeaderSyntaxTests
+{
+    [Fact]
+    public void Complete_continued_sub_preserves_physical_lines_trivia_and_first_line_indentation()
+    {
+        var lines = new[]
+        {
+            "    Private Static Sub Run( _",
+            "        ByVal value As String)   ' keep: note"
+        };
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Module1.bas",
+            string.Join('\n', lines));
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(
+            tree,
+            line: 1,
+            character: lines[1].Length);
+
+        Assert.NotNull(header);
+        Assert.Equal(VbaBlockHeaderKind.Sub, header.Kind);
+        Assert.Equal(0, header.FirstPhysicalLine);
+        Assert.Equal(1, header.FinalPhysicalLine);
+        Assert.Equal("    ", header.LeadingWhitespace);
+        Assert.Equal("End Sub", header.ExpectedTerminator);
+        Assert.Equal(0, header.Range.Start.Character);
+        Assert.Equal(lines[1].Length, header.Range.End.Character);
+    }
+
+    [Fact]
+    public void Complete_type_qualifier_allows_an_explicit_continuation_before_member_access()
+    {
+        var lines = new[]
+        {
+            "Public Sub Run(ByVal target As Excel _",
+            "    .Range)"
+        };
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Module1.bas",
+            string.Join('\n', lines));
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(
+            tree,
+            line: 1,
+            character: lines[1].Length);
+
+        Assert.NotNull(header);
+    }
+
+    [Fact]
+    public void Constant_reference_allows_an_explicit_continuation_before_member_access()
+    {
+        var lines = new[]
+        {
+            "Public Sub Run(Optional value As Long = Constants _",
+            "    .Foo)"
+        };
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Module1.bas",
+            string.Join('\n', lines));
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(
+            tree,
+            line: 1,
+            character: lines[1].Length);
+
+        Assert.NotNull(header);
+    }
+
+    [Theory]
+    [InlineData("Public Sub Run(", 0, 0)]
+    [InlineData("Public Sub Run() _\n    ByVal value As Long)", 0, 0)]
+    [InlineData("Public Sub Run():", 0, 0)]
+    [InlineData("Public Sub Run()", 0, -1)]
+    [InlineData("Public Declare Sub Run Lib \"library\" ()", 0, 0)]
+    [InlineData("Public Sub Run() garbage", 0, 0)]
+    [InlineData("Public Sub Run(ByVal)", 0, 0)]
+    [InlineData("Public Sub Run(value As)", 0, 0)]
+    [InlineData("Public Sub Run(Optional first As Long, second As Long)", 0, 0)]
+    [InlineData("Public Sub Run(Optional first As Long, ParamArray rest() As Variant)", 0, 0)]
+    [InlineData("Public Sub Run(ByVal ParamArray values() As Variant)", 0, 0)]
+    [InlineData("Public Sub Run(ByVal values() As Long)", 0, 0)]
+    [InlineData("Public Sub Run(Optional ByVal values() As Variant)", 0, 0)]
+    [InlineData("Public Sub Run(Optional values() As Variant)", 0, 0)]
+    [InlineData("Public Sub Run(Optional ByRef values() As Variant)", 0, 0)]
+    [InlineData("Public Sub Run(Optional values() As Variant = Empty)", 0, 0)]
+    [InlineData("Public Sub Run(ParamArray values() As Variant, tail As Variant)", 0, 0)]
+    [InlineData("Public Sub Run(ParamArray values() As String)", 0, 0)]
+    [InlineData("Public Sub Run(value$ As String)", 0, 0)]
+    [InlineData("Public Sub Run(value As Long.Member)", 0, 0)]
+    [InlineData("Public Sub Run(value As Long.Foo.Bar)", 0, 0)]
+    [InlineData("Public Sub Run(value As Variant.Member)", 0, 0)]
+    [InlineData("Public Sub Run(value As Any)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Long =)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Long = 1 +)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Long = 1 + * 2)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Long = 1 And)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Long = Not)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Long = +1)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Long = (1 +))", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Long = 1 2)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Variant = True.Member)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Variant = Nothing.Member)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Variant = Empty.Member)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Date = #1/1/2020#&)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Date = #garbage#)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Date = ##)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Date = #13/32/2014#)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Date = #89:98#)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Date = #Jan Jan#)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Date = #1/1/2020 24:00#)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Date = #4 PM garbage#)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Double = 10.253&)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Variant = 1 &HFF)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Long = CInt(1, 2))", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Long = CInt)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Long = Constants . Foo)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Variant = _Constant)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Long = &HFF!)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Long = &HFF#)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Long = &HFF@)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Integer = 32768%)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Long = 2147483648&)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As LongLong = 9223372036854775808^)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Double = 1E309)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Double = 1E309#)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Single = 3.5E38!)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Currency = 922337203685477.5808@)", 0, 0)]
+    [InlineData("Public Sub Run(ByVal target As Excel .Range)", 0, 0)]
+    [InlineData("Public Sub Run(value^ As LongLong)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Object = 1)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Object = Null)", 0, 0)]
+    [InlineData("Public Sub Run(Optional value As Object = Nothing Or Nothing)", 0, 0)]
+    [InlineData("Public Sub _Run()", 0, 0)]
+    [InlineData("Public Sub Run(_value As Long)", 0, 0)]
+    [InlineData("Public Sub Run(value As Long, VALUE As String)", 0, 0)]
+    [InlineData("Public Sub Outer()\n    Public Sub Inner()", 1, 0)]
+    [InlineData("Public Function Outer() As Long\nPublic Sub Run()", 1, 0)]
+    [InlineData("Public Property Get Value() As Long\nPublic Sub Run()", 1, 0)]
+    [InlineData("If True Then\nPublic Sub Run()", 1, 0)]
+    [InlineData("Select Case 1\nPublic Sub Run()", 1, 0)]
+    [InlineData("With Me\nPublic Sub Run()", 1, 0)]
+    [InlineData("For index = 1 To 3\nPublic Sub Run()", 1, 0)]
+    [InlineData("Do\nPublic Sub Run()", 1, 0)]
+    [InlineData("While True\nPublic Sub Run()", 1, 0)]
+    [InlineData("Public Enum Mode\nPublic Sub Run()", 1, 0)]
+    [InlineData("Public Type Record\nPublic Sub Run()", 1, 0)]
+    [InlineData("Static Sub Run() Static", 0, 0)]
+    public void Incomplete_external_colon_and_non_line_end_candidates_are_rejected(
+        string source,
+        int line,
+        int characterDelta)
+    {
+        var lines = source.Split('\n');
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(
+            tree,
+            line,
+            lines[line].Length + characterDelta);
+
+        Assert.Null(header);
+    }
+
+    [Theory]
+    [InlineData("Public Sub Run")]
+    [InlineData("Public Sub Run()   ")]
+    [InlineData("Public Sub Run(ByRef values() As String, ByVal target As Excel.Range)")]
+    [InlineData("Public Sub Run(ByVal target As Excel.Range, ParamArray values() As Variant)")]
+    [InlineData("Public Sub Run(Optional first As Long, Optional second As Long = 2)")]
+    [InlineData("Public Sub Run(Optional value$ = \"text\")")]
+    [InlineData("Public Sub Run(Optional value As Long = -1)")]
+    [InlineData("Public Sub Run(Optional value As Long = 1 + 2 * 3)")]
+    [InlineData("Public Sub Run(Optional enabled As Boolean = Not False)")]
+    [InlineData("Public Sub Run(Optional flags As Long = (FlagA Or Constants.FlagB))")]
+    [InlineData("Public Sub Run(Optional value As Variant = Empty)")]
+    [InlineData("Public Sub Run(Optional target As Object = Nothing)")]
+    [InlineData("Public Sub Run(Optional value As Date = #1/1/2020#)")]
+    [InlineData("Public Sub Run(Optional value As Date = #1-1-2020#)")]
+    [InlineData("Public Sub Run(Optional value As Date = #2020/1/1#)")]
+    [InlineData("Public Sub Run(Optional value As Date = #Jan 2020#)")]
+    [InlineData("Public Sub Run(Optional value As Date = #January 1, 1993#)")]
+    [InlineData("Public Sub Run(Optional value As Date = #1 Jan 1993#)")]
+    [InlineData("Public Sub Run(Optional value As Date = #4:28:14 PM#)")]
+    [InlineData("Public Sub Run(Optional value As Date = #4.28.14 PM#)")]
+    [InlineData("Public Sub Run(Optional value As Date = #4 PM#)")]
+    [InlineData("Public Sub Run(Optional value As Date = #1/1/2020 12:30 PM#)")]
+    [InlineData("Public Sub Run(Optional value As Long = &HFF&)")]
+    [InlineData("Public Sub Run(Optional value As Long = &O77)")]
+    [InlineData("Public Sub Run(Optional value As Double = 1E3)")]
+    [InlineData("Public Sub Run(Optional value As Double = 1E-3)")]
+    [InlineData("Public Sub Run(Optional value As Double = .5)")]
+    [InlineData("Public Sub Run(Optional value As Double = 1D3)")]
+    [InlineData("Public Sub Run(Optional value As Double = 1.)")]
+    [InlineData("Public Sub Run(Optional value As Double = 1.E3)")]
+    [InlineData("Public Sub Run(Optional value As LongLong = &H100000000^)")]
+    [InlineData("Public Sub Run(Optional value As Integer = 32767%)")]
+    [InlineData("Public Sub Run(Optional value As Long = 2147483647&)")]
+    [InlineData("Public Sub Run(Optional value As LongLong = 9223372036854775807^)")]
+    [InlineData("Public Sub Run(Optional value As Double = 1E308)")]
+    [InlineData("Public Sub Run(Optional value As Double = 1E308#)")]
+    [InlineData("Public Sub Run(Optional value As Single = 3.4E38!)")]
+    [InlineData("Public Sub Run(Optional value As Currency = 922337203685477.5807@)")]
+    [InlineData("Public Sub Run(ByVal target As Excel. Range)")]
+    [InlineData("Public Sub Run(Optional value As Long = &777)")]
+    [InlineData("Public Sub Run(Optional value As String = 1 & HFF)")]
+    [InlineData("Public Sub Run(Optional value As Long = Foo&)")]
+    [InlineData("Public Sub Run(Optional value As Long = Constants.Foo&)")]
+    [InlineData("Public Sub Run(Optional value As Long = CInt(1))")]
+    [InlineData("Public Sub Run(Optional value As Boolean = Nothing Is Nothing)")]
+    [InlineData("Public Sub Run(ByRef values() As Long)")]
+    [InlineData("Public Sub Run(value_with_underscore As Long)")]
+    [InlineData("Public Sub Run(value^)")]
+    [InlineData("Public Sub Run(ByVal Optional value As Long = 1)")]
+    [InlineData("Public Sub Run(ByRef Optional value As Long = 1)")]
+    [InlineData("Public Sub Run(value As [Long])")]
+    [InlineData("Public Sub Run(ParamArray values() As [Variant])")]
+    [InlineData("Public Sub Run() Static")]
+    [InlineData("Public Sub Run Static")]
+    [InlineData("public sub run(byval value as long)")]
+    [InlineData("Public Sub Run(Optional value As String = \":\")   ' note: ok")]
+    [InlineData("Public Sub Run()   ' astral comment: 😀")]
+    public void Optional_parentheses_and_non_structural_colons_remain_eligible(string source)
+    {
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(
+            tree,
+            line: 0,
+            character: source.Length);
+
+        Assert.NotNull(header);
+        Assert.Equal("End Sub", header.ExpectedTerminator);
+    }
+
+    [Fact]
+    public void Candidate_after_a_complete_prior_block_remains_eligible()
+    {
+        const string source = "Public Sub First()\nEnd Sub\nPublic Sub Run()";
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(
+            tree,
+            line: 2,
+            character: "Public Sub Run()".Length);
+
+        Assert.NotNull(header);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Identifiers_longer_than_255_characters_are_rejected(bool procedureName)
+    {
+        var overlongName = new string('A', 256);
+        var source = procedureName
+            ? $"Public Sub {overlongName}()"
+            : $"Public Sub Run({overlongName} As Long)";
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(tree, 0, source.Length);
+
+        Assert.Null(header);
+    }
+
+    [Fact]
+    public void Overlong_constant_reference_is_rejected()
+    {
+        var overlongName = new string('A', 256);
+        var source = $"Public Sub Run(Optional value As Variant = {overlongName})";
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(tree, 0, source.Length);
+
+        Assert.Null(header);
+    }
+
+    [Fact]
+    public void Friend_sub_is_eligible_only_in_an_object_module()
+    {
+        const string source = "Friend Sub Run()";
+        var standardTree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+        var classTree = VbaSyntaxTree.ParseModule("file:///C:/work/Class1.cls", source);
+
+        Assert.Null(VbaBlockHeaderSyntax.FindAtPosition(standardTree, 0, source.Length));
+        Assert.NotNull(VbaBlockHeaderSyntax.FindAtPosition(classTree, 0, source.Length));
+    }
+
+    [Fact]
+    public void Global_sub_is_eligible_only_in_a_standard_module()
+    {
+        const string source = "Global Sub Run()";
+        var standardTree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+        var classTree = VbaSyntaxTree.ParseModule("file:///C:/work/Class1.cls", source);
+
+        Assert.NotNull(VbaBlockHeaderSyntax.FindAtPosition(standardTree, 0, source.Length));
+        Assert.Null(VbaBlockHeaderSyntax.FindAtPosition(classTree, 0, source.Length));
+    }
+
+    [Theory]
+    [InlineData("#If VBA7 Then\nPublic Sub Run()", 1)]
+    [InlineData("#If VBA7 Then\n#End If\nPublic Sub Run()", 2)]
+    public void Conditional_compilation_contexts_fail_closed_until_branch_locality_is_supported(
+        string source,
+        int line)
+    {
+        var lines = source.Split('\n');
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(tree, line, lines[line].Length);
+
+        Assert.Null(header);
+    }
+
+    [Fact]
+    public void Non_conditional_preprocessor_constants_do_not_hide_an_eligible_sub()
+    {
+        const string source = "#Const VBA7 = True\nPublic Sub Run()";
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(
+            tree,
+            line: 1,
+            character: "Public Sub Run()".Length);
+
+        Assert.NotNull(header);
+    }
+}

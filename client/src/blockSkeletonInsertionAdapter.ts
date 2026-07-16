@@ -9,7 +9,8 @@ import {
 import {
   BlockSkeletonInsertionPlan,
   BlockSkeletonInsertionRequest,
-  getBlockSkeletonInsertionPlanProvider
+  getBlockSkeletonInsertionPlanProvider,
+  resolveBlockSkeletonInsertionOptions
 } from './blockSkeletonInsertion';
 import {
   NativeLineBreakInsertion,
@@ -17,6 +18,7 @@ import {
 } from './nativeLineBreak';
 import { isPostNativeRequestVersion } from './nativeLineBreakText';
 import {
+  BlockSkeletonInsertionTransactionResult,
   runBlockSkeletonInsertionTransaction
 } from './blockSkeletonInsertionTransaction';
 
@@ -24,7 +26,7 @@ const requestTimeoutMilliseconds = 100;
 
 export async function runBlockSkeletonInsertionAfterNativeEnter(
   recorder: NativeLineBreakRecorder
-): Promise<void> {
+): Promise<BlockSkeletonInsertionTransactionResult | undefined> {
   const editor = window.activeTextEditor;
   if (editor === undefined) {
     return;
@@ -42,7 +44,7 @@ export async function runBlockSkeletonInsertionAfterNativeEnter(
 
   const invalidation = observeCandidateInvalidation(editor, nativeInsertion);
   try {
-    await runBlockSkeletonInsertionTransaction({
+    return await runBlockSkeletonInsertionTransaction({
       nativeInsertion,
       beginPlanRequest: () => getBlockSkeletonInsertionPlanProvider()(request),
       isCurrent: (insertion, plan) => isCurrent(
@@ -105,13 +107,30 @@ function captureCandidate(
     return undefined;
   }
 
+  const editorConfiguration = workspace.getConfiguration(
+    'editor',
+    editor.document.uri
+  );
+  const options = resolveBlockSkeletonInsertionOptions(
+    editor.options,
+    {
+      insertSpaces: editorConfiguration.get<boolean>('insertSpaces'),
+      tabSize: editorConfiguration.get<number>('tabSize'),
+      indentSize: editorConfiguration.get<number | string>('indentSize')
+    }
+  );
+  if (options === undefined) {
+    return undefined;
+  }
+
   return {
     documentUri: editor.document.uri.toString(),
     documentVersion: nativeInsertion.documentVersion,
     position: {
       line: nativeInsertion.range.start.line,
       character: nativeInsertion.range.start.character
-    }
+    },
+    options
   };
 }
 
@@ -205,6 +224,11 @@ function observeCandidateInvalidation(
           || !event.selections[0].active.isEqual(nativeInsertion.cursor)
         )
       ) {
+        invalidate();
+      }
+    }),
+    window.onDidChangeTextEditorOptions((event) => {
+      if (event.textEditor === editor) {
         invalidate();
       }
     })

@@ -6,6 +6,25 @@ namespace VbaLanguageServer.Syntax.Tests;
 public sealed class VbaSyntaxTreeDeclarationTests
 {
     [Fact]
+    public void Parser_treats_a_global_sub_as_a_public_callable_in_a_standard_module()
+    {
+        const string source = "Global Sub Run()\nEnd Sub";
+
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.bas", source);
+
+        var callable = Assert.Single(tree.Module.CallableDeclarations);
+        Assert.Equal("Run", callable.Name);
+        Assert.Equal(VbaDeclarationKind.Procedure, callable.Kind);
+        Assert.Equal(VbaDeclarationVisibility.Public, callable.Visibility);
+        Assert.Contains(tree.Module.Statements, statement =>
+            statement.Kind == VbaStatementKind.ProcedureBody
+            && statement.Text.Contains("Global Sub Run", StringComparison.Ordinal));
+        Assert.DoesNotContain(tree.Module.Declarations, declaration =>
+            declaration.Name == "Run"
+            && declaration.Kind == VbaDeclarationKind.Variable);
+    }
+
+    [Fact]
     public void ParserRepresentsModuleMembersDeclarationsAndCallableSignatures()
     {
         var source = string.Join('\n', [

@@ -16,7 +16,7 @@ internal static class VbaSyntaxTreeParser
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex ProcedurePattern = new(
-        "^\\s*(?:(?<visibility>Public|Private|Friend)\\s+)?(?:(?<static>Static)\\s+)?(?:(?<kind>Sub|Function)|Property\\s+(?<propertyKind>Get|Let|Set))\\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\\s*(?:\\((?<parameters>.*)\\))?",
+        "^\\s*(?:(?<visibility>Public|Private|Friend|Global)\\s+)?(?:(?<static>Static)\\s+)?(?:(?<kind>Sub|Function)|Property\\s+(?<propertyKind>Get|Let|Set))\\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\\s*(?:\\((?<parameters>.*)\\))?",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex DeclarePattern = new(
@@ -777,7 +777,7 @@ internal static class VbaSyntaxTreeParser
     {
         if (!Regex.IsMatch(
             trimmedLine,
-            "^(Public\\s+|Private\\s+|Friend\\s+)?(Static\\s+)?(Sub|Function|Property)\\b",
+            "^(Public\\s+|Private\\s+|Friend\\s+|Global\\s+)?(Static\\s+)?(Sub|Function|Property)\\b",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
         {
             return false;
