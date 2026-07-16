@@ -3,6 +3,10 @@
 .vscode-test-web/**
 .vscode-test-insiders/**
 client/src/**
+client/out/extensionHost/**
+client/out/**/*.test.js
+client/out/testRunner.js
+client/out/**/*.js.map
 server/**
 **/*.ts
 **/tsconfig.json
@@ -14,6 +18,8 @@ test-results/**
 playwright-report/**
 tools/vba-dev/**
 tools/vba-language-server/**
+.tmp/**
+temp/**
 scripts/**
 bin/**/*.deps.json
 bin/**/*.dll

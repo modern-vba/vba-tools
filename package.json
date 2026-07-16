@@ -29,7 +29,8 @@
     "onCommand:vbaTools.commonModules.update",
     "onCommand:vbaTools.references.list",
     "onCommand:vbaTools.references.add",
-    "onCommand:vbaTools.references.remove"
+    "onCommand:vbaTools.references.remove",
+    "onCommand:vbaTools.blockSkeletonInsertion.afterNativeEnter"
   ],
   "main": "./client/out/extension.js",
   "contributes": {
@@ -152,6 +153,19 @@
         "title": "VBA Tools: Remove Reference"
       }
     ],
+    "keybindings": [
+      {
+        "command": "runCommands",
+        "key": "enter",
+        "args": {
+          "commands": [
+            "lineBreakInsert",
+            "vbaTools.blockSkeletonInsertion.afterNativeEnter"
+          ]
+        },
+        "when": "editorTextFocus && editorLangId == vba && config.vbaLanguageServer.blockSkeletonInsertion.enabled && !editorReadonly && !editorHasSelection && !editorHasMultipleSelections && !suggestWidgetVisible && !inlineSuggestionVisible && !inSnippetMode && !renameInputVisible && !isComposing"
+      }
+    ],
     "configuration": {
       "title": "VBA Tools",
       "properties": {
@@ -171,6 +185,12 @@
           "type": "string",
           "default": "",
           "description": "Overrides the bundled vba-dev executable path for development or diagnostics."
+        },
+        "vbaLanguageServer.blockSkeletonInsertion.enabled": {
+          "scope": "resource",
+          "type": "boolean",
+          "default": true,
+          "description": "Inserts a complete VBA block skeleton when Enter follows an eligible header."
         }
       }
     }
@@ -179,6 +199,8 @@
     "compile": "tsc -b",
     "test": "npm run test:extension && npm run test:devtool && npm run test:language-server && npm run test:packaging",
     "test:extension": "npm run compile && node client/out/testRunner.js",
+    "test:extension-host": "npm run compile && node client/out/extensionHost/runTests.js",
+    "verify:guarded-enter": "npm run test:extension && npm run test:extension-host && npm run test:packaging",
     "test:devtool": "dotnet test tools/vba-dev/tests/VbaDev.Tests/VbaDev.Tests.csproj -m:1 -p:UseSharedCompilation=false",
     "test:language-server": "dotnet test tools/vba-language-server/VbaLanguageServer.slnx -m:1 -p:UseSharedCompilation=false",
     "test:packaging": "node --test --test-isolation=none scripts/*.test.mjs",

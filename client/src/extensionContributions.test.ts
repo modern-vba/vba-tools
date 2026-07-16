@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { minimumSupportedVscodeVersion } from './extensionHost/configuration';
 
 interface GrammarPattern {
   name?: string;
@@ -230,6 +231,89 @@ test('extension contributes VbaProjectReference commands', () => {
     });
     assert.ok(packageJson.activationEvents?.includes(`onCommand:${expected[0]}`));
   }
+});
+
+test('extension contributes the guarded VBA Enter command setting and editor-owned state guards', () => {
+  const packageJson = readPackageJson<{
+    activationEvents?: string[];
+    engines?: { vscode?: string };
+    contributes?: {
+      commands?: Array<{
+        command?: string;
+        title?: string;
+      }>;
+      keybindings?: Array<{
+        command?: string;
+        key?: string;
+        when?: string;
+        args?: unknown;
+      }>;
+      configuration?: {
+        properties?: Record<string, unknown>;
+      };
+    };
+  }>();
+  const afterNativeCommand = 'vbaTools.blockSkeletonInsertion.afterNativeEnter';
+
+  assert.equal(
+    packageJson.engines?.vscode,
+    `^${minimumSupportedVscodeVersion}`
+  );
+
+  assert.equal(
+    packageJson.contributes?.commands?.some(
+      (candidate) => candidate.command === afterNativeCommand
+    ),
+    false
+  );
+  assert.ok(
+    packageJson.activationEvents?.includes(`onCommand:${afterNativeCommand}`)
+  );
+  assert.deepEqual(
+    packageJson.contributes?.configuration?.properties?.[
+      'vbaLanguageServer.blockSkeletonInsertion.enabled'
+    ],
+    {
+      scope: 'resource',
+      type: 'boolean',
+      default: true,
+      description: 'Inserts a complete VBA block skeleton when Enter follows an eligible header.'
+    }
+  );
+  assert.deepEqual(packageJson.contributes?.keybindings, [
+    {
+      command: 'runCommands',
+      key: 'enter',
+      args: {
+        commands: [
+          'lineBreakInsert',
+          afterNativeCommand
+        ]
+      },
+      when: [
+        'editorTextFocus',
+        'editorLangId == vba',
+        'config.vbaLanguageServer.blockSkeletonInsertion.enabled',
+        '!editorReadonly',
+        '!editorHasSelection',
+        '!editorHasMultipleSelections',
+        '!suggestWidgetVisible',
+        '!inlineSuggestionVisible',
+        '!inSnippetMode',
+        '!renameInputVisible',
+        '!isComposing'
+      ].join(' && ')
+    }
+  ]);
+});
+
+test('Extension Host test artifacts are excluded from the packaged extension', () => {
+  const vscodeIgnore = fs.readFileSync(
+    path.join(process.cwd(), '.vscodeignore'),
+    'utf8'
+  );
+
+  assert.match(vscodeIgnore, /^client\/out\/extensionHost\/\*\*$/m);
 });
 
 test('VBA TextMate grammar has lexical scopes for representative VBA fixtures', () => {

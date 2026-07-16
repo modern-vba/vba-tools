@@ -108,8 +108,13 @@ export function assertVsixContents(files, distributionManifest = defaultDistribu
   const sourceFiles = normalized.filter((file) => distributionManifest.vsix.excludedSourcePrefixes.some((prefix) => (
     file === prefix.replace(/\/$/, '') || file.startsWith(prefix)
   )));
-  if (sourceFiles.length > 0) {
-    throw new Error(`VSIX file list must exclude tool source files: ${sourceFiles.join(', ')}`);
+  const excludedFiles = normalized.filter((file) => (
+    distributionManifest.vsix.excludedFiles.includes(file)
+    || distributionManifest.vsix.excludedFileSuffixes.some((suffix) => file.endsWith(suffix))
+  ));
+  const forbiddenFiles = [...new Set([...sourceFiles, ...excludedFiles])];
+  if (forbiddenFiles.length > 0) {
+    throw new Error(`VSIX file list must exclude development files: ${forbiddenFiles.join(', ')}`);
   }
 }
 
@@ -212,6 +217,8 @@ function isDistributionManifest(value) {
     isRecord(value.vsix) &&
     isStringArray(value.vsix.requiredFiles) &&
     isStringArray(value.vsix.excludedSourcePrefixes) &&
+    isStringArray(value.vsix.excludedFiles) &&
+    isStringArray(value.vsix.excludedFileSuffixes) &&
     isStringArray(value.vsix.forbiddenRuntimeSidecarSuffixes);
 }
 

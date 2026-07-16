@@ -39,7 +39,17 @@
       "tools/vba-dev/",
       "tools/vba-language-server/",
       "client/src/",
+      "client/out/extensionHost/",
+      ".tmp/",
+      "temp/",
       "server/"
+    ],
+    "excludedFiles": [
+      "client/out/testRunner.js"
+    ],
+    "excludedFileSuffixes": [
+      ".test.js",
+      ".js.map"
     ],
     "forbiddenRuntimeSidecarSuffixes": [
       ".deps.json",

@@ -68,6 +68,10 @@ import {
 import {
   openVbaDevTerminal
 } from './vbaDevTerminalCommand';
+import {
+  runBlockSkeletonInsertionAfterNativeEnter
+} from './blockSkeletonInsertionAdapter';
+import { NativeLineBreakRecorder } from './nativeLineBreak';
 
 let client: LanguageClient | undefined;
 let outputChannel: OutputChannel | undefined;
@@ -76,6 +80,8 @@ let toolDiagnosticReporter: VbaDevDiagnosticReporter | undefined;
 export async function activate(context: ExtensionContext): Promise<void> {
   outputChannel = window.createOutputChannel('VBA Tools');
   context.subscriptions.push(outputChannel);
+  const nativeLineBreakRecorder = new NativeLineBreakRecorder();
+  context.subscriptions.push(nativeLineBreakRecorder);
   const sourceFileWatcher = workspace.createFileSystemWatcher('**/*.{bas,cls,frm}');
   const projectManifestWatcher = workspace.createFileSystemWatcher('**/vba-project.json');
   context.subscriptions.push(sourceFileWatcher, projectManifestWatcher);
@@ -191,6 +197,14 @@ export async function activate(context: ExtensionContext): Promise<void> {
   context.subscriptions.push(commands.registerCommand('vbaTools.openVbaDevTerminal', async () => {
     await openVbaDevTerminalCommand(context);
   }));
+  context.subscriptions.push(commands.registerCommand(
+    'vbaTools.blockSkeletonInsertion.afterNativeEnter',
+    () => {
+      void runBlockSkeletonInsertionAfterNativeEnter(
+        nativeLineBreakRecorder
+      ).catch(() => undefined);
+    }
+  ));
   for (const command of WorkbookBackedProjectCommands) {
     context.subscriptions.push(commands.registerCommand(command.commandId, async () => {
       await runWorkbookBackedProjectCommandWithProgress(context, command.toolCommandName, command.title);

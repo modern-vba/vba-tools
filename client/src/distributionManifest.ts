@@ -12,6 +12,8 @@ export interface DistributionManifest {
   vsix: {
     requiredFiles: readonly string[];
     excludedSourcePrefixes: readonly string[];
+    excludedFiles: readonly string[];
+    excludedFileSuffixes: readonly string[];
     forbiddenRuntimeSidecarSuffixes: readonly string[];
   };
 }
@@ -72,6 +74,8 @@ function isDistributionManifest(value: unknown): value is DistributionManifest {
     isRuntimeManifest(value.runtimes.vbaLanguageServer) &&
     isStringArray(value.vsix.requiredFiles) &&
     isStringArray(value.vsix.excludedSourcePrefixes) &&
+    isStringArray(value.vsix.excludedFiles) &&
+    isStringArray(value.vsix.excludedFileSuffixes) &&
     isStringArray(value.vsix.forbiddenRuntimeSidecarSuffixes);
 }
 

@@ -120,6 +120,40 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
     ]),
     /server\/out\/server\.js/
   );
+
+  assert.throws(
+    () => assertVsixContents([
+      'README.md',
+      distributionManifestPath,
+      marketplaceIconPath,
+      requiredBundledCliPath,
+      requiredBundledLanguageServerPath,
+      requiredVbaDevContractPath,
+      'client/out/extensionHost/runTests.js'
+    ]),
+    /client\/out\/extensionHost/
+  );
+
+  for (const excludedFile of [
+    'client/out/example.test.js',
+    'client/out/example.js.map',
+    'client/out/testRunner.js',
+    '.tmp/old-smoke/output.bas',
+    'temp/old-smoke/output.xlsm'
+  ]) {
+    assert.throws(
+      () => assertVsixContents([
+        'README.md',
+        distributionManifestPath,
+        marketplaceIconPath,
+        requiredBundledCliPath,
+        requiredBundledLanguageServerPath,
+        requiredVbaDevContractPath,
+        excludedFile
+      ]),
+      new RegExp(excludedFile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    );
+  }
 });
 
 test('CLI publish settings require a Windows x64 self-contained single-file executable', () => {
@@ -306,6 +340,10 @@ test('package scripts publish the bundled CLI and verify VSIX contents before pa
   assert.match(packageJson.scripts['package:verify'], /publish:devtool/);
   assert.match(packageJson.scripts['package:verify'], /publish:language-server/);
   assert.match(packageJson.scripts['package:verify'], /verify:vsix/);
+  assert.equal(
+    packageJson.scripts['verify:guarded-enter'],
+    'npm run test:extension && npm run test:extension-host && npm run test:packaging'
+  );
   assert.match(packageJson.scripts.package, /package:verify/);
   assert.match(packageJson.scripts.test, /test:packaging/);
   assert.match(packageJson.scripts['test:packaging'], /--test-isolation=none/);
