@@ -549,7 +549,57 @@ public sealed class VbaBlockAncestorSyntaxTests
     }
 
     [Theory]
-    [InlineData("For index = 1 To 3\nNext", VbaBlockKind.For)]
+    [InlineData("Public Sub Main()\n    For index = 1 To 3\n    Next\nEnd Sub")]
+    [InlineData("Public Sub Main()\n    For Each item In items\n    Next\nEnd Sub")]
+    [InlineData("Public Sub Main()\n    For index = 1 To 3")]
+    public void Complete_for_ancestor_with_optional_bare_closer_is_accepted(string source)
+    {
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+        var block = Assert.Single(tree.Module.Blocks, candidate =>
+            candidate.Kind == VbaBlockKind.For);
+
+        var isComplete = VbaBlockAncestorSyntax.IsComplete(tree, block);
+
+        Assert.True(isComplete);
+    }
+
+    [Fact]
+    public void Complete_nested_for_ancestors_are_each_accepted()
+    {
+        const string source = "Public Sub Main()\n"
+            + "    For outerIndex = 1 To 3\n"
+            + "        For Each item In items\n"
+            + "        Next\n"
+            + "    Next\n"
+            + "End Sub";
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+        var blocks = tree.Module.Blocks
+            .Where(candidate => candidate.Kind == VbaBlockKind.For)
+            .OrderBy(candidate => candidate.OpenerRange.Start.Offset)
+            .ToArray();
+
+        Assert.Equal(2, blocks.Length);
+        Assert.All(blocks, block =>
+            Assert.True(VbaBlockAncestorSyntax.IsComplete(tree, block)));
+    }
+
+    [Theory]
+    [InlineData("Public Sub Main()\n    For index = To 3\n    Next\nEnd Sub")]
+    [InlineData("Public Sub Main()\n    For Each item In\n    Next\nEnd Sub")]
+    [InlineData("Public Sub Main()\n    For index = 1 To 3\n    Next index\nEnd Sub")]
+    [InlineData("Public Sub Main()\n    For index = 1 To 3\n    Next index, outerIndex\nEnd Sub")]
+    public void Malformed_or_explicit_for_ancestor_is_rejected(string source)
+    {
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+        var block = Assert.Single(tree.Module.Blocks, candidate =>
+            candidate.Kind == VbaBlockKind.For);
+
+        var isComplete = VbaBlockAncestorSyntax.IsComplete(tree, block);
+
+        Assert.False(isComplete);
+    }
+
+    [Theory]
     [InlineData("Select Case value\nEnd Select", VbaBlockKind.Select)]
     [InlineData("Do\nLoop", VbaBlockKind.Do)]
     [InlineData("While True\nWend", VbaBlockKind.While)]

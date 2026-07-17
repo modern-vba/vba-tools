@@ -611,6 +611,118 @@ export async function runBlockSkeletonIntegrationTests(): Promise<void> {
     expectedCursor: new Position(2, 4),
     expectedPlan: null
   });
+
+  await runProductionCase({
+    name: 'the production language server inserts a continued tab-indented For skeleton',
+    originalLines: [
+      'Public Sub Main()',
+      '\tfOr index = source.To _',
+      '        tO maximum.Step',
+      'End Sub'
+    ],
+    headerLine: 2,
+    expectedLines: [
+      'Public Sub Main()',
+      '\tfOr index = source.To _',
+      '        tO maximum.Step',
+      '\t\t',
+      '\tNext',
+      'End Sub'
+    ],
+    expectedCursor: new Position(3, 2),
+    lineEnding: '\r\n',
+    editorOptions: {
+      insertSpaces: false,
+      tabSize: 4,
+      indentSize: 4
+    },
+    expectedPlan: {
+      textBeforeCursor: '\r\n\t\t',
+      textAfterCursor: '\r\n\tNext'
+    }
+  });
+
+  await runProductionCase({
+    name: 'the production language server inserts a nested For Each skeleton without stealing the ancestor Next',
+    originalLines: [
+      'Public Sub Main()',
+      '    For outerIndex = 1 To 3',
+      '        For Each item In items',
+      '    Next',
+      'End Sub'
+    ],
+    headerLine: 2,
+    expectedLines: [
+      'Public Sub Main()',
+      '    For outerIndex = 1 To 3',
+      '        For Each item In items',
+      '          ',
+      '        Next',
+      '    Next',
+      'End Sub'
+    ],
+    expectedCursor: new Position(3, 10),
+    expectedPlan: {
+      textBeforeCursor: '\n          ',
+      textAfterCursor: '\n        Next'
+    }
+  });
+
+  await runProductionCase({
+    name: 'the production language server leaves a candidate-owned Next to native Enter',
+    originalLines: [
+      'Public Sub Main()',
+      '    For index = 1 To 3',
+      '    Next index',
+      'End Sub'
+    ],
+    headerLine: 1,
+    expectedLines: [
+      'Public Sub Main()',
+      '    For index = 1 To 3',
+      '    ',
+      '    Next index',
+      'End Sub'
+    ],
+    expectedCursor: new Position(2, 4),
+    expectedPlan: null
+  });
+
+  await runProductionCase({
+    name: 'the production language server leaves Do While to native Enter',
+    originalLines: [
+      'Public Sub Main()',
+      '    Do While Ready()',
+      'End Sub'
+    ],
+    headerLine: 1,
+    expectedLines: [
+      'Public Sub Main()',
+      '    Do While Ready()',
+      '    ',
+      'End Sub'
+    ],
+    expectedCursor: new Position(2, 4),
+    expectedPlan: null
+  });
+
+  await runProductionCase({
+    name: 'the production language server leaves While to native Enter',
+    originalLines: [
+      'Public Sub Main()',
+      '    While Ready()',
+      'End Sub'
+    ],
+    headerLine: 1,
+    expectedLines: [
+      'Public Sub Main()',
+      '    While Ready()',
+      '    ',
+      'End Sub'
+    ],
+    expectedCursor: new Position(2, 4),
+    expectedPlan: null
+  });
 }
 
 async function runProductionCase(testCase: BlockSkeletonCase): Promise<void> {

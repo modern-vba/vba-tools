@@ -797,7 +797,6 @@ public sealed class BlockSkeletonInsertionPlannerTests
     }
 
     [Theory]
-    [InlineData("    For index = 1 To 3", "    Next")]
     [InlineData("    Select Case value", "    End Select")]
     public void Planner_fails_closed_for_an_if_inside_an_unsupported_cross_kind_ancestor(
         string ancestorHeader,
@@ -819,6 +818,29 @@ public sealed class BlockSkeletonInsertionPlannerTests
             VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
 
         Assert.Null(plan);
+    }
+
+    [Fact]
+    public void Planner_accepts_an_if_inside_a_strict_for_ancestor()
+    {
+        const string uri = "file:///C:/work/ForAncestorIf.bas";
+        const string header = "        If True Then";
+        const string text = "Public Sub Main()\n"
+            + "    For index = 1 To 3\n"
+            + "        If True Then\n"
+            + "        \n"
+            + "    Next\n"
+            + "End Sub";
+        var snapshot = CreateSnapshot(uri, version: 7, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(2, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.NotNull(plan);
+        Assert.Equal("\n            ", plan.TextBeforeCursor);
+        Assert.Equal("\n        End If", plan.TextAfterCursor);
     }
 
     [Fact]
@@ -982,6 +1004,232 @@ public sealed class BlockSkeletonInsertionPlannerTests
             snapshot,
             new BlockSkeletonInsertionPosition(2, header.Length),
             VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.Null(plan);
+    }
+
+    [Theory]
+    [InlineData("    For index = 1 To 3")]
+    [InlineData("    For Each item In items")]
+    [InlineData("    For Each item In values(0)")]
+    [InlineData("    For Each item In vbCrLf.Value")]
+    public void Planner_inserts_a_bare_next_for_a_complete_for_header(string header)
+    {
+        const string uri = "file:///C:/work/For.bas";
+        var text = $"Public Sub Main()\n{header}\n    \nEnd Sub";
+        var snapshot = CreateSnapshot(uri, version: 40, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(1, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 2));
+
+        Assert.NotNull(plan);
+        Assert.Equal("\n      ", plan.TextBeforeCursor);
+        Assert.Equal("\n    Next", plan.TextAfterCursor);
+        Assert.Equal(
+            $"Public Sub Main()\n{header}\n      \n    Next\nEnd Sub",
+            ApplyPlan(text, VbaSourceText.From(text), plan));
+    }
+
+    [Fact]
+    public void Planner_preserves_continued_for_each_line_endings_tabs_and_first_line_indentation()
+    {
+        var lines = new[]
+        {
+            "Public Sub Main()",
+            "    Dim source As Object",
+            "\tFor Each item _",
+            "        In source.Items   ' keep",
+            "\t\t",
+            "End Sub"
+        };
+        var text = string.Join("\r\n", lines);
+        var snapshot = CreateSnapshot(
+            "file:///C:/work/ContinuedForEach.bas",
+            version: 41,
+            text);
+
+        var intermediate = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(2, lines[2].Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: false, indentSize: 8));
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(3, lines[3].Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: false, indentSize: 8));
+
+        Assert.Null(intermediate);
+        Assert.NotNull(plan);
+        Assert.Equal("\r\n\t\t", plan.TextBeforeCursor);
+        Assert.Equal("\r\n\tNext", plan.TextAfterCursor);
+    }
+
+    [Theory]
+    [InlineData("        Debug.Print item")]
+    [InlineData("        ' existing comment")]
+    [InlineData("        Rem existing comment")]
+    [InlineData("    Next")]
+    [InlineData("    Next index")]
+    [InlineData("      Next")]
+    public void Planner_rejects_body_owned_candidate_closed_and_ambiguous_for_context(
+        string followingLine)
+    {
+        const string uri = "file:///C:/work/OwnedForContext.bas";
+        const string header = "    For index = 1 To 3";
+        var text = "Public Sub Main()\n"
+            + $"{header}\n"
+            + "    \n"
+            + $"{followingLine}\n"
+            + "End Sub";
+        var snapshot = CreateSnapshot(uri, version: 42, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(1, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 2));
+
+        Assert.Null(plan);
+    }
+
+    [Fact]
+    public void Planner_keeps_a_shallow_next_with_the_ancestor_of_a_fresh_nested_for()
+    {
+        const string uri = "file:///C:/work/NestedFor.bas";
+        const string header = "        For innerIndex = 1 To 3";
+        const string text = "Public Sub Main()\n"
+            + "    For Each outerItem In outerItems\n"
+            + "        For innerIndex = 1 To 3\n"
+            + "        \n"
+            + "    Next\n"
+            + "End Sub";
+        var snapshot = CreateSnapshot(uri, version: 43, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(2, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 2));
+
+        Assert.NotNull(plan);
+        Assert.Equal("\n          ", plan.TextBeforeCursor);
+        Assert.Equal("\n        Next", plan.TextAfterCursor);
+        Assert.Equal(
+            "Public Sub Main()\n"
+                + "    For Each outerItem In outerItems\n"
+                + "        For innerIndex = 1 To 3\n"
+                + "          \n"
+                + "        Next\n"
+                + "    Next\n"
+                + "End Sub",
+            ApplyPlan(text, VbaSourceText.From(text), plan));
+    }
+
+    [Theory]
+    [InlineData("    Else")]
+    [InlineData("    ElseIf OtherReady() Then")]
+    [InlineData("    End If")]
+    public void Planner_preserves_a_proven_if_ancestor_boundary_for_a_for_candidate(
+        string boundary)
+    {
+        const string uri = "file:///C:/work/ForIfBoundary.bas";
+        const string header = "        For Each item In items";
+        var outerCloser = boundary.Equals("    End If", StringComparison.Ordinal)
+            ? string.Empty
+            : "    End If\n";
+        var text = "Public Sub Main()\n"
+            + "    If Ready() Then\n"
+            + $"{header}\n"
+            + "        \n"
+            + $"{boundary}\n"
+            + outerCloser
+            + "End Sub";
+        var snapshot = CreateSnapshot(uri, version: 44, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(2, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 2));
+
+        Assert.NotNull(plan);
+        Assert.Contains("        Next\n" + boundary, ApplyPlan(text, VbaSourceText.From(text), plan));
+    }
+
+    [Fact]
+    public void Planner_rejects_same_indentation_for_nested_for_ownership()
+    {
+        const string uri = "file:///C:/work/SameIndentNestedFor.bas";
+        const string header = "    For innerIndex = 1 To 3";
+        const string text = "Public Sub Main()\n"
+            + "    For outerIndex = 1 To 3\n"
+            + "    For innerIndex = 1 To 3\n"
+            + "    \n"
+            + "    Next\n"
+            + "End Sub";
+        var snapshot = CreateSnapshot(uri, version: 45, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(2, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 2));
+
+        Assert.Null(plan);
+    }
+
+    [Theory]
+    [InlineData("    For index = 1 To")]
+    [InlineData("    For Each item In")]
+    [InlineData("    For Each item In 1")]
+    [InlineData("    For Each item In Empty")]
+    [InlineData("    For Each item In source.Value + 1")]
+    [InlineData("    For Each item In source.Count&")]
+    [InlineData("    Do")]
+    [InlineData("    Do While Ready()")]
+    [InlineData("    Do Until Ready()")]
+    [InlineData("    Loop")]
+    [InlineData("    Loop While Ready()")]
+    [InlineData("    Loop Until Ready()")]
+    [InlineData("    While Ready()")]
+    [InlineData("    Wend")]
+    public void Planner_rejects_incomplete_ineligible_and_excluded_loop_headers(string header)
+    {
+        const string uri = "file:///C:/work/ExcludedLoops.bas";
+        var text = $"Public Sub Main()\n{header}\n    \nEnd Sub";
+        var snapshot = CreateSnapshot(uri, version: 46, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(1, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 2));
+
+        Assert.Null(plan);
+    }
+
+    [Fact]
+    public void Planner_rejects_an_injected_error_overlapping_a_for_header()
+    {
+        const string uri = "file:///C:/work/ForOverlappingError.bas";
+        const string header = "    For index = 1 To 3";
+        const string text = "Public Sub Main()\n    For index = 1 To 3\n    \nEnd Sub";
+        var snapshot = CreateSnapshot(uri, version: 47, text);
+        snapshot = snapshot with
+        {
+            Diagnostics = snapshot.Diagnostics with
+            {
+                SyntaxDiagnostics = snapshot.Diagnostics.SyntaxDiagnostics
+                    .Append(new PublishedSyntaxDiagnostic(
+                        "test.error",
+                        "An error overlapping the For candidate.",
+                        new VbaRange(
+                            new VbaPosition(1, 4),
+                            new VbaPosition(1, header.Length))))
+                    .ToArray()
+            }
+        };
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(1, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 2));
 
         Assert.Null(plan);
     }

@@ -532,6 +532,155 @@ public sealed class VbaBlockHeaderSyntaxTests
         Assert.Equal(VbaBlockHeaderKind.If, header.Kind);
     }
 
+    [Theory]
+    [InlineData(
+        "Public Sub Main()\n    For index = 1 To 10",
+        VbaBlockHeaderKind.For)]
+    [InlineData(
+        "Public Sub Main()\n    For index% = 1 To 10",
+        VbaBlockHeaderKind.For)]
+    [InlineData(
+        "Public Sub Main()\n    For index! = 1 To 10",
+        VbaBlockHeaderKind.For)]
+    [InlineData(
+        "Public Sub Main()\n    For index = lower! To upper",
+        VbaBlockHeaderKind.For)]
+    [InlineData(
+        "Public Sub Main()\n    For index = lower To upper! Step increment!",
+        VbaBlockHeaderKind.For)]
+    [InlineData(
+        "Public Sub Main()\n    For index = 1. To 3",
+        VbaBlockHeaderKind.For)]
+    [InlineData(
+        "Public Sub Main()\n    For index = 1.To 3",
+        VbaBlockHeaderKind.For)]
+    [InlineData(
+        "Public Sub Main()\n    For Each item In items",
+        VbaBlockHeaderKind.ForEach)]
+    [InlineData(
+        "Public Sub Main()\n    For Each item In VBA.Array(1, 2)",
+        VbaBlockHeaderKind.ForEach)]
+    [InlineData(
+        "Public Sub Main()\n    For Each item In values(0)",
+        VbaBlockHeaderKind.ForEach)]
+    [InlineData(
+        "Public Sub Main()\n    For Each item In GetItems()",
+        VbaBlockHeaderKind.ForEach)]
+    [InlineData(
+        "Public Sub Main()\n    For Each item In vbCrLf.Value",
+        VbaBlockHeaderKind.ForEach)]
+    [InlineData(
+        "Public Sub Main()\n    For counters(GetSlot()) = limits.To To maximum.Step Step config.StepValue",
+        VbaBlockHeaderKind.For)]
+    [InlineData(
+        "Public Sub Main()\n    For Each state.In In items",
+        VbaBlockHeaderKind.ForEach)]
+    public void Complete_for_headers_inside_callable_bodies_are_accepted(
+        string source,
+        VbaBlockHeaderKind expectedKind)
+    {
+        var lines = source.Split('\n');
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(tree, 1, lines[1].Length);
+
+        Assert.NotNull(header);
+        Assert.Equal(expectedKind, header.Kind);
+        Assert.Equal("Next", header.ExpectedTerminator);
+    }
+
+    [Fact]
+    public void Complete_continued_for_each_preserves_physical_lines_trivia_and_first_line_indentation()
+    {
+        var lines = new[]
+        {
+            "Public Sub Main()",
+            "    Dim source As Object",
+            "\tFor Each item _",
+            "        In source.Items   ' keep: note"
+        };
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Module1.bas",
+            string.Join('\n', lines));
+
+        Assert.Null(VbaBlockHeaderSyntax.FindAtPosition(tree, 2, lines[2].Length));
+        var header = VbaBlockHeaderSyntax.FindAtPosition(tree, 3, lines[3].Length);
+
+        Assert.NotNull(header);
+        Assert.Equal(VbaBlockHeaderKind.ForEach, header.Kind);
+        Assert.Equal(2, header.FirstPhysicalLine);
+        Assert.Equal(3, header.FinalPhysicalLine);
+        Assert.Equal("\t", header.LeadingWhitespace);
+        Assert.Equal("Next", header.ExpectedTerminator);
+    }
+
+    [Fact]
+    public void Leading_member_for_expressions_require_and_use_an_enclosing_with_block()
+    {
+        const string outside = "Public Sub Main()\n    For .Step = .Start To .End";
+        const string inside = "Public Sub Main()\n"
+            + "    With state\n"
+            + "        For .Step = .Start To .End";
+        var outsideTree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", outside);
+        var insideTree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", inside);
+
+        Assert.Null(VbaBlockHeaderSyntax.FindAtPosition(
+            outsideTree,
+            1,
+            outside.Split('\n')[1].Length));
+        var header = VbaBlockHeaderSyntax.FindAtPosition(
+            insideTree,
+            2,
+            inside.Split('\n')[2].Length);
+
+        Assert.NotNull(header);
+        Assert.Equal(VbaBlockHeaderKind.For, header.Kind);
+    }
+
+    [Theory]
+    [InlineData("For index = 1 To 3", 0)]
+    [InlineData("Public Sub Main()\n    For", 1)]
+    [InlineData("Public Sub Main()\n    For = 1 To 3", 1)]
+    [InlineData("Public Sub Main()\n    For 1 = 1 To 3", 1)]
+    [InlineData("Public Sub Main()\n    For left + right = 1 To 3", 1)]
+    [InlineData("Public Sub Main()\n    For (index) = 1 To 3", 1)]
+    [InlineData("Public Sub Main()\n    For GetCounter() = 1 To 3", 1)]
+    [InlineData("Public Sub Main()\n    For index$ = 1 To 3", 1)]
+    [InlineData("Public Sub Main()\n    For index 1 To 3", 1)]
+    [InlineData("Public Sub Main()\n    For index = To 3", 1)]
+    [InlineData("Public Sub Main()\n    For index = 1 To", 1)]
+    [InlineData("Public Sub Main()\n    For index = 1 To 3 Step", 1)]
+    [InlineData("Public Sub Main()\n    For Each In items", 1)]
+    [InlineData("Public Sub Main()\n    For Each item items", 1)]
+    [InlineData("Public Sub Main()\n    For Each item + other In items", 1)]
+    [InlineData("Public Sub Main()\n    For Each GetItem() In items", 1)]
+    [InlineData("Public Sub Main()\n    For Each item$ In items", 1)]
+    [InlineData("Public Sub Main()\n    For Each item% In items", 1)]
+    [InlineData("Public Sub Main()\n    For Each item In", 1)]
+    [InlineData("Public Sub Main()\n    For Each item In 1", 1)]
+    [InlineData("Public Sub Main()\n    For Each item In \"text\"", 1)]
+    [InlineData("Public Sub Main()\n    For Each item In Empty", 1)]
+    [InlineData("Public Sub Main()\n    For Each item In Null", 1)]
+    [InlineData("Public Sub Main()\n    For Each item In left + right", 1)]
+    [InlineData("Public Sub Main()\n    For Each item In count%", 1)]
+    [InlineData("Public Sub Main()\n    For Each item In source.Value + 1", 1)]
+    [InlineData("Public Sub Main()\n    For Each item In source.Count&", 1)]
+    [InlineData("Public Sub Main()\n    For index = 1 To 3:", 1)]
+    [InlineData("Public Sub Main()\n    For index = 1 To 3 _\n", 1)]
+    [InlineData("Public Sub Outer()\n    Public Sub Inner()\n        For index = 1 To 3", 2)]
+    [InlineData("#If VBA7 Then\nPublic Sub Main()\n    For index = 1 To 3\n#End If", 2)]
+    public void Incomplete_ineligible_and_structurally_ambiguous_for_headers_are_rejected(
+        string source,
+        int line)
+    {
+        var lines = source.Split('\n');
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(tree, line, lines[line].Length);
+
+        Assert.Null(header);
+    }
+
     [Fact]
     public void Me_expression_is_accepted_only_in_an_object_module()
     {

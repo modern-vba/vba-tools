@@ -41,6 +41,16 @@ public enum VbaBlockHeaderKind
     With,
 
     /// <summary>
+    /// A For...Next statement inside a callable body.
+    /// </summary>
+    For,
+
+    /// <summary>
+    /// A For Each...Next statement inside a callable body.
+    /// </summary>
+    ForEach,
+
+    /// <summary>
     /// A module-level Enum declaration.
     /// </summary>
     Enum,
@@ -141,6 +151,28 @@ public sealed record VbaBlockHeaderSyntax(
                     statement.StartOffset,
                     statement.EndOffset))
             && !HasDisqualifyingHeaderDiagnostic(tree, statement, CanonicalEndWith);
+    }
+
+    internal static bool IsCompleteForAncestor(
+        VbaSyntaxTree tree,
+        VbaSyntaxRange openerRange)
+    {
+        var statement = FindCompleteAncestorStatement(tree, openerRange);
+        if (statement is null)
+        {
+            return false;
+        }
+
+        return VbaForHeaderSyntax.TryGetCompleteKind(
+                tree,
+                statement,
+                VbaBlockSyntaxFacts.HasEnclosingBlock(
+                    tree,
+                    VbaBlockKind.With,
+                    statement.StartOffset,
+                    statement.EndOffset),
+                out _)
+            && !HasDisqualifyingHeaderDiagnostic(tree, statement, CanonicalNext);
     }
 
     private static VbaLogicalStatementSpan? FindCompleteAncestorStatement(
@@ -314,6 +346,38 @@ public sealed record VbaBlockHeaderSyntax(
                 CanonicalEndWith);
         }
 
+        if (tokens.Count > 0 && Matches(tokens[0], "For"))
+        {
+            if (!VbaForHeaderSyntax.TryGetCompleteKind(
+                    tree,
+                    statement,
+                    VbaBlockSyntaxFacts.HasEnclosingBlock(
+                        tree,
+                        VbaBlockKind.With,
+                        statement.StartOffset,
+                        statement.EndOffset),
+                    out var forHeaderKind)
+                || tokens[^1].Range.End.Line != line
+                || !HasOnlyLeadingWhitespace(source.Lines[tokens[0].Range.Start.Line], tokens[0])
+                || !HasOnlyTrailingSpacesOrApostropheComment(source.Lines[line], tokens[^1])
+                || tree.TokenStream.Tokens.Any(token =>
+                    token.Kind == VbaTokenKind.LineContinuation
+                    && token.Range.Start.Line == line)
+                || !HasCallableOwner(tree, statement)
+                || HasDisqualifyingHeaderDiagnostic(tree, statement, CanonicalNext))
+            {
+                return null;
+            }
+
+            return CreateHeader(
+                source,
+                tokens,
+                line,
+                character,
+                forHeaderKind,
+                CanonicalNext);
+        }
+
         if (!HasCompleteBlockIfTokenShape(
                 tokens,
                 tree.Module.Kind,
@@ -398,6 +462,9 @@ public sealed record VbaBlockHeaderSyntax(
     private static string CanonicalEndProperty
         => $"{VbaLanguageVocabulary.CanonicalKeywords["end"]} "
             + VbaLanguageVocabulary.CanonicalKeywords["property"];
+
+    private static string CanonicalNext
+        => VbaLanguageVocabulary.CanonicalKeywords["next"];
 
     private static int GetSubKeywordIndex(IReadOnlyList<VbaToken> tokens)
     {

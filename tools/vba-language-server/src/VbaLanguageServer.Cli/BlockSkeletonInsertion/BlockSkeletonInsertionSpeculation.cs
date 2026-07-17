@@ -19,7 +19,10 @@ internal static class BlockSkeletonInsertionSpeculation
         int? firstFollowingContentLine,
         string lineEnding)
     {
-        if (originalHeader.Kind is VbaBlockHeaderKind.If or VbaBlockHeaderKind.With)
+        if (originalHeader.Kind is VbaBlockHeaderKind.If
+            or VbaBlockHeaderKind.With
+            or VbaBlockHeaderKind.For
+            or VbaBlockHeaderKind.ForEach)
         {
             return IsSafeStructuredBlock(
                 snapshot,
@@ -912,6 +915,8 @@ internal static class BlockSkeletonInsertionSpeculation
             VbaBlockHeaderKind.PropertySet => VbaBlockKind.Procedure,
             VbaBlockHeaderKind.If => VbaBlockKind.If,
             VbaBlockHeaderKind.With => VbaBlockKind.With,
+            VbaBlockHeaderKind.For => VbaBlockKind.For,
+            VbaBlockHeaderKind.ForEach => VbaBlockKind.For,
             VbaBlockHeaderKind.Enum => VbaBlockKind.Enum,
             VbaBlockHeaderKind.Type => VbaBlockKind.Type,
             _ => VbaBlockKind.Malformed

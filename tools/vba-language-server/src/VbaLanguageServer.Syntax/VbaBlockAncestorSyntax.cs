@@ -28,6 +28,7 @@ public static class VbaBlockAncestorSyntax
             VbaBlockKind.Procedure => IsCompleteProcedure(tree, block),
             VbaBlockKind.If => IsCompleteIf(tree, block),
             VbaBlockKind.With => IsCompleteWith(tree, block),
+            VbaBlockKind.For => IsCompleteFor(tree, block),
             _ => false
         };
     }
@@ -59,6 +60,14 @@ public static class VbaBlockAncestorSyntax
         VbaBlockSyntax block)
         => block.ExpectedTerminator.Equals("End With", StringComparison.OrdinalIgnoreCase)
             && VbaBlockHeaderSyntax.IsCompleteWithAncestor(tree, block.OpenerRange)
+            && block.Branches.Count == 0
+            && HasExactCloserWhenPresent(tree, block);
+
+    private static bool IsCompleteFor(
+        VbaSyntaxTree tree,
+        VbaBlockSyntax block)
+        => block.ExpectedTerminator.Equals("Next", StringComparison.OrdinalIgnoreCase)
+            && VbaBlockHeaderSyntax.IsCompleteForAncestor(tree, block.OpenerRange)
             && block.Branches.Count == 0
             && HasExactCloserWhenPresent(tree, block);
 

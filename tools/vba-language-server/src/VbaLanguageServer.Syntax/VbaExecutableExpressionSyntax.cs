@@ -55,6 +55,16 @@ internal static class VbaExecutableExpressionSyntax
                 && (memberHasNoWhitespace || memberHasLineContinuation);
     }
 
+    internal static bool HasTrailingDecimalPointTokenShape(
+        IReadOnlyList<VbaToken> tokens,
+        int decimalPointIndex)
+        => decimalPointIndex > 0
+            && decimalPointIndex < tokens.Count
+            && tokens[decimalPointIndex].Text == "."
+            && tokens[decimalPointIndex - 1].Kind == VbaTokenKind.NumericLiteral
+            && tokens[decimalPointIndex - 1].Range.End.Offset
+                == tokens[decimalPointIndex].Range.Start.Offset;
+
     private sealed class Parser(
         IReadOnlyList<VbaToken> tokens,
         int start,

@@ -120,7 +120,10 @@ internal sealed record BlockSkeletonInsertionPrefixContext(
             return ancestors.Count == 0;
         }
 
-        if (headerKind is not VbaBlockHeaderKind.If and not VbaBlockHeaderKind.With
+        if (headerKind is not VbaBlockHeaderKind.If
+            and not VbaBlockHeaderKind.With
+            and not VbaBlockHeaderKind.For
+            and not VbaBlockHeaderKind.ForEach
             || ancestors.Count == 0
             || ancestors[0].Kind != VbaBlockKind.Procedure
             || ancestors.Count(block => block.Kind == VbaBlockKind.Procedure) != 1
@@ -177,6 +180,8 @@ internal sealed record BlockSkeletonInsertionPrefixContext(
             VbaBlockHeaderKind.Sub => VbaBlockKind.Procedure,
             VbaBlockHeaderKind.If => VbaBlockKind.If,
             VbaBlockHeaderKind.With => VbaBlockKind.With,
+            VbaBlockHeaderKind.For => VbaBlockKind.For,
+            VbaBlockHeaderKind.ForEach => VbaBlockKind.For,
             _ => VbaBlockKind.Malformed
         };
 }

@@ -728,6 +728,147 @@ public sealed class BlockSkeletonInsertionProcessTests
     }
 
     [Fact]
+    public async Task Complete_for_headers_return_version_bound_literal_bare_next_plans()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+
+        (string Uri, string Header)[] cases =
+        [
+            ("file:///C:/work/For.bas", "    For index = 1 To 3"),
+            ("file:///C:/work/ForEach.bas", "    For Each item In items"),
+            ("file:///C:/work/IndexedForEach.bas", "    For Each item In values(0)"),
+            ("file:///C:/work/ShadowableForEach.bas", "    For Each item In vbCrLf.Value")
+        ];
+
+        for (var index = 0; index < cases.Length; index++)
+        {
+            var candidate = cases[index];
+            var version = 90 + index;
+            await server.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(
+                    candidate.Uri,
+                    version,
+                    $"Public Sub Main()\n{candidate.Header}\n    \nEnd Sub"));
+
+            var response = await SendInsertionRequestAsync(
+                server,
+                index + 2,
+                candidate.Uri,
+                version,
+                candidate.Header.Length,
+                line: 1);
+
+            var plan = response.GetProperty("result");
+            Assert.Equal(version, plan.GetProperty("documentVersion").GetInt32());
+            Assert.Equal(1, plan.GetProperty("position").GetProperty("line").GetInt32());
+            Assert.Equal(candidate.Header.Length, plan.GetProperty("position").GetProperty("character").GetInt32());
+            Assert.Equal("\n      ", plan.GetProperty("textBeforeCursor").GetString());
+            Assert.Equal("\n    Next", plan.GetProperty("textAfterCursor").GetString());
+        }
+
+        await server.ShutdownAsync(cases.Length + 2);
+    }
+
+    [Fact]
+    public async Task Nested_for_header_preserves_the_ancestor_next_and_returns_its_own_next()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+
+        const string uri = "file:///C:/work/NestedFor.bas";
+        const string header = "        For Each item In items";
+        const int version = 92;
+        await server.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(
+                uri,
+                version,
+                "Public Sub Main()\n"
+                    + "    For outerIndex = 1 To 3\n"
+                    + $"{header}\n"
+                    + "        \n"
+                    + "    Next\n"
+                    + "End Sub"));
+
+        var response = await SendInsertionRequestAsync(
+            server,
+            2,
+            uri,
+            version,
+            header.Length,
+            line: 2);
+
+        var plan = response.GetProperty("result");
+        Assert.Equal("\n          ", plan.GetProperty("textBeforeCursor").GetString());
+        Assert.Equal("\n        Next", plan.GetProperty("textAfterCursor").GetString());
+
+        await server.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Ineligible_owned_and_excluded_loop_headers_return_null()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+
+        (string Uri, string Text, string Header)[] cases =
+        [
+            (
+                "file:///C:/work/IncompleteFor.bas",
+                "Public Sub Main()\n    For index = 1 To\n    \nEnd Sub",
+                "    For index = 1 To"),
+            (
+                "file:///C:/work/IncompleteForEach.bas",
+                "Public Sub Main()\n    For Each item In\n    \nEnd Sub",
+                "    For Each item In"),
+            (
+                "file:///C:/work/LiteralForEach.bas",
+                "Public Sub Main()\n    For Each item In 1\n    \nEnd Sub",
+                "    For Each item In 1"),
+            (
+                "file:///C:/work/OwnedFor.bas",
+                "Public Sub Main()\n    For index = 1 To 3\n    \n        Debug.Print index\nEnd Sub",
+                "    For index = 1 To 3"),
+            (
+                "file:///C:/work/ClosedFor.bas",
+                "Public Sub Main()\n    For index = 1 To 3\n    \n    Next index\nEnd Sub",
+                "    For index = 1 To 3"),
+            (
+                "file:///C:/work/DoWhile.bas",
+                "Public Sub Main()\n    Do While Ready()\n    \nEnd Sub",
+                "    Do While Ready()"),
+            (
+                "file:///C:/work/While.bas",
+                "Public Sub Main()\n    While Ready()\n    \nEnd Sub",
+                "    While Ready()")
+        ];
+
+        for (var index = 0; index < cases.Length; index++)
+        {
+            var candidate = cases[index];
+            var version = 100 + index;
+            await server.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(candidate.Uri, version, candidate.Text));
+            var response = await SendInsertionRequestAsync(
+                server,
+                index + 2,
+                candidate.Uri,
+                version,
+                candidate.Header.Length,
+                line: 1);
+
+            Assert.Equal(
+                System.Text.Json.JsonValueKind.Null,
+                response.GetProperty("result").ValueKind);
+        }
+
+        await server.ShutdownAsync(cases.Length + 2);
+    }
+
+    [Fact]
     public async Task Unsafe_non_eof_sub_contexts_return_null()
     {
         await using var server = await LanguageServerProcessHarness.StartAsync();
