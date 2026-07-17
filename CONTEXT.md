@@ -401,14 +401,98 @@ _Avoid_: getter flag, setter flag, inferred property mode
 A `SourceFormatting` operation that rewrites leading whitespace according to
 VBA block structure. It depends on source ranges, tokens, and syntax block
 structure rather than `NameResolution`; identifier meaning does not affect
-indent depth. When block structure is incomplete or malformed, indentation uses
-only recognized structure and does not infer repairs for missing block
-boundaries.
+indent depth. Each emitted indentation level follows the resolved editor style:
+`indentSize` spaces when spaces are requested, or one tab when tabs are
+requested. A formatting client that does not provide `indentSize` uses
+`tabSize` as a compatibility fallback. When block structure is incomplete or
+malformed, indentation uses only recognized structure and does not infer
+repairs for missing block boundaries.
 _Avoid_: alignment, line wrapping
 
 **EndStatementCompletion**:
-An editor completion that inserts the matching VBA block closer for a block opener, such as `End Sub`, `End Function`, or `End If`.
-_Avoid_: automatic typing, on-type edit
+An explicit editor completion candidate that inserts the matching VBA block
+closer for a block opener, such as `End Sub`, `End Function`, or `End If`.
+_Avoid_: `BlockSkeletonInsertion`, automatic typing, on-type edit
+
+**BlockHeader**:
+A complete logical VBA statement that opens a body-owning block with a canonical
+matching terminator. It may span multiple physical lines through VBA line
+continuations, but only its final physical line completes the header.
+_Avoid_: definition line, opener line, declaration row
+
+**BlockDeclarationHeader**:
+A `BlockHeader` that declares a body-owning module member or module-level type.
+Participating forms are non-external `Sub` and `Function`, `Property Get`,
+`Property Let`, `Property Set`, `Enum`, and `Type`.
+_Avoid_: block header, declaration line
+
+**BlockSkeletonInsertion**:
+An editor action that expands a complete `BlockHeader` after an Enter keypress
+at the end of its final physical line into an indented empty body and its
+matching block terminator. It does not activate on an intermediate line that
+continues the logical header. Every participating form receives the same single
+empty body line; the action does not add form-specific placeholders such as an
+initial `Case` clause. The action inserts that body line and the terminator at
+the caret without consuming or reusing pre-existing following blank lines; such
+lines remain unchanged after the new terminator.
+It is separate from explicit `EndStatementCompletion` and from
+`SourceFormatting`. It participates in `BlockDeclarationHeader`s and in
+block-form `If...Then`, `For`, `For Each`, `Select Case`, and `With` statement
+headers. A single-line `If`, `While...Wend`, and every pre-condition or
+post-condition `Do...Loop` form are outside its scope. Unconditional
+`Do...Loop` is also outside its scope. An `Event` declaration does not
+participate because VBA events have neither a body nor an `End Event`
+terminator. External `Declare Sub` and `Declare Function` declarations also do
+not participate because their implementation bodies exist outside VBA. A
+matching terminator already owned by a participating header
+suppresses the action, but post-header block pairing alone does not establish
+ownership when nested blocks use the same terminator. Prefix ancestry and
+leading indentation distinguish a candidate-owned closer or branch from an
+ancestor boundary: candidate indentation suppresses insertion, ancestor
+indentation permits further validation, and ambiguous indentation fails closed.
+The action does not move or rewrite an existing body. It scaffolds a fresh
+empty block rather than repairing an existing unterminated body. Existing code
+or comments that could belong to the body make the header ineligible;
+intervening blank lines do not.
+A following end of file, same-level block declaration, conditional-compilation
+boundary, or known ancestor branch or terminator may establish a safe non-body
+boundary. The prospective terminator is speculatively inserted and reparsed; it
+is eligible only when it closes the candidate, restores the ancestor boundary,
+removes only directly caused missing or mismatched diagnostics, and introduces
+no new error. Eligibility is otherwise local and fail-closed: the participating
+header must parse completely, be permitted by the current `VbaModuleKind`, and
+have no overlapping error-severity `SyntaxDiagnostic` or
+`VbaValidationDiagnostic` apart from the directly caused missing or mismatched
+diagnostics eliminated by the validated insertion. Warnings and informational
+diagnostics do not suppress the action, and unrelated diagnostics elsewhere in
+the document do not suppress the action. Trailing whitespace and an apostrophe
+comment are header trivia and remain unchanged; they do not make the header
+ineligible when Enter is pressed at the actual physical line end. Invalid
+trivia, such as a comment after a line-continuation marker, remains a syntax
+error and suppresses the action.
+Branch headers such as `Else`, `ElseIf`, `Case`, and `Case Else` do not own a
+new block and never trigger the action, even when the shared enclosing
+terminator is missing.
+For both `For` and `For Each`, the inserted canonical terminator is the bare
+`Next` statement without a repeated counter or element name.
+Any top-level colon in the `BlockHeader`, including a trailing colon, makes the
+header ineligible because it expresses same-physical-line statement structure.
+Colons inside string literals or comments remain trivia and do not affect
+eligibility.
+Conditional-compilation directives such as `#If...Then` are not `BlockHeader`s
+for this action. An ordinary participating header inside a conditional branch
+remains eligible only when its block relationship can be established entirely
+within that branch; the action never infers a relationship across `#Else`,
+`#ElseIf`, or `#End If`.
+The terminator copies the exact leading whitespace of the `BlockHeader`'s first
+physical line. The empty body line adds one resolved editor indentation unit to
+that prefix: `indentSize` spaces when spaces are requested, or one tab when tabs
+are requested. A continued header's final line does not become the indentation
+base. Existing header whitespace remains unchanged, and inserted text preserves
+the document's line-ending convention. The terminator uses canonical
+`LanguageVocabulary` casing independently of the header's spelling; the action
+does not recase the existing header.
+_Avoid_: `EndStatementCompletion`, source formatting, automatic completion
 
 **DocumentationComment**:
 A structured Doxygen-style VBA comment block attached to a `VbaDefinition` regardless of public or private visibility. Hover shows the complete rendered comment. Signature Help presents only the active `CallableParameter`'s `@param` documentation; its protocol metadata retains documentation per parameter so the client can select the active one, but callable summary, details, and return documentation are not projected. Plain apostrophe comments are not `DocumentationComment`s; when an implementation member has no `DocumentationComment`, it may inherit one from the interface member named by its `Implements` relationship.
@@ -591,8 +675,14 @@ Domain Expert: "No. `SourceFormatting` includes `CasingNormalization` and `Inden
 Dev: "Is `String` a host definition when formatting casing?"
 Domain Expert: "No. Intrinsic words such as `String`, `True`, and `Nothing` belong to `LanguageVocabulary`."
 
-Dev: "Should typing Enter after `Sub` automatically insert `End Sub`?"
-Domain Expert: "No. `EndStatementCompletion` is an explicit completion item, not an on-type edit."
+Dev: "Is automatic body and terminator insertion after Enter the same as `EndStatementCompletion`?"
+Domain Expert: "No. `EndStatementCompletion` remains an explicit completion candidate. The automatic editor action is `BlockSkeletonInsertion`."
+
+Dev: "Is each physical line of a continued `Function` declaration a separate header?"
+Domain Expert: "No. The continued logical declaration is one `BlockDeclarationHeader`, and only its final physical line can trigger `BlockSkeletonInsertion`."
+
+Dev: "Is a trailing `Loop While condition` the terminator of a `While` block?"
+Domain Expert: "No. It terminates a post-condition `Do...Loop`; `While...Wend` is a separate form. Both forms are outside `BlockSkeletonInsertion`."
 
 Dev: "Should a space after a completed expression keep general completion open?"
 Domain Expert: "No. A completed expression has no `CompletionExpectation`, so an LSP trigger cannot manufacture `CompletionCandidate`s for it."

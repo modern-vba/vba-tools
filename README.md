@@ -329,6 +329,12 @@ Supported declaration forms are `Sub`, `Function`, `Property Get`,
 legality. Supported control forms inside a callable body are block `If`,
 `For`, `For Each`, `Select Case`, and `With`.
 
+While locating a safe boundary, blank lines and comment-only apostrophe, `Rem`,
+or Doxygen-style `'*` lines are transparent and remain verbatim after the
+inserted terminator. A line containing VBA code followed by an inline comment
+is still evaluated from its code; the comment suffix does not turn body code,
+a declaration, a branch, or a terminator into boundary trivia.
+
 Inside conditional compilation, a skeleton is inserted only when the header,
 body, matching terminator, ancestors, safe boundary, and relevant diagnostics
 are proven within one well-formed `#If` / `#ElseIf` / `#Else` branch. The

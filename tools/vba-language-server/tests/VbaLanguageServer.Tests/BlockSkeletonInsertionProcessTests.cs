@@ -138,6 +138,8 @@ public sealed class BlockSkeletonInsertionProcessTests
         const string text = "#If VBA7 Then\n"
             + $"{header}\n"
             + "  \n"
+            + "'* candidate branch tail\n"
+            + "Rem candidate branch tail\n"
             + "#Else\n"
             + "End Sub\n"
             + "#End If";
@@ -156,6 +158,38 @@ public sealed class BlockSkeletonInsertionProcessTests
         Assert.Equal(
             System.Text.Json.JsonValueKind.Null,
             response.GetProperty("result").ValueKind);
+
+        await server.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Comment_only_rem_tail_at_eof_returns_a_sub_plan()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+
+        const string uri = "file:///C:/work/CommentTail.bas";
+        const int version = 48;
+        const string header = "Public Sub Run()";
+        const string text = "Public Sub Run()\n"
+            + "    \n"
+            + "\n"
+            + "Rem existing comment";
+        await server.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, version, text));
+
+        var response = await SendInsertionRequestAsync(
+            server,
+            id: 2,
+            uri,
+            version,
+            character: header.Length);
+
+        var plan = response.GetProperty("result");
+        Assert.Equal(version, plan.GetProperty("documentVersion").GetInt32());
+        Assert.Equal("\n  ", plan.GetProperty("textBeforeCursor").GetString());
+        Assert.Equal("\nEnd Sub", plan.GetProperty("textAfterCursor").GetString());
 
         await server.ShutdownAsync(3);
     }
@@ -206,6 +240,7 @@ public sealed class BlockSkeletonInsertionProcessTests
         string[] boundaries =
         [
             "Public Sub Second()\nEnd Sub",
+            "Public Sub Second() ' trailing boundary comment\nEnd Sub",
             "Public Function Second() As Long\nEnd Function",
             "Public Property Get Second() As Long\nEnd Property"
         ];
@@ -297,6 +332,52 @@ public sealed class BlockSkeletonInsertionProcessTests
         }
 
         await server.ShutdownAsync(cases.Length + 2);
+    }
+
+    [Fact]
+    public async Task Documented_sub_boundary_returns_a_crlf_function_plan()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+
+        const string uri = "file:///C:/work/DocumentedBoundary.bas";
+        const int version = 47;
+        const string header = "Public Function ExampleFunc(ByVal Arg1 As Long, Optional ByVal Arg2 As Boolean = False, Optional ByVal Arg3 As Boolean = False) As String";
+        string[] lines =
+        [
+            header,
+            "    ",
+            "",
+            "'* Example of a subroutine.",
+            "'*",
+            "'* @param[out] Arg1 Example of a required argument.",
+            "'* @param[in] Arg2 Example of an optional argument.",
+            "'* @param[in] Arg3 Example of another optional argument.",
+            "'*",
+            "'* @details",
+            "'* This is an example of a subroutine.",
+            "Public Sub ExampleSub(ByRef Arg1 As Long, Optional ByVal Arg2 As Boolean = False, Optional ByVal Arg3 As Boolean = False)",
+            "End Sub"
+        ];
+        await server.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, version, string.Join("\r\n", lines)));
+
+        var response = await SendInsertionRequestAsync(
+            server,
+            id: 2,
+            uri,
+            version,
+            character: header.Length);
+
+        var plan = response.GetProperty("result");
+        Assert.Equal(version, plan.GetProperty("documentVersion").GetInt32());
+        Assert.Equal(0, plan.GetProperty("position").GetProperty("line").GetInt32());
+        Assert.Equal(header.Length, plan.GetProperty("position").GetProperty("character").GetInt32());
+        Assert.Equal("\r\n  ", plan.GetProperty("textBeforeCursor").GetString());
+        Assert.Equal("\r\nEnd Function", plan.GetProperty("textAfterCursor").GetString());
+
+        await server.ShutdownAsync(3);
     }
 
     [Fact]
@@ -556,7 +637,7 @@ public sealed class BlockSkeletonInsertionProcessTests
             CreateOpenDocument(
                 uri,
                 version,
-                text: $"Public Sub Main()\n{header}\n    \nEnd Sub"));
+                text: $"Public Sub Main()\n{header}\n    \n    Rem existing comment\nEnd Sub"));
 
         var response = await SendInsertionRequestAsync(
             server,
@@ -1190,11 +1271,12 @@ public sealed class BlockSkeletonInsertionProcessTests
         const string header = "Public Sub First()";
         string[] contexts =
         [
-            "    Debug.Print 1",
-            "    ' existing comment",
-            "End Sub",
+            "    Debug.Print 1 ' existing inline comment",
+            "End Sub ' existing inline comment",
             "    Public Sub Nested()\n    End Sub",
-            "Public Sub Broken("
+            "Public Sub Broken( ' existing inline comment",
+            "Public Event Changed() ' existing inline comment",
+            "#Else ' existing inline comment"
         ];
 
         for (var index = 0; index < contexts.Length; index++)
@@ -1205,7 +1287,7 @@ public sealed class BlockSkeletonInsertionProcessTests
                 CreateOpenDocument(
                     uri,
                     version: 1,
-                    text: $"{header}\n    \n\n{contexts[index]}"));
+                    text: $"{header}\n    \n\n' boundary comment\nRem boundary comment\n{contexts[index]}"));
             var response = await SendInsertionRequestAsync(
                 server,
                 index + 2,

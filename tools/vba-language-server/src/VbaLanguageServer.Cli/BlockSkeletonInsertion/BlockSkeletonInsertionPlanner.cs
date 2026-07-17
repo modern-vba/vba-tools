@@ -111,7 +111,7 @@ public static class BlockSkeletonInsertionPlanner
         for (var lineIndex = position.Line + 2; lineIndex < source.Lines.Count; lineIndex++)
         {
             var lineText = source.Lines[lineIndex].Text;
-            if (lineText.All(value => value is ' ' or '\t'))
+            if (VbaLexicalFacts.IsBlankOrCommentOnlyLine(lineText))
             {
                 continue;
             }

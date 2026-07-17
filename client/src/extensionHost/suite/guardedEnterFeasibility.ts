@@ -442,13 +442,13 @@ export async function runGuardedEnterFeasibilityTests(): Promise<void> {
   );
 
   await runTest(
-    'the production language server declines a Sub skeleton before an existing body comment',
+    'the production language server declines a Sub skeleton before body code with an inline comment',
     async () => {
       const lineEnding = '\n';
       const firstHeader = '    Public Sub First()';
       const originalText = [
         firstHeader,
-        "    ' existing body comment",
+        "    Debug.Print 1 ' existing inline comment",
         '',
         '    Public Sub Second()',
         '    End Sub'
@@ -525,7 +525,7 @@ export async function runGuardedEnterFeasibilityTests(): Promise<void> {
         const expectedText = [
           firstHeader,
           '    ',
-          "    ' existing body comment",
+          "    Debug.Print 1 ' existing inline comment",
           '',
           '    Public Sub Second()',
           '    End Sub'

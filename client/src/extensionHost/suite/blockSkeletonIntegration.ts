@@ -42,6 +42,11 @@ interface BlockSkeletonCase {
 }
 
 export async function runBlockSkeletonIntegrationTests(): Promise<void> {
+  const documentedFunctionHeader =
+    'Public Function ExampleFunc(ByVal Arg1 As Long, Optional ByVal Arg2 As Boolean = False, Optional ByVal Arg3 As Boolean = False) As String';
+  const documentedSubHeader =
+    'Public Sub ExampleSub(ByRef Arg1 As Long, Optional ByVal Arg2 As Boolean = False, Optional ByVal Arg3 As Boolean = False)';
+
   await runProductionCase({
     name: 'the production language server inserts a continued tab-indented Function skeleton',
     originalLines: [
@@ -65,6 +70,52 @@ export async function runBlockSkeletonIntegrationTests(): Promise<void> {
     expectedPlan: {
       textBeforeCursor: '\r\n\t\t',
       textAfterCursor: '\r\n\tEnd Function'
+    }
+  });
+
+  await runProductionCase({
+    name: 'the production language server inserts a Function skeleton before documented Sub trivia',
+    originalLines: [
+      documentedFunctionHeader,
+      '',
+      "'* Example of a subroutine.",
+      "'*",
+      "'* @param[out] Arg1 Example of a required argument.",
+      "'* @param[in] Arg2 Example of an optional argument.",
+      "'* @param[in] Arg3 Example of another optional argument.",
+      "'*",
+      "'* @details",
+      "'* This is an example of a subroutine.",
+      documentedSubHeader,
+      'End Sub'
+    ],
+    headerLine: 0,
+    expectedLines: [
+      documentedFunctionHeader,
+      '    ',
+      'End Function',
+      '',
+      "'* Example of a subroutine.",
+      "'*",
+      "'* @param[out] Arg1 Example of a required argument.",
+      "'* @param[in] Arg2 Example of an optional argument.",
+      "'* @param[in] Arg3 Example of another optional argument.",
+      "'*",
+      "'* @details",
+      "'* This is an example of a subroutine.",
+      documentedSubHeader,
+      'End Sub'
+    ],
+    expectedCursor: new Position(1, 4),
+    lineEnding: '\r\n',
+    editorOptions: {
+      insertSpaces: true,
+      tabSize: 4,
+      indentSize: 4
+    },
+    expectedPlan: {
+      textBeforeCursor: '\r\n    ',
+      textAfterCursor: '\r\nEnd Function'
     }
   });
 

@@ -8,11 +8,37 @@ namespace VbaLanguageServer.Syntax;
 public sealed record VbaCodeLineParts(string CodePart, string CommentPart);
 
 /// <summary>
-/// Provides token-based bulk lexical operations used by source formatting.
+/// Provides shared token-based lexical operations over physical source lines.
 /// Position-dependent editor queries belong to <see cref="VbaSyntaxTree.GetPositionSyntax"/>.
 /// </summary>
 public static class VbaLexicalFacts
 {
+    /// <summary>
+    /// Determines whether one physical line contains only whitespace or a VBA comment.
+    /// </summary>
+    public static bool IsBlankOrCommentOnlyLine(string line)
+    {
+        if (line.All(character => character is ' ' or '\t'))
+        {
+            return true;
+        }
+
+        var tokens = VbaTokenStream.FromText(line).Tokens;
+        for (var tokenIndex = 0; tokenIndex < tokens.Count; tokenIndex++)
+        {
+            var token = tokens[tokenIndex];
+            if (token.Kind is VbaTokenKind.Whitespace or VbaTokenKind.NewLine)
+            {
+                continue;
+            }
+
+            return token.Kind == VbaTokenKind.Comment
+                || IsRemCommentStart(tokens, tokenIndex, line);
+        }
+
+        return true;
+    }
+
     /// <summary>
     /// Finds identifier occurrences in the code portion of a physical line.
     /// </summary>
@@ -23,7 +49,7 @@ public static class VbaLexicalFacts
         {
             var token = tokens[tokenIndex];
             if (token.Kind == VbaTokenKind.Comment
-                || IsRemCommentStart(tokens, tokenIndex))
+                || IsRemCommentStart(tokens, tokenIndex, line))
             {
                 yield break;
             }
@@ -55,7 +81,10 @@ public static class VbaLexicalFacts
             : new VbaCodeLineParts(line[..commentStart], line[commentStart..]);
     }
 
-    private static bool IsRemCommentStart(IReadOnlyList<VbaToken> tokens, int tokenIndex)
+    private static bool IsRemCommentStart(
+        IReadOnlyList<VbaToken> tokens,
+        int tokenIndex,
+        string line)
     {
         var token = tokens[tokenIndex];
         if (!token.Text.Equals("Rem", StringComparison.OrdinalIgnoreCase))
@@ -63,8 +92,15 @@ public static class VbaLexicalFacts
             return false;
         }
 
-        return tokens
+        if (tokens
             .Take(tokenIndex)
-            .All(previous => previous.Kind == VbaTokenKind.Whitespace);
+            .Any(previous => previous.Kind != VbaTokenKind.Whitespace))
+        {
+            return false;
+        }
+
+        var tokenEnd = token.Range.End.Character;
+        return tokenEnd == line.Length
+            || (tokenEnd < line.Length && line[tokenEnd] == ' ');
     }
 }

@@ -189,8 +189,8 @@ public sealed class BlockSkeletonInsertionPlannerTests
     [Theory]
     [InlineData("        .Value = 1")]
     [InlineData("        Debug.Print 1")]
-    [InlineData("        ' existing comment")]
-    [InlineData("        Rem existing comment")]
+    [InlineData("        .Value = 1 ' existing inline comment")]
+    [InlineData("    End With ' existing inline comment")]
     [InlineData("    End With")]
     [InlineData("      End With")]
     public void Planner_rejects_body_owned_candidate_closed_and_ambiguous_with_context(
@@ -211,6 +211,61 @@ public sealed class BlockSkeletonInsertionPlannerTests
             VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 2));
 
         Assert.Null(plan);
+    }
+
+    [Theory]
+    [InlineData("    If True Then", "End If", "        ' existing comment")]
+    [InlineData("    If True Then", "End If", "        Rem existing comment")]
+    [InlineData("    If True Then", "End If", "        '* @details")]
+    [InlineData("    With target", "End With", "        ' existing comment")]
+    [InlineData("    With target", "End With", "        Rem existing comment")]
+    [InlineData("    With target", "End With", "        '* @details")]
+    [InlineData("    For index = 1 To 3", "Next", "        ' existing comment")]
+    [InlineData("    For index = 1 To 3", "Next", "        Rem existing comment")]
+    [InlineData("    For index = 1 To 3", "Next", "        '* @details")]
+    [InlineData("    For Each item In items", "Next", "        ' existing comment")]
+    [InlineData("    For Each item In items", "Next", "        Rem existing comment")]
+    [InlineData("    For Each item In items", "Next", "        '* @details")]
+    [InlineData("    Select Case value", "End Select", "        ' existing comment")]
+    [InlineData("    Select Case value", "End Select", "        Rem existing comment")]
+    [InlineData("    Select Case value", "End Select", "        '* @details")]
+    public void Planner_preserves_comment_only_trivia_before_control_ancestor_boundaries(
+        string header,
+        string terminator,
+        string commentLine)
+    {
+        const string uri = "file:///C:/work/ControlBoundaryTrivia.bas";
+        var text = string.Join(
+            '\n',
+            [
+                "Public Sub Main()",
+                header,
+                "    ",
+                commentLine,
+                "End Sub"
+            ]);
+        var snapshot = CreateSnapshot(uri, version: 14, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(1, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 2));
+
+        Assert.NotNull(plan);
+        Assert.Equal("\n      ", plan.TextBeforeCursor);
+        Assert.Equal($"\n    {terminator}", plan.TextAfterCursor);
+        Assert.Equal(
+            string.Join(
+                '\n',
+                [
+                    "Public Sub Main()",
+                    header,
+                    "      ",
+                    $"    {terminator}",
+                    commentLine,
+                    "End Sub"
+                ]),
+            ApplyPlan(text, VbaSourceText.From(text), plan));
     }
 
     [Theory]
@@ -428,8 +483,7 @@ public sealed class BlockSkeletonInsertionPlannerTests
     [InlineData("        ElseIf Ready() Then")]
     [InlineData("        End If")]
     [InlineData("          Debug.Print 1")]
-    [InlineData("        ' existing comment")]
-    [InlineData("        Rem existing comment")]
+    [InlineData("          Debug.Print 1 ' existing inline comment")]
     [InlineData("      End If")]
     public void Planner_rejects_candidate_owned_body_and_ambiguous_if_context(string followingLine)
     {
@@ -439,6 +493,8 @@ public sealed class BlockSkeletonInsertionPlannerTests
             + "    If True Then\n"
             + $"{header}\n"
             + "        \n"
+            + "        ' boundary comment\n"
+            + "        Rem boundary comment\n"
             + $"{followingLine}\n"
             + "    End If\n"
             + "End Sub";
@@ -592,6 +648,8 @@ public sealed class BlockSkeletonInsertionPlannerTests
         const string text = "#If VBA7 Then\n"
             + $"{header}\n"
             + "\n"
+            + "' branch tail comment\n"
+            + "Rem another branch tail comment\n"
             + "#End If";
         var snapshot = CreateSnapshot(uri, version: 2, text);
 
@@ -603,6 +661,15 @@ public sealed class BlockSkeletonInsertionPlannerTests
         Assert.NotNull(plan);
         Assert.Equal("\n    ", plan.TextBeforeCursor);
         Assert.Equal("\nEnd Sub", plan.TextAfterCursor);
+        Assert.Equal(
+            "#If VBA7 Then\n"
+                + $"{header}\n"
+                + "    \n"
+                + "End Sub\n"
+                + "' branch tail comment\n"
+                + "Rem another branch tail comment\n"
+                + "#End If",
+            ApplyPlan(text, VbaSourceText.From(text), plan));
     }
 
     [Fact]
@@ -1068,6 +1135,8 @@ public sealed class BlockSkeletonInsertionPlannerTests
         const string text = "#If VBA7 Then\n"
             + $"{header}\n"
             + "\n"
+            + "'* candidate branch tail\n"
+            + "Rem candidate branch tail\n"
             + "#Else\n"
             + "End Sub\n"
             + "#End If";
@@ -1811,6 +1880,7 @@ public sealed class BlockSkeletonInsertionPlannerTests
         const string text = "Public Sub Main()\n"
             + "    If Ready() Then\n"
             + "    \n"
+            + "    '* candidate tail\n"
             + "End Sub\n"
             + "\n"
             + "Public Sub Broken(value As Long, value As Long)\n"
@@ -2028,8 +2098,7 @@ public sealed class BlockSkeletonInsertionPlannerTests
 
     [Theory]
     [InlineData("        Debug.Print value")]
-    [InlineData("        ' existing comment")]
-    [InlineData("        Rem existing comment")]
+    [InlineData("        Debug.Print value ' existing inline comment")]
     [InlineData("    Case 2")]
     [InlineData("    Case Else")]
     [InlineData("    End Select")]
@@ -2221,8 +2290,7 @@ public sealed class BlockSkeletonInsertionPlannerTests
 
     [Theory]
     [InlineData("        Debug.Print item")]
-    [InlineData("        ' existing comment")]
-    [InlineData("        Rem existing comment")]
+    [InlineData("        Debug.Print item ' existing inline comment")]
     [InlineData("    Next")]
     [InlineData("    Next index")]
     [InlineData("      Next")]
@@ -2721,6 +2789,117 @@ public sealed class BlockSkeletonInsertionPlannerTests
         Assert.Equal(expectedAfterCursor, plan.TextAfterCursor);
     }
 
+    [Fact]
+    public void Planner_preserves_documentation_comment_boundary_trivia_after_a_function_skeleton()
+    {
+        const string uri = "file:///C:/work/DocumentedBoundary.bas";
+        const string header = "Public Function ExampleFunc(ByVal Arg1 As Long, Optional ByVal Arg2 As Boolean = False, Optional ByVal Arg3 As Boolean = False) As String";
+        string[] lines =
+        [
+            header,
+            "    ",
+            "",
+            "'* Example of a subroutine.",
+            "'*",
+            "'* @param[out] Arg1 Example of a required argument.",
+            "'* @param[in] Arg2 Example of an optional argument.",
+            "'* @param[in] Arg3 Example of another optional argument.",
+            "'*",
+            "'* @details",
+            "'* This is an example of a subroutine.",
+            "Public Sub ExampleSub(ByRef Arg1 As Long, Optional ByVal Arg2 As Boolean = False, Optional ByVal Arg3 As Boolean = False)",
+            "End Sub"
+        ];
+        var text = string.Join("\r\n", lines);
+        var snapshot = CreateSnapshot(uri, version: 32, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(0, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.NotNull(plan);
+        Assert.Equal("\r\n    ", plan.TextBeforeCursor);
+        Assert.Equal("\r\nEnd Function", plan.TextAfterCursor);
+        Assert.Equal(
+            string.Join(
+                "\r\n",
+                [
+                    header,
+                    "    ",
+                    "End Function",
+                    "",
+                    .. lines[3..]
+                ]),
+            ApplyPlan(text, VbaSourceText.From(text), plan));
+    }
+
+    [Theory]
+    [InlineData(
+        "file:///C:/work/Run.bas",
+        "Public Sub Run()",
+        "End Sub",
+        "    ' existing comment")]
+    [InlineData(
+        "file:///C:/work/Build.bas",
+        "Public Function Build() As String",
+        "End Function",
+        "    Rem existing comment")]
+    [InlineData(
+        "file:///C:/work/Read.cls",
+        "Public Property Get Value() As Long",
+        "End Property",
+        "    '* @details")]
+    [InlineData(
+        "file:///C:/work/Write.cls",
+        "Public Property Let Value(ByVal assignedValue As Long)",
+        "End Property",
+        "    ' existing comment")]
+    [InlineData(
+        "file:///C:/work/Object.cls",
+        "Public Property Set Value(ByVal assignedValue As Object)",
+        "End Property",
+        "    Rem existing comment")]
+    [InlineData(
+        "file:///C:/work/State.bas",
+        "Public Enum State",
+        "End Enum",
+        "    '* @details")]
+    [InlineData(
+        "file:///C:/work/Record.bas",
+        "Private Type Record",
+        "End Type",
+        "    ' existing comment")]
+    public void Planner_preserves_a_comment_only_tail_at_declaration_eof(
+        string uri,
+        string header,
+        string terminator,
+        string commentLine)
+    {
+        var text = string.Join('\n', [header, "    ", "", commentLine]);
+        var snapshot = CreateSnapshot(uri, version: 33, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(0, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 2));
+
+        Assert.NotNull(plan);
+        Assert.Equal("\n  ", plan.TextBeforeCursor);
+        Assert.Equal($"\n{terminator}", plan.TextAfterCursor);
+        Assert.Equal(
+            string.Join(
+                '\n',
+                [
+                    header,
+                    "  ",
+                    terminator,
+                    "",
+                    commentLine
+                ]),
+            ApplyPlan(text, VbaSourceText.From(text), plan));
+    }
+
     [Theory]
     [InlineData(
         "Public Sub Existing()\nEnd Sub\nPublic Function Build() As Long\n    ",
@@ -2800,7 +2979,7 @@ public sealed class BlockSkeletonInsertionPlannerTests
         "Public Function Build() As String\n    \n    Debug.Print 1")]
     [InlineData(
         "file:///C:/work/Worker.cls",
-        "Public Property Get Value() As Long\n    \n    ' existing comment")]
+        "Public Property Get Value() As Long\n    \n    Debug.Print 1 ' existing inline comment")]
     [InlineData(
         "file:///C:/work/Worker.cls",
         "Public Property Let Value(ByVal assignedValue As Long)\n    \nEnd Property")]
@@ -2922,8 +3101,7 @@ public sealed class BlockSkeletonInsertionPlannerTests
     [Theory]
     [InlineData("Public Sub Run()")]
     [InlineData("Public Sub Run()\n    Debug.Print 1")]
-    [InlineData("Public Sub Run()\n    ' existing comment")]
-    [InlineData("Public Sub Run()\n    Rem existing comment")]
+    [InlineData("Public Sub Run()\n    Debug.Print 1 ' existing inline comment")]
     [InlineData("Public Sub Run()\nEnd Sub")]
     [InlineData("Public Sub Run()\n    \n\n    Public Sub Nested()\n    End Sub")]
     [InlineData("Public Sub Run()\n    \n\nPublic Sub Broken(")]
@@ -2935,6 +3113,33 @@ public sealed class BlockSkeletonInsertionPlannerTests
         const string uri = "file:///C:/work/NotEof.bas";
         const string header = "Public Sub Run()";
         var snapshot = CreateSnapshot(uri, version: 5, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(0, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.Null(plan);
+    }
+
+    [Theory]
+    [InlineData("    Debug.Print 1 ' existing inline comment")]
+    [InlineData("End Sub ' existing inline comment")]
+    [InlineData("Public Sub Broken( ' existing inline comment")]
+    [InlineData("Public Event Changed() ' existing inline comment")]
+    [InlineData("#Else ' existing inline comment")]
+    public void Planner_rejects_unsafe_syntax_after_comment_only_boundary_trivia(
+        string followingLine)
+    {
+        const string uri = "file:///C:/work/UnsafeCommentBoundary.bas";
+        const string header = "Public Sub Run()";
+        var text = $"{header}\n"
+            + "    \n"
+            + "\n"
+            + "' boundary comment\n"
+            + "Rem boundary comment\n"
+            + followingLine;
+        var snapshot = CreateSnapshot(uri, version: 6, text);
 
         var plan = BlockSkeletonInsertionPlanner.CreatePlan(
             snapshot,
@@ -3144,10 +3349,10 @@ public sealed class BlockSkeletonInsertionPlannerTests
 
     [Theory]
     [InlineData("Public Enum State\n    \n    Ready")]
-    [InlineData("Public Enum State\n    \n    ' existing comment")]
+    [InlineData("Public Enum State\n    \n    Ready ' existing inline comment")]
     [InlineData("Public Enum State\n    \nEnd Enum")]
     [InlineData("Private Type Record\n    \n    Value As Long")]
-    [InlineData("Private Type Record\n    \n    Rem existing comment")]
+    [InlineData("Private Type Record\n    \n    Value As Long ' existing inline comment")]
     [InlineData("Private Type Record\n    \nEnd Type")]
     [InlineData("Public Enum State\n    \n\nPublic value As Long")]
     public void Planner_rejects_owned_or_unproven_enum_and_type_post_header_context(string text)
