@@ -313,12 +313,46 @@ declarations, edit sibling files, or rewrite comments and strings.
 
 ---
 
+## Block Skeleton Insertion
+
+Block skeleton insertion is enabled by default. When Enter follows the physical
+line end of a complete eligible header, VBA Tools first lets VS Code insert its
+native line break. The language server then replaces that blank line only when
+the exact document version and local syntax prove a safe insertion. A successful
+plan adds one indented body line and the matching terminator, places the cursor
+on the body line, preserves the document line ending, uses the editor
+`indentSize` (with `tabSize` as the protocol fallback), and remains one Undo
+operation.
+
+Supported declaration forms are `Sub`, `Function`, `Property Get`,
+`Property Let`, `Property Set`, `Enum`, and `Type`, subject to normal VBA module
+legality. Supported control forms inside a callable body are block `If`,
+`For`, `For Each`, `Select Case`, and `With`.
+
+Inside conditional compilation, a skeleton is inserted only when the header,
+body, matching terminator, ancestors, safe boundary, and relevant diagnostics
+are proven within one well-formed `#If` / `#ElseIf` / `#Else` branch. The
+terminator is inserted before a proven branch boundary. Conditional-compilation
+directives themselves always keep native Enter. Malformed, nested-ambiguous, or
+cross-branch ownership also keeps native Enter without moving or repairing
+source.
+
+`Event`, external `Declare`, single-line `If`, `Do...Loop`, `While...Wend`, and
+runtime branch headers (`Else`, `ElseIf`, `Case`, and `Case Else`) are excluded.
+Existing candidate-owned body content, branches, or terminators are not
+rewritten. Disabling the setting, an unavailable or cancelled language server
+request, a timeout, stale document state, or any unproven syntax leaves the one
+native Enter unchanged.
+
+---
+
 ## Settings
 
 | Setting | Default | Description |
 | --- | --- | --- |
 | `vbaLanguageServer.trace.server` | `off` | Controls LSP trace output for the VBA language server. |
 | `vbaTools.devtool.path` | empty | Overrides the bundled `vba-dev` executable path for development or diagnostics. |
+| `vbaLanguageServer.blockSkeletonInsertion.enabled` | `true` | Inserts a proven body line and matching terminator after an eligible complete VBA block header; otherwise preserves native Enter. |
 
 ---
 

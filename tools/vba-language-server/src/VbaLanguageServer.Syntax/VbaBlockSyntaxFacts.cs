@@ -11,12 +11,20 @@ internal static class VbaBlockSyntaxFacts
         VbaSyntaxTree tree,
         VbaBlockKind kind,
         int startOffset,
-        int endOffset)
+        int endOffset,
+        VbaConditionalCompilationBranchPath positionPath,
+        bool requireCompleteConditionalStructure)
         => tree.Module.Blocks.Any(block =>
             block.Kind == kind
             && !block.IsMalformedBarrier
             && block.OpenerRange.Start.Offset < startOffset
-            && endOffset <= block.Range.End.Offset);
+            && endOffset <= block.Range.End.Offset
+            && VbaConditionalCompilationBranchFacts.TryGetPath(
+                tree,
+                block.OpenerRange,
+                requireCompleteConditionalStructure,
+                out var blockPath)
+            && blockPath.IsPrefixOf(positionPath));
 
     public static string? GetFormattingOpenTerminator(string trimmedLine)
         => GetProcedureOpenTerminator(trimmedLine)

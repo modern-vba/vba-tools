@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  createExtensionHostLaunchArgs,
   createExtensionHostRuntimeSelection,
   minimumSupportedVscodeVersion
 } from './configuration';
@@ -22,5 +23,17 @@ test('Extension Host tests use only an explicit executable override', () => {
       version: undefined,
       vscodeExecutablePath: 'C:\\VSCode\\Code.exe'
     }
+  );
+});
+
+test('Extension Host tests isolate each run in an explicit user data directory', () => {
+  assert.deepEqual(
+    createExtensionHostLaunchArgs('C:\\Temp\\vba-tools-extension-host'),
+    [
+      '--disable-extensions',
+      '--skip-welcome',
+      '--skip-release-notes',
+      '--user-data-dir=C:\\Temp\\vba-tools-extension-host'
+    ]
   );
 });

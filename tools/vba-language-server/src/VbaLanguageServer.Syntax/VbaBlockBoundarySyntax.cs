@@ -70,11 +70,22 @@ public sealed record VbaBlockBoundarySyntax(
         VbaBlockBranchKind? branchKind = null;
         if (!MatchesExactTerminator(tokens, expectedTerminator))
         {
+            if (!VbaConditionalCompilationBranchFacts.TryGetPath(
+                tree,
+                statement.Range,
+                requireCompleteStructure: false,
+                out var conditionalCompilationBranchPath))
+            {
+                return null;
+            }
+
             var allowLeadingMemberAccess = VbaBlockSyntaxFacts.HasEnclosingBlock(
                 tree,
                 VbaBlockKind.With,
                 statement.StartOffset,
-                statement.EndOffset);
+                statement.EndOffset,
+                conditionalCompilationBranchPath,
+                requireCompleteConditionalStructure: false);
             var isCompleteBranch = ownerBlockKind switch
             {
                 VbaBlockKind.If => TryGetIfBranch(

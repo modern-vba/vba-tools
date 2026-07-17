@@ -73,7 +73,14 @@ internal static class BlockSkeletonInsertionSpeculation
             : FindBlock(speculativeTree, speculativeHeader);
         if (speculativeHeader?.Kind != originalHeader.Kind
             || speculativeHeader.Range != originalHeader.Range
-            || candidateBlock?.CloserRange != insertedTerminatorRange)
+            || !speculativeHeader.ConditionalCompilationBranchPath.Equals(
+                originalHeader.ConditionalCompilationBranchPath)
+            || candidateBlock?.CloserRange != insertedTerminatorRange
+            || !VbaConditionalCompilationBranchFacts.IsBlockLocal(
+                speculativeTree,
+                candidateBlock,
+                originalHeader.ConditionalCompilationBranchPath,
+                requireCompleteStructure: true))
         {
             return false;
         }
@@ -138,7 +145,11 @@ internal static class BlockSkeletonInsertionSpeculation
             originalHeader.Range.End.Offset);
         var controlTree = VbaSyntaxTree.ParseModule(snapshot.Uri, controlText);
         if (controlTree.Module.Kind != snapshot.ModuleKind
-            || !TryFindPrefixBlocks(controlTree, prefix.Ancestors, out var controlAncestors)
+            || !TryFindPrefixBlocks(
+                controlTree,
+                prefix.Ancestors,
+                prefix.Candidate.ConditionalCompilationBranchPath,
+                out var controlAncestors)
             || !TryProveControlBoundary(
                 controlTree,
                 prefix,
@@ -183,14 +194,23 @@ internal static class BlockSkeletonInsertionSpeculation
                 && originalHeader.Range.Start.Offset <= block.OpenerRange.Start.Offset
                 && block.OpenerRange.End.Offset <= originalHeader.Range.End.Offset);
         if (prospectiveHeader != originalHeader
-            || candidateBlock?.CloserRange != insertedTerminatorRange)
+            || candidateBlock?.CloserRange != insertedTerminatorRange
+            || !VbaConditionalCompilationBranchFacts.IsBlockLocal(
+                prospectiveTree,
+                candidateBlock,
+                originalHeader.ConditionalCompilationBranchPath,
+                requireCompleteStructure: true))
         {
             return false;
         }
 
         var replacementEndOffset = insertionStartOffset + replacement.Length;
         var delta = replacement.Length - (insertionEndOffset - insertionStartOffset);
-        if (!TryFindPrefixBlocks(prospectiveTree, prefix.Ancestors, out var prospectiveAncestors)
+        if (!TryFindPrefixBlocks(
+                prospectiveTree,
+                prefix.Ancestors,
+                prefix.Candidate.ConditionalCompilationBranchPath,
+                out var prospectiveAncestors)
             || !PreservesPrefixAncestors(
                 controlAncestors,
                 prospectiveAncestors,
@@ -265,6 +285,7 @@ internal static class BlockSkeletonInsertionSpeculation
     private static bool TryFindPrefixBlocks(
         VbaSyntaxTree tree,
         IReadOnlyList<BlockSkeletonInsertionPrefixBlock> prefixBlocks,
+        VbaConditionalCompilationBranchPath selectedLeafPath,
         out IReadOnlyList<VbaBlockSyntax> blocks)
     {
         var result = new List<VbaBlockSyntax>(prefixBlocks.Count);
@@ -276,7 +297,11 @@ internal static class BlockSkeletonInsertionSpeculation
                     prefixBlock.ExpectedTerminator,
                     StringComparison.OrdinalIgnoreCase)
                 && candidate.OpenerRange == prefixBlock.OpenerRange);
-            if (block is null || !VbaBlockAncestorSyntax.IsComplete(tree, block))
+            if (block is null
+                || !VbaBlockAncestorSyntax.IsComplete(
+                    tree,
+                    block,
+                    selectedLeafPath))
             {
                 blocks = Array.Empty<VbaBlockSyntax>();
                 return false;
@@ -302,6 +327,18 @@ internal static class BlockSkeletonInsertionSpeculation
             return true;
         }
 
+        if (VbaConditionalCompilationBranchFacts.TryGetClosingBoundary(
+            controlTree,
+            prefix.Candidate.ConditionalCompilationBranchPath,
+            firstFollowingContentLine.Value,
+            out var conditionalBoundary))
+        {
+            proof = new ConditionalCompilationBoundaryProof(
+                prefix.Candidate.ConditionalCompilationBranchPath,
+                conditionalBoundary);
+            return true;
+        }
+
         var matches = new List<BlockBoundaryProof>();
         for (var index = 0; index < prefix.Ancestors.Count; index++)
         {
@@ -320,7 +357,7 @@ internal static class BlockSkeletonInsertionSpeculation
                 continue;
             }
 
-            matches.Add(new BlockBoundaryProof(index, boundary));
+            matches.Add(new AncestorBlockBoundaryProof(index, boundary));
         }
 
         if (matches.Count != 1)
@@ -374,29 +411,50 @@ internal static class BlockSkeletonInsertionSpeculation
             return true;
         }
 
+        if (proof is ConditionalCompilationBoundaryProof conditionalProof)
+        {
+            var prospectiveConditionalLine = prospectiveSource
+                .PositionAt(conditionalProof.Boundary.Range.Start.Offset + delta)
+                .Line;
+            return VbaConditionalCompilationBranchFacts.TryGetClosingBoundary(
+                    prospectiveTree,
+                    conditionalProof.Path,
+                    prospectiveConditionalLine,
+                    out var prospectiveConditionalBoundary)
+                && prospectiveConditionalBoundary.Kind == conditionalProof.Boundary.Kind
+                && prospectiveConditionalBoundary.Range == ShiftRange(
+                    conditionalProof.Boundary.Range,
+                    prospectiveSource,
+                    insertionEndOffset,
+                    delta)
+                && candidateBlock.CloserRange!.End.Offset
+                    <= prospectiveConditionalBoundary.Range.Start.Offset;
+        }
+
+        var ancestorProof = (AncestorBlockBoundaryProof)proof;
         var prospectiveLine = prospectiveSource
-            .PositionAt(proof.Boundary.TokenRange.Start.Offset + delta)
+            .PositionAt(ancestorProof.Boundary.TokenRange.Start.Offset + delta)
             .Line;
         var prospectiveBoundary = VbaBlockBoundarySyntax.FindAtFirstPhysicalLine(
             prospectiveTree,
             prospectiveLine,
-            proof.Boundary.OwnerBlockKind,
-            proof.Boundary.ExpectedTerminator);
+            ancestorProof.Boundary.OwnerBlockKind,
+            ancestorProof.Boundary.ExpectedTerminator);
         return prospectiveBoundary is not null
-            && prospectiveBoundary.Role == proof.Boundary.Role
-            && prospectiveBoundary.BranchKind == proof.Boundary.BranchKind
+            && prospectiveBoundary.Role == ancestorProof.Boundary.Role
+            && prospectiveBoundary.BranchKind == ancestorProof.Boundary.BranchKind
             && prospectiveBoundary.TokenRange == ShiftRange(
-                proof.Boundary.TokenRange,
+                ancestorProof.Boundary.TokenRange,
                 prospectiveSource,
                 insertionEndOffset,
                 delta)
             && prospectiveBoundary.Range == ShiftRange(
-                proof.Boundary.Range,
+                ancestorProof.Boundary.Range,
                 prospectiveSource,
                 insertionEndOffset,
                 delta)
             && OwnsBoundary(
-                prospectiveAncestors[proof.AncestorIndex],
+                prospectiveAncestors[ancestorProof.AncestorIndex],
                 prospectiveBoundary)
             && candidateBlock.CloserRange!.End.Offset
                 <= prospectiveBoundary.TokenRange.Start.Offset;
@@ -450,6 +508,17 @@ internal static class BlockSkeletonInsertionSpeculation
             return false;
         }
 
+        if (control.MalformedBarrierOwnerRange is null
+            ? prospective.MalformedBarrierOwnerRange is not null
+            : prospective.MalformedBarrierOwnerRange != ShiftRange(
+                control.MalformedBarrierOwnerRange,
+                prospectiveSource,
+                insertionEndOffset,
+                delta))
+        {
+            return false;
+        }
+
         for (var index = 0; index < control.Branches.Count; index++)
         {
             var controlBranch = control.Branches[index];
@@ -488,6 +557,30 @@ internal static class BlockSkeletonInsertionSpeculation
         if (originalBoundaryOffset < insertionEndOffset)
         {
             return false;
+        }
+
+        if (VbaConditionalCompilationBranchFacts.TryGetClosingBoundary(
+            snapshot.SyntaxTree,
+            candidateHeader.ConditionalCompilationBranchPath,
+            originalBoundaryLine,
+            out var originalConditionalBoundary))
+        {
+            var speculativeConditionalBoundaryLine = speculativeSource
+                .PositionAt(originalBoundaryOffset + delta)
+                .Line;
+            return VbaConditionalCompilationBranchFacts.TryGetClosingBoundary(
+                    speculativeTree,
+                    candidateHeader.ConditionalCompilationBranchPath,
+                    speculativeConditionalBoundaryLine,
+                    out var speculativeConditionalBoundary)
+                && speculativeConditionalBoundary.Kind == originalConditionalBoundary.Kind
+                && speculativeConditionalBoundary.Range == ShiftRange(
+                    originalConditionalBoundary.Range,
+                    speculativeSource,
+                    insertionEndOffset,
+                    delta)
+                && candidateBlock.CloserRange!.End.Offset
+                    <= speculativeConditionalBoundary.Range.Start.Offset;
         }
 
         var speculativeBoundaryLine = speculativeSource
@@ -933,7 +1026,15 @@ internal static class BlockSkeletonInsertionSpeculation
             or VbaBlockHeaderKind.Enum
             or VbaBlockHeaderKind.Type;
 
-    private sealed record BlockBoundaryProof(
+    private abstract record BlockBoundaryProof;
+
+    private sealed record AncestorBlockBoundaryProof(
         int AncestorIndex,
-        VbaBlockBoundarySyntax Boundary);
+        VbaBlockBoundarySyntax Boundary)
+        : BlockBoundaryProof;
+
+    private sealed record ConditionalCompilationBoundaryProof(
+        VbaConditionalCompilationBranchPath Path,
+        VbaConditionalCompilationBoundary Boundary)
+        : BlockBoundaryProof;
 }

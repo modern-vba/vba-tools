@@ -13,34 +13,111 @@ public static class VbaBlockAncestorSyntax
     /// <param name="block">The structured ancestor block to validate.</param>
     /// <returns>True only when the supported ancestor form is locally complete.</returns>
     public static bool IsComplete(VbaSyntaxTree tree, VbaBlockSyntax block)
+        => IsCompleteCore(
+            tree,
+            block,
+            requireCompleteConditionalStructure: true,
+            selectedLeafPath: null);
+
+    internal static bool IsComplete(
+        VbaSyntaxTree tree,
+        VbaBlockSyntax block,
+        VbaConditionalCompilationBranchPath selectedLeafPath)
+        => IsCompleteCore(
+            tree,
+            block,
+            requireCompleteConditionalStructure: true,
+            selectedLeafPath);
+
+    internal static bool IsCompletePrefix(
+        VbaSyntaxTree tree,
+        VbaBlockSyntax block,
+        VbaConditionalCompilationBranchPath selectedLeafPath)
+        => IsCompleteCore(
+            tree,
+            block,
+            requireCompleteConditionalStructure: false,
+            selectedLeafPath);
+
+    private static bool IsCompleteCore(
+        VbaSyntaxTree tree,
+        VbaBlockSyntax block,
+        bool requireCompleteConditionalStructure,
+        VbaConditionalCompilationBranchPath? selectedLeafPath)
     {
         if (block.IsMalformedBarrier
-            || tree.Module.Blocks.Any(candidate =>
-                candidate.IsMalformedBarrier
-                && candidate.Range.Start.Offset <= block.Range.End.Offset
-                && block.Range.Start.Offset <= candidate.Range.End.Offset))
+            || !VbaConditionalCompilationBranchFacts.TryGetPath(
+                tree,
+                block.OpenerRange,
+                requireCompleteConditionalStructure,
+                out var conditionalCompilationBranchPath)
+            || selectedLeafPath is not null
+                && !conditionalCompilationBranchPath.IsPrefixOf(selectedLeafPath)
+            || !VbaConditionalCompilationBranchFacts.IsBlockLocal(
+                tree,
+                block,
+                conditionalCompilationBranchPath,
+                requireCompleteConditionalStructure)
+            || HasCoexistingMalformedBarrier(
+                tree,
+                block,
+                selectedLeafPath ?? conditionalCompilationBranchPath,
+                requireCompleteConditionalStructure))
         {
             return false;
         }
 
         return block.Kind switch
         {
-            VbaBlockKind.Procedure => IsCompleteProcedure(tree, block),
-            VbaBlockKind.If => IsCompleteIf(tree, block),
-            VbaBlockKind.With => IsCompleteWith(tree, block),
-            VbaBlockKind.For => IsCompleteFor(tree, block),
-            VbaBlockKind.Select => IsCompleteSelect(tree, block),
+            VbaBlockKind.Procedure => IsCompleteProcedure(
+                tree,
+                block,
+                requireCompleteConditionalStructure),
+            VbaBlockKind.If => IsCompleteIf(
+                tree,
+                block,
+                requireCompleteConditionalStructure),
+            VbaBlockKind.With => IsCompleteWith(
+                tree,
+                block,
+                requireCompleteConditionalStructure),
+            VbaBlockKind.For => IsCompleteFor(
+                tree,
+                block,
+                requireCompleteConditionalStructure),
+            VbaBlockKind.Select => IsCompleteSelect(
+                tree,
+                block,
+                requireCompleteConditionalStructure),
             _ => false
         };
     }
 
+    private static bool HasCoexistingMalformedBarrier(
+        VbaSyntaxTree tree,
+        VbaBlockSyntax block,
+        VbaConditionalCompilationBranchPath selectedLeafPath,
+        bool requireCompleteConditionalStructure)
+        => tree.Module.Blocks.Any(candidate =>
+            candidate.IsMalformedBarrier
+            && candidate.Range.Start.Offset <= block.Range.End.Offset
+            && block.Range.Start.Offset <= candidate.Range.End.Offset
+            && VbaConditionalCompilationBranchFacts
+                .CanMalformedBarrierAffectPath(
+                    tree,
+                    candidate,
+                    selectedLeafPath,
+                    requireCompleteConditionalStructure));
+
     private static bool IsCompleteProcedure(
         VbaSyntaxTree tree,
-        VbaBlockSyntax block)
+        VbaBlockSyntax block,
+        bool requireCompleteConditionalStructure)
     {
         var header = VbaBlockHeaderSyntax.FindCompleteCallableAncestor(
             tree,
-            block.OpenerRange);
+            block.OpenerRange,
+            requireCompleteConditionalStructure);
         return header is not null
             && block.ExpectedTerminator.Equals(
                 header.ExpectedTerminator,
@@ -50,35 +127,51 @@ public static class VbaBlockAncestorSyntax
 
     private static bool IsCompleteIf(
         VbaSyntaxTree tree,
-        VbaBlockSyntax block)
+        VbaBlockSyntax block,
+        bool requireCompleteConditionalStructure)
         => block.ExpectedTerminator.Equals("End If", StringComparison.OrdinalIgnoreCase)
-            && VbaBlockHeaderSyntax.IsCompleteIfAncestor(tree, block.OpenerRange)
+            && VbaBlockHeaderSyntax.IsCompleteIfAncestor(
+                tree,
+                block.OpenerRange,
+                requireCompleteConditionalStructure)
             && HasExactIfBranches(tree, block)
             && HasExactCloserWhenPresent(tree, block);
 
     private static bool IsCompleteWith(
         VbaSyntaxTree tree,
-        VbaBlockSyntax block)
+        VbaBlockSyntax block,
+        bool requireCompleteConditionalStructure)
         => block.ExpectedTerminator.Equals("End With", StringComparison.OrdinalIgnoreCase)
-            && VbaBlockHeaderSyntax.IsCompleteWithAncestor(tree, block.OpenerRange)
+            && VbaBlockHeaderSyntax.IsCompleteWithAncestor(
+                tree,
+                block.OpenerRange,
+                requireCompleteConditionalStructure)
             && block.Branches.Count == 0
             && HasExactCloserWhenPresent(tree, block);
 
     private static bool IsCompleteFor(
         VbaSyntaxTree tree,
-        VbaBlockSyntax block)
+        VbaBlockSyntax block,
+        bool requireCompleteConditionalStructure)
         => block.ExpectedTerminator.Equals("Next", StringComparison.OrdinalIgnoreCase)
-            && VbaBlockHeaderSyntax.IsCompleteForAncestor(tree, block.OpenerRange)
+            && VbaBlockHeaderSyntax.IsCompleteForAncestor(
+                tree,
+                block.OpenerRange,
+                requireCompleteConditionalStructure)
             && block.Branches.Count == 0
             && HasExactCloserWhenPresent(tree, block);
 
     private static bool IsCompleteSelect(
         VbaSyntaxTree tree,
-        VbaBlockSyntax block)
+        VbaBlockSyntax block,
+        bool requireCompleteConditionalStructure)
         => block.ExpectedTerminator.Equals(
                 "End Select",
                 StringComparison.OrdinalIgnoreCase)
-            && VbaBlockHeaderSyntax.IsCompleteSelectCaseAncestor(tree, block.OpenerRange)
+            && VbaBlockHeaderSyntax.IsCompleteSelectCaseAncestor(
+                tree,
+                block.OpenerRange,
+                requireCompleteConditionalStructure)
             && HasOnlyTriviaBeforeFirstSelectBranch(tree, block)
             && HasExactSelectBranches(tree, block)
             && HasExactCloserWhenPresent(tree, block);

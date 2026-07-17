@@ -122,7 +122,6 @@ public sealed class VbaBlockHeaderSyntaxTests
     [InlineData("file:///C:/work/Module1.bas", "Private Type Outer\n    Private Enum Inner\nEnd Type", 1)]
     [InlineData("file:///C:/work/Module1.bas", "Public Sub Main()\nEnd Sub\nPublic Enum State", 2)]
     [InlineData("file:///C:/work/Module1.bas", "Public Function Value() As Long\nEnd Function\nPrivate Type Record", 2)]
-    [InlineData("file:///C:/work/Module1.bas", "#If VBA7 Then\nPublic Enum State\n#End If", 1)]
     [InlineData("file:///C:/work/Module1.bas", "Public Enum State _\n", 0)]
     [InlineData("file:///C:/work/Dialog.frm", "Private Type Record", 0)]
     public void Incomplete_illegal_and_structurally_ambiguous_module_declarations_are_rejected(
@@ -502,7 +501,6 @@ public sealed class VbaBlockHeaderSyntaxTests
     [InlineData("Public Sub Main()\n    With VBA.Choose(Index:=1)", 1)]
     [InlineData("Public Sub Main()\n    With target:", 1)]
     [InlineData("Public Sub Main()\n    With target\n    End With", 2)]
-    [InlineData("#If VBA7 Then\nPublic Sub Main()\n    With target\n#End If", 2)]
     public void Incomplete_invalid_module_level_and_boundary_with_forms_are_rejected(
         string source,
         int line)
@@ -668,7 +666,6 @@ public sealed class VbaBlockHeaderSyntaxTests
     [InlineData("Public Sub Main()\n    For index = 1 To 3:", 1)]
     [InlineData("Public Sub Main()\n    For index = 1 To 3 _\n", 1)]
     [InlineData("Public Sub Outer()\n    Public Sub Inner()\n        For index = 1 To 3", 2)]
-    [InlineData("#If VBA7 Then\nPublic Sub Main()\n    For index = 1 To 3\n#End If", 2)]
     public void Incomplete_ineligible_and_structurally_ambiguous_for_headers_are_rejected(
         string source,
         int line)
@@ -814,7 +811,6 @@ public sealed class VbaBlockHeaderSyntaxTests
     [InlineData("Public Sub Main()\n    Case 1", 1)]
     [InlineData("Public Sub Main()\n    Case Else", 1)]
     [InlineData("Public Sub Main()\n    End Select", 1)]
-    [InlineData("#If VBA7 Then\nPublic Sub Main()\n    Select Case value\n#End If", 2)]
     public void Incomplete_module_level_branch_and_preprocessor_select_forms_are_rejected(
         string source,
         int line)
@@ -876,7 +872,6 @@ public sealed class VbaBlockHeaderSyntaxTests
     [InlineData("Public Sub Outer()\n    Public Sub Inner()\n        If True Then", 2)]
     [InlineData("Public Enum Mode\n    If True Then", 1)]
     [InlineData("Public Type Item\n    If True Then", 1)]
-    [InlineData("#If VBA7 Then\nPublic Sub Main()\n    If True Then\n#End If", 2)]
     public void Module_level_single_line_incomplete_and_branch_if_forms_are_rejected(
         string source,
         int line)
@@ -1186,17 +1181,33 @@ public sealed class VbaBlockHeaderSyntaxTests
         Assert.Null(VbaBlockHeaderSyntax.FindAtPosition(classTree, 0, source.Length));
     }
 
-    [Theory]
-    [InlineData("#If VBA7 Then\nPublic Sub Run()", 1)]
-    [InlineData("#If VBA7 Then\n#End If\nPublic Sub Run()", 2)]
-    public void Conditional_compilation_contexts_fail_closed_until_branch_locality_is_supported(
-        string source,
-        int line)
+    [Fact]
+    public void Header_retains_its_conditional_compilation_branch_identity()
     {
-        var lines = source.Split('\n');
+        const string source = "#If VBA7 Then\nPublic Sub Run()\n#End If";
         var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
 
-        var header = VbaBlockHeaderSyntax.FindAtPosition(tree, line, lines[line].Length);
+        var header = VbaBlockHeaderSyntax.FindAtPosition(
+            tree,
+            line: 1,
+            character: "Public Sub Run()".Length);
+
+        Assert.NotNull(header);
+        var branch = Assert.Single(header.ConditionalCompilationBranchPath.Branches);
+        Assert.Equal(source.IndexOf("#If", StringComparison.Ordinal), branch.IfDirectiveOffset);
+        Assert.Equal(branch.IfDirectiveOffset, branch.BranchDirectiveOffset);
+    }
+
+    [Fact]
+    public void Header_fails_closed_after_a_malformed_conditional_directive()
+    {
+        const string source = "#Ifx VBA7 Then\nPublic Sub Run()";
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(
+            tree,
+            line: 1,
+            character: "Public Sub Run()".Length);
 
         Assert.Null(header);
     }

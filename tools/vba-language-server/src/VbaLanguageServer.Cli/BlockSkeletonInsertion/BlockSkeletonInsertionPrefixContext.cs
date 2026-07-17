@@ -8,7 +8,8 @@ internal sealed record BlockSkeletonInsertionPrefixBlock(
     string ExpectedTerminator,
     VbaSyntaxRange OpenerRange,
     VbaSyntaxRange StatementRange,
-    string LeadingWhitespace);
+    string LeadingWhitespace,
+    VbaConditionalCompilationBranchPath ConditionalCompilationBranchPath);
 
 internal sealed record BlockSkeletonInsertionPrefixContext(
     BlockSkeletonInsertionPrefixBlock Candidate,
@@ -35,7 +36,7 @@ internal sealed record BlockSkeletonInsertionPrefixContext(
             return false;
         }
 
-        var prefixHeader = VbaBlockHeaderSyntax.FindAtPosition(
+        var prefixHeader = VbaBlockHeaderSyntax.FindAtPrefixPosition(
             prefixTree,
             header.FinalPhysicalLine,
             header.Range.End.Character);
@@ -65,42 +66,92 @@ internal sealed record BlockSkeletonInsertionPrefixContext(
         if (prefixTree.Module.Blocks.Any(block =>
             block.IsMalformedBarrier
             && block.Range.Start.Offset < candidateBlock.OpenerRange.Start.Offset
-            && candidateBlock.OpenerRange.Start.Offset <= block.Range.End.Offset))
+            && candidateBlock.OpenerRange.Start.Offset <= block.Range.End.Offset
+            && VbaConditionalCompilationBranchFacts
+                .CanMalformedBarrierAffectPath(
+                    prefixTree,
+                    block,
+                    header.ConditionalCompilationBranchPath,
+                    requireCompleteStructure: false)))
         {
             return false;
         }
 
-        var openPath = prefixTree.Module.Blocks
+        var openBlocks = prefixTree.Module.Blocks
             .Where(block =>
                 !block.IsMalformedBarrier
                 && block.CloserRange is null
                 && block.Range.End.Offset == prefixText.Length
                 && block.OpenerRange.Start.Offset <= candidateBlock.OpenerRange.Start.Offset)
+            .ToArray();
+        var openPath = new List<VbaBlockSyntax>(openBlocks.Length);
+        foreach (var block in openBlocks)
+        {
+            if (!VbaConditionalCompilationBranchFacts.TryGetPath(
+                prefixTree,
+                block.OpenerRange,
+                requireCompleteStructure: false,
+                out var blockPath))
+            {
+                return false;
+            }
+
+            if (blockPath.IsPrefixOf(header.ConditionalCompilationBranchPath))
+            {
+                openPath.Add(block);
+                continue;
+            }
+
+            if (VbaConditionalCompilationBranchFacts.CanCoexist(
+                blockPath,
+                header.ConditionalCompilationBranchPath))
+            {
+                return false;
+            }
+        }
+
+        var orderedOpenPath = openPath
             .OrderBy(block => block.OpenerRange.Start.Offset)
             .ThenByDescending(block => block.OpenerRange.End.Offset)
             .ToArray();
-        var candidateIndexes = openPath
+        var candidateIndexes = orderedOpenPath
             .Select((block, index) => (block, index))
             .Where(item => item.block == candidateBlock)
             .Select(item => item.index)
             .ToArray();
-        if (candidateIndexes.Length != 1 || candidateIndexes[0] != openPath.Length - 1)
+        if (candidateIndexes.Length != 1
+            || candidateIndexes[0] != orderedOpenPath.Length - 1)
         {
             return false;
         }
 
-        if (openPath
-            .Take(openPath.Length - 1)
-            .Any(block => !VbaBlockAncestorSyntax.IsComplete(prefixTree, block)))
+        if (orderedOpenPath
+            .Take(orderedOpenPath.Length - 1)
+            .Any(block => !VbaBlockAncestorSyntax.IsCompletePrefix(
+                prefixTree,
+                block,
+                header.ConditionalCompilationBranchPath)))
         {
             return false;
         }
 
         var source = VbaSourceText.From(prefixText);
-        var path = openPath.Select(block => CreateBlock(source, block)).ToArray();
+        var path = new List<BlockSkeletonInsertionPrefixBlock>(orderedOpenPath.Length);
+        foreach (var block in orderedOpenPath)
+        {
+            if (!TryCreateBlock(prefixTree, source, block, out var prefixBlock))
+            {
+                return false;
+            }
+
+            path.Add(prefixBlock);
+        }
+
         var candidate = path[^1];
-        var ancestors = path[..^1];
+        var ancestors = path.Take(path.Count - 1).ToArray();
         if (!candidate.LeadingWhitespace.Equals(header.LeadingWhitespace, StringComparison.Ordinal)
+            || !candidate.ConditionalCompilationBranchPath.Equals(
+                header.ConditionalCompilationBranchPath)
             || !HasEligibleAncestry(header.Kind, ancestors, candidate))
         {
             return false;
@@ -140,7 +191,9 @@ internal sealed record BlockSkeletonInsertionPrefixContext(
         {
             var parentIndentation = path[index - 1].LeadingWhitespace;
             var childIndentation = path[index].LeadingWhitespace;
-            if (childIndentation.Length <= parentIndentation.Length
+            if (!path[index - 1].ConditionalCompilationBranchPath.IsPrefixOf(
+                    path[index].ConditionalCompilationBranchPath)
+                || childIndentation.Length <= parentIndentation.Length
                 || !childIndentation.StartsWith(parentIndentation, StringComparison.Ordinal))
             {
                 return false;
@@ -150,16 +203,28 @@ internal sealed record BlockSkeletonInsertionPrefixContext(
         return true;
     }
 
-    private static BlockSkeletonInsertionPrefixBlock CreateBlock(
+    private static bool TryCreateBlock(
+        VbaSyntaxTree tree,
         VbaSourceText source,
-        VbaBlockSyntax block)
+        VbaBlockSyntax block,
+        out BlockSkeletonInsertionPrefixBlock prefixBlock)
     {
+        prefixBlock = default!;
         var firstLine = source.Lines[block.OpenerRange.Start.Line];
         var finalLine = source.Lines[block.OpenerRange.End.Line];
         var leadingWhitespaceLength = firstLine.Text
             .TakeWhile(value => value is ' ' or '\t')
             .Count();
-        return new BlockSkeletonInsertionPrefixBlock(
+        if (!VbaConditionalCompilationBranchFacts.TryGetPath(
+            tree,
+            block.OpenerRange,
+            requireCompleteStructure: false,
+            out var conditionalCompilationBranchPath))
+        {
+            return false;
+        }
+
+        prefixBlock = new BlockSkeletonInsertionPrefixBlock(
             block.Kind,
             block.ExpectedTerminator,
             block.OpenerRange,
@@ -172,7 +237,9 @@ internal sealed record BlockSkeletonInsertionPrefixContext(
                     finalLine.LineNumber,
                     finalLine.Text.Length,
                     finalLine.EndOffset)),
-            firstLine.Text[..leadingWhitespaceLength]);
+            firstLine.Text[..leadingWhitespaceLength],
+            conditionalCompilationBranchPath);
+        return true;
     }
 
     private static VbaBlockKind GetStructuralKind(VbaBlockHeaderKind headerKind)

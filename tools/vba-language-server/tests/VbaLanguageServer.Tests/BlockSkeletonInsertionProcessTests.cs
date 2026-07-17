@@ -53,6 +53,148 @@ public sealed class BlockSkeletonInsertionProcessTests
     }
 
     [Fact]
+    public async Task Complete_sub_header_inside_one_conditional_branch_returns_a_plan()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+
+        const string uri = "file:///C:/work/ConditionalSub.bas";
+        const string header = "Public Sub Run()";
+        const int version = 7;
+        const string text = "#If VBA7 Then\n"
+            + "#Else\n"
+            + $"{header}\n"
+            + "  \n"
+            + "#End If";
+        await server.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, version, text));
+
+        var response = await SendInsertionRequestAsync(
+            server,
+            id: 2,
+            uri,
+            version,
+            character: header.Length,
+            line: 2);
+
+        var plan = response.GetProperty("result");
+        Assert.Equal(version, plan.GetProperty("documentVersion").GetInt32());
+        Assert.Equal(2, plan.GetProperty("position").GetProperty("line").GetInt32());
+        Assert.Equal(header.Length, plan.GetProperty("position").GetProperty("character").GetInt32());
+        Assert.Equal("\n  ", plan.GetProperty("textBeforeCursor").GetString());
+        Assert.Equal("\nEnd Sub", plan.GetProperty("textAfterCursor").GetString());
+
+        await server.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Unrelated_cross_branch_block_ownership_does_not_suppress_a_plan()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+
+        const string uri = "file:///C:/work/CrossBranchBlock.bas";
+        const string header = "Public Sub Candidate()";
+        const int version = 8;
+        const string text = "#If VBA7 Then\n"
+            + "Public Sub CrossBranch()\n"
+            + "#Else\n"
+            + "End Sub\n"
+            + "#End If\n"
+            + "#If Win64 Then\n"
+            + $"{header}\n"
+            + "  \n"
+            + "#End If";
+        await server.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, version, text));
+
+        var response = await SendInsertionRequestAsync(
+            server,
+            id: 2,
+            uri,
+            version,
+            character: header.Length,
+            line: 6);
+
+        var plan = response.GetProperty("result");
+        Assert.Equal(version, plan.GetProperty("documentVersion").GetInt32());
+        Assert.Equal("\n  ", plan.GetProperty("textBeforeCursor").GetString());
+        Assert.Equal("\nEnd Sub", plan.GetProperty("textAfterCursor").GetString());
+
+        await server.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Candidate_cross_branch_block_ownership_returns_null_through_the_protocol()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+
+        const string uri = "file:///C:/work/CandidateCrossBranch.bas";
+        const string header = "Public Sub Candidate()";
+        const int version = 8;
+        const string text = "#If VBA7 Then\n"
+            + $"{header}\n"
+            + "  \n"
+            + "#Else\n"
+            + "End Sub\n"
+            + "#End If";
+        await server.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, version, text));
+
+        var response = await SendInsertionRequestAsync(
+            server,
+            id: 2,
+            uri,
+            version,
+            character: header.Length,
+            line: 1);
+
+        Assert.Equal(
+            System.Text.Json.JsonValueKind.Null,
+            response.GetProperty("result").ValueKind);
+
+        await server.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Malformed_nested_conditional_ownership_returns_null_through_the_protocol()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+
+        const string uri = "file:///C:/work/MalformedNestedConditional.bas";
+        const string header = "Public Sub Candidate()";
+        const int version = 8;
+        const string text = "#If OUTER Then\n"
+            + "#If ( Then\n"
+            + $"{header}\n"
+            + "  \n"
+            + "#End If\n"
+            + "#End If";
+        await server.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, version, text));
+
+        var response = await SendInsertionRequestAsync(
+            server,
+            id: 2,
+            uri,
+            version,
+            character: header.Length,
+            line: 2);
+
+        Assert.Equal(
+            System.Text.Json.JsonValueKind.Null,
+            response.GetProperty("result").ValueKind);
+
+        await server.ShutdownAsync(3);
+    }
+
+    [Fact]
     public async Task Safe_non_eof_sub_boundaries_return_the_same_literal_plan()
     {
         await using var server = await LanguageServerProcessHarness.StartAsync();
@@ -1172,6 +1314,65 @@ public sealed class BlockSkeletonInsertionProcessTests
 
         Assert.Equal(System.Text.Json.JsonValueKind.Null, stale.GetProperty("result").ValueKind);
         Assert.Equal(4, current.GetProperty("result").GetProperty("documentVersion").GetInt32());
+
+        await server.ShutdownAsync(4);
+    }
+
+    [Fact]
+    public async Task Conditional_branch_identity_is_bound_to_the_current_open_document_version()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+
+        const string uri = "file:///C:/work/VersionedConditional.bas";
+        const string header = "    If True Then";
+        const string versionOneText = "Public Sub Main()\n"
+            + "#If VBA7 Then\n"
+            + $"{header}\n"
+            + "      \n"
+            + "#Else\n"
+            + "#End If\n"
+            + "End Sub";
+        const string versionTwoText = "Public Sub Main()\n"
+            + "#If VBA7 Then\n"
+            + "#Else\n"
+            + $"{header}\n"
+            + "      \n"
+            + "#End If\n"
+            + "End Sub";
+        await server.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, version: 1, text: versionOneText));
+        await server.SendNotificationAsync(
+            "textDocument/didChange",
+            new
+            {
+                textDocument = new { uri, version = 2 },
+                contentChanges = new[] { new { text = versionTwoText } }
+            });
+
+        var stale = await SendInsertionRequestAsync(
+            server,
+            id: 2,
+            uri,
+            version: 1,
+            character: header.Length,
+            line: 2);
+        var current = await SendInsertionRequestAsync(
+            server,
+            id: 3,
+            uri,
+            version: 2,
+            character: header.Length,
+            line: 3);
+
+        Assert.Equal(
+            System.Text.Json.JsonValueKind.Null,
+            stale.GetProperty("result").ValueKind);
+        var plan = current.GetProperty("result");
+        Assert.Equal(2, plan.GetProperty("documentVersion").GetInt32());
+        Assert.Equal("\n      ", plan.GetProperty("textBeforeCursor").GetString());
+        Assert.Equal("\n    End If", plan.GetProperty("textAfterCursor").GetString());
 
         await server.ShutdownAsync(4);
     }

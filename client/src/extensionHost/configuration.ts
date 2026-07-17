@@ -5,6 +5,15 @@ export interface ExtensionHostRuntimeSelection {
   readonly vscodeExecutablePath: string | undefined;
 }
 
+export function createExtensionHostLaunchArgs(userDataPath: string): string[] {
+  return [
+    '--disable-extensions',
+    '--skip-welcome',
+    '--skip-release-notes',
+    `--user-data-dir=${userDataPath}`
+  ];
+}
+
 export function createExtensionHostRuntimeSelection(
   environment: Readonly<Record<string, string | undefined>>
 ): ExtensionHostRuntimeSelection {

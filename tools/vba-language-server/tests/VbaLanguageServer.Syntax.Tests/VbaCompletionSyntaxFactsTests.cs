@@ -215,9 +215,25 @@ public sealed class VbaCompletionSyntaxFactsTests
         var barrier = Assert.Single(tree.Module.Blocks, block => block.IsMalformedBarrier);
         Assert.Equal(3, barrier.Range.Start.Line);
         Assert.Equal(6, barrier.Range.End.Line);
+        Assert.Null(barrier.MalformedBarrierOwnerRange);
         var position = tree.GetPositionSyntax(4, 4);
         Assert.Contains(position.EnclosingBlocks, block => block.Block.IsMalformedBarrier);
         Assert.Equal(VbaCompletionExpectation.None, position.CompletionExpectation);
+    }
+
+    [Fact]
+    public void MismatchedCloserRetainsTheInterveningUnclosedOwner()
+    {
+        var source = string.Join('\n', [
+            "Public Sub Run()",
+            "    With target",
+            "End Sub"
+        ]);
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.bas", source);
+
+        var barrier = Assert.Single(tree.Module.Blocks, block => block.IsMalformedBarrier);
+
+        Assert.Equal(1, barrier.MalformedBarrierOwnerRange?.Start.Line);
     }
 
     [Fact]

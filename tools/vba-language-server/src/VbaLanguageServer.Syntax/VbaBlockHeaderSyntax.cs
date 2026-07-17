@@ -75,19 +75,26 @@ public enum VbaBlockHeaderKind
 /// <param name="FinalPhysicalLine">The final physical line of the logical header.</param>
 /// <param name="LeadingWhitespace">The exact leading whitespace of the first physical line.</param>
 /// <param name="ExpectedTerminator">The canonical matching terminator.</param>
+/// <param name="ConditionalCompilationBranchPath">The exact conditional-compilation branch path.</param>
 public sealed record VbaBlockHeaderSyntax(
     VbaBlockHeaderKind Kind,
     VbaSyntaxRange Range,
     int FirstPhysicalLine,
     int FinalPhysicalLine,
     string LeadingWhitespace,
-    string ExpectedTerminator)
+    string ExpectedTerminator,
+    VbaConditionalCompilationBranchPath ConditionalCompilationBranchPath)
 {
     internal static VbaCallableHeaderShape? FindCompleteCallableAncestor(
         VbaSyntaxTree tree,
-        VbaSyntaxRange openerRange)
+        VbaSyntaxRange openerRange,
+        bool requireCompleteConditionalStructure = true)
     {
-        var statement = FindCompleteAncestorStatement(tree, openerRange);
+        var statement = FindCompleteAncestorStatement(
+            tree,
+            openerRange,
+            requireCompleteConditionalStructure,
+            out _);
         if (statement is null)
         {
             return null;
@@ -117,9 +124,14 @@ public sealed record VbaBlockHeaderSyntax(
 
     internal static bool IsCompleteIfAncestor(
         VbaSyntaxTree tree,
-        VbaSyntaxRange openerRange)
+        VbaSyntaxRange openerRange,
+        bool requireCompleteConditionalStructure = true)
     {
-        var statement = FindCompleteAncestorStatement(tree, openerRange);
+        var statement = FindCompleteAncestorStatement(
+            tree,
+            openerRange,
+            requireCompleteConditionalStructure,
+            out var conditionalCompilationBranchPath);
         if (statement is null)
         {
             return false;
@@ -133,15 +145,22 @@ public sealed record VbaBlockHeaderSyntax(
                     tree,
                     VbaBlockKind.With,
                     statement.StartOffset,
-                    statement.EndOffset))
+                    statement.EndOffset,
+                    conditionalCompilationBranchPath,
+                    requireCompleteConditionalStructure))
             && !HasDisqualifyingHeaderDiagnostic(tree, statement, CanonicalEndIf);
     }
 
     internal static bool IsCompleteWithAncestor(
         VbaSyntaxTree tree,
-        VbaSyntaxRange openerRange)
+        VbaSyntaxRange openerRange,
+        bool requireCompleteConditionalStructure = true)
     {
-        var statement = FindCompleteAncestorStatement(tree, openerRange);
+        var statement = FindCompleteAncestorStatement(
+            tree,
+            openerRange,
+            requireCompleteConditionalStructure,
+            out var conditionalCompilationBranchPath);
         if (statement is null)
         {
             return false;
@@ -154,15 +173,22 @@ public sealed record VbaBlockHeaderSyntax(
                     tree,
                     VbaBlockKind.With,
                     statement.StartOffset,
-                    statement.EndOffset))
+                    statement.EndOffset,
+                    conditionalCompilationBranchPath,
+                    requireCompleteConditionalStructure))
             && !HasDisqualifyingHeaderDiagnostic(tree, statement, CanonicalEndWith);
     }
 
     internal static bool IsCompleteForAncestor(
         VbaSyntaxTree tree,
-        VbaSyntaxRange openerRange)
+        VbaSyntaxRange openerRange,
+        bool requireCompleteConditionalStructure = true)
     {
-        var statement = FindCompleteAncestorStatement(tree, openerRange);
+        var statement = FindCompleteAncestorStatement(
+            tree,
+            openerRange,
+            requireCompleteConditionalStructure,
+            out var conditionalCompilationBranchPath);
         if (statement is null)
         {
             return false;
@@ -175,16 +201,23 @@ public sealed record VbaBlockHeaderSyntax(
                     tree,
                     VbaBlockKind.With,
                     statement.StartOffset,
-                    statement.EndOffset),
+                    statement.EndOffset,
+                    conditionalCompilationBranchPath,
+                    requireCompleteConditionalStructure),
                 out _)
             && !HasDisqualifyingHeaderDiagnostic(tree, statement, CanonicalNext);
     }
 
     internal static bool IsCompleteSelectCaseAncestor(
         VbaSyntaxTree tree,
-        VbaSyntaxRange openerRange)
+        VbaSyntaxRange openerRange,
+        bool requireCompleteConditionalStructure = true)
     {
-        var statement = FindCompleteAncestorStatement(tree, openerRange);
+        var statement = FindCompleteAncestorStatement(
+            tree,
+            openerRange,
+            requireCompleteConditionalStructure,
+            out var conditionalCompilationBranchPath);
         if (statement is null)
         {
             return false;
@@ -197,19 +230,19 @@ public sealed record VbaBlockHeaderSyntax(
                     tree,
                     VbaBlockKind.With,
                     statement.StartOffset,
-                    statement.EndOffset))
+                    statement.EndOffset,
+                    conditionalCompilationBranchPath,
+                    requireCompleteConditionalStructure))
             && !HasDisqualifyingHeaderDiagnostic(tree, statement, CanonicalEndSelect);
     }
 
     private static VbaLogicalStatementSpan? FindCompleteAncestorStatement(
         VbaSyntaxTree tree,
-        VbaSyntaxRange openerRange)
+        VbaSyntaxRange openerRange,
+        bool requireCompleteConditionalStructure,
+        out VbaConditionalCompilationBranchPath conditionalCompilationBranchPath)
     {
-        if (HasConditionalCompilationDirective(tree.TokenStream))
-        {
-            return null;
-        }
-
+        conditionalCompilationBranchPath = default!;
         var statements = VbaLogicalStatementSpan
             .Build(tree.SourceText.Text.Length, tree.TokenStream.Tokens)
             .Where(candidate => candidate.Range.Equals(openerRange))
@@ -221,6 +254,15 @@ public sealed record VbaBlockHeaderSyntax(
         }
 
         var statement = statements[0];
+        if (!VbaConditionalCompilationBranchFacts.TryGetPath(
+            tree,
+            statement.Range,
+            requireCompleteConditionalStructure,
+            out conditionalCompilationBranchPath))
+        {
+            return null;
+        }
+
         var tokens = statement.SignificantTokens;
         var firstPhysicalLine = tokens[0].Range.Start.Line;
         var finalPhysicalLine = tokens[^1].Range.End.Line;
@@ -246,13 +288,33 @@ public sealed record VbaBlockHeaderSyntax(
         VbaSyntaxTree tree,
         int line,
         int character)
+        => FindAtPositionCore(
+            tree,
+            line,
+            character,
+            requireCompleteConditionalStructure: true);
+
+    internal static VbaBlockHeaderSyntax? FindAtPrefixPosition(
+        VbaSyntaxTree tree,
+        int line,
+        int character)
+        => FindAtPositionCore(
+            tree,
+            line,
+            character,
+            requireCompleteConditionalStructure: false);
+
+    private static VbaBlockHeaderSyntax? FindAtPositionCore(
+        VbaSyntaxTree tree,
+        int line,
+        int character,
+        bool requireCompleteConditionalStructure)
     {
         var source = tree.SourceText;
         if (line < 0
             || line >= source.Lines.Count
             || character < 0
-            || character != source.Lines[line].Text.Length
-            || HasConditionalCompilationDirective(tree.TokenStream))
+            || character != source.Lines[line].Text.Length)
         {
             return null;
         }
@@ -264,6 +326,15 @@ public sealed record VbaBlockHeaderSyntax(
                 candidate.EndOffset == positionOffset
                 && candidate.SignificantTokens.Count > 0);
         if (statement is null || statement.EndsWithColon)
+        {
+            return null;
+        }
+
+        if (!VbaConditionalCompilationBranchFacts.TryGetPath(
+            tree,
+            statement.Range,
+            requireCompleteConditionalStructure,
+            out var conditionalCompilationBranchPath))
         {
             return null;
         }
@@ -282,8 +353,16 @@ public sealed record VbaBlockHeaderSyntax(
                 || tree.TokenStream.Tokens.Any(token =>
                     token.Kind == VbaTokenKind.LineContinuation
                     && token.Range.Start.Line == line)
-                || HasEnclosingBlockBarrier(tree, statement)
-                || HasPrecedingCallableBody(tree, statement)
+                || HasEnclosingBlockBarrier(
+                    tree,
+                    statement,
+                    conditionalCompilationBranchPath,
+                    requireCompleteConditionalStructure)
+                || HasPrecedingCallableBody(
+                    tree,
+                    statement,
+                    conditionalCompilationBranchPath,
+                    requireCompleteConditionalStructure)
                 || HasDisqualifyingHeaderDiagnostic(tree, statement, declarationTerminator))
             {
                 return null;
@@ -295,7 +374,8 @@ public sealed record VbaBlockHeaderSyntax(
                 line,
                 character,
                 declarationKind,
-                declarationTerminator);
+                declarationTerminator,
+                conditionalCompilationBranchPath);
         }
 
         if (TryGetCompleteCallableShape(tokens, tree.Module.Kind, out var callableShape))
@@ -307,7 +387,11 @@ public sealed record VbaBlockHeaderSyntax(
                 || tree.TokenStream.Tokens.Any(token =>
                     token.Kind == VbaTokenKind.LineContinuation
                     && token.Range.Start.Line == line)
-                || HasPrecedingOpenBlockBarrier(tree, statement)
+                || HasPrecedingOpenBlockBarrier(
+                    tree,
+                    statement,
+                    conditionalCompilationBranchPath,
+                    requireCompleteConditionalStructure)
                 || HasDisqualifyingHeaderDiagnostic(
                     tree,
                     statement,
@@ -338,7 +422,8 @@ public sealed record VbaBlockHeaderSyntax(
                     line,
                     character,
                     callableShape.HeaderKind,
-                    callableShape.ExpectedTerminator);
+                    callableShape.ExpectedTerminator,
+                    conditionalCompilationBranchPath);
         }
 
         if (tokens.Count > 0 && Matches(tokens[0], "With"))
@@ -350,14 +435,20 @@ public sealed record VbaBlockHeaderSyntax(
                         tree,
                         VbaBlockKind.With,
                         statement.StartOffset,
-                        statement.EndOffset))
+                        statement.EndOffset,
+                        conditionalCompilationBranchPath,
+                        requireCompleteConditionalStructure))
                 || tokens[^1].Range.End.Line != line
                 || !HasOnlyLeadingWhitespace(source.Lines[tokens[0].Range.Start.Line], tokens[0])
                 || !HasOnlyTrailingSpacesOrApostropheComment(source.Lines[line], tokens[^1])
                 || tree.TokenStream.Tokens.Any(token =>
                     token.Kind == VbaTokenKind.LineContinuation
                     && token.Range.Start.Line == line)
-                || !HasCallableOwner(tree, statement)
+                || !HasCallableOwner(
+                    tree,
+                    statement,
+                    conditionalCompilationBranchPath,
+                    requireCompleteConditionalStructure)
                 || HasDisqualifyingHeaderDiagnostic(tree, statement, CanonicalEndWith))
             {
                 return null;
@@ -369,7 +460,8 @@ public sealed record VbaBlockHeaderSyntax(
                 line,
                 character,
                 VbaBlockHeaderKind.With,
-                CanonicalEndWith);
+                CanonicalEndWith,
+                conditionalCompilationBranchPath);
         }
 
         if (tokens.Count > 0 && Matches(tokens[0], "For"))
@@ -381,7 +473,9 @@ public sealed record VbaBlockHeaderSyntax(
                         tree,
                         VbaBlockKind.With,
                         statement.StartOffset,
-                        statement.EndOffset),
+                        statement.EndOffset,
+                        conditionalCompilationBranchPath,
+                        requireCompleteConditionalStructure),
                     out var forHeaderKind)
                 || tokens[^1].Range.End.Line != line
                 || !HasOnlyLeadingWhitespace(source.Lines[tokens[0].Range.Start.Line], tokens[0])
@@ -389,7 +483,11 @@ public sealed record VbaBlockHeaderSyntax(
                 || tree.TokenStream.Tokens.Any(token =>
                     token.Kind == VbaTokenKind.LineContinuation
                     && token.Range.Start.Line == line)
-                || !HasCallableOwner(tree, statement)
+                || !HasCallableOwner(
+                    tree,
+                    statement,
+                    conditionalCompilationBranchPath,
+                    requireCompleteConditionalStructure)
                 || HasDisqualifyingHeaderDiagnostic(tree, statement, CanonicalNext))
             {
                 return null;
@@ -401,7 +499,8 @@ public sealed record VbaBlockHeaderSyntax(
                 line,
                 character,
                 forHeaderKind,
-                CanonicalNext);
+                CanonicalNext,
+                conditionalCompilationBranchPath);
         }
 
         if (tokens.Count > 0 && Matches(tokens[0], "Select"))
@@ -413,14 +512,20 @@ public sealed record VbaBlockHeaderSyntax(
                         tree,
                         VbaBlockKind.With,
                         statement.StartOffset,
-                        statement.EndOffset))
+                        statement.EndOffset,
+                        conditionalCompilationBranchPath,
+                        requireCompleteConditionalStructure))
                 || tokens[^1].Range.End.Line != line
                 || !HasOnlyLeadingWhitespace(source.Lines[tokens[0].Range.Start.Line], tokens[0])
                 || !HasOnlyTrailingSpacesOrApostropheComment(source.Lines[line], tokens[^1])
                 || tree.TokenStream.Tokens.Any(token =>
                     token.Kind == VbaTokenKind.LineContinuation
                     && token.Range.Start.Line == line)
-                || !HasCallableOwner(tree, statement)
+                || !HasCallableOwner(
+                    tree,
+                    statement,
+                    conditionalCompilationBranchPath,
+                    requireCompleteConditionalStructure)
                 || HasDisqualifyingHeaderDiagnostic(tree, statement, CanonicalEndSelect))
             {
                 return null;
@@ -432,7 +537,8 @@ public sealed record VbaBlockHeaderSyntax(
                 line,
                 character,
                 VbaBlockHeaderKind.SelectCase,
-                CanonicalEndSelect);
+                CanonicalEndSelect,
+                conditionalCompilationBranchPath);
         }
 
         if (!HasCompleteBlockIfTokenShape(
@@ -442,14 +548,20 @@ public sealed record VbaBlockHeaderSyntax(
                     tree,
                     VbaBlockKind.With,
                     statement.StartOffset,
-                    statement.EndOffset))
+                    statement.EndOffset,
+                    conditionalCompilationBranchPath,
+                    requireCompleteConditionalStructure))
             || tokens[^1].Range.End.Line != line
             || !HasOnlyLeadingWhitespace(source.Lines[tokens[0].Range.Start.Line], tokens[0])
             || !HasOnlyTrailingSpacesOrApostropheComment(source.Lines[line], tokens[^1])
             || tree.TokenStream.Tokens.Any(token =>
                 token.Kind == VbaTokenKind.LineContinuation
                 && token.Range.Start.Line == line)
-            || !HasCallableOwner(tree, statement)
+            || !HasCallableOwner(
+                tree,
+                statement,
+                conditionalCompilationBranchPath,
+                requireCompleteConditionalStructure)
             || HasDisqualifyingHeaderDiagnostic(tree, statement, CanonicalEndIf))
         {
             return null;
@@ -461,7 +573,8 @@ public sealed record VbaBlockHeaderSyntax(
             line,
             character,
             VbaBlockHeaderKind.If,
-            CanonicalEndIf);
+            CanonicalEndIf,
+            conditionalCompilationBranchPath);
     }
 
     private static VbaBlockHeaderSyntax CreateHeader(
@@ -470,7 +583,8 @@ public sealed record VbaBlockHeaderSyntax(
         int finalPhysicalLine,
         int finalCharacter,
         VbaBlockHeaderKind kind,
-        string expectedTerminator)
+        string expectedTerminator,
+        VbaConditionalCompilationBranchPath conditionalCompilationBranchPath)
     {
         var firstPhysicalLine = tokens[0].Range.Start.Line;
         var firstLine = source.Lines[firstPhysicalLine];
@@ -489,7 +603,8 @@ public sealed record VbaBlockHeaderSyntax(
             firstPhysicalLine,
             finalPhysicalLine,
             firstLine.Text[..leadingWhitespaceLength],
-            expectedTerminator);
+            expectedTerminator,
+            conditionalCompilationBranchPath);
     }
 
     private static string CanonicalEndSub
@@ -1011,20 +1126,32 @@ public sealed record VbaBlockHeaderSyntax(
 
     private static bool HasCallableOwner(
         VbaSyntaxTree tree,
-        VbaLogicalStatementSpan statement)
+        VbaLogicalStatementSpan statement,
+        VbaConditionalCompilationBranchPath selectedPath,
+        bool requireCompleteConditionalStructure)
     {
         var owners = tree.Module.CallableDeclarations
             .Where(declaration =>
                 !declaration.IsExternal
                 && declaration.BlockRange.Start.Offset < statement.StartOffset
-                && statement.EndOffset <= declaration.BlockRange.End.Offset)
+                && statement.EndOffset <= declaration.BlockRange.End.Offset
+                && HasAncestorPath(
+                    tree,
+                    declaration.Range,
+                    selectedPath,
+                    requireCompleteConditionalStructure))
             .Take(2)
             .ToArray();
         var enclosingProcedures = tree.Module.Blocks
             .Where(block =>
                 block.Kind == VbaBlockKind.Procedure
                 && block.OpenerRange.Start.Offset < statement.StartOffset
-                && statement.EndOffset <= block.Range.End.Offset)
+                && statement.EndOffset <= block.Range.End.Offset
+                && HasAncestorPath(
+                    tree,
+                    block.OpenerRange,
+                    selectedPath,
+                    requireCompleteConditionalStructure))
             .Take(2)
             .ToArray();
         return owners.Length == 1
@@ -1032,7 +1159,13 @@ public sealed record VbaBlockHeaderSyntax(
             && !tree.Module.Blocks.Any(block =>
                 block.IsMalformedBarrier
                 && block.Range.Start.Offset < statement.StartOffset
-                && statement.EndOffset <= block.Range.End.Offset);
+                && statement.EndOffset <= block.Range.End.Offset
+                && VbaConditionalCompilationBranchFacts
+                    .CanMalformedBarrierAffectPath(
+                        tree,
+                        block,
+                        selectedPath,
+                        requireCompleteConditionalStructure));
     }
 
     private static bool HasCompleteParameterList(
@@ -1334,25 +1467,72 @@ public sealed record VbaBlockHeaderSyntax(
 
     private static bool HasPrecedingOpenBlockBarrier(
         VbaSyntaxTree tree,
-        VbaLogicalStatementSpan statement)
+        VbaLogicalStatementSpan statement,
+        VbaConditionalCompilationBranchPath selectedPath,
+        bool requireCompleteConditionalStructure)
         => tree.Module.Blocks.Any(block =>
             block.CloserRange is null
             && block.OpenerRange.Start.Offset < statement.StartOffset
-            && statement.EndOffset <= block.Range.End.Offset);
+            && statement.EndOffset <= block.Range.End.Offset
+            && (block.IsMalformedBarrier
+                ? VbaConditionalCompilationBranchFacts
+                    .CanMalformedBarrierAffectPath(
+                        tree,
+                        block,
+                        selectedPath,
+                        requireCompleteConditionalStructure)
+                : VbaConditionalCompilationBranchFacts.CanRangeAffectPath(
+                    tree,
+                    block.OpenerRange,
+                    selectedPath,
+                    requireCompleteConditionalStructure)));
 
     private static bool HasEnclosingBlockBarrier(
         VbaSyntaxTree tree,
-        VbaLogicalStatementSpan statement)
+        VbaLogicalStatementSpan statement,
+        VbaConditionalCompilationBranchPath selectedPath,
+        bool requireCompleteConditionalStructure)
         => tree.Module.Blocks.Any(block =>
             block.OpenerRange.Start.Offset < statement.StartOffset
-            && statement.EndOffset <= block.Range.End.Offset);
+            && statement.EndOffset <= block.Range.End.Offset
+            && (block.IsMalformedBarrier
+                ? VbaConditionalCompilationBranchFacts
+                    .CanMalformedBarrierAffectPath(
+                        tree,
+                        block,
+                        selectedPath,
+                        requireCompleteConditionalStructure)
+                : VbaConditionalCompilationBranchFacts.CanRangeAffectPath(
+                    tree,
+                    block.OpenerRange,
+                    selectedPath,
+                    requireCompleteConditionalStructure)));
 
     private static bool HasPrecedingCallableBody(
         VbaSyntaxTree tree,
-        VbaLogicalStatementSpan statement)
+        VbaLogicalStatementSpan statement,
+        VbaConditionalCompilationBranchPath selectedPath,
+        bool requireCompleteConditionalStructure)
         => tree.Module.CallableDeclarations.Any(declaration =>
             !declaration.IsExternal
-            && declaration.BlockRange.End.Offset <= statement.StartOffset);
+            && declaration.BlockRange.End.Offset <= statement.StartOffset
+            && VbaConditionalCompilationBranchFacts.CanRangeAffectPath(
+                tree,
+                declaration.Range,
+                selectedPath,
+                requireCompleteConditionalStructure));
+
+    private static bool HasAncestorPath(
+        VbaSyntaxTree tree,
+        VbaSyntaxRange range,
+        VbaConditionalCompilationBranchPath selectedPath,
+        bool requireCompleteConditionalStructure)
+        => VbaConditionalCompilationBranchFacts.TryGetPath(
+                tree,
+                range,
+                requireCompleteConditionalStructure,
+                out var ownerPath)
+            && ownerPath.IsPrefixOf(selectedPath);
 
     private static bool HasDisqualifyingHeaderDiagnostic(
         VbaSyntaxTree tree,
@@ -1382,24 +1562,6 @@ public sealed record VbaBlockHeaderSyntax(
             && (moduleKind == VbaModuleKind.StandardModule
                 ? Matches(tokens[0], "Friend")
                 : Matches(tokens[0], "Global"));
-
-    private static bool HasConditionalCompilationDirective(VbaTokenStream stream)
-        => stream.Tokens.Any(token =>
-            token.Kind == VbaTokenKind.PreprocessorDirective
-            && IsConditionalCompilationDirective(token.Text));
-
-    private static bool IsConditionalCompilationDirective(string text)
-    {
-        var directive = text.TrimStart();
-        return StartsWithDirectiveWord(directive, "#If")
-            || StartsWithDirectiveWord(directive, "#ElseIf")
-            || StartsWithDirectiveWord(directive, "#Else")
-            || directive.StartsWith("#End", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool StartsWithDirectiveWord(string directive, string word)
-        => directive.StartsWith(word, StringComparison.OrdinalIgnoreCase)
-            && (directive.Length == word.Length || char.IsWhiteSpace(directive[word.Length]));
 
     private static bool AreAdjacent(VbaToken left, VbaToken right)
         => left.Range.End.Offset == right.Range.Start.Offset;

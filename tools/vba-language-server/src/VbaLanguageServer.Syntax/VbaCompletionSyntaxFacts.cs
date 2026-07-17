@@ -51,6 +51,7 @@ public sealed record VbaBlockBranchSyntax(
 /// <param name="Branches">The block branches in source order.</param>
 /// <param name="Range">The full range owned by the block.</param>
 /// <param name="IsMalformedBarrier">Whether the block prevents completion after mismatched syntax.</param>
+/// <param name="MalformedBarrierOwnerRange">The unmatched opener that caused a malformed barrier.</param>
 public sealed record VbaBlockSyntax(
     VbaBlockKind Kind,
     VbaSyntaxRange OpenerRange,
@@ -58,7 +59,8 @@ public sealed record VbaBlockSyntax(
     string ExpectedTerminator,
     IReadOnlyList<VbaBlockBranchSyntax> Branches,
     VbaSyntaxRange Range,
-    bool IsMalformedBarrier = false);
+    bool IsMalformedBarrier = false,
+    VbaSyntaxRange? MalformedBarrierOwnerRange = null);
 
 /// <summary>
 /// Represents a block enclosing an editor position and its active branch.
@@ -153,7 +155,8 @@ internal static class VbaCompletionSyntaxFactsParser
                         sourceText,
                         statement.Range,
                         stack.TryPeek(out var open) ? open.ExpectedTerminator : closeText,
-                        callableDeclarations));
+                        callableDeclarations,
+                        FindBlockingOwnerForCloser(stack, closeKind, closeText)));
                     continue;
                 }
 
@@ -169,7 +172,8 @@ internal static class VbaCompletionSyntaxFactsParser
                         sourceText,
                         statement.Range,
                         stack.TryPeek(out var open) ? open.ExpectedTerminator : string.Empty,
-                        callableDeclarations));
+                        callableDeclarations,
+                        FindBlockingOwnerForBranch(stack, branchKind)));
                     continue;
                 }
 
@@ -451,6 +455,33 @@ internal static class VbaCompletionSyntaxFactsParser
         return !hasElse;
     }
 
+    private static VbaSyntaxRange? FindBlockingOwnerForCloser(
+        Stack<OpenBlock> stack,
+        VbaBlockKind closeKind,
+        string closeText)
+    {
+        var openBlocks = stack.ToArray();
+        return openBlocks.Length > 1
+            && openBlocks.Skip(1).Any(open =>
+                open.Kind == closeKind
+                && open.ExpectedTerminator.Equals(
+                    closeText,
+                    StringComparison.OrdinalIgnoreCase))
+                ? openBlocks[0].OpenerRange
+                : null;
+    }
+
+    private static VbaSyntaxRange? FindBlockingOwnerForBranch(
+        Stack<OpenBlock> stack,
+        VbaBlockBranchKind branchKind)
+    {
+        var openBlocks = stack.ToArray();
+        return openBlocks.Length > 1
+            && openBlocks.Skip(1).Any(open => CanAcceptBranch(open, branchKind))
+                ? openBlocks[0].OpenerRange
+                : null;
+    }
+
     private static VbaBlockSyntax Close(
         OpenBlock open,
         VbaSyntaxRange? closerRange,
@@ -484,7 +515,8 @@ internal static class VbaCompletionSyntaxFactsParser
         VbaSourceText sourceText,
         VbaSyntaxRange offendingRange,
         string expectedTerminator,
-        IReadOnlyList<VbaCallableDeclarationSyntax> callableDeclarations)
+        IReadOnlyList<VbaCallableDeclarationSyntax> callableDeclarations,
+        VbaSyntaxRange? ownerRange)
     {
         var owner = FindCallableOwner(callableDeclarations, offendingRange.Start.Offset);
         var end = owner?.BlockRange.End ?? sourceText.FullRange.End;
@@ -495,7 +527,8 @@ internal static class VbaCompletionSyntaxFactsParser
             expectedTerminator,
             [],
             new VbaSyntaxRange(offendingRange.Start, end),
-            IsMalformedBarrier: true);
+            IsMalformedBarrier: true,
+            MalformedBarrierOwnerRange: ownerRange);
     }
 
     private static VbaCallableDeclarationSyntax? FindCallableOwner(

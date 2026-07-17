@@ -503,7 +503,7 @@ public sealed class VbaBlockAncestorSyntaxTests
     }
 
     [Fact]
-    public void Conditional_compilation_ancestor_context_fails_closed()
+    public void Conditional_compilation_ancestor_inside_one_branch_is_accepted()
     {
         const string source = "#If VBA7 Then\n"
             + "Public Sub Main()\n"
@@ -515,7 +515,7 @@ public sealed class VbaBlockAncestorSyntaxTests
 
         var isComplete = VbaBlockAncestorSyntax.IsComplete(tree, block);
 
-        Assert.False(isComplete);
+        Assert.True(isComplete);
     }
 
     [Theory]

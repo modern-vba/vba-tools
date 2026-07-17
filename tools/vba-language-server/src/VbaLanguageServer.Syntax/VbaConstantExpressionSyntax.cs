@@ -16,20 +16,37 @@ internal static class VbaConstantExpressionSyntax
         IReadOnlyList<VbaToken> tokens,
         int start,
         int end)
+        => IsCompleteCore(tokens, start, end, allowQualifiedNames: true);
+
+    /// <summary>
+    /// Determines whether the slice is valid for conditional compilation.
+    /// </summary>
+    public static bool IsConditionalCompilationExpressionComplete(
+        IReadOnlyList<VbaToken> tokens,
+        int start,
+        int end)
+        => IsCompleteCore(tokens, start, end, allowQualifiedNames: false);
+
+    private static bool IsCompleteCore(
+        IReadOnlyList<VbaToken> tokens,
+        int start,
+        int end,
+        bool allowQualifiedNames)
     {
         if (start < 0 || end > tokens.Count || start >= end)
         {
             return false;
         }
 
-        var parser = new Parser(tokens, start, end);
+        var parser = new Parser(tokens, start, end, allowQualifiedNames);
         return parser.Parse();
     }
 
     private sealed class Parser(
         IReadOnlyList<VbaToken> tokens,
         int start,
-        int end)
+        int end,
+        bool allowQualifiedNames)
     {
         private static readonly string SingleMaximumDigits = (
             ((System.Numerics.BigInteger.One << 24) - System.Numerics.BigInteger.One) << 104
@@ -75,12 +92,14 @@ internal static class VbaConstantExpressionSyntax
                     return false;
                 }
 
-                while (index < end
-                    && TryGetBinaryPrecedence(tokens[index], out var precedence)
+                while (TryGetBinaryOperator(
+                        index,
+                        out var precedence,
+                        out var operatorTokenCount)
                     && precedence >= minimumPrecedence)
                 {
                     var isRightAssociative = Matches(tokens[index], "^");
-                    index++;
+                    index += operatorTokenCount;
                     if (!ParseExpression(precedence + (isRightAssociative ? 0 : 1)))
                     {
                         return false;
@@ -153,7 +172,8 @@ internal static class VbaConstantExpressionSyntax
             if (VbaIdentifierSyntaxFacts.IsValidDeclaredName(token))
             {
                 index++;
-                while (index + 1 < end
+                while (allowQualifiedNames
+                    && index + 1 < end
                     && Matches(tokens[index], ".")
                     && (AreAdjacent(tokens[index - 1], tokens[index])
                         || tokens[index - 1].Range.End.Line < tokens[index].Range.Start.Line)
@@ -500,6 +520,32 @@ internal static class VbaConstantExpressionSyntax
                 _ => 0
             };
             return precedence > 0;
+        }
+
+        private bool TryGetBinaryOperator(
+            int operatorIndex,
+            out int precedence,
+            out int operatorTokenCount)
+        {
+            if (operatorIndex + 1 < end
+                && AreAdjacent(tokens[operatorIndex], tokens[operatorIndex + 1])
+                && VbaExecutableExpressionSyntax.IsTwoTokenComparisonOperator(
+                    tokens[operatorIndex],
+                    tokens[operatorIndex + 1]))
+            {
+                precedence = ComparisonPrecedence;
+                operatorTokenCount = 2;
+                return true;
+            }
+
+            operatorTokenCount = 1;
+            if (operatorIndex >= end)
+            {
+                precedence = 0;
+                return false;
+            }
+
+            return TryGetBinaryPrecedence(tokens[operatorIndex], out precedence);
         }
 
         private bool TryReadBasedIntegerBody(

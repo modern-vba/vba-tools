@@ -231,6 +231,50 @@ public sealed class LanguageServerProcessTests
     }
 
     [Fact]
+    public async Task Explicit_end_statement_completion_remains_available_inside_a_conditional_branch()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalCompletion.bas";
+        var lines = new[]
+        {
+            "Attribute VB_Name = \"ConditionalCompletion\"",
+            "Public Sub Main()",
+            "#If VBA7 Then",
+            "#ElseIf Win64 Then",
+            "    If True Then",
+            "        End ",
+            "    End If",
+            "#Else",
+            "#End If",
+            "End Sub"
+        };
+        await server.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, string.Join('\n', lines)));
+
+        var response = await server.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri },
+                position = new { line = 5, character = lines[5].Length },
+                context = new { triggerKind = 1 }
+            });
+
+        var item = Assert.Single(response
+            .GetProperty("result")
+            .EnumerateArray());
+        Assert.Equal("End If", item.GetProperty("label").GetString());
+        Assert.Equal(
+            "End If",
+            item.GetProperty("textEdit").GetProperty("newText").GetString());
+
+        await server.ShutdownAsync(3);
+    }
+
+    [Fact]
     public async Task Server_preserves_candidates_across_operator_and_call_separator_whitespace()
     {
         await using var server = await LanguageServerProcessHarness.StartAsync();

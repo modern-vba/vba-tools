@@ -39,7 +39,7 @@ internal static class VbaLexer
 
             if (IsPreprocessorDirectiveStart(state))
             {
-                tokens.Add(ReadUntilLineEnd(state, VbaTokenKind.PreprocessorDirective));
+                tokens.Add(ReadPreprocessorDirective(state));
                 continue;
             }
 
@@ -125,6 +125,77 @@ internal static class VbaLexer
         }
 
         return CreateToken(state, kind, start);
+    }
+
+    private static VbaToken ReadPreprocessorDirective(LexerState state)
+    {
+        var start = state.Position;
+        while (!state.IsAtEnd)
+        {
+            var physicalLineStart = state.Position.Offset;
+            while (!state.IsAtEnd && state.Current is not '\r' and not '\n')
+            {
+                state.Advance();
+            }
+
+            if (!HasDirectiveLineContinuation(
+                    state.Source,
+                    physicalLineStart,
+                    state.Position.Offset)
+                || state.IsAtEnd)
+            {
+                break;
+            }
+
+            state.Advance();
+        }
+
+        return CreateToken(state, VbaTokenKind.PreprocessorDirective, start);
+    }
+
+    private static bool HasDirectiveLineContinuation(
+        string source,
+        int startOffset,
+        int endOffset)
+    {
+        var inString = false;
+        for (var offset = startOffset; offset < endOffset; offset++)
+        {
+            if (source[offset] == '"')
+            {
+                if (inString
+                    && offset + 1 < endOffset
+                    && source[offset + 1] == '"')
+                {
+                    offset++;
+                    continue;
+                }
+
+                inString = !inString;
+                continue;
+            }
+
+            if (source[offset] == '\'' && !inString)
+            {
+                return false;
+            }
+        }
+
+        if (inString)
+        {
+            return false;
+        }
+
+        var continuationOffset = endOffset - 1;
+        while (continuationOffset >= startOffset
+            && source[continuationOffset] is ' ' or '\t')
+        {
+            continuationOffset--;
+        }
+
+        return continuationOffset > startOffset
+            && source[continuationOffset] == '_'
+            && source[continuationOffset - 1] is ' ' or '\t';
     }
 
     private static VbaToken ReadStringLiteral(LexerState state)

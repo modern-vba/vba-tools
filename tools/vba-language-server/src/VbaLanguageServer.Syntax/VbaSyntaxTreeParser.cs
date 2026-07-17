@@ -61,6 +61,9 @@ internal static class VbaSyntaxTreeParser
     {
         var sourceText = VbaSourceText.From(source);
         var tokenStream = VbaTokenStream.FromSourceText(sourceText);
+        var physicalAnalysisSourceText = MaskPreprocessorDirectives(
+            sourceText,
+            tokenStream);
         var kind = GetModuleKind(uri);
         var diagnostics = new List<VbaSyntaxDiagnostic>();
         var codeStartLine = 0;
@@ -88,13 +91,21 @@ internal static class VbaSyntaxTreeParser
             }
         }
 
-        var attributes = ParseAttributes(sourceText, codeStartLine);
-        var options = ParseOptions(sourceText, codeStartLine);
+        var attributes = ParseAttributes(physicalAnalysisSourceText, codeStartLine);
+        var options = ParseOptions(physicalAnalysisSourceText, codeStartLine);
         var identity = CreateIdentity(uri, sourceText, kind, attributes);
-        var parsedMembers = ParseMembersAndDeclarations(sourceText, codeStartLine);
-        var parsedStatements = ParseStatementsAndDiagnostics(sourceText, codeStartLine);
+        var parsedPreprocessor = VbaPreprocessorParser.Parse(
+            sourceText,
+            tokenStream,
+            codeStartLine);
+        var parsedMembers = ParseMembersAndDeclarations(
+            physicalAnalysisSourceText,
+            codeStartLine,
+            parsedPreprocessor.Blocks);
+        var parsedStatements = ParseStatementsAndDiagnostics(
+            physicalAnalysisSourceText,
+            codeStartLine);
         var parsedExpressions = ParseExpressions(sourceText, tokenStream, codeStartLine);
-        var parsedPreprocessor = VbaPreprocessorParser.Parse(sourceText.Lines, codeStartLine);
         var completionFacts = VbaCompletionSyntaxFactsParser.Parse(
             sourceText,
             tokenStream,
@@ -122,6 +133,35 @@ internal static class VbaSyntaxTreeParser
             codeStartLine,
             sourceText.FullRange);
         return new VbaSyntaxTree(uri, sourceText, tokenStream, module, diagnostics);
+    }
+
+    private static VbaSourceText MaskPreprocessorDirectives(
+        VbaSourceText sourceText,
+        VbaTokenStream tokenStream)
+    {
+        var directives = tokenStream.Tokens
+            .Where(token => token.Kind == VbaTokenKind.PreprocessorDirective)
+            .ToArray();
+        if (directives.Length == 0)
+        {
+            return sourceText;
+        }
+
+        var characters = sourceText.Text.ToCharArray();
+        foreach (var directive in directives)
+        {
+            for (var offset = directive.Range.Start.Offset;
+                offset < directive.Range.End.Offset;
+                offset++)
+            {
+                if (characters[offset] is not '\r' and not '\n')
+                {
+                    characters[offset] = ' ';
+                }
+            }
+        }
+
+        return VbaSourceText.From(new string(characters));
     }
 
     private static IReadOnlyList<VbaModuleAttributeSyntax> ParseAttributes(VbaSourceText sourceText, int startLine)
@@ -331,7 +371,10 @@ internal static class VbaSyntaxTreeParser
         return null;
     }
 
-    private static ParsedMembers ParseMembersAndDeclarations(VbaSourceText sourceText, int codeStartLine)
+    private static ParsedMembers ParseMembersAndDeclarations(
+        VbaSourceText sourceText,
+        int codeStartLine,
+        IReadOnlyList<VbaPreprocessorBlockSyntax> preprocessorBlocks)
     {
         var members = new List<VbaModuleMemberSyntax>();
         var declarations = new List<VbaDeclarationSyntax>();
@@ -354,6 +397,7 @@ internal static class VbaSyntaxTreeParser
                     declareMatch,
                     line,
                     lineIndex,
+                    preprocessorBlocks,
                     isExternal: true);
                 members.Add(new VbaModuleMemberSyntax(
                     declaration.Name,
@@ -413,7 +457,12 @@ internal static class VbaSyntaxTreeParser
                     visibility,
                     line,
                     declarationLabel: CreateDeclarationLabel("Enum", enumMatch.Groups["name"].Value)));
-                var endLine = FindBlockEndLine(sourceText.Lines, lineIndex + 1, "Enum");
+                var endLine = FindBlockEndLine(
+                    sourceText,
+                    lineIndex,
+                    lineIndex + 1,
+                    "Enum",
+                    preprocessorBlocks);
                 AddMemberDeclarations(
                     sourceText,
                     declarations,
@@ -441,7 +490,12 @@ internal static class VbaSyntaxTreeParser
                     visibility,
                     line,
                     declarationLabel: CreateDeclarationLabel("Type", typeMatch.Groups["name"].Value)));
-                var endLine = FindBlockEndLine(sourceText.Lines, lineIndex + 1, "Type");
+                var endLine = FindBlockEndLine(
+                    sourceText,
+                    lineIndex,
+                    lineIndex + 1,
+                    "Type",
+                    preprocessorBlocks);
                 AddMemberDeclarations(
                     sourceText,
                     declarations,
@@ -487,6 +541,7 @@ internal static class VbaSyntaxTreeParser
                     procedureMatch,
                     procedureStatement,
                     lineIndex,
+                    preprocessorBlocks,
                     isStatic: procedureMatch.Groups["static"].Success);
                 members.Add(new VbaModuleMemberSyntax(
                     declaration.Name,
@@ -791,6 +846,7 @@ internal static class VbaSyntaxTreeParser
         Match match,
         VbaSourceLine line,
         int lineIndex,
+        IReadOnlyList<VbaPreprocessorBlockSyntax> preprocessorBlocks,
         bool isExternal = false,
         bool isStatic = false)
     {
@@ -809,7 +865,12 @@ internal static class VbaSyntaxTreeParser
                 : match.Groups["kind"].Value;
         var endLine = endKeyword is null
             ? lineIndex
-            : FindBlockEndLine(sourceText.Lines, lineIndex + 1, endKeyword);
+            : FindBlockEndLine(
+                sourceText,
+                lineIndex,
+                lineIndex + 1,
+                endKeyword,
+                preprocessorBlocks);
 
         return new VbaCallableDeclarationSyntax(
             name,
@@ -834,6 +895,7 @@ internal static class VbaSyntaxTreeParser
         Match match,
         LogicalStatement statement,
         int lineIndex,
+        IReadOnlyList<VbaPreprocessorBlockSyntax> preprocessorBlocks,
         bool isStatic = false)
     {
         var name = match.Groups["name"].Value;
@@ -847,7 +909,12 @@ internal static class VbaSyntaxTreeParser
         var endKeyword = kind == VbaDeclarationKind.Property
             ? "Property"
             : match.Groups["kind"].Value;
-        var endLine = FindBlockEndLine(sourceText.Lines, statement.Range.End.Line + 1, endKeyword);
+        var endLine = FindBlockEndLine(
+            sourceText,
+            lineIndex,
+            statement.Range.End.Line + 1,
+            endKeyword,
+            preprocessorBlocks);
 
         return new VbaCallableDeclarationSyntax(
             name,
@@ -1630,20 +1697,46 @@ internal static class VbaSyntaxTreeParser
             match.Groups["new"].Success);
     }
 
-    private static int FindBlockEndLine(IReadOnlyList<VbaSourceLine> lines, int startLine, string keyword)
+    private static int FindBlockEndLine(
+        VbaSourceText sourceText,
+        int headerLine,
+        int startLine,
+        string keyword,
+        IReadOnlyList<VbaPreprocessorBlockSyntax> preprocessorBlocks)
     {
+        var lines = sourceText.Lines;
         var pattern = new Regex(
             $"^\\s*End\\s+{Regex.Escape(keyword)}\\b",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-        for (var lineIndex = startLine; lineIndex < lines.Count; lineIndex++)
+        if (!VbaConditionalCompilationBranchFacts.TryGetStructuralPath(
+                preprocessorBlocks,
+                CreateLineRange(lines[headerLine]),
+                out var headerPath)
+            || !VbaConditionalCompilationBranchFacts.TryGetStructuralClosingDirective(
+                preprocessorBlocks,
+                headerPath,
+                out var closingDirective))
         {
-            if (pattern.IsMatch(VbaSourceText.StripApostropheComment(lines[lineIndex].Text)))
+            return lines.Count - 1;
+        }
+
+        var searchEndLine = closingDirective is null
+            ? lines.Count - 1
+            : Math.Max(headerLine, closingDirective.Range.Start.Line - 1);
+        for (var lineIndex = startLine; lineIndex <= searchEndLine; lineIndex++)
+        {
+            if (pattern.IsMatch(VbaSourceText.StripApostropheComment(lines[lineIndex].Text))
+                && VbaConditionalCompilationBranchFacts.TryGetStructuralPath(
+                    preprocessorBlocks,
+                    CreateLineRange(lines[lineIndex]),
+                    out var closerPath)
+                && closerPath.Equals(headerPath))
             {
                 return lineIndex;
             }
         }
 
-        return lines.Count - 1;
+        return searchEndLine;
     }
 
     private static VbaDeclarationVisibility GetVisibility(string visibility, bool defaultPublic)

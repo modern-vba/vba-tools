@@ -415,6 +415,99 @@ export async function runBlockSkeletonIntegrationTests(): Promise<void> {
   });
 
   await runProductionCase({
+    name: 'the production language server inserts a Sub skeleton inside one conditional branch',
+    originalLines: [
+      '#If VBA7 Then',
+      '#Else',
+      'Public Sub Run()',
+      '#End If'
+    ],
+    headerLine: 2,
+    expectedLines: [
+      '#If VBA7 Then',
+      '#Else',
+      'Public Sub Run()',
+      '  ',
+      'End Sub',
+      '#End If'
+    ],
+    expectedCursor: new Position(3, 2),
+    lineEnding: '\r\n',
+    expectedPlan: {
+      textBeforeCursor: '\r\n  ',
+      textAfterCursor: '\r\nEnd Sub'
+    }
+  });
+
+  await runProductionCase({
+    name: 'the production language server inserts a block If skeleton before a conditional branch boundary',
+    originalLines: [
+      'Public Sub Main()',
+      '#If VBA7 Then',
+      '#ElseIf Win64 Then',
+      '    If True Then',
+      '#Else',
+      '#End If',
+      'End Sub'
+    ],
+    headerLine: 3,
+    expectedLines: [
+      'Public Sub Main()',
+      '#If VBA7 Then',
+      '#ElseIf Win64 Then',
+      '    If True Then',
+      '      ',
+      '    End If',
+      '#Else',
+      '#End If',
+      'End Sub'
+    ],
+    expectedCursor: new Position(4, 6),
+    expectedPlan: {
+      textBeforeCursor: '\n      ',
+      textAfterCursor: '\n    End If'
+    }
+  });
+
+  await runProductionCase({
+    name: 'the production language server leaves a conditional compilation directive to native Enter',
+    originalLines: [
+      '#If VBA7 Then',
+      '#End If'
+    ],
+    headerLine: 0,
+    expectedLines: [
+      '#If VBA7 Then',
+      '',
+      '#End If'
+    ],
+    expectedCursor: new Position(1, 0),
+    expectedPlan: null
+  });
+
+  await runProductionCase({
+    name: 'the production language server leaves cross-branch block ownership to native Enter',
+    originalLines: [
+      '#If VBA7 Then',
+      'Public Sub Run()',
+      '#Else',
+      'End Sub',
+      '#End If'
+    ],
+    headerLine: 1,
+    expectedLines: [
+      '#If VBA7 Then',
+      'Public Sub Run()',
+      '',
+      '#Else',
+      'End Sub',
+      '#End If'
+    ],
+    expectedCursor: new Position(2, 0),
+    expectedPlan: null
+  });
+
+  await runProductionCase({
     name: 'the production language server leaves single-line If to native Enter',
     originalLines: [
       'Public Sub Main()',

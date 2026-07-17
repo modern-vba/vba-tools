@@ -277,7 +277,7 @@ test('extension contributes the guarded VBA Enter command setting and editor-own
       scope: 'resource',
       type: 'boolean',
       default: true,
-      description: 'Inserts a complete VBA block skeleton when Enter follows an eligible header.'
+      description: 'Inserts an indented body and matching terminator when Enter follows an eligible complete VBA block header; otherwise preserves native Enter.'
     }
   );
   assert.deepEqual(packageJson.contributes?.keybindings, [
