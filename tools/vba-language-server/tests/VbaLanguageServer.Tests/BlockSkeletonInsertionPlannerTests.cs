@@ -1288,6 +1288,255 @@ public sealed class BlockSkeletonInsertionPlannerTests
         Assert.Null(plan);
     }
 
+    [Theory]
+    [InlineData("file:///C:/work/State.bas", "Public Enum State", "\n  ", "\nEnd Enum")]
+    [InlineData("file:///C:/work/Record.bas", "  Private Type Record", "\n    ", "\n  End Type")]
+    [InlineData("file:///C:/work/State.cls", "Public Enum State", "\n  ", "\nEnd Enum")]
+    [InlineData("file:///C:/work/State.cls", "Private Enum State", "\n  ", "\nEnd Enum")]
+    [InlineData("file:///C:/work/Record.cls", "Private Type Record", "\n  ", "\nEnd Type")]
+    public void Planner_inserts_eligible_enum_and_type_skeletons_at_eof(
+        string uri,
+        string header,
+        string expectedBeforeCursor,
+        string expectedAfterCursor)
+    {
+        var snapshot = CreateSnapshot(uri, version: 17, text: $"{header}\n    ");
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(0, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 2));
+
+        Assert.NotNull(plan);
+        Assert.Equal(expectedBeforeCursor, plan.TextBeforeCursor);
+        Assert.Equal(expectedAfterCursor, plan.TextAfterCursor);
+    }
+
+    [Fact]
+    public void Planner_uses_first_line_tabs_and_crlf_for_a_continued_private_type()
+    {
+        string[] lines =
+        [
+            "\tPrivate _",
+            "        Type _",
+            "    Record   ' keep",
+            "\t\t"
+        ];
+        var text = string.Join("\r\n", lines);
+        var snapshot = CreateSnapshot("file:///C:/work/Record.cls", version: 18, text);
+
+        var intermediate = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(1, lines[1].Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: false, indentSize: 8));
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(2, lines[2].Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: false, indentSize: 8));
+
+        Assert.Null(intermediate);
+        Assert.NotNull(plan);
+        Assert.Equal("\r\n\t\t", plan.TextBeforeCursor);
+        Assert.Equal("\r\n\tEnd Type", plan.TextAfterCursor);
+    }
+
+    [Fact]
+    public void Planner_preserves_blank_lines_and_a_same_level_module_declaration_boundary()
+    {
+        const string uri = "file:///C:/work/Declarations.bas";
+        const string header = "Public Enum State";
+        const string text = "Public Enum State\n    \n\nPrivate Type Record\nEnd Type";
+        var snapshot = CreateSnapshot(uri, version: 19, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(0, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.NotNull(plan);
+        Assert.Equal(
+            "Public Enum State\n    \nEnd Enum\n\nPrivate Type Record\nEnd Type",
+            ApplyPlan(text, VbaSourceText.From(text), plan));
+    }
+
+    [Fact]
+    public void Planner_preserves_a_same_level_sub_boundary_after_a_type_declaration()
+    {
+        const string uri = "file:///C:/work/TypeBeforeSub.bas";
+        const string header = "Private Type Record";
+        const string text = "Private Type Record\n    \n\nPublic Sub Run()\nEnd Sub";
+        var snapshot = CreateSnapshot(uri, version: 20, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(0, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.NotNull(plan);
+        Assert.Equal(
+            "Private Type Record\n    \nEnd Type\n\nPublic Sub Run()\nEnd Sub",
+            ApplyPlan(text, VbaSourceText.From(text), plan));
+    }
+
+    [Fact]
+    public void Planner_preserves_existing_blank_lines_after_a_declaration_skeleton_at_eof()
+    {
+        const string uri = "file:///C:/work/BlankEnum.bas";
+        const string header = "Public Enum State";
+        const string text = "Public Enum State\n    \n\n";
+        var snapshot = CreateSnapshot(uri, version: 25, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(0, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.NotNull(plan);
+        Assert.Equal(
+            "Public Enum State\n    \nEnd Enum\n\n",
+            ApplyPlan(text, VbaSourceText.From(text), plan));
+    }
+
+    [Fact]
+    public void Planner_rejects_a_module_declaration_boundary_with_different_indentation()
+    {
+        const string uri = "file:///C:/work/MismatchedDeclarationBoundary.bas";
+        const string header = "  Public Enum State";
+        const string text = "  Public Enum State\n    \n\nPrivate Type Record\nEnd Type";
+        var snapshot = CreateSnapshot(uri, version: 26, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(0, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.Null(plan);
+    }
+
+    [Theory]
+    [InlineData("Public Sub Main()\nEnd Sub\nPublic Enum State\n    ", 2, "Public Enum State")]
+    [InlineData("Public Property Get Value() As Long\nEnd Property\nPrivate Type Record\n    ", 2, "Private Type Record")]
+    public void Planner_rejects_module_declarations_after_a_callable_body(
+        string text,
+        int line,
+        string header)
+    {
+        var snapshot = CreateSnapshot(
+            "file:///C:/work/DeclarationAfterCallable.bas",
+            version: 27,
+            text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(line, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.Null(plan);
+    }
+
+    [Theory]
+    [InlineData("file:///C:/work/Record.cls", "Public Type Record")]
+    [InlineData("file:///C:/work/Record.cls", "Type Record")]
+    [InlineData("file:///C:/work/Friend.bas", "Friend Enum State")]
+    [InlineData("file:///C:/work/GlobalEnum.bas", "Global Enum State")]
+    [InlineData("file:///C:/work/Global.bas", "Global Type Record")]
+    public void Planner_rejects_enum_and_type_headers_illegal_for_the_module_kind(
+        string uri,
+        string header)
+    {
+        var snapshot = CreateSnapshot(uri, version: 21, text: $"{header}\n    ");
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(0, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.Null(plan);
+    }
+
+    [Theory]
+    [InlineData("Public Enum State", true)]
+    [InlineData("Private Enum State", true)]
+    [InlineData("Private Type Record", true)]
+    [InlineData("Type Record", false)]
+    [InlineData("Public Type Record", false)]
+    public void Planner_obeys_form_module_enum_and_type_visibility(
+        string header,
+        bool expectedPlan)
+    {
+        var lines = new[]
+        {
+            "VERSION 5.00",
+            "Begin VB.Form Dialog",
+            "End",
+            "Attribute VB_Name = \"Dialog\"",
+            header,
+            "    "
+        };
+        var snapshot = CreateSnapshot(
+            "file:///C:/work/Dialog.frm",
+            version: 24,
+            string.Join('\n', lines));
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(4, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.Equal(expectedPlan, plan is not null);
+    }
+
+    [Theory]
+    [InlineData("Public Enum State\n    \n    Ready")]
+    [InlineData("Public Enum State\n    \n    ' existing comment")]
+    [InlineData("Public Enum State\n    \nEnd Enum")]
+    [InlineData("Private Type Record\n    \n    Value As Long")]
+    [InlineData("Private Type Record\n    \n    Rem existing comment")]
+    [InlineData("Private Type Record\n    \nEnd Type")]
+    [InlineData("Public Enum State\n    \n\nPublic value As Long")]
+    public void Planner_rejects_owned_or_unproven_enum_and_type_post_header_context(string text)
+    {
+        const string uri = "file:///C:/work/OwnedDeclarationContext.bas";
+        var header = text.Split('\n')[0];
+        var snapshot = CreateSnapshot(uri, version: 22, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(0, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.Null(plan);
+    }
+
+    [Fact]
+    public void Planner_rejects_an_error_overlapping_an_enum_header()
+    {
+        const string uri = "file:///C:/work/InvalidEnum.bas";
+        const string header = "Public Enum State";
+        var snapshot = CreateSnapshot(uri, version: 23, text: $"{header}\n    ");
+        snapshot = snapshot with
+        {
+            Diagnostics = snapshot.Diagnostics with
+            {
+                SyntaxDiagnostics = snapshot.Diagnostics.SyntaxDiagnostics
+                    .Append(new PublishedSyntaxDiagnostic(
+                        "test.error",
+                        "An error overlapping the Enum candidate.",
+                        new VbaRange(
+                            new VbaPosition(0, 0),
+                            new VbaPosition(0, header.Length))))
+                    .ToArray()
+            }
+        };
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(0, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.Null(plan);
+    }
+
     private static VbaVersionedDocumentSnapshot CreateSnapshot(
         string uri,
         int version,

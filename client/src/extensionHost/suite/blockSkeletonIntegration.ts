@@ -28,6 +28,13 @@ interface BlockSkeletonCase {
   readonly headerLine: number;
   readonly expectedLines: readonly string[];
   readonly expectedCursor: Position;
+  readonly fileExtension?: 'bas' | 'cls' | 'frm';
+  readonly lineEnding?: '\n' | '\r\n';
+  readonly editorOptions?: {
+    readonly insertSpaces: boolean;
+    readonly tabSize: number;
+    readonly indentSize: number;
+  };
   readonly expectedPlan: Pick<
     BlockSkeletonInsertionPlan,
     'textBeforeCursor' | 'textAfterCursor'
@@ -35,6 +42,176 @@ interface BlockSkeletonCase {
 }
 
 export async function runBlockSkeletonIntegrationTests(): Promise<void> {
+  await runProductionCase({
+    name: 'the production language server inserts a continued Enum skeleton before a same-level declaration',
+    originalLines: [
+      '  pUbLiC _',
+      "      eNuM State   ' keep",
+      '',
+      '  Public Sub Run()',
+      '  End Sub'
+    ],
+    headerLine: 1,
+    expectedLines: [
+      '  pUbLiC _',
+      "      eNuM State   ' keep",
+      '    ',
+      '  End Enum',
+      '',
+      '  Public Sub Run()',
+      '  End Sub'
+    ],
+    expectedCursor: new Position(2, 4),
+    lineEnding: '\r\n',
+    expectedPlan: {
+      textBeforeCursor: '\r\n    ',
+      textAfterCursor: '\r\n  End Enum'
+    }
+  });
+
+  await runProductionCase({
+    name: 'the production language server inserts a Public Enum skeleton in a class module',
+    originalLines: [
+      'Public Enum State'
+    ],
+    headerLine: 0,
+    expectedLines: [
+      'Public Enum State',
+      '  ',
+      'End Enum'
+    ],
+    expectedCursor: new Position(1, 2),
+    fileExtension: 'cls',
+    lineEnding: '\r\n',
+    expectedPlan: {
+      textBeforeCursor: '\r\n  ',
+      textAfterCursor: '\r\nEnd Enum'
+    }
+  });
+
+  await runProductionCase({
+    name: 'the production language server inserts a Public Enum skeleton in a form module',
+    originalLines: [
+      'VERSION 5.00',
+      'Begin VB.Form Dialog',
+      'End',
+      'Attribute VB_Name = "Dialog"',
+      'Public Enum State'
+    ],
+    headerLine: 4,
+    expectedLines: [
+      'VERSION 5.00',
+      'Begin VB.Form Dialog',
+      'End',
+      'Attribute VB_Name = "Dialog"',
+      'Public Enum State',
+      '  ',
+      'End Enum'
+    ],
+    expectedCursor: new Position(5, 2),
+    fileExtension: 'frm',
+    expectedPlan: {
+      textBeforeCursor: '\n  ',
+      textAfterCursor: '\nEnd Enum'
+    }
+  });
+
+  await runProductionCase({
+    name: 'the production language server inserts a tab-indented Private Type skeleton in a class module',
+    originalLines: [
+      '\tPrivate Type Record'
+    ],
+    headerLine: 0,
+    expectedLines: [
+      '\tPrivate Type Record',
+      '\t\t',
+      '\tEnd Type'
+    ],
+    expectedCursor: new Position(1, 2),
+    fileExtension: 'cls',
+    lineEnding: '\r\n',
+    editorOptions: {
+      insertSpaces: false,
+      tabSize: 4,
+      indentSize: 4
+    },
+    expectedPlan: {
+      textBeforeCursor: '\r\n\t\t',
+      textAfterCursor: '\r\n\tEnd Type'
+    }
+  });
+
+  await runProductionCase({
+    name: 'the production language server leaves a non-private Type in a form module to native Enter',
+    originalLines: [
+      'VERSION 5.00',
+      'Begin VB.Form Dialog',
+      'End',
+      'Attribute VB_Name = "Dialog"',
+      'Type Record'
+    ],
+    headerLine: 4,
+    expectedLines: [
+      'VERSION 5.00',
+      'Begin VB.Form Dialog',
+      'End',
+      'Attribute VB_Name = "Dialog"',
+      'Type Record',
+      ''
+    ],
+    expectedCursor: new Position(5, 0),
+    fileExtension: 'frm',
+    expectedPlan: null
+  });
+
+  await runProductionCase({
+    name: 'the production language server leaves an invalid Friend Enum to native Enter',
+    originalLines: [
+      'Friend Enum State'
+    ],
+    headerLine: 0,
+    expectedLines: [
+      'Friend Enum State',
+      ''
+    ],
+    expectedCursor: new Position(1, 0),
+    fileExtension: 'cls',
+    lineEnding: '\r\n',
+    expectedPlan: null
+  });
+
+  await runProductionCase({
+    name: 'the production language server leaves an existing Enum member to native Enter',
+    originalLines: [
+      'Public Enum State',
+      '    Ready'
+    ],
+    headerLine: 0,
+    expectedLines: [
+      'Public Enum State',
+      '',
+      '    Ready'
+    ],
+    expectedCursor: new Position(1, 0),
+    expectedPlan: null
+  });
+
+  await runProductionCase({
+    name: 'the production language server leaves a candidate-owned End Type to native Enter',
+    originalLines: [
+      'Private Type Record',
+      'End Type'
+    ],
+    headerLine: 0,
+    expectedLines: [
+      'Private Type Record',
+      '',
+      'End Type'
+    ],
+    expectedCursor: new Position(1, 0),
+    expectedPlan: null
+  });
+
   await runProductionCase({
     name: 'the production language server inserts a block If skeleton',
     originalLines: [
@@ -284,12 +461,17 @@ export async function runBlockSkeletonIntegrationTests(): Promise<void> {
 
 async function runProductionCase(testCase: BlockSkeletonCase): Promise<void> {
   await runTest(testCase.name, async () => {
-    const lineEnding = '\n';
+    const lineEnding = testCase.lineEnding ?? '\n';
+    const editorOptions = testCase.editorOptions ?? {
+      insertSpaces: true,
+      tabSize: 4,
+      indentSize: 2
+    };
     const originalText = testCase.originalLines.join(lineEnding);
     const expectedText = testCase.expectedLines.join(lineEnding);
     const documentUri = Uri.file(join(
       tmpdir(),
-      `vba-tools-block-skeleton-${randomUUID()}.bas`
+      `vba-tools-block-skeleton-${randomUUID()}.${testCase.fileExtension ?? 'bas'}`
     ));
     let fileCreated = false;
     let openedDocument: TextDocument | undefined;
@@ -302,11 +484,7 @@ async function runProductionCase(testCase: BlockSkeletonCase): Promise<void> {
       openedDocument = document;
       assert.equal(document.languageId, 'vba');
       const editor = await window.showTextDocument(document);
-      editor.options = {
-        insertSpaces: true,
-        tabSize: 4,
-        indentSize: 2
-      };
+      editor.options = editorOptions;
       const initialDocumentVersion = document.version;
       const end = document.lineAt(testCase.headerLine).range.end;
       editor.selection = new Selection(end, end);
@@ -321,9 +499,9 @@ async function runProductionCase(testCase: BlockSkeletonCase): Promise<void> {
           character: end.character
         },
         options: {
-          insertSpaces: true,
-          indentSize: 2,
-          tabSize: 4
+          insertSpaces: editorOptions.insertSpaces,
+          indentSize: editorOptions.indentSize,
+          tabSize: editorOptions.tabSize
         }
       });
       await warmup.response;
@@ -383,9 +561,9 @@ async function runProductionCase(testCase: BlockSkeletonCase): Promise<void> {
           character: end.character
         },
         options: {
-          insertSpaces: true,
-          tabSize: 4,
-          indentSize: 2
+          insertSpaces: editorOptions.insertSpaces,
+          tabSize: editorOptions.tabSize,
+          indentSize: editorOptions.indentSize
         }
       });
       assert.deepEqual(

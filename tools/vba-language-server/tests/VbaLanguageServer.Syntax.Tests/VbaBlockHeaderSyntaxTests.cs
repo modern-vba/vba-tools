@@ -5,6 +5,181 @@ namespace VbaLanguageServer.Syntax.Tests;
 
 public sealed class VbaBlockHeaderSyntaxTests
 {
+    [Theory]
+    [InlineData("file:///C:/work/Module1.bas", "Enum State", VbaBlockHeaderKind.Enum, "End Enum")]
+    [InlineData("file:///C:/work/Module1.bas", "Public Enum State   ' keep", VbaBlockHeaderKind.Enum, "End Enum")]
+    [InlineData("file:///C:/work/Module1.bas", "Type Record", VbaBlockHeaderKind.Type, "End Type")]
+    [InlineData("file:///C:/work/Module1.bas", "Public Type Record", VbaBlockHeaderKind.Type, "End Type")]
+    [InlineData("file:///C:/work/Module1.bas", "  pRiVaTe tYpE Record", VbaBlockHeaderKind.Type, "End Type")]
+    [InlineData("file:///C:/work/Worker.cls", "Enum State", VbaBlockHeaderKind.Enum, "End Enum")]
+    [InlineData("file:///C:/work/Worker.cls", "Public Enum State", VbaBlockHeaderKind.Enum, "End Enum")]
+    [InlineData("file:///C:/work/Worker.cls", "Private Enum State", VbaBlockHeaderKind.Enum, "End Enum")]
+    [InlineData("file:///C:/work/Worker.cls", "Private Type Record", VbaBlockHeaderKind.Type, "End Type")]
+    public void Complete_eligible_module_declaration_headers_are_accepted(
+        string uri,
+        string headerLine,
+        VbaBlockHeaderKind expectedKind,
+        string expectedTerminator)
+    {
+        var tree = VbaSyntaxTree.ParseModule(uri, headerLine);
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(tree, 0, headerLine.Length);
+
+        Assert.NotNull(header);
+        Assert.Equal(expectedKind, header.Kind);
+        Assert.Equal(expectedTerminator, header.ExpectedTerminator);
+        Assert.Equal(
+            headerLine[..headerLine.TakeWhile(value => value is ' ' or '\t').Count()],
+            header.LeadingWhitespace);
+    }
+
+    [Theory]
+    [InlineData("Enum", "End Enum")]
+    [InlineData("Type", "End Type")]
+    public void Complete_private_form_module_declaration_headers_are_accepted(
+        string declarationKeyword,
+        string expectedTerminator)
+    {
+        var lines = new[]
+        {
+            "VERSION 5.00",
+            "Begin VB.Form Dialog",
+            "End",
+            "Attribute VB_Name = \"Dialog\"",
+            $"Private {declarationKeyword} State"
+        };
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Dialog.frm",
+            string.Join('\n', lines));
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(tree, 4, lines[4].Length);
+
+        Assert.NotNull(header);
+        Assert.Equal(expectedTerminator, header.ExpectedTerminator);
+    }
+
+    [Theory]
+    [InlineData("Enum State")]
+    [InlineData("Public Enum State")]
+    public void Public_and_default_form_module_enum_headers_are_accepted(string headerLine)
+    {
+        var lines = new[]
+        {
+            "VERSION 5.00",
+            "Begin VB.Form Dialog",
+            "End",
+            "Attribute VB_Name = \"Dialog\"",
+            headerLine
+        };
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Dialog.frm",
+            string.Join('\n', lines));
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(tree, 4, headerLine.Length);
+
+        Assert.NotNull(header);
+        Assert.Equal(VbaBlockHeaderKind.Enum, header.Kind);
+        Assert.Equal("End Enum", header.ExpectedTerminator);
+    }
+
+    [Fact]
+    public void Complete_continued_module_declaration_preserves_first_line_indentation_and_trivia()
+    {
+        var lines = new[]
+        {
+            "\tPrivate _",
+            "        Type _",
+            "    Record   ' keep: note"
+        };
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Record.cls",
+            string.Join('\n', lines));
+
+        Assert.Null(VbaBlockHeaderSyntax.FindAtPosition(tree, 0, lines[0].Length));
+        Assert.Null(VbaBlockHeaderSyntax.FindAtPosition(tree, 1, lines[1].Length));
+        var header = VbaBlockHeaderSyntax.FindAtPosition(tree, 2, lines[2].Length);
+
+        Assert.NotNull(header);
+        Assert.Equal(VbaBlockHeaderKind.Type, header.Kind);
+        Assert.Equal(0, header.FirstPhysicalLine);
+        Assert.Equal(2, header.FinalPhysicalLine);
+        Assert.Equal("\t", header.LeadingWhitespace);
+        Assert.Equal("End Type", header.ExpectedTerminator);
+    }
+
+    [Theory]
+    [InlineData("file:///C:/work/Module1.bas", "Public Enum", 0)]
+    [InlineData("file:///C:/work/Module1.bas", "Public Enum State Extra", 0)]
+    [InlineData("file:///C:/work/Module1.bas", "Static Enum State", 0)]
+    [InlineData("file:///C:/work/Module1.bas", "Friend Enum State", 0)]
+    [InlineData("file:///C:/work/Module1.bas", "Global Enum State", 0)]
+    [InlineData("file:///C:/work/Module1.bas", "Friend Type Record", 0)]
+    [InlineData("file:///C:/work/Module1.bas", "Global Type Record", 0)]
+    [InlineData("file:///C:/work/Worker.cls", "Type Record", 0)]
+    [InlineData("file:///C:/work/Worker.cls", "Public Type Record", 0)]
+    [InlineData("file:///C:/work/Module1.bas", "Private Type Record:", 0)]
+    [InlineData("file:///C:/work/Module1.bas", "Public Sub Main()\n    Private Enum State\nEnd Sub", 1)]
+    [InlineData("file:///C:/work/Module1.bas", "Private Type Outer\n    Private Enum Inner\nEnd Type", 1)]
+    [InlineData("file:///C:/work/Module1.bas", "Public Sub Main()\nEnd Sub\nPublic Enum State", 2)]
+    [InlineData("file:///C:/work/Module1.bas", "Public Function Value() As Long\nEnd Function\nPrivate Type Record", 2)]
+    [InlineData("file:///C:/work/Module1.bas", "#If VBA7 Then\nPublic Enum State\n#End If", 1)]
+    [InlineData("file:///C:/work/Module1.bas", "Public Enum State _\n", 0)]
+    [InlineData("file:///C:/work/Dialog.frm", "Private Type Record", 0)]
+    public void Incomplete_illegal_and_structurally_ambiguous_module_declarations_are_rejected(
+        string uri,
+        string source,
+        int line)
+    {
+        var lines = source.Split('\n');
+        var tree = VbaSyntaxTree.ParseModule(uri, source);
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(tree, line, lines[line].Length);
+
+        Assert.Null(header);
+    }
+
+    [Fact]
+    public void Form_designer_text_before_the_code_section_is_not_a_module_declaration_header()
+    {
+        var lines = new[]
+        {
+            "VERSION 5.00",
+            "Begin VB.Form Dialog",
+            "    Private Type Record",
+            "End",
+            "Attribute VB_Name = \"Dialog\""
+        };
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Dialog.frm",
+            string.Join('\n', lines));
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(tree, 2, lines[2].Length);
+
+        Assert.Null(header);
+    }
+
+    [Theory]
+    [InlineData("Type Record")]
+    [InlineData("Public Type Record")]
+    public void Non_private_form_module_type_declarations_are_rejected(string headerLine)
+    {
+        var lines = new[]
+        {
+            "VERSION 5.00",
+            "Begin VB.Form Dialog",
+            "End",
+            "Attribute VB_Name = \"Dialog\"",
+            headerLine
+        };
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Dialog.frm",
+            string.Join('\n', lines));
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(tree, 4, headerLine.Length);
+
+        Assert.Null(header);
+    }
+
     [Fact]
     public void Complete_with_expression_inside_a_callable_body_is_accepted()
     {

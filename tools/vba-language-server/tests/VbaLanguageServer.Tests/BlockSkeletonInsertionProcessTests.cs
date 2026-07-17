@@ -84,6 +84,188 @@ public sealed class BlockSkeletonInsertionProcessTests
     }
 
     [Fact]
+    public async Task Complete_enum_and_type_headers_return_version_bound_literal_plans()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+
+        (string Uri, string Text, int Line, int Character, string Before, string After)[] cases =
+        [
+            (
+                "file:///C:/work/State.bas",
+                "Public Enum State\n    ",
+                0,
+                "Public Enum State".Length,
+                "\n  ",
+                "\nEnd Enum"),
+            (
+                "file:///C:/work/Record.cls",
+                "Private Type Record\n    ",
+                0,
+                "Private Type Record".Length,
+                "\n  ",
+                "\nEnd Type"),
+            (
+                "file:///C:/work/Dialog.frm",
+                "VERSION 5.00\nBegin VB.Form Dialog\nEnd\nAttribute VB_Name = \"Dialog\"\nPublic Enum State\n    ",
+                4,
+                "Public Enum State".Length,
+                "\n  ",
+                "\nEnd Enum"),
+            (
+                "file:///C:/work/PrivateDialog.frm",
+                "VERSION 5.00\nBegin VB.Form Dialog\nEnd\nAttribute VB_Name = \"Dialog\"\nPrivate Type Record\n    ",
+                4,
+                "Private Type Record".Length,
+                "\n  ",
+                "\nEnd Type")
+        ];
+
+        for (var index = 0; index < cases.Length; index++)
+        {
+            var candidate = cases[index];
+            var version = 60 + index;
+            await server.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(candidate.Uri, version, candidate.Text));
+
+            var response = await SendInsertionRequestAsync(
+                server,
+                index + 2,
+                candidate.Uri,
+                version,
+                candidate.Character,
+                candidate.Line);
+
+            var plan = response.GetProperty("result");
+            Assert.Equal(version, plan.GetProperty("documentVersion").GetInt32());
+            Assert.Equal(candidate.Line, plan.GetProperty("position").GetProperty("line").GetInt32());
+            Assert.Equal(candidate.Character, plan.GetProperty("position").GetProperty("character").GetInt32());
+            Assert.Equal(candidate.Before, plan.GetProperty("textBeforeCursor").GetString());
+            Assert.Equal(candidate.After, plan.GetProperty("textAfterCursor").GetString());
+        }
+
+        await server.ShutdownAsync(cases.Length + 2);
+    }
+
+    [Fact]
+    public async Task Continued_type_header_returns_a_plan_only_on_its_final_physical_line()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+
+        const string uri = "file:///C:/work/ContinuedRecord.cls";
+        string[] lines =
+        [
+            "\tPrivate _",
+            "        Type _",
+            "    Record   ' keep",
+            "\t\t"
+        ];
+        const int version = 70;
+        await server.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, version, string.Join("\r\n", lines)));
+
+        var intermediate = await SendInsertionRequestAsync(
+            server,
+            2,
+            uri,
+            version,
+            lines[1].Length,
+            line: 1);
+        var final = await server.SendRequestAsync(
+            3,
+            "vba/blockSkeletonInsertion",
+            new
+            {
+                documentUri = uri,
+                documentVersion = version,
+                position = new { line = 2, character = lines[2].Length },
+                options = new { insertSpaces = false, indentSize = 8, tabSize = 8 }
+            });
+
+        Assert.Equal(System.Text.Json.JsonValueKind.Null, intermediate.GetProperty("result").ValueKind);
+        Assert.Equal("\r\n\t\t", final.GetProperty("result").GetProperty("textBeforeCursor").GetString());
+        Assert.Equal("\r\n\tEnd Type", final.GetProperty("result").GetProperty("textAfterCursor").GetString());
+
+        await server.ShutdownAsync(4);
+    }
+
+    [Fact]
+    public async Task Illegal_or_owned_enum_and_type_contexts_return_null()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+
+        (string Uri, string Text, int Line, int Character)[] cases =
+        [
+            (
+                "file:///C:/work/PublicRecord.cls",
+                "Public Type Record\n    ",
+                0,
+                "Public Type Record".Length),
+            (
+                "file:///C:/work/DefaultRecord.cls",
+                "Type Record\n    ",
+                0,
+                "Type Record".Length),
+            (
+                "file:///C:/work/FriendState.bas",
+                "Friend Enum State\n    ",
+                0,
+                "Friend Enum State".Length),
+            (
+                "file:///C:/work/GlobalRecord.bas",
+                "Global Type Record\n    ",
+                0,
+                "Global Type Record".Length),
+            (
+                "file:///C:/work/EnumBody.bas",
+                "Public Enum State\n    \n    Ready",
+                0,
+                "Public Enum State".Length),
+            (
+                "file:///C:/work/TypeCloser.bas",
+                "Private Type Record\n    \nEnd Type",
+                0,
+                "Private Type Record".Length),
+            (
+                "file:///C:/work/Dialog.frm",
+                "VERSION 5.00\nBegin VB.Form Dialog\nEnd\nAttribute VB_Name = \"Dialog\"\nType Record\n    ",
+                4,
+                "Type Record".Length),
+            (
+                "file:///C:/work/EnumAfterSub.bas",
+                "Public Sub Main()\nEnd Sub\nPublic Enum State\n    ",
+                2,
+                "Public Enum State".Length)
+        ];
+
+        for (var index = 0; index < cases.Length; index++)
+        {
+            var candidate = cases[index];
+            var version = 80 + index;
+            await server.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(candidate.Uri, version, candidate.Text));
+            var response = await SendInsertionRequestAsync(
+                server,
+                index + 2,
+                candidate.Uri,
+                version,
+                candidate.Character,
+                candidate.Line);
+
+            Assert.Equal(
+                System.Text.Json.JsonValueKind.Null,
+                response.GetProperty("result").ValueKind);
+        }
+
+        await server.ShutdownAsync(cases.Length + 2);
+    }
+
+    [Fact]
     public async Task Complete_block_if_header_returns_a_version_bound_literal_plan()
     {
         await using var server = await LanguageServerProcessHarness.StartAsync();

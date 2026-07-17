@@ -18,7 +18,17 @@ public enum VbaBlockHeaderKind
     /// <summary>
     /// A With statement inside a callable body.
     /// </summary>
-    With
+    With,
+
+    /// <summary>
+    /// A module-level Enum declaration.
+    /// </summary>
+    Enum,
+
+    /// <summary>
+    /// A module-level user-defined Type declaration.
+    /// </summary>
+    Type
 }
 
 /// <summary>
@@ -181,6 +191,35 @@ public sealed record VbaBlockHeaderSyntax(
         }
 
         var tokens = statement.SignificantTokens;
+        if (TryGetCompleteModuleDeclarationShape(
+                tokens,
+                tree.Module.Kind,
+                out var declarationKind,
+                out var declarationTerminator))
+        {
+            if (tokens[0].Range.Start.Line < tree.Module.CodeStartLine
+                || tokens[^1].Range.End.Line != line
+                || !HasOnlyLeadingWhitespace(source.Lines[tokens[0].Range.Start.Line], tokens[0])
+                || !HasOnlyTrailingSpacesOrApostropheComment(source.Lines[line], tokens[^1])
+                || tree.TokenStream.Tokens.Any(token =>
+                    token.Kind == VbaTokenKind.LineContinuation
+                    && token.Range.Start.Line == line)
+                || HasEnclosingBlockBarrier(tree, statement)
+                || HasPrecedingCallableBody(tree, statement)
+                || HasDisqualifyingHeaderDiagnostic(tree, statement, declarationTerminator))
+            {
+                return null;
+            }
+
+            return CreateHeader(
+                source,
+                tokens,
+                line,
+                character,
+                declarationKind,
+                declarationTerminator);
+        }
+
         var keywordIndex = GetSubKeywordIndex(tokens);
         if (keywordIndex >= 0)
         {
@@ -311,6 +350,14 @@ public sealed record VbaBlockHeaderSyntax(
         => $"{VbaLanguageVocabulary.CanonicalKeywords["end"]} "
             + VbaLanguageVocabulary.CanonicalKeywords["with"];
 
+    private static string CanonicalEndEnum
+        => $"{VbaLanguageVocabulary.CanonicalKeywords["end"]} "
+            + VbaLanguageVocabulary.CanonicalKeywords["enum"];
+
+    private static string CanonicalEndType
+        => $"{VbaLanguageVocabulary.CanonicalKeywords["end"]} "
+            + VbaLanguageVocabulary.CanonicalKeywords["type"];
+
     private static string CanonicalEndFunction
         => $"{VbaLanguageVocabulary.CanonicalKeywords["end"]} "
             + VbaLanguageVocabulary.CanonicalKeywords["function"];
@@ -335,6 +382,50 @@ public sealed record VbaBlockHeaderSyntax(
         return index < tokens.Count && Matches(tokens[index], "Sub")
             ? index
             : -1;
+    }
+
+    private static bool TryGetCompleteModuleDeclarationShape(
+        IReadOnlyList<VbaToken> tokens,
+        VbaModuleKind moduleKind,
+        out VbaBlockHeaderKind kind,
+        out string expectedTerminator)
+    {
+        kind = default;
+        expectedTerminator = string.Empty;
+        var keywordIndex = 0;
+        if (tokens.Count > 0 && IsVisibility(tokens[0].Text))
+        {
+            if (!Matches(tokens[0], "Public") && !Matches(tokens[0], "Private"))
+            {
+                return false;
+            }
+
+            keywordIndex++;
+        }
+
+        if (tokens.Count != keywordIndex + 2
+            || !VbaIdentifierSyntaxFacts.IsValidDeclaredName(tokens[keywordIndex + 1]))
+        {
+            return false;
+        }
+
+        if (Matches(tokens[keywordIndex], "Enum"))
+        {
+            kind = VbaBlockHeaderKind.Enum;
+            expectedTerminator = CanonicalEndEnum;
+            return true;
+        }
+
+        if (!Matches(tokens[keywordIndex], "Type")
+            || moduleKind != VbaModuleKind.StandardModule
+                && (keywordIndex == 0 || !Matches(tokens[0], "Private")))
+        {
+            return false;
+        }
+
+        kind = VbaBlockHeaderKind.Type;
+        expectedTerminator = CanonicalEndType;
+        return true;
     }
 
     private static bool TryGetCompleteCallableShape(
@@ -1063,6 +1154,20 @@ public sealed record VbaBlockHeaderSyntax(
             block.CloserRange is null
             && block.OpenerRange.Start.Offset < statement.StartOffset
             && statement.EndOffset <= block.Range.End.Offset);
+
+    private static bool HasEnclosingBlockBarrier(
+        VbaSyntaxTree tree,
+        VbaLogicalStatementSpan statement)
+        => tree.Module.Blocks.Any(block =>
+            block.OpenerRange.Start.Offset < statement.StartOffset
+            && statement.EndOffset <= block.Range.End.Offset);
+
+    private static bool HasPrecedingCallableBody(
+        VbaSyntaxTree tree,
+        VbaLogicalStatementSpan statement)
+        => tree.Module.CallableDeclarations.Any(declaration =>
+            !declaration.IsExternal
+            && declaration.BlockRange.End.Offset <= statement.StartOffset);
 
     private static bool HasDisqualifyingHeaderDiagnostic(
         VbaSyntaxTree tree,

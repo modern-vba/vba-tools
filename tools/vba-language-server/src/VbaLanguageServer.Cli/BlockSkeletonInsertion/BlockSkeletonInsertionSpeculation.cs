@@ -31,7 +31,7 @@ internal static class BlockSkeletonInsertionSpeculation
                 lineEnding);
         }
 
-        if (originalHeader.Kind != VbaBlockHeaderKind.Sub)
+        if (!IsModuleDeclarationHeader(originalHeader.Kind))
         {
             return false;
         }
@@ -67,7 +67,7 @@ internal static class BlockSkeletonInsertionSpeculation
         var candidateBlock = speculativeHeader is null
             ? null
             : FindBlock(speculativeTree, speculativeHeader);
-        if (speculativeHeader?.Kind != VbaBlockHeaderKind.Sub
+        if (speculativeHeader?.Kind != originalHeader.Kind
             || speculativeHeader.Range != originalHeader.Range
             || candidateBlock?.CloserRange != insertedTerminatorRange)
         {
@@ -502,7 +502,8 @@ internal static class BlockSkeletonInsertionSpeculation
             speculativeTree,
             finalBoundaryLine,
             speculativeSource.Lines[finalBoundaryLine].Text.Length);
-        if (boundaryHeader?.Kind != VbaBlockHeaderKind.Sub
+        if (boundaryHeader is null
+            || !IsModuleDeclarationHeader(boundaryHeader.Kind)
             || boundaryHeader.FirstPhysicalLine != speculativeBoundaryLine
             || !boundaryHeader.LeadingWhitespace.Equals(
                 candidateHeader.LeadingWhitespace,
@@ -529,8 +530,10 @@ internal static class BlockSkeletonInsertionSpeculation
         }
 
         var originalBoundaryBlock = FindUniqueBlock(snapshot.SyntaxTree.Module.Blocks, block =>
-            block.Kind == VbaBlockKind.Procedure
-            && block.ExpectedTerminator.Equals("End Sub", StringComparison.OrdinalIgnoreCase)
+            block.Kind == GetStructuralKind(boundaryHeader.Kind)
+            && block.ExpectedTerminator.Equals(
+                boundaryHeader.ExpectedTerminator,
+                StringComparison.OrdinalIgnoreCase)
             && block.OpenerRange == originalBoundaryOpener);
         if (originalBoundaryBlock is null)
         {
@@ -568,7 +571,7 @@ internal static class BlockSkeletonInsertionSpeculation
         VbaSyntaxTree tree,
         VbaBlockHeaderSyntax header)
         => FindUniqueBlock(tree.Module.Blocks, block =>
-            block.Kind == VbaBlockKind.Procedure
+            block.Kind == GetStructuralKind(header.Kind)
             && block.ExpectedTerminator.Equals(
                 header.ExpectedTerminator,
                 StringComparison.OrdinalIgnoreCase)
@@ -625,7 +628,13 @@ internal static class BlockSkeletonInsertionSpeculation
             .Where(diagnostic => IsError(diagnostic.Severity))
             .Where(diagnostic => IsDirectMissingTerminator(diagnostic, header))
             .ToArray();
-        if (directMissing.Length != 1)
+        var derivedDirectMissingCount = VbaDiagnosticPipeline
+            .CollectDocument(snapshot.SyntaxTree, snapshot.Uri)
+            .SyntaxDiagnostics
+            .Count(diagnostic =>
+                IsError(diagnostic.Severity)
+                && IsDirectMissingTerminator(diagnostic, header));
+        if (directMissing.Length != derivedDirectMissingCount)
         {
             return false;
         }
@@ -896,10 +905,18 @@ internal static class BlockSkeletonInsertionSpeculation
     private static VbaBlockKind GetStructuralKind(VbaBlockHeaderKind headerKind)
         => headerKind switch
         {
+            VbaBlockHeaderKind.Sub => VbaBlockKind.Procedure,
             VbaBlockHeaderKind.If => VbaBlockKind.If,
             VbaBlockHeaderKind.With => VbaBlockKind.With,
+            VbaBlockHeaderKind.Enum => VbaBlockKind.Enum,
+            VbaBlockHeaderKind.Type => VbaBlockKind.Type,
             _ => VbaBlockKind.Malformed
         };
+
+    private static bool IsModuleDeclarationHeader(VbaBlockHeaderKind headerKind)
+        => headerKind is VbaBlockHeaderKind.Sub
+            or VbaBlockHeaderKind.Enum
+            or VbaBlockHeaderKind.Type;
 
     private sealed record BlockBoundaryProof(
         int AncestorIndex,
