@@ -1611,6 +1611,8 @@ public sealed class LanguageServerProcessTests
                 "End Sub"
             ]);
             await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
+            await process.WaitForLogTextAsync(
+                "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
 
             var valueHover = await SendPositionRequestAsync(
                 process,
@@ -1745,7 +1747,7 @@ public sealed class LanguageServerProcessTests
     }
 
     [Fact]
-    public async Task Server_uses_current_persisted_excel_catalog_for_first_completion_without_discovery()
+    public async Task Server_uses_current_persisted_excel_catalog_after_background_preload_without_discovery()
     {
         var projectRoot = Directory.CreateTempSubdirectory("vba-ls-current-startup-catalog-").FullName;
         var cacheRoot = Directory.CreateTempSubdirectory("vba-ls-current-startup-cache-").FullName;
@@ -1771,6 +1773,8 @@ public sealed class LanguageServerProcessTests
             var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
             var text = CreateExcelStartupCatalogWorkerText();
             await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
+            await process.WaitForLogTextAsync(
+                "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
 
             var completion = await process.SendRequestAsync(2,
                 "textDocument/completion",
@@ -1888,6 +1892,41 @@ public sealed class LanguageServerProcessTests
         {
             Directory.Delete(projectRoot, recursive: true);
             Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_shutdown_cancels_blocked_reference_catalog_lifecycle()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-catalog-shutdown-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(projectRoot, "Generated Library");
+            var discoveryStartedFile = Path.Combine(projectRoot, "discovery-started.txt");
+            var discoveryReleaseFile = Path.Combine(projectRoot, "discovery-release.txt");
+            await using var process = await LanguageServerProcessHarness.StartAsync(
+                environment: new Dictionary<string, string>
+                {
+                    ["VBA_TOOLS_REFERENCE_CATALOG_DISCOVERY_STARTED_FILE"] = discoveryStartedFile,
+                    ["VBA_TOOLS_REFERENCE_CATALOG_DISCOVERY_RELEASE_FILE"] = discoveryReleaseFile
+                });
+
+            await process.InitializeAsync();
+            var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(
+                    uri,
+                    "Attribute VB_Name = \"Worker\"\nPublic Sub Run()\nEnd Sub"));
+            await WaitForFileAsync(discoveryStartedFile, TimeSpan.FromSeconds(5));
+
+            await process.ShutdownAsync(2);
+
+            Assert.False(File.Exists(discoveryReleaseFile));
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
         }
     }
 

@@ -12,6 +12,7 @@ internal sealed class VbaLanguageServerRuntime
     private readonly LspMessageTransport transport;
     private readonly VbaLspRequestExecution requestExecution;
     private readonly VbaDocumentLifecycle documentLifecycle;
+    private readonly ReferenceCatalogRefreshCoordinator? catalogLifecycle;
 
     /// <summary>
     /// Creates a language-server runtime from transport, request, and lifecycle components.
@@ -19,14 +20,17 @@ internal sealed class VbaLanguageServerRuntime
     /// <param name="transport">The LSP transport used for JSON-RPC messages.</param>
     /// <param name="requestExecution">The boundary used for request handling.</param>
     /// <param name="documentLifecycle">The document lifecycle handler used for notifications.</param>
+    /// <param name="catalogLifecycle">The optional background catalog lifecycle owner.</param>
     public VbaLanguageServerRuntime(
         LspMessageTransport transport,
         VbaLspRequestExecution requestExecution,
-        VbaDocumentLifecycle documentLifecycle)
+        VbaDocumentLifecycle documentLifecycle,
+        ReferenceCatalogRefreshCoordinator? catalogLifecycle = null)
     {
         this.transport = transport;
         this.requestExecution = requestExecution;
         this.documentLifecycle = documentLifecycle;
+        this.catalogLifecycle = catalogLifecycle;
     }
 
     /// <summary>
@@ -57,7 +61,11 @@ internal sealed class VbaLanguageServerRuntime
             workspace.ManifestWorkspace,
             transport);
         var documentLifecycle = new VbaDocumentLifecycle(transport, workspace, catalogRefresh);
-        return new VbaLanguageServerRuntime(transport, requestExecution, documentLifecycle);
+        return new VbaLanguageServerRuntime(
+            transport,
+            requestExecution,
+            documentLifecycle,
+            catalogRefresh);
     }
 
     /// <summary>
@@ -205,10 +213,20 @@ internal sealed class VbaLanguageServerRuntime
                 responseLifetime.Cancel();
             }
 
-            await scheduler.StopAsync(
-                gracefulExit
-                    ? VbaInteractiveStopReason.Complete
-                    : VbaInteractiveStopReason.Abort);
+            try
+            {
+                await scheduler.StopAsync(
+                    gracefulExit
+                        ? VbaInteractiveStopReason.Complete
+                        : VbaInteractiveStopReason.Abort);
+            }
+            finally
+            {
+                if (catalogLifecycle is not null)
+                {
+                    await catalogLifecycle.StopAsync();
+                }
+            }
         }
     }
 

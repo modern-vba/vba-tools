@@ -38,17 +38,23 @@ internal sealed class VbaProjectSnapshotProvider
 {
     private readonly object gate = new();
     private readonly Dictionary<string, CachedProjectSnapshot> cache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, CachedManifestResolution> manifestResolutionCache =
+        new(StringComparer.OrdinalIgnoreCase);
     private readonly VbaProjectReferenceCatalogCache referenceCatalogCache;
-    private readonly VbaProjectManifestWorkspace manifestWorkspace;
+    private readonly IVbaProjectManifestResolutionSource manifestResolutionSource;
     private readonly VbaProjectSnapshotBuilder snapshotBuilder;
+    private readonly IVbaProjectReferenceCatalogLifecycleObserver lifecycleObserver;
 
     public VbaProjectSnapshotProvider(
         VbaProjectReferenceCatalogCache referenceCatalogCache,
         VbaProjectSourceDocumentCache diskDocumentCache,
-        VbaProjectManifestWorkspace manifestWorkspace)
+        IVbaProjectManifestResolutionSource manifestResolutionSource,
+        IVbaProjectReferenceCatalogLifecycleObserver? lifecycleObserver = null)
     {
         this.referenceCatalogCache = referenceCatalogCache;
-        this.manifestWorkspace = manifestWorkspace;
+        this.manifestResolutionSource = manifestResolutionSource;
+        this.lifecycleObserver =
+            lifecycleObserver ?? NullVbaProjectReferenceCatalogLifecycleObserver.Instance;
         snapshotBuilder = new VbaProjectSnapshotBuilder(diskDocumentCache);
     }
 
@@ -58,15 +64,15 @@ internal sealed class VbaProjectSnapshotProvider
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var resolution = manifestWorkspace.Resolve(activeUri);
-        var manifestVersion = manifestWorkspace.Version;
-        var referenceCatalogState = referenceCatalogCache.State;
+        var (resolution, manifestVersion) = ResolveCurrentManifest(activeUri);
+        var referenceCatalogState = referenceCatalogCache.CaptureSelectionState(
+            resolution.ReferenceEntries);
         var cacheIdentity = VbaProjectSnapshotIdentity.Create(activeUri, resolution);
         if (TryGetCachedSnapshot(
             cacheIdentity,
             workspaceState.Version,
             manifestVersion,
-            referenceCatalogState.Version,
+            referenceCatalogState.Revision,
             cancellationToken,
             out var cachedSnapshot))
         {
@@ -88,7 +94,7 @@ internal sealed class VbaProjectSnapshotProvider
             cacheIdentity,
             workspaceState.Version,
             manifestVersion,
-            referenceCatalogState.Version,
+            referenceCatalogState.Revision,
             inventorySnapshot.SourceFiles,
             snapshot);
         return snapshot;
@@ -102,25 +108,70 @@ internal sealed class VbaProjectSnapshotProvider
         }
     }
 
+    private (VbaProjectResolution Resolution, long Version) ResolveCurrentManifest(string activeUri)
+    {
+        while (true)
+        {
+            var version = manifestResolutionSource.Version;
+            lock (gate)
+            {
+                if (manifestResolutionCache.TryGetValue(activeUri, out var cached)
+                    && cached.Version == version)
+                {
+                    return (cached.Resolution, version);
+                }
+            }
+
+            lifecycleObserver.Record(new VbaProjectReferenceCatalogLifecycleEvent(
+                VbaProjectReferenceCatalogLifecycleOperation.ProjectSnapshotManifestResolve,
+                ScopeKey: activeUri));
+            var resolution = manifestResolutionSource.Resolve(activeUri);
+            if (manifestResolutionSource.Version != version)
+            {
+                continue;
+            }
+
+            lock (gate)
+            {
+                manifestResolutionCache[activeUri] = new CachedManifestResolution(version, resolution);
+            }
+
+            return (resolution, version);
+        }
+    }
+
     private bool TryGetCachedSnapshot(
         VbaProjectSnapshotIdentity cacheIdentity,
         long expectedWorkspaceVersion,
         long expectedManifestVersion,
-        long expectedReferenceCatalogVersion,
+        long expectedReferenceCatalogRevision,
         CancellationToken cancellationToken,
         out VbaProjectSnapshot snapshot)
     {
+        var catalogInvalidatedScope = false;
         lock (gate)
         {
             if (cache.TryGetValue(cacheIdentity.Key, out var cached)
                 && cached.WorkspaceVersion == expectedWorkspaceVersion
-                && cached.ManifestVersion == expectedManifestVersion
-                && cached.ReferenceCatalogVersion == expectedReferenceCatalogVersion
-                && AreKnownSourcesCurrent(cached.SourceFiles, cancellationToken))
+                && cached.ManifestVersion == expectedManifestVersion)
             {
-                snapshot = cached.Snapshot;
-                return true;
+                if (cached.ReferenceCatalogRevision == expectedReferenceCatalogRevision
+                    && AreKnownSourcesCurrent(cached.SourceFiles, cancellationToken))
+                {
+                    snapshot = cached.Snapshot;
+                    return true;
+                }
+
+                catalogInvalidatedScope =
+                    cached.ReferenceCatalogRevision != expectedReferenceCatalogRevision;
             }
+        }
+
+        if (catalogInvalidatedScope)
+        {
+            lifecycleObserver.Record(new VbaProjectReferenceCatalogLifecycleEvent(
+                VbaProjectReferenceCatalogLifecycleOperation.ProjectScopeInvalidation,
+                ScopeKey: cacheIdentity.Key));
         }
 
         snapshot = default!;
@@ -131,7 +182,7 @@ internal sealed class VbaProjectSnapshotProvider
         VbaProjectSnapshotIdentity cacheIdentity,
         long snapshotWorkspaceVersion,
         long snapshotManifestVersion,
-        long snapshotReferenceCatalogVersion,
+        long snapshotReferenceCatalogRevision,
         IReadOnlyList<VbaProjectSourceFileState> sourceFiles,
         VbaProjectSnapshot snapshot)
     {
@@ -140,7 +191,7 @@ internal sealed class VbaProjectSnapshotProvider
             cache[cacheIdentity.Key] = new CachedProjectSnapshot(
                 snapshotWorkspaceVersion,
                 snapshotManifestVersion,
-                snapshotReferenceCatalogVersion,
+                snapshotReferenceCatalogRevision,
                 sourceFiles,
                 snapshot);
         }
@@ -165,7 +216,11 @@ internal sealed class VbaProjectSnapshotProvider
     private sealed record CachedProjectSnapshot(
         long WorkspaceVersion,
         long ManifestVersion,
-        long ReferenceCatalogVersion,
+        long ReferenceCatalogRevision,
         IReadOnlyList<VbaProjectSourceFileState> SourceFiles,
         VbaProjectSnapshot Snapshot);
+
+    private sealed record CachedManifestResolution(
+        long Version,
+        VbaProjectResolution Resolution);
 }

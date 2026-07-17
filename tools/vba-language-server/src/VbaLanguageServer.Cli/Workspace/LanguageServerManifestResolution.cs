@@ -13,10 +13,14 @@ internal sealed record VbaLanguageServerManifestMessage(int Type, string Text);
 /// <summary>
 /// Represents the reference selection resolved for one manifest document.
 /// </summary>
+/// <param name="ScopeKey">The stable manifest-document scope key.</param>
 /// <param name="DocumentName">The manifest document name.</param>
+/// <param name="DocumentKind">The manifest document kind.</param>
 /// <param name="Selection">The reference selection for the document.</param>
 internal sealed record VbaProjectReferenceSelectionContext(
+    string ScopeKey,
     string DocumentName,
+    string DocumentKind,
     VbaProjectReferenceSelection Selection);
 
 /// <summary>
@@ -114,9 +118,12 @@ internal static class LanguageServerManifestResolution
             try
             {
                 var manifest = ProjectManifestReader.Parse(text, uri);
+                var manifestIdentity = VbaProjectResolver.TryGetLocalPath(uri) ?? uri;
                 selections = manifest.Documents
                     .Select(document => new VbaProjectReferenceSelectionContext(
+                        CreateScopeKey(manifestIdentity, document.Key),
                         document.Key,
+                        document.Value.Kind,
                         VbaProjectReferenceSelection.Create(
                             document.Value.Kind,
                             document.Value.References ?? [])))
@@ -149,13 +156,23 @@ internal static class LanguageServerManifestResolution
         selections =
         [
             new VbaProjectReferenceSelectionContext(
+                CreateScopeKey(
+                    resolution.ManifestPath ?? resolution.RootPath,
+                    resolution.DocumentName),
                 resolution.DocumentName,
+                resolution.DocumentKind,
                 VbaProjectReferenceSelection.Create(
                     resolution.DocumentKind,
                     resolution.ReferenceEntries))
         ];
         return true;
     }
+
+    private static string CreateScopeKey(string manifestIdentity, string documentName)
+        => string.Join(
+            "\u001f",
+            Path.GetFullPath(manifestIdentity),
+            documentName);
 
     private static IReadOnlyList<VbaLanguageServerManifestMessage> CreateReferenceSelectionMessages(
         VbaProjectResolution resolution,

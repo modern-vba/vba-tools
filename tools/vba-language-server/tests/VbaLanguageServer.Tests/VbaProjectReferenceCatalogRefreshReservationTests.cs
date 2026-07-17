@@ -130,6 +130,40 @@ public sealed class VbaProjectReferenceCatalogRefreshReservationTests
     }
 
     [Fact]
+    public async Task CatalogRefreshRejectsSuccessfulResultWhoseCatalogIdentityDoesNotMatchReservation()
+    {
+        var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
+        var discovery = new SuccessfulResultNameMismatchCatalogDiscovery("Reported Library");
+        var service = CreateService(cache, discovery);
+        var selection = CreateSelection("Requested Library");
+
+        var firstResult = Assert.Single(await service.RefreshAsync(selection));
+        await service.RefreshAsync(selection);
+
+        Assert.True(firstResult.DiscoveryResult.IsFailure);
+        Assert.False(cache.Current.HasCatalog("Reported Library"));
+        Assert.False(cache.Current.HasCatalog("Requested Library"));
+        Assert.Equal(["Requested Library", "Requested Library"], discovery.ReferenceNames);
+    }
+
+    [Fact]
+    public async Task CatalogRefreshRejectsIdentityOnlyResultWhoseNameDoesNotMatchReservation()
+    {
+        var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
+        var discovery = new IdentityOnlyResultNameMismatchCatalogDiscovery("Reported Library");
+        var service = CreateService(cache, discovery);
+        var selection = CreateSelection("Requested Library");
+
+        var firstResult = Assert.Single(await service.RefreshAsync(selection));
+        await service.RefreshAsync(selection);
+
+        Assert.True(firstResult.DiscoveryResult.IsFailure);
+        Assert.False(cache.HasIdentity("Reported Library"));
+        Assert.False(cache.HasIdentity("Requested Library"));
+        Assert.Equal(["Requested Library", "Requested Library"], discovery.ReferenceNames);
+    }
+
+    [Fact]
     public async Task CatalogRefreshResultNameMismatchDoesNotReleaseOverlappingReservationOwner()
     {
         var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
@@ -174,6 +208,161 @@ public sealed class VbaProjectReferenceCatalogRefreshReservationTests
             discovery.ReferenceNames);
     }
 
+    [Fact]
+    public async Task SlowStalePreloadDoesNotReplaceNewerGeneratedCatalog()
+    {
+        var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
+        var staleResult = CreateSuccess("Library A");
+        var persistentStore = new DelayedFirstStalePersistentStore(
+            new VbaProjectReferenceCatalogPersistentEntry(
+                Assert.Single(staleResult.Identities),
+                staleResult.Catalog!));
+        var discovery = new SuccessfulCatalogDiscovery();
+        var service = new VbaProjectReferenceCatalogRefreshService(
+            cache,
+            discovery,
+            persistentStore,
+            new InlineRefreshWorker());
+        var selection = CreateSelection("Library A");
+
+        var slowRefresh = service.RefreshAsync(selection);
+        await persistentStore.FirstLoadStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var competingRefresh = service.RefreshAsync(selection);
+        await competingRefresh.WaitAsync(TimeSpan.FromSeconds(5));
+
+        persistentStore.ReleaseFirstLoad();
+        await slowRefresh.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(
+            VbaProjectReferenceCatalogSource.Generated,
+            cache.GetCatalogSource("Library A"));
+        Assert.Equal(1, discovery.CallCount);
+    }
+
+    [Fact]
+    public async Task AutomaticRefreshWaitsForExplicitOwnerBeforeRetryingOverlappingReference()
+    {
+        var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
+        var discovery = new SelectiveBlockingCatalogDiscovery("Library A");
+        var service = CreateService(cache, discovery);
+
+        var explicitRefresh = service.RefreshAsync(CreateSelection("Library A"));
+        await discovery.BlockedReferenceStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var automaticRefresh = service.RefreshAutomaticallyAsync(
+            CreateSelection("Library A", "Library B"),
+            CancellationToken.None);
+
+        var completedBeforeOwner = await Task.WhenAny(
+            automaticRefresh,
+            Task.Delay(TimeSpan.FromMilliseconds(250)));
+        Assert.NotSame(automaticRefresh, completedBeforeOwner);
+
+        discovery.ReleaseBlockedReference();
+        await explicitRefresh.WaitAsync(TimeSpan.FromSeconds(5));
+        var automaticResults = await automaticRefresh.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(
+            ["Library A", "Library B"],
+            automaticResults.Select(result => result.ReferenceName));
+        Assert.Equal(
+            ["Library A", "Library A", "Library B"],
+            discovery.ReferenceNames);
+    }
+
+    [Fact]
+    public async Task CancellationAfterPersistedLoadDoesNotCommitTheIgnoredResult()
+    {
+        var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
+        var currentResult = CreateSuccess("Library A");
+        var persistentStore = new IgnoringCancellationPersistentStore(
+            VbaProjectReferenceCatalogPersistentLoadResult.Current(
+                new VbaProjectReferenceCatalogPersistentEntry(
+                    Assert.Single(currentResult.Identities),
+                    currentResult.Catalog!)));
+        var service = new VbaProjectReferenceCatalogRefreshService(
+            cache,
+            new SuccessfulCatalogDiscovery(),
+            persistentStore,
+            new InlineRefreshWorker());
+        using var cancellation = new CancellationTokenSource();
+
+        var refresh = service.RefreshAsync(
+            CreateSelection("Library A"),
+            cancellation.Token);
+        await persistentStore.LoadStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await cancellation.CancelAsync();
+        persistentStore.ReleaseLoad();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => refresh);
+        Assert.False(cache.HasIdentity("Library A"));
+        Assert.False(cache.Current.HasCatalog("Library A"));
+    }
+
+    [Fact]
+    public async Task CancellationAfterDiscoveryDoesNotCommitTheIgnoredResult()
+    {
+        var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
+        var discovery = new IgnoringCancellationSuccessfulDiscovery();
+        var service = CreateService(cache, discovery);
+        using var cancellation = new CancellationTokenSource();
+
+        var refresh = service.RefreshAsync(
+            CreateSelection("Library A"),
+            cancellation.Token);
+        await discovery.DiscoveryStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await cancellation.CancelAsync();
+        discovery.ReleaseDiscovery();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => refresh);
+        Assert.False(cache.HasIdentity("Library A"));
+        Assert.False(cache.Current.HasCatalog("Library A"));
+    }
+
+    [Theory]
+    [InlineData(MalformedDiscoveryResultKind.FailureWithCatalog)]
+    [InlineData(MalformedDiscoveryResultKind.AmbiguousWithCatalog)]
+    [InlineData(MalformedDiscoveryResultKind.CatalogWithoutIdentity)]
+    public async Task MalformedDiscoveryResultPreservesLastKnownGoodAndRemainsRetryable(
+        MalformedDiscoveryResultKind resultKind)
+    {
+        var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
+        cache.StoreStaleCatalog(CreateSuccess("Library A").Catalog!);
+        var discovery = new MalformedCatalogDiscovery(resultKind);
+        var service = CreateService(cache, discovery);
+        var selection = CreateSelection("Library A");
+
+        var firstResult = Assert.Single(await service.RefreshAsync(selection));
+        Assert.Single(await service.RefreshAsync(selection));
+
+        Assert.False(firstResult.DiscoveryResult.HasUsableCatalog);
+        Assert.False(cache.HasIdentity("Library A"));
+        Assert.Equal(
+            VbaProjectReferenceCatalogSource.StalePersisted,
+            cache.GetCatalogSource("Library A"));
+        Assert.Equal(2, discovery.CallCount);
+    }
+
+    [Fact]
+    public void CacheStoreRejectsInternallyInconsistentSuccessfulResult()
+    {
+        var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
+        var success = CreateSuccess("Library A");
+        var inconsistent = success with
+        {
+            Catalog = CreateSuccess("Library B").Catalog
+        };
+
+        cache.Store(inconsistent);
+
+        Assert.False(inconsistent.IsSuccessful);
+        Assert.False(cache.HasIdentity("Library A"));
+        Assert.False(cache.Current.HasCatalog("Library A"));
+        Assert.False(cache.Current.HasCatalog("Library B"));
+        Assert.Equal(
+            VbaProjectReferenceCatalogSource.Unavailable,
+            cache.GetCatalogSource("Library A"));
+    }
+
     private static VbaProjectReferenceCatalogRefreshService CreateService(
         VbaProjectReferenceCatalogCache cache,
         IVbaProjectReferenceCatalogDiscovery discovery)
@@ -216,6 +405,175 @@ public sealed class VbaProjectReferenceCatalogRefreshReservationTests
             string referenceName,
             CancellationToken cancellationToken)
             => discovery.DiscoverAsync(referenceName, cancellationToken);
+    }
+
+    private sealed class DelayedFirstStalePersistentStore
+        : IVbaProjectReferenceCatalogPersistentStore
+    {
+        private readonly VbaProjectReferenceCatalogPersistentEntry entry;
+        private readonly TaskCompletionSource releaseFirstLoad =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int loadCount;
+
+        public DelayedFirstStalePersistentStore(
+            VbaProjectReferenceCatalogPersistentEntry entry)
+        {
+            this.entry = entry;
+        }
+
+        public TaskCompletionSource FirstLoadStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<VbaProjectReferenceCatalogPersistentLoadResult> LoadAsync(
+            string referenceName,
+            CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref loadCount) == 1)
+            {
+                FirstLoadStarted.TrySetResult();
+                await releaseFirstLoad.Task.WaitAsync(cancellationToken);
+                return VbaProjectReferenceCatalogPersistentLoadResult.Stale(
+                    entry,
+                    "Expected delayed stale entry.");
+            }
+
+            return VbaProjectReferenceCatalogPersistentLoadResult.Miss();
+        }
+
+        public Task SaveAsync(
+            VbaProjectReferenceCatalogPersistentEntry entry,
+            CancellationToken cancellationToken)
+            => Task.CompletedTask;
+
+        public void ReleaseFirstLoad()
+            => releaseFirstLoad.TrySetResult();
+    }
+
+    private sealed class IgnoringCancellationPersistentStore
+        : IVbaProjectReferenceCatalogPersistentStore
+    {
+        private readonly VbaProjectReferenceCatalogPersistentLoadResult loadResult;
+        private readonly TaskCompletionSource releaseLoad =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public IgnoringCancellationPersistentStore(
+            VbaProjectReferenceCatalogPersistentLoadResult loadResult)
+        {
+            this.loadResult = loadResult;
+        }
+
+        public TaskCompletionSource LoadStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<VbaProjectReferenceCatalogPersistentLoadResult> LoadAsync(
+            string referenceName,
+            CancellationToken cancellationToken)
+        {
+            LoadStarted.TrySetResult();
+            await releaseLoad.Task;
+            return loadResult;
+        }
+
+        public Task SaveAsync(
+            VbaProjectReferenceCatalogPersistentEntry entry,
+            CancellationToken cancellationToken)
+            => Task.CompletedTask;
+
+        public void ReleaseLoad()
+            => releaseLoad.TrySetResult();
+    }
+
+    private sealed class SuccessfulCatalogDiscovery : IVbaProjectReferenceCatalogDiscovery
+    {
+        private int callCount;
+
+        public int CallCount => Volatile.Read(ref callCount);
+
+        public Task<VbaProjectReferenceCatalogDiscoveryResult> DiscoverAsync(
+            string referenceName,
+            CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref callCount);
+            return Task.FromResult(CreateSuccess(referenceName));
+        }
+    }
+
+    private sealed class IgnoringCancellationSuccessfulDiscovery
+        : IVbaProjectReferenceCatalogDiscovery
+    {
+        private readonly TaskCompletionSource releaseDiscovery =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource DiscoveryStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<VbaProjectReferenceCatalogDiscoveryResult> DiscoverAsync(
+            string referenceName,
+            CancellationToken cancellationToken = default)
+        {
+            DiscoveryStarted.TrySetResult();
+            await releaseDiscovery.Task;
+            return CreateSuccess(referenceName);
+        }
+
+        public void ReleaseDiscovery()
+            => releaseDiscovery.TrySetResult();
+    }
+
+    public enum MalformedDiscoveryResultKind
+    {
+        FailureWithCatalog,
+        AmbiguousWithCatalog,
+        CatalogWithoutIdentity
+    }
+
+    private sealed class MalformedCatalogDiscovery
+        : IVbaProjectReferenceCatalogDiscovery
+    {
+        private readonly MalformedDiscoveryResultKind resultKind;
+        private int callCount;
+
+        public MalformedCatalogDiscovery(MalformedDiscoveryResultKind resultKind)
+        {
+            this.resultKind = resultKind;
+        }
+
+        public int CallCount => Volatile.Read(ref callCount);
+
+        public Task<VbaProjectReferenceCatalogDiscoveryResult> DiscoverAsync(
+            string referenceName,
+            CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref callCount);
+            var success = CreateSuccess(referenceName);
+            var identity = Assert.Single(success.Identities);
+            var catalog = success.Catalog!;
+            var result = resultKind switch
+            {
+                MalformedDiscoveryResultKind.FailureWithCatalog =>
+                    new VbaProjectReferenceCatalogDiscoveryResult(
+                        referenceName,
+                        [identity],
+                        catalog,
+                        "Expected malformed failure."),
+                MalformedDiscoveryResultKind.AmbiguousWithCatalog =>
+                    new VbaProjectReferenceCatalogDiscoveryResult(
+                        referenceName,
+                        [
+                            identity,
+                            identity with
+                            {
+                                Guid = "{44444444-4444-4444-4444-444444444444}"
+                            }
+                        ],
+                        catalog),
+                _ => new VbaProjectReferenceCatalogDiscoveryResult(
+                    referenceName,
+                    [],
+                    catalog)
+            };
+            return Task.FromResult(result);
+        }
     }
 
     private sealed class SelectiveBlockingCatalogDiscovery : IVbaProjectReferenceCatalogDiscovery
@@ -353,6 +711,58 @@ public sealed class VbaProjectReferenceCatalogRefreshReservationTests
             return Task.FromResult(VbaProjectReferenceCatalogDiscoveryResult.Failure(
                 resultReferenceName,
                 "Expected mismatched test result."));
+        }
+    }
+
+    private sealed class SuccessfulResultNameMismatchCatalogDiscovery
+        : IVbaProjectReferenceCatalogDiscovery
+    {
+        private readonly string resultReferenceName;
+        private readonly List<string> referenceNames = [];
+
+        public SuccessfulResultNameMismatchCatalogDiscovery(string resultReferenceName)
+        {
+            this.resultReferenceName = resultReferenceName;
+        }
+
+        public IReadOnlyList<string> ReferenceNames => referenceNames;
+
+        public Task<VbaProjectReferenceCatalogDiscoveryResult> DiscoverAsync(
+            string referenceName,
+            CancellationToken cancellationToken = default)
+        {
+            referenceNames.Add(referenceName);
+            return Task.FromResult(CreateSuccess(resultReferenceName));
+        }
+    }
+
+    private sealed class IdentityOnlyResultNameMismatchCatalogDiscovery
+        : IVbaProjectReferenceCatalogDiscovery
+    {
+        private readonly string resultReferenceName;
+        private readonly List<string> referenceNames = [];
+
+        public IdentityOnlyResultNameMismatchCatalogDiscovery(string resultReferenceName)
+        {
+            this.resultReferenceName = resultReferenceName;
+        }
+
+        public IReadOnlyList<string> ReferenceNames => referenceNames;
+
+        public Task<VbaProjectReferenceCatalogDiscoveryResult> DiscoverAsync(
+            string referenceName,
+            CancellationToken cancellationToken = default)
+        {
+            referenceNames.Add(referenceName);
+            return Task.FromResult(
+                VbaProjectReferenceCatalogDiscoveryResult.Success(
+                    new VbaProjectReferenceCatalogIdentity(
+                        resultReferenceName,
+                        "{33333333-3333-3333-3333-333333333333}",
+                        1,
+                        0,
+                        0,
+                        $@"C:\TypeLibs\{resultReferenceName}.tlb")));
         }
     }
 

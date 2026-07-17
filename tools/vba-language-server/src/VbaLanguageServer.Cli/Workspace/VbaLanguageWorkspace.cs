@@ -51,12 +51,22 @@ public sealed class VbaLanguageWorkspace
     /// </summary>
     /// <param name="referenceCatalogCache">The reference catalog cache used when building source indexes.</param>
     public VbaLanguageWorkspace(VbaProjectReferenceCatalogCache referenceCatalogCache)
+        : this(
+            referenceCatalogCache,
+            NullVbaProjectReferenceCatalogLifecycleObserver.Instance)
+    {
+    }
+
+    internal VbaLanguageWorkspace(
+        VbaProjectReferenceCatalogCache referenceCatalogCache,
+        IVbaProjectReferenceCatalogLifecycleObserver lifecycleObserver)
     {
         ManifestWorkspace = new VbaProjectManifestWorkspace();
         snapshotProvider = new VbaProjectSnapshotProvider(
             referenceCatalogCache,
             diskDocumentCache,
-            ManifestWorkspace);
+            ManifestWorkspace,
+            lifecycleObserver);
     }
 
     /// <summary>

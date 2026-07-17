@@ -47,23 +47,23 @@ internal sealed class VbaDocumentChangePipeline
 {
     private readonly VbaLanguageWorkspace workspace;
     private readonly VbaProjectManifestWorkspace manifestWorkspace;
-    private readonly ReferenceCatalogRefreshCoordinator catalogRefresh;
+    private readonly IReferenceCatalogLifecycle catalogLifecycle;
     private readonly VbaDiagnosticsPublisher diagnosticsPublisher;
 
     /// <summary>
     /// Creates a document change pipeline.
     /// </summary>
     /// <param name="workspace">The workspace to update.</param>
-    /// <param name="catalogRefresh">The catalog refresh coordinator.</param>
+    /// <param name="catalogLifecycle">The reference catalog lifecycle boundary.</param>
     /// <param name="diagnosticsPublisher">The diagnostics publisher.</param>
     public VbaDocumentChangePipeline(
         VbaLanguageWorkspace workspace,
-        ReferenceCatalogRefreshCoordinator catalogRefresh,
+        IReferenceCatalogLifecycle catalogLifecycle,
         VbaDiagnosticsPublisher diagnosticsPublisher)
     {
         this.workspace = workspace;
         manifestWorkspace = workspace.ManifestWorkspace;
-        this.catalogRefresh = catalogRefresh;
+        this.catalogLifecycle = catalogLifecycle;
         this.diagnosticsPublisher = diagnosticsPublisher;
     }
 
@@ -109,20 +109,12 @@ internal sealed class VbaDocumentChangePipeline
 
         if (!IsVbaSourceUri(change.Uri))
         {
-            catalogRefresh.RefreshReferenceCatalogsInBackground(
-                change.Uri,
-                change.Text,
-                cancellationToken);
             return;
         }
 
         workspace.OpenDocument(change.Uri, change.Version, change.Text, cancellationToken);
-        await ApplyAuthoritativeSourceTextAsync(
-            change.Uri,
-            change.Text,
-            preloadPersistedCatalogs: true,
-            publishReferenceTrace: true,
-            cancellationToken);
+        await ApplyAuthoritativeSourceTextAsync(change.Uri, cancellationToken);
+        catalogLifecycle.ActivateProject(change.Uri);
     }
 
     private async Task ApplyChangedDocumentAsync(
@@ -140,10 +132,6 @@ internal sealed class VbaDocumentChangePipeline
 
         if (!IsVbaSourceUri(change.Uri))
         {
-            catalogRefresh.RefreshReferenceCatalogsInBackground(
-                change.Uri,
-                change.Text,
-                cancellationToken);
             return;
         }
 
@@ -152,12 +140,7 @@ internal sealed class VbaDocumentChangePipeline
             return;
         }
 
-        await ApplyAuthoritativeSourceTextAsync(
-            change.Uri,
-            change.Text,
-            preloadPersistedCatalogs: true,
-            publishReferenceTrace: false,
-            cancellationToken);
+        await ApplyAuthoritativeSourceTextAsync(change.Uri, cancellationToken);
     }
 
     private async Task ApplyClosedDocumentAsync(string uri, CancellationToken cancellationToken)
@@ -209,12 +192,7 @@ internal sealed class VbaDocumentChangePipeline
             return;
         }
 
-        await ApplyAuthoritativeSourceTextAsync(
-            uri,
-            text,
-            preloadPersistedCatalogs: false,
-            publishReferenceTrace: true,
-            cancellationToken);
+        await ApplyAuthoritativeSourceTextAsync(uri, cancellationToken);
     }
 
     private async Task ApplyWatchedFileDeletedAsync(string uri, CancellationToken cancellationToken)
@@ -248,24 +226,9 @@ internal sealed class VbaDocumentChangePipeline
 
     private async Task ApplyAuthoritativeSourceTextAsync(
         string uri,
-        string fallbackText,
-        bool preloadPersistedCatalogs,
-        bool publishReferenceTrace,
         CancellationToken cancellationToken)
     {
-        var text = workspace.GetDocumentText(uri, cancellationToken) ?? fallbackText;
-        if (preloadPersistedCatalogs)
-        {
-            await catalogRefresh.PreloadReferenceCatalogsAsync(uri, text, cancellationToken);
-        }
-
         await diagnosticsPublisher.PublishTrackedDiagnosticsAsync(uri, cancellationToken);
-        if (publishReferenceTrace)
-        {
-            await catalogRefresh.PublishReferenceSelectionTraceAsync(uri, cancellationToken);
-        }
-
-        catalogRefresh.RefreshReferenceCatalogsInBackground(uri, text, cancellationToken);
     }
 
     private async Task ApplyEffectiveManifestStateAsync(
@@ -290,7 +253,7 @@ internal sealed class VbaDocumentChangePipeline
             uri,
             error,
             cancellationToken);
-        await PublishManifestTracesAsync(cancellationToken);
+        catalogLifecycle.DeactivateManifest(uri);
     }
 
     private async Task ApplyManifestOverlayUpdateAsync(
@@ -318,22 +281,13 @@ internal sealed class VbaDocumentChangePipeline
         }
     }
 
-    private async Task ApplyManifestTextAsync(
+    private Task ApplyManifestTextAsync(
         string uri,
         string text,
         CancellationToken cancellationToken)
     {
-        await catalogRefresh.PreloadReferenceCatalogsAsync(uri, text, cancellationToken);
-        await PublishManifestTracesAsync(cancellationToken);
-        catalogRefresh.RefreshReferenceCatalogsInBackground(uri, text, cancellationToken);
-    }
-
-    private async Task PublishManifestTracesAsync(CancellationToken cancellationToken)
-    {
-        foreach (var documentUri in workspace.GetDocumentUris(cancellationToken))
-        {
-            await catalogRefresh.PublishReferenceSelectionTraceAsync(documentUri, cancellationToken);
-        }
+        catalogLifecycle.ApplyManifestSelectionChange(uri, text);
+        return Task.CompletedTask;
     }
 
     private static bool IsVbaSourceUri(string uri)

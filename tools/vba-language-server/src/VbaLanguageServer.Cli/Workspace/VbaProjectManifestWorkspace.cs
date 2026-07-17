@@ -11,9 +11,19 @@ internal sealed record VbaProjectManifestOverlayUpdate(
     VbaProjectManifestException? Error);
 
 /// <summary>
+/// Supplies versioned project-manifest resolution to project snapshot construction.
+/// </summary>
+internal interface IVbaProjectManifestResolutionSource
+{
+    long Version { get; }
+
+    VbaProjectResolution Resolve(string activeUri);
+}
+
+/// <summary>
 /// Tracks open project-manifest overlays and watched disk authority for language-server resolution.
 /// </summary>
-internal sealed class VbaProjectManifestWorkspace
+internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutionSource
 {
     private const string ManifestFileName = "vba-project.json";
     private readonly object gate = new();

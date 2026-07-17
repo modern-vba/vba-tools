@@ -141,9 +141,32 @@ public sealed record VbaProjectReferenceCatalogPersistentLoadResult(
 }
 
 /// <summary>
+/// Loads and saves generated reference catalogs across language-server sessions.
+/// </summary>
+public interface IVbaProjectReferenceCatalogPersistentStore
+{
+    /// <summary>
+    /// Loads the persisted state for one reference name.
+    /// </summary>
+    /// <param name="referenceName">The human-visible reference name.</param>
+    /// <returns>The persisted load result.</returns>
+    Task<VbaProjectReferenceCatalogPersistentLoadResult> LoadAsync(
+        string referenceName,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Saves a generated reference catalog entry.
+    /// </summary>
+    /// <param name="entry">The generated catalog entry to persist.</param>
+    Task SaveAsync(
+        VbaProjectReferenceCatalogPersistentEntry entry,
+        CancellationToken cancellationToken);
+}
+
+/// <summary>
 /// Stores generated reference catalogs on disk for reuse across language-server sessions.
 /// </summary>
-public sealed class VbaProjectReferenceCatalogPersistentStore
+public sealed class VbaProjectReferenceCatalogPersistentStore : IVbaProjectReferenceCatalogPersistentStore
 {
     /// <summary>
     /// The environment variable that overrides the persistent reference catalog root directory.
@@ -240,6 +263,17 @@ public sealed class VbaProjectReferenceCatalogPersistentStore
     /// <param name="referenceName">The human-visible reference name.</param>
     /// <returns>The load result.</returns>
     public VbaProjectReferenceCatalogPersistentLoadResult Load(string referenceName)
+        => LoadCoreAsync(referenceName, CancellationToken.None).GetAwaiter().GetResult();
+
+    /// <inheritdoc />
+    public Task<VbaProjectReferenceCatalogPersistentLoadResult> LoadAsync(
+        string referenceName,
+        CancellationToken cancellationToken)
+        => LoadCoreAsync(referenceName, cancellationToken);
+
+    private async Task<VbaProjectReferenceCatalogPersistentLoadResult> LoadCoreAsync(
+        string referenceName,
+        CancellationToken cancellationToken)
     {
         var indexPath = GetReferenceIndexPath(referenceName);
         if (!File.Exists(indexPath))
@@ -249,7 +283,9 @@ public sealed class VbaProjectReferenceCatalogPersistentStore
 
         try
         {
-            var index = ReadJson<ReferenceCatalogIndex>(indexPath);
+            var index = await ReadJsonAsync<ReferenceCatalogIndex>(
+                indexPath,
+                cancellationToken).ConfigureAwait(false);
             var staleWarnings = new List<string>();
             if (index.SchemaVersion != CurrentSchemaVersion)
             {
@@ -264,7 +300,9 @@ public sealed class VbaProjectReferenceCatalogPersistentStore
             }
 
             var entryPath = GetCatalogEntryPath(index.CatalogEntryKey);
-            var entry = ReadJson<VbaProjectReferenceCatalogPersistentEntry>(entryPath);
+            var entry = await ReadJsonAsync<VbaProjectReferenceCatalogPersistentEntry>(
+                entryPath,
+                cancellationToken).ConfigureAwait(false);
             if (entry.SchemaVersion != CurrentSchemaVersion)
             {
                 return VbaProjectReferenceCatalogPersistentLoadResult.Warning(
@@ -305,6 +343,17 @@ public sealed class VbaProjectReferenceCatalogPersistentStore
     /// </summary>
     /// <param name="entry">The generated catalog entry to persist.</param>
     public void Save(VbaProjectReferenceCatalogPersistentEntry entry)
+        => SaveCoreAsync(entry, CancellationToken.None).GetAwaiter().GetResult();
+
+    /// <inheritdoc />
+    public Task SaveAsync(
+        VbaProjectReferenceCatalogPersistentEntry entry,
+        CancellationToken cancellationToken)
+        => SaveCoreAsync(entry, cancellationToken);
+
+    private async Task SaveCoreAsync(
+        VbaProjectReferenceCatalogPersistentEntry entry,
+        CancellationToken cancellationToken)
     {
         var catalogEntryKey = CreateCatalogEntryKey(entry.Identity);
         var catalogEntryPath = GetCatalogEntryPath(catalogEntryKey);
@@ -321,20 +370,35 @@ public sealed class VbaProjectReferenceCatalogPersistentStore
             catalogEntryKey,
             entry.Identity);
 
-        WriteJsonAtomic(catalogEntryPath, currentEntry);
-        WriteJsonAtomic(indexPath, index);
+        await WriteJsonAtomicAsync(
+            catalogEntryPath,
+            currentEntry,
+            cancellationToken).ConfigureAwait(false);
+        await WriteJsonAtomicAsync(
+            indexPath,
+            index,
+            cancellationToken).ConfigureAwait(false);
     }
 
     private string GetCatalogEntryPath(string catalogEntryKey)
         => Path.Combine(rootDirectory, CatalogsDirectoryName, catalogEntryKey);
 
-    private static T ReadJson<T>(string path)
+    private static async Task<T> ReadJsonAsync<T>(
+        string path,
+        CancellationToken cancellationToken)
     {
-        var value = JsonSerializer.Deserialize<T>(File.ReadAllText(path, Encoding.UTF8), SerializerOptions);
+        var text = await File.ReadAllTextAsync(
+            path,
+            Encoding.UTF8,
+            cancellationToken).ConfigureAwait(false);
+        var value = JsonSerializer.Deserialize<T>(text, SerializerOptions);
         return value ?? throw new JsonException($"JSON file '{path}' did not contain a value.");
     }
 
-    private static void WriteJsonAtomic<T>(string path, T value)
+    private static async Task WriteJsonAtomicAsync<T>(
+        string path,
+        T value,
+        CancellationToken cancellationToken)
     {
         var directory = Path.GetDirectoryName(path);
         if (!string.IsNullOrWhiteSpace(directory))
@@ -345,10 +409,12 @@ public sealed class VbaProjectReferenceCatalogPersistentStore
         var tempPath = $"{path}.{Guid.NewGuid():N}.tmp";
         try
         {
-            File.WriteAllText(
+            await File.WriteAllTextAsync(
                 tempPath,
                 JsonSerializer.Serialize(value, SerializerOptions),
-                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+                cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
             File.Move(tempPath, path, overwrite: true);
         }
         finally

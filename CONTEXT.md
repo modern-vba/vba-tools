@@ -295,12 +295,43 @@ absent from the manifest.
 _Avoid_: source diagnostic, auto-added reference, implicit default
 
 **VbaProjectReferenceCatalogRefresh**:
-The background process that refreshes cached `VbaProjectReferenceCatalog`
-metadata after language-server startup or `ProjectManifest` changes. Editor
-requests such as completion, hover, and signature help use the best currently
-available bundled or cached catalog and do not synchronously wait for refresh
-completion.
-_Avoid_: completion-time discovery, blocking metadata load, synchronous COM scan
+The lifecycle-owned background process that preloads persisted metadata and
+discovers TypeLib metadata after project activation or an effective
+`VbaProjectReferenceSelection` change. Ordinary VBA source edits do not restart
+it. Editor requests use the best committed catalog without waiting for preload
+or discovery. Per-reference ownership spans preload and discovery so stale
+metadata cannot overtake a newer commit, while an explicit refresh may bypass
+lifecycle negative caching for references that are currently free.
+_Avoid_: completion-time discovery, source-edit refresh, blocking metadata load
+
+**VbaProjectReferenceCatalogLifecycle**:
+The project-scoped C# responsibility that reacts to project activation,
+effective `ProjectManifest` reference-selection changes, and deactivation. It
+schedules persisted-catalog preload and TypeLib discovery independently from
+ordinary VBA source edits. Completion, hover, signature help, and other editor
+queries only read committed catalog state.
+_Avoid_: source-edit refresh, completion-time preload, per-document catalog reload
+
+**ReferenceSelectionFingerprint**:
+The case-insensitive deterministic identity of one effective
+`VbaProjectReferenceSelection`, including the document kind, main-reference
+state, and normalized reference names. Repeated activation with the same
+project scope and fingerprint shares one automatic catalog lifecycle revision.
+_Avoid_: document version, manifest version, catalog identity, TypeLib identity
+
+**ReferenceCatalogLifecycleRevision**:
+One generation of automatic persisted preload and discovery for a project scope
+and `ReferenceSelectionFingerprint`. Missing or unreadable persisted results
+are negative-cached only for this revision; an explicit retry or changed
+selection may start new work.
+_Avoid_: source revision, cache format version, LSP document version
+
+**LastKnownGoodReferenceCatalog**:
+The latest usable bundled, persisted, stale-persisted, or generated catalog
+revision already committed for a reference. A cancelled or failed refresh does
+not replace or remove it; only a later successful atomic commit changes the
+editor-facing catalog.
+_Avoid_: in-flight catalog, failed discovery result, source diagnostic
 
 **SyntaxHighlighting**:
 Editor coloring for VBA source text. It combines lexical classification for VBA syntax with meaning-aware classification from parsed project information when that information is available.
@@ -690,7 +721,19 @@ Dev: "If an active reference has no usable catalog, should the editor mark sourc
 Domain Expert: "No. The reference stays active but contributes no external definitions. Report `VbaProjectReferenceCatalogAvailability` through language-server output, status, or trace and through `EnvironmentDiagnostic`, not through source diagnostics."
 
 Dev: "Should completion wait while TypeLib metadata is being discovered?"
-Domain Expert: "No. Completion, hover, and signature help use the best currently available bundled or cached `VbaProjectReferenceCatalog`. `VbaProjectReferenceCatalogRefresh` runs in the background after startup or `ProjectManifest` changes."
+Domain Expert: "No. Completion, hover, and signature help use the best committed `LastKnownGoodReferenceCatalog`. `VbaProjectReferenceCatalogRefresh` runs in the background after project activation or an effective reference-selection change."
+
+Dev: "Should every VBA `didChange` resolve the manifest and retry reference catalog work?"
+Domain Expert: "No. It updates source analysis and diagnostics only. `VbaProjectReferenceCatalogLifecycle` belongs to project activation and effective reference-selection changes."
+
+Dev: "What happens when two source files from the same project open with the same references?"
+Domain Expert: "They share the same `ReferenceSelectionFingerprint` and automatic lifecycle revision, so persisted preload and discovery are scheduled at most once."
+
+Dev: "What happens when a persisted catalog is missing or corrupt?"
+Domain Expert: "That result is negative-cached for the current `ReferenceCatalogLifecycleRevision`. It does not create a source diagnostic and does not prevent an explicit retry or a changed selection from trying again."
+
+Dev: "Does refreshing an Excel catalog invalidate a project that selects only Word?"
+Domain Expert: "No. Project snapshots track revisions for their selected references, so only affected project scopes are rebuilt."
 
 Dev: "Should `vba-project.json` store TypeLib GUIDs for references?"
 Domain Expert: "No. The `ProjectManifest` stores the human-visible `VbaProjectReference` name from `Reference.Description`. After discovery resolves that name, catalogs and caches may use `VbaProjectReferenceCatalogIdentity` keys such as GUID, version, LCID, and path."
