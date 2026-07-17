@@ -37,6 +37,29 @@ public sealed class VbaExecutableExpressionSyntaxTests
         Assert.True(IsComplete("TypeOf target.Parent Is Excel.Workbook"));
     }
 
+    [Theory]
+    [InlineData("New Class1")]
+    [InlineData("New Project1.Class1")]
+    [InlineData("New Project1. Class1")]
+    [InlineData("New Project1 _\n.Class1")]
+    public void Complete_new_class_expressions_are_accepted(string expression)
+    {
+        Assert.True(IsComplete(expression));
+    }
+
+    [Theory]
+    [InlineData("New")]
+    [InlineData("New Long")]
+    [InlineData("New Object")]
+    [InlineData("New Project1.")]
+    [InlineData("New Project1 .Class1")]
+    [InlineData("New Project1 . Class1")]
+    [InlineData("New Class1()")]
+    public void Incomplete_or_non_class_new_expressions_are_rejected(string expression)
+    {
+        Assert.False(IsComplete(expression));
+    }
+
     [Fact]
     public void Callable_keyword_expressions_are_accepted()
     {
@@ -84,12 +107,19 @@ public sealed class VbaExecutableExpressionSyntaxTests
     [InlineData("String(2, \"x\").Member")]
     [InlineData("String(2, \"x\")!Member")]
     [InlineData("String(2, \"x\")(0)")]
-    [InlineData("String$(2, \"x\").Member")]
     [InlineData("Date.Member")]
     [InlineData("Date!Member")]
     [InlineData("Date()(0)")]
+    public void Variant_intrinsics_accept_postfix_chains(string expression)
+    {
+        Assert.True(IsComplete(expression));
+    }
+
+    [Theory]
+    [InlineData("String$(2, \"x\").Member")]
     [InlineData("Date$.Member")]
-    public void Scalar_intrinsics_reject_postfix_chains(string expression)
+    [InlineData("Date$!Member")]
+    public void Fixed_string_intrinsics_reject_postfix_chains(string expression)
     {
         Assert.False(IsComplete(expression));
     }
@@ -153,6 +183,14 @@ public sealed class VbaExecutableExpressionSyntaxTests
     [Theory]
     [InlineData("target.Member", false)]
     [InlineData("target.Member(1).Next", false)]
+    [InlineData("target.Mod(1)", false)]
+    [InlineData("target. Parent", false)]
+    [InlineData("target _\n.Parent", false)]
+    [InlineData("target!Field", false)]
+    [InlineData("target _\n!Field", false)]
+    [InlineData("target _\n! _\nField", false)]
+    [InlineData("target.Mod", false)]
+    [InlineData("target!Mod", false)]
     [InlineData("Factory()(1).Member", false)]
     [InlineData(".Item(1).Member", true)]
     public void Ordinary_identifier_postfix_chains_remain_accepted(
@@ -173,6 +211,10 @@ public sealed class VbaExecutableExpressionSyntaxTests
     {
         Assert.False(IsComplete(".Enabled"));
         Assert.True(IsComplete(".Enabled", allowLeadingMemberAccess: true));
+        Assert.False(IsComplete("!Child"));
+        Assert.True(IsComplete("!Child", allowLeadingMemberAccess: true));
+        Assert.True(IsComplete("! Child", allowLeadingMemberAccess: true));
+        Assert.True(IsComplete("! _\nChild", allowLeadingMemberAccess: true));
         Assert.True(IsComplete(".5", allowLeadingMemberAccess: true));
     }
 
@@ -229,6 +271,12 @@ public sealed class VbaExecutableExpressionSyntaxTests
     [InlineData("+1")]
     [InlineData("+Ready()")]
     [InlineData("TypeOf target Is Object.Member")]
+    [InlineData("target! Field")]
+    [InlineData("target !Field")]
+    [InlineData("target ! Field")]
+    [InlineData("target! _\nField")]
+    [InlineData("target _\n! Field")]
+    [InlineData("target .Parent")]
     public void Malformed_dangling_and_unbalanced_expressions_are_rejected(string expression)
     {
         Assert.False(IsComplete(expression));

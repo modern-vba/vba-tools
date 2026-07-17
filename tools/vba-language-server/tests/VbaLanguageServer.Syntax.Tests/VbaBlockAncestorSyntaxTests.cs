@@ -519,7 +519,36 @@ public sealed class VbaBlockAncestorSyntaxTests
     }
 
     [Theory]
-    [InlineData("With target\nEnd With", VbaBlockKind.With)]
+    [InlineData("Public Sub Main()\n    With target\n    End With\nEnd Sub")]
+    [InlineData("Public Sub Main()\n    With target")]
+    [InlineData("Public Sub Main()\n    With target _\n        .Parent\n    End With\nEnd Sub")]
+    public void Complete_with_ancestor_with_optional_closer_is_accepted(string source)
+    {
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+        var block = Assert.Single(tree.Module.Blocks, candidate =>
+            candidate.Kind == VbaBlockKind.With);
+
+        var isComplete = VbaBlockAncestorSyntax.IsComplete(tree, block);
+
+        Assert.True(isComplete);
+    }
+
+    [Theory]
+    [InlineData("Public Sub Main()\n    With\n    End With\nEnd Sub")]
+    [InlineData("Public Sub Main()\n    With target +\n    End With\nEnd Sub")]
+    [InlineData("Public Sub Main()\n    With target\n    End With extra\nEnd Sub")]
+    public void Malformed_with_ancestor_is_rejected(string source)
+    {
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+        var block = Assert.Single(tree.Module.Blocks, candidate =>
+            candidate.Kind == VbaBlockKind.With);
+
+        var isComplete = VbaBlockAncestorSyntax.IsComplete(tree, block);
+
+        Assert.False(isComplete);
+    }
+
+    [Theory]
     [InlineData("For index = 1 To 3\nNext", VbaBlockKind.For)]
     [InlineData("Select Case value\nEnd Select", VbaBlockKind.Select)]
     [InlineData("Do\nLoop", VbaBlockKind.Do)]

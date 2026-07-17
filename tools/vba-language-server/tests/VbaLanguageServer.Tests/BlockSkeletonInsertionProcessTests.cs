@@ -158,6 +158,189 @@ public sealed class BlockSkeletonInsertionProcessTests
     }
 
     [Fact]
+    public async Task Complete_with_header_returns_a_version_bound_literal_plan()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+
+        const string uri = "file:///C:/work/With.bas";
+        const string header = "    With target.Parent";
+        const int version = 31;
+        await server.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(
+                uri,
+                version,
+                text: $"Public Sub Main()\n{header}\n    \nEnd Sub"));
+
+        var response = await SendInsertionRequestAsync(
+            server,
+            2,
+            uri,
+            version,
+            character: header.Length,
+            line: 1);
+
+        var plan = response.GetProperty("result");
+        Assert.Equal(version, plan.GetProperty("documentVersion").GetInt32());
+        Assert.Equal(1, plan.GetProperty("position").GetProperty("line").GetInt32());
+        Assert.Equal(header.Length, plan.GetProperty("position").GetProperty("character").GetInt32());
+        Assert.Equal("\n      ", plan.GetProperty("textBeforeCursor").GetString());
+        Assert.Equal("\n    End With", plan.GetProperty("textAfterCursor").GetString());
+
+        await server.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Continued_with_returns_a_plan_only_on_its_final_physical_line()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+
+        const string uri = "file:///C:/work/ContinuedWith.bas";
+        string[] lines =
+        [
+            "Public Sub Main()",
+            "  With Worksheets( _",
+            "        \"Sheet1\")   ' keep",
+            "      ",
+            "End Sub"
+        ];
+        const int version = 32;
+        await server.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, version, string.Join("\r\n", lines)));
+
+        var intermediate = await SendInsertionRequestAsync(
+            server,
+            2,
+            uri,
+            version,
+            character: lines[1].Length,
+            line: 1);
+        var final = await SendInsertionRequestAsync(
+            server,
+            3,
+            uri,
+            version,
+            character: lines[2].Length,
+            line: 2);
+
+        Assert.Equal(System.Text.Json.JsonValueKind.Null, intermediate.GetProperty("result").ValueKind);
+        Assert.Equal("\r\n    ", final.GetProperty("result").GetProperty("textBeforeCursor").GetString());
+        Assert.Equal("\r\n  End With", final.GetProperty("result").GetProperty("textAfterCursor").GetString());
+
+        await server.ShutdownAsync(4);
+    }
+
+    [Fact]
+    public async Task Nested_with_preserves_the_ancestor_boundary_and_returns_its_own_terminator()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+
+        const string uri = "file:///C:/work/NestedWith.bas";
+        const string header = "        With .Font";
+        const int version = 33;
+        await server.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(
+                uri,
+                version,
+                text:
+                    "Public Sub Main()\n" +
+                    "    With target\n" +
+                    $"{header}\n" +
+                    "        \n" +
+                    "    End With\n" +
+                    "End Sub"));
+
+        var response = await SendInsertionRequestAsync(
+            server,
+            2,
+            uri,
+            version,
+            character: header.Length,
+            line: 2);
+
+        var plan = response.GetProperty("result");
+        Assert.Equal("\n          ", plan.GetProperty("textBeforeCursor").GetString());
+        Assert.Equal("\n        End With", plan.GetProperty("textAfterCursor").GetString());
+
+        await server.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Ineligible_with_headers_and_owned_contexts_return_null()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+
+        (string Uri, int Version, string Text, int Line, int Character)[] cases =
+        [
+            CreateWithRefusalCase("IncompleteWith", 41, "    With"),
+            CreateWithRefusalCase("InvalidWith", 42, "    With target +"),
+            CreateWithRefusalCase("ScalarWith", 47, "    With 1"),
+            CreateWithRefusalCase("StandardConstantWith", 48, "    With VBA.Constants.vbCrLf"),
+            CreateWithRefusalCase("StandardEnumWith", 49, "    With VbCompareMethod.vbBinaryCompare"),
+            CreateWithRefusalCase("ErrScalarWith", 50, "    With Err.Number"),
+            CreateWithRefusalCase("ScalarChainWith", 51, "    With VBA.DateTime.Timer.Value"),
+            CreateWithRefusalCase("StandardOwnerWith", 52, "    With VBA.Strings"),
+            CreateWithRefusalCase("UnknownStandardMemberWith", 53, "    With Strings.Unknown"),
+            CreateWithRefusalCase("InvalidStandardCallWith", 54, "    With VBA.String(1)"),
+            CreateWithRefusalCase("ColonWith", 43, "    With target:"),
+            (
+                "file:///C:/work/ModuleLevelWith.bas",
+                44,
+                "With target\n    ",
+                0,
+                "With target".Length),
+            (
+                "file:///C:/work/WithBody.bas",
+                45,
+                "Public Sub Main()\n" +
+                "    With target\n" +
+                "    \n" +
+                "        .Value = 1\n" +
+                "End Sub",
+                1,
+                "    With target".Length),
+            (
+                "file:///C:/work/CandidateOwnedEndWith.bas",
+                46,
+                "Public Sub Main()\n" +
+                "    With target\n" +
+                "    \n" +
+                "    End With\n" +
+                "End Sub",
+                1,
+                "    With target".Length)
+        ];
+
+        for (var index = 0; index < cases.Length; index++)
+        {
+            var candidate = cases[index];
+            await server.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(candidate.Uri, candidate.Version, candidate.Text));
+
+            var response = await SendInsertionRequestAsync(
+                server,
+                index + 2,
+                candidate.Uri,
+                candidate.Version,
+                candidate.Character,
+                candidate.Line);
+
+            Assert.Equal(
+                System.Text.Json.JsonValueKind.Null,
+                response.GetProperty("result").ValueKind);
+        }
+
+        await server.ShutdownAsync(cases.Length + 2);
+    }
+
+    [Fact]
     public async Task Ineligible_if_headers_and_candidate_owned_boundaries_return_null()
     {
         await using var server = await LanguageServerProcessHarness.StartAsync();
@@ -549,6 +732,17 @@ public sealed class BlockSkeletonInsertionProcessTests
         };
 
     private static (string Uri, int Version, string Text, int Line, int Character) CreateIfRefusalCase(
+        string name,
+        int version,
+        string header)
+        => (
+            $"file:///C:/work/{name}.bas",
+            version,
+            $"Public Sub Main()\n{header}\n    \nEnd Sub",
+            1,
+            header.Length);
+
+    private static (string Uri, int Version, string Text, int Line, int Character) CreateWithRefusalCase(
         string name,
         int version,
         string header)

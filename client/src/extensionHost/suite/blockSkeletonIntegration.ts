@@ -22,7 +22,7 @@ import {
 const afterNativeEnterCommand =
   'vbaTools.blockSkeletonInsertion.afterNativeEnter';
 
-interface BlockIfSkeletonCase {
+interface BlockSkeletonCase {
   readonly name: string;
   readonly originalLines: readonly string[];
   readonly headerLine: number;
@@ -34,7 +34,7 @@ interface BlockIfSkeletonCase {
   > | null;
 }
 
-export async function runBlockIfSkeletonIntegrationTests(): Promise<void> {
+export async function runBlockSkeletonIntegrationTests(): Promise<void> {
   await runProductionCase({
     name: 'the production language server inserts a block If skeleton',
     originalLines: [
@@ -122,16 +122,174 @@ export async function runBlockIfSkeletonIntegrationTests(): Promise<void> {
     expectedCursor: new Position(2, 4),
     expectedPlan: null
   });
+
+  await runProductionCase({
+    name: 'the production language server inserts a With skeleton',
+    originalLines: [
+      'Public Sub Main()',
+      '    With target.Parent',
+      'End Sub'
+    ],
+    headerLine: 1,
+    expectedLines: [
+      'Public Sub Main()',
+      '    With target.Parent',
+      '      ',
+      '    End With',
+      'End Sub'
+    ],
+    expectedCursor: new Position(2, 6),
+    expectedPlan: {
+      textBeforeCursor: '\n      ',
+      textAfterCursor: '\n    End With'
+    }
+  });
+
+  await runProductionCase({
+    name: 'the production language server inserts a continued With skeleton at the final physical line',
+    originalLines: [
+      'Public Sub Main()',
+      '  With Worksheets( _',
+      '        "Sheet1")',
+      'End Sub'
+    ],
+    headerLine: 2,
+    expectedLines: [
+      'Public Sub Main()',
+      '  With Worksheets( _',
+      '        "Sheet1")',
+      '    ',
+      '  End With',
+      'End Sub'
+    ],
+    expectedCursor: new Position(3, 4),
+    expectedPlan: {
+      textBeforeCursor: '\n    ',
+      textAfterCursor: '\n  End With'
+    }
+  });
+
+  await runProductionCase({
+    name: 'the production language server inserts a nested With skeleton without stealing the ancestor closer',
+    originalLines: [
+      'Public Sub Main()',
+      '    With target',
+      '        With .Font',
+      '    End With',
+      'End Sub'
+    ],
+    headerLine: 2,
+    expectedLines: [
+      'Public Sub Main()',
+      '    With target',
+      '        With .Font',
+      '          ',
+      '        End With',
+      '    End With',
+      'End Sub'
+    ],
+    expectedCursor: new Position(3, 10),
+    expectedPlan: {
+      textBeforeCursor: '\n          ',
+      textAfterCursor: '\n        End With'
+    }
+  });
+
+  await runProductionCase({
+    name: 'the production language server preserves an If ancestor branch after a With skeleton',
+    originalLines: [
+      'Public Sub Main()',
+      '    If Ready() Then',
+      '        With target',
+      '    Else',
+      '    End If',
+      'End Sub'
+    ],
+    headerLine: 2,
+    expectedLines: [
+      'Public Sub Main()',
+      '    If Ready() Then',
+      '        With target',
+      '          ',
+      '        End With',
+      '    Else',
+      '    End If',
+      'End Sub'
+    ],
+    expectedCursor: new Position(3, 10),
+    expectedPlan: {
+      textBeforeCursor: '\n          ',
+      textAfterCursor: '\n        End With'
+    }
+  });
+
+  await runProductionCase({
+    name: 'the production language server leaves an existing With body to native Enter',
+    originalLines: [
+      'Public Sub Main()',
+      '    With target',
+      '        .Value = 1',
+      'End Sub'
+    ],
+    headerLine: 1,
+    expectedLines: [
+      'Public Sub Main()',
+      '    With target',
+      '    ',
+      '        .Value = 1',
+      'End Sub'
+    ],
+    expectedCursor: new Position(2, 4),
+    expectedPlan: null
+  });
+
+  await runProductionCase({
+    name: 'the production language server leaves a candidate-owned End With to native Enter',
+    originalLines: [
+      'Public Sub Main()',
+      '    With target',
+      '    End With',
+      'End Sub'
+    ],
+    headerLine: 1,
+    expectedLines: [
+      'Public Sub Main()',
+      '    With target',
+      '    ',
+      '    End With',
+      'End Sub'
+    ],
+    expectedCursor: new Position(2, 4),
+    expectedPlan: null
+  });
+
+  await runProductionCase({
+    name: 'the production language server leaves an invalid With header to native Enter',
+    originalLines: [
+      'Public Sub Main()',
+      '    With target +',
+      'End Sub'
+    ],
+    headerLine: 1,
+    expectedLines: [
+      'Public Sub Main()',
+      '    With target +',
+      '    ',
+      'End Sub'
+    ],
+    expectedCursor: new Position(2, 4),
+    expectedPlan: null
+  });
 }
 
-async function runProductionCase(testCase: BlockIfSkeletonCase): Promise<void> {
+async function runProductionCase(testCase: BlockSkeletonCase): Promise<void> {
   await runTest(testCase.name, async () => {
     const lineEnding = '\n';
     const originalText = testCase.originalLines.join(lineEnding);
     const expectedText = testCase.expectedLines.join(lineEnding);
     const documentUri = Uri.file(join(
       tmpdir(),
-      `vba-tools-block-if-skeleton-${randomUUID()}.bas`
+      `vba-tools-block-skeleton-${randomUUID()}.bas`
     ));
     let fileCreated = false;
     let openedDocument: TextDocument | undefined;

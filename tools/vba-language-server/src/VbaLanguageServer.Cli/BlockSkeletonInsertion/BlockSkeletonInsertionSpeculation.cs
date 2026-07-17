@@ -19,9 +19,9 @@ internal static class BlockSkeletonInsertionSpeculation
         int? firstFollowingContentLine,
         string lineEnding)
     {
-        if (originalHeader.Kind == VbaBlockHeaderKind.If)
+        if (originalHeader.Kind is VbaBlockHeaderKind.If or VbaBlockHeaderKind.With)
         {
-            return IsSafeIf(
+            return IsSafeStructuredBlock(
                 snapshot,
                 originalHeader,
                 plan,
@@ -104,7 +104,7 @@ internal static class BlockSkeletonInsertionSpeculation
             delta);
     }
 
-    private static bool IsSafeIf(
+    private static bool IsSafeStructuredBlock(
         VbaVersionedDocumentSnapshot snapshot,
         VbaBlockHeaderSyntax originalHeader,
         BlockSkeletonInsertionPlan plan,
@@ -168,10 +168,11 @@ internal static class BlockSkeletonInsertionSpeculation
             prospectiveSource.PositionAt(terminatorStartOffset),
             prospectiveSource.PositionAt(
                 terminatorStartOffset + originalHeader.ExpectedTerminator.Length));
+        var candidateKind = GetStructuralKind(originalHeader.Kind);
         var candidateBlock = prospectiveHeader is null
             ? null
             : FindUniqueBlock(prospectiveTree.Module.Blocks, block =>
-                block.Kind == VbaBlockKind.If
+                block.Kind == candidateKind
                 && block.ExpectedTerminator.Equals(
                     originalHeader.ExpectedTerminator,
                     StringComparison.OrdinalIgnoreCase)
@@ -289,7 +290,7 @@ internal static class BlockSkeletonInsertionSpeculation
         BlockSkeletonInsertionPrefixContext prefix,
         IReadOnlyList<VbaBlockSyntax> controlAncestors,
         int? firstFollowingContentLine,
-        out IfBoundaryProof? proof)
+        out BlockBoundaryProof? proof)
     {
         proof = null;
         if (firstFollowingContentLine is null)
@@ -297,7 +298,7 @@ internal static class BlockSkeletonInsertionSpeculation
             return true;
         }
 
-        var matches = new List<IfBoundaryProof>();
+        var matches = new List<BlockBoundaryProof>();
         for (var index = 0; index < prefix.Ancestors.Count; index++)
         {
             var ancestor = prefix.Ancestors[index];
@@ -315,7 +316,7 @@ internal static class BlockSkeletonInsertionSpeculation
                 continue;
             }
 
-            matches.Add(new IfBoundaryProof(index, boundary));
+            matches.Add(new BlockBoundaryProof(index, boundary));
         }
 
         if (matches.Count != 1)
@@ -356,7 +357,7 @@ internal static class BlockSkeletonInsertionSpeculation
     }
 
     private static bool PreservesControlBoundary(
-        IfBoundaryProof? proof,
+        BlockBoundaryProof? proof,
         VbaSyntaxTree prospectiveTree,
         VbaSourceText prospectiveSource,
         IReadOnlyList<VbaBlockSyntax> prospectiveAncestors,
@@ -892,7 +893,15 @@ internal static class BlockSkeletonInsertionSpeculation
         int StartOffset,
         int EndOffset);
 
-    private sealed record IfBoundaryProof(
+    private static VbaBlockKind GetStructuralKind(VbaBlockHeaderKind headerKind)
+        => headerKind switch
+        {
+            VbaBlockHeaderKind.If => VbaBlockKind.If,
+            VbaBlockHeaderKind.With => VbaBlockKind.With,
+            _ => VbaBlockKind.Malformed
+        };
+
+    private sealed record BlockBoundaryProof(
         int AncestorIndex,
         VbaBlockBoundarySyntax Boundary);
 }

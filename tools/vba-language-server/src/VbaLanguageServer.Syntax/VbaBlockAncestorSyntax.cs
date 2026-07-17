@@ -1,7 +1,7 @@
 namespace VbaLanguageServer.Syntax;
 
 /// <summary>
-/// Validates the local syntax owned by a Procedure or block If ancestor.
+/// Validates the local syntax owned by a supported body-owning ancestor.
 /// </summary>
 public static class VbaBlockAncestorSyntax
 {
@@ -27,6 +27,7 @@ public static class VbaBlockAncestorSyntax
         {
             VbaBlockKind.Procedure => IsCompleteProcedure(tree, block),
             VbaBlockKind.If => IsCompleteIf(tree, block),
+            VbaBlockKind.With => IsCompleteWith(tree, block),
             _ => false
         };
     }
@@ -51,6 +52,14 @@ public static class VbaBlockAncestorSyntax
         => block.ExpectedTerminator.Equals("End If", StringComparison.OrdinalIgnoreCase)
             && VbaBlockHeaderSyntax.IsCompleteIfAncestor(tree, block.OpenerRange)
             && HasExactIfBranches(tree, block)
+            && HasExactCloserWhenPresent(tree, block);
+
+    private static bool IsCompleteWith(
+        VbaSyntaxTree tree,
+        VbaBlockSyntax block)
+        => block.ExpectedTerminator.Equals("End With", StringComparison.OrdinalIgnoreCase)
+            && VbaBlockHeaderSyntax.IsCompleteWithAncestor(tree, block.OpenerRange)
+            && block.Branches.Count == 0
             && HasExactCloserWhenPresent(tree, block);
 
     private static bool HasExactIfBranches(

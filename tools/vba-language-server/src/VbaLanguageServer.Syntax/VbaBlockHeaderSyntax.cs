@@ -13,7 +13,12 @@ public enum VbaBlockHeaderKind
     /// <summary>
     /// A block-form If statement inside a callable body.
     /// </summary>
-    If
+    If,
+
+    /// <summary>
+    /// A With statement inside a callable body.
+    /// </summary>
+    With
 }
 
 /// <summary>
@@ -79,8 +84,33 @@ public sealed record VbaBlockHeaderSyntax(
         return HasCompleteBlockIfTokenShape(
                 tokens,
                 tree.Module.Kind,
-                allowLeadingMemberAccess: false)
+                VbaBlockSyntaxFacts.HasEnclosingBlock(
+                    tree,
+                    VbaBlockKind.With,
+                    statement.StartOffset,
+                    statement.EndOffset))
             && !HasDisqualifyingHeaderDiagnostic(tree, statement, CanonicalEndIf);
+    }
+
+    internal static bool IsCompleteWithAncestor(
+        VbaSyntaxTree tree,
+        VbaSyntaxRange openerRange)
+    {
+        var statement = FindCompleteAncestorStatement(tree, openerRange);
+        if (statement is null)
+        {
+            return false;
+        }
+
+        return HasCompleteWithTokenShape(
+                statement.SignificantTokens,
+                tree.Module.Kind,
+                VbaBlockSyntaxFacts.HasEnclosingBlock(
+                    tree,
+                    VbaBlockKind.With,
+                    statement.StartOffset,
+                    statement.EndOffset))
+            && !HasDisqualifyingHeaderDiagnostic(tree, statement, CanonicalEndWith);
     }
 
     private static VbaLogicalStatementSpan? FindCompleteAncestorStatement(
@@ -181,6 +211,37 @@ public sealed record VbaBlockHeaderSyntax(
                     CanonicalEndSub);
         }
 
+        if (tokens.Count > 0 && Matches(tokens[0], "With"))
+        {
+            if (!HasCompleteWithTokenShape(
+                    tokens,
+                    tree.Module.Kind,
+                    VbaBlockSyntaxFacts.HasEnclosingBlock(
+                        tree,
+                        VbaBlockKind.With,
+                        statement.StartOffset,
+                        statement.EndOffset))
+                || tokens[^1].Range.End.Line != line
+                || !HasOnlyLeadingWhitespace(source.Lines[tokens[0].Range.Start.Line], tokens[0])
+                || !HasOnlyTrailingSpacesOrApostropheComment(source.Lines[line], tokens[^1])
+                || tree.TokenStream.Tokens.Any(token =>
+                    token.Kind == VbaTokenKind.LineContinuation
+                    && token.Range.Start.Line == line)
+                || !HasCallableOwner(tree, statement)
+                || HasDisqualifyingHeaderDiagnostic(tree, statement, CanonicalEndWith))
+            {
+                return null;
+            }
+
+            return CreateHeader(
+                source,
+                tokens,
+                line,
+                character,
+                VbaBlockHeaderKind.With,
+                CanonicalEndWith);
+        }
+
         if (!HasCompleteBlockIfTokenShape(
                 tokens,
                 tree.Module.Kind,
@@ -245,6 +306,10 @@ public sealed record VbaBlockHeaderSyntax(
     private static string CanonicalEndIf
         => $"{VbaLanguageVocabulary.CanonicalKeywords["end"]} "
             + VbaLanguageVocabulary.CanonicalKeywords["if"];
+
+    private static string CanonicalEndWith
+        => $"{VbaLanguageVocabulary.CanonicalKeywords["end"]} "
+            + VbaLanguageVocabulary.CanonicalKeywords["with"];
 
     private static string CanonicalEndFunction
         => $"{VbaLanguageVocabulary.CanonicalKeywords["end"]} "
@@ -638,6 +703,19 @@ public sealed record VbaBlockHeaderSyntax(
                 tokens,
                 1,
                 tokens.Count - 1,
+                moduleKind,
+                allowLeadingMemberAccess);
+
+    private static bool HasCompleteWithTokenShape(
+        IReadOnlyList<VbaToken> tokens,
+        VbaModuleKind moduleKind,
+        bool allowLeadingMemberAccess)
+        => tokens.Count >= 2
+            && Matches(tokens[0], "With")
+            && VbaWithReceiverExpressionSyntax.IsComplete(
+                tokens,
+                1,
+                tokens.Count,
                 moduleKind,
                 allowLeadingMemberAccess);
 

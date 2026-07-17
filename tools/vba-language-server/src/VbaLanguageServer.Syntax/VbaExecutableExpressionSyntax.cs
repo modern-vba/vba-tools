@@ -29,6 +29,32 @@ internal static class VbaExecutableExpressionSyntax
         return parser.Parse();
     }
 
+    internal static bool HasDictionaryAccessTokenShape(
+        IReadOnlyList<VbaToken> tokens,
+        int separatorIndex,
+        int end)
+    {
+        if (separatorIndex <= 0
+            || separatorIndex + 1 >= end
+            || !tokens[separatorIndex].Text.Equals("!", StringComparison.OrdinalIgnoreCase)
+            || tokens[separatorIndex + 1].Kind is not (
+                VbaTokenKind.Identifier or VbaTokenKind.Keyword))
+        {
+            return false;
+        }
+
+        var receiver = tokens[separatorIndex - 1];
+        var separator = tokens[separatorIndex];
+        var member = tokens[separatorIndex + 1];
+        var receiverHasNoWhitespace = receiver.Range.End.Offset == separator.Range.Start.Offset;
+        var receiverHasLineContinuation = receiver.Range.End.Line < separator.Range.Start.Line;
+        var memberHasNoWhitespace = separator.Range.End.Offset == member.Range.Start.Offset;
+        var memberHasLineContinuation = separator.Range.End.Line < member.Range.Start.Line;
+        return receiverHasNoWhitespace && memberHasNoWhitespace
+            || receiverHasLineContinuation
+                && (memberHasNoWhitespace || memberHasLineContinuation);
+    }
+
     private sealed class Parser(
         IReadOnlyList<VbaToken> tokens,
         int start,
@@ -105,6 +131,11 @@ internal static class VbaExecutableExpressionSyntax
                 return ParseTypeOfExpression();
             }
 
+            if (Matches(tokens[index], "New"))
+            {
+                return ParseNewExpression();
+            }
+
             if (Matches(tokens[index], "-"))
             {
                 index++;
@@ -118,6 +149,34 @@ internal static class VbaExecutableExpressionSyntax
             }
 
             return ParsePrimary();
+        }
+
+        private bool ParseNewExpression()
+        {
+            index++;
+            if (index >= end || !IsClassTypeName(tokens[index]))
+            {
+                return false;
+            }
+
+            index++;
+            while (index < end && Matches(tokens[index], "."))
+            {
+                if (!AreLogicallyAdjacent(tokens[index - 1], tokens[index]))
+                {
+                    return false;
+                }
+
+                index++;
+                if (index >= end || !IsClassTypeName(tokens[index]))
+                {
+                    return false;
+                }
+
+                index++;
+            }
+
+            return true;
         }
 
         private bool ParseTypeOfExpression()
@@ -139,7 +198,8 @@ internal static class VbaExecutableExpressionSyntax
         private bool CanStartObjectReference(VbaToken token)
             => VbaIdentifierSyntaxFacts.IsValidDeclaredName(token)
                 || Matches(token, "Me")
-                || allowLeadingMemberAccess && Matches(token, ".");
+                || allowLeadingMemberAccess
+                    && (Matches(token, ".") || Matches(token, "!"));
 
         private bool ParseQualifiedObjectType()
         {
@@ -162,6 +222,11 @@ internal static class VbaExecutableExpressionSyntax
             index++;
             while (index < end && Matches(tokens[index], "."))
             {
+                if (!AreLogicallyAdjacent(tokens[index - 1], tokens[index]))
+                {
+                    return false;
+                }
+
                 index++;
                 if (index >= end
                     || !VbaIdentifierSyntaxFacts.IsValidDeclaredName(tokens[index]))
@@ -184,8 +249,9 @@ internal static class VbaExecutableExpressionSyntax
 
             var token = tokens[index];
             if (allowLeadingMemberAccess
-                && Matches(token, ".")
-                && !(index + 1 < end
+                && (Matches(token, ".") || Matches(token, "!"))
+                && !(Matches(token, ".")
+                    && index + 1 < end
                     && tokens[index + 1].Kind == VbaTokenKind.NumericLiteral
                     && AreAdjacent(token, tokens[index + 1])))
             {
@@ -279,10 +345,10 @@ internal static class VbaExecutableExpressionSyntax
         private bool ParseDateIntrinsic()
         {
             index++;
-            ConsumeAdjacentIntrinsicStringSuffix();
+            var fixedStringResult = ConsumeAdjacentIntrinsicStringSuffix();
             if (index >= end || !Matches(tokens[index], "("))
             {
-                return true;
+                return fixedStringResult || ParsePostfix();
             }
 
             index++;
@@ -292,13 +358,13 @@ internal static class VbaExecutableExpressionSyntax
             }
 
             index++;
-            return true;
+            return fixedStringResult || ParsePostfix();
         }
 
         private bool ParseStringIntrinsic()
         {
             index++;
-            ConsumeAdjacentIntrinsicStringSuffix();
+            var fixedStringResult = ConsumeAdjacentIntrinsicStringSuffix();
             if (index >= end || !Matches(tokens[index], "("))
             {
                 return false;
@@ -309,7 +375,7 @@ internal static class VbaExecutableExpressionSyntax
             for (var argumentIndex = 0; argumentIndex < 2; argumentIndex++)
             {
                 var namedArgument = index + 1 < end
-                    && VbaIdentifierSyntaxFacts.IsValidDeclaredName(tokens[index])
+                    && IsUnrestrictedName(tokens[index])
                     && Matches(tokens[index + 1], ":=");
                 if (namedArgument)
                 {
@@ -335,17 +401,20 @@ internal static class VbaExecutableExpressionSyntax
                 index++;
             }
 
-            return true;
+            return fixedStringResult || ParsePostfix();
         }
 
-        private void ConsumeAdjacentIntrinsicStringSuffix()
+        private bool ConsumeAdjacentIntrinsicStringSuffix()
         {
             if (index < end
                 && Matches(tokens[index], "$")
                 && AreAdjacent(tokens[index - 1], tokens[index]))
             {
                 index++;
+                return true;
             }
+
+            return false;
         }
 
         private bool ParseNumericLiteral()
@@ -497,6 +566,14 @@ internal static class VbaExecutableExpressionSyntax
             {
                 if (Matches(tokens[index], ".") || Matches(tokens[index], "!"))
                 {
+                    var separator = tokens[index];
+                    if (Matches(separator, "!")
+                        ? !HasDictionaryAccessTokenShape(tokens, index, end)
+                        : !AreLogicallyAdjacent(tokens[index - 1], separator))
+                    {
+                        return false;
+                    }
+
                     index++;
                     if (index >= end || !IsMemberName(tokens[index]))
                     {
@@ -543,6 +620,7 @@ internal static class VbaExecutableExpressionSyntax
         {
             if (index < end
                 && IsIdentifierTypeCharacter(tokens[index])
+                && !IsDictionaryAccess(index)
                 && AreAdjacent(tokens[index - 1], tokens[index]))
             {
                 index++;
@@ -551,6 +629,9 @@ internal static class VbaExecutableExpressionSyntax
 
             return false;
         }
+
+        private bool IsDictionaryAccess(int separatorIndex)
+            => HasDictionaryAccessTokenShape(tokens, separatorIndex, end);
 
         private bool ParseArgumentList()
         {
@@ -589,7 +670,7 @@ internal static class VbaExecutableExpressionSyntax
                 }
 
                 var namedArgument = index + 1 < end
-                    && VbaIdentifierSyntaxFacts.IsValidDeclaredName(tokens[index])
+                    && IsUnrestrictedName(tokens[index])
                     && Matches(tokens[index + 1], ":=");
                 if (namedArgument)
                 {
@@ -670,8 +751,35 @@ internal static class VbaExecutableExpressionSyntax
         private static bool IsIdentifierTypeCharacter(VbaToken token)
             => IsNumericTypeCharacter(token) || token.Text == "$";
 
+        private static bool IsUnrestrictedName(VbaToken token)
+            => token.Kind is VbaTokenKind.Identifier or VbaTokenKind.Keyword;
+
+        private static bool IsClassTypeName(VbaToken token)
+            => VbaIdentifierSyntaxFacts.IsValidDeclaredName(token)
+                && !IsIntrinsicTypeKeyword(token);
+
+        private static bool IsIntrinsicTypeKeyword(VbaToken token)
+            => token.Kind == VbaTokenKind.Keyword
+                && (Matches(token, "Boolean")
+                    || Matches(token, "Byte")
+                    || Matches(token, "Currency")
+                    || Matches(token, "Date")
+                    || Matches(token, "Double")
+                    || Matches(token, "Integer")
+                    || Matches(token, "Long")
+                    || Matches(token, "LongLong")
+                    || Matches(token, "LongPtr")
+                    || Matches(token, "Object")
+                    || Matches(token, "Single")
+                    || Matches(token, "String")
+                    || Matches(token, "Variant"));
+
         private static bool AreAdjacent(VbaToken left, VbaToken right)
             => left.Range.End.Offset == right.Range.Start.Offset;
+
+        private static bool AreLogicallyAdjacent(VbaToken left, VbaToken right)
+            => AreAdjacent(left, right)
+                || left.Range.End.Line < right.Range.Start.Line;
 
         private static bool ContainsOnlyAsciiDigits(ReadOnlySpan<char> value)
         {

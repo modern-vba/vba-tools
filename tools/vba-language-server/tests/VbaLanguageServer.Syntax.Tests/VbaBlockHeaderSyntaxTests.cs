@@ -5,6 +5,171 @@ namespace VbaLanguageServer.Syntax.Tests;
 
 public sealed class VbaBlockHeaderSyntaxTests
 {
+    [Fact]
+    public void Complete_with_expression_inside_a_callable_body_is_accepted()
+    {
+        const string source = "Public Sub Main()\n    With target.Parent";
+        var line = source.Split('\n')[1];
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(tree, 1, line.Length);
+
+        Assert.NotNull(header);
+        Assert.Equal("End With", header.ExpectedTerminator);
+        Assert.Equal("    ", header.LeadingWhitespace);
+    }
+
+    [Theory]
+    [InlineData("    With New Class1")]
+    [InlineData("    With New Project1.Class1")]
+    public void Complete_with_new_class_expression_is_accepted(string headerLine)
+    {
+        var source = $"Public Sub Main()\n{headerLine}";
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(tree, 1, headerLine.Length);
+
+        Assert.NotNull(header);
+        Assert.Equal("End With", header.ExpectedTerminator);
+    }
+
+    [Theory]
+    [InlineData("    With Date")]
+    [InlineData("    With Date.Value")]
+    [InlineData("    With String(2, \"x\")")]
+    [InlineData("    With String(2, \"x\")!Value")]
+    [InlineData("    With Len(value)")]
+    [InlineData("    With Strings.Len(value)")]
+    [InlineData("    With VBA.Strings.Len(value)")]
+    [InlineData("    With VBA.Date.Value")]
+    [InlineData("    With VBA.Array(1)")]
+    [InlineData("    With VBA.String(2, \"x\")")]
+    [InlineData("    With VBA.Information.Err")]
+    public void Complete_statically_eligible_intrinsic_with_expression_is_accepted(string headerLine)
+    {
+        var source = $"Public Sub Main()\n{headerLine}";
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(tree, 1, headerLine.Length);
+
+        Assert.NotNull(header);
+        Assert.Equal("End With", header.ExpectedTerminator);
+    }
+
+    [Fact]
+    public void Complete_continued_with_preserves_first_line_indentation_and_trivia()
+    {
+        var lines = new[]
+        {
+            "Public Sub Main()",
+            "    With Worksheets( _",
+            "        \"Sheet1\")   ' keep: note"
+        };
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Module1.bas",
+            string.Join('\n', lines));
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(tree, 2, lines[2].Length);
+
+        Assert.NotNull(header);
+        Assert.Equal(1, header.FirstPhysicalLine);
+        Assert.Equal(2, header.FinalPhysicalLine);
+        Assert.Equal("    ", header.LeadingWhitespace);
+        Assert.Equal("End With", header.ExpectedTerminator);
+    }
+
+    [Fact]
+    public void Continued_with_is_eligible_only_at_its_final_physical_line()
+    {
+        var lines = new[]
+        {
+            "Public Sub Main()",
+            "    With Worksheets( _",
+            "        \"Sheet1\")"
+        };
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Module1.bas",
+            string.Join('\n', lines));
+
+        Assert.Null(VbaBlockHeaderSyntax.FindAtPosition(tree, 1, lines[1].Length));
+        Assert.NotNull(VbaBlockHeaderSyntax.FindAtPosition(tree, 2, lines[2].Length));
+    }
+
+    [Fact]
+    public void Leading_member_with_expression_requires_an_enclosing_with_block()
+    {
+        const string outside = "Public Sub Main()\n    With .Font";
+        const string outsideDictionary = "Public Sub Main()\n    With !Child";
+        const string inside = "Public Sub Main()\n    With target\n        With ! Child";
+        var outsideTree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", outside);
+        var outsideDictionaryTree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Module1.bas",
+            outsideDictionary);
+        var insideTree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", inside);
+
+        Assert.Null(VbaBlockHeaderSyntax.FindAtPosition(
+            outsideTree,
+            1,
+            outside.Split('\n')[1].Length));
+        Assert.Null(VbaBlockHeaderSyntax.FindAtPosition(
+            outsideDictionaryTree,
+            1,
+            outsideDictionary.Split('\n')[1].Length));
+        Assert.NotNull(VbaBlockHeaderSyntax.FindAtPosition(
+            insideTree,
+            2,
+            inside.Split('\n')[2].Length));
+    }
+
+    [Theory]
+    [InlineData("With target", 0)]
+    [InlineData("Public Sub Main()\n    With", 1)]
+    [InlineData("Public Sub Main()\n    With target +", 1)]
+    [InlineData("Public Sub Main()\n    With True()", 1)]
+    [InlineData("Public Sub Main()\n    With 1", 1)]
+    [InlineData("Public Sub Main()\n    With \"text\"", 1)]
+    [InlineData("Public Sub Main()\n    With #1/1/2020#", 1)]
+    [InlineData("Public Sub Main()\n    With True", 1)]
+    [InlineData("Public Sub Main()\n    With TypeOf target Is Class1", 1)]
+    [InlineData("Public Sub Main()\n    With Not target", 1)]
+    [InlineData("Public Sub Main()\n    With left + right", 1)]
+    [InlineData("Public Sub Main()\n    With count%", 1)]
+    [InlineData("Public Sub Main()\n    With GetText$(1)", 1)]
+    [InlineData("Public Sub Main()\n    With CStr(value)", 1)]
+    [InlineData("Public Sub Main()\n    With target! Field", 1)]
+    [InlineData("Public Sub Main()\n    With target !Field", 1)]
+    [InlineData("Public Sub Main()\n    With target! _\n        Field", 2)]
+    [InlineData("Public Sub Main()\n    With target _\n        ! Field", 2)]
+    [InlineData("Public Sub Main()\n    With Strings.Asc(\"A\")", 1)]
+    [InlineData("Public Sub Main()\n    With VBA.Conversion.CStr(value)", 1)]
+    [InlineData("Public Sub Main()\n    With Strings.Unknown", 1)]
+    [InlineData("Public Sub Main()\n    With VBA.Strings.Unknown", 1)]
+    [InlineData("Public Sub Main()\n    With VbDayOfWeek.Unknown", 1)]
+    [InlineData("Public Sub Main()\n    With Err.Unknown", 1)]
+    [InlineData("Public Sub Main()\n    With VBA.Err.Unknown", 1)]
+    [InlineData("Public Sub Main()\n    With Global.Unknown", 1)]
+    [InlineData("Public Sub Main()\n    With VBA.Unknown", 1)]
+    [InlineData("Public Sub Main()\n    With VBA.String(1)", 1)]
+    [InlineData("Public Sub Main()\n    With VBA.CVar()", 1)]
+    [InlineData("Public Sub Main()\n    With Information.Err.Number", 1)]
+    [InlineData("Public Sub Main()\n    With LBound(values)", 1)]
+    [InlineData("Public Sub Main()\n    With Circle", 1)]
+    [InlineData("Public Sub Main()\n    With VBA.Choose(Index:=1)", 1)]
+    [InlineData("Public Sub Main()\n    With target:", 1)]
+    [InlineData("Public Sub Main()\n    With target\n    End With", 2)]
+    [InlineData("#If VBA7 Then\nPublic Sub Main()\n    With target\n#End If", 2)]
+    public void Incomplete_invalid_module_level_and_boundary_with_forms_are_rejected(
+        string source,
+        int line)
+    {
+        var lines = source.Split('\n');
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(tree, line, lines[line].Length);
+
+        Assert.Null(header);
+    }
+
     [Theory]
     [InlineData("Public Sub Main()\n    If Ready() Then", 1)]
     [InlineData("Public Function Main() As Boolean\n    If IsReady(value, Flag:=True) Then", 1)]
