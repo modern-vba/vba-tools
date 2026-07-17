@@ -47,7 +47,10 @@ internal sealed class VbaLanguageServerRuntime
             catalogDiscovery,
             VbaProjectReferenceCatalogPersistentStore.CreateDefault());
         var workspace = new VbaLanguageWorkspace(referenceCatalogCache);
-        var requestExecution = new VbaLspRequestExecution(transport, workspace);
+        var requestExecution = new VbaLspRequestExecution(
+            transport,
+            workspace,
+            BlockingVbaLspRequestExecutionGate.CreateFromEnvironment());
         var catalogRefresh = new ReferenceCatalogRefreshCoordinator(
             referenceCatalogCache,
             catalogRefreshService,
@@ -64,27 +67,148 @@ internal sealed class VbaLanguageServerRuntime
     /// <returns>A task that completes when the runtime stops.</returns>
     public async Task RunAsync(CancellationToken cancellationToken = default)
     {
-        while (!cancellationToken.IsCancellationRequested)
+        using var responseLifetime =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var scheduler = new VbaInteractiveWorkScheduler(
+            VbaInteractiveWorkTimingFileSink.CreateFromEnvironment(),
+            failureSink: _ => responseLifetime.Cancel());
+        var gracefulExit = false;
+        var shutdownAdmitted = false;
+        try
         {
-            var message = await transport.ReadMessageAsync(cancellationToken);
-            if (message is null)
+            while (!responseLifetime.IsCancellationRequested)
             {
-                return;
+                var message = await transport.ReadMessageAsync(responseLifetime.Token);
+                if (message is null)
+                {
+                    responseLifetime.Cancel();
+                    return;
+                }
+
+                if (!TryGetNotification(message, out var method, out var parameters))
+                {
+                    var requestMethod = GetRequestMethod(message);
+                    var requestId = VbaLspRequestId.TryCreate(
+                        message["id"],
+                        out var parsedRequestId)
+                            ? parsedRequestId
+                            : (VbaLspRequestId?)null;
+                    try
+                    {
+                        scheduler.AdmitRequest(
+                            requestId,
+                            requestMethod,
+                            (requestCancellationToken, releaseCancellationOwnership) =>
+                                requestExecution.ExecuteAsync(
+                                    message,
+                                    requestCancellationToken,
+                                    responseLifetime.Token,
+                                    releaseCancellationOwnership));
+                    }
+                    catch (VbaDuplicateRequestIdException)
+                    {
+                        try
+                        {
+                            scheduler.AdmitBarrier(
+                                "<duplicate-request>",
+                                _ => transport.WriteErrorResponseAsync(
+                                    message["id"],
+                                    -32600,
+                                    "Duplicate request id",
+                                    responseLifetime.Token));
+                        }
+                        catch (ObjectDisposedException) when (!scheduler.IsAccepting)
+                        {
+                            return;
+                        }
+
+                        continue;
+                    }
+                    catch (ObjectDisposedException) when (!scheduler.IsAccepting)
+                    {
+                        return;
+                    }
+
+                    shutdownAdmitted |= IsValidShutdownAdmission(
+                        message,
+                        requestMethod);
+                    continue;
+                }
+
+                if (method == "$/cancelRequest")
+                {
+                    if (TryGetCancellationRequestId(parameters, out var cancelledRequestId))
+                    {
+                        scheduler.TryCancel(cancelledRequestId);
+                    }
+
+                    continue;
+                }
+
+                if (method == "exit")
+                {
+                    if (!shutdownAdmitted && !requestExecution.ShutdownRequested)
+                    {
+                        Environment.ExitCode = 1;
+                        responseLifetime.Cancel();
+                        return;
+                    }
+
+                    VbaInteractiveWorkAdmission exit;
+                    try
+                    {
+                        exit = scheduler.AdmitBarrier("exit", _ =>
+                        {
+                            Environment.ExitCode = requestExecution.ShutdownRequested ? 0 : 1;
+                            return Task.CompletedTask;
+                        });
+                    }
+                    catch (ObjectDisposedException) when (!scheduler.IsAccepting)
+                    {
+                        return;
+                    }
+
+                    await exit.Completion;
+                    gracefulExit = true;
+                    return;
+                }
+
+                Func<CancellationToken, Task> executeNotification =
+                    workCancellationToken => HandleNotificationAsync(
+                        method,
+                        parameters,
+                        workCancellationToken);
+                try
+                {
+                    if (IsWorkspaceMutationNotification(method))
+                    {
+                        scheduler.AdmitMutation(method, executeNotification);
+                    }
+                    else
+                    {
+                        scheduler.AdmitBarrier(method, executeNotification);
+                    }
+                }
+                catch (ObjectDisposedException) when (!scheduler.IsAccepting)
+                {
+                    return;
+                }
+            }
+        }
+        catch (OperationCanceledException) when (responseLifetime.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            if (!gracefulExit)
+            {
+                responseLifetime.Cancel();
             }
 
-            if (!TryGetNotification(message, out var method, out var parameters))
-            {
-                await requestExecution.ExecuteAsync(message, cancellationToken);
-                continue;
-            }
-
-            if (method == "exit")
-            {
-                Environment.ExitCode = requestExecution.ShutdownRequested ? 0 : 1;
-                return;
-            }
-
-            await HandleNotificationAsync(method, parameters, cancellationToken);
+            await scheduler.StopAsync(
+                gracefulExit
+                    ? VbaInteractiveStopReason.Complete
+                    : VbaInteractiveStopReason.Abort);
         }
     }
 
@@ -110,6 +234,38 @@ internal sealed class VbaLanguageServerRuntime
         parameters = message["params"];
         return true;
     }
+
+    private static bool TryGetCancellationRequestId(
+        JsonNode? parameters,
+        out VbaLspRequestId requestId)
+    {
+        requestId = default;
+        return parameters is JsonObject parameterObject
+            && VbaLspRequestId.TryCreate(parameterObject["id"], out requestId);
+    }
+
+    private static string GetRequestMethod(JsonObject message)
+        => message["method"] is JsonValue methodNode
+            && methodNode.TryGetValue<string>(out var method)
+                ? method
+                : "<invalid-request>";
+
+    private static bool IsValidShutdownAdmission(
+        JsonObject message,
+        string method)
+        => method == "shutdown"
+            && message.TryGetPropertyValue("id", out var id)
+            && (id is null || VbaLspRequestId.TryCreate(id, out _))
+            && message["params"] is null
+            && message["jsonrpc"] is JsonValue jsonRpcNode
+            && jsonRpcNode.TryGetValue<string>(out var jsonRpc)
+            && jsonRpc == "2.0";
+
+    private static bool IsWorkspaceMutationNotification(string method)
+        => method is "textDocument/didOpen"
+            or "textDocument/didChange"
+            or "textDocument/didClose"
+            or "workspace/didChangeWatchedFiles";
 
     private async Task HandleNotificationAsync(
         string method,

@@ -40,6 +40,7 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
     private Task? _disposeTask;
     private bool _initialized;
     private bool _shutdownRequested;
+    private bool _inputCompleted;
     private int _cleanupRequestId = 1_000_000;
 
     private LanguageServerProcessHarness(
@@ -64,6 +65,23 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
             {
                 return _transcript.Count;
             }
+        }
+    }
+
+    public int CountResponses(int requestId, int afterCheckpoint = 0)
+    {
+        lock (_gate)
+        {
+            return _transcript
+                .Skip(afterCheckpoint)
+                .Count(message =>
+                    message.TryGetProperty("id", out var id)
+                    && id.ValueKind == JsonValueKind.Number
+                    && id.TryGetInt32(out var numericId)
+                    && numericId == requestId
+                    && !message.TryGetProperty("method", out _)
+                    && (message.TryGetProperty("result", out _)
+                        || message.TryGetProperty("error", out _)));
         }
     }
 
@@ -178,6 +196,27 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
 
     public Task SendRawMessageAsync(object message, CancellationToken cancellationToken = default)
         => SendMessageAsync(message, TimeSpan.FromSeconds(10), cancellationToken);
+
+    public void CompleteInput()
+    {
+        lock (_gate)
+        {
+            EnsureOperationAllowedLocked(allowDisposing: false);
+            _inputCompleted = true;
+        }
+
+        _stdin.Dispose();
+    }
+
+    public async Task<int> WaitForProcessExitAsync(
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default)
+    {
+        await WaitForExitAsync(
+            timeout ?? TimeSpan.FromSeconds(5),
+            cancellationToken);
+        return _process.ExitCode;
+    }
 
     private async Task<JsonElement> SendRequestCoreAsync(
         int id,
@@ -568,8 +607,13 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
         }
-        catch (EndOfStreamException) when (_shutdownRequested || _state is not HarnessState.Active)
+        catch (EndOfStreamException)
+            when (_shutdownRequested || _state is not HarnessState.Active)
         {
+        }
+        catch (EndOfStreamException exception) when (_inputCompleted)
+        {
+            FaultSession(exception);
         }
         catch (Exception exception)
         {

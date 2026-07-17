@@ -143,15 +143,16 @@ internal sealed class LspMessageTransport
     private async Task<Dictionary<string, string>?> ReadHeaderAsync(CancellationToken cancellationToken)
     {
         var buffer = new ArrayBufferWriter<byte>();
+        var singleByte = new byte[1];
         while (true)
         {
-            var next = input.ReadByte();
-            if (next < 0)
+            var read = await input.ReadAsync(singleByte.AsMemory(0, 1), cancellationToken);
+            if (read == 0)
             {
                 return null;
             }
 
-            buffer.GetSpan(1)[0] = (byte)next;
+            buffer.GetSpan(1)[0] = singleByte[0];
             buffer.Advance(1);
 
             var written = buffer.WrittenSpan;
@@ -164,7 +165,6 @@ internal sealed class LspMessageTransport
                 break;
             }
 
-            cancellationToken.ThrowIfCancellationRequested();
         }
 
         var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);

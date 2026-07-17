@@ -36,16 +36,21 @@ internal sealed class VbaLspRequestExecution
 
     private readonly LspMessageTransport transport;
     private readonly VbaLanguageWorkspace workspace;
+    private readonly IVbaLspRequestExecutionGate executionGate;
 
     /// <summary>
     /// Creates a request executor over the transport and workspace boundaries.
     /// </summary>
     /// <param name="transport">The transport used to write the request response.</param>
     /// <param name="workspace">The workspace used to create language feature snapshots.</param>
-    public VbaLspRequestExecution(LspMessageTransport transport, VbaLanguageWorkspace workspace)
+    public VbaLspRequestExecution(
+        LspMessageTransport transport,
+        VbaLanguageWorkspace workspace,
+        IVbaLspRequestExecutionGate? executionGate = null)
     {
         this.transport = transport;
         this.workspace = workspace;
+        this.executionGate = executionGate ?? ImmediateVbaLspRequestExecutionGate.Instance;
     }
 
     /// <summary>
@@ -57,8 +62,13 @@ internal sealed class VbaLspRequestExecution
     /// Executes one request and writes exactly one success or error response.
     /// </summary>
     /// <param name="request">The JSON-RPC request object.</param>
-    /// <param name="cancellationToken">A cancellation token for request execution and response writing.</param>
-    public async Task ExecuteAsync(JsonObject request, CancellationToken cancellationToken)
+    /// <param name="requestCancellationToken">A cancellation token owned by this request.</param>
+    /// <param name="responseCancellationToken">A cancellation token for the response transport lifetime.</param>
+    public async Task ExecuteAsync(
+        JsonObject request,
+        CancellationToken requestCancellationToken,
+        CancellationToken responseCancellationToken,
+        Action? releaseCancellationOwnership = null)
     {
         var id = GetResponseId(request);
         RequestOutcome outcome;
@@ -70,9 +80,24 @@ internal sealed class VbaLspRequestExecution
         {
             try
             {
-                outcome = ExecuteRequest(method, parameters, cancellationToken);
+                var requestId = VbaLspRequestId.TryCreate(id, out var parsedRequestId)
+                    ? parsedRequestId
+                    : (VbaLspRequestId?)null;
+                requestCancellationToken.ThrowIfCancellationRequested();
+                await executionGate.WaitAsync(
+                    requestId,
+                    method,
+                    requestCancellationToken);
+                outcome = ExecuteRequest(method, parameters, requestCancellationToken);
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException)
+                when (requestCancellationToken.IsCancellationRequested
+                    && !responseCancellationToken.IsCancellationRequested)
+            {
+                outcome = RequestOutcome.Error(-32800, "Request cancelled");
+            }
+            catch (OperationCanceledException)
+                when (responseCancellationToken.IsCancellationRequested)
             {
                 throw;
             }
@@ -82,17 +107,18 @@ internal sealed class VbaLspRequestExecution
             }
         }
 
+        releaseCancellationOwnership?.Invoke();
         if (outcome.ErrorCode is int errorCode)
         {
             await transport.WriteErrorResponseAsync(
                 id,
                 errorCode,
                 outcome.ErrorMessage!,
-                cancellationToken);
+                responseCancellationToken);
             return;
         }
 
-        await transport.WriteResponseAsync(id, outcome.Result, cancellationToken);
+        await transport.WriteResponseAsync(id, outcome.Result, responseCancellationToken);
     }
 
     private RequestOutcome ExecuteRequest(
