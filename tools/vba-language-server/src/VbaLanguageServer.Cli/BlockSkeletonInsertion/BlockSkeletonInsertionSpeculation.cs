@@ -906,6 +906,10 @@ internal static class BlockSkeletonInsertionSpeculation
         => headerKind switch
         {
             VbaBlockHeaderKind.Sub => VbaBlockKind.Procedure,
+            VbaBlockHeaderKind.Function => VbaBlockKind.Procedure,
+            VbaBlockHeaderKind.PropertyGet => VbaBlockKind.Procedure,
+            VbaBlockHeaderKind.PropertyLet => VbaBlockKind.Procedure,
+            VbaBlockHeaderKind.PropertySet => VbaBlockKind.Procedure,
             VbaBlockHeaderKind.If => VbaBlockKind.If,
             VbaBlockHeaderKind.With => VbaBlockKind.With,
             VbaBlockHeaderKind.Enum => VbaBlockKind.Enum,
@@ -915,6 +919,10 @@ internal static class BlockSkeletonInsertionSpeculation
 
     private static bool IsModuleDeclarationHeader(VbaBlockHeaderKind headerKind)
         => headerKind is VbaBlockHeaderKind.Sub
+            or VbaBlockHeaderKind.Function
+            or VbaBlockHeaderKind.PropertyGet
+            or VbaBlockHeaderKind.PropertyLet
+            or VbaBlockHeaderKind.PropertySet
             or VbaBlockHeaderKind.Enum
             or VbaBlockHeaderKind.Type;
 

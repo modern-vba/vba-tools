@@ -1027,6 +1027,12 @@ public sealed class BlockSkeletonInsertionPlannerTests
     [InlineData(
         "Public Sub First()\n    \n\nPublic Sub Second()",
         "Public Sub First()\n    \nEnd Sub\n\nPublic Sub Second()")]
+    [InlineData(
+        "Public Sub First()\n    \n\nPublic Function Second() As Long\nEnd Function",
+        "Public Sub First()\n    \nEnd Sub\n\nPublic Function Second() As Long\nEnd Function")]
+    [InlineData(
+        "Public Sub First()\n    \n\nPublic Property Get Second() As Long\nEnd Property",
+        "Public Sub First()\n    \nEnd Sub\n\nPublic Property Get Second() As Long\nEnd Property")]
     public void Planner_preserves_blank_to_eof_and_complete_same_level_sub_boundaries(
         string text,
         string expectedText)
@@ -1208,6 +1214,255 @@ public sealed class BlockSkeletonInsertionPlannerTests
         Assert.Equal(expectedAfterCursor, plan.TextAfterCursor);
     }
 
+    [Theory]
+    [InlineData(
+        "file:///C:/work/Module1.bas",
+        "Public Function Build() As String",
+        "\nEnd Function")]
+    [InlineData(
+        "file:///C:/work/Worker.cls",
+        "Public Property Get Value() As Long",
+        "\nEnd Property")]
+    [InlineData(
+        "file:///C:/work/Module1.bas",
+        "Public Property Get Value() As Long",
+        "\nEnd Property")]
+    [InlineData(
+        "file:///C:/work/Worker.cls",
+        "Public Property Let Value(ByVal assignedValue As Long)",
+        "\nEnd Property")]
+    [InlineData(
+        "file:///C:/work/Worker.cls",
+        "Public Property Set Value(ByVal assignedValue As Object)",
+        "\nEnd Property")]
+    public void Planner_inserts_eligible_function_and_property_skeletons_at_eof(
+        string uri,
+        string header,
+        string expectedAfterCursor)
+    {
+        var snapshot = CreateSnapshot(uri, version: 30, text: $"{header}\n    ");
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(0, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 2));
+
+        Assert.NotNull(plan);
+        Assert.Equal("\n  ", plan.TextBeforeCursor);
+        Assert.Equal(expectedAfterCursor, plan.TextAfterCursor);
+    }
+
+    [Fact]
+    public void Planner_preserves_tabs_crlf_and_first_line_indentation_for_a_continued_function()
+    {
+        string[] lines =
+        [
+            "\tPrivate Function Build( _",
+            "        ByVal value As Long) As String   ' keep",
+            "\t\t"
+        ];
+        var text = string.Join("\r\n", lines);
+        var snapshot = CreateSnapshot(
+            "file:///C:/work/Module1.bas",
+            version: 31,
+            text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(1, lines[1].Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: false, indentSize: 8));
+
+        Assert.NotNull(plan);
+        Assert.Equal("\r\n\t\t", plan.TextBeforeCursor);
+        Assert.Equal("\r\n\tEnd Function", plan.TextAfterCursor);
+    }
+
+    [Theory]
+    [InlineData(
+        "Public Function First() As Long",
+        "Public Property Get Second() As Long",
+        "End Property",
+        "\nEnd Function")]
+    [InlineData(
+        "Public Property Get First() As Long",
+        "Public Property Let Second(ByVal assignedValue As Long)",
+        "End Property",
+        "\nEnd Property")]
+    [InlineData(
+        "Public Property Let First(ByVal assignedValue As Long)",
+        "Public Property Set Second(ByVal assignedValue As Object)",
+        "End Property",
+        "\nEnd Property")]
+    [InlineData(
+        "Public Property Set First(ByVal assignedValue As Object)",
+        "Public Sub Second()",
+        "End Sub",
+        "\nEnd Property")]
+    public void Planner_preserves_complete_same_level_callable_boundaries(
+        string header,
+        string boundaryHeader,
+        string boundaryTerminator,
+        string expectedAfterCursor)
+    {
+        var text = $"{header}\n    \n\n{boundaryHeader}\n{boundaryTerminator}";
+        var snapshot = CreateSnapshot(
+            "file:///C:/work/Worker.cls",
+            version: 32,
+            text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(0, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.NotNull(plan);
+        Assert.Equal(expectedAfterCursor, plan.TextAfterCursor);
+    }
+
+    [Theory]
+    [InlineData(
+        "Public Sub Existing()\nEnd Sub\nPublic Function Build() As Long\n    ",
+        2,
+        "Public Function Build() As Long",
+        "\nEnd Function")]
+    [InlineData(
+        "Public Property Get Existing() As Long\nEnd Property\nPublic Property Let Existing(ByVal assignedValue As Long)\n    ",
+        2,
+        "Public Property Let Existing(ByVal assignedValue As Long)",
+        "\nEnd Property")]
+    public void Planner_allows_callable_skeletons_after_a_finished_callable(
+        string text,
+        int line,
+        string header,
+        string expectedAfterCursor)
+    {
+        var snapshot = CreateSnapshot(
+            "file:///C:/work/Worker.cls",
+            version: 36,
+            text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(line, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.NotNull(plan);
+        Assert.Equal(expectedAfterCursor, plan.TextAfterCursor);
+    }
+
+    [Theory]
+    [InlineData(
+        "file:///C:/work/Worker.cls",
+        "Public Event Changed(ByVal value As Long)")]
+    [InlineData(
+        "file:///C:/work/Module1.bas",
+        "Public Declare Sub Run Lib \"library\" ()")]
+    [InlineData(
+        "file:///C:/work/Module1.bas",
+        "Private Declare PtrSafe Function Read Lib \"library\" () As Long")]
+    [InlineData(
+        "file:///C:/work/Module1.bas",
+        "Friend Function Build() As String")]
+    [InlineData(
+        "file:///C:/work/Worker.cls",
+        "Global Function Build() As String")]
+    [InlineData(
+        "file:///C:/work/Worker.cls",
+        "Public Property Let Value()")]
+    [InlineData(
+        "file:///C:/work/Worker.cls",
+        "Public Property Set Value(ByVal assignedValue As Long)")]
+    [InlineData(
+        "file:///C:/work/Module1.bas",
+        "Public Function Build() As Long _")]
+    [InlineData(
+        "file:///C:/work/Worker.cls",
+        "Public Property Get Value() As Long _")]
+    public void Planner_rejects_excluded_illegal_and_incomplete_callable_headers(
+        string uri,
+        string header)
+    {
+        var snapshot = CreateSnapshot(uri, version: 33, text: $"{header}\n    ");
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(0, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.Null(plan);
+    }
+
+    [Theory]
+    [InlineData(
+        "file:///C:/work/Module1.bas",
+        "Public Function Build() As String\n    \n    Debug.Print 1")]
+    [InlineData(
+        "file:///C:/work/Worker.cls",
+        "Public Property Get Value() As Long\n    \n    ' existing comment")]
+    [InlineData(
+        "file:///C:/work/Worker.cls",
+        "Public Property Let Value(ByVal assignedValue As Long)\n    \nEnd Property")]
+    [InlineData(
+        "file:///C:/work/Worker.cls",
+        "Public Property Set Value(ByVal assignedValue As Object)\n    \n\nPublic Event Changed()")]
+    public void Planner_rejects_owned_or_unproven_callable_post_header_context(
+        string uri,
+        string text)
+    {
+        var header = text.Split('\n')[0];
+        var snapshot = CreateSnapshot(uri, version: 34, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(0, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.Null(plan);
+    }
+
+    [Theory]
+    [InlineData(
+        "file:///C:/work/FunctionDuplicateRecovery.bas",
+        "Public Function First() As Long",
+        "Public Sub Second()",
+        "End Sub",
+        "End Function")]
+    [InlineData(
+        "file:///C:/work/PropertyDuplicateRecovery.cls",
+        "Public Property Get First() As Long",
+        "Public Function Second() As Long",
+        "End Function",
+        "End Property")]
+    public void Planner_rejects_an_unproven_duplicate_of_a_direct_callable_recovery_diagnostic(
+        string uri,
+        string header,
+        string boundaryHeader,
+        string boundaryTerminator,
+        string expectedTerminator)
+    {
+        var text = $"{header}\n    \n\n{boundaryHeader}\n{boundaryTerminator}";
+        var snapshot = CreateSnapshot(uri, version: 35, text);
+        var direct = Assert.Single(snapshot.Diagnostics.SyntaxDiagnostics, diagnostic =>
+            diagnostic.Code == "syntax.missingBlockTerminator"
+            && diagnostic.Message == $"Block is missing '{expectedTerminator}'.");
+        snapshot = snapshot with
+        {
+            Diagnostics = snapshot.Diagnostics with
+            {
+                SyntaxDiagnostics = snapshot.Diagnostics.SyntaxDiagnostics
+                    .Append(direct)
+                    .ToArray()
+            }
+        };
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(0, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.Null(plan);
+    }
+
     [Fact]
     public void Planner_rejects_a_validation_error_overlapping_the_header()
     {
@@ -1268,7 +1523,6 @@ public sealed class BlockSkeletonInsertionPlannerTests
     [InlineData("Public Sub Run()\n    ' existing comment")]
     [InlineData("Public Sub Run()\n    Rem existing comment")]
     [InlineData("Public Sub Run()\nEnd Sub")]
-    [InlineData("Public Sub Run()\n    \n\nPublic Function NextValue() As Long\nEnd Function")]
     [InlineData("Public Sub Run()\n    \n\n    Public Sub Nested()\n    End Sub")]
     [InlineData("Public Sub Run()\n    \n\nPublic Sub Broken(")]
     [InlineData("Public Sub Run()\n    \n\n#Const Enabled = True")]

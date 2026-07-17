@@ -180,6 +180,176 @@ public sealed class VbaBlockHeaderSyntaxTests
         Assert.Null(header);
     }
 
+    [Theory]
+    [InlineData(
+        "file:///C:/work/Module1.bas",
+        "Function Build() As String",
+        VbaBlockHeaderKind.Function,
+        "End Function")]
+    [InlineData(
+        "file:///C:/work/Module1.bas",
+        "Global Static Function Build(Optional ByVal prefix As String = \"x\") As String",
+        VbaBlockHeaderKind.Function,
+        "End Function")]
+    [InlineData(
+        "file:///C:/work/Worker.cls",
+        "Friend Property Get Value() As Long",
+        VbaBlockHeaderKind.PropertyGet,
+        "End Property")]
+    [InlineData(
+        "file:///C:/work/Module1.bas",
+        "Public Property Get Value() As Long",
+        VbaBlockHeaderKind.PropertyGet,
+        "End Property")]
+    [InlineData(
+        "file:///C:/work/Worker.cls",
+        "Private Property Let Value(ByVal assignedValue As Long)",
+        VbaBlockHeaderKind.PropertyLet,
+        "End Property")]
+    [InlineData(
+        "file:///C:/work/Worker.cls",
+        "Public Property Set Value(ByVal assignedValue As Object)",
+        VbaBlockHeaderKind.PropertySet,
+        "End Property")]
+    public void Complete_eligible_function_and_property_headers_are_accepted(
+        string uri,
+        string headerLine,
+        VbaBlockHeaderKind expectedKind,
+        string expectedTerminator)
+    {
+        var tree = VbaSyntaxTree.ParseModule(uri, headerLine);
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(tree, 0, headerLine.Length);
+
+        Assert.NotNull(header);
+        Assert.Equal(expectedKind, header.Kind);
+        Assert.Equal(expectedTerminator, header.ExpectedTerminator);
+    }
+
+    [Fact]
+    public void Complete_form_property_header_after_the_designer_section_is_accepted()
+    {
+        var lines = new[]
+        {
+            "VERSION 5.00",
+            "Begin VB.Form Dialog",
+            "End",
+            "Attribute VB_Name = \"Dialog\"",
+            "Public Property Get CaptionText() As String"
+        };
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Dialog.frm",
+            string.Join('\n', lines));
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(tree, 4, lines[4].Length);
+
+        Assert.NotNull(header);
+        Assert.Equal(VbaBlockHeaderKind.PropertyGet, header.Kind);
+        Assert.Equal("End Property", header.ExpectedTerminator);
+    }
+
+    [Fact]
+    public void Complete_continued_function_is_eligible_only_on_its_final_physical_line()
+    {
+        var lines = new[]
+        {
+            "\tPrivate Static Function Build( _",
+            "        ByVal value As Long _",
+            "    ) As String   ' keep: note"
+        };
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Module1.bas",
+            string.Join('\n', lines));
+
+        Assert.Null(VbaBlockHeaderSyntax.FindAtPosition(tree, 0, lines[0].Length));
+        Assert.Null(VbaBlockHeaderSyntax.FindAtPosition(tree, 1, lines[1].Length));
+        var header = VbaBlockHeaderSyntax.FindAtPosition(tree, 2, lines[2].Length);
+
+        Assert.NotNull(header);
+        Assert.Equal(VbaBlockHeaderKind.Function, header.Kind);
+        Assert.Equal(0, header.FirstPhysicalLine);
+        Assert.Equal(2, header.FinalPhysicalLine);
+        Assert.Equal("\t", header.LeadingWhitespace);
+        Assert.Equal("End Function", header.ExpectedTerminator);
+    }
+
+    [Fact]
+    public void Complete_continued_property_let_is_eligible_only_on_its_final_physical_line()
+    {
+        var lines = new[]
+        {
+            "\tPublic Property Let Value( _",
+            "        ByVal index As Long, _",
+            "        ByVal assignedValue As Long)   ' keep: note"
+        };
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.cls",
+            string.Join('\n', lines));
+
+        Assert.Null(VbaBlockHeaderSyntax.FindAtPosition(tree, 0, lines[0].Length));
+        Assert.Null(VbaBlockHeaderSyntax.FindAtPosition(tree, 1, lines[1].Length));
+        var header = VbaBlockHeaderSyntax.FindAtPosition(tree, 2, lines[2].Length);
+
+        Assert.NotNull(header);
+        Assert.Equal(VbaBlockHeaderKind.PropertyLet, header.Kind);
+        Assert.Equal(0, header.FirstPhysicalLine);
+        Assert.Equal(2, header.FinalPhysicalLine);
+        Assert.Equal("\t", header.LeadingWhitespace);
+        Assert.Equal("End Property", header.ExpectedTerminator);
+    }
+
+    [Theory]
+    [InlineData(
+        "Public Sub Existing()\nEnd Sub\nPublic Function Build() As Long",
+        2,
+        VbaBlockHeaderKind.Function)]
+    [InlineData(
+        "Public Property Get Existing() As Long\nEnd Property\nPublic Property Let Existing(ByVal assignedValue As Long)",
+        2,
+        VbaBlockHeaderKind.PropertyLet)]
+    public void Complete_callable_headers_after_a_finished_callable_are_accepted(
+        string source,
+        int line,
+        VbaBlockHeaderKind expectedKind)
+    {
+        var lines = source.Split('\n');
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.cls", source);
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(tree, line, lines[line].Length);
+
+        Assert.NotNull(header);
+        Assert.Equal(expectedKind, header.Kind);
+    }
+
+    [Theory]
+    [InlineData("file:///C:/work/Worker.cls", "Public Event Changed(ByVal value As Long)", 0)]
+    [InlineData("file:///C:/work/Module1.bas", "Public Declare Sub Run Lib \"library\" ()", 0)]
+    [InlineData("file:///C:/work/Module1.bas", "Private Declare PtrSafe Function Read Lib \"library\" () As Long", 0)]
+    [InlineData("file:///C:/work/Module1.bas", "Friend Function Build() As String", 0)]
+    [InlineData("file:///C:/work/Worker.cls", "Global Function Build() As String", 0)]
+    [InlineData("file:///C:/work/Module1.bas", "Friend Property Get Value() As Long", 0)]
+    [InlineData("file:///C:/work/Worker.cls", "Global Property Get Value() As Long", 0)]
+    [InlineData("file:///C:/work/Module1.bas", "Public Function Build() As", 0)]
+    [InlineData("file:///C:/work/Worker.cls", "Public Property Value() As Long", 0)]
+    [InlineData("file:///C:/work/Worker.cls", "Public Property Let Value()", 0)]
+    [InlineData("file:///C:/work/Worker.cls", "Public Property Set Value(ByVal assignedValue As Long)", 0)]
+    [InlineData("file:///C:/work/Module1.bas", "Public Function Build() As Long _", 0)]
+    [InlineData("file:///C:/work/Worker.cls", "Public Property Get Value() As Long _", 0)]
+    [InlineData("file:///C:/work/Module1.bas", "Public Sub Outer()\n    Public Function Inner() As Long", 1)]
+    [InlineData("file:///C:/work/Module1.bas", "Public Function Build() As String:", 0)]
+    public void Excluded_illegal_incomplete_and_nested_callable_headers_are_rejected(
+        string uri,
+        string source,
+        int line)
+    {
+        var lines = source.Split('\n');
+        var tree = VbaSyntaxTree.ParseModule(uri, source);
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(tree, line, lines[line].Length);
+
+        Assert.Null(header);
+    }
+
     [Fact]
     public void Complete_with_expression_inside_a_callable_body_is_accepted()
     {

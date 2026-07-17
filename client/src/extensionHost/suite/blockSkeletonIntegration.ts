@@ -43,6 +43,160 @@ interface BlockSkeletonCase {
 
 export async function runBlockSkeletonIntegrationTests(): Promise<void> {
   await runProductionCase({
+    name: 'the production language server inserts a continued tab-indented Function skeleton',
+    originalLines: [
+      '\tPrivate Function Build( _',
+      '        ByVal value As Long) As String'
+    ],
+    headerLine: 1,
+    expectedLines: [
+      '\tPrivate Function Build( _',
+      '        ByVal value As Long) As String',
+      '\t\t',
+      '\tEnd Function'
+    ],
+    expectedCursor: new Position(2, 2),
+    lineEnding: '\r\n',
+    editorOptions: {
+      insertSpaces: false,
+      tabSize: 4,
+      indentSize: 4
+    },
+    expectedPlan: {
+      textBeforeCursor: '\r\n\t\t',
+      textAfterCursor: '\r\n\tEnd Function'
+    }
+  });
+
+  await runProductionCase({
+    name: 'the production language server inserts a Property Get skeleton',
+    originalLines: [
+      'Public Property Get Value() As Long'
+    ],
+    headerLine: 0,
+    expectedLines: [
+      'Public Property Get Value() As Long',
+      '  ',
+      'End Property'
+    ],
+    expectedCursor: new Position(1, 2),
+    lineEnding: '\r\n',
+    expectedPlan: {
+      textBeforeCursor: '\r\n  ',
+      textAfterCursor: '\r\nEnd Property'
+    }
+  });
+
+  await runProductionCase({
+    name: 'the production language server inserts a Property Let skeleton',
+    originalLines: [
+      'Public Property Let Value(ByVal assignedValue As Long)'
+    ],
+    headerLine: 0,
+    expectedLines: [
+      'Public Property Let Value(ByVal assignedValue As Long)',
+      '  ',
+      'End Property'
+    ],
+    expectedCursor: new Position(1, 2),
+    fileExtension: 'cls',
+    lineEnding: '\r\n',
+    expectedPlan: {
+      textBeforeCursor: '\r\n  ',
+      textAfterCursor: '\r\nEnd Property'
+    }
+  });
+
+  await runProductionCase({
+    name: 'the production language server inserts a Property Set skeleton in a form module',
+    originalLines: [
+      'VERSION 5.00',
+      'Begin VB.Form Dialog',
+      'End',
+      'Attribute VB_Name = "Dialog"',
+      'Public Property Set Value(ByVal assignedValue As Object)'
+    ],
+    headerLine: 4,
+    expectedLines: [
+      'VERSION 5.00',
+      'Begin VB.Form Dialog',
+      'End',
+      'Attribute VB_Name = "Dialog"',
+      'Public Property Set Value(ByVal assignedValue As Object)',
+      '  ',
+      'End Property'
+    ],
+    expectedCursor: new Position(5, 2),
+    fileExtension: 'frm',
+    expectedPlan: {
+      textBeforeCursor: '\n  ',
+      textAfterCursor: '\nEnd Property'
+    }
+  });
+
+  await runProductionCase({
+    name: 'the production language server leaves Event declarations to native Enter',
+    originalLines: [
+      'Public Event Changed(ByVal value As Long)'
+    ],
+    headerLine: 0,
+    expectedLines: [
+      'Public Event Changed(ByVal value As Long)',
+      ''
+    ],
+    expectedCursor: new Position(1, 0),
+    fileExtension: 'cls',
+    lineEnding: '\r\n',
+    expectedPlan: null
+  });
+
+  await runProductionCase({
+    name: 'the production language server leaves Declare Sub declarations to native Enter',
+    originalLines: [
+      'Public Declare Sub Run Lib "library" ()'
+    ],
+    headerLine: 0,
+    expectedLines: [
+      'Public Declare Sub Run Lib "library" ()',
+      ''
+    ],
+    expectedCursor: new Position(1, 0),
+    lineEnding: '\r\n',
+    expectedPlan: null
+  });
+
+  await runProductionCase({
+    name: 'the production language server leaves Declare Function declarations to native Enter',
+    originalLines: [
+      'Private Declare PtrSafe Function Read Lib "library" () As Long'
+    ],
+    headerLine: 0,
+    expectedLines: [
+      'Private Declare PtrSafe Function Read Lib "library" () As Long',
+      ''
+    ],
+    expectedCursor: new Position(1, 0),
+    lineEnding: '\r\n',
+    expectedPlan: null
+  });
+
+  await runProductionCase({
+    name: 'the production language server leaves an illegal Global Function in a class module to native Enter',
+    originalLines: [
+      'Global Function Build() As String'
+    ],
+    headerLine: 0,
+    expectedLines: [
+      'Global Function Build() As String',
+      ''
+    ],
+    expectedCursor: new Position(1, 0),
+    fileExtension: 'cls',
+    lineEnding: '\r\n',
+    expectedPlan: null
+  });
+
+  await runProductionCase({
     name: 'the production language server inserts a continued Enum skeleton before a same-level declaration',
     originalLines: [
       '  pUbLiC _',

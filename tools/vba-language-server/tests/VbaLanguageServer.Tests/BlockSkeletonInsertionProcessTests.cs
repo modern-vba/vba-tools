@@ -53,7 +53,7 @@ public sealed class BlockSkeletonInsertionProcessTests
     }
 
     [Fact]
-    public async Task Safe_non_eof_sub_boundary_returns_the_same_literal_plan()
+    public async Task Safe_non_eof_sub_boundaries_return_the_same_literal_plan()
     {
         await using var server = await LanguageServerProcessHarness.StartAsync();
         await server.InitializeAsync();
@@ -61,26 +61,161 @@ public sealed class BlockSkeletonInsertionProcessTests
         const string uri = "file:///C:/work/Boundary.bas";
         const string header = "Public Sub First()";
         const int version = 8;
-        await server.SendNotificationAsync(
-            "textDocument/didOpen",
-            CreateOpenDocument(
-                uri,
+        string[] boundaries =
+        [
+            "Public Sub Second()\nEnd Sub",
+            "Public Function Second() As Long\nEnd Function",
+            "Public Property Get Second() As Long\nEnd Property"
+        ];
+
+        for (var index = 0; index < boundaries.Length; index++)
+        {
+            var candidateUri = index == 0 ? uri : $"file:///C:/work/Boundary{index}.bas";
+            await server.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(
+                    candidateUri,
+                    version,
+                    text: $"{header}\n    \n\n{boundaries[index]}"));
+
+            var response = await SendInsertionRequestAsync(
+                server,
+                index + 2,
+                candidateUri,
                 version,
-                text: $"{header}\n    \n\nPublic Sub Second()\nEnd Sub"));
+                character: header.Length);
 
-        var response = await SendInsertionRequestAsync(
-            server,
-            2,
-            uri,
-            version,
-            character: header.Length);
+            var plan = response.GetProperty("result");
+            Assert.Equal(version, plan.GetProperty("documentVersion").GetInt32());
+            Assert.Equal("\n  ", plan.GetProperty("textBeforeCursor").GetString());
+            Assert.Equal("\nEnd Sub", plan.GetProperty("textAfterCursor").GetString());
+        }
 
-        var plan = response.GetProperty("result");
-        Assert.Equal(version, plan.GetProperty("documentVersion").GetInt32());
-        Assert.Equal("\n  ", plan.GetProperty("textBeforeCursor").GetString());
-        Assert.Equal("\nEnd Sub", plan.GetProperty("textAfterCursor").GetString());
+        await server.ShutdownAsync(boundaries.Length + 2);
+    }
 
-        await server.ShutdownAsync(3);
+    [Fact]
+    public async Task Complete_function_and_property_headers_return_version_bound_literal_plans()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+
+        (string Uri, string Header, string Before, string After)[] cases =
+        [
+            (
+                "file:///C:/work/Build.bas",
+                "Public Function Build() As String",
+                "\n  ",
+                "\nEnd Function"),
+            (
+                "file:///C:/work/Read.cls",
+                "Public Property Get Value() As Long",
+                "\n  ",
+                "\nEnd Property"),
+            (
+                "file:///C:/work/ReadModule.bas",
+                "Public Property Get ModuleValue() As Long",
+                "\n  ",
+                "\nEnd Property"),
+            (
+                "file:///C:/work/Write.cls",
+                "Public Property Let Value(ByVal assignedValue As Long)",
+                "\n  ",
+                "\nEnd Property"),
+            (
+                "file:///C:/work/Object.cls",
+                "Public Property Set Value(ByVal assignedValue As Object)",
+                "\n  ",
+                "\nEnd Property")
+        ];
+
+        for (var index = 0; index < cases.Length; index++)
+        {
+            var candidate = cases[index];
+            var version = 40 + index;
+            await server.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(
+                    candidate.Uri,
+                    version,
+                    $"{candidate.Header}\n    "));
+
+            var response = await SendInsertionRequestAsync(
+                server,
+                index + 2,
+                candidate.Uri,
+                version,
+                candidate.Header.Length);
+
+            var plan = response.GetProperty("result");
+            Assert.Equal(version, plan.GetProperty("documentVersion").GetInt32());
+            Assert.Equal(candidate.Header.Length, plan.GetProperty("position").GetProperty("character").GetInt32());
+            Assert.Equal(candidate.Before, plan.GetProperty("textBeforeCursor").GetString());
+            Assert.Equal(candidate.After, plan.GetProperty("textAfterCursor").GetString());
+        }
+
+        await server.ShutdownAsync(cases.Length + 2);
+    }
+
+    [Fact]
+    public async Task Excluded_illegal_and_owned_callable_headers_return_null()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+
+        (string Uri, string Text, string Header)[] cases =
+        [
+            (
+                "file:///C:/work/Event.cls",
+                "Public Event Changed(ByVal value As Long)\n    ",
+                "Public Event Changed(ByVal value As Long)"),
+            (
+                "file:///C:/work/DeclareSub.bas",
+                "Public Declare Sub Run Lib \"library\" ()\n    ",
+                "Public Declare Sub Run Lib \"library\" ()"),
+            (
+                "file:///C:/work/DeclareFunction.bas",
+                "Private Declare PtrSafe Function Read Lib \"library\" () As Long\n    ",
+                "Private Declare PtrSafe Function Read Lib \"library\" () As Long"),
+            (
+                "file:///C:/work/FriendFunction.bas",
+                "Friend Function Build() As String\n    ",
+                "Friend Function Build() As String"),
+            (
+                "file:///C:/work/GlobalProperty.cls",
+                "Global Property Get Value() As Long\n    ",
+                "Global Property Get Value() As Long"),
+            (
+                "file:///C:/work/OwnedFunction.bas",
+                "Public Function Build() As String\n    \n    Build = \"value\"",
+                "Public Function Build() As String"),
+            (
+                "file:///C:/work/OwnedProperty.cls",
+                "Public Property Get Value() As Long\n    \nEnd Property",
+                "Public Property Get Value() As Long")
+        ];
+
+        for (var index = 0; index < cases.Length; index++)
+        {
+            var candidate = cases[index];
+            var version = 50 + index;
+            await server.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(candidate.Uri, version, candidate.Text));
+
+            var response = await SendInsertionRequestAsync(
+                server,
+                index + 2,
+                candidate.Uri,
+                version,
+                candidate.Header.Length);
+
+            Assert.Equal(
+                System.Text.Json.JsonValueKind.Null,
+                response.GetProperty("result").ValueKind);
+        }
+
+        await server.ShutdownAsync(cases.Length + 2);
     }
 
     [Fact]
@@ -604,7 +739,6 @@ public sealed class BlockSkeletonInsertionProcessTests
             "    Debug.Print 1",
             "    ' existing comment",
             "End Sub",
-            "Public Function NextValue() As Long\nEnd Function",
             "    Public Sub Nested()\n    End Sub",
             "Public Sub Broken("
         ];

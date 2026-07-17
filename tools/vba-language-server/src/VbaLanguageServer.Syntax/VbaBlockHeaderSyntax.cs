@@ -11,6 +11,26 @@ public enum VbaBlockHeaderKind
     Sub,
 
     /// <summary>
+    /// A non-external Function declaration.
+    /// </summary>
+    Function,
+
+    /// <summary>
+    /// A Property Get declaration.
+    /// </summary>
+    PropertyGet,
+
+    /// <summary>
+    /// A Property Let declaration.
+    /// </summary>
+    PropertyLet,
+
+    /// <summary>
+    /// A Property Set declaration.
+    /// </summary>
+    PropertySet,
+
+    /// <summary>
     /// A block-form If statement inside a callable body.
     /// </summary>
     If,
@@ -220,34 +240,47 @@ public sealed record VbaBlockHeaderSyntax(
                 declarationTerminator);
         }
 
-        var keywordIndex = GetSubKeywordIndex(tokens);
-        if (keywordIndex >= 0)
+        if (TryGetCompleteCallableShape(tokens, tree.Module.Kind, out var callableShape))
         {
-            if (IsIllegalForModuleKind(tree.Module.Kind, tokens)
-                || !HasCompleteSubTokenShape(tokens, keywordIndex)
+            if (tokens[0].Range.Start.Line < tree.Module.CodeStartLine
+                || tokens[^1].Range.End.Line != line
+                || !HasOnlyLeadingWhitespace(source.Lines[tokens[0].Range.Start.Line], tokens[0])
+                || !HasOnlyTrailingSpacesOrApostropheComment(source.Lines[line], tokens[^1])
+                || tree.TokenStream.Tokens.Any(token =>
+                    token.Kind == VbaTokenKind.LineContinuation
+                    && token.Range.Start.Line == line)
                 || HasPrecedingOpenBlockBarrier(tree, statement)
-                || HasDisqualifyingHeaderDiagnostic(tree, statement, CanonicalEndSub))
+                || HasDisqualifyingHeaderDiagnostic(
+                    tree,
+                    statement,
+                    callableShape.ExpectedTerminator))
             {
                 return null;
             }
 
-            var nameToken = tokens[keywordIndex + 1];
             var firstPhysicalLine = tokens[0].Range.Start.Line;
-            var declaration = tree.Module.CallableDeclarations.FirstOrDefault(candidate =>
-                candidate.LineIndex == firstPhysicalLine
-                && candidate.Kind == VbaDeclarationKind.Procedure
-                && !candidate.IsExternal
-                && candidate.Name.Equals(nameToken.Text, StringComparison.OrdinalIgnoreCase)
-                && candidate.DeclarationKeyword?.Equals("Sub", StringComparison.OrdinalIgnoreCase) == true);
-            return declaration is null
+            var declarations = tree.Module.CallableDeclarations
+                .Where(candidate =>
+                    candidate.LineIndex == firstPhysicalLine
+                    && !candidate.IsExternal
+                    && candidate.Name.Equals(
+                        callableShape.Name,
+                        StringComparison.OrdinalIgnoreCase)
+                    && candidate.DeclarationKeyword?.Equals(
+                        callableShape.DeclarationKeyword,
+                        StringComparison.OrdinalIgnoreCase) == true
+                    && candidate.PropertyAccessorKind == callableShape.PropertyAccessorKind)
+                .Take(2)
+                .ToArray();
+            return declarations.Length != 1
                 ? null
                 : CreateHeader(
                     source,
                     tokens,
                     line,
                     character,
-                    VbaBlockHeaderKind.Sub,
-                    CanonicalEndSub);
+                    callableShape.HeaderKind,
+                    callableShape.ExpectedTerminator);
         }
 
         if (tokens.Count > 0 && Matches(tokens[0], "With"))
@@ -443,6 +476,7 @@ public sealed record VbaBlockHeaderSyntax(
         if (keywordIndex >= 0 && HasCompleteSubTokenShape(tokens, keywordIndex))
         {
             shape = new VbaCallableHeaderShape(
+                VbaBlockHeaderKind.Sub,
                 tokens[keywordIndex + 1].Text,
                 "Sub",
                 null,
@@ -463,6 +497,7 @@ public sealed record VbaBlockHeaderSyntax(
             }
 
             shape = new VbaCallableHeaderShape(
+                VbaBlockHeaderKind.Function,
                 tokens[keywordIndex + 1].Text,
                 "Function",
                 null,
@@ -487,6 +522,13 @@ public sealed record VbaBlockHeaderSyntax(
         }
 
         shape = new VbaCallableHeaderShape(
+            accessor switch
+            {
+                VbaPropertyAccessorKind.Get => VbaBlockHeaderKind.PropertyGet,
+                VbaPropertyAccessorKind.Let => VbaBlockHeaderKind.PropertyLet,
+                VbaPropertyAccessorKind.Set => VbaBlockHeaderKind.PropertySet,
+                _ => throw new InvalidOperationException("Unsupported Property accessor kind.")
+            },
             tokens[nameIndex].Text,
             "Property",
             accessor,
@@ -1224,6 +1266,7 @@ public sealed record VbaBlockHeaderSyntax(
 }
 
 internal sealed record VbaCallableHeaderShape(
+    VbaBlockHeaderKind HeaderKind,
     string Name,
     string DeclarationKeyword,
     VbaPropertyAccessorKind? PropertyAccessorKind,
