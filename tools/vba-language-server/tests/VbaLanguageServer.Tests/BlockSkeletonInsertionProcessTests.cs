@@ -869,6 +869,177 @@ public sealed class BlockSkeletonInsertionProcessTests
     }
 
     [Fact]
+    public async Task Complete_select_case_header_returns_a_version_bound_placeholder_free_plan()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+
+        const string uri = "file:///C:/work/SelectCase.bas";
+        const string header = "    Select Case value";
+        const int version = 110;
+        await server.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(
+                uri,
+                version,
+                $"Public Sub Main()\n{header}\n    \nEnd Sub"));
+
+        var response = await SendInsertionRequestAsync(
+            server,
+            2,
+            uri,
+            version,
+            header.Length,
+            line: 1);
+
+        var plan = response.GetProperty("result");
+        Assert.Equal(version, plan.GetProperty("documentVersion").GetInt32());
+        Assert.Equal(1, plan.GetProperty("position").GetProperty("line").GetInt32());
+        Assert.Equal(header.Length, plan.GetProperty("position").GetProperty("character").GetInt32());
+        Assert.Equal("\n      ", plan.GetProperty("textBeforeCursor").GetString());
+        Assert.Equal("\n    End Select", plan.GetProperty("textAfterCursor").GetString());
+
+        await server.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Nested_select_preserves_an_ancestor_case_else_boundary()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+
+        const string uri = "file:///C:/work/NestedSelectCase.bas";
+        const string header = "        Select Case innerValue";
+        const int version = 111;
+        await server.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(
+                uri,
+                version,
+                "Public Sub Main()\n"
+                    + "    Select Case outerValue\n"
+                    + "    Case 1\n"
+                    + $"{header}\n"
+                    + "        \n"
+                    + "    Case Else\n"
+                    + "    End Select\n"
+                    + "End Sub"));
+
+        var response = await SendInsertionRequestAsync(
+            server,
+            2,
+            uri,
+            version,
+            header.Length,
+            line: 3);
+
+        var plan = response.GetProperty("result");
+        Assert.Equal("\n          ", plan.GetProperty("textBeforeCursor").GetString());
+        Assert.Equal("\n        End Select", plan.GetProperty("textAfterCursor").GetString());
+
+        await server.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Ineligible_malformed_and_candidate_owned_select_contexts_return_null()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+
+        (string Uri, int Version, string Text, int Line, int Character)[] cases =
+        [
+            CreateSelectRefusalCase("IncompleteSelect", 112, "    Select Case"),
+            CreateSelectRefusalCase("InvalidSelect", 113, "    Select Case value +"),
+            CreateSelectRefusalCase("MissingSelectWhitespace", 114, "    Select Case(value)"),
+            (
+                "file:///C:/work/SelectCaseBranchHeader.bas",
+                115,
+                "Public Sub Main()\n"
+                    + "    Select Case value\n"
+                    + "    Case 1\n"
+                    + "    \n"
+                    + "    End Select\n"
+                    + "End Sub",
+                2,
+                "    Case 1".Length),
+            (
+                "file:///C:/work/SelectCaseElseHeader.bas",
+                116,
+                "Public Sub Main()\n"
+                    + "    Select Case value\n"
+                    + "    Case Else\n"
+                    + "    \n"
+                    + "    End Select\n"
+                    + "End Sub",
+                2,
+                "    Case Else".Length),
+            (
+                "file:///C:/work/OwnedSelectBody.bas",
+                117,
+                "Public Sub Main()\n"
+                    + "    Select Case value\n"
+                    + "    \n"
+                    + "        Debug.Print value\n"
+                    + "End Sub",
+                1,
+                "    Select Case value".Length),
+            (
+                "file:///C:/work/OwnedSelectCase.bas",
+                118,
+                "Public Sub Main()\n"
+                    + "    Select Case value\n"
+                    + "    \n"
+                    + "    Case 1\n"
+                    + "    End Select\n"
+                    + "End Sub",
+                1,
+                "    Select Case value".Length),
+            (
+                "file:///C:/work/OwnedSelectCaseElse.bas",
+                119,
+                "Public Sub Main()\n"
+                    + "    Select Case value\n"
+                    + "    \n"
+                    + "    Case Else\n"
+                    + "    End Select\n"
+                    + "End Sub",
+                1,
+                "    Select Case value".Length),
+            (
+                "file:///C:/work/OwnedEndSelect.bas",
+                120,
+                "Public Sub Main()\n"
+                    + "    Select Case value\n"
+                    + "    \n"
+                    + "    End Select\n"
+                    + "End Sub",
+                1,
+                "    Select Case value".Length)
+        ];
+
+        for (var index = 0; index < cases.Length; index++)
+        {
+            var candidate = cases[index];
+            await server.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(candidate.Uri, candidate.Version, candidate.Text));
+            var response = await SendInsertionRequestAsync(
+                server,
+                index + 2,
+                candidate.Uri,
+                candidate.Version,
+                candidate.Character,
+                candidate.Line);
+
+            Assert.Equal(
+                System.Text.Json.JsonValueKind.Null,
+                response.GetProperty("result").ValueKind);
+        }
+
+        await server.ShutdownAsync(cases.Length + 2);
+    }
+
+    [Fact]
     public async Task Unsafe_non_eof_sub_contexts_return_null()
     {
         await using var server = await LanguageServerProcessHarness.StartAsync();
@@ -1200,6 +1371,17 @@ public sealed class BlockSkeletonInsertionProcessTests
             header.Length);
 
     private static (string Uri, int Version, string Text, int Line, int Character) CreateWithRefusalCase(
+        string name,
+        int version,
+        string header)
+        => (
+            $"file:///C:/work/{name}.bas",
+            version,
+            $"Public Sub Main()\n{header}\n    \nEnd Sub",
+            1,
+            header.Length);
+
+    private static (string Uri, int Version, string Text, int Line, int Character) CreateSelectRefusalCase(
         string name,
         int version,
         string header)

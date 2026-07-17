@@ -65,6 +65,64 @@ internal static class VbaExecutableExpressionSyntax
             && tokens[decimalPointIndex - 1].Range.End.Offset
                 == tokens[decimalPointIndex].Range.Start.Offset;
 
+    internal static bool IsTwoTokenComparisonOperator(
+        VbaToken first,
+        VbaToken second)
+        => (first.Text, second.Text) is
+            ("<", ">")
+            or (">", "<")
+            or (">", "=")
+            or ("=", ">")
+            or ("<", "=")
+            or ("=", "<");
+
+    internal static bool HasAdjacentNumericBangTypeCharacterTokenShape(
+        IReadOnlyList<VbaToken> tokens,
+        int bangIndex)
+    {
+        if (bangIndex <= 0
+            || bangIndex >= tokens.Count
+            || tokens[bangIndex].Text != "!"
+            || tokens[bangIndex - 1].Range.End.Offset
+                != tokens[bangIndex].Range.Start.Offset)
+        {
+            return false;
+        }
+
+        var previousIndex = bangIndex - 1;
+        if (tokens[previousIndex].Kind == VbaTokenKind.NumericLiteral
+            || HasTrailingDecimalPointTokenShape(tokens, previousIndex))
+        {
+            return true;
+        }
+
+        return tokens[previousIndex].Kind == VbaTokenKind.Identifier
+            && IsCompactDecimalExponent(tokens[previousIndex].Text)
+            && previousIndex > 0
+            && tokens[previousIndex - 1].Range.End.Offset
+                == tokens[previousIndex].Range.Start.Offset
+            && (tokens[previousIndex - 1].Kind == VbaTokenKind.NumericLiteral
+                || HasTrailingDecimalPointTokenShape(tokens, previousIndex - 1));
+    }
+
+    private static bool IsCompactDecimalExponent(string text)
+    {
+        if (text.Length <= 1 || text[0] is not ('D' or 'd' or 'E' or 'e'))
+        {
+            return false;
+        }
+
+        for (var index = 1; index < text.Length; index++)
+        {
+            if (!char.IsAsciiDigit(text[index]))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     private sealed class Parser(
         IReadOnlyList<VbaToken> tokens,
         int start,
@@ -109,12 +167,15 @@ internal static class VbaExecutableExpressionSyntax
                     return false;
                 }
 
-                while (index < end
-                    && TryGetBinaryPrecedence(tokens[index], out var precedence)
+                while (TryGetBinaryOperator(
+                        index,
+                        out var precedence,
+                        out var operatorTokenCount)
                     && precedence >= minimumPrecedence)
                 {
-                    var rightAssociative = Matches(tokens[index], "^");
-                    index++;
+                    var rightAssociative = operatorTokenCount == 1
+                        && Matches(tokens[index], "^");
+                    index += operatorTokenCount;
                     if (!ParseExpression(precedence + (rightAssociative ? 0 : 1)))
                     {
                         return false;
@@ -742,6 +803,31 @@ internal static class VbaExecutableExpressionSyntax
                 _ => 0
             };
             return precedence > 0;
+        }
+
+        private bool TryGetBinaryOperator(
+            int operatorIndex,
+            out int precedence,
+            out int operatorTokenCount)
+        {
+            if (operatorIndex + 1 < end
+                && IsTwoTokenComparisonOperator(
+                    tokens[operatorIndex],
+                    tokens[operatorIndex + 1]))
+            {
+                precedence = ComparisonPrecedence;
+                operatorTokenCount = 2;
+                return true;
+            }
+
+            operatorTokenCount = 1;
+            if (operatorIndex >= end)
+            {
+                precedence = 0;
+                return false;
+            }
+
+            return TryGetBinaryPrecedence(tokens[operatorIndex], out precedence);
         }
 
         private static bool IsLiteralKeyword(VbaToken token)

@@ -689,6 +689,162 @@ export async function runBlockSkeletonIntegrationTests(): Promise<void> {
   });
 
   await runProductionCase({
+    name: 'the production language server inserts a placeholder-free Select Case skeleton',
+    originalLines: [
+      'Public Sub Main()',
+      '    Select Case value',
+      'End Sub'
+    ],
+    headerLine: 1,
+    expectedLines: [
+      'Public Sub Main()',
+      '    Select Case value',
+      '      ',
+      '    End Select',
+      'End Sub'
+    ],
+    expectedCursor: new Position(2, 6),
+    expectedPlan: {
+      textBeforeCursor: '\n      ',
+      textAfterCursor: '\n    End Select'
+    }
+  });
+
+  await runProductionCase({
+    name: 'the production language server preserves a Select ancestor Case Else branch',
+    originalLines: [
+      'Public Sub Main()',
+      '    Select Case outerValue',
+      '    Case 1',
+      '        Select Case innerValue',
+      '    Case Else',
+      '    End Select',
+      'End Sub'
+    ],
+    headerLine: 3,
+    expectedLines: [
+      'Public Sub Main()',
+      '    Select Case outerValue',
+      '    Case 1',
+      '        Select Case innerValue',
+      '          ',
+      '        End Select',
+      '    Case Else',
+      '    End Select',
+      'End Sub'
+    ],
+    expectedCursor: new Position(4, 10),
+    expectedPlan: {
+      textBeforeCursor: '\n          ',
+      textAfterCursor: '\n        End Select'
+    }
+  });
+
+  await runProductionCase({
+    name: 'the production language server leaves a candidate-owned Case branch to native Enter',
+    originalLines: [
+      'Public Sub Main()',
+      '    Select Case value',
+      '    Case 1',
+      '    End Select',
+      'End Sub'
+    ],
+    headerLine: 1,
+    expectedLines: [
+      'Public Sub Main()',
+      '    Select Case value',
+      '    ',
+      '    Case 1',
+      '    End Select',
+      'End Sub'
+    ],
+    expectedCursor: new Position(2, 4),
+    expectedPlan: null
+  });
+
+  await runProductionCase({
+    name: 'the production language server leaves a Case header to native Enter',
+    originalLines: [
+      'Public Sub Main()',
+      '    Select Case value',
+      '    Case 1',
+      '    End Select',
+      'End Sub'
+    ],
+    headerLine: 2,
+    expectedLines: [
+      'Public Sub Main()',
+      '    Select Case value',
+      '    Case 1',
+      '    ',
+      '    End Select',
+      'End Sub'
+    ],
+    expectedCursor: new Position(3, 4),
+    expectedPlan: null
+  });
+
+  await runProductionCase({
+    name: 'the production language server leaves a Case Else header to native Enter',
+    originalLines: [
+      'Public Sub Main()',
+      '    Select Case value',
+      '    Case Else',
+      '    End Select',
+      'End Sub'
+    ],
+    headerLine: 2,
+    expectedLines: [
+      'Public Sub Main()',
+      '    Select Case value',
+      '    Case Else',
+      '    ',
+      '    End Select',
+      'End Sub'
+    ],
+    expectedCursor: new Position(3, 4),
+    expectedPlan: null
+  });
+
+  await runProductionCase({
+    name: 'the production language server leaves a candidate-owned End Select to native Enter',
+    originalLines: [
+      'Public Sub Main()',
+      '    Select Case value',
+      '    End Select',
+      'End Sub'
+    ],
+    headerLine: 1,
+    expectedLines: [
+      'Public Sub Main()',
+      '    Select Case value',
+      '    ',
+      '    End Select',
+      'End Sub'
+    ],
+    expectedCursor: new Position(2, 4),
+    expectedPlan: null
+  });
+
+  await runProductionCase({
+    name: 'the production language server leaves a malformed Select Case header to native Enter',
+    originalLines: [
+      'Public Sub Main()',
+      '    Select Case value +',
+      'End Sub'
+    ],
+    headerLine: 1,
+    expectedLines: [
+      'Public Sub Main()',
+      '    Select Case value +',
+      '    ',
+      'End Sub'
+    ],
+    expectedCursor: new Position(2, 4),
+    expectedPlan: null
+  });
+
+  await runProductionCase({
     name: 'the production language server leaves Do While to native Enter',
     originalLines: [
       'Public Sub Main()',

@@ -796,25 +796,93 @@ public sealed class BlockSkeletonInsertionPlannerTests
         Assert.Equal("\n        End If", plan.TextAfterCursor);
     }
 
-    [Theory]
-    [InlineData("    Select Case value", "    End Select")]
-    public void Planner_fails_closed_for_an_if_inside_an_unsupported_cross_kind_ancestor(
-        string ancestorHeader,
-        string ancestorTerminator)
+    [Fact]
+    public void Planner_accepts_an_if_inside_a_strict_select_ancestor()
     {
         const string uri = "file:///C:/work/CrossKindAncestorIf.bas";
         const string header = "        If True Then";
-        var text = "Public Sub Main()\n"
-            + $"{ancestorHeader}\n"
-            + $"{header}\n"
+        const string text = "Public Sub Main()\n"
+            + "    Select Case value\n"
+            + "    Case 1\n"
+            + "        If True Then\n"
             + "        \n"
-            + $"{ancestorTerminator}\n"
+            + "    End Select\n"
             + "End Sub";
         var snapshot = CreateSnapshot(uri, version: 7, text);
 
         var plan = BlockSkeletonInsertionPlanner.CreatePlan(
             snapshot,
+            new BlockSkeletonInsertionPosition(3, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.NotNull(plan);
+        Assert.Equal("\n            ", plan.TextBeforeCursor);
+        Assert.Equal("\n        End If", plan.TextAfterCursor);
+    }
+
+    [Fact]
+    public void Planner_rejects_an_if_before_the_first_case_in_a_select_ancestor()
+    {
+        const string uri = "file:///C:/work/BeforeFirstCaseIf.bas";
+        const string header = "        If True Then";
+        const string text = "Public Sub Main()\n"
+            + "    Select Case value\n"
+            + "        If True Then\n"
+            + "        \n"
+            + "    Case 1\n"
+            + "    End Select\n"
+            + "End Sub";
+        var snapshot = CreateSnapshot(uri, version: 8, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
             new BlockSkeletonInsertionPosition(2, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.Null(plan);
+    }
+
+    [Fact]
+    public void Planner_rejects_a_select_ancestor_with_a_statement_before_its_first_case()
+    {
+        const string uri = "file:///C:/work/StatementBeforeFirstCase.bas";
+        const string header = "        If True Then";
+        const string text = "Public Sub Main()\n"
+            + "    Select Case value\n"
+            + "        Debug.Print value\n"
+            + "    Case 1\n"
+            + "        If True Then\n"
+            + "        \n"
+            + "    End Select\n"
+            + "End Sub";
+        var snapshot = CreateSnapshot(uri, version: 9, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(4, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.Null(plan);
+    }
+
+    [Fact]
+    public void Planner_rejects_a_select_ancestor_with_an_invalid_case_continuation()
+    {
+        const string uri = "file:///C:/work/InvalidCaseContinuation.bas";
+        const string header = "        If True Then";
+        const string text = "Public Sub Main()\n"
+            + "    Select Case value\n"
+            + "    Case first, _ ' invalid continuation\n"
+            + "        second\n"
+            + "        If True Then\n"
+            + "        \n"
+            + "    End Select\n"
+            + "End Sub";
+        var snapshot = CreateSnapshot(uri, version: 10, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(4, header.Length),
             VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
 
         Assert.Null(plan);
@@ -1004,6 +1072,170 @@ public sealed class BlockSkeletonInsertionPlannerTests
             snapshot,
             new BlockSkeletonInsertionPosition(2, header.Length),
             VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.Null(plan);
+    }
+
+    [Fact]
+    public void Planner_inserts_a_placeholder_free_select_case_skeleton()
+    {
+        const string uri = "file:///C:/work/SelectCase.bas";
+        const string header = "    Select Case value";
+        const string text = "Public Sub Main()\n"
+            + "    Select Case value\n"
+            + "    \n"
+            + "End Sub";
+        var snapshot = CreateSnapshot(uri, version: 40, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(1, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 2));
+
+        Assert.NotNull(plan);
+        Assert.Equal("\n      ", plan.TextBeforeCursor);
+        Assert.Equal("\n    End Select", plan.TextAfterCursor);
+        Assert.Equal(
+            "Public Sub Main()\n"
+                + "    Select Case value\n"
+                + "      \n"
+                + "    End Select\n"
+                + "End Sub",
+            ApplyPlan(text, VbaSourceText.From(text), plan));
+    }
+
+    [Theory]
+    [InlineData("        Debug.Print value")]
+    [InlineData("        ' existing comment")]
+    [InlineData("        Rem existing comment")]
+    [InlineData("    Case 2")]
+    [InlineData("    Case Else")]
+    [InlineData("    End Select")]
+    [InlineData("      Case 2")]
+    public void Planner_rejects_candidate_owned_and_ambiguous_select_context(
+        string followingLine)
+    {
+        const string uri = "file:///C:/work/OwnedSelectCase.bas";
+        const string header = "    Select Case value";
+        var text = "Public Sub Main()\n"
+            + $"{header}\n"
+            + "    \n"
+            + $"{followingLine}\n"
+            + "End Sub";
+        var snapshot = CreateSnapshot(uri, version: 41, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(1, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 2));
+
+        Assert.Null(plan);
+    }
+
+    [Theory]
+    [InlineData("    Case 2")]
+    [InlineData("    Case Else")]
+    [InlineData("    End Select")]
+    public void Planner_preserves_a_proven_select_ancestor_boundary_for_a_nested_select(
+        string boundary)
+    {
+        const string uri = "file:///C:/work/NestedSelectBoundary.bas";
+        const string header = "        Select Case innerValue";
+        var outerCloser = boundary.Equals("    End Select", StringComparison.Ordinal)
+            ? string.Empty
+            : "    End Select\n";
+        var text = "Public Sub Main()\n"
+            + "    Select Case outerValue\n"
+            + "    Case 1\n"
+            + $"{header}\n"
+            + "        \n"
+            + $"{boundary}\n"
+            + outerCloser
+            + "End Sub";
+        var snapshot = CreateSnapshot(uri, version: 42, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(3, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 2));
+
+        Assert.NotNull(plan);
+        Assert.Contains(
+            "        End Select\n" + boundary,
+            ApplyPlan(text, VbaSourceText.From(text), plan));
+    }
+
+    [Fact]
+    public void Planner_rejects_same_indentation_for_nested_select_ownership()
+    {
+        const string uri = "file:///C:/work/SameIndentNestedSelect.bas";
+        const string header = "    Select Case innerValue";
+        const string text = "Public Sub Main()\n"
+            + "    Select Case outerValue\n"
+            + "    Select Case innerValue\n"
+            + "    \n"
+            + "    End Select\n"
+            + "End Sub";
+        var snapshot = CreateSnapshot(uri, version: 43, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(2, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 2));
+
+        Assert.Null(plan);
+    }
+
+    [Fact]
+    public void Planner_preserves_existing_blank_lines_after_a_select_skeleton()
+    {
+        const string uri = "file:///C:/work/SelectBlankLines.bas";
+        const string header = "    Select Case value";
+        const string text = "Public Sub Main()\n"
+            + "    Select Case value\n"
+            + "    \n"
+            + "\n"
+            + "\n"
+            + "End Sub";
+        var snapshot = CreateSnapshot(uri, version: 44, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(1, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 2));
+
+        Assert.NotNull(plan);
+        Assert.Equal(
+            "Public Sub Main()\n"
+                + "    Select Case value\n"
+                + "      \n"
+                + "    End Select\n"
+                + "\n"
+                + "\n"
+                + "End Sub",
+            ApplyPlan(text, VbaSourceText.From(text), plan));
+    }
+
+    [Theory]
+    [InlineData("    Select")]
+    [InlineData("    Select Case")]
+    [InlineData("    Select Case(value)")]
+    [InlineData("    Select Case value +")]
+    [InlineData("    Select Case value:")]
+    [InlineData("    Case 1")]
+    [InlineData("    Case Else")]
+    [InlineData("    End Select")]
+    public void Planner_rejects_incomplete_branch_closer_and_malformed_select_headers(
+        string header)
+    {
+        const string uri = "file:///C:/work/InvalidSelectCase.bas";
+        var text = $"Public Sub Main()\n{header}\n    \nEnd Sub";
+        var snapshot = CreateSnapshot(uri, version: 45, text);
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(1, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 2));
 
         Assert.Null(plan);
     }

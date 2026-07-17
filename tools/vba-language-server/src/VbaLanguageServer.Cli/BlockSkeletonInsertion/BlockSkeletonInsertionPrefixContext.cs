@@ -124,6 +124,7 @@ internal sealed record BlockSkeletonInsertionPrefixContext(
             and not VbaBlockHeaderKind.With
             and not VbaBlockHeaderKind.For
             and not VbaBlockHeaderKind.ForEach
+            and not VbaBlockHeaderKind.SelectCase
             || ancestors.Count == 0
             || ancestors[0].Kind != VbaBlockKind.Procedure
             || ancestors.Count(block => block.Kind == VbaBlockKind.Procedure) != 1
@@ -182,6 +183,7 @@ internal sealed record BlockSkeletonInsertionPrefixContext(
             VbaBlockHeaderKind.With => VbaBlockKind.With,
             VbaBlockHeaderKind.For => VbaBlockKind.For,
             VbaBlockHeaderKind.ForEach => VbaBlockKind.For,
+            VbaBlockHeaderKind.SelectCase => VbaBlockKind.Select,
             _ => VbaBlockKind.Malformed
         };
 }

@@ -599,8 +599,135 @@ public sealed class VbaBlockAncestorSyntaxTests
         Assert.False(isComplete);
     }
 
+    [Fact]
+    public void Complete_select_ancestor_without_branches_is_accepted()
+    {
+        const string source = "Public Sub Main()\n"
+            + "    Select Case value\n"
+            + "    End Select\n"
+            + "End Sub";
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+        var block = Assert.Single(tree.Module.Blocks, candidate =>
+            candidate.Kind == VbaBlockKind.Select);
+
+        var isComplete = VbaBlockAncestorSyntax.IsComplete(tree, block);
+
+        Assert.True(isComplete);
+    }
+
+    [Fact]
+    public void Complete_select_ancestor_with_strict_case_branches_is_accepted()
+    {
+        const string source = "Public Sub Main()\n"
+            + "    Select Case value\n"
+            + "    Case 1 To 3, Is >= minimum\n"
+            + "    Case Else\n"
+            + "    End Select\n"
+            + "End Sub";
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+        var block = Assert.Single(tree.Module.Blocks, candidate =>
+            candidate.Kind == VbaBlockKind.Select);
+
+        var isComplete = VbaBlockAncestorSyntax.IsComplete(tree, block);
+
+        Assert.True(isComplete);
+    }
+
+    [Fact]
+    public void Select_ancestor_allows_comments_before_the_first_case()
+    {
+        const string source = "Public Sub Main()\n"
+            + "    Select Case value\n"
+            + "        ' apostrophe comment\n"
+            + "        Rem comment\n"
+            + "    Case 1\n"
+            + "    End Select\n"
+            + "End Sub";
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+        var block = Assert.Single(tree.Module.Blocks, candidate =>
+            candidate.Kind == VbaBlockKind.Select);
+
+        var isComplete = VbaBlockAncestorSyntax.IsComplete(tree, block);
+
+        Assert.True(isComplete);
+    }
+
     [Theory]
-    [InlineData("Select Case value\nEnd Select", VbaBlockKind.Select)]
+    [InlineData(
+        "Public Sub Main()\n"
+        + "    Select Case value\n"
+        + "        Debug.Print value\n"
+        + "    Case 1\n"
+        + "    End Select\n"
+        + "End Sub")]
+    [InlineData(
+        "Public Sub Main()\n"
+        + "    Select Case value\n"
+        + "        Debug.Print value\n"
+        + "    End Select\n"
+        + "End Sub")]
+    public void Select_ancestor_rejects_significant_statements_before_the_first_case(
+        string source)
+    {
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+        var block = Assert.Single(tree.Module.Blocks, candidate =>
+            candidate.Kind == VbaBlockKind.Select);
+
+        var isComplete = VbaBlockAncestorSyntax.IsComplete(tree, block);
+
+        Assert.False(isComplete);
+    }
+
+    [Fact]
+    public void Complete_nested_select_ancestors_are_each_accepted()
+    {
+        const string source = "Public Sub Main()\n"
+            + "    Select Case outerValue\n"
+            + "    Case 1\n"
+            + "        Select Case innerValue\n"
+            + "        Case Else\n"
+            + "        End Select\n"
+            + "    End Select\n"
+            + "End Sub";
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+        var blocks = tree.Module.Blocks
+            .Where(candidate => candidate.Kind == VbaBlockKind.Select)
+            .OrderBy(candidate => candidate.OpenerRange.Start.Offset)
+            .ToArray();
+
+        Assert.Equal(2, blocks.Length);
+        Assert.All(blocks, block =>
+            Assert.True(VbaBlockAncestorSyntax.IsComplete(tree, block)));
+    }
+
+    [Theory]
+    [InlineData("Public Sub Main()\n    Select Case\n    End Select\nEnd Sub")]
+    [InlineData("Public Sub Main()\n    Select Case(value)\n    End Select\nEnd Sub")]
+    [InlineData("Public Sub Main()\n    Select Case value +\n    End Select\nEnd Sub")]
+    [InlineData("Public Sub Main()\n    Select Case value\n    Case\n    End Select\nEnd Sub")]
+    [InlineData("Public Sub Main()\n    Select Case value\n    Case 1 To\n    End Select\nEnd Sub")]
+    [InlineData("Public Sub Main()\n    Select Case value\n    Case Else extra\n    End Select\nEnd Sub")]
+    [InlineData(
+        "Public Sub Main()\n"
+        + "    Select Case value\n"
+        + "    Case first, _ ' invalid continuation\n"
+        + "        second\n"
+        + "    End Select\n"
+        + "End Sub")]
+    [InlineData("Public Sub Main()\n    Select Case value\n    End Select extra\nEnd Sub")]
+    [InlineData("Public Sub Main()\n    Select Case value\n    Case Else\n    Case 2\n    End Select\nEnd Sub")]
+    public void Malformed_select_ancestor_is_rejected(string source)
+    {
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+        var block = Assert.Single(tree.Module.Blocks, candidate =>
+            candidate.Kind == VbaBlockKind.Select);
+
+        var isComplete = VbaBlockAncestorSyntax.IsComplete(tree, block);
+
+        Assert.False(isComplete);
+    }
+
+    [Theory]
     [InlineData("Do\nLoop", VbaBlockKind.Do)]
     [InlineData("While True\nWend", VbaBlockKind.While)]
     [InlineData("Public Enum Mode\nEnd Enum", VbaBlockKind.Enum)]

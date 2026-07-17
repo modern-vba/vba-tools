@@ -714,6 +714,120 @@ public sealed class VbaBlockHeaderSyntaxTests
     }
 
     [Fact]
+    public void Complete_select_case_header_inside_a_callable_body_is_accepted()
+    {
+        const string source = "Public Sub Main()\n    Select Case value";
+        var line = source.Split('\n')[1];
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(tree, 1, line.Length);
+
+        Assert.NotNull(header);
+        Assert.Equal(VbaBlockHeaderKind.SelectCase, header.Kind);
+        Assert.Equal("End Select", header.ExpectedTerminator);
+    }
+
+    [Fact]
+    public void Complete_select_case_accepts_a_two_token_comparison_selector()
+    {
+        const string source =
+            "Public Sub Main()\n    Select Case left = > right";
+        var line = source.Split('\n')[1];
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(tree, 1, line.Length);
+
+        Assert.NotNull(header);
+        Assert.Equal(VbaBlockHeaderKind.SelectCase, header.Kind);
+    }
+
+    [Fact]
+    public void Select_case_requires_whitespace_before_the_selector()
+    {
+        const string source = "Public Sub Main()\n    Select Case(value)";
+        var line = source.Split('\n')[1];
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(tree, 1, line.Length);
+
+        Assert.Null(header);
+    }
+
+    [Fact]
+    public void Complete_continued_select_case_preserves_physical_lines_and_first_line_indentation()
+    {
+        var lines = new[]
+        {
+            "Public Sub Main()",
+            "\tSelect Case firstValue _",
+            "        + secondValue   ' keep"
+        };
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Module1.bas",
+            string.Join('\n', lines));
+
+        var intermediate = VbaBlockHeaderSyntax.FindAtPosition(
+            tree,
+            line: 1,
+            character: lines[1].Length);
+        var header = VbaBlockHeaderSyntax.FindAtPosition(
+            tree,
+            line: 2,
+            character: lines[2].Length);
+
+        Assert.Null(intermediate);
+        Assert.NotNull(header);
+        Assert.Equal(VbaBlockHeaderKind.SelectCase, header.Kind);
+        Assert.Equal(1, header.FirstPhysicalLine);
+        Assert.Equal(2, header.FinalPhysicalLine);
+        Assert.Equal("\t", header.LeadingWhitespace);
+        Assert.Equal("End Select", header.ExpectedTerminator);
+    }
+
+    [Fact]
+    public void Leading_member_select_case_requires_an_enclosing_with_block()
+    {
+        const string outside = "Public Sub Main()\n    Select Case .Value";
+        const string inside = "Public Sub Main()\n"
+            + "    With target\n"
+            + "        Select Case .Value";
+        var outsideTree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", outside);
+        var insideTree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", inside);
+
+        Assert.Null(VbaBlockHeaderSyntax.FindAtPosition(
+            outsideTree,
+            1,
+            outside.Split('\n')[1].Length));
+        Assert.NotNull(VbaBlockHeaderSyntax.FindAtPosition(
+            insideTree,
+            2,
+            inside.Split('\n')[2].Length));
+    }
+
+    [Theory]
+    [InlineData("Select Case value", 0)]
+    [InlineData("Public Sub Main()\n    Select", 1)]
+    [InlineData("Public Sub Main()\n    Select Case", 1)]
+    [InlineData("Public Sub Main()\n    Select Case value +", 1)]
+    [InlineData("Public Sub Main()\n    Select Case value:", 1)]
+    [InlineData("Public Sub Main()\n    label: Select Case value", 1)]
+    [InlineData("Public Sub Main()\n    Case 1", 1)]
+    [InlineData("Public Sub Main()\n    Case Else", 1)]
+    [InlineData("Public Sub Main()\n    End Select", 1)]
+    [InlineData("#If VBA7 Then\nPublic Sub Main()\n    Select Case value\n#End If", 2)]
+    public void Incomplete_module_level_branch_and_preprocessor_select_forms_are_rejected(
+        string source,
+        int line)
+    {
+        var lines = source.Split('\n');
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(tree, line, lines[line].Length);
+
+        Assert.Null(header);
+    }
+
+    [Fact]
     public void Complete_continued_block_if_preserves_physical_lines_trivia_and_first_line_indentation()
     {
         var lines = new[]

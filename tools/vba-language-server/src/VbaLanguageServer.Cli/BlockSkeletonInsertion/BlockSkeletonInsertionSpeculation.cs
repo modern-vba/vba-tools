@@ -22,7 +22,8 @@ internal static class BlockSkeletonInsertionSpeculation
         if (originalHeader.Kind is VbaBlockHeaderKind.If
             or VbaBlockHeaderKind.With
             or VbaBlockHeaderKind.For
-            or VbaBlockHeaderKind.ForEach)
+            or VbaBlockHeaderKind.ForEach
+            or VbaBlockHeaderKind.SelectCase)
         {
             return IsSafeStructuredBlock(
                 snapshot,
@@ -917,6 +918,7 @@ internal static class BlockSkeletonInsertionSpeculation
             VbaBlockHeaderKind.With => VbaBlockKind.With,
             VbaBlockHeaderKind.For => VbaBlockKind.For,
             VbaBlockHeaderKind.ForEach => VbaBlockKind.For,
+            VbaBlockHeaderKind.SelectCase => VbaBlockKind.Select,
             VbaBlockHeaderKind.Enum => VbaBlockKind.Enum,
             VbaBlockHeaderKind.Type => VbaBlockKind.Type,
             _ => VbaBlockKind.Malformed

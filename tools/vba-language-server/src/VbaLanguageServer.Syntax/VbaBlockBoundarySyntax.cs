@@ -60,7 +60,8 @@ public sealed record VbaBlockBoundarySyntax(
                 tokens[^1])
             || tree.TokenStream.Tokens.Any(token =>
                 token.Kind == VbaTokenKind.LineContinuation
-                && token.Range.Start.Line == finalPhysicalLine))
+                && token.Range.Start.Line == finalPhysicalLine)
+            || HasCommentAfterLineContinuation(tree.TokenStream.Tokens, statement))
         {
             return null;
         }
@@ -69,16 +70,26 @@ public sealed record VbaBlockBoundarySyntax(
         VbaBlockBranchKind? branchKind = null;
         if (!MatchesExactTerminator(tokens, expectedTerminator))
         {
-            if (ownerBlockKind != VbaBlockKind.If
-                || !TryGetIfBranch(
+            var allowLeadingMemberAccess = VbaBlockSyntaxFacts.HasEnclosingBlock(
+                tree,
+                VbaBlockKind.With,
+                statement.StartOffset,
+                statement.EndOffset);
+            var isCompleteBranch = ownerBlockKind switch
+            {
+                VbaBlockKind.If => TryGetIfBranch(
                     tokens,
                     tree.Module.Kind,
-                    VbaBlockSyntaxFacts.HasEnclosingBlock(
-                        tree,
-                        VbaBlockKind.With,
-                        statement.StartOffset,
-                        statement.EndOffset),
-                    out branchKind))
+                    allowLeadingMemberAccess,
+                    out branchKind),
+                VbaBlockKind.Select => VbaSelectCaseBranchSyntax.TryGetCompleteKind(
+                    tokens,
+                    tree.Module.Kind,
+                    allowLeadingMemberAccess,
+                    out branchKind),
+                _ => false
+            };
+            if (!isCompleteBranch)
             {
                 return null;
             }
@@ -146,6 +157,18 @@ public sealed record VbaBlockBoundarySyntax(
         return tokens.Count == words.Length
             && tokens.Select((token, index) => Matches(token, words[index])).All(value => value);
     }
+
+    private static bool HasCommentAfterLineContinuation(
+        IReadOnlyList<VbaToken> tokens,
+        VbaLogicalStatementSpan statement)
+        => tokens.Any(continuation =>
+            continuation.Kind == VbaTokenKind.LineContinuation
+            && statement.StartOffset <= continuation.Range.Start.Offset
+            && continuation.Range.Start.Offset < statement.NextOffset
+            && tokens.Any(comment =>
+                comment.Kind == VbaTokenKind.Comment
+                && comment.Range.Start.Line == continuation.Range.Start.Line
+                && continuation.Range.End.Offset <= comment.Range.Start.Offset));
 
     private static bool HasOnlyLeadingWhitespace(VbaSourceLine line, VbaToken firstToken)
         => firstToken.Range.Start.Character <= line.Text.Length

@@ -29,6 +29,7 @@ public static class VbaBlockAncestorSyntax
             VbaBlockKind.If => IsCompleteIf(tree, block),
             VbaBlockKind.With => IsCompleteWith(tree, block),
             VbaBlockKind.For => IsCompleteFor(tree, block),
+            VbaBlockKind.Select => IsCompleteSelect(tree, block),
             _ => false
         };
     }
@@ -71,6 +72,17 @@ public static class VbaBlockAncestorSyntax
             && block.Branches.Count == 0
             && HasExactCloserWhenPresent(tree, block);
 
+    private static bool IsCompleteSelect(
+        VbaSyntaxTree tree,
+        VbaBlockSyntax block)
+        => block.ExpectedTerminator.Equals(
+                "End Select",
+                StringComparison.OrdinalIgnoreCase)
+            && VbaBlockHeaderSyntax.IsCompleteSelectCaseAncestor(tree, block.OpenerRange)
+            && HasOnlyTriviaBeforeFirstSelectBranch(tree, block)
+            && HasExactSelectBranches(tree, block)
+            && HasExactCloserWhenPresent(tree, block);
+
     private static bool HasExactIfBranches(
         VbaSyntaxTree tree,
         VbaBlockSyntax block)
@@ -108,6 +120,57 @@ public static class VbaBlockAncestorSyntax
         }
 
         return true;
+    }
+
+    private static bool HasExactSelectBranches(
+        VbaSyntaxTree tree,
+        VbaBlockSyntax block)
+    {
+        var hasCaseElse = false;
+        foreach (var branch in block.Branches)
+        {
+            if (branch.Kind is not VbaBlockBranchKind.Case
+                and not VbaBlockBranchKind.CaseElse
+                || hasCaseElse)
+            {
+                return false;
+            }
+
+            hasCaseElse = branch.Kind == VbaBlockBranchKind.CaseElse;
+            var boundary = VbaBlockBoundarySyntax.FindAtFirstPhysicalLine(
+                tree,
+                branch.HeaderRange.Start.Line,
+                VbaBlockKind.Select,
+                block.ExpectedTerminator);
+            if (boundary is null
+                || boundary.Role != VbaBlockBoundaryRole.Branch
+                || boundary.BranchKind != branch.Kind
+                || !boundary.TokenRange.Equals(branch.HeaderRange))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool HasOnlyTriviaBeforeFirstSelectBranch(
+        VbaSyntaxTree tree,
+        VbaBlockSyntax block)
+    {
+        var boundaryOffset = block.Branches.Count > 0
+            ? block.Branches[0].HeaderRange.Start.Offset
+            : block.CloserRange?.Start.Offset ?? block.Range.End.Offset;
+        return !VbaLogicalStatementSpan
+            .Build(tree.SourceText.Text.Length, tree.TokenStream.Tokens)
+            .Any(statement =>
+                statement.SignificantTokens.Count > 0
+                && !statement.SignificantTokens[0].Text.Equals(
+                    "Rem",
+                    StringComparison.OrdinalIgnoreCase)
+                && block.OpenerRange.End.Offset
+                    <= statement.SignificantTokens[0].Range.Start.Offset
+                && statement.SignificantTokens[0].Range.Start.Offset < boundaryOffset);
     }
 
     private static bool HasExactCloserWhenPresent(

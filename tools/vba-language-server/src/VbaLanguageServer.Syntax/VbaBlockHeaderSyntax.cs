@@ -51,6 +51,11 @@ public enum VbaBlockHeaderKind
     ForEach,
 
     /// <summary>
+    /// A Select Case...End Select statement inside a callable body.
+    /// </summary>
+    SelectCase,
+
+    /// <summary>
     /// A module-level Enum declaration.
     /// </summary>
     Enum,
@@ -173,6 +178,27 @@ public sealed record VbaBlockHeaderSyntax(
                     statement.EndOffset),
                 out _)
             && !HasDisqualifyingHeaderDiagnostic(tree, statement, CanonicalNext);
+    }
+
+    internal static bool IsCompleteSelectCaseAncestor(
+        VbaSyntaxTree tree,
+        VbaSyntaxRange openerRange)
+    {
+        var statement = FindCompleteAncestorStatement(tree, openerRange);
+        if (statement is null)
+        {
+            return false;
+        }
+
+        return HasCompleteSelectCaseTokenShape(
+                statement.SignificantTokens,
+                tree.Module.Kind,
+                VbaBlockSyntaxFacts.HasEnclosingBlock(
+                    tree,
+                    VbaBlockKind.With,
+                    statement.StartOffset,
+                    statement.EndOffset))
+            && !HasDisqualifyingHeaderDiagnostic(tree, statement, CanonicalEndSelect);
     }
 
     private static VbaLogicalStatementSpan? FindCompleteAncestorStatement(
@@ -378,6 +404,37 @@ public sealed record VbaBlockHeaderSyntax(
                 CanonicalNext);
         }
 
+        if (tokens.Count > 0 && Matches(tokens[0], "Select"))
+        {
+            if (!HasCompleteSelectCaseTokenShape(
+                    tokens,
+                    tree.Module.Kind,
+                    VbaBlockSyntaxFacts.HasEnclosingBlock(
+                        tree,
+                        VbaBlockKind.With,
+                        statement.StartOffset,
+                        statement.EndOffset))
+                || tokens[^1].Range.End.Line != line
+                || !HasOnlyLeadingWhitespace(source.Lines[tokens[0].Range.Start.Line], tokens[0])
+                || !HasOnlyTrailingSpacesOrApostropheComment(source.Lines[line], tokens[^1])
+                || tree.TokenStream.Tokens.Any(token =>
+                    token.Kind == VbaTokenKind.LineContinuation
+                    && token.Range.Start.Line == line)
+                || !HasCallableOwner(tree, statement)
+                || HasDisqualifyingHeaderDiagnostic(tree, statement, CanonicalEndSelect))
+            {
+                return null;
+            }
+
+            return CreateHeader(
+                source,
+                tokens,
+                line,
+                character,
+                VbaBlockHeaderKind.SelectCase,
+                CanonicalEndSelect);
+        }
+
         if (!HasCompleteBlockIfTokenShape(
                 tokens,
                 tree.Module.Kind,
@@ -447,6 +504,10 @@ public sealed record VbaBlockHeaderSyntax(
         => $"{VbaLanguageVocabulary.CanonicalKeywords["end"]} "
             + VbaLanguageVocabulary.CanonicalKeywords["with"];
 
+    private static string CanonicalEndSelect
+        => $"{VbaLanguageVocabulary.CanonicalKeywords["end"]} "
+            + VbaLanguageVocabulary.CanonicalKeywords["select"];
+
     private static string CanonicalEndEnum
         => $"{VbaLanguageVocabulary.CanonicalKeywords["end"]} "
             + VbaLanguageVocabulary.CanonicalKeywords["enum"];
@@ -465,6 +526,21 @@ public sealed record VbaBlockHeaderSyntax(
 
     private static string CanonicalNext
         => VbaLanguageVocabulary.CanonicalKeywords["next"];
+
+    private static bool HasCompleteSelectCaseTokenShape(
+        IReadOnlyList<VbaToken> tokens,
+        VbaModuleKind moduleKind,
+        bool allowLeadingMemberAccess)
+        => tokens.Count > 2
+            && Matches(tokens[0], "Select")
+            && Matches(tokens[1], "Case")
+            && tokens[1].Range.End.Offset < tokens[2].Range.Start.Offset
+            && VbaExecutableExpressionSyntax.IsComplete(
+                tokens,
+                2,
+                tokens.Count,
+                moduleKind,
+                allowLeadingMemberAccess);
 
     private static int GetSubKeywordIndex(IReadOnlyList<VbaToken> tokens)
     {

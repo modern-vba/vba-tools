@@ -233,6 +233,19 @@ public sealed class VbaExecutableExpressionSyntaxTests
     }
 
     [Theory]
+    [InlineData("left < > right")]
+    [InlineData("left > < right")]
+    [InlineData("left > = right")]
+    [InlineData("left = > right")]
+    [InlineData("left < = right")]
+    [InlineData("left = < right")]
+    [InlineData("left = _\n > right")]
+    public void Complete_two_token_comparison_operators_are_accepted(string expression)
+    {
+        Assert.True(IsComplete(expression));
+    }
+
+    [Theory]
     [InlineData(VbaModuleKind.StandardModule, false)]
     [InlineData(VbaModuleKind.ClassModule, true)]
     [InlineData(VbaModuleKind.FormModule, true)]
