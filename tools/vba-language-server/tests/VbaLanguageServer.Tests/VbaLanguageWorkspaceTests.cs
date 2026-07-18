@@ -480,6 +480,8 @@ public sealed class VbaLanguageWorkspaceTests
                 "Attribute VB_Name = \"Worker\"",
                 "Public Sub Run()",
                 "    Dim value As ",
+                "    result = Gen",
+                "    result = Generated.",
                 "End Sub"
             ]));
 
@@ -489,6 +491,16 @@ public sealed class VbaLanguageWorkspaceTests
                 .SourceIndex
                 .GetCompletionDefinitions(uri, line: 2, character: "    Dim value As ".Length)
                 .Select(definition => definition.Name)
+                .ToArray();
+            var beforeRoot = beforeRefreshSnapshot.SourceIndex
+                .GetCompletionResult(uri, line: 3, character: "    result = Gen".Length)
+                .Candidates
+                .Select(candidate => candidate.Label)
+                .ToArray();
+            var beforeQualified = beforeRefreshSnapshot.SourceIndex
+                .GetCompletionResult(uri, line: 4, character: "    result = Generated.".Length)
+                .Candidates
+                .Select(candidate => candidate.Label)
                 .ToArray();
             cache.Store(VbaProjectReferenceCatalogDiscoveryResult.Success(
                 new VbaProjectReferenceCatalogIdentity(
@@ -505,7 +517,14 @@ public sealed class VbaLanguageWorkspaceTests
                         new VbaProjectReferenceDefinition(
                             "Generated Library",
                             "GeneratedType",
-                            VbaSourceDefinitionKind.Class)
+                            VbaSourceDefinitionKind.Class),
+                        new VbaProjectReferenceDefinition(
+                            "Generated Library",
+                            "GeneratedValue",
+                            VbaSourceDefinitionKind.Property,
+                            TypeReference: new VbaTypeReference("Variant"),
+                            PropertyAccess: VbaPropertyAccess.Readable,
+                            GlobalExposure: ReferenceDefinitionGlobalExposure.LibraryGlobal)
                     ])));
             var afterRefreshSnapshot = workspace.CreateProjectSnapshot(uri);
             var afterRefresh = afterRefreshSnapshot
@@ -513,11 +532,27 @@ public sealed class VbaLanguageWorkspaceTests
                 .GetCompletionDefinitions(uri, line: 2, character: "    Dim value As ".Length)
                 .Select(definition => definition.Name)
                 .ToArray();
+            var afterRoot = afterRefreshSnapshot.SourceIndex
+                .GetCompletionResult(uri, line: 3, character: "    result = Gen".Length)
+                .Candidates
+                .Select(candidate => candidate.Label)
+                .ToArray();
+            var afterQualified = afterRefreshSnapshot.SourceIndex
+                .GetCompletionResult(uri, line: 4, character: "    result = Generated.".Length)
+                .Candidates
+                .Select(candidate => candidate.Label)
+                .ToArray();
 
             Assert.Same(beforeRefreshSnapshot, reusedBeforeRefreshSnapshot);
             Assert.NotSame(beforeRefreshSnapshot, afterRefreshSnapshot);
             Assert.DoesNotContain("GeneratedType", beforeRefresh);
             Assert.Contains("GeneratedType", afterRefresh);
+            Assert.DoesNotContain("Generated", beforeRoot);
+            Assert.DoesNotContain("GeneratedValue", beforeRoot);
+            Assert.Empty(beforeQualified);
+            Assert.Contains("Generated", afterRoot);
+            Assert.Contains("GeneratedValue", afterRoot);
+            Assert.Contains("GeneratedValue", afterQualified);
         }
         finally
         {

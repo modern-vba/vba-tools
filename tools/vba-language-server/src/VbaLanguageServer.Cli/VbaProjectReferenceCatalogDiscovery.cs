@@ -1031,6 +1031,7 @@ public sealed class VbaProjectReferenceCatalogRefreshService
         return await RefreshCoreAsync(
             selection,
             waitForExistingOwners: false,
+            persistedPreloadCompleted: null,
             cancellationToken);
     }
 
@@ -1041,11 +1042,24 @@ public sealed class VbaProjectReferenceCatalogRefreshService
         => RefreshCoreAsync(
             selection,
             waitForExistingOwners: true,
+            persistedPreloadCompleted: null,
+            cancellationToken);
+
+    internal Task<IReadOnlyList<VbaProjectReferenceCatalogRefreshResult>>
+        RefreshAutomaticallyAsync(
+            VbaProjectReferenceSelection selection,
+            Action<IReadOnlyList<VbaProjectReferenceCatalogRefreshResult>> persistedPreloadCompleted,
+            CancellationToken cancellationToken)
+        => RefreshCoreAsync(
+            selection,
+            waitForExistingOwners: true,
+            persistedPreloadCompleted,
             cancellationToken);
 
     private async Task<IReadOnlyList<VbaProjectReferenceCatalogRefreshResult>> RefreshCoreAsync(
         VbaProjectReferenceSelection selection,
         bool waitForExistingOwners,
+        Action<IReadOnlyList<VbaProjectReferenceCatalogRefreshResult>>? persistedPreloadCompleted,
         CancellationToken cancellationToken)
     {
         using var refreshLease = await cache.AcquireRefreshLeaseAsync(
@@ -1066,9 +1080,11 @@ public sealed class VbaProjectReferenceCatalogRefreshService
                 .ToArray()
         };
         var results = new List<VbaProjectReferenceCatalogRefreshResult>();
-        results.AddRange(await PreloadPersistedCatalogsAsync(
+        var persistedPreloadResults = await PreloadPersistedCatalogsAsync(
             ownedSelection,
-            cancellationToken));
+            cancellationToken);
+        results.AddRange(persistedPreloadResults);
+        persistedPreloadCompleted?.Invoke(persistedPreloadResults);
         cancellationToken.ThrowIfCancellationRequested();
         results.AddRange(await DiscoverMissingCatalogsAsync(
             ownedSelection,

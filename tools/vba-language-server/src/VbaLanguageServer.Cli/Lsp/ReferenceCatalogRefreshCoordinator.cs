@@ -229,7 +229,7 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogLife
             selection => selection.State.Fingerprint,
             StringComparer.Ordinal))
         {
-            Task<IReadOnlyList<VbaProjectReferenceCatalogRefreshResult>>? automaticWork = null;
+            SharedReferenceCatalogWork? automaticWork = null;
             foreach (var selection in selectionGroup)
             {
                 automaticWork ??= GetOrStartSharedAutomaticWork(selection);
@@ -244,7 +244,7 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogLife
 
     private void StartSelectionLifecycle(
         ScheduledReferenceCatalogSelection selection,
-        Task<IReadOnlyList<VbaProjectReferenceCatalogRefreshResult>>? automaticWork)
+        SharedReferenceCatalogWork? automaticWork)
     {
         Task task;
         lock (lifecycleGate)
@@ -268,7 +268,7 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogLife
 
     private async Task RunSelectionLifecycleAsync(
         ScheduledReferenceCatalogSelection scheduledSelection,
-        Task<IReadOnlyList<VbaProjectReferenceCatalogRefreshResult>>? automaticWork,
+        SharedReferenceCatalogWork? automaticWork,
         CancellationToken cancellationToken)
     {
         try
@@ -296,13 +296,28 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogLife
                 return;
             }
 
-            var results = await automaticWork;
+            var persistedPreloadResults = await automaticWork.PersistedPreloadResults
+                .WaitAsync(cancellationToken);
             if (!IsCurrentLifecycle(scheduledSelection))
             {
                 return;
             }
 
-            foreach (var result in results)
+            foreach (var result in persistedPreloadResults)
+            {
+                await PublishCatalogRefreshResultAsync(
+                    context.DocumentName,
+                    result,
+                    cancellationToken);
+            }
+
+            var results = await automaticWork.Task;
+            if (!IsCurrentLifecycle(scheduledSelection))
+            {
+                return;
+            }
+
+            foreach (var result in results.Skip(persistedPreloadResults.Count))
             {
                 await PublishCatalogRefreshResultAsync(
                     context.DocumentName,
@@ -329,7 +344,7 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogLife
         }
     }
 
-    private Task<IReadOnlyList<VbaProjectReferenceCatalogRefreshResult>>?
+    private SharedReferenceCatalogWork?
         GetOrStartSharedAutomaticWork(ScheduledReferenceCatalogSelection selection)
     {
         lock (lifecycleGate)
@@ -343,7 +358,7 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogLife
             if (sharedAutomaticWork.TryGetValue(fingerprint, out var existing)
                 && !existing.Cancellation.IsCancellationRequested)
             {
-                return existing.Task;
+                return existing;
             }
 
             var cancellation = CancellationTokenSource.CreateLinkedTokenSource(
@@ -355,27 +370,34 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogLife
                 .Where(work => work.ReferenceNames.Overlaps(referenceNames))
                 .Select(work => work.Task)
                 .ToArray();
+            var persistedPreloadResults =
+                new TaskCompletionSource<IReadOnlyList<VbaProjectReferenceCatalogRefreshResult>>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
             var task = Task.Run(
                 () => RunAutomaticWorkAsync(
                     selection.Context,
                     dependencies,
+                    persistedPreloadResults,
                     cancellation.Token),
                 CancellationToken.None);
             var sharedWork = new SharedReferenceCatalogWork(
                 task,
+                persistedPreloadResults.Task,
                 cancellation,
                 referenceNames);
             sharedAutomaticWork[fingerprint] = sharedWork;
             activeAutomaticWork.Add(sharedWork);
             backgroundTasks.Add(task);
             ObserveSharedAutomaticWork(fingerprint, sharedWork);
-            return task;
+            return sharedWork;
         }
     }
 
     private async Task<IReadOnlyList<VbaProjectReferenceCatalogRefreshResult>> RunAutomaticWorkAsync(
         VbaProjectReferenceSelectionContext selectionContext,
         IReadOnlyList<Task<IReadOnlyList<VbaProjectReferenceCatalogRefreshResult>>> dependencies,
+        TaskCompletionSource<IReadOnlyList<VbaProjectReferenceCatalogRefreshResult>>
+            persistedPreloadResults,
         CancellationToken cancellationToken)
     {
         try
@@ -388,6 +410,7 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogLife
             cancellationToken.ThrowIfCancellationRequested();
             return await refreshService.RefreshAutomaticallyAsync(
                 selectionContext.Selection,
+                results => persistedPreloadResults.TrySetResult(results),
                 cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -410,6 +433,10 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogLife
             }
 
             return [];
+        }
+        finally
+        {
+            persistedPreloadResults.TrySetResult([]);
         }
     }
 
@@ -536,7 +563,19 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogLife
             }
         }
 
-        await transport.WriteLogMessageAsync(type, message, cancellationToken);
+        try
+        {
+            await transport.WriteLogMessageAsync(type, message, cancellationToken);
+        }
+        catch
+        {
+            lock (diagnosticGate)
+            {
+                publishedDiagnostics.Remove(key);
+            }
+
+            throw;
+        }
     }
 
     private IReadOnlyList<ReferenceCatalogRefreshSessionMessage> CreateReferenceSelectionTraceMessages(
@@ -679,15 +718,21 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogLife
 
         public SharedReferenceCatalogWork(
             Task<IReadOnlyList<VbaProjectReferenceCatalogRefreshResult>> task,
+            Task<IReadOnlyList<VbaProjectReferenceCatalogRefreshResult>>
+                persistedPreloadResults,
             CancellationTokenSource cancellation,
             IReadOnlySet<string> referenceNames)
         {
             Task = task;
+            PersistedPreloadResults = persistedPreloadResults;
             Cancellation = cancellation;
             ReferenceNames = referenceNames;
         }
 
         public Task<IReadOnlyList<VbaProjectReferenceCatalogRefreshResult>> Task { get; }
+
+        public Task<IReadOnlyList<VbaProjectReferenceCatalogRefreshResult>>
+            PersistedPreloadResults { get; }
 
         public CancellationTokenSource Cancellation { get; }
 

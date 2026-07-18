@@ -1884,6 +1884,106 @@ public sealed class LanguageServerProcessTests
     }
 
     [Fact]
+    public async Task Server_returns_no_uncommitted_catalog_root_surfaces_while_discovery_is_blocked()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-uncommitted-catalog-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(projectRoot, "Generated Library");
+            var discoveryStartedFile = Path.Combine(projectRoot, "discovery-started.txt");
+            var discoveryReleaseFile = Path.Combine(projectRoot, "discovery-release.txt");
+            await using var process = await LanguageServerProcessHarness.StartAsync(
+                environment: new Dictionary<string, string>
+                {
+                    ["VBA_TOOLS_REFERENCE_CATALOG_DISCOVERY_STARTED_FILE"] = discoveryStartedFile,
+                    ["VBA_TOOLS_REFERENCE_CATALOG_DISCOVERY_RELEASE_FILE"] = discoveryReleaseFile
+                });
+
+            await process.InitializeAsync();
+            var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
+            var text = string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Option Explicit",
+                "",
+                "Public Sub Run()",
+                "    value = Gen",
+                "    value = Generated.",
+                "    value = GeneratedValue",
+                "    CatalogRun(",
+                "End Sub"
+            ]);
+            await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
+            var diagnostics = await process.WaitForDiagnosticsAsync(uri);
+            await WaitForFileAsync(discoveryStartedFile, TimeSpan.FromSeconds(5));
+
+            var rootCompletion = await process.SendRequestAsync(2,
+                    "textDocument/completion",
+                    new
+                    {
+                        textDocument = new { uri },
+                        position = new
+                        {
+                            line = 4,
+                            character = "    value = Gen".Length
+                        }
+                    })
+                .WaitAsync(TimeSpan.FromSeconds(1));
+            var rootLabels = rootCompletion
+                .GetProperty("result")
+                .EnumerateArray()
+                .Select(item => item.GetProperty("label").GetString())
+                .ToArray();
+            var qualifierCompletion = await process.SendRequestAsync(3,
+                    "textDocument/completion",
+                    new
+                    {
+                        textDocument = new { uri },
+                        position = new
+                        {
+                            line = 5,
+                            character = "    value = Generated.".Length
+                        }
+                    })
+                .WaitAsync(TimeSpan.FromSeconds(1));
+            var hover = await SendPositionRequestAsync(
+                    process,
+                    4,
+                    "textDocument/hover",
+                    uri,
+                    text,
+                    "GeneratedValue")
+                .WaitAsync(TimeSpan.FromSeconds(1));
+            var signatureHelp = await SendPositionRequestAsync(
+                    process,
+                    5,
+                    "textDocument/signatureHelp",
+                    uri,
+                    text,
+                    "CatalogRun(",
+                    "CatalogRun(".Length)
+                .WaitAsync(TimeSpan.FromSeconds(1));
+
+            Assert.DoesNotContain("Generated", rootLabels);
+            Assert.DoesNotContain("GeneratedValue", rootLabels);
+            Assert.Empty(qualifierCompletion.GetProperty("result").EnumerateArray());
+            Assert.Equal(JsonValueKind.Null, hover.GetProperty("result").ValueKind);
+            Assert.Equal(JsonValueKind.Null, signatureHelp.GetProperty("result").ValueKind);
+            Assert.Empty(
+                diagnostics
+                    .GetProperty("params")
+                    .GetProperty("diagnostics")
+                    .EnumerateArray());
+
+            File.WriteAllText(discoveryReleaseFile, "release");
+            await process.ShutdownAsync(6);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Server_uses_stale_persisted_excel_catalog_for_editor_features_while_refresh_is_blocked()
     {
         var projectRoot = Directory.CreateTempSubdirectory("vba-ls-stale-startup-catalog-").FullName;
@@ -1911,7 +2011,11 @@ public sealed class LanguageServerProcessTests
             var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
             var text = CreateExcelStartupCatalogWorkerText();
             await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
+            var diagnostics = await process.WaitForDiagnosticsAsync(uri);
             await WaitForFileAsync(discoveryStartedFile, TimeSpan.FromSeconds(5));
+            var staleMessage = await process.WaitForLogTextAsync(
+                    "source=stale-persisted outcome=stale phase=persistent-load expensiveMetadata=false")
+                .WaitAsync(TimeSpan.FromSeconds(1));
 
             var completion = await process.SendRequestAsync(2,
                 "textDocument/completion",
@@ -1923,7 +2027,7 @@ public sealed class LanguageServerProcessTests
                         line = 7,
                         character = "    Set target_sheet = target_book.W".Length
                     }
-                });
+                }).WaitAsync(TimeSpan.FromSeconds(1));
             var completionLabels = completion
                 .GetProperty("result")
                 .EnumerateArray()
@@ -1934,16 +2038,100 @@ public sealed class LanguageServerProcessTests
                 uri,
                 text,
                 "Range(",
-                "Range(".Length);
+                "Range(".Length).WaitAsync(TimeSpan.FromSeconds(1));
             var semanticTokensResponse = await process.SendRequestAsync(4,
                 "textDocument/semanticTokens/full",
                 new
                 {
                     textDocument = new { uri }
-                });
+                }).WaitAsync(TimeSpan.FromSeconds(1));
             var semanticTokens = DecodeSemanticTokens(semanticTokensResponse, text);
+            var hostGlobalCompletion = await process.SendRequestAsync(5,
+                "textDocument/completion",
+                new
+                {
+                    textDocument = new { uri },
+                    position = new
+                    {
+                        line = 9,
+                        character = "    value = App".Length
+                    }
+                }).WaitAsync(TimeSpan.FromSeconds(1));
+            var hostGlobalCompletionLabels = hostGlobalCompletion
+                .GetProperty("result")
+                .EnumerateArray()
+                .Select(item => item.GetProperty("label").GetString())
+                .ToArray();
+            var libraryGlobalCompletion = await process.SendRequestAsync(6,
+                "textDocument/completion",
+                new
+                {
+                    textDocument = new { uri },
+                    position = new
+                    {
+                        line = 10,
+                        character = "    value = xlC".Length
+                    }
+                }).WaitAsync(TimeSpan.FromSeconds(1));
+            var libraryGlobalCompletionLabels = libraryGlobalCompletion
+                .GetProperty("result")
+                .EnumerateArray()
+                .Select(item => item.GetProperty("label").GetString())
+                .ToArray();
+            var qualifierCompletion = await process.SendRequestAsync(7,
+                "textDocument/completion",
+                new
+                {
+                    textDocument = new { uri },
+                    position = new
+                    {
+                        line = 11,
+                        character = "    value = Excel.".Length
+                    }
+                }).WaitAsync(TimeSpan.FromSeconds(1));
+            var qualifierCompletionLabels = qualifierCompletion
+                .GetProperty("result")
+                .EnumerateArray()
+                .Select(item => item.GetProperty("label").GetString())
+                .ToArray();
+            var catalogSignatureHelp = await SendPositionRequestAsync(process, 8,
+                "textDocument/signatureHelp",
+                uri,
+                text,
+                "Excel.CatalogRun(",
+                "Excel.CatalogRun(".Length).WaitAsync(TimeSpan.FromSeconds(1));
+            var hostGlobalHover = await SendPositionRequestAsync(process, 9,
+                "textDocument/hover",
+                uri,
+                text,
+                "Application").WaitAsync(TimeSpan.FromSeconds(1));
 
             Assert.Contains("Worksheets", completionLabels);
+            Assert.Contains("Microsoft Excel 16.0 Object Library", staleMessage);
+            Assert.Empty(
+                diagnostics
+                    .GetProperty("params")
+                    .GetProperty("diagnostics")
+                    .EnumerateArray());
+            Assert.Contains("Application", hostGlobalCompletionLabels);
+            Assert.Contains("xlCenter", libraryGlobalCompletionLabels);
+            Assert.Contains("xlCenter", qualifierCompletionLabels);
+            var catalogSignature = catalogSignatureHelp
+                .GetProperty("result")
+                .GetProperty("signatures")
+                .EnumerateArray()
+                .Single();
+            Assert.Equal(
+                "Sub CatalogRun(Value As Long)",
+                catalogSignature.GetProperty("label").GetString());
+            Assert.Contains(
+                "Application As Application",
+                hostGlobalHover
+                    .GetProperty("result")
+                    .GetProperty("contents")
+                    .GetProperty("value")
+                    .GetString(),
+                StringComparison.Ordinal);
             var signature = signatureHelp
                 .GetProperty("result")
                 .GetProperty("signatures")
@@ -1960,7 +2148,7 @@ public sealed class LanguageServerProcessTests
                 && token.Line == 8);
 
             File.WriteAllText(discoveryReleaseFile, "release");
-            await process.ShutdownAsync(5);
+            await process.ShutdownAsync(10);
         }
         finally
         {
@@ -3995,6 +4183,47 @@ public sealed class LanguageServerProcessTests
             [
                 new VbaProjectReferenceDefinition(
                     "Microsoft Excel 16.0 Object Library",
+                    "Application",
+                    VbaSourceDefinitionKind.Class,
+                    "Represents the Microsoft Excel application."),
+                new VbaProjectReferenceDefinition(
+                    "Microsoft Excel 16.0 Object Library",
+                    "Application",
+                    VbaSourceDefinitionKind.Property,
+                    "Returns the Microsoft Excel application.",
+                    ParentTypeName: "Application",
+                    TypeReference: new VbaTypeReference("Application", "Excel"),
+                    PropertyAccess: VbaPropertyAccess.Readable,
+                    GlobalExposure: ReferenceDefinitionGlobalExposure.MainHostGlobal),
+                new VbaProjectReferenceDefinition(
+                    "Microsoft Excel 16.0 Object Library",
+                    "XlHAlign",
+                    VbaSourceDefinitionKind.Enum,
+                    "Specifies horizontal alignment."),
+                new VbaProjectReferenceDefinition(
+                    "Microsoft Excel 16.0 Object Library",
+                    "xlCenter",
+                    VbaSourceDefinitionKind.EnumMember,
+                    "Centers content horizontally.",
+                    ParentTypeName: "XlHAlign",
+                    TypeReference: new VbaTypeReference("Long"),
+                    GlobalExposure: ReferenceDefinitionGlobalExposure.LibraryGlobal),
+                new VbaProjectReferenceDefinition(
+                    "Microsoft Excel 16.0 Object Library",
+                    "CatalogRun",
+                    VbaSourceDefinitionKind.Procedure,
+                    "Runs a catalog-backed operation.",
+                    new VbaCallableSignature(
+                        "CatalogRun(Value)",
+                        [
+                            new VbaCallableParameter(
+                                "Value",
+                                TypeReference: new VbaTypeReference("Long"))
+                        ],
+                        CallableKind: VbaCallableKind.Sub),
+                    GlobalExposure: ReferenceDefinitionGlobalExposure.LibraryGlobal),
+                new VbaProjectReferenceDefinition(
+                    "Microsoft Excel 16.0 Object Library",
                     "Workbook",
                     VbaSourceDefinitionKind.Class,
                     "Represents a Microsoft Excel workbook."),
@@ -4049,6 +4278,11 @@ public sealed class LanguageServerProcessTests
             "    Dim target_range As Range",
             "    Set target_sheet = target_book.W",
             "    Set target_range = target_sheet.Range(",
+            "    value = App",
+            "    value = xlC",
+            "    value = Excel.",
+            "    Excel.CatalogRun(",
+            "    value = Application",
             "End Sub"
         ]);
 
