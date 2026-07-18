@@ -89,6 +89,28 @@ public sealed class VbaNameResolutionService
     }
 
     /// <summary>
+    /// Gets source module qualifier names that are visible at a position.
+    /// </summary>
+    /// <param name="uri">The document URI.</param>
+    /// <param name="position">The source position.</param>
+    /// <returns>The visible source module qualifier names.</returns>
+    public IReadOnlyList<string> GetCompletionSourceQualifiers(string uri, VbaPosition position)
+    {
+        var currentDocument = candidates.FindDocument(uri);
+        if (currentDocument is null)
+        {
+            return [];
+        }
+
+        return candidates.GetSourceModuleNames()
+            .Where(moduleName => !HasLocalQualifierShadow(currentDocument, position, moduleName))
+            .Where(moduleName => GetSourceQualifiedCompletionDefinitions(currentDocument, position, moduleName).Count > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(moduleName => moduleName, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    /// <summary>
     /// Gets reference definitions exposed through a visible qualifier alias.
     /// </summary>
     /// <param name="currentDocument">The current document.</param>
@@ -102,6 +124,21 @@ public sealed class VbaNameResolutionService
         => HasSourceQualifierShadow(currentDocument, position, qualifier)
             ? []
             : candidates.GetQualifiedReferenceDefinitions(qualifier);
+
+    /// <summary>
+    /// Gets definitions exposed through a source module qualifier.
+    /// </summary>
+    /// <param name="currentDocument">The current document.</param>
+    /// <param name="position">The source position.</param>
+    /// <param name="qualifier">The source module qualifier.</param>
+    /// <returns>The qualified source definitions, or an empty list when a local definition shadows the qualifier.</returns>
+    public IReadOnlyList<VbaSourceDefinition> GetSourceQualifiedCompletionDefinitions(
+        VbaSourceDocument currentDocument,
+        VbaPosition position,
+        string qualifier)
+        => HasLocalQualifierShadow(currentDocument, position, qualifier)
+            ? []
+            : GetVisibleSourceModuleDefinitions(currentDocument, qualifier);
 
     /// <summary>
     /// Gets project-level definitions that can participate in document formatting.
@@ -234,6 +271,28 @@ public sealed class VbaNameResolutionService
             .Where(candidate => !SameUri(candidate.Uri, currentDocument.Uri))
             .Where(candidate => resolutionPolicy.IsReferenceTarget(candidate.Definition))
             .Any(candidate => candidate.Visibility == VbaSourceDefinitionVisibility.Public);
+    }
+
+    private bool HasLocalQualifierShadow(
+        VbaSourceDocument currentDocument,
+        VbaPosition position,
+        string qualifier)
+        => candidates.GetSourceCandidates(currentDocument)
+            .Where(candidate => candidate.Visibility == VbaSourceDefinitionVisibility.Local)
+            .Where(candidate => ContainsPosition(candidate.Definition, position))
+            .Any(candidate => SameName(candidate.Name, qualifier));
+
+    private IReadOnlyList<VbaSourceDefinition> GetVisibleSourceModuleDefinitions(
+        VbaSourceDocument currentDocument,
+        string qualifier)
+    {
+        var definitions = candidates.GetSourceCandidatesByModule(qualifier)
+            .Where(candidate => resolutionPolicy.IsReferenceTarget(candidate.Definition))
+            .Where(candidate => SameUri(currentDocument.Uri, candidate.Uri)
+                || candidate.Visibility == VbaSourceDefinitionVisibility.Public)
+            .Select(candidate => candidate.Definition)
+            .ToArray();
+        return definitions;
     }
 
     private IReadOnlyList<VbaSourceDefinition> ResolveCompletionCandidates(IEnumerable<VbaRankedDefinition> candidates)
@@ -507,6 +566,11 @@ internal sealed class VbaNameCandidateInventory
 
     public IEnumerable<VbaNameCandidate> GetReferenceCandidatesByParentType(string parentTypeName)
         => referenceCandidatesByParentType[parentTypeName];
+
+    public IEnumerable<string> GetSourceModuleNames()
+        => sourceCandidates
+            .Where(candidate => candidate.Definition.Kind == VbaSourceDefinitionKind.Module)
+            .Select(candidate => candidate.Name);
 
     public IEnumerable<string> GetReferenceQualifiers()
         => activeReferenceQualifiers.Select(candidate => candidate.Qualifier);

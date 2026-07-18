@@ -92,6 +92,30 @@ internal sealed class VbaSemanticResolution
             && (positionSyntax.MemberAccess.TargetSegmentIndex > 0
                 || positionSyntax.MemberAccess.IsLeadingDot
                 || positionSyntax.MemberAccess.IsIncomplete)
+            && TryGetSourceQualifierCompletionDefinitions(
+                currentDocument,
+                line,
+                character,
+                positionSyntax,
+                out var sourceQualifierDefinitions))
+        {
+            return Complete(
+                CreateDefinitionCandidates(FilterDefinitions(
+                    sourceQualifierDefinitions,
+                    expectation,
+                    VbaCallableCompletionContext.None)),
+                positionSyntax.CompletionReplacementRange);
+        }
+
+        if (IsMemberCompletionPosition(
+                currentDocument,
+                line,
+                character,
+                positionSyntax)
+            && positionSyntax.MemberAccess is not null
+            && (positionSyntax.MemberAccess.TargetSegmentIndex > 0
+                || positionSyntax.MemberAccess.IsLeadingDot
+                || positionSyntax.MemberAccess.IsIncomplete)
             && TryGetReferenceQualifierCompletionDefinitions(
                 currentDocument,
                 line,
@@ -134,6 +158,9 @@ internal sealed class VbaSemanticResolution
         var visibleDefinitions = nameResolution.GetCompletionDefinitions(
             uri,
             new VbaPosition(line, character));
+        var sourceQualifiers = nameResolution.GetCompletionSourceQualifiers(
+            uri,
+            new VbaPosition(line, character));
         var referenceQualifiers = nameResolution.GetCompletionReferenceQualifiers(
             uri,
             new VbaPosition(line, character));
@@ -157,6 +184,7 @@ internal sealed class VbaSemanticResolution
                     visibleDefinitions,
                     expectation,
                     callableContext))
+                    .Concat(CreateQualifierCandidates(sourceQualifiers))
                     .Concat(CreateReferenceQualifierCandidates(referenceQualifiers))
                     .Concat(CreateVocabularyCandidates(VbaLanguageVocabulary.ProcedureStatementWords))
                     .Concat(CreateContextualStatementCandidates(positionSyntax.ContextualStatements)),
@@ -167,6 +195,7 @@ internal sealed class VbaSemanticResolution
                     character,
                     positionSyntax,
                     visibleDefinitions,
+                    sourceQualifiers,
                     referenceQualifiers),
             VbaCompletionExpectation.AssignmentTarget =>
                 CreateDefinitionCandidates(FilterDefinitions(
@@ -175,6 +204,7 @@ internal sealed class VbaSemanticResolution
                     callableContext)),
             VbaCompletionExpectation.TypeName =>
                 CreateDefinitionCandidates(GetTypeCompletionDefinitions(currentDocument, typeQualifier))
+                    .Concat(CreateQualifierCandidates(typeQualifier is null ? sourceQualifiers : []))
                     .Concat(CreateReferenceQualifierCandidates(typeQualifier is null ? referenceQualifiers : []))
                     .Concat(typeQualifier is null
                         ? CreateVocabularyCandidates(VbaLanguageVocabulary.TypeNames)
@@ -182,6 +212,7 @@ internal sealed class VbaSemanticResolution
             VbaCompletionExpectation.CreatableType =>
                 CreateDefinitionCandidates(GetTypeCompletionDefinitions(currentDocument, typeQualifier)
                     .Where(definition => definition.IsCreatable))
+                    .Concat(CreateQualifierCandidates(typeQualifier is null ? sourceQualifiers : []))
                     .Concat(CreateReferenceQualifierCandidates(typeQualifier is null ? referenceQualifiers : [])),
             VbaCompletionExpectation.ImplementsType =>
                 CreateDefinitionCandidates(GetTypeCompletionDefinitions(currentDocument, typeQualifier)
@@ -401,6 +432,33 @@ internal sealed class VbaSemanticResolution
         return definitions.Count > 0;
     }
 
+    private bool TryGetSourceQualifierCompletionDefinitions(
+        VbaSourceDocument currentDocument,
+        int line,
+        int character,
+        VbaPositionSyntax positionSyntax,
+        out IReadOnlyList<VbaSourceDefinition> definitions)
+    {
+        definitions = [];
+        var access = positionSyntax.MemberAccess;
+        if (access is null
+            || access.IsLeadingDot
+            || !access.IsIncomplete
+            || access.Target is not null
+            || access.ReceiverSegments.Count != 1
+            || !SupportsMemberCompletion(positionSyntax.CompletionExpectation))
+        {
+            return false;
+        }
+
+        var qualifier = access.ReceiverSegments[0].Name;
+        definitions = nameResolution.GetSourceQualifiedCompletionDefinitions(
+            currentDocument,
+            new VbaPosition(line, character),
+            qualifier);
+        return definitions.Count > 0;
+    }
+
     private static IEnumerable<VbaCompletionCandidate> CreateModuleDeclarationCandidates(
         VbaPositionSyntax positionSyntax)
     {
@@ -524,11 +582,13 @@ internal sealed class VbaSemanticResolution
         int character,
         VbaPositionSyntax positionSyntax,
         IReadOnlyList<VbaSourceDefinition> visibleDefinitions,
+        IReadOnlyList<string> sourceQualifiers,
         IReadOnlyList<string> referenceQualifiers)
     {
         if (!IsInsideActiveCallArgument(positionSyntax.CallSite, line, character))
         {
             return CreateExpressionCandidates(currentDocument, visibleDefinitions)
+                .Concat(CreateQualifierCandidates(sourceQualifiers))
                 .Concat(CreateReferenceQualifierCandidates(referenceQualifiers));
         }
 
@@ -539,6 +599,7 @@ internal sealed class VbaSemanticResolution
             positionSyntax);
         return availability.AllowsPositionalExpression
             ? CreateExpressionCandidates(currentDocument, visibleDefinitions)
+                .Concat(CreateQualifierCandidates(sourceQualifiers))
                 .Concat(CreateReferenceQualifierCandidates(referenceQualifiers))
             : [];
     }
@@ -643,6 +704,10 @@ internal sealed class VbaSemanticResolution
             Definition: definition));
 
     private static IEnumerable<VbaCompletionCandidate> CreateReferenceQualifierCandidates(
+        IEnumerable<string> qualifiers)
+        => CreateQualifierCandidates(qualifiers);
+
+    private static IEnumerable<VbaCompletionCandidate> CreateQualifierCandidates(
         IEnumerable<string> qualifiers)
         => qualifiers.Select(qualifier => new VbaCompletionCandidate(
             qualifier,

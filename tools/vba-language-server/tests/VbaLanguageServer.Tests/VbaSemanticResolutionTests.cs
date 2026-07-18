@@ -124,6 +124,116 @@ public sealed class VbaSemanticResolutionTests
     }
 
     [Fact]
+    public void ReferenceQualifierCompletionFiltersByCompletionContext()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    Dim typed As Excel.",
+            "    value = Excel.",
+            "    Set created = New Excel.",
+            "    value = Excel.Application ",
+            "End Sub"
+        ]);
+        var index = BuildIndex(uri, text);
+
+        var typeCompletion = index.GetCompletionResult(uri, 2, "    Dim typed As Excel.".Length);
+        var valueCompletion = index.GetCompletionResult(uri, 3, "    value = Excel.".Length);
+        var creatableCompletion = index.GetCompletionResult(uri, 4, "    Set created = New Excel.".Length);
+        var completedExpressionCompletion = index.GetCompletionResult(uri, 5, "    value = Excel.Application ".Length);
+
+        Assert.Contains(typeCompletion.Candidates, candidate => candidate.Label == "Application");
+        Assert.Contains(typeCompletion.Candidates, candidate => candidate.Label == "Workbook");
+        Assert.DoesNotContain(typeCompletion.Candidates, candidate => candidate.Label == "Run");
+
+        Assert.Contains(valueCompletion.Candidates, candidate => candidate.Label == "Workbooks");
+        Assert.DoesNotContain(valueCompletion.Candidates, candidate => candidate.Label == "Application");
+        Assert.DoesNotContain(valueCompletion.Candidates, candidate => candidate.Label == "Workbook");
+
+        Assert.Contains(creatableCompletion.Candidates, candidate => candidate.Label == "Application");
+        Assert.DoesNotContain(creatableCompletion.Candidates, candidate => candidate.Label == "Workbook");
+        Assert.Empty(completedExpressionCompletion.Candidates);
+    }
+
+    [Fact]
+    public void SourceModuleQualifierCandidatesInsertTrailingDotAndShadowReferenceQualifiers()
+    {
+        const string workerUri = "file:///C:/work/Worker.bas";
+        const string excelUri = "file:///C:/work/Excel.bas";
+        var workerText = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    value = ",
+            "    value = Excel.",
+            "    Dim typed As Excel.",
+            "End Sub"
+        ]);
+        var excelText = string.Join('\n', [
+            "Attribute VB_Name = \"Excel\"",
+            "Public Function SourceValue() As String",
+            "End Function",
+            "Public Type SourceRecord",
+            "    Value As Long",
+            "End Type"
+        ]);
+        var index = BuildIndex(new Dictionary<string, string>
+        {
+            [workerUri] = workerText,
+            [excelUri] = excelText
+        });
+
+        var rootCompletion = index.GetCompletionResult(workerUri, 2, "    value = ".Length);
+        var sourceQualifier = Assert.Single(rootCompletion.Candidates, candidate =>
+            candidate.Label == "Excel"
+            && candidate.InsertText == "Excel.");
+        var valueCompletion = index.GetCompletionResult(workerUri, 3, "    value = Excel.".Length);
+        var typeCompletion = index.GetCompletionResult(workerUri, 4, "    Dim typed As Excel.".Length);
+
+        Assert.Equal(VbaCompletionCandidateKind.ReferenceQualifier, sourceQualifier.Kind);
+        Assert.Contains(valueCompletion.Candidates, candidate => candidate.Label == "SourceValue");
+        Assert.DoesNotContain(valueCompletion.Candidates, candidate => candidate.Label == "Workbooks");
+        Assert.Contains(typeCompletion.Candidates, candidate => candidate.Label == "SourceRecord");
+        Assert.DoesNotContain(typeCompletion.Candidates, candidate => candidate.Label == "Application");
+    }
+
+    [Fact]
+    public void SameLabelCallableAndQualifierCandidatesRemainDistinct()
+    {
+        const string workerUri = "file:///C:/work/Worker.bas";
+        const string excelUri = "file:///C:/work/Excel.bas";
+        var workerText = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Function Excel() As String",
+            "End Function",
+            "Public Sub Run()",
+            "    value = ",
+            "End Sub"
+        ]);
+        var excelText = string.Join('\n', [
+            "Attribute VB_Name = \"Excel\"",
+            "Public Function SourceValue() As String",
+            "End Function"
+        ]);
+        var index = VbaSourceIndex.Build(
+            new Dictionary<string, string>
+            {
+                [workerUri] = workerText,
+                [excelUri] = excelText
+            },
+            referenceSelection: null,
+            VbaProjectReferenceCatalogSet.CreateBundled());
+
+        var excelCandidates = index.GetCompletionResult(workerUri, 4, "    value = ".Length)
+            .Candidates
+            .Where(candidate => candidate.Label == "Excel")
+            .ToArray();
+
+        Assert.Contains(excelCandidates, candidate => candidate.InsertText is null);
+        Assert.Contains(excelCandidates, candidate => candidate.InsertText == "Excel.");
+    }
+
+    [Fact]
     public void BundledFunctionKindsDoNotDependOnReturnTypeMetadata()
     {
         const string uri = "file:///C:/work/Worker.bas";

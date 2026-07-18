@@ -61,4 +61,23 @@ public sealed class VbaLspCompletionProjectionTests
             .GetInt32());
         Assert.False(projected["End If"].TryGetProperty("insertText", out _));
     }
+
+    [Fact]
+    public void ProjectionPreservesQualifierInsertionTextAndKind()
+    {
+        var items = VbaLspFeatureProjection.CreateCompletionItems(
+            new VbaCompletionResult([
+                new VbaCompletionCandidate(
+                    "Excel",
+                    VbaCompletionCandidateKind.ReferenceQualifier,
+                    InsertText: "Excel.",
+                    FilterText: "Excel")
+            ]));
+        var item = JsonSerializer.SerializeToElement(Assert.Single(items), JsonOptions);
+
+        Assert.Equal("Excel", item.GetProperty("label").GetString());
+        Assert.Equal("Excel.", item.GetProperty("insertText").GetString());
+        Assert.Equal("Excel", item.GetProperty("filterText").GetString());
+        Assert.Equal(9, item.GetProperty("kind").GetInt32());
+    }
 }
