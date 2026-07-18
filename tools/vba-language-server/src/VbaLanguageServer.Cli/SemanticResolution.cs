@@ -156,7 +156,7 @@ internal sealed class VbaSemanticResolution
         }
 
         var callableContext = GetCurrentCallableCompletionContext(syntaxTree, line, character);
-        var visibleDefinitions = nameResolution.GetCompletionDefinitions(
+        var visibleDefinitions = nameResolution.GetRankedCompletionDefinitions(
             uri,
             new VbaPosition(line, character),
             definition => !nameResolution.IsTypeDefinition(definition));
@@ -176,16 +176,18 @@ internal sealed class VbaSemanticResolution
             VbaCompletionExpectation.ContextualStatement =>
                 CreateContextualStatementCandidates(positionSyntax.ContextualStatements),
             VbaCompletionExpectation.CallableName =>
-                CreateDefinitionCandidates(FilterDefinitions(
+                CreateDefinitionCandidates(FilterRankedDefinitions(
                     visibleDefinitions,
                     expectation,
                     callableContext)),
             VbaCompletionExpectation.ProcedureStatement =>
-                CreateDefinitionCandidates(FilterDefinitions(
+                CreateDefinitionCandidates(FilterRankedDefinitions(
                     visibleDefinitions,
                     expectation,
                     callableContext))
-                    .Concat(CreateQualifierCandidates(sourceQualifiers))
+                    .Concat(CreateQualifierCandidates(
+                        sourceQualifiers,
+                        currentDocument.ModuleName))
                     .Concat(CreateReferenceQualifierCandidates(referenceQualifiers))
                     .Concat(CreateVocabularyCandidates(VbaLanguageVocabulary.ProcedureStatementWords))
                     .Concat(CreateContextualStatementCandidates(positionSyntax.ContextualStatements)),
@@ -199,26 +201,30 @@ internal sealed class VbaSemanticResolution
                     sourceQualifiers,
                     referenceQualifiers),
             VbaCompletionExpectation.AssignmentTarget =>
-                CreateDefinitionCandidates(FilterDefinitions(
+                CreateDefinitionCandidates(FilterRankedDefinitions(
                     visibleDefinitions,
                     expectation,
                     callableContext)),
             VbaCompletionExpectation.TypeName =>
                 CreateDefinitionCandidates(GetTypeCompletionDefinitions(currentDocument, typeQualifier))
-                    .Concat(CreateQualifierCandidates(typeQualifier is null ? sourceQualifiers : []))
+                    .Concat(CreateQualifierCandidates(
+                        typeQualifier is null ? sourceQualifiers : [],
+                        currentDocument.ModuleName))
                     .Concat(CreateReferenceQualifierCandidates(typeQualifier is null ? referenceQualifiers : []))
                     .Concat(typeQualifier is null
                         ? CreateVocabularyCandidates(VbaLanguageVocabulary.TypeNames)
                         : []),
             VbaCompletionExpectation.CreatableType =>
                 CreateDefinitionCandidates(GetTypeCompletionDefinitions(currentDocument, typeQualifier)
-                    .Where(definition => definition.IsCreatable))
-                    .Concat(CreateQualifierCandidates(typeQualifier is null ? sourceQualifiers : []))
+                    .Where(candidate => candidate.Definition.IsCreatable))
+                    .Concat(CreateQualifierCandidates(
+                        typeQualifier is null ? sourceQualifiers : [],
+                        currentDocument.ModuleName))
                     .Concat(CreateReferenceQualifierCandidates(typeQualifier is null ? referenceQualifiers : [])),
             VbaCompletionExpectation.ImplementsType =>
                 CreateDefinitionCandidates(GetTypeCompletionDefinitions(currentDocument, typeQualifier)
-                    .Where(definition => definition.Kind == VbaSourceDefinitionKind.Class)
-                    .Where(definition => !SameUri(definition.Uri, currentDocument.Uri))),
+                    .Where(candidate => candidate.Definition.Kind == VbaSourceDefinitionKind.Class)
+                    .Where(candidate => !SameUri(candidate.Definition.Uri, currentDocument.Uri))),
             VbaCompletionExpectation.CallArgument =>
                 CreateCallArgumentCandidates(
                     currentDocument,
@@ -502,7 +508,7 @@ internal sealed class VbaSemanticResolution
         int line,
         int character,
         VbaPositionSyntax positionSyntax,
-        IReadOnlyList<VbaSourceDefinition> visibleDefinitions)
+        IReadOnlyList<VbaRankedDefinition> visibleDefinitions)
     {
         var availability = callSiteResolution.GetCallArgumentAvailability(
             currentDocument,
@@ -538,7 +544,7 @@ internal sealed class VbaSemanticResolution
         int line,
         int character,
         VbaPositionSyntax positionSyntax,
-        IReadOnlyList<VbaSourceDefinition> visibleDefinitions)
+        IReadOnlyList<VbaRankedDefinition> visibleDefinitions)
     {
         var availability = callSiteResolution.GetCallArgumentAvailability(
             currentDocument,
@@ -597,8 +603,9 @@ internal sealed class VbaSemanticResolution
 
     private static IEnumerable<VbaCompletionCandidate> CreateExpressionCandidates(
         VbaSourceDocument currentDocument,
-        IEnumerable<VbaSourceDefinition> definitions)
-        => CreateDefinitionCandidates(definitions.Where(IsReadableDefinition))
+        IEnumerable<VbaRankedDefinition> definitions)
+        => CreateDefinitionCandidates(definitions.Where(candidate =>
+                IsReadableDefinition(candidate.Definition)))
             .Concat(CreateVocabularyCandidates(VbaLanguageVocabulary.GetExpressionValueWords(
                 GetSyntaxTree(currentDocument).Module.Kind)));
 
@@ -607,14 +614,16 @@ internal sealed class VbaSemanticResolution
         int line,
         int character,
         VbaPositionSyntax positionSyntax,
-        IReadOnlyList<VbaSourceDefinition> visibleDefinitions,
+        IReadOnlyList<VbaRankedDefinition> visibleDefinitions,
         IReadOnlyList<string> sourceQualifiers,
         IReadOnlyList<string> referenceQualifiers)
     {
         if (!IsInsideActiveCallArgument(positionSyntax.CallSite, line, character))
         {
             return CreateExpressionCandidates(currentDocument, visibleDefinitions)
-                .Concat(CreateQualifierCandidates(sourceQualifiers))
+                .Concat(CreateQualifierCandidates(
+                    sourceQualifiers,
+                    currentDocument.ModuleName))
                 .Concat(CreateReferenceQualifierCandidates(referenceQualifiers));
         }
 
@@ -625,7 +634,9 @@ internal sealed class VbaSemanticResolution
             positionSyntax);
         return availability.AllowsPositionalExpression
             ? CreateExpressionCandidates(currentDocument, visibleDefinitions)
-                .Concat(CreateQualifierCandidates(sourceQualifiers))
+                .Concat(CreateQualifierCandidates(
+                    sourceQualifiers,
+                    currentDocument.ModuleName))
                 .Concat(CreateReferenceQualifierCandidates(referenceQualifiers))
             : [];
     }
@@ -654,6 +665,15 @@ internal sealed class VbaSemanticResolution
         VbaCallableCompletionContext callableContext)
         => definitions.Where(definition => IsAllowedDefinition(
             definition,
+            expectation,
+            callableContext));
+
+    private static IEnumerable<VbaRankedDefinition> FilterRankedDefinitions(
+        IEnumerable<VbaRankedDefinition> definitions,
+        VbaCompletionExpectation expectation,
+        VbaCallableCompletionContext callableContext)
+        => definitions.Where(candidate => IsAllowedDefinition(
+            candidate.Definition,
             expectation,
             callableContext));
 
@@ -738,17 +758,40 @@ internal sealed class VbaSemanticResolution
             VbaCompletionCandidateKind.Definition,
             Definition: definition));
 
-    private static IEnumerable<VbaCompletionCandidate> CreateReferenceQualifierCandidates(
-        IEnumerable<string> qualifiers)
-        => CreateQualifierCandidates(qualifiers);
+    private static IEnumerable<VbaCompletionCandidate> CreateDefinitionCandidates(
+        IEnumerable<VbaRankedDefinition> definitions)
+        => definitions.Select(candidate => new VbaCompletionCandidate(
+            candidate.Definition.Name,
+            VbaCompletionCandidateKind.Definition,
+            Definition: candidate.Definition)
+        {
+            SortRank = candidate.Rank
+        });
 
-    private static IEnumerable<VbaCompletionCandidate> CreateQualifierCandidates(
+    private static IEnumerable<VbaCompletionCandidate> CreateReferenceQualifierCandidates(
         IEnumerable<string> qualifiers)
         => qualifiers.Select(qualifier => new VbaCompletionCandidate(
             qualifier,
             VbaCompletionCandidateKind.ReferenceQualifier,
             InsertText: $"{qualifier}.",
-            FilterText: qualifier));
+            FilterText: qualifier)
+        {
+            SortRank = VbaResolutionPolicy.ReferenceRank
+        });
+
+    private static IEnumerable<VbaCompletionCandidate> CreateQualifierCandidates(
+        IEnumerable<string> qualifiers,
+        string currentModuleName)
+        => qualifiers.Select(qualifier => new VbaCompletionCandidate(
+            qualifier,
+            VbaCompletionCandidateKind.SourceQualifier,
+            InsertText: $"{qualifier}.",
+            FilterText: qualifier)
+        {
+            SortRank = qualifier.Equals(currentModuleName, StringComparison.OrdinalIgnoreCase)
+                ? VbaResolutionPolicy.CurrentModuleRank
+                : VbaResolutionPolicy.ProjectRank
+        });
 
     private static IEnumerable<VbaCompletionCandidate> CreateVocabularyCandidates(
         IEnumerable<string> words)
@@ -809,7 +852,13 @@ internal sealed class VbaSemanticResolution
     }
 
     private static string GetCandidateIdentity(VbaCompletionCandidate candidate)
-        => $"{candidate.Label}\0{GetEffectiveInsertionText(candidate)}";
+        => string.Join(
+            "\0",
+            candidate.Label,
+            GetEffectiveInsertionText(candidate),
+            candidate.Kind,
+            candidate.Definition?.Kind,
+            candidate.SortRank);
 
     private static string GetEffectiveInsertionText(VbaCompletionCandidate candidate)
         => candidate.TextEdit?.NewText
@@ -942,15 +991,24 @@ internal sealed class VbaSemanticResolution
             : left.Character.CompareTo(right.Character);
     }
 
-    private IReadOnlyList<VbaSourceDefinition> GetTypeCompletionDefinitions(
+    private IReadOnlyList<VbaRankedDefinition> GetTypeCompletionDefinitions(
         VbaSourceDocument currentDocument,
         string? qualifier)
-        => nameResolution.GetVisibleTypeDefinitions(currentDocument, qualifier)
-            .GroupBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
-            .Select(group => typeResolution.ResolveSourceTypeCompletionGroup(group.ToArray()))
-            .Where(definition => definition is not null)
-            .Select(definition => definition!)
-            .OrderBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
+        => nameResolution.GetRankedVisibleTypeDefinitions(currentDocument, qualifier)
+            .GroupBy(candidate => candidate.Definition.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(group =>
+            {
+                var bestRank = group.Min(candidate => candidate.Rank);
+                var definition = typeResolution.ResolveSourceTypeCompletionGroup(group
+                    .Where(candidate => candidate.Rank == bestRank)
+                    .Select(candidate => candidate.Definition)
+                    .ToArray());
+                return definition is null
+                    ? null
+                    : new VbaRankedDefinition(definition, bestRank);
+            })
+            .Where(candidate => candidate is not null)
+            .Select(candidate => candidate!)
             .ToArray();
 
     private sealed record VbaCallableCompletionContext(

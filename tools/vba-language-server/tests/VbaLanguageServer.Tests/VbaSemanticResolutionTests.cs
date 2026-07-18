@@ -815,7 +815,7 @@ public sealed class VbaSemanticResolutionTests
         var valueCompletion = index.GetCompletionResult(workerUri, 3, "    value = Excel.".Length);
         var typeCompletion = index.GetCompletionResult(workerUri, 4, "    Dim typed As Excel.".Length);
 
-        Assert.Equal(VbaCompletionCandidateKind.ReferenceQualifier, sourceQualifier.Kind);
+        Assert.Equal(VbaCompletionCandidateKind.SourceQualifier, sourceQualifier.Kind);
         Assert.Contains(valueCompletion.Candidates, candidate => candidate.Label == "SourceValue");
         Assert.DoesNotContain(valueCompletion.Candidates, candidate => candidate.Label == "Workbooks");
         Assert.Contains(typeCompletion.Candidates, candidate => candidate.Label == "SourceRecord");

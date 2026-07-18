@@ -453,7 +453,12 @@ public enum VbaCompletionCandidateKind
     /// <summary>
     /// A qualifier alias for an active project reference catalog.
     /// </summary>
-    ReferenceQualifier
+    ReferenceQualifier,
+
+    /// <summary>
+    /// A qualifier for a source module.
+    /// </summary>
+    SourceQualifier
 }
 
 /// <summary>
@@ -471,7 +476,13 @@ public sealed record VbaCompletionCandidate(
     string? InsertText = null,
     string? FilterText = null,
     VbaSourceDefinition? Definition = null,
-    VbaTextEdit? TextEdit = null);
+    VbaTextEdit? TextEdit = null)
+{
+    /// <summary>
+    /// Gets the request-relative name-resolution rank used by editor projection.
+    /// </summary>
+    public int? SortRank { get; init; }
+}
 
 /// <summary>
 /// Represents the complete editor-neutral candidates valid at a source position.
@@ -828,7 +839,10 @@ public sealed class VbaSourceIndex
     public VbaDefinitionLocation? ResolveDefinition(string uri, int line, int character)
     {
         var definition = ResolveSourceDefinition(uri, line, character);
-        return definition?.Location;
+        return definition is null
+            || definition.Identity.Origin == VbaDefinitionOrigin.ProjectReference
+                ? null
+                : definition.Location;
     }
 
     /// <summary>

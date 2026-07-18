@@ -61,6 +61,15 @@ public sealed class VbaNameResolutionService
         string uri,
         VbaPosition position,
         Func<VbaSourceDefinition, bool>? definitionFilter)
+        => GetRankedCompletionDefinitions(uri, position, definitionFilter)
+            .Select(candidate => candidate.Definition)
+            .OrderBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+    internal IReadOnlyList<VbaRankedDefinition> GetRankedCompletionDefinitions(
+        string uri,
+        VbaPosition position,
+        Func<VbaSourceDefinition, bool>? definitionFilter)
     {
         var currentDocument = candidates.FindDocument(uri);
         if (currentDocument is null)
@@ -68,11 +77,9 @@ public sealed class VbaNameResolutionService
             return [];
         }
 
-        return ResolveCompletionCandidates(
+        return ResolveRankedCompletionCandidates(
                 GetUnqualifiedCandidates(currentDocument, position, includeLocals: true),
-                definitionFilter)
-            .OrderBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
-            .ToArray();
+                definitionFilter);
     }
 
     /// <summary>
@@ -310,6 +317,11 @@ public sealed class VbaNameResolutionService
         VbaPosition position,
         string qualifier)
     {
+        if (candidates.HasSourceModule(qualifier))
+        {
+            return true;
+        }
+
         if (candidates.GetSourceCandidates(currentDocument)
             .Where(candidate => candidate.Visibility == VbaSourceDefinitionVisibility.Local)
             .Where(candidate => ContainsPosition(candidate.Definition, position))
@@ -356,17 +368,31 @@ public sealed class VbaNameResolutionService
     private IReadOnlyList<VbaSourceDefinition> ResolveCompletionCandidates(
         IEnumerable<VbaRankedDefinition> candidates,
         Func<VbaSourceDefinition, bool>? definitionFilter = null)
+        => ResolveRankedCompletionCandidates(candidates, definitionFilter)
+            .Select(candidate => candidate.Definition)
+            .ToArray();
+
+    private IReadOnlyList<VbaRankedDefinition> ResolveRankedCompletionCandidates(
+        IEnumerable<VbaRankedDefinition> candidates,
+        Func<VbaSourceDefinition, bool>? definitionFilter = null)
     {
         return candidates
             .GroupBy(candidate => candidate.Definition.Name, StringComparer.OrdinalIgnoreCase)
-            .Select(group => definitionFilter is null
+            .Select(group =>
+            {
+                var bestRank = group.Min(candidate => candidate.Rank);
+                var definition = definitionFilter is null
                 ? ResolveRankedCandidates(group)
                 : ResolveBestRankCandidates(
                     group,
                     definitionFilter,
-                    fallbackToUnfiltered: false))
-            .Where(definition => definition is not null)
-            .Select(definition => definition!)
+                    fallbackToUnfiltered: false);
+                return definition is null
+                    ? null
+                    : new VbaRankedDefinition(definition, bestRank);
+            })
+            .Where(candidate => candidate is not null)
+            .Select(candidate => candidate!)
             .ToArray();
     }
 
@@ -433,6 +459,13 @@ public sealed class VbaNameResolutionService
     internal IReadOnlyList<VbaSourceDefinition> GetVisibleTypeDefinitions(
         VbaSourceDocument currentDocument,
         string? qualifier = null)
+        => GetRankedVisibleTypeDefinitions(currentDocument, qualifier)
+            .Select(candidate => candidate.Definition)
+            .ToArray();
+
+    internal IReadOnlyList<VbaRankedDefinition> GetRankedVisibleTypeDefinitions(
+        VbaSourceDocument currentDocument,
+        string? qualifier = null)
     {
         if (!string.IsNullOrWhiteSpace(qualifier))
         {
@@ -444,7 +477,9 @@ public sealed class VbaNameResolutionService
                         VbaSourceDefinitionKind.Class or VbaSourceDefinitionKind.Form))
                     .Where(candidate => SameUri(candidate.Uri, currentDocument.Uri)
                         || candidate.Visibility == VbaSourceDefinitionVisibility.Public)
-                    .Select(candidate => candidate.Definition)
+                    .Select(candidate => new VbaRankedDefinition(
+                        candidate.Definition,
+                        VbaResolutionPolicy.ReferenceRank))
                     .ToArray();
             }
 
@@ -452,23 +487,32 @@ public sealed class VbaNameResolutionService
                 ? candidates.GetQualifiedReferenceDefinitions(qualifier)
                     .Where(resolutionPolicy.IsTypeDefinition)
                     .Where(definition => definition.ParentTypeName is null)
+                    .Select(definition => new VbaRankedDefinition(
+                        definition,
+                        VbaResolutionPolicy.ReferenceRank))
                     .ToArray()
                 : [];
         }
 
-        var visibleDefinitions = new List<VbaSourceDefinition>();
+        var visibleDefinitions = new List<VbaRankedDefinition>();
         visibleDefinitions.AddRange(candidates.GetSourceCandidates(currentDocument)
             .Where(candidate => resolutionPolicy.IsTypeDefinition(candidate.Definition))
-            .Select(candidate => candidate.Definition));
+            .Select(candidate => new VbaRankedDefinition(
+                candidate.Definition,
+                VbaResolutionPolicy.CurrentModuleRank)));
         visibleDefinitions.AddRange(candidates.GetSourceCandidates(requestedName: null)
             .Where(candidate => !SameUri(candidate.Uri, currentDocument.Uri))
             .Where(candidate => resolutionPolicy.IsTypeDefinition(candidate.Definition))
             .Where(candidate => candidate.Visibility == VbaSourceDefinitionVisibility.Public)
-            .Select(candidate => candidate.Definition));
+            .Select(candidate => new VbaRankedDefinition(
+                candidate.Definition,
+                VbaResolutionPolicy.ProjectRank)));
         visibleDefinitions.AddRange(candidates.GetReferenceCandidates(requestedName: null)
             .Where(candidate => resolutionPolicy.IsTypeDefinition(candidate.Definition))
             .Where(candidate => candidate.ParentTypeName is null)
-            .Select(candidate => candidate.Definition));
+            .Select(candidate => new VbaRankedDefinition(
+                candidate.Definition,
+                VbaResolutionPolicy.ReferenceRank)));
         return visibleDefinitions;
     }
 

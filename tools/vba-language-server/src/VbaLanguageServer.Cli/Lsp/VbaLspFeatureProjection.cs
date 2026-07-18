@@ -1,3 +1,4 @@
+using System.Globalization;
 using VbaLanguageServer.Diagnostics;
 using VbaLanguageServer.SourceModel;
 
@@ -227,11 +228,18 @@ internal static class VbaLspFeatureProjection
         var item = new Dictionary<string, object?>
         {
             ["label"] = candidate.Label,
-            ["kind"] = GetCompletionKind(candidate)
+            ["kind"] = GetCompletionKind(candidate),
+            ["sortText"] = CreateCompletionSortText(candidate)
         };
         if (!string.IsNullOrWhiteSpace(candidate.FilterText))
         {
             item["filterText"] = candidate.FilterText;
+        }
+
+        var detail = CreateCompletionDetail(candidate);
+        if (!string.IsNullOrWhiteSpace(detail))
+        {
+            item["detail"] = detail;
         }
 
         if (candidate.TextEdit is not null)
@@ -248,6 +256,66 @@ internal static class VbaLspFeatureProjection
         }
 
         return item;
+    }
+
+    private static string? CreateCompletionDetail(VbaCompletionCandidate candidate)
+    {
+        if (candidate.Kind == VbaCompletionCandidateKind.SourceQualifier)
+        {
+            return "Module qualifier";
+        }
+
+        if (candidate.Kind == VbaCompletionCandidateKind.ReferenceQualifier)
+        {
+            return "Reference qualifier";
+        }
+
+        var definition = candidate.Definition;
+        if (candidate.Kind != VbaCompletionCandidateKind.Definition || definition is null)
+        {
+            return null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(definition.DeclarationLabel))
+        {
+            return definition.DeclarationLabel;
+        }
+
+        if (!string.IsNullOrWhiteSpace(definition.Signature?.Label))
+        {
+            return definition.Signature.Label;
+        }
+
+        return definition.Kind switch
+        {
+            VbaSourceDefinitionKind.Module => $"Module {definition.Name}",
+            VbaSourceDefinitionKind.Class => $"Class {definition.Name}",
+            VbaSourceDefinitionKind.Form => $"Form {definition.Name}",
+            VbaSourceDefinitionKind.Enum => $"Enum {definition.Name}",
+            VbaSourceDefinitionKind.Type => $"Type {definition.Name}",
+            _ => definition.Name
+        };
+    }
+
+    private static string CreateCompletionSortText(VbaCompletionCandidate candidate)
+    {
+        const int unrankedSortGroup = 3;
+        var effectiveInsertionText = candidate.TextEdit?.NewText
+            ?? candidate.InsertText
+            ?? candidate.Label;
+        return string.Join(
+            "|",
+            (candidate.SortRank ?? unrankedSortGroup).ToString(
+                "D2",
+                CultureInfo.InvariantCulture),
+            candidate.Label.ToUpperInvariant(),
+            ((int)candidate.Kind).ToString("D2", CultureInfo.InvariantCulture),
+            candidate.Definition is null
+                ? string.Empty
+                : ((int)candidate.Definition.Kind).ToString(
+                    "D2",
+                    CultureInfo.InvariantCulture),
+            effectiveInsertionText.ToUpperInvariant());
     }
 
     private static int GetSymbolKind(VbaSourceDefinitionKind kind)
@@ -274,7 +342,8 @@ internal static class VbaLspFeatureProjection
         {
             VbaCompletionCandidateKind.Definition when candidate.Definition is not null =>
                 GetDefinitionCompletionKind(candidate.Definition.Kind),
-            VbaCompletionCandidateKind.ReferenceQualifier => 9,
+            VbaCompletionCandidateKind.SourceQualifier
+                or VbaCompletionCandidateKind.ReferenceQualifier => 9,
             VbaCompletionCandidateKind.NamedArgument => 5,
             VbaCompletionCandidateKind.Label => 18,
             _ => 14

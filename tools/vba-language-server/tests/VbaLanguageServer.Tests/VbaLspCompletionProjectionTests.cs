@@ -11,6 +11,80 @@ public sealed class VbaLspCompletionProjectionTests
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     [Fact]
+    public void ProjectionKeepsUnrankedCandidatesInTheNeutralReferenceSortGroup()
+    {
+        var items = VbaLspFeatureProjection.CreateCompletionItems(
+            new VbaCompletionResult([
+                new VbaCompletionCandidate(
+                    "AlphaArg",
+                    VbaCompletionCandidateKind.NamedArgument,
+                    InsertText: "AlphaArg:="),
+                new VbaCompletionCandidate(
+                    "ZuluCatalog",
+                    VbaCompletionCandidateKind.Definition)
+                {
+                    SortRank = 3
+                }
+            ]));
+        var projected = items
+            .Select(item => JsonSerializer.SerializeToElement(item, JsonOptions))
+            .ToDictionary(item => item.GetProperty("label").GetString()!);
+
+        Assert.True(StringComparer.Ordinal.Compare(
+            projected["AlphaArg"].GetProperty("sortText").GetString(),
+            projected["ZuluCatalog"].GetProperty("sortText").GetString()) < 0);
+    }
+
+    [Fact]
+    public void ProjectionAddsDefinitionAndQualifierDetails()
+    {
+        var range = new VbaRange(
+            new VbaPosition(0, 0),
+            new VbaPosition(0, 0));
+        var definition = new VbaSourceDefinition(
+            VbaDefinitionIdentity.ForProjectReference(
+                "Visual Basic For Applications",
+                "Constants",
+                VbaSourceDefinitionKind.Constant,
+                "vbCrLf"),
+            new VbaDefinitionLocation("vba-reference://vba/constants/vbcrlf", range),
+            "vbCrLf",
+            VbaSourceDefinitionKind.Constant,
+            VbaSourceDefinitionVisibility.Public,
+            "Visual Basic For Applications",
+            ParentTypeName: "Constants",
+            DeclarationLabel: "Const vbCrLf As String");
+        var items = VbaLspFeatureProjection.CreateCompletionItems(
+            new VbaCompletionResult([
+                new VbaCompletionCandidate(
+                    "vbCrLf",
+                    VbaCompletionCandidateKind.Definition,
+                    Definition: definition)
+                {
+                    SortRank = 3
+                },
+                new VbaCompletionCandidate(
+                    "VBA",
+                    VbaCompletionCandidateKind.ReferenceQualifier,
+                    InsertText: "VBA.",
+                    FilterText: "VBA")
+                {
+                    SortRank = 3
+                }
+            ]));
+        var projected = items
+            .Select(item => JsonSerializer.SerializeToElement(item, JsonOptions))
+            .ToDictionary(item => item.GetProperty("label").GetString()!);
+
+        Assert.Equal(
+            "Const vbCrLf As String",
+            projected["vbCrLf"].GetProperty("detail").GetString());
+        Assert.Equal(
+            "Reference qualifier",
+            projected["VBA"].GetProperty("detail").GetString());
+    }
+
+    [Fact]
     public void ProjectionUsesOnlyCompletedSemanticCandidates()
     {
         var items = VbaLspFeatureProjection.CreateCompletionItems(
@@ -23,7 +97,8 @@ public sealed class VbaLspCompletionProjectionTests
 
         Assert.Equal("End If", item.GetProperty("label").GetString());
         Assert.Equal(14, item.GetProperty("kind").GetInt32());
-        Assert.Equal(2, item.EnumerateObject().Count());
+        Assert.False(string.IsNullOrWhiteSpace(item.GetProperty("sortText").GetString()));
+        Assert.Equal(3, item.EnumerateObject().Count());
     }
 
     [Fact]

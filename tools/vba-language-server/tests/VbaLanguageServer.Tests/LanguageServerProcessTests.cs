@@ -566,6 +566,332 @@ public sealed class LanguageServerProcessTests
     }
 
     [Fact]
+    public async Task Server_orders_completion_items_by_source_proximity_before_catalogs()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string workerUri = "file:///C:/work/CompletionOrderingWorker.bas";
+        const string projectUri = "file:///C:/work/CompletionOrderingProject.bas";
+        var workerText = string.Join('\n', [
+            "Attribute VB_Name = \"CompletionOrderingWorker\"",
+            "Option Explicit",
+            "Private YankeeCurrent As String",
+            "Public Sub Run()",
+            "    Dim ZuluLocal As String",
+            "    value = ",
+            "End Sub"
+        ]);
+        var projectText = string.Join('\n', [
+            "Attribute VB_Name = \"CompletionOrderingProject\"",
+            "Option Explicit",
+            "Public XrayProject As String"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(projectUri, projectText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+
+        var completion = await process.SendRequestAsync(2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new { line = 5, character = "    value = ".Length }
+            });
+        var items = completion
+            .GetProperty("result")
+            .EnumerateArray()
+            .ToArray();
+
+        var localSortText = Assert.Single(items, item =>
+                item.GetProperty("label").GetString() == "ZuluLocal")
+            .GetProperty("sortText")
+            .GetString();
+        var currentModuleSortText = Assert.Single(items, item =>
+                item.GetProperty("label").GetString() == "YankeeCurrent")
+            .GetProperty("sortText")
+            .GetString();
+        var projectSortText = Assert.Single(items, item =>
+                item.GetProperty("label").GetString() == "XrayProject")
+            .GetProperty("sortText")
+            .GetString();
+        var catalogSortText = Assert.Single(items, item =>
+                item.GetProperty("label").GetString() == "vbCrLf")
+            .GetProperty("sortText")
+            .GetString();
+
+        Assert.True(StringComparer.Ordinal.Compare(localSortText, currentModuleSortText) < 0);
+        Assert.True(StringComparer.Ordinal.Compare(currentModuleSortText, projectSortText) < 0);
+        Assert.True(StringComparer.Ordinal.Compare(projectSortText, catalogSortText) < 0);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_orders_current_module_qualifier_before_project_and_reference_qualifiers()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string workerUri = "file:///C:/work/ZuluCurrent.bas";
+        const string projectUri = "file:///C:/work/YankeeProject.bas";
+        var workerText = string.Join('\n', [
+            "Attribute VB_Name = \"ZuluCurrent\"",
+            "Option Explicit",
+            "Public Function CurrentValue() As String",
+            "End Function",
+            "Public Sub Run()",
+            "    value = ",
+            "End Sub"
+        ]);
+        var projectText = string.Join('\n', [
+            "Attribute VB_Name = \"YankeeProject\"",
+            "Option Explicit",
+            "Public Function ProjectValue() As String",
+            "End Function"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(projectUri, projectText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+
+        var completion = await process.SendRequestAsync(2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new { line = 5, character = "    value = ".Length }
+            });
+        var items = completion
+            .GetProperty("result")
+            .EnumerateArray()
+            .ToArray();
+        var currentSortText = Assert.Single(items, item =>
+                item.GetProperty("label").GetString() == "ZuluCurrent"
+                && item.GetProperty("kind").GetInt32() == 9)
+            .GetProperty("sortText")
+            .GetString();
+        var projectSortText = Assert.Single(items, item =>
+                item.GetProperty("label").GetString() == "YankeeProject"
+                && item.GetProperty("kind").GetInt32() == 9)
+            .GetProperty("sortText")
+            .GetString();
+        var referenceSortText = Assert.Single(items, item =>
+                item.GetProperty("label").GetString() == "VBA"
+                && item.GetProperty("kind").GetInt32() == 9)
+            .GetProperty("sortText")
+            .GetString();
+
+        Assert.True(StringComparer.Ordinal.Compare(currentSortText, projectSortText) < 0);
+        Assert.True(StringComparer.Ordinal.Compare(projectSortText, referenceSortText) < 0);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_distinguishes_same_label_callable_and_source_qualifier_items()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string workerUri = "file:///C:/work/SameLabelWorker.bas";
+        const string builderUri = "file:///C:/work/Builder.bas";
+        var workerText = string.Join('\n', [
+            "Attribute VB_Name = \"SameLabelWorker\"",
+            "Option Explicit",
+            "Public Function Builder() As String",
+            "End Function",
+            "Public Sub Run()",
+            "    value = ",
+            "End Sub"
+        ]);
+        var builderText = string.Join('\n', [
+            "Attribute VB_Name = \"Builder\"",
+            "Option Explicit",
+            "Public Function CreateValue() As String",
+            "End Function"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(builderUri, builderText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+
+        var completion = await process.SendRequestAsync(2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new { line = 5, character = "    value = ".Length }
+            });
+        var builderItems = completion
+            .GetProperty("result")
+            .EnumerateArray()
+            .Where(item => item.GetProperty("label").GetString() == "Builder")
+            .ToArray();
+
+        Assert.Equal(2, builderItems.Length);
+        var callable = Assert.Single(builderItems, item =>
+            item.GetProperty("kind").GetInt32() == 3);
+        var qualifier = Assert.Single(builderItems, item =>
+            item.GetProperty("kind").GetInt32() == 9);
+        Assert.Equal(
+            "Function Builder() As String",
+            callable.GetProperty("detail").GetString());
+        Assert.Equal(
+            "Module qualifier",
+            qualifier.GetProperty("detail").GetString());
+        Assert.Equal("Builder.", qualifier.GetProperty("insertText").GetString());
+        Assert.NotEqual(
+            callable.GetProperty("sortText").GetString(),
+            qualifier.GetProperty("sortText").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_orders_unqualified_type_completion_before_catalog_types()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-type-ordering-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(
+                projectRoot,
+                "Microsoft Excel 16.0 Object Library");
+
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+
+            await process.InitializeAsync();
+            var workerUri = ToFileUri(Path.Combine(
+                projectRoot,
+                "src",
+                "Book1",
+                "TypeOrderingWorker.bas"));
+            var projectUri = ToFileUri(Path.Combine(
+                projectRoot,
+                "src",
+                "Book1",
+                "TypeOrderingProject.bas"));
+            var workerText = string.Join('\n', [
+                "Attribute VB_Name = \"TypeOrderingWorker\"",
+                "Option Explicit",
+                "Public Type ZuluCurrentType",
+                "    Value As Long",
+                "End Type",
+                "Public Sub Run()",
+                "    Dim value As ",
+                "End Sub"
+            ]);
+            var projectText = string.Join('\n', [
+                "Attribute VB_Name = \"TypeOrderingProject\"",
+                "Option Explicit",
+                "Public Type YankeeProjectType",
+                "    Value As Long",
+                "End Type"
+            ]);
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(projectUri, projectText));
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(workerUri, workerText));
+
+            var completion = await process.SendRequestAsync(2,
+                "textDocument/completion",
+                new
+                {
+                    textDocument = new { uri = workerUri },
+                    position = new { line = 6, character = "    Dim value As ".Length }
+                });
+            var items = completion
+                .GetProperty("result")
+                .EnumerateArray()
+                .ToArray();
+            var currentModuleSortText = Assert.Single(items, item =>
+                    item.GetProperty("label").GetString() == "ZuluCurrentType")
+                .GetProperty("sortText")
+                .GetString();
+            var projectSortText = Assert.Single(items, item =>
+                    item.GetProperty("label").GetString() == "YankeeProjectType")
+                .GetProperty("sortText")
+                .GetString();
+            var catalogSortText = Assert.Single(items, item =>
+                    item.GetProperty("label").GetString() == "Application")
+                .GetProperty("sortText")
+                .GetString();
+
+            Assert.True(StringComparer.Ordinal.Compare(currentModuleSortText, projectSortText) < 0);
+            Assert.True(StringComparer.Ordinal.Compare(projectSortText, catalogSortText) < 0);
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_replaces_partial_source_qualifier_with_a_trailing_dot()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string workerUri = "file:///C:/work/PartialQualifierWorker.bas";
+        const string builderUri = "file:///C:/work/Builder.bas";
+        var workerText = string.Join('\n', [
+            "Attribute VB_Name = \"PartialQualifierWorker\"",
+            "Option Explicit",
+            "Public Sub Run()",
+            "    value = Bui",
+            "End Sub"
+        ]);
+        var builderText = string.Join('\n', [
+            "Attribute VB_Name = \"Builder\"",
+            "Option Explicit",
+            "Public Function CreateValue() As String",
+            "End Function"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(builderUri, builderText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+
+        var completion = await process.SendRequestAsync(2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new { line = 3, character = "    value = Bui".Length }
+            });
+        var item = Assert.Single(
+            completion.GetProperty("result").EnumerateArray(),
+            candidate => candidate.GetProperty("label").GetString() == "Builder");
+        var textEdit = item.GetProperty("textEdit");
+
+        Assert.Equal("Builder", item.GetProperty("label").GetString());
+        Assert.Equal("Builder", item.GetProperty("filterText").GetString());
+        Assert.Equal("Builder.", textEdit.GetProperty("newText").GetString());
+        Assert.Equal(
+            "    value = ".Length,
+            textEdit.GetProperty("range").GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(
+            "    value = Bui".Length,
+            textEdit.GetProperty("range").GetProperty("end").GetProperty("character").GetInt32());
+        Assert.False(item.TryGetProperty("insertText", out _));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
     public async Task Server_exposes_standard_library_constants_in_ad_hoc_projects()
     {
         await using var process = await LanguageServerProcessHarness.StartAsync();
@@ -635,7 +961,102 @@ public sealed class LanguageServerProcessTests
             "vbCrLf");
         Assert.Equal(JsonValueKind.Null, prepareRename.GetProperty("result").ValueKind);
 
-        await process.ShutdownAsync(7);
+        var definition = await SendPositionRequestAsync(
+            process,
+            7,
+            "textDocument/definition",
+            uri,
+            text,
+            "vbCrLf");
+        Assert.Equal(JsonValueKind.Null, definition.GetProperty("result").ValueKind);
+        Assert.DoesNotContain(
+            VbaProjectReferenceCatalogSet.ExternalDefinitionUriPrefix,
+            definition.GetRawText(),
+            StringComparison.Ordinal);
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            8,
+            "textDocument/rename",
+            uri,
+            text,
+            "vbCrLf",
+            0,
+            new { newName = "lineBreak" });
+        Assert.Equal(JsonValueKind.Null, rename.GetProperty("result").ValueKind);
+
+        await process.ShutdownAsync(9);
+    }
+
+    [Fact]
+    public async Task Server_allows_definition_and_rename_for_a_source_shadow_of_a_catalog_name()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/SourceShadow.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"SourceShadow\"",
+            "Option Explicit",
+            "Public Sub Run()",
+            "    Dim vbCrLf As String",
+            "    vbCrLf = \"shadow\"",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
+        var usageOffset = text.LastIndexOf("vbCrLf", StringComparison.Ordinal)
+            - text.IndexOf("vbCrLf", StringComparison.Ordinal);
+
+        var definition = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/definition",
+            uri,
+            text,
+            "vbCrLf",
+            usageOffset);
+        var location = definition.GetProperty("result");
+        Assert.Equal(uri, location.GetProperty("uri").GetString());
+        Assert.Equal(
+            3,
+            location.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32());
+
+        var prepareRename = await SendPositionRequestAsync(
+            process,
+            3,
+            "textDocument/prepareRename",
+            uri,
+            text,
+            "vbCrLf",
+            usageOffset);
+        Assert.Equal(
+            3,
+            prepareRename
+                .GetProperty("result")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32());
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            4,
+            "textDocument/rename",
+            uri,
+            text,
+            "vbCrLf",
+            usageOffset,
+            new { newName = "sourceLineBreak" });
+        var edits = rename
+            .GetProperty("result")
+            .GetProperty("changes")
+            .GetProperty(uri)
+            .EnumerateArray()
+            .ToArray();
+        Assert.Equal(2, edits.Length);
+        Assert.All(edits, edit =>
+            Assert.Equal("sourceLineBreak", edit.GetProperty("newText").GetString()));
+
+        await process.ShutdownAsync(5);
     }
 
     [Fact]
@@ -2502,16 +2923,40 @@ public sealed class LanguageServerProcessTests
                 "Attribute VB_Name = \"Worker\"",
                 "Option Explicit",
                 "Public Sub Run()",
+                "    value = ",
                 "    value = ActiveCell",
                 "    value = Application",
+                "    value = xlCenter",
                 "    Dim app As Application",
                 "End Sub"
             ]);
             await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
 
+            var rootCompletion = await process.SendRequestAsync(2,
+                "textDocument/completion",
+                new
+                {
+                    textDocument = new { uri },
+                    position = new { line = 3, character = "    value = ".Length }
+                });
+            var rootItems = rootCompletion
+                .GetProperty("result")
+                .EnumerateArray()
+                .ToArray();
+            var typeCompletion = await process.SendRequestAsync(3,
+                "textDocument/completion",
+                new
+                {
+                    textDocument = new { uri },
+                    position = new { line = 7, character = "    Dim app As ".Length }
+                });
+            var typeItems = typeCompletion
+                .GetProperty("result")
+                .EnumerateArray()
+                .ToArray();
             var hover = await SendPositionRequestAsync(
                 process,
-                2,
+                4,
                 "textDocument/hover",
                 uri,
                 text,
@@ -2521,7 +2966,7 @@ public sealed class LanguageServerProcessTests
                 .GetProperty("contents")
                 .GetProperty("value")
                 .GetString();
-            var semanticTokensResponse = await process.SendRequestAsync(3,
+            var semanticTokensResponse = await process.SendRequestAsync(5,
                 "textDocument/semanticTokens/full",
                 new
                 {
@@ -2529,25 +2974,65 @@ public sealed class LanguageServerProcessTests
                 });
             var semanticTokens = DecodeSemanticTokens(semanticTokensResponse, text);
 
+            AssertCatalogCompletionItem(
+                rootItems,
+                "vbCrLf",
+                expectedKind: 21,
+                expectedDetail: "Const vbCrLf As String");
+            AssertCatalogCompletionItem(
+                rootItems,
+                "xlCenter",
+                expectedKind: 20,
+                expectedDetail: "xlCenter As Long");
+            AssertCatalogCompletionItem(
+                rootItems,
+                "ActiveCell",
+                expectedKind: 10,
+                expectedDetail: "ActiveCell As Range");
+            AssertCatalogCompletionItem(
+                rootItems,
+                "Application",
+                expectedKind: 10,
+                expectedDetail: "Application As Application");
+            AssertCatalogCompletionItem(
+                typeItems,
+                "Application",
+                expectedKind: 7,
+                expectedDetail: "Class Application");
+            var excelQualifier = Assert.Single(rootItems, item =>
+                item.GetProperty("label").GetString() == "Excel"
+                && item.GetProperty("kind").GetInt32() == 9);
+            Assert.Equal(
+                "Reference qualifier",
+                excelQualifier.GetProperty("detail").GetString());
+            Assert.Equal("Excel.", excelQualifier.GetProperty("insertText").GetString());
+            Assert.False(string.IsNullOrWhiteSpace(
+                excelQualifier.GetProperty("sortText").GetString()));
+
             Assert.Contains("```vba\nActiveCell As Range\n```", hoverValue, StringComparison.Ordinal);
             Assert.DoesNotContain("Property ActiveCell", hoverValue, StringComparison.Ordinal);
             Assert.Contains(semanticTokens, token =>
                 token.Text == "ActiveCell"
                 && token.TokenType == "property"
                 && token.TokenModifiers.Contains("defaultLibrary")
-                && token.Line == 3);
+                && token.Line == 4);
             Assert.Contains(semanticTokens, token =>
                 token.Text == "Application"
                 && token.TokenType == "property"
                 && token.TokenModifiers.Contains("defaultLibrary")
-                && token.Line == 4);
+                && token.Line == 5);
+            Assert.Contains(semanticTokens, token =>
+                token.Text == "xlCenter"
+                && token.TokenType == "enumMember"
+                && token.TokenModifiers.Contains("defaultLibrary")
+                && token.Line == 6);
             Assert.Contains(semanticTokens, token =>
                 token.Text == "Application"
                 && token.TokenType == "class"
                 && token.TokenModifiers.Contains("defaultLibrary")
-                && token.Line == 5);
+                && token.Line == 7);
 
-            await process.ShutdownAsync(4);
+            await process.ShutdownAsync(6);
         }
         finally
         {
@@ -3900,6 +4385,19 @@ public sealed class LanguageServerProcessTests
         {
             Directory.Delete(projectRoot, recursive: true);
         }
+    }
+
+    private static void AssertCatalogCompletionItem(
+        IReadOnlyList<JsonElement> items,
+        string label,
+        int expectedKind,
+        string expectedDetail)
+    {
+        var item = Assert.Single(items, candidate =>
+            candidate.GetProperty("label").GetString() == label);
+        Assert.Equal(expectedKind, item.GetProperty("kind").GetInt32());
+        Assert.Equal(expectedDetail, item.GetProperty("detail").GetString());
+        Assert.False(string.IsNullOrWhiteSpace(item.GetProperty("sortText").GetString()));
     }
 
     private static void AssertJsonRpcError(JsonElement response, int code, string message)

@@ -636,8 +636,7 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
         Assert.Equal("Function Execute(String) As MatchCollection", signatureHelp.Signature.Label);
 
         var location = index.ResolveDefinition(uri, 5, "    regex.Execute(".IndexOf("Execute", StringComparison.Ordinal));
-        Assert.NotNull(location);
-        Assert.StartsWith(VbaProjectReferenceCatalogSet.ExternalDefinitionUriPrefix, location.Uri);
+        Assert.Null(location);
     }
 
     [Fact]
