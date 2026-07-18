@@ -446,7 +446,12 @@ public enum VbaCompletionCandidateKind
     /// <summary>
     /// A callable-owned line label or a special label destination.
     /// </summary>
-    Label
+    Label,
+
+    /// <summary>
+    /// A qualifier alias for an active project reference catalog.
+    /// </summary>
+    ReferenceQualifier
 }
 
 /// <summary>

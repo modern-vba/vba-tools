@@ -566,6 +566,79 @@ public sealed class LanguageServerProcessTests
     }
 
     [Fact]
+    public async Task Server_exposes_standard_library_constants_in_ad_hoc_projects()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/StandardLibrary.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"StandardLibrary\"",
+            "Option Explicit",
+            "Public Sub Run()",
+            "    value = ",
+            "    value = VBA.",
+            "    value = vbCrLf",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
+
+        var rootCompletion = await process.SendRequestAsync(2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri },
+                position = new { line = 3, character = "    value = ".Length }
+            });
+        var rootItems = rootCompletion.GetProperty("result").EnumerateArray().ToArray();
+        Assert.Contains(rootItems, item =>
+            item.GetProperty("label").GetString() == "vbCrLf"
+            && item.GetProperty("kind").GetInt32() == 21);
+        var qualifierItem = Assert.Single(rootItems, item =>
+            item.GetProperty("label").GetString() == "VBA");
+        Assert.Equal("VBA.", qualifierItem.GetProperty("insertText").GetString());
+
+        var qualifiedCompletion = await process.SendRequestAsync(3,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri },
+                position = new { line = 4, character = "    value = VBA.".Length }
+            });
+        Assert.Contains(qualifiedCompletion.GetProperty("result").EnumerateArray(), item =>
+            item.GetProperty("label").GetString() == "vbCrLf");
+
+        var hover = await SendPositionRequestAsync(process, 4, "textDocument/hover", uri, text, "vbCrLf");
+        var hoverValue = hover.GetProperty("result").GetProperty("contents").GetProperty("value").GetString();
+        Assert.Contains("Carriage return-linefeed character combination.", hoverValue, StringComparison.Ordinal);
+        Assert.Contains("```vba\nConst vbCrLf As String\n```", hoverValue, StringComparison.Ordinal);
+
+        var semanticTokensResponse = await process.SendRequestAsync(5,
+            "textDocument/semanticTokens/full",
+            new
+            {
+                textDocument = new { uri }
+            });
+        var semanticTokens = DecodeSemanticTokens(semanticTokensResponse, text);
+        Assert.Contains(semanticTokens, token =>
+            token.Text == "vbCrLf"
+            && token.TokenType == "field"
+            && token.TokenModifiers.Contains("readonly")
+            && token.TokenModifiers.Contains("defaultLibrary"));
+
+        var prepareRename = await SendPositionRequestAsync(
+            process,
+            6,
+            "textDocument/prepareRename",
+            uri,
+            text,
+            "vbCrLf");
+        Assert.Equal(JsonValueKind.Null, prepareRename.GetProperty("result").ValueKind);
+
+        await process.ShutdownAsync(7);
+    }
+
+    [Fact]
     public async Task Server_publishes_diagnostics_after_open_and_change_notifications()
     {
         await using var process = await LanguageServerProcessHarness.StartAsync();

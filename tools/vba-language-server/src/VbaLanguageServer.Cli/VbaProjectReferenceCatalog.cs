@@ -43,6 +43,11 @@ public sealed record VbaProjectReferenceCatalog(
 public sealed class VbaProjectReferenceCatalogSet
 {
     /// <summary>
+    /// The manifest/catalog name used by the VBA standard library.
+    /// </summary>
+    public const string StandardLibraryReferenceName = "Visual Basic For Applications";
+
+    /// <summary>
     /// The URI prefix used for definitions that originate from reference catalogs.
     /// </summary>
     public const string ExternalDefinitionUriPrefix = "vba-reference://";
@@ -69,17 +74,17 @@ public sealed class VbaProjectReferenceCatalogSet
         var bundledCatalogs = new[]
         {
             new VbaProjectReferenceCatalog(
-                "Visual Basic For Applications",
+                StandardLibraryReferenceName,
                 ["VBA"],
                 [
                     new VbaProjectReferenceDefinition(
-                        "Visual Basic For Applications",
+                        StandardLibraryReferenceName,
                         "Collection",
                         VbaSourceDefinitionKind.Class,
                         "Represents an ordered set of items.",
                         IsCreatable: true),
                     new VbaProjectReferenceDefinition(
-                        "Visual Basic For Applications",
+                        StandardLibraryReferenceName,
                         "MsgBox",
                         VbaSourceDefinitionKind.Procedure,
                         "Displays a message in a dialog box.",
@@ -92,7 +97,14 @@ public sealed class VbaProjectReferenceCatalogSet
                             ],
                             "Displays a message in a dialog box.",
                             CallableKind: VbaCallableKind.Function,
-                            SupportsNamedArguments: true))
+                            SupportsNamedArguments: true)),
+                    new VbaProjectReferenceDefinition(
+                        StandardLibraryReferenceName,
+                        "vbCrLf",
+                        VbaSourceDefinitionKind.Constant,
+                        "Carriage return-linefeed character combination.",
+                        ParentTypeName: "Constants",
+                        TypeReference: new VbaTypeReference("String"))
                 ]),
             new VbaProjectReferenceCatalog(
                 "Microsoft Excel 16.0 Object Library",
@@ -275,7 +287,7 @@ public sealed class VbaProjectReferenceCatalogSet
     /// </summary>
     /// <param name="selection">The active reference selection.</param>
     /// <returns>The active catalog definitions projected into source definitions.</returns>
-    public IReadOnlyList<VbaSourceDefinition> GetActiveDefinitions(VbaProjectReferenceSelection selection)
+    public IReadOnlyList<VbaSourceDefinition> GetActiveDefinitions(VbaProjectReferenceSelection? selection)
         => GetActiveReferenceDefinitions(selection)
             .Select(ToSourceDefinition)
             .ToArray();
@@ -303,7 +315,7 @@ public sealed class VbaProjectReferenceCatalogSet
     /// <param name="memberName">The requested member or root definition name.</param>
     /// <returns>The matching reference definitions.</returns>
     public IReadOnlyList<VbaSourceDefinition> GetQualifiedDefinitions(
-        VbaProjectReferenceSelection selection,
+        VbaProjectReferenceSelection? selection,
         string qualifier,
         string memberName)
     {
@@ -319,7 +331,7 @@ public sealed class VbaProjectReferenceCatalogSet
     /// <param name="qualifier">The qualifier alias used in source.</param>
     /// <returns>The matching reference definitions.</returns>
     public IReadOnlyList<VbaSourceDefinition> GetQualifiedDefinitions(
-        VbaProjectReferenceSelection selection,
+        VbaProjectReferenceSelection? selection,
         string qualifier)
     {
         return GetActiveCatalogs(selection)
@@ -338,7 +350,7 @@ public sealed class VbaProjectReferenceCatalogSet
     /// <param name="qualifier">The qualifier spelling found in source.</param>
     /// <returns>The canonical qualifier alias, or null when it is not active.</returns>
     public string? GetActiveCanonicalQualifierAlias(
-        VbaProjectReferenceSelection selection,
+        VbaProjectReferenceSelection? selection,
         string referenceName,
         string qualifier)
     {
@@ -349,20 +361,35 @@ public sealed class VbaProjectReferenceCatalogSet
     }
 
     internal IReadOnlyList<(string ReferenceName, string Qualifier)> GetActiveQualifierAliases(
-        VbaProjectReferenceSelection selection)
+        VbaProjectReferenceSelection? selection)
         => GetActiveCatalogs(selection)
             .SelectMany(catalog => catalog.Catalog.QualifierAliases.Select(alias => (
                 catalog.Catalog.ReferenceName,
                 Qualifier: alias)))
             .ToArray();
 
-    private IEnumerable<VbaProjectReferenceDefinition> GetActiveReferenceDefinitions(VbaProjectReferenceSelection selection)
+    private IEnumerable<VbaProjectReferenceDefinition> GetActiveReferenceDefinitions(VbaProjectReferenceSelection? selection)
         => GetActiveCatalogs(selection).SelectMany(catalog => catalog.Catalog.Definitions);
 
-    private IEnumerable<ActiveReferenceCatalog> GetActiveCatalogs(VbaProjectReferenceSelection selection)
+    private IEnumerable<ActiveReferenceCatalog> GetActiveCatalogs(VbaProjectReferenceSelection? selection)
     {
+        if (catalogs.TryGetValue(StandardLibraryReferenceName, out var standardLibraryCatalog))
+        {
+            yield return new ActiveReferenceCatalog(StandardLibraryReferenceName, standardLibraryCatalog);
+        }
+
+        if (selection is null)
+        {
+            yield break;
+        }
+
         foreach (var reference in selection.References)
         {
+            if (reference.Name.Equals(StandardLibraryReferenceName, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
             if (catalogs.TryGetValue(reference.Name, out var catalog))
             {
                 yield return new ActiveReferenceCatalog(reference.Name, catalog);

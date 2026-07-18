@@ -274,6 +274,7 @@ internal static class VbaLspFeatureProjection
         {
             VbaCompletionCandidateKind.Definition when candidate.Definition is not null =>
                 GetDefinitionCompletionKind(candidate.Definition.Kind),
+            VbaCompletionCandidateKind.ReferenceQualifier => 9,
             VbaCompletionCandidateKind.NamedArgument => 5,
             VbaCompletionCandidateKind.Label => 18,
             _ => 14

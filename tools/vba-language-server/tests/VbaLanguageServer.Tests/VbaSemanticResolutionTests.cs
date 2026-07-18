@@ -7,6 +7,123 @@ namespace VbaLanguageServer.Tests;
 public sealed class VbaSemanticResolutionTests
 {
     [Fact]
+    public void StandardLibraryConstantsAreAlwaysAvailableInAdHocAndManifestBackedProjects()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    value = ",
+            "    value = vbcrlf",
+            "End Sub"
+        ]);
+        var selections = new VbaProjectReferenceSelection?[]
+        {
+            null,
+            VbaProjectReferenceSelection.Create(
+                ProjectDocument.ExcelKind,
+                [new VbaProjectReference("Microsoft Excel 16.0 Object Library")])
+        };
+
+        foreach (var selection in selections)
+        {
+            var index = VbaSourceIndex.Build(
+                new Dictionary<string, string> { [uri] = text },
+                selection,
+                VbaProjectReferenceCatalogSet.CreateBundled());
+
+            var completion = index.GetCompletionResult(uri, 2, "    value = ".Length);
+            var candidate = Assert.Single(completion.Candidates, candidate =>
+                string.Equals(candidate.Label, "vbCrLf", StringComparison.OrdinalIgnoreCase));
+            Assert.NotNull(candidate.Definition);
+            var definition = candidate.Definition;
+            var resolved = index.ResolveSourceDefinition(uri, 3, "    value = ".Length);
+
+            Assert.Equal("vbCrLf", candidate.Label);
+            Assert.Equal("vbCrLf", definition.Name);
+            Assert.Equal("Visual Basic For Applications", definition.ModuleName);
+            Assert.Equal(VbaSourceDefinitionKind.Constant, definition.Kind);
+            Assert.Equal(VbaDefinitionOrigin.ProjectReference, definition.Identity.Origin);
+            Assert.Equal("String", definition.TypeReference?.Name);
+            Assert.Equal("Const vbCrLf As String", definition.DeclarationLabel);
+            Assert.Equal("vbCrLf", resolved?.Name);
+        }
+    }
+
+    [Fact]
+    public void StandardLibraryQualifierCompletesAndExposesPublicRootSurfaceInAdHocProjects()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    value = ",
+            "    value = VBA.",
+            "End Sub"
+        ]);
+        var index = VbaSourceIndex.Build(
+            new Dictionary<string, string> { [uri] = text },
+            referenceSelection: null,
+            VbaProjectReferenceCatalogSet.CreateBundled());
+
+        var rootCompletion = index.GetCompletionResult(uri, 2, "    value = ".Length);
+        var qualifier = Assert.Single(rootCompletion.Candidates, candidate =>
+            string.Equals(candidate.Label, "VBA", StringComparison.OrdinalIgnoreCase));
+        var qualifiedCompletion = index.GetCompletionResult(uri, 3, "    value = VBA.".Length);
+
+        Assert.Equal("VBA.", qualifier.InsertText);
+        Assert.Contains(qualifiedCompletion.Candidates, candidate =>
+            string.Equals(candidate.Label, "vbCrLf", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void SourceDefinitionsShadowStandardLibraryQualifierAndConstants()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    Dim VBA As String",
+            "    Dim vbCrLf As String",
+            "    value = ",
+            "    value = vbCrLf",
+            "End Sub"
+        ]);
+        var index = VbaSourceIndex.Build(
+            new Dictionary<string, string> { [uri] = text },
+            referenceSelection: null,
+            VbaProjectReferenceCatalogSet.CreateBundled());
+
+        var completion = index.GetCompletionResult(uri, 4, "    value = ".Length);
+        var resolved = index.ResolveSourceDefinition(uri, 5, "    value = ".Length);
+
+        Assert.DoesNotContain(completion.Candidates, candidate =>
+            string.Equals(candidate.Label, "VBA", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(candidate.InsertText, "VBA.", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(VbaDefinitionOrigin.Source, resolved?.Identity.Origin);
+        Assert.NotNull(index.PrepareRename(uri, 5, "    value = ".Length));
+    }
+
+    [Fact]
+    public void StandardLibraryReferenceDefinitionsAreNotRenameTargets()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    value = vbCrLf",
+            "End Sub"
+        ]);
+        var index = VbaSourceIndex.Build(
+            new Dictionary<string, string> { [uri] = text },
+            referenceSelection: null,
+            VbaProjectReferenceCatalogSet.CreateBundled());
+
+        Assert.Null(index.PrepareRename(uri, 2, "    value = ".Length));
+        Assert.Null(index.CreateRenamePlan(uri, 2, "    value = ".Length, "lineBreak"));
+    }
+
+    [Fact]
     public void BundledFunctionKindsDoNotDependOnReturnTypeMetadata()
     {
         const string uri = "file:///C:/work/Worker.bas";

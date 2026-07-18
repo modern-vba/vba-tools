@@ -45,7 +45,7 @@ public sealed class VbaNameResolutionService
             referenceSelection,
             referenceCatalogs,
             activeReferenceDefinitions
-                ?? (referenceSelection is null ? [] : referenceCatalogs.GetActiveDefinitions(referenceSelection)));
+                ?? referenceCatalogs.GetActiveDefinitions(referenceSelection));
     }
 
     /// <summary>
@@ -66,6 +66,42 @@ public sealed class VbaNameResolutionService
             .OrderBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
             .ToArray();
     }
+
+    /// <summary>
+    /// Gets active reference qualifier aliases that are visible at a position.
+    /// </summary>
+    /// <param name="uri">The document URI.</param>
+    /// <param name="position">The source position.</param>
+    /// <returns>The visible qualifier aliases.</returns>
+    public IReadOnlyList<string> GetCompletionReferenceQualifiers(string uri, VbaPosition position)
+    {
+        var currentDocument = candidates.FindDocument(uri);
+        if (currentDocument is null)
+        {
+            return [];
+        }
+
+        return candidates.GetReferenceQualifiers()
+            .Where(qualifier => !HasSourceQualifierShadow(currentDocument, position, qualifier))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(qualifier => qualifier, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    /// <summary>
+    /// Gets reference definitions exposed through a visible qualifier alias.
+    /// </summary>
+    /// <param name="currentDocument">The current document.</param>
+    /// <param name="position">The source position.</param>
+    /// <param name="qualifier">The qualifier alias.</param>
+    /// <returns>The qualified reference definitions, or an empty list when a source definition shadows the alias.</returns>
+    public IReadOnlyList<VbaSourceDefinition> GetQualifiedCompletionDefinitions(
+        VbaSourceDocument currentDocument,
+        VbaPosition position,
+        string qualifier)
+        => HasSourceQualifierShadow(currentDocument, position, qualifier)
+            ? []
+            : candidates.GetQualifiedReferenceDefinitions(qualifier);
 
     /// <summary>
     /// Gets project-level definitions that can participate in document formatting.
@@ -172,6 +208,32 @@ public sealed class VbaNameResolutionService
                 yield return new VbaRankedDefinition(definition, VbaResolutionPolicy.ReferenceRank);
             }
         }
+    }
+
+    private bool HasSourceQualifierShadow(
+        VbaSourceDocument currentDocument,
+        VbaPosition position,
+        string qualifier)
+    {
+        if (candidates.GetSourceCandidates(currentDocument)
+            .Where(candidate => candidate.Visibility == VbaSourceDefinitionVisibility.Local)
+            .Where(candidate => ContainsPosition(candidate.Definition, position))
+            .Any(candidate => SameName(candidate.Name, qualifier)))
+        {
+            return true;
+        }
+
+        if (candidates.GetSourceCandidates(currentDocument)
+            .Where(candidate => resolutionPolicy.IsReferenceTarget(candidate.Definition))
+            .Any(candidate => SameName(candidate.Name, qualifier)))
+        {
+            return true;
+        }
+
+        return candidates.GetSourceCandidates(qualifier)
+            .Where(candidate => !SameUri(candidate.Uri, currentDocument.Uri))
+            .Where(candidate => resolutionPolicy.IsReferenceTarget(candidate.Definition))
+            .Any(candidate => candidate.Visibility == VbaSourceDefinitionVisibility.Public);
     }
 
     private IReadOnlyList<VbaSourceDefinition> ResolveCompletionCandidates(IEnumerable<VbaRankedDefinition> candidates)
@@ -407,18 +469,14 @@ internal sealed class VbaNameCandidateInventory
         referenceCandidatesByParentType = referenceCandidates
             .Where(candidate => candidate.ParentTypeName is not null)
             .ToLookup(candidate => candidate.ParentTypeName!, StringComparer.OrdinalIgnoreCase);
-        activeReferenceQualifiers = referenceSelection is null
-            ? []
-            : referenceCatalogs.GetActiveQualifierAliases(referenceSelection);
-        var qualifiedReferenceDefinitions = referenceSelection is null
-            ? []
-            : activeReferenceQualifiers
-                .Select(candidate => candidate.Qualifier)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .SelectMany(qualifier => referenceCatalogs
-                    .GetQualifiedDefinitions(referenceSelection, qualifier)
-                    .Select(definition => new VbaQualifiedReferenceDefinition(qualifier, definition)))
-                .ToArray();
+        activeReferenceQualifiers = referenceCatalogs.GetActiveQualifierAliases(referenceSelection);
+        var qualifiedReferenceDefinitions = activeReferenceQualifiers
+            .Select(candidate => candidate.Qualifier)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .SelectMany(qualifier => referenceCatalogs
+                .GetQualifiedDefinitions(referenceSelection, qualifier)
+                .Select(definition => new VbaQualifiedReferenceDefinition(qualifier, definition)))
+            .ToArray();
         qualifiedReferenceDefinitionsByQualifier = qualifiedReferenceDefinitions.ToLookup(
             candidate => candidate.Qualifier,
             candidate => candidate.Definition,
@@ -427,7 +485,7 @@ internal sealed class VbaNameCandidateInventory
 
     public VbaProjectReferenceSelection? ReferenceSelection { get; }
 
-    public bool HasReferenceSelection => ReferenceSelection is not null;
+    public bool HasReferenceSelection => referenceCandidates.Count > 0 || activeReferenceQualifiers.Count > 0;
 
     public VbaSourceDocument? FindDocument(string uri)
         => documentsByUri[uri].FirstOrDefault();
@@ -449,6 +507,9 @@ internal sealed class VbaNameCandidateInventory
 
     public IEnumerable<VbaNameCandidate> GetReferenceCandidatesByParentType(string parentTypeName)
         => referenceCandidatesByParentType[parentTypeName];
+
+    public IEnumerable<string> GetReferenceQualifiers()
+        => activeReferenceQualifiers.Select(candidate => candidate.Qualifier);
 
     public IReadOnlyList<VbaSourceDefinition> GetQualifiedReferenceDefinitions(string qualifier)
         => qualifiedReferenceDefinitionsByQualifier[qualifier].ToArray();

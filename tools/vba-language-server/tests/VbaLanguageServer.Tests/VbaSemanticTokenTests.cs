@@ -7,6 +7,29 @@ namespace VbaLanguageServer.Tests;
 public sealed class VbaSemanticTokenTests
 {
     [Fact]
+    public void SemanticTokensCoverStandardLibraryConstantsInAdHocProjects()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Option Explicit",
+            "Public Sub Run()",
+            "    value = vbCrLf",
+            "End Sub"
+        ]);
+        var index = VbaSourceIndex.Build(
+            new Dictionary<string, string> { [uri] = text },
+            referenceSelection: null,
+            VbaProjectReferenceCatalogSet.CreateBundled());
+
+        var token = Assert.Single(index.GetSemanticTokens(uri), token => token.Text == "vbCrLf");
+
+        Assert.Equal("field", token.TokenType);
+        Assert.Contains("readonly", token.TokenModifiers);
+        Assert.Contains("defaultLibrary", token.TokenModifiers);
+    }
+
+    [Fact]
     public void SemanticTokensCoverSourceDefinitionsActiveReferencesAndSkipUnresolvedNames()
     {
         const string uri = "file:///C:/work/Worker.bas";
