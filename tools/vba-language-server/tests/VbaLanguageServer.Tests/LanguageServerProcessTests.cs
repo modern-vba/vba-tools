@@ -2297,6 +2297,77 @@ public sealed class LanguageServerProcessTests
     }
 
     [Fact]
+    public async Task Server_projects_excel_host_globals_as_external_values()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-host-globals-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(
+                projectRoot,
+                "Microsoft Excel 16.0 Object Library");
+
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+
+            await process.InitializeAsync();
+            var uri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
+            var text = string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Option Explicit",
+                "Public Sub Run()",
+                "    value = ActiveCell",
+                "    value = Application",
+                "    Dim app As Application",
+                "End Sub"
+            ]);
+            await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
+
+            var hover = await SendPositionRequestAsync(
+                process,
+                2,
+                "textDocument/hover",
+                uri,
+                text,
+                "ActiveCell");
+            var hoverValue = hover
+                .GetProperty("result")
+                .GetProperty("contents")
+                .GetProperty("value")
+                .GetString();
+            var semanticTokensResponse = await process.SendRequestAsync(3,
+                "textDocument/semanticTokens/full",
+                new
+                {
+                    textDocument = new { uri }
+                });
+            var semanticTokens = DecodeSemanticTokens(semanticTokensResponse, text);
+
+            Assert.Contains("```vba\nActiveCell As Range\n```", hoverValue, StringComparison.Ordinal);
+            Assert.DoesNotContain("Property ActiveCell", hoverValue, StringComparison.Ordinal);
+            Assert.Contains(semanticTokens, token =>
+                token.Text == "ActiveCell"
+                && token.TokenType == "property"
+                && token.TokenModifiers.Contains("defaultLibrary")
+                && token.Line == 3);
+            Assert.Contains(semanticTokens, token =>
+                token.Text == "Application"
+                && token.TokenType == "property"
+                && token.TokenModifiers.Contains("defaultLibrary")
+                && token.Line == 4);
+            Assert.Contains(semanticTokens, token =>
+                token.Text == "Application"
+                && token.TokenType == "class"
+                && token.TokenModifiers.Contains("defaultLibrary")
+                && token.Line == 5);
+
+            await process.ShutdownAsync(4);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Server_prefers_main_reference_over_other_reference_matches_for_unqualified_names()
     {
         var projectRoot = Directory.CreateTempSubdirectory("vba-ls-main-catalog-").FullName;

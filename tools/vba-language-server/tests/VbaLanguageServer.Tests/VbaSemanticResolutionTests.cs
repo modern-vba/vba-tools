@@ -163,6 +163,196 @@ public sealed class VbaSemanticResolutionTests
     }
 
     [Fact]
+    public void ExcelHostGlobalsRequireTheActiveExcelMainReference()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        const string excelReferenceName = "Microsoft Excel 16.0 Object Library";
+        const string officeReferenceName = "Microsoft Office 16.0 Object Library";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    value = ",
+            "    value = Application",
+            "    value = Application.",
+            "End Sub"
+        ]);
+        var catalogs = VbaProjectReferenceCatalogSet.CreateBundled();
+        var excelIndex = VbaSourceIndex.Build(
+            new Dictionary<string, string> { [uri] = text },
+            VbaProjectReferenceSelection.Create(
+                ProjectDocument.ExcelKind,
+                [new VbaProjectReference(excelReferenceName)]),
+            catalogs);
+        var adHocIndex = VbaSourceIndex.Build(
+            new Dictionary<string, string> { [uri] = text },
+            referenceSelection: null,
+            catalogs);
+        var differentMainHostIndex = VbaSourceIndex.Build(
+            new Dictionary<string, string> { [uri] = text },
+            new VbaProjectReferenceSelection(
+                [
+                    new VbaProjectReference(excelReferenceName),
+                    new VbaProjectReference(officeReferenceName)
+                ],
+                new MainVbaProjectReference(officeReferenceName),
+                MissingExpectedMainReference: null),
+            catalogs);
+        var missingExcelReferenceIndex = VbaSourceIndex.Build(
+            new Dictionary<string, string> { [uri] = text },
+            VbaProjectReferenceSelection.Create(
+                ProjectDocument.ExcelKind,
+                [new VbaProjectReference(officeReferenceName)]),
+            catalogs);
+        string[] expectedHostGlobals =
+        [
+            "Application",
+            "ActiveWindow",
+            "ActiveCell",
+            "ActiveSheet",
+            "ActiveWorkbook",
+            "ThisWorkbook"
+        ];
+
+        var excelLabels = excelIndex.GetCompletionResult(uri, 2, "    value = ".Length)
+            .Candidates
+            .Select(candidate => candidate.Label)
+            .ToArray();
+
+        Assert.All(expectedHostGlobals, name => Assert.Contains(name, excelLabels));
+        Assert.Equal(
+            VbaSourceDefinitionKind.Property,
+            excelIndex.ResolveSourceDefinition(uri, 3, "    value = ".Length)?.Kind);
+        foreach (var index in new[]
+                 {
+                     adHocIndex,
+                     differentMainHostIndex,
+                     missingExcelReferenceIndex
+                 })
+        {
+            var labels = index.GetCompletionResult(uri, 2, "    value = ".Length)
+                .Candidates
+                .Select(candidate => candidate.Label)
+                .ToArray();
+            Assert.All(expectedHostGlobals, name => Assert.DoesNotContain(name, labels));
+            Assert.Null(index.ResolveSourceDefinition(uri, 3, "    value = ".Length));
+            Assert.DoesNotContain(
+                index.GetSemanticTokens(uri),
+                token => token.Text == "Application" && token.Range.Start.Line == 3);
+            Assert.Empty(index.GetCompletionResult(
+                uri,
+                4,
+                "    value = Application.".Length).Candidates);
+        }
+    }
+
+    [Fact]
+    public void ExcelHostGlobalsUseReadOnlyValueShapesAndApplicationTypeContext()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    value = Application",
+            "    value = ActiveWindow",
+            "    value = ActiveCell",
+            "    value = ActiveSheet",
+            "    value = ActiveWorkbook",
+            "    value = ThisWorkbook",
+            "    Dim app As Application",
+            "End Sub"
+        ]);
+        var index = BuildIndex(uri, text);
+        var expectedShapes = new[]
+        {
+            (Line: 2, Name: "Application", TypeName: "Application", Label: "Application As Application"),
+            (Line: 3, Name: "ActiveWindow", TypeName: "Window", Label: "ActiveWindow As Window"),
+            (Line: 4, Name: "ActiveCell", TypeName: "Range", Label: "ActiveCell As Range"),
+            (Line: 5, Name: "ActiveSheet", TypeName: (string?)null, Label: "ActiveSheet"),
+            (Line: 6, Name: "ActiveWorkbook", TypeName: "Workbook", Label: "ActiveWorkbook As Workbook"),
+            (Line: 7, Name: "ThisWorkbook", TypeName: "Workbook", Label: "ThisWorkbook As Workbook")
+        };
+
+        foreach (var expected in expectedShapes)
+        {
+            var definition = index.ResolveSourceDefinition(
+                uri,
+                expected.Line,
+                "    value = ".Length);
+
+            Assert.NotNull(definition);
+            Assert.Equal(expected.Name, definition.Name);
+            Assert.Equal(VbaSourceDefinitionKind.Property, definition.Kind);
+            Assert.Equal(VbaPropertyAccess.Readable, definition.PropertyAccess);
+            Assert.Equal(expected.TypeName, definition.TypeReference?.Name);
+            Assert.Equal(expected.Label, definition.DeclarationLabel);
+            Assert.Equal(
+                ReferenceDefinitionGlobalExposure.MainHostGlobal,
+                definition.ReferenceGlobalExposure);
+        }
+
+        var applicationType = index.ResolveSourceDefinition(
+            uri,
+            8,
+            "    Dim app As ".Length);
+
+        Assert.Equal(VbaSourceDefinitionKind.Class, applicationType?.Kind);
+        Assert.Equal("Application", applicationType?.Name);
+    }
+
+    [Fact]
+    public void SourceValuesShadowExcelHostGlobalsWithoutMergingThisWorkbookDocumentModules()
+    {
+        const string workerUri = "file:///C:/work/Worker.bas";
+        const string thisWorkbookUri = "file:///C:/work/ThisWorkbook.cls";
+        var workerText = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    Dim ActiveCell As String",
+            "    value = ",
+            "    value = ActiveCell",
+            "    value = ActiveWorkbook",
+            "    value = ThisWorkbook",
+            "End Sub"
+        ]);
+        var thisWorkbookText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ThisWorkbook\"",
+            "Attribute VB_PredeclaredId = True",
+            "Public Function SourceOnly() As String",
+            "End Function"
+        ]);
+        var index = BuildIndex(new Dictionary<string, string>
+        {
+            [workerUri] = workerText,
+            [thisWorkbookUri] = thisWorkbookText
+        });
+
+        var shadowingCandidate = Assert.Single(
+            index.GetCompletionResult(workerUri, 3, "    value = ".Length).Candidates,
+            candidate => candidate.Label == "ActiveCell");
+        var shadowingDefinition = index.ResolveSourceDefinition(
+            workerUri,
+            4,
+            "    value = ".Length);
+        var hostDefinition = index.ResolveSourceDefinition(
+            workerUri,
+            5,
+            "    value = ".Length);
+        var thisWorkbookDefinition = index.ResolveSourceDefinition(
+            workerUri,
+            6,
+            "    value = ".Length);
+
+        Assert.Equal(VbaDefinitionOrigin.Source, shadowingCandidate.Definition?.Identity.Origin);
+        Assert.Equal(VbaDefinitionOrigin.Source, shadowingDefinition?.Identity.Origin);
+        Assert.NotNull(index.PrepareRename(workerUri, 4, "    value = ".Length));
+        Assert.Equal(VbaDefinitionOrigin.ProjectReference, hostDefinition?.Identity.Origin);
+        Assert.Null(index.PrepareRename(workerUri, 5, "    value = ".Length));
+        Assert.Equal(VbaDefinitionOrigin.ProjectReference, thisWorkbookDefinition?.Identity.Origin);
+        Assert.Equal("ThisWorkbook As Workbook", thisWorkbookDefinition?.DeclarationLabel);
+    }
+
+    [Fact]
     public void ReferenceQualifierCompletionFiltersByCompletionContext()
     {
         const string uri = "file:///C:/work/Worker.bas";
@@ -182,15 +372,29 @@ public sealed class VbaSemanticResolutionTests
         var creatableCompletion = index.GetCompletionResult(uri, 4, "    Set created = New Excel.".Length);
         var completedExpressionCompletion = index.GetCompletionResult(uri, 5, "    value = Excel.Application ".Length);
 
-        Assert.Contains(typeCompletion.Candidates, candidate => candidate.Label == "Application");
+        var applicationType = Assert.Single(
+            typeCompletion.Candidates,
+            candidate => candidate.Label == "Application");
+        Assert.Equal(VbaSourceDefinitionKind.Class, applicationType.Definition?.Kind);
         Assert.Contains(typeCompletion.Candidates, candidate => candidate.Label == "Workbook");
         Assert.DoesNotContain(typeCompletion.Candidates, candidate => candidate.Label == "Run");
 
         Assert.Contains(valueCompletion.Candidates, candidate => candidate.Label == "Workbooks");
-        Assert.DoesNotContain(valueCompletion.Candidates, candidate => candidate.Label == "Application");
+        var applicationValue = Assert.Single(
+            valueCompletion.Candidates,
+            candidate => candidate.Label == "Application");
+        Assert.Equal(VbaSourceDefinitionKind.Property, applicationValue.Definition?.Kind);
+        Assert.Equal(VbaPropertyAccess.Readable, applicationValue.Definition?.PropertyAccess);
+        Assert.Equal(
+            ReferenceDefinitionGlobalExposure.MainHostGlobal,
+            applicationValue.Definition?.ReferenceGlobalExposure);
         Assert.DoesNotContain(valueCompletion.Candidates, candidate => candidate.Label == "Workbook");
 
-        Assert.Contains(creatableCompletion.Candidates, candidate => candidate.Label == "Application");
+        var creatableApplication = Assert.Single(
+            creatableCompletion.Candidates,
+            candidate => candidate.Label == "Application");
+        Assert.Equal(VbaSourceDefinitionKind.Class, creatableApplication.Definition?.Kind);
+        Assert.True(creatableApplication.Definition?.IsCreatable);
         Assert.DoesNotContain(creatableCompletion.Candidates, candidate => candidate.Label == "Workbook");
         Assert.Empty(completedExpressionCompletion.Candidates);
     }

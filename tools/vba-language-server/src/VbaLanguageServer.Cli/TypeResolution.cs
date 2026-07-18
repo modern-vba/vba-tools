@@ -96,7 +96,7 @@ internal sealed class VbaTypeResolution
             return true;
         }
 
-        var firstDefinition = nameResolution.Resolve(
+        var firstDefinition = nameResolution.ResolveValue(
             currentDocument.Uri,
             new VbaPosition(line, character),
             qualifier: null,

@@ -55,6 +55,12 @@ public sealed class VbaNameResolutionService
     /// <param name="position">The source position.</param>
     /// <returns>The visible and unambiguous completion definitions.</returns>
     public IReadOnlyList<VbaSourceDefinition> GetCompletionDefinitions(string uri, VbaPosition position)
+        => GetCompletionDefinitions(uri, position, definitionFilter: null);
+
+    internal IReadOnlyList<VbaSourceDefinition> GetCompletionDefinitions(
+        string uri,
+        VbaPosition position,
+        Func<VbaSourceDefinition, bool>? definitionFilter)
     {
         var currentDocument = candidates.FindDocument(uri);
         if (currentDocument is null)
@@ -62,7 +68,9 @@ public sealed class VbaNameResolutionService
             return [];
         }
 
-        return ResolveCompletionCandidates(GetUnqualifiedCandidates(currentDocument, position, includeLocals: true))
+        return ResolveCompletionCandidates(
+                GetUnqualifiedCandidates(currentDocument, position, includeLocals: true),
+                definitionFilter)
             .OrderBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
             .ToArray();
     }
@@ -173,6 +181,49 @@ public sealed class VbaNameResolutionService
         VbaPosition position,
         string? qualifier,
         string identifier)
+        => ResolvePreferredCore(
+            uri,
+            position,
+            qualifier,
+            identifier,
+            definition => !resolutionPolicy.IsTypeDefinition(definition),
+            fallbackToUnfiltered: true);
+
+    internal VbaSourceDefinition? ResolveValue(
+        string uri,
+        VbaPosition position,
+        string? qualifier,
+        string identifier)
+        => ResolvePreferredCore(
+            uri,
+            position,
+            qualifier,
+            identifier,
+            definition => definition.Identity.Origin != VbaDefinitionOrigin.ProjectReference
+                || !resolutionPolicy.IsTypeDefinition(definition),
+            fallbackToUnfiltered: false);
+
+    internal VbaSourceDefinition? ResolvePreferred(
+        string uri,
+        VbaPosition position,
+        string? qualifier,
+        string identifier,
+        Func<VbaSourceDefinition, bool> preferredDefinition)
+        => ResolvePreferredCore(
+            uri,
+            position,
+            qualifier,
+            identifier,
+            preferredDefinition,
+            fallbackToUnfiltered: true);
+
+    private VbaSourceDefinition? ResolvePreferredCore(
+        string uri,
+        VbaPosition position,
+        string? qualifier,
+        string identifier,
+        Func<VbaSourceDefinition, bool> preferredDefinition,
+        bool fallbackToUnfiltered)
     {
         var currentDocument = candidates.FindDocument(uri);
         if (currentDocument is null)
@@ -184,7 +235,10 @@ public sealed class VbaNameResolutionService
             ? GetUnqualifiedCandidates(currentDocument, position, includeLocals: true, identifier)
             : GetQualifiedCandidates(currentDocument, qualifier)
                 .Where(candidate => SameName(candidate.Definition.Name, identifier));
-        return ResolveRankedCandidates(rankedCandidates);
+        return ResolveBestRankCandidates(
+            rankedCandidates,
+            preferredDefinition,
+            fallbackToUnfiltered);
     }
 
     private IEnumerable<VbaRankedDefinition> GetUnqualifiedCandidates(
@@ -299,11 +353,18 @@ public sealed class VbaNameResolutionService
         return definitions;
     }
 
-    private IReadOnlyList<VbaSourceDefinition> ResolveCompletionCandidates(IEnumerable<VbaRankedDefinition> candidates)
+    private IReadOnlyList<VbaSourceDefinition> ResolveCompletionCandidates(
+        IEnumerable<VbaRankedDefinition> candidates,
+        Func<VbaSourceDefinition, bool>? definitionFilter = null)
     {
         return candidates
             .GroupBy(candidate => candidate.Definition.Name, StringComparer.OrdinalIgnoreCase)
-            .Select(group => ResolveRankedCandidates(group))
+            .Select(group => definitionFilter is null
+                ? ResolveRankedCandidates(group)
+                : ResolveBestRankCandidates(
+                    group,
+                    definitionFilter,
+                    fallbackToUnfiltered: false))
             .Where(definition => definition is not null)
             .Select(definition => definition!)
             .ToArray();
@@ -311,6 +372,29 @@ public sealed class VbaNameResolutionService
 
     private VbaSourceDefinition? ResolveRankedCandidates(IEnumerable<VbaRankedDefinition> candidates)
         => resolutionPolicy.ResolveRankedCandidates(candidates, this.candidates.ReferenceSelection);
+
+    private VbaSourceDefinition? ResolveBestRankCandidates(
+        IEnumerable<VbaRankedDefinition> candidates,
+        Func<VbaSourceDefinition, bool> definitionFilter,
+        bool fallbackToUnfiltered)
+    {
+        var rankedCandidates = candidates.ToArray();
+        if (rankedCandidates.Length == 0)
+        {
+            return null;
+        }
+
+        var bestRank = rankedCandidates.Min(candidate => candidate.Rank);
+        var bestCandidates = rankedCandidates
+            .Where(candidate => candidate.Rank == bestRank)
+            .ToArray();
+        var filteredCandidates = bestCandidates
+            .Where(candidate => definitionFilter(candidate.Definition))
+            .ToArray();
+        return ResolveRankedCandidates(filteredCandidates.Length > 0 || !fallbackToUnfiltered
+            ? filteredCandidates
+            : bestCandidates);
+    }
 
     internal VbaSourceDefinition? ResolveTypeDefinition(
         VbaSourceDocument currentDocument,

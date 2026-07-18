@@ -155,16 +155,17 @@ internal sealed class VbaSemanticResolution
                 positionSyntax.CompletionReplacementRange);
         }
 
+        var callableContext = GetCurrentCallableCompletionContext(syntaxTree, line, character);
         var visibleDefinitions = nameResolution.GetCompletionDefinitions(
             uri,
-            new VbaPosition(line, character));
+            new VbaPosition(line, character),
+            definition => !nameResolution.IsTypeDefinition(definition));
         var sourceQualifiers = nameResolution.GetCompletionSourceQualifiers(
             uri,
             new VbaPosition(line, character));
         var referenceQualifiers = nameResolution.GetCompletionReferenceQualifiers(
             uri,
             new VbaPosition(line, character));
-        var callableContext = GetCurrentCallableCompletionContext(syntaxTree, line, character);
         var typeQualifier = positionSyntax.TypeReference?.Qualifier?.Name;
         IEnumerable<VbaCompletionCandidate> candidates = expectation switch
         {
@@ -293,7 +294,18 @@ internal sealed class VbaSemanticResolution
         }
 
         var qualifier = GetImmediateQualifier(positionSyntax.MemberAccess, identifier);
-        return nameResolution.Resolve(uri, new VbaPosition(line, character), qualifier, identifier.Name);
+        return qualifier is null
+            ? nameResolution.ResolveValue(
+                uri,
+                new VbaPosition(line, character),
+                qualifier: null,
+                identifier.Name)
+            : nameResolution.ResolvePreferred(
+                uri,
+                new VbaPosition(line, character),
+                qualifier,
+                identifier.Name,
+                definition => !nameResolution.IsTypeDefinition(definition));
     }
 
     /// <summary>
@@ -375,7 +387,7 @@ internal sealed class VbaSemanticResolution
             return null;
         }
 
-        var definition = nameResolution.Resolve(
+        var definition = nameResolution.ResolveValue(
             document.Uri,
             new VbaPosition(lineIndex, occurrence.Start),
             qualifier: null,
@@ -626,7 +638,16 @@ internal sealed class VbaSemanticResolution
         IEnumerable<VbaSourceDefinition> definitions,
         VbaCompletionExpectation expectation,
         VbaCallableCompletionContext callableContext)
-        => definitions.Where(definition => expectation switch
+        => definitions.Where(definition => IsAllowedDefinition(
+            definition,
+            expectation,
+            callableContext));
+
+    private static bool IsAllowedDefinition(
+        VbaSourceDefinition definition,
+        VbaCompletionExpectation expectation,
+        VbaCallableCompletionContext callableContext)
+        => expectation switch
         {
             VbaCompletionExpectation.ExpressionValue
                 or VbaCompletionExpectation.CallArgument
@@ -640,7 +661,7 @@ internal sealed class VbaSemanticResolution
             VbaCompletionExpectation.CallableName =>
                 IsCallableDefinition(definition),
             _ => false
-        });
+        };
 
     private static bool IsReadableDefinition(VbaSourceDefinition definition)
         => definition.Kind switch
@@ -1015,7 +1036,7 @@ internal sealed class VbaSemanticResolution
             return false;
         }
 
-        var definition = nameResolution.Resolve(
+        var definition = nameResolution.ResolveValue(
             document.Uri,
             new VbaPosition(lineIndex, occurrence.Start),
             qualifier: null,
@@ -1035,11 +1056,12 @@ internal sealed class VbaSemanticResolution
         if (access?.Target is not null && access.TargetSegmentIndex > 0)
         {
             var qualifier = access.Segments[access.TargetSegmentIndex - 1];
-            var definition = nameResolution.Resolve(
+            var definition = nameResolution.ResolvePreferred(
                 uri,
                 new VbaPosition(lineIndex, 0),
                 qualifier.Name,
-                occurrence.Name);
+                occurrence.Name,
+                candidate => !nameResolution.IsTypeDefinition(candidate));
             canonicalName = definition?.Name;
             return canonicalName is not null;
         }
@@ -1049,11 +1071,12 @@ internal sealed class VbaSemanticResolution
             && access.Segments.Count > 1)
         {
             var member = access.Segments[1];
-            var definition = nameResolution.Resolve(
+            var definition = nameResolution.ResolvePreferred(
                 uri,
                 new VbaPosition(lineIndex, 0),
                 occurrence.Name,
-                member.Name);
+                member.Name,
+                candidate => !nameResolution.IsTypeDefinition(candidate));
             canonicalName = definition is null
                 ? null
                 : nameResolution.GetCanonicalQualifierName(definition, occurrence.Name);

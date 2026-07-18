@@ -376,11 +376,17 @@ internal sealed class VbaCallSiteResolution
                     .Take(callSite.Callee.TargetSegmentIndex)
                     .Select(segment => segment.Name))
             : null;
-        definition = nameResolution.Resolve(
-            currentDocument.Uri,
-            new VbaPosition(line, character),
-            qualifier,
-            target.Name);
+        definition = qualifier is null
+            ? nameResolution.ResolveValue(
+                currentDocument.Uri,
+                new VbaPosition(line, character),
+                qualifier: null,
+                target.Name)
+            : nameResolution.Resolve(
+                currentDocument.Uri,
+                new VbaPosition(line, character),
+                qualifier,
+                target.Name);
         return true;
     }
 
