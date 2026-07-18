@@ -312,6 +312,7 @@ public sealed class VbaSemanticResolutionTests
             "    value = ActiveCell",
             "    value = ActiveWorkbook",
             "    value = ThisWorkbook",
+            "    value = ThisWorkbook.",
             "End Sub"
         ]);
         var thisWorkbookText = string.Join('\n', [
@@ -342,6 +343,13 @@ public sealed class VbaSemanticResolutionTests
             workerUri,
             6,
             "    value = ".Length);
+        var thisWorkbookMembers = index.GetCompletionResult(
+                workerUri,
+                7,
+                "    value = ThisWorkbook.".Length)
+            .Candidates
+            .Select(candidate => candidate.Label)
+            .ToArray();
 
         Assert.Equal(VbaDefinitionOrigin.Source, shadowingCandidate.Definition?.Identity.Origin);
         Assert.Equal(VbaDefinitionOrigin.Source, shadowingDefinition?.Identity.Origin);
@@ -350,6 +358,250 @@ public sealed class VbaSemanticResolutionTests
         Assert.Null(index.PrepareRename(workerUri, 5, "    value = ".Length));
         Assert.Equal(VbaDefinitionOrigin.ProjectReference, thisWorkbookDefinition?.Identity.Origin);
         Assert.Equal("ThisWorkbook As Workbook", thisWorkbookDefinition?.DeclarationLabel);
+        Assert.Contains("Name", thisWorkbookMembers);
+        Assert.DoesNotContain("SourceOnly", thisWorkbookMembers);
+    }
+
+    [Fact]
+    public void TypedExcelHostGlobalsResolveDeclaredCatalogMemberChains()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    value = ActiveCell.",
+            "    value = ActiveWorkbook.",
+            "    value = ThisWorkbook.",
+            "    value = Application.ActiveWorkbook.",
+            "    value = Application _",
+            "        .ActiveWorkbook.",
+            "    With Application.ActiveWorkbook",
+            "        value = .",
+            "    End With",
+            "End Sub"
+        ]);
+        var index = BuildIndex(uri, text);
+
+        var activeCellMembers = index.GetCompletionResult(
+                uri,
+                2,
+                "    value = ActiveCell.".Length)
+            .Candidates
+            .Select(candidate => candidate.Label)
+            .ToArray();
+        var activeWorkbookMembers = index.GetCompletionResult(
+                uri,
+                3,
+                "    value = ActiveWorkbook.".Length)
+            .Candidates
+            .Select(candidate => candidate.Label)
+            .ToArray();
+        var thisWorkbookMembers = index.GetCompletionResult(
+                uri,
+                4,
+                "    value = ThisWorkbook.".Length)
+            .Candidates
+            .Select(candidate => candidate.Label)
+            .ToArray();
+        var applicationWorkbookMembers = index.GetCompletionResult(
+                uri,
+                5,
+                "    value = Application.ActiveWorkbook.".Length)
+            .Candidates
+            .Select(candidate => candidate.Label)
+            .ToArray();
+        var continuedApplicationWorkbookMembers = index.GetCompletionResult(
+                uri,
+                7,
+                "        .ActiveWorkbook.".Length)
+            .Candidates
+            .Select(candidate => candidate.Label)
+            .ToArray();
+        var withWorkbookMembers = index.GetCompletionResult(
+                uri,
+                9,
+                "        value = .".Length)
+            .Candidates
+            .Select(candidate => candidate.Label)
+            .ToArray();
+
+        Assert.Contains("Row", activeCellMembers);
+        Assert.Contains("Name", activeWorkbookMembers);
+        Assert.Contains("Name", thisWorkbookMembers);
+        Assert.Contains("Name", applicationWorkbookMembers);
+        Assert.Contains("Name", continuedApplicationWorkbookMembers);
+        Assert.Contains("Name", withWorkbookMembers);
+    }
+
+    [Fact]
+    public void UntypedOrUnresolvableHostGlobalsFailClosedWithoutSourceDiagnostics()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        const string activeSheetUri = "file:///C:/work/ActiveSheet.bas";
+        const string referenceName = "Microsoft Excel 16.0 Object Library";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    value = ActiveCell.",
+            "    value = ActiveSheet.",
+            "End Sub"
+        ]);
+        var activeSheetModuleText = string.Join('\n', [
+            "Attribute VB_Name = \"ActiveSheet\"",
+            "Public Function SourceOnly() As String",
+            "End Function"
+        ]);
+        var selection = VbaProjectReferenceSelection.Create(
+            ProjectDocument.ExcelKind,
+            [new VbaProjectReference(referenceName)]);
+        var unavailableTypeCatalog = new VbaProjectReferenceCatalog(
+            referenceName,
+            ["Excel"],
+            [
+                new VbaProjectReferenceDefinition(
+                    referenceName,
+                    "ActiveCell",
+                    VbaSourceDefinitionKind.Property,
+                    ParentTypeName: "Application",
+                    TypeReference: new VbaTypeReference("Range", "Excel"),
+                    PropertyAccess: VbaPropertyAccess.Readable,
+                    GlobalExposure: ReferenceDefinitionGlobalExposure.MainHostGlobal)
+            ]);
+        var ambiguousTypeCatalog = new VbaProjectReferenceCatalog(
+            referenceName,
+            ["Excel"],
+            [
+                new VbaProjectReferenceDefinition(
+                    referenceName,
+                    "ActiveCell",
+                    VbaSourceDefinitionKind.Property,
+                    ParentTypeName: "Application",
+                    TypeReference: new VbaTypeReference("Range", "Excel"),
+                    PropertyAccess: VbaPropertyAccess.Readable,
+                    GlobalExposure: ReferenceDefinitionGlobalExposure.MainHostGlobal),
+                new VbaProjectReferenceDefinition(
+                    referenceName,
+                    "Range",
+                    VbaSourceDefinitionKind.Class),
+                new VbaProjectReferenceDefinition(
+                    referenceName,
+                    "Range",
+                    VbaSourceDefinitionKind.Class,
+                    "Ambiguous duplicate range metadata."),
+                new VbaProjectReferenceDefinition(
+                    referenceName,
+                    "Row",
+                    VbaSourceDefinitionKind.Property,
+                    ParentTypeName: "Range",
+                    PropertyAccess: VbaPropertyAccess.Readable)
+            ]);
+        var unavailableTypeIndex = VbaSourceIndex.Build(
+            new Dictionary<string, string> { [uri] = text },
+            selection,
+            VbaProjectReferenceCatalogSet.Empty.WithCatalog(unavailableTypeCatalog));
+        var ambiguousTypeIndex = VbaSourceIndex.Build(
+            new Dictionary<string, string> { [uri] = text },
+            selection,
+            VbaProjectReferenceCatalogSet.Empty.WithCatalog(ambiguousTypeCatalog));
+        var bundledIndex = BuildIndex(new Dictionary<string, string>
+        {
+            [uri] = text,
+            [activeSheetUri] = activeSheetModuleText
+        });
+
+        Assert.Empty(unavailableTypeIndex.GetCompletionResult(
+            uri,
+            2,
+            "    value = ActiveCell.".Length).Candidates);
+        Assert.Empty(ambiguousTypeIndex.GetCompletionResult(
+            uri,
+            2,
+            "    value = ActiveCell.".Length).Candidates);
+        Assert.Empty(bundledIndex.GetCompletionResult(
+            uri,
+            3,
+            "    value = ActiveSheet.".Length).Candidates);
+        Assert.Empty(VbaDocumentDiagnostics.Collect(text, "Worker.bas"));
+    }
+
+    [Fact]
+    public void GeneratedCatalogMemberTypesStayBoundToTheOwningReference()
+    {
+        const string workerUri = "file:///C:/work/Worker.bas";
+        const string workbookUri = "file:///C:/work/Workbook.cls";
+        const string excelModuleUri = "file:///C:/work/Excel.bas";
+        const string referenceName = "Microsoft Excel 16.0 Object Library";
+        var workerText = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    value = ActiveWorkbook.",
+            "End Sub"
+        ]);
+        var sourceWorkbookText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Workbook\"",
+            "Public Function SourceOnly() As String",
+            "End Function"
+        ]);
+        var sourceExcelModuleText = string.Join('\n', [
+            "Attribute VB_Name = \"Excel\"",
+            "Public Type Workbook",
+            "    SourceOnly As String",
+            "End Type"
+        ]);
+        var catalog = TypeLibReferenceCatalogBuilder.Build(
+            referenceName,
+            new TypeLibCatalogMetadata(
+                "Excel",
+                [
+                    new TypeLibCatalogType(
+                        "Application",
+                        VbaSourceDefinitionKind.Class,
+                        null,
+                        [
+                            new TypeLibCatalogMember(
+                                "ActiveWorkbook",
+                                VbaSourceDefinitionKind.Property,
+                                null,
+                                TypeReference: new VbaTypeReference("Workbook"),
+                                PropertyAccess: VbaPropertyAccess.Readable)
+                        ],
+                        IsApplicationObject: true),
+                    new TypeLibCatalogType(
+                        "Workbook",
+                        VbaSourceDefinitionKind.Class,
+                        null,
+                        [
+                            new TypeLibCatalogMember(
+                                "Name",
+                                VbaSourceDefinitionKind.Property,
+                                null,
+                                TypeReference: new VbaTypeReference("String"),
+                                PropertyAccess: VbaPropertyAccess.Readable)
+                        ])
+                ]));
+        var index = VbaSourceIndex.Build(
+            new Dictionary<string, string>
+            {
+                [workerUri] = workerText,
+                [workbookUri] = sourceWorkbookText,
+                [excelModuleUri] = sourceExcelModuleText
+            },
+            VbaProjectReferenceSelection.Create(
+                ProjectDocument.ExcelKind,
+                [new VbaProjectReference(referenceName)]),
+            VbaProjectReferenceCatalogSet.Empty.WithCatalog(catalog));
+
+        var members = index.GetCompletionResult(
+                workerUri,
+                2,
+                "    value = ActiveWorkbook.".Length)
+            .Candidates
+            .Select(candidate => candidate.Label)
+            .ToArray();
+
+        Assert.Contains("Name", members);
+        Assert.DoesNotContain("SourceOnly", members);
     }
 
     [Fact]

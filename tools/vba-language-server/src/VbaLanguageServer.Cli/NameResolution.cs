@@ -414,6 +414,22 @@ public sealed class VbaNameResolutionService
                 .Select(candidate => candidate.Definition));
     }
 
+    internal VbaSourceDefinition? ResolveProjectReferenceTypeDefinition(
+        string owningReferenceName,
+        VbaTypeReference typeReference)
+    {
+        var definitions = string.IsNullOrWhiteSpace(typeReference.Qualifier)
+            ? candidates.GetReferenceCandidates(typeReference.Name)
+                .Where(candidate => SameName(candidate.ModuleName, owningReferenceName))
+                .Select(candidate => candidate.Definition)
+            : candidates.GetQualifiedReferenceDefinitions(
+                typeReference.Qualifier,
+                typeReference.Name);
+        return ResolveReferenceCandidates(definitions
+            .Where(resolutionPolicy.IsTypeDefinition)
+            .Where(definition => definition.ParentTypeName is null));
+    }
+
     internal IReadOnlyList<VbaSourceDefinition> GetVisibleTypeDefinitions(
         VbaSourceDocument currentDocument,
         string? qualifier = null)

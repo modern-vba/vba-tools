@@ -171,6 +171,14 @@ public sealed class VbaProjectReferenceCatalogSet
                         "Represents a cell or range of cells."),
                     new VbaProjectReferenceDefinition(
                         "Microsoft Excel 16.0 Object Library",
+                        "Row",
+                        VbaSourceDefinitionKind.Property,
+                        "Returns the number of the first row in the range.",
+                        ParentTypeName: "Range",
+                        TypeReference: new VbaTypeReference("Long"),
+                        PropertyAccess: VbaPropertyAccess.Readable),
+                    new VbaProjectReferenceDefinition(
+                        "Microsoft Excel 16.0 Object Library",
                         "ActiveCell",
                         VbaSourceDefinitionKind.Property,
                         "Returns the active cell.",
@@ -276,6 +284,7 @@ public sealed class VbaProjectReferenceCatalogSet
                         VbaSourceDefinitionKind.Property,
                         "Returns the workbook name.",
                         ParentTypeName: "Workbook",
+                        TypeReference: new VbaTypeReference("String"),
                         PropertyAccess: VbaPropertyAccess.Readable),
                     new VbaProjectReferenceDefinition(
                         "Microsoft Excel 16.0 Object Library",

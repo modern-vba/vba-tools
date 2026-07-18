@@ -464,6 +464,20 @@ internal sealed class VbaSemanticResolution
         }
 
         var qualifier = access.ReceiverSegments[0].Name;
+        var receiverDefinition = nameResolution.ResolveValue(
+            currentDocument.Uri,
+            new VbaPosition(line, character),
+            qualifier: null,
+            qualifier);
+        if (receiverDefinition is
+            {
+                Identity.Origin: VbaDefinitionOrigin.ProjectReference,
+                ReferenceGlobalExposure: ReferenceDefinitionGlobalExposure.MainHostGlobal
+            })
+        {
+            return false;
+        }
+
         definitions = nameResolution.GetSourceQualifiedCompletionDefinitions(
             currentDocument,
             new VbaPosition(line, character),

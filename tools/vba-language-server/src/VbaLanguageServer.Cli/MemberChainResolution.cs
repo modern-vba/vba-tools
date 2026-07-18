@@ -116,8 +116,11 @@ internal sealed class VbaMemberChainResolution
         return new VbaMemberChainResolutionResult(
             receiverType,
             member,
-            member?.TypeReference is not null
-                && typeResolution.TryResolveTypeReference(currentDocument, member.TypeReference, out var resultType)
+            member is not null
+                && typeResolution.TryResolveDefinitionTypeReference(
+                    currentDocument,
+                    member,
+                    out var resultType)
                     ? resultType
                     : null,
             member is null

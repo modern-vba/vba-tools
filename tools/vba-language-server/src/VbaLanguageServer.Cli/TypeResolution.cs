@@ -73,7 +73,11 @@ internal sealed class VbaTypeResolution
             foreach (var memberName in parts)
             {
                 var member = ResolveMember(currentDocument, resolvedType, memberName);
-                if (member?.TypeReference is null || !TryResolveTypeReference(currentDocument, member.TypeReference, out resolvedType))
+                if (member is null
+                    || !TryResolveDefinitionTypeReference(
+                        currentDocument,
+                        member,
+                        out resolvedType))
                 {
                     return false;
                 }
@@ -87,7 +91,11 @@ internal sealed class VbaTypeResolution
             for (var index = 2; index < parts.Count; index++)
             {
                 var member = ResolveMember(currentDocument, resolvedType, parts[index]);
-                if (member?.TypeReference is null || !TryResolveTypeReference(currentDocument, member.TypeReference, out resolvedType))
+                if (member is null
+                    || !TryResolveDefinitionTypeReference(
+                        currentDocument,
+                        member,
+                        out resolvedType))
                 {
                     return false;
                 }
@@ -103,7 +111,10 @@ internal sealed class VbaTypeResolution
             parts[0]);
         if (firstDefinition?.TypeReference is not null)
         {
-            if (!TryResolveTypeReference(currentDocument, firstDefinition.TypeReference, out resolvedType))
+            if (!TryResolveDefinitionTypeReference(
+                currentDocument,
+                firstDefinition,
+                out resolvedType))
             {
                 return false;
             }
@@ -120,7 +131,11 @@ internal sealed class VbaTypeResolution
         for (var index = 1; index < parts.Count; index++)
         {
             var member = ResolveMember(currentDocument, resolvedType, parts[index]);
-            if (member?.TypeReference is null || !TryResolveTypeReference(currentDocument, member.TypeReference, out resolvedType))
+            if (member is null
+                || !TryResolveDefinitionTypeReference(
+                    currentDocument,
+                    member,
+                    out resolvedType))
             {
                 return false;
             }
@@ -142,6 +157,41 @@ internal sealed class VbaTypeResolution
         }
 
         resolvedType = ToResolvedType(definition);
+        return true;
+    }
+
+    public bool TryResolveDefinitionTypeReference(
+        VbaSourceDocument currentDocument,
+        VbaSourceDefinition definition,
+        out VbaResolvedType resolvedType)
+    {
+        resolvedType = default!;
+        if (definition.TypeReference is null)
+        {
+            return false;
+        }
+
+        VbaSourceDefinition? typeDefinition;
+        if (definition.Identity.Origin == VbaDefinitionOrigin.ProjectReference)
+        {
+            typeDefinition = nameResolution.ResolveProjectReferenceTypeDefinition(
+                definition.Identity.ReferenceName ?? definition.ModuleName,
+                definition.TypeReference);
+        }
+        else if (!TryResolveTypeReferenceDefinition(
+                     currentDocument,
+                     definition.TypeReference,
+                     out typeDefinition))
+        {
+            return false;
+        }
+
+        if (typeDefinition is null)
+        {
+            return false;
+        }
+
+        resolvedType = ToResolvedType(typeDefinition);
         return true;
     }
 
