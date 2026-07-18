@@ -311,6 +311,7 @@ public readonly struct VbaDefinitionIdentity : IEquatable<VbaDefinitionIdentity>
 /// <param name="IsCreatable">Whether the type can be used as the target of a New expression.</param>
 /// <param name="PropertyAccessorKind">The source accessor kind, or null for a logical or reference property.</param>
 /// <param name="IsArray">Whether the source declaration carries a VBA array marker.</param>
+/// <param name="ReferenceGlobalExposure">The explicit public root exposure for a reference definition.</param>
 public sealed record VbaSourceDefinition(
     VbaDefinitionIdentity Identity,
     VbaDefinitionLocation Location,
@@ -329,7 +330,8 @@ public sealed record VbaSourceDefinition(
     VbaPropertyAccess PropertyAccess = VbaPropertyAccess.Unknown,
     bool IsCreatable = false,
     VbaPropertyAccessorKind? PropertyAccessorKind = null,
-    bool IsArray = false)
+    bool IsArray = false,
+    ReferenceDefinitionGlobalExposure ReferenceGlobalExposure = ReferenceDefinitionGlobalExposure.None)
 {
     /// <summary>
     /// Gets the editor-facing definition URI.

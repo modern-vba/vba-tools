@@ -123,7 +123,9 @@ public sealed class VbaNameResolutionService
         string qualifier)
         => HasSourceQualifierShadow(currentDocument, position, qualifier)
             ? []
-            : candidates.GetQualifiedReferenceDefinitions(qualifier);
+            : candidates.GetQualifiedReferenceDefinitions(qualifier)
+                .Where(IsQualifiedReferenceRootDefinition)
+                .ToArray();
 
     /// <summary>
     /// Gets definitions exposed through a source module qualifier.
@@ -219,7 +221,8 @@ public sealed class VbaNameResolutionService
 
         if (candidates.HasReferenceSelection)
         {
-            foreach (var candidate in candidates.GetReferenceCandidates(requestedName))
+            foreach (var candidate in candidates.GetReferenceCandidates(requestedName)
+                .Where(candidate => IsUnqualifiedReferenceRootDefinition(candidate.Definition)))
             {
                 yield return new VbaRankedDefinition(candidate.Definition, VbaResolutionPolicy.ReferenceRank);
             }
@@ -240,7 +243,8 @@ public sealed class VbaNameResolutionService
 
         if (candidates.HasReferenceSelection)
         {
-            foreach (var definition in candidates.GetQualifiedReferenceDefinitions(qualifier))
+            foreach (var definition in candidates.GetQualifiedReferenceDefinitions(qualifier)
+                .Where(IsQualifiedReferenceRootDefinition))
             {
                 yield return new VbaRankedDefinition(definition, VbaResolutionPolicy.ReferenceRank);
             }
@@ -446,6 +450,26 @@ public sealed class VbaNameResolutionService
 
     private VbaSourceDefinition? ResolveReferenceCandidates(IEnumerable<VbaSourceDefinition> definitions)
         => resolutionPolicy.ResolveReferenceCandidates(definitions, candidates.ReferenceSelection);
+
+    private bool IsUnqualifiedReferenceRootDefinition(VbaSourceDefinition definition)
+    {
+        return definition.ReferenceGlobalExposure switch
+        {
+            ReferenceDefinitionGlobalExposure.LibraryGlobal => true,
+            ReferenceDefinitionGlobalExposure.MainHostGlobal =>
+                candidates.ReferenceSelection?.MainVbaProjectReference is not null
+                && SameName(
+                    candidates.ReferenceSelection.MainVbaProjectReference.Name,
+                    definition.ModuleName),
+            _ => definition.ParentTypeName is null
+                && resolutionPolicy.IsTypeDefinition(definition)
+        };
+    }
+
+    private bool IsQualifiedReferenceRootDefinition(VbaSourceDefinition definition)
+        => definition.ReferenceGlobalExposure != ReferenceDefinitionGlobalExposure.None
+            || (definition.ParentTypeName is null
+                && resolutionPolicy.IsTypeDefinition(definition));
 
     private static VbaSourceDefinition? ResolveMemberCandidateGroup(
         IEnumerable<VbaSourceDefinition> definitions)

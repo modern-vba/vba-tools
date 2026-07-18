@@ -4,6 +4,27 @@ using VbaLanguageServer.ProjectModel;
 namespace VbaLanguageServer.SourceModel;
 
 /// <summary>
+/// Identifies a reference definition's explicit global root exposure.
+/// </summary>
+public enum ReferenceDefinitionGlobalExposure
+{
+    /// <summary>
+    /// The definition has no global-value exposure. Public root types remain addressable as types.
+    /// </summary>
+    None,
+
+    /// <summary>
+    /// The definition is a public library global whenever its owning reference is active.
+    /// </summary>
+    LibraryGlobal,
+
+    /// <summary>
+    /// The definition is a host global only when its owning reference is the active main reference.
+    /// </summary>
+    MainHostGlobal
+}
+
+/// <summary>
 /// Represents one definition supplied by an active VBA project reference catalog.
 /// </summary>
 /// <param name="ReferenceName">The manifest reference name that owns the definition.</param>
@@ -15,6 +36,7 @@ namespace VbaLanguageServer.SourceModel;
 /// <param name="TypeReference">The result or member type reference supplied by the catalog.</param>
 /// <param name="PropertyAccess">The supported property operations, or Unknown when unavailable.</param>
 /// <param name="IsCreatable">Whether the type can be used as the target of a New expression.</param>
+/// <param name="GlobalExposure">The definition's explicit public root exposure.</param>
 public sealed record VbaProjectReferenceDefinition(
     string ReferenceName,
     string Name,
@@ -24,7 +46,8 @@ public sealed record VbaProjectReferenceDefinition(
     string? ParentTypeName = null,
     VbaTypeReference? TypeReference = null,
     VbaPropertyAccess PropertyAccess = VbaPropertyAccess.Unknown,
-    bool IsCreatable = false);
+    bool IsCreatable = false,
+    ReferenceDefinitionGlobalExposure GlobalExposure = ReferenceDefinitionGlobalExposure.None);
 
 /// <summary>
 /// Contains reference-catalog definitions and qualifier aliases for one VBA project reference.
@@ -97,14 +120,16 @@ public sealed class VbaProjectReferenceCatalogSet
                             ],
                             "Displays a message in a dialog box.",
                             CallableKind: VbaCallableKind.Function,
-                            SupportsNamedArguments: true)),
+                            SupportsNamedArguments: true),
+                        GlobalExposure: ReferenceDefinitionGlobalExposure.LibraryGlobal),
                     new VbaProjectReferenceDefinition(
                         StandardLibraryReferenceName,
                         "vbCrLf",
                         VbaSourceDefinitionKind.Constant,
                         "Carriage return-linefeed character combination.",
                         ParentTypeName: "Constants",
-                        TypeReference: new VbaTypeReference("String"))
+                        TypeReference: new VbaTypeReference("String"),
+                        GlobalExposure: ReferenceDefinitionGlobalExposure.LibraryGlobal)
                 ]),
             new VbaProjectReferenceCatalog(
                 "Microsoft Excel 16.0 Object Library",
@@ -118,6 +143,19 @@ public sealed class VbaProjectReferenceCatalogSet
                         IsCreatable: true),
                     new VbaProjectReferenceDefinition(
                         "Microsoft Excel 16.0 Object Library",
+                        "XlHAlign",
+                        VbaSourceDefinitionKind.Enum,
+                        "Specifies horizontal alignment."),
+                    new VbaProjectReferenceDefinition(
+                        "Microsoft Excel 16.0 Object Library",
+                        "xlCenter",
+                        VbaSourceDefinitionKind.EnumMember,
+                        "Centers content horizontally.",
+                        ParentTypeName: "XlHAlign",
+                        TypeReference: new VbaTypeReference("Long"),
+                        GlobalExposure: ReferenceDefinitionGlobalExposure.LibraryGlobal),
+                    new VbaProjectReferenceDefinition(
+                        "Microsoft Excel 16.0 Object Library",
                         "Workbooks",
                         VbaSourceDefinitionKind.Class,
                         "Represents the collection of open Microsoft Excel workbooks."),
@@ -128,7 +166,8 @@ public sealed class VbaProjectReferenceCatalogSet
                         "Returns the open Microsoft Excel workbooks.",
                         ParentTypeName: "Application",
                         TypeReference: new VbaTypeReference("Workbooks", "Excel"),
-                        PropertyAccess: VbaPropertyAccess.Readable),
+                        PropertyAccess: VbaPropertyAccess.Readable,
+                        GlobalExposure: ReferenceDefinitionGlobalExposure.MainHostGlobal),
                     new VbaProjectReferenceDefinition(
                         "Microsoft Excel 16.0 Object Library",
                         "Run",
@@ -146,7 +185,8 @@ public sealed class VbaProjectReferenceCatalogSet
                             "Runs a macro or calls a function.",
                             CallableKind: VbaCallableKind.Function,
                             SupportsNamedArguments: true),
-                        ParentTypeName: "Application"),
+                        ParentTypeName: "Application",
+                        GlobalExposure: ReferenceDefinitionGlobalExposure.MainHostGlobal),
                     new VbaProjectReferenceDefinition(
                         "Microsoft Excel 16.0 Object Library",
                         "Workbook",
@@ -187,7 +227,8 @@ public sealed class VbaProjectReferenceCatalogSet
                             "Occurs when a workbook is opened.",
                             CallableKind: VbaCallableKind.Event,
                             SupportsNamedArguments: true),
-                        ParentTypeName: "Application")
+                        ParentTypeName: "Application",
+                        GlobalExposure: ReferenceDefinitionGlobalExposure.MainHostGlobal)
                 ]),
             new VbaProjectReferenceCatalog(
                 "Microsoft Scripting Runtime",
@@ -420,7 +461,8 @@ public sealed class VbaProjectReferenceCatalogSet
             TypeReference: definition.TypeReference,
             DeclarationLabel: CreateDeclarationLabel(definition, signature),
             PropertyAccess: definition.PropertyAccess,
-            IsCreatable: definition.IsCreatable);
+            IsCreatable: definition.IsCreatable,
+            ReferenceGlobalExposure: definition.GlobalExposure);
     }
 
     private static VbaCallableSignature? CreateSourceSignature(VbaProjectReferenceDefinition definition)

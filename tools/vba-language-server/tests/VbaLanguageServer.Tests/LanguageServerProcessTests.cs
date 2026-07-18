@@ -1646,7 +1646,8 @@ public sealed class LanguageServerProcessTests
                                 "GeneratedValue",
                                 VbaSourceDefinitionKind.Property,
                                 "Returns a generated value.",
-                                TypeReference: new VbaTypeReference("Variant")),
+                                TypeReference: new VbaTypeReference("Variant"),
+                                GlobalExposure: ReferenceDefinitionGlobalExposure.LibraryGlobal),
                             new VbaProjectReferenceDefinition(
                                 "Generated Library",
                                 "RichMethod",

@@ -306,6 +306,9 @@ public sealed class VbaNameResolutionServiceTests
             kind,
             VbaSourceDefinitionVisibility.Public,
             referenceName,
-            ParentTypeName: parentTypeName);
+            ParentTypeName: parentTypeName,
+            ReferenceGlobalExposure: parentTypeName is null
+                ? ReferenceDefinitionGlobalExposure.LibraryGlobal
+                : ReferenceDefinitionGlobalExposure.None);
     }
 }

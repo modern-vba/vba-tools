@@ -1,3 +1,4 @@
+using VbaLanguageServer.Diagnostics;
 using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.SourceModel;
 using Xunit;
@@ -124,6 +125,44 @@ public sealed class VbaSemanticResolutionTests
     }
 
     [Fact]
+    public void BundledExcelEnumGlobalsRequireTheOwningReference()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        const string referenceName = "Microsoft Excel 16.0 Object Library";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    value = ",
+            "    value = xlCenter",
+            "End Sub"
+        ]);
+        var catalogs = VbaProjectReferenceCatalogSet.CreateBundled();
+        var excelIndex = VbaSourceIndex.Build(
+            new Dictionary<string, string> { [uri] = text },
+            VbaProjectReferenceSelection.Create(
+                ProjectDocument.ExcelKind,
+                [new VbaProjectReference(referenceName)]),
+            catalogs);
+        var adHocIndex = VbaSourceIndex.Build(
+            new Dictionary<string, string> { [uri] = text },
+            referenceSelection: null,
+            catalogs);
+
+        var completion = excelIndex.GetCompletionResult(uri, 2, "    value = ".Length);
+        var candidate = Assert.Single(completion.Candidates, candidate => candidate.Label == "xlCenter");
+        var resolved = excelIndex.ResolveSourceDefinition(uri, 3, "    value = ".Length);
+
+        Assert.Equal(VbaSourceDefinitionKind.EnumMember, candidate.Definition?.Kind);
+        Assert.Equal(ReferenceDefinitionGlobalExposure.LibraryGlobal, candidate.Definition?.ReferenceGlobalExposure);
+        Assert.Equal("Long", candidate.Definition?.TypeReference?.Name);
+        Assert.Equal("xlCenter As Long", resolved?.DeclarationLabel);
+        Assert.DoesNotContain(
+            adHocIndex.GetCompletionResult(uri, 2, "    value = ".Length).Candidates,
+            candidate => candidate.Label == "xlCenter");
+        Assert.Empty(VbaDocumentDiagnostics.Collect(text, "Worker.bas"));
+    }
+
+    [Fact]
     public void ReferenceQualifierCompletionFiltersByCompletionContext()
     {
         const string uri = "file:///C:/work/Worker.bas";
@@ -154,6 +193,136 @@ public sealed class VbaSemanticResolutionTests
         Assert.Contains(creatableCompletion.Candidates, candidate => candidate.Label == "Application");
         Assert.DoesNotContain(creatableCompletion.Candidates, candidate => candidate.Label == "Workbook");
         Assert.Empty(completedExpressionCompletion.Candidates);
+    }
+
+    [Fact]
+    public void ExplicitReferenceExposureControlsUnqualifiedAndQualifiedRootCompletion()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        const string referenceName = "Microsoft Excel 16.0 Object Library";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    value = ",
+            "    value = Excel.",
+            "    Dim ordinary As OrdinaryType",
+            "    value = ordinary.",
+            "End Sub"
+        ]);
+        var catalog = new VbaProjectReferenceCatalog(
+            referenceName,
+            ["Excel"],
+            [
+                new VbaProjectReferenceDefinition(
+                    referenceName,
+                    "OrdinaryType",
+                    VbaSourceDefinitionKind.Class),
+                new VbaProjectReferenceDefinition(
+                    referenceName,
+                    "OrdinaryValue",
+                    VbaSourceDefinitionKind.Property,
+                    ParentTypeName: "OrdinaryType",
+                    TypeReference: new VbaTypeReference("Long"),
+                    PropertyAccess: VbaPropertyAccess.Readable),
+                new VbaProjectReferenceDefinition(
+                    referenceName,
+                    "xlCenter",
+                    VbaSourceDefinitionKind.EnumMember,
+                    ParentTypeName: "XlHAlign",
+                    TypeReference: new VbaTypeReference("Long"),
+                    GlobalExposure: ReferenceDefinitionGlobalExposure.LibraryGlobal),
+                new VbaProjectReferenceDefinition(
+                    referenceName,
+                    "ActiveItem",
+                    VbaSourceDefinitionKind.Property,
+                    ParentTypeName: "Application",
+                    TypeReference: new VbaTypeReference("Object"),
+                    PropertyAccess: VbaPropertyAccess.Readable,
+                    GlobalExposure: ReferenceDefinitionGlobalExposure.MainHostGlobal)
+            ]);
+        var catalogs = VbaProjectReferenceCatalogSet.Empty.WithCatalog(catalog);
+        var mainHostIndex = VbaSourceIndex.Build(
+            new Dictionary<string, string> { [uri] = text },
+            VbaProjectReferenceSelection.Create(
+                ProjectDocument.ExcelKind,
+                [new VbaProjectReference(referenceName)]),
+            catalogs);
+        var secondaryReferenceIndex = VbaSourceIndex.Build(
+            new Dictionary<string, string> { [uri] = text },
+            VbaProjectReferenceSelection.Create(
+                "word",
+                [new VbaProjectReference(referenceName)]),
+            catalogs);
+
+        var mainRoot = mainHostIndex.GetCompletionResult(uri, 2, "    value = ".Length);
+        var secondaryRoot = secondaryReferenceIndex.GetCompletionResult(uri, 2, "    value = ".Length);
+        var qualifiedRoot = secondaryReferenceIndex.GetCompletionResult(uri, 3, "    value = Excel.".Length);
+        var ordinaryMember = mainHostIndex.GetCompletionResult(uri, 5, "    value = ordinary.".Length);
+
+        Assert.Contains(mainRoot.Candidates, candidate => candidate.Label == "xlCenter");
+        Assert.Contains(mainRoot.Candidates, candidate => candidate.Label == "ActiveItem");
+        Assert.DoesNotContain(mainRoot.Candidates, candidate => candidate.Label == "OrdinaryValue");
+        Assert.Contains(secondaryRoot.Candidates, candidate => candidate.Label == "xlCenter");
+        Assert.DoesNotContain(secondaryRoot.Candidates, candidate => candidate.Label == "ActiveItem");
+        Assert.Contains(qualifiedRoot.Candidates, candidate => candidate.Label == "xlCenter");
+        Assert.Contains(qualifiedRoot.Candidates, candidate => candidate.Label == "ActiveItem");
+        Assert.DoesNotContain(qualifiedRoot.Candidates, candidate => candidate.Label == "OrdinaryValue");
+        Assert.Contains(ordinaryMember.Candidates, candidate => candidate.Label == "OrdinaryValue");
+    }
+
+    [Fact]
+    public void UnclassifiedRootValuesFailClosedWhileRootTypesRemainUsable()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        const string referenceName = "Legacy Library";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    value = ",
+            "    value = Legacy.",
+            "    value = Legacy.LegacyValue",
+            "    Dim typed As ",
+            "End Sub"
+        ]);
+        var index = VbaSourceIndex.Build(
+            new Dictionary<string, string> { [uri] = text },
+            VbaProjectReferenceSelection.Create(
+                "word",
+                [new VbaProjectReference(referenceName)]),
+            VbaProjectReferenceCatalogSet.Empty.WithCatalog(
+                new VbaProjectReferenceCatalog(
+                    referenceName,
+                    ["Legacy"],
+                    [
+                        new VbaProjectReferenceDefinition(
+                            referenceName,
+                            "LegacyType",
+                            VbaSourceDefinitionKind.Class),
+                        new VbaProjectReferenceDefinition(
+                            referenceName,
+                            "LegacyValue",
+                            VbaSourceDefinitionKind.Constant,
+                            TypeReference: new VbaTypeReference("Long"))
+                    ])));
+
+        Assert.DoesNotContain(
+            index.GetCompletionResult(uri, 2, "    value = ".Length).Candidates,
+            candidate => candidate.Label == "LegacyValue");
+        Assert.DoesNotContain(
+            index.GetCompletionResult(uri, 3, "    value = Legacy.".Length).Candidates,
+            candidate => candidate.Label == "LegacyValue");
+        Assert.Null(index.ResolveSourceDefinition(uri, 4, "    value = Legacy.".Length));
+        Assert.Contains(
+            index.GetCompletionResult(uri, 5, "    Dim typed As ".Length).Candidates,
+            candidate => candidate.Label == "LegacyType");
+        Assert.Empty(VbaDocumentDiagnostics.Collect(
+            string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Public Sub Run()",
+                "    value = LegacyValue",
+                "End Sub"
+            ]),
+            "Worker.bas"));
     }
 
     [Fact]

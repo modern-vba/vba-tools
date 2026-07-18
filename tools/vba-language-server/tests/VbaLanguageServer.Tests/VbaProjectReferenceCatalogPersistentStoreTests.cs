@@ -45,6 +45,101 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
     }
 
     [Fact]
+    public void PersistentStoreRoundTripsExposureAndLegacyMetadataFailsClosedForRoots()
+    {
+        var cacheRoot = Directory.CreateTempSubdirectory("vba-ls-catalog-exposure-").FullName;
+        try
+        {
+            const string referenceName = "Generated Library";
+            const string uri = "file:///C:/work/Worker.bas";
+            var identity = CreateIdentity(referenceName);
+            var store = new VbaProjectReferenceCatalogPersistentStore(cacheRoot);
+            var catalog = CreateGeneratedCatalog(referenceName, "GeneratedType", "GeneratedMember");
+            catalog = catalog with
+            {
+                Definitions = catalog.Definitions
+                    .Select(definition => definition.Name == "GeneratedMember"
+                        ? definition with
+                        {
+                            GlobalExposure = ReferenceDefinitionGlobalExposure.LibraryGlobal
+                        }
+                        : definition)
+                    .ToArray()
+            };
+            store.Save(new VbaProjectReferenceCatalogPersistentEntry(identity, catalog));
+
+            var currentLoad = store.Load(referenceName);
+            var currentEntry = Assert.IsType<VbaProjectReferenceCatalogPersistentEntry>(currentLoad.Entry);
+            Assert.Equal(
+                ReferenceDefinitionGlobalExposure.LibraryGlobal,
+                Assert.Single(
+                    currentEntry.Catalog.Definitions,
+                    definition => definition.Name == "GeneratedMember").GlobalExposure);
+
+            var entryPath = Path.Combine(
+                cacheRoot,
+                "catalogs",
+                VbaProjectReferenceCatalogPersistentStore.CreateCatalogEntryKey(identity));
+            File.WriteAllText(
+                entryPath,
+                Regex.Replace(
+                    File.ReadAllText(entryPath)
+                        .Replace(
+                            VbaProjectReferenceCatalogPersistentStore.CurrentGeneratorVersion,
+                            "typelib-catalog-v6",
+                            StringComparison.Ordinal),
+                    ",\\s*\"globalExposure\"\\s*:\\s*\\d+",
+                    "",
+                    RegexOptions.CultureInvariant));
+            var indexPath = store.GetReferenceIndexPath(referenceName);
+            File.WriteAllText(
+                indexPath,
+                File.ReadAllText(indexPath).Replace(
+                    VbaProjectReferenceCatalogPersistentStore.CurrentGeneratorVersion,
+                    "typelib-catalog-v6",
+                    StringComparison.Ordinal));
+
+            var legacyLoad = store.Load(referenceName);
+            var legacyEntry = Assert.IsType<VbaProjectReferenceCatalogPersistentEntry>(legacyLoad.Entry);
+            var legacyMember = Assert.Single(
+                legacyEntry.Catalog.Definitions,
+                definition => definition.Name == "GeneratedMember");
+            Assert.Equal(VbaProjectReferenceCatalogPersistentLoadStatus.Stale, legacyLoad.Status);
+            Assert.Equal(ReferenceDefinitionGlobalExposure.None, legacyMember.GlobalExposure);
+            Assert.Equal("GeneratedType", legacyMember.ParentTypeName);
+            Assert.Equal(
+                VbaPropertyAccess.Readable | VbaPropertyAccess.Writable,
+                legacyMember.PropertyAccess);
+
+            var source = string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Public Sub Run()",
+                "    value = ",
+                "    Dim generated As GeneratedType",
+                "    value = generated.",
+                "End Sub"
+            ]);
+            var index = VbaSourceIndex.Build(
+                new Dictionary<string, string> { [uri] = source },
+                VbaProjectReferenceSelection.Create(
+                    ProjectDocument.ExcelKind,
+                    [new VbaProjectReference(referenceName)]),
+                VbaProjectReferenceCatalogSet.Empty.WithCatalog(legacyEntry.Catalog));
+
+            Assert.DoesNotContain(
+                index.GetCompletionDefinitions(uri, 2, "    value = ".Length),
+                definition => definition.Name == "GeneratedMember");
+            Assert.Contains(
+                index.GetCompletionDefinitions(uri, 4, "    value = generated.".Length),
+                definition => definition.Name == "GeneratedMember");
+        }
+        finally
+        {
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void PersistentStoreLoadsV2SignaturesWithoutGuessingMissingCallableKinds()
     {
         var cacheRoot = Directory.CreateTempSubdirectory("vba-ls-catalog-v2-").FullName;

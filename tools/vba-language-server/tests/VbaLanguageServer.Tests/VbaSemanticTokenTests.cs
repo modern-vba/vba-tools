@@ -336,5 +336,6 @@ public sealed class VbaSemanticTokenTests
             name,
             VbaSourceDefinitionKind.Property,
             $"Reference member named {name}.",
-            ParentTypeName: "Application");
+            ParentTypeName: "Application",
+            GlobalExposure: ReferenceDefinitionGlobalExposure.LibraryGlobal);
 }

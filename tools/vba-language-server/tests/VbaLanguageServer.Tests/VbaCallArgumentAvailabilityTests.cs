@@ -198,7 +198,8 @@ public sealed class VbaCallArgumentAvailabilityTests
                                 new VbaCallableParameter("Arg1"),
                                 new VbaCallableParameter("Arg2")
                             ],
-                            CallableKind: VbaCallableKind.Function))
+                            CallableKind: VbaCallableKind.Function),
+                        GlobalExposure: ReferenceDefinitionGlobalExposure.LibraryGlobal)
                 ]));
 
         var availability = ResolveCall(
@@ -234,7 +235,8 @@ public sealed class VbaCallArgumentAvailabilityTests
                                 new VbaCallableParameter("Arg2")
                             ],
                             CallableKind: VbaCallableKind.Function,
-                            SupportsNamedArguments: true))
+                            SupportsNamedArguments: true),
+                        GlobalExposure: ReferenceDefinitionGlobalExposure.LibraryGlobal)
                 ]));
 
         var availability = ResolveCall(

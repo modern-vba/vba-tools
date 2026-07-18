@@ -21,12 +21,16 @@ public sealed record TypeLibCatalogMetadata(
 /// <param name="Documentation">The type documentation.</param>
 /// <param name="Members">The members exposed by the type.</param>
 /// <param name="IsCreatable">Whether the TypeLib type is a coclass that can be used with New.</param>
+/// <param name="IsApplicationObject">Whether TypeLib metadata marks the type as an application object.</param>
+/// <param name="IsBrowsable">Whether the type itself belongs to the public browsable surface.</param>
 public sealed record TypeLibCatalogType(
     string Name,
     VbaSourceDefinitionKind Kind,
     string? Documentation,
     IReadOnlyList<TypeLibCatalogMember> Members,
-    bool IsCreatable = false);
+    bool IsCreatable = false,
+    bool IsApplicationObject = false,
+    bool IsBrowsable = true);
 
 /// <summary>
 /// Represents one TypeLib member.
@@ -79,12 +83,20 @@ public static class TypeLibReferenceCatalogBuilder
 
         foreach (var type in metadata.Types.Where(type => !string.IsNullOrWhiteSpace(type.Name)))
         {
-            definitions.Add(new VbaProjectReferenceDefinition(
-                referenceName,
-                type.Name,
-                type.Kind,
-                type.Documentation,
-                IsCreatable: type.IsCreatable));
+            if (!type.IsBrowsable && !type.IsApplicationObject)
+            {
+                continue;
+            }
+
+            if (type.IsBrowsable)
+            {
+                definitions.Add(new VbaProjectReferenceDefinition(
+                    referenceName,
+                    type.Name,
+                    type.Kind,
+                    type.Documentation,
+                    IsCreatable: type.IsCreatable));
+            }
 
             foreach (var member in type.Members.Where(member => !string.IsNullOrWhiteSpace(member.Name)))
             {
@@ -98,12 +110,20 @@ public static class TypeLibReferenceCatalogBuilder
                         : member.Signature with { SupportsNamedArguments = true },
                     ParentTypeName: type.Name,
                     TypeReference: member.TypeReference,
-                    PropertyAccess: member.PropertyAccess));
+                    PropertyAccess: member.PropertyAccess,
+                    GlobalExposure: GetGlobalExposure(type)));
             }
         }
 
         return new VbaProjectReferenceCatalog(referenceName, aliases, DeduplicateDefinitions(definitions));
     }
+
+    private static ReferenceDefinitionGlobalExposure GetGlobalExposure(TypeLibCatalogType type)
+        => type.IsApplicationObject
+            ? ReferenceDefinitionGlobalExposure.MainHostGlobal
+            : type.Kind is VbaSourceDefinitionKind.Module or VbaSourceDefinitionKind.Enum
+                ? ReferenceDefinitionGlobalExposure.LibraryGlobal
+                : ReferenceDefinitionGlobalExposure.None;
 
     private static IReadOnlyList<VbaProjectReferenceDefinition> DeduplicateDefinitions(
         IReadOnlyList<VbaProjectReferenceDefinition> definitions)
@@ -130,10 +150,27 @@ public static class TypeLibReferenceCatalogBuilder
                             VbaPropertyAccess.Unknown,
                             (access, definition) => access | definition.PropertyAccess)
                         : VbaPropertyAccess.Unknown,
-                    IsCreatable = group.Any(definition => definition.IsCreatable)
+                    IsCreatable = group.Any(definition => definition.IsCreatable),
+                    GlobalExposure = MergeGlobalExposure(group)
                 };
             })
             .ToArray();
+    }
+
+    private static ReferenceDefinitionGlobalExposure MergeGlobalExposure(
+        IEnumerable<VbaProjectReferenceDefinition> definitions)
+    {
+        var exposures = definitions
+            .Select(definition => definition.GlobalExposure)
+            .ToArray();
+        if (exposures.Contains(ReferenceDefinitionGlobalExposure.LibraryGlobal))
+        {
+            return ReferenceDefinitionGlobalExposure.LibraryGlobal;
+        }
+
+        return exposures.Contains(ReferenceDefinitionGlobalExposure.MainHostGlobal)
+            ? ReferenceDefinitionGlobalExposure.MainHostGlobal
+            : ReferenceDefinitionGlobalExposure.None;
     }
 
     private static string CreateQualifierAlias(string referenceName)
@@ -232,7 +269,10 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
         {
             typeInfo.GetTypeAttr(out attrPointer);
             var attr = Marshal.PtrToStructure<TYPEATTR>(attrPointer);
-            if (!allowHiddenType && HasHiddenOrRestrictedTypeFlags(attr))
+            var typeFlags = (TYPEFLAGS)attr.wTypeFlags;
+            var isApplicationObject = IsApplicationObjectType(typeFlags);
+            var isBrowsable = IsBrowsableType(typeFlags);
+            if (!allowHiddenType && !isBrowsable && !isApplicationObject)
             {
                 return null;
             }
@@ -251,7 +291,9 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
                 definitionKind,
                 EmptyToNull(documentation),
                 members,
-                IsCreatableTypeKind(attr.typekind));
+                IsCreatableTypeKind(attr.typekind),
+                IsApplicationObject: isApplicationObject,
+                IsBrowsable: isBrowsable);
         }
         finally
         {
@@ -273,7 +315,11 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
             {
                 coClassInfo.GetTypeAttr(out attrPointer);
                 var attr = Marshal.PtrToStructure<TYPEATTR>(attrPointer);
-                if (attr.typekind != TYPEKIND.TKIND_COCLASS || HasHiddenOrRestrictedTypeFlags(attr))
+                var typeFlags = (TYPEFLAGS)attr.wTypeFlags;
+                var isApplicationObject = IsApplicationObjectType(typeFlags);
+                var isBrowsable = IsBrowsableType(typeFlags);
+                if (attr.typekind != TYPEKIND.TKIND_COCLASS
+                    || (!isBrowsable && !isApplicationObject))
                 {
                     continue;
                 }
@@ -316,7 +362,9 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
                         VbaSourceDefinitionKind.Class,
                         null,
                         members,
-                        IsCreatable: true));
+                        IsCreatable: true,
+                        IsApplicationObject: isApplicationObject,
+                        IsBrowsable: isBrowsable));
                 }
             }
             finally
@@ -569,6 +617,24 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
     internal static bool IsCreatableTypeKind(TYPEKIND typeKind)
         => typeKind == TYPEKIND.TKIND_COCLASS;
 
+    internal static bool IsApplicationObjectType(TYPEFLAGS typeFlags)
+        => (typeFlags & TYPEFLAGS.TYPEFLAG_FAPPOBJECT) != 0;
+
+    internal static bool IsBrowsableType(TYPEFLAGS typeFlags)
+        => (typeFlags & (TYPEFLAGS.TYPEFLAG_FHIDDEN | TYPEFLAGS.TYPEFLAG_FRESTRICTED)) == 0;
+
+    internal static bool IsBrowsableFunction(FUNCFLAGS functionFlags)
+        => (functionFlags & (
+            FUNCFLAGS.FUNCFLAG_FHIDDEN
+            | FUNCFLAGS.FUNCFLAG_FRESTRICTED
+            | FUNCFLAGS.FUNCFLAG_FNONBROWSABLE)) == 0;
+
+    internal static bool IsBrowsableVariable(VARFLAGS variableFlags)
+        => (variableFlags & (
+            VARFLAGS.VARFLAG_FHIDDEN
+            | VARFLAGS.VARFLAG_FRESTRICTED
+            | VARFLAGS.VARFLAG_FNONBROWSABLE)) == 0;
+
     private static string CreateParameterLabel(VbaCallableParameter parameter)
         => parameter.IsOptional ? $"[{parameter.Name}]" : parameter.Name;
 
@@ -683,18 +749,23 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
 
     private static bool TryMapTypeKind(TYPEKIND typeKind, out VbaSourceDefinitionKind definitionKind)
     {
-        definitionKind = typeKind switch
+        var mappedKind = GetTypeDefinitionKind(typeKind);
+        definitionKind = mappedKind ?? VbaSourceDefinitionKind.Variable;
+        return mappedKind is not null;
+    }
+
+    internal static VbaSourceDefinitionKind? GetTypeDefinitionKind(TYPEKIND typeKind)
+        => typeKind switch
         {
             TYPEKIND.TKIND_ENUM => VbaSourceDefinitionKind.Enum,
             TYPEKIND.TKIND_RECORD => VbaSourceDefinitionKind.Type,
             TYPEKIND.TKIND_UNION => VbaSourceDefinitionKind.Type,
+            TYPEKIND.TKIND_MODULE => VbaSourceDefinitionKind.Module,
             TYPEKIND.TKIND_DISPATCH => VbaSourceDefinitionKind.Class,
             TYPEKIND.TKIND_INTERFACE => VbaSourceDefinitionKind.Class,
             TYPEKIND.TKIND_COCLASS => VbaSourceDefinitionKind.Class,
-            _ => VbaSourceDefinitionKind.Variable
+            _ => null
         };
-        return definitionKind != VbaSourceDefinitionKind.Variable;
-    }
 
     private static VbaPropertyAccess GetVariablePropertyAccess(
         VbaSourceDefinitionKind memberKind,
@@ -713,14 +784,11 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
     private static bool IsPropertyInvokeKind(INVOKEKIND invokeKind)
         => GetPropertyAccess(invokeKind) != VbaPropertyAccess.Unknown;
 
-    private static bool HasHiddenOrRestrictedTypeFlags(TYPEATTR attr)
-        => ((TYPEFLAGS)attr.wTypeFlags & (TYPEFLAGS.TYPEFLAG_FHIDDEN | TYPEFLAGS.TYPEFLAG_FRESTRICTED)) != 0;
-
     private static bool HasHiddenOrRestrictedFuncFlags(FUNCDESC funcDesc)
-        => (funcDesc.wFuncFlags & (short)(FUNCFLAGS.FUNCFLAG_FHIDDEN | FUNCFLAGS.FUNCFLAG_FRESTRICTED | FUNCFLAGS.FUNCFLAG_FNONBROWSABLE)) != 0;
+        => !IsBrowsableFunction((FUNCFLAGS)funcDesc.wFuncFlags);
 
     private static bool HasHiddenOrRestrictedVarFlags(VARDESC varDesc)
-        => (varDesc.wVarFlags & (short)(VARFLAGS.VARFLAG_FHIDDEN | VARFLAGS.VARFLAG_FRESTRICTED | VARFLAGS.VARFLAG_FNONBROWSABLE)) != 0;
+        => !IsBrowsableVariable((VARFLAGS)varDesc.wVarFlags);
 
     private static string? EmptyToNull(string? value)
         => string.IsNullOrWhiteSpace(value) ? null : value;

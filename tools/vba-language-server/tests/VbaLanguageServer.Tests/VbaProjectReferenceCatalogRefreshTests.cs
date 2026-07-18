@@ -39,6 +39,122 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
     }
 
     [Fact]
+    public void TypeLibCatalogBuilderUsesExplicitBindingMetadataForGlobalExposure()
+    {
+        var catalog = TypeLibReferenceCatalogBuilder.Build(
+            "Generated Library",
+            new TypeLibCatalogMetadata(
+                "Generated",
+                [
+                    new TypeLibCatalogType(
+                        "Application",
+                        VbaSourceDefinitionKind.Class,
+                        null,
+                        [new TypeLibCatalogMember("ActiveItem", VbaSourceDefinitionKind.Property, null)],
+                        IsApplicationObject: true),
+                    new TypeLibCatalogType(
+                        "GlobalModule",
+                        VbaSourceDefinitionKind.Module,
+                        null,
+                        [new TypeLibCatalogMember("LibraryValue", VbaSourceDefinitionKind.Property, null)]),
+                    new TypeLibCatalogType(
+                        "GeneratedConstants",
+                        VbaSourceDefinitionKind.Enum,
+                        null,
+                        [new TypeLibCatalogMember("generatedCenter", VbaSourceDefinitionKind.EnumMember, null)]),
+                    new TypeLibCatalogType(
+                        "_Global",
+                        VbaSourceDefinitionKind.Class,
+                        null,
+                        [new TypeLibCatalogMember("NameOnlyValue", VbaSourceDefinitionKind.Property, null)]),
+                    new TypeLibCatalogType(
+                        "OrdinaryType",
+                        VbaSourceDefinitionKind.Class,
+                        null,
+                        [new TypeLibCatalogMember("OrdinaryValue", VbaSourceDefinitionKind.Property, null)]),
+                    new TypeLibCatalogType(
+                        "_Application",
+                        VbaSourceDefinitionKind.Class,
+                        null,
+                        [new TypeLibCatalogMember("ExplicitHiddenOwnerGlobal", VbaSourceDefinitionKind.Property, null)],
+                        IsApplicationObject: true,
+                        IsBrowsable: false)
+                ]));
+
+        Assert.Equal(
+            ReferenceDefinitionGlobalExposure.MainHostGlobal,
+            Assert.Single(catalog.Definitions, definition => definition.Name == "ActiveItem").GlobalExposure);
+        Assert.Equal(
+            ReferenceDefinitionGlobalExposure.LibraryGlobal,
+            Assert.Single(catalog.Definitions, definition => definition.Name == "LibraryValue").GlobalExposure);
+        Assert.Equal(
+            ReferenceDefinitionGlobalExposure.LibraryGlobal,
+            Assert.Single(catalog.Definitions, definition => definition.Name == "generatedCenter").GlobalExposure);
+        Assert.Equal(
+            ReferenceDefinitionGlobalExposure.None,
+            Assert.Single(catalog.Definitions, definition => definition.Name == "NameOnlyValue").GlobalExposure);
+        Assert.Equal(
+            ReferenceDefinitionGlobalExposure.None,
+            Assert.Single(catalog.Definitions, definition => definition.Name == "OrdinaryValue").GlobalExposure);
+        Assert.DoesNotContain(catalog.Definitions, definition => definition.Name == "_Application");
+        Assert.Equal(
+            ReferenceDefinitionGlobalExposure.MainHostGlobal,
+            Assert.Single(
+                catalog.Definitions,
+                definition => definition.Name == "ExplicitHiddenOwnerGlobal").GlobalExposure);
+    }
+
+    [Fact]
+    public void ComTypeLibMetadataUsesApplicationObjectFlagsAndModuleKinds()
+    {
+        Assert.True(ComTypeLibCatalogMetadataReader.IsApplicationObjectType(
+            TYPEFLAGS.TYPEFLAG_FAPPOBJECT | TYPEFLAGS.TYPEFLAG_FHIDDEN));
+        Assert.False(ComTypeLibCatalogMetadataReader.IsApplicationObjectType(
+            TYPEFLAGS.TYPEFLAG_FHIDDEN));
+        Assert.Equal(
+            VbaSourceDefinitionKind.Module,
+            ComTypeLibCatalogMetadataReader.GetTypeDefinitionKind(TYPEKIND.TKIND_MODULE));
+    }
+
+    [Fact]
+    public void ComTypeLibMetadataSuppressesHiddenRestrictedAndNonBrowsableEntries()
+    {
+        Assert.False(ComTypeLibCatalogMetadataReader.IsBrowsableType(TYPEFLAGS.TYPEFLAG_FHIDDEN));
+        Assert.False(ComTypeLibCatalogMetadataReader.IsBrowsableType(TYPEFLAGS.TYPEFLAG_FRESTRICTED));
+        Assert.False(ComTypeLibCatalogMetadataReader.IsBrowsableFunction(FUNCFLAGS.FUNCFLAG_FNONBROWSABLE));
+        Assert.False(ComTypeLibCatalogMetadataReader.IsBrowsableVariable(VARFLAGS.VARFLAG_FRESTRICTED));
+        Assert.True(ComTypeLibCatalogMetadataReader.IsBrowsableType(0));
+        Assert.True(ComTypeLibCatalogMetadataReader.IsBrowsableFunction(0));
+        Assert.True(ComTypeLibCatalogMetadataReader.IsBrowsableVariable(0));
+    }
+
+    [Fact]
+    public void TypeLibCatalogDeduplicationPreservesTheBroadestExplicitExposure()
+    {
+        var catalog = TypeLibReferenceCatalogBuilder.Build(
+            "Generated Library",
+            new TypeLibCatalogMetadata(
+                "Generated",
+                [
+                    new TypeLibCatalogType(
+                        "Globals",
+                        VbaSourceDefinitionKind.Module,
+                        null,
+                        [new TypeLibCatalogMember("SharedValue", VbaSourceDefinitionKind.Property, null)]),
+                    new TypeLibCatalogType(
+                        "Globals",
+                        VbaSourceDefinitionKind.Module,
+                        null,
+                        [new TypeLibCatalogMember("SharedValue", VbaSourceDefinitionKind.Property, null)],
+                        IsApplicationObject: true)
+                ]));
+
+        Assert.Equal(
+            ReferenceDefinitionGlobalExposure.LibraryGlobal,
+            Assert.Single(catalog.Definitions, definition => definition.Name == "SharedValue").GlobalExposure);
+    }
+
+    [Fact]
     public void TypeLibCallableKindUsesReturnValueParameterPresenceWhenItsTypeIsUnavailable()
     {
         var callableKind = ComTypeLibCatalogMetadataReader.GetCallableKind(
@@ -239,6 +355,13 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
         Assert.Contains(catalog.Definitions, definition =>
             definition.Kind == VbaSourceDefinitionKind.Event
             && definition.Signature?.CallableKind == VbaCallableKind.Event);
+        Assert.Contains(catalog.Definitions, definition =>
+            definition.Name == "xlCenter"
+            && definition.Kind == VbaSourceDefinitionKind.EnumMember
+            && definition.GlobalExposure == ReferenceDefinitionGlobalExposure.LibraryGlobal);
+        Assert.Contains(catalog.Definitions, definition =>
+            definition.Name == "Workbooks"
+            && definition.GlobalExposure == ReferenceDefinitionGlobalExposure.MainHostGlobal);
     }
 
     [Fact]
