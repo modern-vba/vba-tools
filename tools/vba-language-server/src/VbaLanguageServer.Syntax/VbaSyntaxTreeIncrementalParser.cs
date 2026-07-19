@@ -9,15 +9,43 @@ internal static class VbaSyntaxTreeIncrementalParser
         string uri,
         string source,
         VbaSyntaxTree previousSyntaxTree,
-        out VbaSyntaxTreeParseResult result)
+        out VbaSyntaxTreeParseResult result,
+        out VbaIncrementalParseObservation observation)
     {
         result = default!;
+        observation = VbaIncrementalParseObservation.FullModule(
+            source.Length,
+            VbaIncrementalParseFallbackReason.DifferentialGuardFailed);
         var previousSource = previousSyntaxTree.SourceText;
         var currentSource = VbaSourceText.Update(source, previousSource);
-        if (previousSyntaxTree.Diagnostics.Count > 0
-            || previousSyntaxTree.Module.Kind == VbaModuleKind.FormModule
-            || !previousSyntaxTree.Uri.Equals(uri, StringComparison.OrdinalIgnoreCase)
-            || !TryFindChangedLineRange(
+        if (previousSyntaxTree.Diagnostics.Count > 0)
+        {
+            observation = observation with
+            {
+                FallbackReason = VbaIncrementalParseFallbackReason.PreviousDiagnostics
+            };
+            return false;
+        }
+
+        if (previousSyntaxTree.Module.Kind == VbaModuleKind.FormModule)
+        {
+            observation = observation with
+            {
+                FallbackReason = VbaIncrementalParseFallbackReason.UnsupportedModuleKind
+            };
+            return false;
+        }
+
+        if (!previousSyntaxTree.Uri.Equals(uri, StringComparison.OrdinalIgnoreCase))
+        {
+            observation = observation with
+            {
+                FallbackReason = VbaIncrementalParseFallbackReason.UriMismatch
+            };
+            return false;
+        }
+
+        if (!TryFindChangedLineRange(
                 previousSource,
                 currentSource,
                 out var oldStartLine,
@@ -25,15 +53,32 @@ internal static class VbaSyntaxTreeIncrementalParser
                 out var newStartLine,
                 out var newEndLine))
         {
+            observation = observation with
+            {
+                FallbackReason = VbaIncrementalParseFallbackReason.ChangeLocalityUnproven
+            };
             return false;
         }
+
         var previousMember = FindSingleContainingMember(
             previousSyntaxTree.Module.Members,
             oldStartLine,
             oldEndLine);
-        if (previousMember is null
-            || TouchesMemberBoundary(previousMember, oldStartLine, oldEndLine))
+        if (previousMember is null)
         {
+            observation = observation with
+            {
+                FallbackReason = VbaIncrementalParseFallbackReason.MemberNotUnique
+            };
+            return false;
+        }
+
+        if (TouchesMemberBoundary(previousSource, previousMember, oldStartLine, oldEndLine))
+        {
+            observation = observation with
+            {
+                FallbackReason = VbaIncrementalParseFallbackReason.MemberBoundaryTouched
+            };
             return false;
         }
 
@@ -42,40 +87,73 @@ internal static class VbaSyntaxTreeIncrementalParser
         var currentMemberEndLine = previousMember.BlockRange.End.Line + lineDelta;
         if (currentMemberEndLine >= currentSource.Lines.Count
             || newStartLine <= currentMemberStartLine
-            || newEndLine >= currentMemberEndLine
-            || HasCrossMemberPreprocessorBlock(previousSyntaxTree.Module.PreprocessorBlocks, previousMember.BlockRange))
+            || newEndLine >= currentMemberEndLine)
         {
+            observation = observation with
+            {
+                FallbackReason = VbaIncrementalParseFallbackReason.WindowOutOfRange
+            };
             return false;
         }
 
-        var maskedSource = MaskUnchangedMembers(
+        if (HasCrossMemberPreprocessorBlock(previousSyntaxTree.Module.PreprocessorBlocks, previousMember.BlockRange))
+        {
+            observation = observation with
+            {
+                FallbackReason = VbaIncrementalParseFallbackReason.CrossMemberPreprocessor
+            };
+            return false;
+        }
+
+        if (!TryCreateSourceWindow(
             source,
             currentSource,
             previousSyntaxTree.Module,
             currentMemberStartLine,
-            currentMemberEndLine);
-        var parsedMemberTree = VbaSyntaxTreeParser.ParseModule(uri, maskedSource);
-        if (parsedMemberTree.Diagnostics.Count > 0)
+            currentMemberEndLine,
+            out var window))
         {
+            observation = observation with
+            {
+                FallbackReason = VbaIncrementalParseFallbackReason.WindowOutOfRange
+            };
             return false;
         }
 
-        var currentMember = parsedMemberTree.Module.Members.SingleOrDefault(member =>
+        var parsedLocalTree = VbaSyntaxTreeParser.ParseModule(uri, window.Text);
+        if (parsedLocalTree.Diagnostics.Count > 0)
+        {
+            observation = observation with
+            {
+                FallbackReason = VbaIncrementalParseFallbackReason.SliceParseDiagnostics
+            };
+            return false;
+        }
+
+        var projectedMemberTree = ProjectSyntaxTree(
+            uri,
+            parsedLocalTree,
+            currentSource,
+            window.ModuleContext,
+            window.Origin);
+        var currentMember = projectedMemberTree.Module.Members.SingleOrDefault(member =>
             member.BlockRange.Start.Line == currentMemberStartLine
             && member.BlockRange.End.Line == currentMemberEndLine);
         if (currentMember is null
             || currentMember.Kind != previousMember.Kind
-            || !currentMember.Name.Equals(previousMember.Name, StringComparison.OrdinalIgnoreCase)
-            || !previousSyntaxTree.Module.Identity.Name.Equals(
-                parsedMemberTree.Module.Identity.Name,
-                StringComparison.OrdinalIgnoreCase))
+            || !currentMember.Name.Equals(previousMember.Name, StringComparison.OrdinalIgnoreCase))
         {
+            observation = observation with
+            {
+                FallbackReason = VbaIncrementalParseFallbackReason.MemberShapeChanged
+            };
             return false;
         }
+
         var syntaxTree = MergeSyntaxTree(
             uri,
             previousSyntaxTree,
-            parsedMemberTree,
+            projectedMemberTree,
             previousMember,
             currentMember,
             currentSource);
@@ -90,7 +168,126 @@ internal static class VbaSyntaxTreeIncrementalParser
             syntaxTree,
             VbaSyntaxTreeParseUpdateKind.ModuleMember,
             update);
+        observation = new VbaIncrementalParseObservation(
+            VbaIncrementalParseRoute.ModuleMemberSourceWindow,
+            VbaIncrementalParseFallbackReason.None,
+            source.Length,
+            window.Text.Length,
+            window.Origin.Utf16Offset,
+            window.Origin.Line,
+            window.MemberUtf16Length,
+            window.ModuleContext.Kind,
+            window.ModuleContext.Identity.Name);
         return true;
+    }
+
+    private static bool TryCreateSourceWindow(
+        string source,
+        VbaSourceText currentSource,
+        VbaModuleSyntax previousModule,
+        int memberStartLine,
+        int memberEndLine,
+        out VbaModuleMemberSourceWindow window)
+    {
+        window = default!;
+        var documentationStartLine = VbaSyntaxTreeParser.FindDocumentationCommentStartLine(
+            currentSource.Lines,
+            memberStartLine);
+        var windowStartOffset = currentSource.Lines[documentationStartLine].StartOffset;
+        var memberStartOffset = currentSource.Lines[memberStartLine].StartOffset;
+        var memberEndOffset = currentSource.Lines[memberEndLine].EndOffset;
+        if (windowStartOffset < 0
+            || memberStartOffset < windowStartOffset
+            || memberEndOffset > source.Length)
+        {
+            return false;
+        }
+
+        window = new VbaModuleMemberSourceWindow(
+            source[windowStartOffset..memberEndOffset],
+            new VbaSourceOrigin(documentationStartLine, windowStartOffset),
+            new VbaModuleParseContext(
+                previousModule.Kind,
+                previousModule.Identity,
+                previousModule.Attributes,
+                previousModule.Options,
+                previousModule.CodeStartLine),
+            memberStartLine,
+            memberEndLine,
+            memberStartOffset,
+            memberEndOffset);
+        return true;
+    }
+
+    private static VbaSyntaxTree ProjectSyntaxTree(
+        string uri,
+        VbaSyntaxTree parsedLocalTree,
+        VbaSourceText currentSource,
+        VbaModuleParseContext moduleContext,
+        VbaSourceOrigin origin)
+    {
+        var module = new VbaModuleSyntax(
+            moduleContext.Kind,
+            moduleContext.Identity,
+            moduleContext.Attributes,
+            moduleContext.Options,
+            parsedLocalTree.Module.Members
+                .Select(member => Shift(member, origin.Line, origin.Utf16Offset))
+                .ToArray(),
+            parsedLocalTree.Module.Declarations
+                .Select(declaration => Shift(declaration, origin.Line, origin.Utf16Offset))
+                .ToArray(),
+            parsedLocalTree.Module.CallableDeclarations
+                .Select(declaration => Shift(declaration, origin.Line, origin.Utf16Offset))
+                .ToArray(),
+            parsedLocalTree.Module.Statements
+                .Select(statement => statement with
+                {
+                    Range = Shift(statement.Range, origin.Line, origin.Utf16Offset)
+                })
+                .ToArray(),
+            parsedLocalTree.Module.Expressions
+                .Select(expression => expression with
+                {
+                    Range = Shift(expression.Range, origin.Line, origin.Utf16Offset)
+                })
+                .ToArray(),
+            parsedLocalTree.Module.ArgumentLists
+                .Select(argumentList => Shift(argumentList, origin.Line, origin.Utf16Offset))
+                .ToArray(),
+            parsedLocalTree.Module.Blocks
+                .Select(block => Shift(block, origin.Line, origin.Utf16Offset))
+                .ToArray(),
+            parsedLocalTree.Module.LineLabels
+                .Select(label => Shift(label, origin.Line, origin.Utf16Offset))
+                .ToArray(),
+            parsedLocalTree.Module.PreprocessorDirectives
+                .Select(directive => Shift(directive, origin.Line, origin.Utf16Offset))
+                .ToArray(),
+            parsedLocalTree.Module.PreprocessorBlocks
+                .Select(block => Shift(block, origin.Line, origin.Utf16Offset))
+                .ToArray(),
+            null,
+            moduleContext.CodeStartLine,
+            currentSource.FullRange);
+        var tokens = parsedLocalTree.TokenStream.Tokens
+            .Select(token => token with
+            {
+                Range = Shift(token.Range, origin.Line, origin.Utf16Offset)
+            })
+            .ToArray();
+        var diagnostics = parsedLocalTree.Diagnostics
+            .Select(diagnostic => diagnostic with
+            {
+                Range = Shift(diagnostic.Range, origin.Line, origin.Utf16Offset)
+            })
+            .ToArray();
+        return new VbaSyntaxTree(
+            uri,
+            currentSource,
+            new VbaTokenStream(tokens),
+            module,
+            diagnostics);
     }
 
     private static VbaSyntaxTree MergeSyntaxTree(
@@ -351,55 +548,6 @@ internal static class VbaSyntaxTreeIncrementalParser
         return low;
     }
 
-    private static string MaskUnchangedMembers(
-        string source,
-        VbaSourceText sourceText,
-        VbaModuleSyntax previousModule,
-        int memberStartLine,
-        int memberEndLine)
-    {
-        return string.Create(
-            source.Length,
-            (source, sourceText, previousModule, memberStartLine, memberEndLine),
-            static (masked, state) =>
-            {
-                masked.Fill(' ');
-                var searchOffset = 0;
-                while (searchOffset < state.source.Length)
-                {
-                    var relativeNewLineOffset = state.source
-                        .AsSpan(searchOffset)
-                        .IndexOfAny('\r', '\n');
-                    if (relativeNewLineOffset < 0)
-                    {
-                        break;
-                    }
-
-                    var newLineOffset = searchOffset + relativeNewLineOffset;
-                    masked[newLineOffset] = state.source[newLineOffset];
-                    searchOffset = newLineOffset + 1;
-                }
-
-                var preservedLines = state.previousModule.Attributes
-                    .Select(attribute => attribute.Range.Start.Line)
-                    .Concat(state.previousModule.Options.Select(option => option.Range.Start.Line))
-                    .Append(state.previousModule.Identity.Range.Start.Line)
-                    .Where(line => line >= 0 && line < state.sourceText.Lines.Count)
-                    .Concat(Enumerable.Range(
-                        state.memberStartLine,
-                        state.memberEndLine - state.memberStartLine + 1))
-                    .Distinct();
-                foreach (var lineNumber in preservedLines)
-                {
-                    var line = state.sourceText.Lines[lineNumber];
-                    state.source.AsSpan(
-                            line.StartOffset,
-                            line.EndOffset - line.StartOffset)
-                        .CopyTo(masked[line.StartOffset..]);
-                }
-            });
-    }
-
     private static bool TryFindChangedLineRange(
         VbaSourceText oldSource,
         VbaSourceText newSource,
@@ -477,8 +625,26 @@ internal static class VbaSyntaxTreeIncrementalParser
         return containingMembers.Length == 1 ? containingMembers[0] : null;
     }
 
-    private static bool TouchesMemberBoundary(VbaModuleMemberSyntax member, int startLine, int endLine)
-        => startLine <= member.BlockRange.Start.Line || endLine >= member.BlockRange.End.Line;
+    private static bool TouchesMemberBoundary(
+        VbaSourceText sourceText,
+        VbaModuleMemberSyntax member,
+        int startLine,
+        int endLine)
+    {
+        var headerEndLine = member.BlockRange.Start.Line;
+        while (headerEndLine < member.BlockRange.End.Line)
+        {
+            var code = VbaSourceText.StripApostropheComment(sourceText.Lines[headerEndLine].Text);
+            if (!VbaSourceText.HasLineContinuation(code))
+            {
+                break;
+            }
+
+            headerEndLine++;
+        }
+
+        return startLine <= headerEndLine || endLine >= member.BlockRange.End.Line;
+    }
 
     private static bool HasCrossMemberPreprocessorBlock(
         IReadOnlyList<VbaPreprocessorBlockSyntax> blocks,
@@ -554,7 +720,10 @@ internal static class VbaSyntaxTreeIncrementalParser
                 HeaderRange = Shift(branch.HeaderRange, lineDelta, offsetDelta),
                 Range = Shift(branch.Range, lineDelta, offsetDelta)
             }).ToArray(),
-            Range = Shift(block.Range, lineDelta, offsetDelta)
+            Range = Shift(block.Range, lineDelta, offsetDelta),
+            MalformedBarrierOwnerRange = block.MalformedBarrierOwnerRange is null
+                ? null
+                : Shift(block.MalformedBarrierOwnerRange, lineDelta, offsetDelta)
         };
 
     private static VbaLineLabelSyntax Shift(

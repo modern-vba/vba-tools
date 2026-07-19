@@ -83,11 +83,27 @@ public sealed record VbaSyntaxTree(
         string uri,
         string source,
         VbaSyntaxTree? previousSyntaxTree)
+        => ParseOrUpdate(uri, source, previousSyntaxTree, out _);
+
+    internal static VbaSyntaxTreeParseResult ParseOrUpdate(
+        string uri,
+        string source,
+        VbaSyntaxTree? previousSyntaxTree,
+        out VbaIncrementalParseObservation observation)
     {
+        observation = VbaIncrementalParseObservation.FullModule(
+            source.Length,
+            previousSyntaxTree is null
+                ? VbaIncrementalParseFallbackReason.NoPreviousTree
+                : VbaIncrementalParseFallbackReason.DifferentialGuardFailed);
         if (previousSyntaxTree is not null
             && previousSyntaxTree.Uri.Equals(uri, StringComparison.OrdinalIgnoreCase)
             && previousSyntaxTree.Text.Equals(source, StringComparison.Ordinal))
         {
+            observation = VbaIncrementalParseObservation.Reuse(
+                previousSyntaxTree.Text.Length,
+                previousSyntaxTree.Module.Kind,
+                previousSyntaxTree.Module.Identity.Name);
             return new VbaSyntaxTreeParseResult(
                 previousSyntaxTree,
                 VbaSyntaxTreeParseUpdateKind.ModuleMember);
@@ -98,7 +114,8 @@ public sealed record VbaSyntaxTree(
                 uri,
                 source,
                 previousSyntaxTree,
-                out var incrementalResult))
+                out var incrementalResult,
+                out observation))
         {
             return incrementalResult;
         }
@@ -107,6 +124,72 @@ public sealed record VbaSyntaxTree(
             ParseModule(uri, source),
             VbaSyntaxTreeParseUpdateKind.FullModule);
     }
+}
+
+internal enum VbaIncrementalParseRoute
+{
+    Reuse,
+    ModuleMemberSourceWindow,
+    FullModule
+}
+
+internal enum VbaIncrementalParseFallbackReason
+{
+    None,
+    NoPreviousTree,
+    PreviousDiagnostics,
+    UnsupportedModuleKind,
+    UriMismatch,
+    ChangeLocalityUnproven,
+    MemberNotUnique,
+    MemberBoundaryTouched,
+    WindowOutOfRange,
+    CrossMemberPreprocessor,
+    SliceParseDiagnostics,
+    MemberShapeChanged,
+    ModuleIdentityChanged,
+    DifferentialGuardFailed
+}
+
+internal readonly record struct VbaIncrementalParseObservation(
+    VbaIncrementalParseRoute Route,
+    VbaIncrementalParseFallbackReason FallbackReason,
+    int DocumentUtf16Length,
+    int ParseWindowUtf16Length,
+    int WindowStartOffset,
+    int WindowStartLine,
+    int MemberUtf16Length,
+    VbaModuleKind ModuleKind,
+    string? ModuleIdentity)
+{
+    public static VbaIncrementalParseObservation Reuse(
+        int documentUtf16Length,
+        VbaModuleKind moduleKind,
+        string? moduleIdentity)
+        => new(
+            VbaIncrementalParseRoute.Reuse,
+            VbaIncrementalParseFallbackReason.None,
+            documentUtf16Length,
+            0,
+            0,
+            0,
+            0,
+            moduleKind,
+            moduleIdentity);
+
+    public static VbaIncrementalParseObservation FullModule(
+        int documentUtf16Length,
+        VbaIncrementalParseFallbackReason fallbackReason)
+        => new(
+            VbaIncrementalParseRoute.FullModule,
+            fallbackReason,
+            documentUtf16Length,
+            0,
+            0,
+            0,
+            0,
+            VbaModuleKind.StandardModule,
+            null);
 }
 
 /// <summary>

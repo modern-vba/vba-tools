@@ -1477,9 +1477,9 @@ internal static class VbaSyntaxTreeParser
         return segments;
     }
 
-    private static DocumentationComment? ParseDocumentationComment(IReadOnlyList<VbaSourceLine> lines, int declarationLine)
+    internal static int FindDocumentationCommentStartLine(IReadOnlyList<VbaSourceLine> lines, int declarationLine)
     {
-        var rawLines = new Stack<string>();
+        var startLine = declarationLine;
         for (var lineIndex = declarationLine - 1; lineIndex >= 0; lineIndex--)
         {
             var trimmed = lines[lineIndex].Text.TrimStart();
@@ -1488,6 +1488,19 @@ internal static class VbaSyntaxTreeParser
                 break;
             }
 
+            startLine = lineIndex;
+        }
+
+        return startLine;
+    }
+
+    private static DocumentationComment? ParseDocumentationComment(IReadOnlyList<VbaSourceLine> lines, int declarationLine)
+    {
+        var rawLines = new Stack<string>();
+        var documentationStartLine = FindDocumentationCommentStartLine(lines, declarationLine);
+        for (var lineIndex = declarationLine - 1; lineIndex >= documentationStartLine; lineIndex--)
+        {
+            var trimmed = lines[lineIndex].Text.TrimStart();
             rawLines.Push(trimmed[2..].TrimStart());
         }
 
