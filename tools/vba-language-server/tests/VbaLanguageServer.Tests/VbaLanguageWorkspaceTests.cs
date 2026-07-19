@@ -178,6 +178,43 @@ public sealed class VbaLanguageWorkspaceTests
         }
     }
 
+    [Fact]
+    public void ManifestBackedProjectSnapshotIdentityDoesNotDependOnActiveDocumentUri()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-scope-identity-").FullName;
+        try
+        {
+            WriteProjectManifest(projectRoot);
+            var helperUri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Helper.bas"));
+            var callerUri = ToFileUri(Path.Combine(projectRoot, "src", "Book1", "Caller.bas"));
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.CreateBundled()));
+            workspace.UpdateDocument(helperUri, string.Join('\n', [
+                "Attribute VB_Name = \"Helper\"",
+                "Public Function BuildValue() As String",
+                "End Function"
+            ]));
+            workspace.UpdateDocument(callerUri, string.Join('\n', [
+                "Attribute VB_Name = \"Caller\"",
+                "Public Sub Run()",
+                "    BuildValue",
+                "End Sub"
+            ]));
+
+            var helperSnapshot = workspace.CreateProjectSnapshot(helperUri);
+            var callerSnapshot = workspace.CreateProjectSnapshot(callerUri);
+
+            Assert.Same(helperSnapshot, callerSnapshot);
+            Assert.Equal("Book1", callerSnapshot.Resolution.DocumentName);
+            Assert.Contains(helperUri, callerSnapshot.SourceDocuments.Keys);
+            Assert.Contains(callerUri, callerSnapshot.SourceDocuments.Keys);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
     [Theory]
     [MemberData(nameof(BomAndUtf8EncodedSourceCases))]
     public void ProjectSnapshotDecodesBomAndUtf8DiskSourceDocumentation(byte[] helperBytes)
@@ -268,7 +305,7 @@ public sealed class VbaLanguageWorkspaceTests
     }
 
     [Fact]
-    public void ProjectSnapshotCacheInvalidatesWhenDiskSourceChanges()
+    public void WatcherLessDiskSourceWriteStaysStaleUntilReload()
     {
         var projectRoot = Directory.CreateTempSubdirectory("vba-ls-disk-refresh-").FullName;
         try
@@ -302,9 +339,12 @@ public sealed class VbaLanguageWorkspaceTests
                     "Public Function BuildReplacement() As String",
                     "End Function"
                 ]));
+            var staleSnapshot = workspace.CreateProjectSnapshot(callerUri);
+            workspace.ReloadSourceDocument(helperUri, File.ReadAllText(helperPath));
             var refreshedSnapshot = workspace.CreateProjectSnapshot(callerUri);
 
             Assert.Same(initialSnapshot, reusedSnapshot);
+            Assert.Same(initialSnapshot, staleSnapshot);
             Assert.NotSame(initialSnapshot, refreshedSnapshot);
             Assert.Contains(
                 refreshedSnapshot.SourceIndex.GetWorkspaceSymbols("BuildReplacement"),

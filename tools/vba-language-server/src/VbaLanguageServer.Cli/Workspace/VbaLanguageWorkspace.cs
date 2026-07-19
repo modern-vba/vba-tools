@@ -99,7 +99,7 @@ public sealed class VbaLanguageWorkspace
                 : 0;
             if (RemoveExcludedSourceIdentity(uri))
             {
-                MarkWorkspaceChanged();
+                MarkWorkspaceChanged(uri);
             }
             reservation = ReserveDocumentAnalysis(
                 continuesOpenLifecycle
@@ -139,7 +139,7 @@ public sealed class VbaLanguageWorkspace
         {
             if (RemoveExcludedSourceIdentity(uri))
             {
-                MarkWorkspaceChanged();
+                MarkWorkspaceChanged(uri);
             }
             var existing = GetDocumentState(uri);
             reservation = ReserveDocumentAnalysis(
@@ -221,7 +221,7 @@ public sealed class VbaLanguageWorkspace
             {
                 if (exclusionRemoved)
                 {
-                    MarkWorkspaceChanged();
+                    MarkWorkspaceChanged(uri);
                 }
 
                 return false;
@@ -229,7 +229,7 @@ public sealed class VbaLanguageWorkspace
 
             if (exclusionRemoved)
             {
-                MarkWorkspaceChanged();
+                MarkWorkspaceChanged(uri);
             }
 
             reservation = ReserveDocumentAnalysis(
@@ -282,7 +282,7 @@ public sealed class VbaLanguageWorkspace
             if (hasOpenDocument)
             {
                 documents.Remove(documentKey!);
-                MarkWorkspaceChanged();
+                MarkWorkspaceChanged(uri);
             }
 
             return true;
@@ -314,7 +314,7 @@ public sealed class VbaLanguageWorkspace
             {
                 if (exclusionAdded)
                 {
-                    MarkWorkspaceChanged();
+                    MarkWorkspaceChanged(uri);
                 }
 
                 return false;
@@ -330,7 +330,7 @@ public sealed class VbaLanguageWorkspace
                 && documents.Remove(documentKey);
             if (exclusionAdded || documentRemoved)
             {
-                MarkWorkspaceChanged();
+                MarkWorkspaceChanged(uri);
             }
 
             return true;
@@ -361,7 +361,7 @@ public sealed class VbaLanguageWorkspace
                 && documents.Remove(documentKey);
             if (documentRemoved)
             {
-                MarkWorkspaceChanged();
+                MarkWorkspaceChanged(uri);
             }
 
             return revisionRemoved || documentRemoved;
@@ -707,7 +707,7 @@ public sealed class VbaLanguageWorkspace
             reservation.Version is null
                 ? null
                 : VbaVersionedDocumentSnapshot.Create(analysis, reservation.Version.Value));
-        MarkWorkspaceChanged();
+        MarkWorkspaceChanged(analysis.Uri);
     }
 
     private WorkspaceDocumentState? GetDocumentState(string uri)
@@ -779,10 +779,10 @@ public sealed class VbaLanguageWorkspace
         }
     }
 
-    private void MarkWorkspaceChanged()
+    private void MarkWorkspaceChanged(string uri)
     {
         workspaceVersion++;
-        snapshotProvider.Invalidate();
+        snapshotProvider.InvalidateSource(uri);
     }
 
     private enum WorkspaceDocumentAuthority
