@@ -126,6 +126,13 @@ internal sealed class NullVbaInteractiveWorkTimingSink : IVbaInteractiveWorkTimi
     }
 }
 
+internal sealed record VbaInteractiveWorkSchedulerOptions(
+    bool CoalesceSupersededMutations)
+{
+    public static VbaInteractiveWorkSchedulerOptions Default { get; } = new(
+        CoalesceSupersededMutations: true);
+}
+
 internal sealed class VbaInteractiveWorkCancellationOwner
 {
     private readonly object gate = new();
@@ -218,11 +225,13 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
             SingleReader = true,
             SingleWriter = false
         });
+    private readonly Queue<ScheduledWork> bufferedWork = [];
     private readonly Dictionary<VbaLspRequestId, VbaInteractiveWorkCancellationOwner>
         requestCancellations = [];
     private readonly HashSet<VbaInteractiveWorkCancellationOwner> activeCancellations = [];
     private readonly IVbaInteractiveWorkTimingSink timingSink;
     private readonly Action<VbaInteractiveWorkFailure> failureSink;
+    private readonly VbaInteractiveWorkSchedulerOptions options;
     private readonly Task worker;
     private Task abortCancellationDispatch = Task.CompletedTask;
     private Task? stopTask;
@@ -238,10 +247,12 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
     /// </summary>
     public VbaInteractiveWorkScheduler(
         IVbaInteractiveWorkTimingSink? timingSink = null,
-        Action<VbaInteractiveWorkFailure>? failureSink = null)
+        Action<VbaInteractiveWorkFailure>? failureSink = null,
+        VbaInteractiveWorkSchedulerOptions? options = null)
     {
         this.timingSink = timingSink ?? NullVbaInteractiveWorkTimingSink.Instance;
         this.failureSink = failureSink ?? (static _ => { });
+        this.options = options ?? VbaInteractiveWorkSchedulerOptions.Default;
         worker = ProcessQueueAsync();
     }
 
@@ -275,9 +286,28 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
         => Admit(
             VbaInteractiveWorkKind.Mutation,
             method,
+            coalescingKey: null,
             requestId: null,
             (cancellationToken, _) => executeAsync(cancellationToken),
             advancesReadFence: true);
+
+    /// <summary>
+    /// Admits a mutation that may be superseded by a later queued mutation with the same key before any read fence.
+    /// </summary>
+    public VbaInteractiveWorkAdmission AdmitCoalescibleMutation(
+        string method,
+        string coalescingKey,
+        Func<CancellationToken, Task> executeAsync)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(coalescingKey);
+        return Admit(
+            VbaInteractiveWorkKind.Mutation,
+            method,
+            coalescingKey,
+            requestId: null,
+            (cancellationToken, _) => executeAsync(cancellationToken),
+            advancesReadFence: true);
+    }
 
     /// <summary>
     /// Admits ordered non-mutating work without advancing the read fence.
@@ -288,6 +318,7 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
         => Admit(
             VbaInteractiveWorkKind.Control,
             method,
+            coalescingKey: null,
             requestId: null,
             (cancellationToken, _) => executeAsync(cancellationToken),
             advancesReadFence: false);
@@ -322,6 +353,7 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
         => Admit(
             VbaInteractiveWorkKind.Request,
             method,
+            coalescingKey: null,
             requestId,
             executeAsync,
             advancesReadFence: false);
@@ -404,6 +436,7 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
     private VbaInteractiveWorkAdmission Admit(
         VbaInteractiveWorkKind kind,
         string method,
+        string? coalescingKey,
         VbaLspRequestId? requestId,
         Func<CancellationToken, Action, Task> executeAsync,
         bool advancesReadFence)
@@ -449,6 +482,7 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
                 latestMutationSequence,
                 kind,
                 method,
+                coalescingKey,
                 requestId,
                 admittedAt,
                 _ => executeAsync(
@@ -487,8 +521,21 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
 
     private async Task ProcessQueueAsync()
     {
-        await foreach (var work in workQueue.Reader.ReadAllAsync())
+        while (true)
         {
+            var work = await ReadNextWorkAsync();
+            if (work is null)
+            {
+                return;
+            }
+
+            work = await CoalesceQueuedWorkAsync(work);
+            await ExecuteWorkAsync(work);
+        }
+    }
+
+    private async Task ExecuteWorkAsync(ScheduledWork work)
+    {
             var executionStarted = Stopwatch.GetTimestamp();
             Exception? failure = null;
             var cancelled = false;
@@ -553,8 +600,90 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
             {
                 work.Completion.TrySetResult();
             }
-        }
     }
+
+    private async Task<ScheduledWork?> ReadNextWorkAsync()
+    {
+        if (bufferedWork.TryDequeue(out var buffered))
+        {
+            return buffered;
+        }
+
+        while (await workQueue.Reader.WaitToReadAsync())
+        {
+            if (workQueue.Reader.TryRead(out var work))
+            {
+                return work;
+            }
+        }
+
+        return null;
+    }
+
+    private async Task<ScheduledWork> CoalesceQueuedWorkAsync(ScheduledWork work)
+    {
+        if (!options.CoalesceSupersededMutations
+            || work.CoalescingKey is null)
+        {
+            return work;
+        }
+
+        var current = work;
+        while (TryReadAlreadyQueuedWork(out var next))
+        {
+            if (!CanCoalesce(current, next))
+            {
+                bufferedWork.Enqueue(next);
+                return current;
+            }
+
+            await CompleteSupersededWorkAsync(current);
+            current = next;
+        }
+
+        return current;
+    }
+
+    private bool TryReadAlreadyQueuedWork(out ScheduledWork work)
+    {
+        if (bufferedWork.TryDequeue(out work!))
+        {
+            return true;
+        }
+
+        return workQueue.Reader.TryRead(out work!);
+    }
+
+    private async Task CompleteSupersededWorkAsync(ScheduledWork work)
+    {
+        var completedAt = Stopwatch.GetTimestamp();
+        RecordCompletion(new VbaInteractiveWorkCompletionTiming(
+            work.InputSequence,
+            work.ReadFence,
+            work.Kind,
+            work.Method,
+            work.RequestId,
+            Stopwatch.GetElapsedTime(work.AdmittedAt, completedAt),
+            TimeSpan.Zero,
+            Cancelled: false,
+            Faulted: false));
+        if (work.RequestId is { } requestId)
+        {
+            ReleaseCancellationOwnership(requestId, work.Cancellation);
+        }
+
+        await work.Cancellation.DisposeAsync(
+            ReleaseActiveCancellation(work.Cancellation));
+        work.Completion.TrySetResult();
+    }
+
+    private static bool CanCoalesce(ScheduledWork current, ScheduledWork next)
+        => current.Kind == VbaInteractiveWorkKind.Mutation
+            && next.Kind == VbaInteractiveWorkKind.Mutation
+            && current.Method.Equals(next.Method, StringComparison.Ordinal)
+            && current.CoalescingKey is { } currentKey
+            && next.CoalescingKey is { } nextKey
+            && currentKey.Equals(nextKey, StringComparison.OrdinalIgnoreCase);
 
     private void RecordAdmission(VbaInteractiveWorkAdmissionTiming timing)
     {
@@ -690,6 +819,7 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
         long ReadFence,
         VbaInteractiveWorkKind Kind,
         string Method,
+        string? CoalescingKey,
         VbaLspRequestId? RequestId,
         long AdmittedAt,
         Func<CancellationToken, Task> ExecuteAsync,

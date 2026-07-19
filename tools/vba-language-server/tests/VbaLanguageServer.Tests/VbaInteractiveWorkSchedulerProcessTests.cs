@@ -238,6 +238,224 @@ public sealed class VbaInteractiveWorkSchedulerProcessTests
     }
 
     [Fact]
+    public async Task Server_coalesces_adjacent_didChange_burst_before_the_next_read()
+    {
+        var gateRoot = Directory.CreateTempSubdirectory("vba-ls-scheduler-coalesce-").FullName;
+        var admissionDirectory = Directory.CreateDirectory(
+            Path.Combine(gateRoot, "admissions")).FullName;
+        var startedFile = Path.Combine(gateRoot, "started");
+        var releaseFile = Path.Combine(gateRoot, "release");
+        try
+        {
+            await using var process = await LanguageServerProcessHarness.StartAsync(
+                environment: new Dictionary<string, string>
+                {
+                    ["VBA_TOOLS_INTERACTIVE_REQUEST_ID"] = "number:2",
+                    ["VBA_TOOLS_INTERACTIVE_REQUEST_STARTED_FILE"] = startedFile,
+                    ["VBA_TOOLS_INTERACTIVE_REQUEST_RELEASE_FILE"] = releaseFile,
+                    ["VBA_TOOLS_INTERACTIVE_ADMISSION_DIRECTORY"] = admissionDirectory
+                });
+            try
+            {
+                await process.InitializeAsync();
+                const string uri = "file:///C:/work/SchedulerCoalescing.bas";
+                var oldText = "Attribute VB_Name = \"SchedulerCoalescing\"\n"
+                    + "Public Sub OldProcedure()\n"
+                    + "End Sub\n";
+                var versionTwoText = "Attribute VB_Name = \"SchedulerCoalescing\"\n"
+                    + "Public Sub VersionTwoProcedure()\n"
+                    + "End Sub\n";
+                var versionThreeText = "Attribute VB_Name = \"SchedulerCoalescing\"\n"
+                    + "Public Sub VersionThreeProcedure()\n"
+                    + "End Sub\n";
+                await process.SendNotificationAsync(
+                    "textDocument/didOpen",
+                    CreateOpenDocument(uri, oldText));
+                await process.WaitForDiagnosticsAsync(uri);
+
+                var oldRead = process.SendRequestAsync(
+                    2,
+                    "textDocument/documentSymbol",
+                    new
+                    {
+                        textDocument = new { uri }
+                    });
+                await WaitForFileCreatedAsync(startedFile, TimeSpan.FromSeconds(5));
+                await process.SendNotificationAsync(
+                    "textDocument/didChange",
+                    CreateChangedDocument(uri, version: 2, versionTwoText));
+                await process.SendNotificationAsync(
+                    "textDocument/didChange",
+                    CreateChangedDocument(uri, version: 3, versionThreeText));
+                var latestRead = process.SendRequestAsync(
+                    3,
+                    "textDocument/documentSymbol",
+                    new
+                    {
+                        textDocument = new { uri }
+                    });
+                await WaitForMatchingFileCreatedAsync(
+                    admissionDirectory,
+                    fileName => fileName.EndsWith("-number-3.admitted", StringComparison.Ordinal),
+                    TimeSpan.FromSeconds(5));
+
+                File.WriteAllText(releaseFile, "release");
+                var oldResponse = await oldRead;
+                var latestResponse = await latestRead;
+                Assert.Contains(
+                    oldResponse.GetProperty("result").EnumerateArray(),
+                    symbol => symbol.GetProperty("name").GetString() == "OldProcedure");
+                Assert.Contains(
+                    latestResponse.GetProperty("result").EnumerateArray(),
+                    symbol => symbol.GetProperty("name").GetString() == "VersionThreeProcedure");
+                Assert.DoesNotContain(
+                    latestResponse.GetProperty("result").EnumerateArray(),
+                    symbol => symbol.GetProperty("name").GetString() == "VersionTwoProcedure");
+                Assert.Equal(
+                    2,
+                    CountCompletedFiles(
+                        admissionDirectory,
+                        "-mutation-textDocument_didChange-none.completed"));
+                Assert.Contains(
+                    Directory.EnumerateFiles(admissionDirectory, "*.completed"),
+                    path => path.EndsWith(
+                            "-mutation-textDocument_didChange-none.completed",
+                            StringComparison.Ordinal)
+                        && File.ReadLines(path).Contains(
+                            "executionMilliseconds=0.000000"));
+
+                await process.ShutdownAsync(4);
+            }
+            finally
+            {
+                File.WriteAllText(releaseFile, "release");
+            }
+        }
+        finally
+        {
+            Directory.Delete(gateRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_does_not_coalesce_across_exact_version_block_skeleton_request()
+    {
+        var gateRoot = Directory.CreateTempSubdirectory("vba-ls-scheduler-exact-fence-").FullName;
+        var admissionDirectory = Directory.CreateDirectory(
+            Path.Combine(gateRoot, "admissions")).FullName;
+        var startedFile = Path.Combine(gateRoot, "started");
+        var releaseFile = Path.Combine(gateRoot, "release");
+        try
+        {
+            await using var process = await LanguageServerProcessHarness.StartAsync(
+                environment: new Dictionary<string, string>
+                {
+                    ["VBA_TOOLS_INTERACTIVE_REQUEST_ID"] = "number:2",
+                    ["VBA_TOOLS_INTERACTIVE_REQUEST_STARTED_FILE"] = startedFile,
+                    ["VBA_TOOLS_INTERACTIVE_REQUEST_RELEASE_FILE"] = releaseFile,
+                    ["VBA_TOOLS_INTERACTIVE_ADMISSION_DIRECTORY"] = admissionDirectory
+                });
+            try
+            {
+                await process.InitializeAsync();
+                const string uri = "file:///C:/work/SchedulerExactFence.bas";
+                var versionOneText = "Attribute VB_Name = \"SchedulerExactFence\"\n"
+                    + "Public Sub Existing()\n"
+                    + "End Sub\n";
+                var versionTwoHeader = "Public Function Pending() As String";
+                var versionTwoText = "Attribute VB_Name = \"SchedulerExactFence\"\n"
+                    + versionTwoHeader
+                    + "\n";
+                var versionThreeText = "Attribute VB_Name = \"SchedulerExactFence\"\n"
+                    + "Public Sub Later()\n"
+                    + "End Sub\n";
+                await process.SendNotificationAsync(
+                    "textDocument/didOpen",
+                    CreateOpenDocument(uri, versionOneText));
+                await process.WaitForDiagnosticsAsync(uri);
+
+                var blockedRead = process.SendRequestAsync(
+                    2,
+                    "textDocument/documentSymbol",
+                    new
+                    {
+                        textDocument = new { uri }
+                    });
+                await WaitForFileCreatedAsync(startedFile, TimeSpan.FromSeconds(5));
+                await process.SendNotificationAsync(
+                    "textDocument/didChange",
+                    CreateChangedDocument(uri, version: 2, versionTwoText));
+                var exactRequest = process.SendRequestAsync(
+                    3,
+                    "vba/blockSkeletonInsertion",
+                    new
+                    {
+                        documentUri = uri,
+                        documentVersion = 2,
+                        position = new
+                        {
+                            line = 1,
+                            character = versionTwoHeader.Length
+                        },
+                        options = new
+                        {
+                            insertSpaces = true,
+                            indentSize = 4,
+                            tabSize = 4
+                        }
+                    });
+                await process.SendNotificationAsync(
+                    "textDocument/didChange",
+                    CreateChangedDocument(uri, version: 3, versionThreeText));
+                var latestRead = process.SendRequestAsync(
+                    4,
+                    "textDocument/documentSymbol",
+                    new
+                    {
+                        textDocument = new { uri }
+                    });
+                await WaitForMatchingFileCreatedAsync(
+                    admissionDirectory,
+                    fileName => fileName.EndsWith("-number-3.admitted", StringComparison.Ordinal),
+                    TimeSpan.FromSeconds(5));
+
+                File.WriteAllText(releaseFile, "release");
+                await blockedRead;
+                var exactResponse = await exactRequest;
+                var latestResponse = await latestRead;
+
+                Assert.Equal(
+                    2,
+                    exactResponse.GetProperty("result").GetProperty("documentVersion").GetInt32());
+                Assert.Contains(
+                    latestResponse.GetProperty("result").EnumerateArray(),
+                    symbol => symbol.GetProperty("name").GetString() == "Later");
+                Assert.Equal(
+                    2,
+                    CountCompletedFiles(
+                        admissionDirectory,
+                        "-mutation-textDocument_didChange-none.completed"));
+                Assert.DoesNotContain(
+                    Directory.EnumerateFiles(admissionDirectory, "*.completed")
+                        .Where(path => path.EndsWith(
+                            "-mutation-textDocument_didChange-none.completed",
+                            StringComparison.Ordinal)),
+                    path => File.ReadLines(path).Contains("executionMilliseconds=0.000000"));
+
+                await process.ShutdownAsync(5);
+            }
+            finally
+            {
+                File.WriteAllText(releaseFile, "release");
+            }
+        }
+        finally
+        {
+            Directory.Delete(gateRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Server_sequences_shutdown_before_exit_while_an_earlier_request_is_blocked()
     {
         var gateRoot = Directory.CreateTempSubdirectory("vba-ls-scheduler-exit-").FullName;
@@ -659,4 +877,8 @@ public sealed class VbaInteractiveWorkSchedulerProcessTests
 
         return await created.Task.WaitAsync(timeout);
     }
+
+    private static int CountCompletedFiles(string directory, string suffix)
+        => Directory.EnumerateFiles(directory, "*.completed")
+            .Count(path => path.EndsWith(suffix, StringComparison.Ordinal));
 }

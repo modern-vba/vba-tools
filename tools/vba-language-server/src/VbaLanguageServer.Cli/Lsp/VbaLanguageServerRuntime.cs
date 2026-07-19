@@ -190,7 +190,18 @@ internal sealed class VbaLanguageServerRuntime
                 {
                     if (IsWorkspaceMutationNotification(method))
                     {
-                        scheduler.AdmitMutation(method, executeNotification);
+                        if (method == "textDocument/didChange"
+                            && TryGetTextDocumentUri(parameters, out var changedDocumentUri))
+                        {
+                            scheduler.AdmitCoalescibleMutation(
+                                method,
+                                changedDocumentUri,
+                                executeNotification);
+                        }
+                        else
+                        {
+                            scheduler.AdmitMutation(method, executeNotification);
+                        }
                     }
                     else
                     {
@@ -260,6 +271,16 @@ internal sealed class VbaLanguageServerRuntime
         requestId = default;
         return parameters is JsonObject parameterObject
             && VbaLspRequestId.TryCreate(parameterObject["id"], out requestId);
+    }
+
+    private static bool TryGetTextDocumentUri(JsonNode? parameters, out string uri)
+    {
+        uri = "";
+        return parameters is JsonObject parameterObject
+            && parameterObject["textDocument"] is JsonObject textDocument
+            && textDocument["uri"] is JsonValue uriNode
+            && uriNode.TryGetValue(out uri!)
+            && !string.IsNullOrWhiteSpace(uri);
     }
 
     private static string GetRequestMethod(JsonObject message)

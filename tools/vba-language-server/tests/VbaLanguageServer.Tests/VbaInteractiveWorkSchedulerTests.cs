@@ -632,8 +632,310 @@ public sealed class VbaInteractiveWorkSchedulerTests
         Assert.True(barrier.InputSequence < read.InputSequence);
     }
 
+    [Fact]
+    public async Task Coalescible_mutations_for_the_same_key_execute_only_the_latest_before_a_read_fence()
+    {
+        var executed = new List<string>();
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+
+        var versionTwo = scheduler.AdmitCoalescibleMutation(
+            "textDocument/didChange",
+            "file:///C:/work/Module.bas",
+            _ =>
+            {
+                executed.Add("v2");
+                return Task.CompletedTask;
+            });
+        var versionThree = scheduler.AdmitCoalescibleMutation(
+            "textDocument/didChange",
+            "file:///C:/work/Module.bas",
+            _ =>
+            {
+                executed.Add("v3");
+                return Task.CompletedTask;
+            });
+
+        await Task.WhenAll(versionTwo.Completion, versionThree.Completion)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(versionTwo.InputSequence + 1, versionThree.InputSequence);
+        Assert.Equal(versionThree.InputSequence, versionThree.ReadFence);
+        Assert.Equal(["v3"], executed);
+    }
+
+    [Fact]
+    public async Task Coalescible_mutations_do_not_cross_a_read_fence()
+    {
+        var executed = new List<string>();
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+
+        var versionTwo = scheduler.AdmitCoalescibleMutation(
+            "textDocument/didChange",
+            "file:///C:/work/Module.bas",
+            _ =>
+            {
+                executed.Add("v2");
+                return Task.CompletedTask;
+            });
+        var read = scheduler.AdmitRequest(
+            requestId: null,
+            "textDocument/hover",
+            _ =>
+            {
+                executed.Add("read");
+                return Task.CompletedTask;
+            });
+        var versionThree = scheduler.AdmitCoalescibleMutation(
+            "textDocument/didChange",
+            "file:///C:/work/Module.bas",
+            _ =>
+            {
+                executed.Add("v3");
+                return Task.CompletedTask;
+            });
+
+        await Task.WhenAll(versionTwo.Completion, read.Completion, versionThree.Completion)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(["v2", "read", "v3"], executed);
+    }
+
+    [Fact]
+    public async Task Coalescible_mutations_do_not_cross_document_keys()
+    {
+        var executed = new List<string>();
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+
+        var moduleA2 = scheduler.AdmitCoalescibleMutation(
+            "textDocument/didChange",
+            "file:///C:/work/ModuleA.bas",
+            _ =>
+            {
+                executed.Add("a2");
+                return Task.CompletedTask;
+            });
+        var moduleB2 = scheduler.AdmitCoalescibleMutation(
+            "textDocument/didChange",
+            "file:///C:/work/ModuleB.bas",
+            _ =>
+            {
+                executed.Add("b2");
+                return Task.CompletedTask;
+            });
+        var moduleA3 = scheduler.AdmitCoalescibleMutation(
+            "textDocument/didChange",
+            "file:///C:/work/ModuleA.bas",
+            _ =>
+            {
+                executed.Add("a3");
+                return Task.CompletedTask;
+            });
+
+        await Task.WhenAll(moduleA2.Completion, moduleB2.Completion, moduleA3.Completion)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(["a2", "b2", "a3"], executed);
+    }
+
+    [Fact]
+    public async Task Coalescing_can_be_disabled_without_changing_admission_order()
+    {
+        var executed = new List<string>();
+        await using var scheduler = new VbaInteractiveWorkScheduler(
+            options: new VbaInteractiveWorkSchedulerOptions(
+                CoalesceSupersededMutations: false));
+
+        var versionTwo = scheduler.AdmitCoalescibleMutation(
+            "textDocument/didChange",
+            "file:///C:/work/Module.bas",
+            _ =>
+            {
+                executed.Add("v2");
+                return Task.CompletedTask;
+            });
+        var versionThree = scheduler.AdmitCoalescibleMutation(
+            "textDocument/didChange",
+            "file:///C:/work/Module.bas",
+            _ =>
+            {
+                executed.Add("v3");
+                return Task.CompletedTask;
+            });
+
+        await Task.WhenAll(versionTwo.Completion, versionThree.Completion)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(["v2", "v3"], executed);
+        Assert.Equal(versionTwo.InputSequence + 1, versionThree.InputSequence);
+    }
+
+    [Fact]
+    public async Task Randomized_mutation_and_read_sequences_match_the_non_coalescing_reference()
+    {
+        for (var seed = 0; seed < 16; seed++)
+        {
+            var operations = CreateRandomizedOperations(seed);
+
+            var reference = await RunObservableScenarioAsync(
+                operations,
+                coalesceSupersededMutations: false);
+            var coalesced = await RunObservableScenarioAsync(
+                operations,
+                coalesceSupersededMutations: true);
+
+            Assert.Equal(reference.Reads, coalesced.Reads);
+            Assert.Equal(reference.FinalState, coalesced.FinalState);
+            Assert.Equal(operations.Count, coalesced.CompletedCount);
+            Assert.True(coalesced.ExecutedMutationCount <= reference.ExecutedMutationCount);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "Performance")]
+    public async Task Release_burst_coalescing_reports_typing_latency_and_superseded_work()
+    {
+        const int acceptedChangeCount = 256;
+        var release = CreateSignal();
+        var timingSink = new RecordingTimingSink();
+        var executedAnalysisCount = 0;
+        await using var scheduler = new VbaInteractiveWorkScheduler(timingSink);
+        var blocker = scheduler.AdmitBarrier(
+            "test/block",
+            cancellationToken => release.Task.WaitAsync(cancellationToken));
+        var beforeAllocatedBytes = GC.GetTotalAllocatedBytes(precise: true);
+
+        var admissions = Enumerable.Range(0, acceptedChangeCount)
+            .Select(index => scheduler.AdmitCoalescibleMutation(
+                "textDocument/didChange",
+                "file:///C:/work/Burst.bas",
+                _ =>
+                {
+                    executedAnalysisCount++;
+                    return Task.CompletedTask;
+                }))
+            .ToArray();
+
+        release.TrySetResult();
+        await Task.WhenAll(admissions.Select(admission => admission.Completion).Append(blocker.Completion))
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        var allocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - beforeAllocatedBytes;
+
+        var didChangeCompletions = timingSink.Completed
+            .Where(timing => timing.Method == "textDocument/didChange")
+            .ToArray();
+        var supersededCount = acceptedChangeCount - executedAnalysisCount;
+        var queueP95 = Percentile95(didChangeCompletions.Select(timing => timing.QueueTime));
+        var commitLatencyP95 = Percentile95(
+            didChangeCompletions
+                .Where(timing => timing.ExecutionTime > TimeSpan.Zero)
+                .Select(timing => timing.ExecutionTime));
+        output.WriteLine(
+            "burst coalescing: acceptedChanges={0} analysisBuilds={1} superseded={2} queueDelayP95={3:F6}ms commitLatencyP95={4:F6}ms allocatedBytes={5}",
+            acceptedChangeCount,
+            executedAnalysisCount,
+            supersededCount,
+            queueP95.TotalMilliseconds,
+            commitLatencyP95.TotalMilliseconds,
+            allocatedBytes);
+
+        Assert.Equal(acceptedChangeCount, didChangeCompletions.Length);
+        Assert.Equal(1, executedAnalysisCount);
+        Assert.Equal(acceptedChangeCount - 1, supersededCount);
+        Assert.True(allocatedBytes >= 0);
+    }
+
     private static TaskCompletionSource CreateSignal()
         => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private static IReadOnlyList<ScenarioOperation> CreateRandomizedOperations(int seed)
+    {
+        var random = new Random(seed);
+        var operations = new List<ScenarioOperation>();
+        var value = 0;
+        for (var index = 0; index < 48; index++)
+        {
+            if (index % 7 == 6)
+            {
+                operations.Add(new ScenarioOperation(
+                    ScenarioOperationKind.Read,
+                    Key: "read",
+                    Value: 0));
+                continue;
+            }
+
+            var key = random.Next(2) == 0 ? "A" : "B";
+            operations.Add(new ScenarioOperation(
+                ScenarioOperationKind.Mutation,
+                key,
+                ++value));
+        }
+
+        operations.Add(new ScenarioOperation(
+            ScenarioOperationKind.Read,
+            Key: "read",
+            Value: 0));
+        return operations;
+    }
+
+    private static async Task<ScenarioResult> RunObservableScenarioAsync(
+        IReadOnlyList<ScenarioOperation> operations,
+        bool coalesceSupersededMutations)
+    {
+        var release = CreateSignal();
+        var state = new Dictionary<string, int>(StringComparer.Ordinal)
+        {
+            ["A"] = 0,
+            ["B"] = 0
+        };
+        var reads = new List<string>();
+        var executedMutationCount = 0;
+        var admissions = new List<VbaInteractiveWorkAdmission>();
+        await using var scheduler = new VbaInteractiveWorkScheduler(
+            options: new VbaInteractiveWorkSchedulerOptions(
+                coalesceSupersededMutations));
+        var blocker = scheduler.AdmitBarrier(
+            "test/block",
+            cancellationToken => release.Task.WaitAsync(cancellationToken));
+
+        foreach (var operation in operations)
+        {
+            if (operation.Kind == ScenarioOperationKind.Mutation)
+            {
+                var key = operation.Key;
+                var value = operation.Value;
+                admissions.Add(scheduler.AdmitCoalescibleMutation(
+                    "textDocument/didChange",
+                    key,
+                    _ =>
+                    {
+                        executedMutationCount++;
+                        state[key] = value;
+                        return Task.CompletedTask;
+                    }));
+            }
+            else
+            {
+                admissions.Add(scheduler.AdmitRequest(
+                    requestId: null,
+                    "textDocument/hover",
+                    _ =>
+                    {
+                        reads.Add($"A={state["A"]};B={state["B"]}");
+                        return Task.CompletedTask;
+                    }));
+            }
+        }
+
+        release.TrySetResult();
+        await Task.WhenAll(admissions.Select(admission => admission.Completion).Append(blocker.Completion))
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        return new ScenarioResult(
+            reads,
+            $"A={state["A"]};B={state["B"]}",
+            executedMutationCount,
+            admissions.Count);
+    }
 
     private static TimeSpan Percentile95(IEnumerable<TimeSpan> values)
     {
@@ -654,4 +956,21 @@ public sealed class VbaInteractiveWorkSchedulerTests
         public void RecordCompletion(VbaInteractiveWorkCompletionTiming timing)
             => Completed.Add(timing);
     }
+
+    private enum ScenarioOperationKind
+    {
+        Mutation,
+        Read
+    }
+
+    private sealed record ScenarioOperation(
+        ScenarioOperationKind Kind,
+        string Key,
+        int Value);
+
+    private sealed record ScenarioResult(
+        IReadOnlyList<string> Reads,
+        string FinalState,
+        int ExecutedMutationCount,
+        int CompletedCount);
 }

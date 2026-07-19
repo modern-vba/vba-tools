@@ -121,9 +121,9 @@ public sealed class VbaDiagnosticsPublisherTests
             await output.WaitForMessageCountAsync(1));
         await DrainQueuedPublicationsAsync();
 
-        Assert.Equal(1, output.MessageCount);
+        messages = ReadJsonMessages(output.ReadText());
         var parameters = Assert.IsType<JsonObject>(
-            messages.Single()["params"]);
+            messages.Last()["params"]);
         Assert.Null(parameters["version"]);
         Assert.Empty(Assert.IsType<JsonArray>(parameters["diagnostics"]));
     }

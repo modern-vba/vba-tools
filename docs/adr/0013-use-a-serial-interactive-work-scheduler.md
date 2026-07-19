@@ -69,6 +69,18 @@ The server continues advertising LSP full-text document synchronization. This
 decision changes neither that contract nor the C# authority established by ADR
 0009.
 
+The scheduler may mark full-text `didChange` mutations as coalescible by source
+URI. Coalescing is an execution-lane optimization, not a new observable
+document-version contract: admission sequence and read fences are still
+recorded for every input. When multiple queued `didChange` mutations for the
+same URI are adjacent and no request, barrier, lifecycle transition, watched
+file mutation, manifest mutation, or other source URI separates them, the lane
+may skip the superseded mutation body and execute only the newest queued body.
+The optimization stops at the first non-matching queued item, so a read admitted
+between V2 and V3 still observes V2 before V3 can execute. Coalescing is
+controlled by `VbaInteractiveWorkSchedulerOptions` and can be disabled without
+removing exact-version snapshots or latest-only diagnostics.
+
 ## Considered options
 
 - Keeping the blocking read/execute loop preserved incidental serial behavior,
@@ -96,3 +108,8 @@ existing owner; reuse is allowed after terminal ownership release. Shutdown,
 exit, EOF, cancellation-token disposal, output serialization, completion versus
 cancellation races, and timing thresholds require gate-driven regression tests
 without sleep-based ordering assumptions.
+
+Coalesced work records a normal terminal completion with zero execution time
+for the superseded queued mutation. That keeps admission/completion accounting
+balanced while making accepted input versions distinct from optional
+intermediate analysis work.
