@@ -53,6 +53,15 @@ public sealed class VbaSemanticInventoryTests
         Assert.Equal(
             compatibilityIndex.GetSignatureHelp(callerUri, 3, "    value = ReadValue(".Length),
             inventory.GetSignatureHelp(callerUri, 3, "    value = ReadValue(".Length));
+        Assert.Equal(
+            compatibilityIndex.FindReferences(callerUri, 3, "    value = ReadValue".Length),
+            inventory.FindReferences(callerUri, 3, "    value = ReadValue".Length));
+        AssertSameRenamePlan(
+            compatibilityIndex.CreateRenamePlan(callerUri, 3, "    value = ReadValue".Length, "ReadText"),
+            inventory.CreateRenamePlan(callerUri, 3, "    value = ReadValue".Length, "ReadText"));
+        Assert.Equal(
+            compatibilityIndex.GetSemanticTokenData(callerUri),
+            inventory.GetSemanticTokenData(callerUri));
     }
 
     [Fact]
@@ -136,4 +145,22 @@ public sealed class VbaSemanticInventoryTests
 
         return string.Join('\n', lines);
     }
+
+    private static void AssertSameRenamePlan(VbaRenamePlan? expected, VbaRenamePlan? actual)
+    {
+        Assert.Equal(expected?.TargetRange, actual?.TargetRange);
+        Assert.Equal(
+            FlattenRenameChanges(expected),
+            FlattenRenameChanges(actual));
+    }
+
+    private static IReadOnlyList<string> FlattenRenameChanges(VbaRenamePlan? plan)
+        => plan?.Changes
+            .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+            .SelectMany(pair => pair.Value
+                .OrderBy(edit => edit.Range.Start.Line)
+                .ThenBy(edit => edit.Range.Start.Character)
+                .Select(edit => $"{pair.Key}:{edit.Range}:{edit.NewText}"))
+            .ToArray()
+            ?? [];
 }
