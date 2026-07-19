@@ -1,5 +1,4 @@
 using VbaLanguageServer.Diagnostics;
-using VbaLanguageServer.Syntax;
 using VbaLanguageServer.Workspace;
 
 namespace VbaLanguageServer.Lsp;
@@ -30,10 +29,10 @@ internal sealed class VbaDiagnosticsPublisher
     /// <param name="cancellationToken">A cancellation token for transport work.</param>
     public Task PublishTrackedDiagnosticsAsync(string uri, CancellationToken cancellationToken)
     {
-        var syntaxTree = workspace.GetDocumentSyntaxTree(uri, cancellationToken);
-        return syntaxTree is null
+        var analysis = workspace.GetDocumentAnalysis(uri, cancellationToken);
+        return analysis is null
             ? PublishEmptyDiagnosticsAsync(uri, cancellationToken)
-            : PublishDiagnosticsAsync(uri, syntaxTree, cancellationToken);
+            : PublishDiagnosticsAsync(analysis, cancellationToken);
     }
 
     /// <summary>
@@ -90,16 +89,15 @@ internal sealed class VbaDiagnosticsPublisher
     }
 
     private Task PublishDiagnosticsAsync(
-        string uri,
-        VbaSyntaxTree syntaxTree,
+        VbaDocumentAnalysis analysis,
         CancellationToken cancellationToken)
         => transport.WriteNotificationAsync(
             "textDocument/publishDiagnostics",
             new
             {
-                uri,
+                uri = analysis.Uri,
                 diagnostics = VbaLspFeatureProjection.CreateDiagnostics(
-                    VbaDocumentDiagnostics.Collect(syntaxTree, uri))
+                    analysis.Diagnostics.Diagnostics)
             },
             cancellationToken);
 }

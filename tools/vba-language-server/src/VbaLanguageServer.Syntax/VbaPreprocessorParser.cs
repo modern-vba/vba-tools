@@ -20,11 +20,24 @@ internal static class VbaPreprocessorParser
         int codeStartLine)
     {
         var lines = sourceText.Lines;
-        var directiveTokens = tokenStream.Tokens
-            .Where(token =>
-                token.Kind == VbaTokenKind.PreprocessorDirective
-                && token.Range.Start.Line >= codeStartLine)
-            .ToDictionary(token => token.Range.Start.Line);
+        Dictionary<int, VbaToken>? directiveTokens = null;
+        foreach (var token in tokenStream.Tokens)
+        {
+            if (token.Kind != VbaTokenKind.PreprocessorDirective
+                || token.Range.Start.Line < codeStartLine)
+            {
+                continue;
+            }
+
+            directiveTokens ??= [];
+            directiveTokens.Add(token.Range.Start.Line, token);
+        }
+
+        if (directiveTokens is null)
+        {
+            return ParsedPreprocessor.Empty;
+        }
+
         var directives = new List<VbaPreprocessorDirectiveSyntax>();
         var blocks = new List<VbaPreprocessorBlockSyntax>();
         var diagnostics = new List<VbaSyntaxDiagnostic>();
@@ -484,7 +497,13 @@ internal static class VbaPreprocessorParser
 internal sealed record ParsedPreprocessor(
     IReadOnlyList<VbaPreprocessorDirectiveSyntax> Directives,
     IReadOnlyList<VbaPreprocessorBlockSyntax> Blocks,
-    IReadOnlyList<VbaSyntaxDiagnostic> Diagnostics);
+    IReadOnlyList<VbaSyntaxDiagnostic> Diagnostics)
+{
+    public static ParsedPreprocessor Empty { get; } = new(
+        Array.Empty<VbaPreprocessorDirectiveSyntax>(),
+        Array.Empty<VbaPreprocessorBlockSyntax>(),
+        Array.Empty<VbaSyntaxDiagnostic>());
+}
 
 /// <summary>
 /// Builds a preprocessor #If block while scanning directive lines.

@@ -29,7 +29,10 @@ public sealed record VbaSyntaxTree(
         this.sourceText = sourceText;
     }
 
-    internal VbaSourceText SourceText
+    /// <summary>
+    /// Gets the source-coordinate model created from the same text as this syntax tree.
+    /// </summary>
+    public VbaSourceText SourceText
     {
         get
         {

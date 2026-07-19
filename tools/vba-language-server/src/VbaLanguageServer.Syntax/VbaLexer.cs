@@ -21,7 +21,12 @@ internal static class VbaLexer
     public static VbaTokenStream Tokenize(VbaSourceText sourceText)
     {
         var state = new LexerState(sourceText);
-        var tokens = new List<VbaToken>();
+        var estimatedTokenCapacity = (int)Math.Max(
+            4L,
+            Math.Min(
+                sourceText.Text.Length,
+                ((long)sourceText.Lines.Count * 2) + 64));
+        var tokens = new List<VbaToken>(estimatedTokenCapacity);
 
         while (!state.IsAtEnd)
         {
@@ -97,23 +102,40 @@ internal static class VbaLexer
         if (state.Current == '\r' && state.Peek(1) == '\n')
         {
             state.Advance();
-            return new VbaToken(VbaTokenKind.NewLine, "\r\n", new VbaSyntaxRange(start, state.Position));
+            var end = state.Position;
+            return new VbaToken(VbaTokenKind.NewLine, "\r\n", new VbaSyntaxRange(start, end));
         }
 
-        var text = state.Current.ToString();
+        var text = state.Current == '\r' ? "\r" : "\n";
         state.Advance();
-        return new VbaToken(VbaTokenKind.NewLine, text, new VbaSyntaxRange(start, state.Position));
+        var singleCharacterEnd = state.Position;
+        return new VbaToken(
+            VbaTokenKind.NewLine,
+            text,
+            new VbaSyntaxRange(start, singleCharacterEnd));
     }
 
     private static VbaToken ReadWhitespace(LexerState state)
     {
         var start = state.Position;
+        var containsOnlySpaces = true;
         while (!state.IsAtEnd && char.IsWhiteSpace(state.Current) && state.Current is not '\r' and not '\n')
         {
+            if (state.Current == ' ')
+            {
+                state.AdvanceSpaces();
+                continue;
+            }
+
+            containsOnlySpaces = false;
             state.Advance();
         }
 
-        return CreateToken(state, VbaTokenKind.Whitespace, start);
+        var end = state.Position;
+        return new VbaToken(
+            VbaTokenKind.Whitespace,
+            state.SliceWhitespace(start.Offset, end.Offset, containsOnlySpaces),
+            new VbaSyntaxRange(start, end));
     }
 
     private static VbaToken ReadUntilLineEnd(LexerState state, VbaTokenKind kind)
@@ -277,7 +299,8 @@ internal static class VbaLexer
         var kind = VbaLanguageVocabulary.IsKeyword(text)
             ? VbaTokenKind.Keyword
             : VbaTokenKind.Identifier;
-        return new VbaToken(kind, text, new VbaSyntaxRange(start, state.Position));
+        var end = state.Position;
+        return new VbaToken(kind, text, new VbaSyntaxRange(start, end));
     }
 
     private static bool TryReadOperator(LexerState state, out VbaToken token)
@@ -313,7 +336,13 @@ internal static class VbaLexer
     }
 
     private static VbaToken CreateToken(LexerState state, VbaTokenKind kind, VbaSyntaxPosition start)
-        => new(kind, state.Slice(start.Offset, state.Position.Offset), new VbaSyntaxRange(start, state.Position));
+    {
+        var end = state.Position;
+        return new VbaToken(
+            kind,
+            state.Slice(start.Offset, end.Offset),
+            new VbaSyntaxRange(start, end));
+    }
 
     private static bool IsPreprocessorDirectiveStart(LexerState state)
         => state.Current == '#' && IsFirstNonWhitespaceOnLine(state);
@@ -374,6 +403,10 @@ internal static class VbaLexer
 
     private sealed class LexerState
     {
+        private const int MaximumCachedSpaceCount = 64;
+        private readonly string?[] spacesByLength =
+            new string?[MaximumCachedSpaceCount + 1];
+
         /// <summary>
         /// Initializes a lexer cursor at the beginning of the supplied source.
         /// </summary>
@@ -381,10 +414,16 @@ internal static class VbaLexer
         public LexerState(VbaSourceText sourceText)
         {
             SourceText = sourceText;
-            Position = sourceText.StartPosition;
+            line = sourceText.StartPosition.Line;
+            character = sourceText.StartPosition.Character;
+            offset = sourceText.StartPosition.Offset;
         }
 
         private VbaSourceText SourceText { get; }
+        private int line;
+        private int character;
+        private int offset;
+        private VbaSyntaxPosition? cachedPosition;
 
         /// <summary>
         /// Gets the source text being tokenized.
@@ -394,17 +433,18 @@ internal static class VbaLexer
         /// <summary>
         /// Gets the current line, character, and offset of the lexer cursor.
         /// </summary>
-        public VbaSyntaxPosition Position { get; private set; }
+        public VbaSyntaxPosition Position
+            => cachedPosition ??= new VbaSyntaxPosition(line, character, offset);
 
         /// <summary>
         /// Gets whether the lexer cursor has reached the end of the source text.
         /// </summary>
-        public bool IsAtEnd => Position.Offset >= Source.Length;
+        public bool IsAtEnd => offset >= Source.Length;
 
         /// <summary>
         /// Gets the current source character, or a null character sentinel at end of source.
         /// </summary>
-        public char Current => IsAtEnd ? '\0' : Source[Position.Offset];
+        public char Current => IsAtEnd ? '\0' : Source[offset];
 
         /// <summary>
         /// Returns a character relative to the current cursor position.
@@ -413,8 +453,10 @@ internal static class VbaLexer
         /// <returns>The requested character, or a null character sentinel beyond the end of source.</returns>
         public char Peek(int distance)
         {
-            var offset = Position.Offset + distance;
-            return offset >= Source.Length ? '\0' : Source[offset];
+            var requestedOffset = offset + distance;
+            return requestedOffset >= Source.Length
+                ? '\0'
+                : Source[requestedOffset];
         }
 
         /// <summary>
@@ -426,6 +468,20 @@ internal static class VbaLexer
         public string Slice(int startOffset, int endOffset)
             => Source[startOffset..endOffset];
 
+        public string SliceWhitespace(
+            int startOffset,
+            int endOffset,
+            bool containsOnlySpaces)
+        {
+            var length = endOffset - startOffset;
+            if (!containsOnlySpaces || length > MaximumCachedSpaceCount)
+            {
+                return Slice(startOffset, endOffset);
+            }
+
+            return spacesByLength[length] ??= new string(' ', length);
+        }
+
         /// <summary>
         /// Advances the cursor by one source character, normalizing CRLF to a single line break.
         /// </summary>
@@ -436,7 +492,42 @@ internal static class VbaLexer
                 return;
             }
 
-            Position = SourceText.Advance(Position);
+            if (Source[offset] == '\r')
+            {
+                cachedPosition = null;
+                line++;
+                character = 0;
+                offset += Peek(1) == '\n' ? 2 : 1;
+                return;
+            }
+
+            if (Source[offset] == '\n')
+            {
+                cachedPosition = null;
+                line++;
+                character = 0;
+                offset++;
+                return;
+            }
+
+            cachedPosition = null;
+            character++;
+            offset++;
+        }
+
+        /// <summary>
+        /// Advances over a contiguous run of ordinary spaces without changing lines.
+        /// </summary>
+        public void AdvanceSpaces()
+        {
+            var remaining = Source.AsSpan(offset);
+            var nonSpaceOffset = remaining.IndexOfAnyExcept(' ');
+            var length = nonSpaceOffset < 0
+                ? remaining.Length
+                : nonSpaceOffset;
+            cachedPosition = null;
+            character += length;
+            offset += length;
         }
 
         /// <summary>
@@ -445,7 +536,10 @@ internal static class VbaLexer
         /// <param name="position">The position to restore.</param>
         public void Rewind(VbaSyntaxPosition position)
         {
-            Position = position;
+            line = position.Line;
+            character = position.Character;
+            offset = position.Offset;
+            cachedPosition = position;
         }
     }
 }

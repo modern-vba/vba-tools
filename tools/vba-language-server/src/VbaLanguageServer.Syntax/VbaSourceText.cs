@@ -27,15 +27,18 @@ public sealed record VbaSourceLine(
 public sealed class VbaSourceText
 {
     private readonly VbaSourceLine[] indexedLines;
+    private readonly bool[] blankLines;
 
     private VbaSourceText(
         string text,
         VbaSourceLine[] lines,
+        bool[] blankLines,
         VbaSyntaxPosition startPosition,
         VbaSyntaxRange fullRange)
     {
         Text = text;
         indexedLines = lines;
+        this.blankLines = blankLines;
         Lines = Array.AsReadOnly(lines);
         StartPosition = startPosition;
         FullRange = fullRange;
@@ -73,18 +76,31 @@ public sealed class VbaSourceText
     /// <returns>The indexed source text.</returns>
     public static VbaSourceText From(string source)
     {
-        var lines = new List<VbaSourceLine>();
+        const int maximumCachedSpaceCount = 128;
+        var spacesByLength = new string?[maximumCachedSpaceCount + 1];
+        var lines = new List<VbaSourceLine>(
+            Math.Max(1, source.Length / 32));
+        var blankLines = new List<bool>(lines.Capacity);
         var line = 0;
         var offset = 0;
         while (offset <= source.Length)
         {
             var startOffset = offset;
-            while (offset < source.Length && source[offset] is not '\r' and not '\n')
-            {
-                offset++;
-            }
+            var remainingSource = source.AsSpan(offset);
+            var relativeNewLineOffset = remainingSource.IndexOfAny('\r', '\n');
+            var lineLength = relativeNewLineOffset < 0
+                ? remainingSource.Length
+                : relativeNewLineOffset;
+            var lineSpan = remainingSource[..lineLength];
+            var containsOnlySpaces = lineSpan.IndexOfAnyExcept(' ') < 0;
+            offset += lineLength;
 
-            lines.Add(new VbaSourceLine(line, source[startOffset..offset], startOffset, offset));
+            var length = offset - startOffset;
+            var lineText = containsOnlySpaces && length <= maximumCachedSpaceCount
+                ? spacesByLength[length] ??= new string(' ', length)
+                : source[startOffset..offset];
+            lines.Add(new VbaSourceLine(line, lineText, startOffset, offset));
+            blankLines.Add(containsOnlySpaces || lineSpan.Trim().IsEmpty);
             if (offset >= source.Length)
             {
                 break;
@@ -109,9 +125,74 @@ public sealed class VbaSourceText
         return new VbaSourceText(
             source,
             indexedLines,
+            blankLines.ToArray(),
             startPosition,
             new VbaSyntaxRange(startPosition, endPosition));
     }
+
+    internal static VbaSourceText Update(
+        string source,
+        VbaSourceText previous)
+    {
+        if (source.Length != previous.Text.Length)
+        {
+            return From(source);
+        }
+
+        var firstDifference = 0;
+        while (firstDifference < source.Length
+            && source[firstDifference] == previous.Text[firstDifference])
+        {
+            firstDifference++;
+        }
+
+        if (firstDifference == source.Length)
+        {
+            return previous;
+        }
+
+        var lastDifference = source.Length - 1;
+        while (lastDifference > firstDifference
+            && source[lastDifference] == previous.Text[lastDifference])
+        {
+            lastDifference--;
+        }
+
+        var changedLineIndex = previous.PositionAt(firstDifference).Line;
+        var changedLine = previous.indexedLines[changedLineIndex];
+        if (lastDifference >= changedLine.EndOffset
+            || source.AsSpan(
+                    firstDifference,
+                    lastDifference - firstDifference + 1)
+                .IndexOfAny('\r', '\n') >= 0)
+        {
+            return From(source);
+        }
+
+        var updatedLines = (VbaSourceLine[])previous.indexedLines.Clone();
+        var updatedBlankLines = (bool[])previous.blankLines.Clone();
+        updatedLines[changedLineIndex] = new VbaSourceLine(
+            changedLine.LineNumber,
+            source[changedLine.StartOffset..changedLine.EndOffset],
+            changedLine.StartOffset,
+            changedLine.EndOffset);
+        updatedBlankLines[changedLineIndex] = source
+            .AsSpan(changedLine.StartOffset, changedLine.EndOffset - changedLine.StartOffset)
+            .Trim()
+            .IsEmpty;
+        return new VbaSourceText(
+            source,
+            updatedLines,
+            updatedBlankLines,
+            previous.StartPosition,
+            previous.FullRange);
+    }
+
+    /// <summary>
+    /// Gets whether one indexed physical line contains only whitespace.
+    /// </summary>
+    internal bool IsBlankLine(int lineIndex)
+        => blankLines[lineIndex];
 
     /// <summary>
     /// Converts an absolute character offset to a syntax position.

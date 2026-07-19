@@ -685,6 +685,64 @@ public sealed class VbaLanguageWorkspaceTests
     }
 
     [Fact]
+    public void Disk_reload_adopts_the_latest_equivalent_input_uri()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-reload-uri-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(projectRoot, "Worker.bas");
+            var canonicalUri = ToFileUri(sourcePath);
+            var encodedUri = ToEncodedDriveFileUri(sourcePath);
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()));
+            Assert.True(workspace.ReloadSourceDocument(
+                encodedUri,
+                "Public Sub Encoded()\nEnd Sub\n"));
+
+            Assert.True(workspace.ReloadSourceDocument(
+                canonicalUri,
+                "Public Sub Canonical()\nEnd Sub\n"));
+
+            Assert.Equal(canonicalUri, Assert.Single(workspace.GetDocumentUris()));
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void New_open_lifecycle_adopts_the_latest_equivalent_input_uri()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-update-uri-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(projectRoot, "Worker.bas");
+            var canonicalUri = ToFileUri(sourcePath);
+            var encodedUri = ToEncodedDriveFileUri(sourcePath);
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()));
+            Assert.True(workspace.ReloadSourceDocument(
+                encodedUri,
+                "Public Sub Disk()\nEnd Sub\n"));
+
+            workspace.UpdateDocument(
+                canonicalUri,
+                "Public Sub OpenBuffer()\nEnd Sub\n");
+
+            Assert.Equal(canonicalUri, Assert.Single(workspace.GetDocumentUris()));
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void WatchedDeletePreservesOpenBufferUntilCloseAndReloadClearsExclusion()
     {
         var projectRoot = Directory.CreateTempSubdirectory("vba-ls-delete-authority-").FullName;

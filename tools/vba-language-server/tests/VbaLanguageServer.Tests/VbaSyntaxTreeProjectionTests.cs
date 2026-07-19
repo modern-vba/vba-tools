@@ -7,6 +7,32 @@ namespace VbaLanguageServer.Tests;
 public sealed class VbaSyntaxTreeProjectionTests
 {
     [Fact]
+    public void Lexer_token_positions_match_source_coordinates_across_mixed_newlines()
+    {
+        const string uri = "file:///C:/work/MixedNewlines.bas";
+        const string source =
+            "Attribute VB_Name = \"MixedNewlines\"\r\n"
+            + "Public Sub Run()\r"
+            + "    Dim text As String\n"
+            + "    text = \"日本語😀\"\r\n"
+            + "End Sub";
+        var sourceText = VbaSourceText.From(source);
+
+        var tree = VbaSyntaxTree.ParseModule(uri, source);
+
+        Assert.NotEmpty(tree.TokenStream.Tokens);
+        foreach (var token in tree.TokenStream.Tokens)
+        {
+            Assert.Equal(
+                sourceText.PositionAt(token.Range.Start.Offset),
+                token.Range.Start);
+            Assert.Equal(
+                sourceText.PositionAt(token.Range.End.Offset),
+                token.Range.End);
+        }
+    }
+
+    [Fact]
     public void ParserReportsModuleMemberUpdateForSafeCallableBodyEdit()
     {
         const string uri = "file:///C:/work/Worker.bas";
@@ -37,6 +63,48 @@ public sealed class VbaSyntaxTreeProjectionTests
         Assert.Equal(VbaSyntaxTreeParseUpdateKind.ModuleMember, result.UpdateKind);
         Assert.Contains(result.SyntaxTree.Module.CallableDeclarations, declaration => declaration.Name == "BuildValue");
         Assert.Contains(result.SyntaxTree.Module.CallableDeclarations, declaration => declaration.Name == "Run");
+    }
+
+    [Fact]
+    public void Incremental_source_projection_falls_back_when_previous_semantic_shape_is_not_proven()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var original = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Before()",
+            "End Sub",
+            "Public Sub Edited()",
+            "    Dim value As Long",
+            "    value = 1",
+            "End Sub"
+        ]);
+        var updated = original.Replace("value = 1", "value = 2", StringComparison.Ordinal);
+        var previousTree = VbaSyntaxTree.ParseModule(uri, original);
+        var previousDocument = VbaSourceIndex.CreateDocument(uri, previousTree);
+        var corruptedDefinitions = previousDocument.Definitions
+            .Select(definition => definition.Name == "Before"
+                ? definition with { Documentation = "stale projection" }
+                : definition)
+            .ToArray();
+        var corruptedDocument = previousDocument with
+        {
+            Definitions = corruptedDefinitions
+        };
+        var parseResult = VbaSyntaxTree.ParseOrUpdate(uri, updated, previousTree);
+        var clean = VbaSourceIndex.CreateDocument(uri, parseResult.SyntaxTree);
+
+        var projected = VbaSourceIndex.CreateDocument(
+            uri,
+            parseResult.SyntaxTree,
+            previousTree,
+            corruptedDocument,
+            parseResult.MemberUpdate);
+
+        Assert.Equal(VbaSyntaxTreeParseUpdateKind.ModuleMember, parseResult.UpdateKind);
+        Assert.Equal(clean.Definitions, projected.Definitions);
+        Assert.DoesNotContain(
+            projected.Definitions,
+            definition => definition.Documentation == "stale projection");
     }
 
     [Fact]

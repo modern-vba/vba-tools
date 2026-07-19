@@ -1,4 +1,5 @@
 using VbaLanguageServer.Diagnostics;
+using VbaLanguageServer.SourceModel;
 using VbaLanguageServer.Syntax;
 
 namespace VbaLanguageServer.Workspace;
@@ -20,14 +21,44 @@ public sealed record VbaVersionedDocumentSnapshot(
     VbaModuleKind ModuleKind,
     VbaDiagnosticPipelineResult Diagnostics)
 {
+    public VbaSourceText SourceText { get; init; } = SyntaxTree.SourceText;
+
+    public VbaSourceDocument SourceDocument { get; init; } =
+        VbaSourceIndex.CreateDocument(Uri, SyntaxTree);
+
+    public VbaSyntaxTreeParseUpdateKind LastParseUpdateKind { get; init; }
+
+    public VbaModuleMemberIncrementalUpdate? LastMemberUpdate { get; init; }
+
+    internal VbaDocumentAnalysis? Analysis { get; init; }
+
+    internal bool IsOwnedByAnalysis
+        => Analysis is { } analysis
+            && Uri.Equals(analysis.Uri, StringComparison.Ordinal)
+            && ReferenceEquals(Text, analysis.Text)
+            && ReferenceEquals(SourceText, analysis.SourceText)
+            && ReferenceEquals(SyntaxTree, analysis.SyntaxTree)
+            && ModuleKind == analysis.ModuleKind
+            && ReferenceEquals(SourceDocument, analysis.SourceDocument)
+            && ReferenceEquals(Diagnostics, analysis.Diagnostics)
+            && LastParseUpdateKind == analysis.LastParseUpdateKind
+            && ReferenceEquals(LastMemberUpdate, analysis.LastMemberUpdate);
+
     internal static VbaVersionedDocumentSnapshot Create(
-        VbaTrackedDocument document,
+        VbaDocumentAnalysis analysis,
         int version)
         => new(
-            document.Uri,
+            analysis.Uri,
             version,
-            document.Text,
-            document.SyntaxTree,
-            document.SyntaxTree.Module.Kind,
-            VbaDiagnosticPipeline.CollectDocument(document.SyntaxTree, document.Uri));
+            analysis.Text,
+            analysis.SyntaxTree,
+            analysis.ModuleKind,
+            analysis.Diagnostics)
+        {
+            SourceText = analysis.SourceText,
+            SourceDocument = analysis.SourceDocument,
+            LastParseUpdateKind = analysis.LastParseUpdateKind,
+            LastMemberUpdate = analysis.LastMemberUpdate,
+            Analysis = analysis
+        };
 }

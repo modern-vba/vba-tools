@@ -122,7 +122,10 @@ internal static class VbaCompletionSyntaxFactsParser
         IReadOnlyList<VbaPreprocessorBlockSyntax> preprocessorBlocks,
         int codeStartLine)
     {
-        var statements = VbaLogicalStatementSpan.Build(sourceText.Text.Length, tokenStream.Tokens)
+        var statements = VbaLogicalStatementSpan.Build(
+                sourceText.Text.Length,
+                tokenStream.Tokens,
+                includeEmptyStatements: false)
             .Where(statement => statement.Range.Start.Line >= codeStartLine)
             .ToArray();
         var blocks = ParseBlocks(sourceText, statements, callableDeclarations);
@@ -598,7 +601,8 @@ internal sealed record VbaLogicalStatementSpan(
 
     public static IReadOnlyList<VbaLogicalStatementSpan> Build(
         int textLength,
-        IReadOnlyList<VbaToken> tokens)
+        IReadOnlyList<VbaToken> tokens,
+        bool includeEmptyStatements = true)
     {
         var statements = new List<VbaLogicalStatementSpan>();
         var significant = new List<VbaToken>();
@@ -621,7 +625,14 @@ internal sealed record VbaLogicalStatementSpan(
                     continue;
                 }
 
-                AddStatement(statements, startOffset, token.Range.Start.Offset, token.Range.End.Offset, significant, false);
+                AddStatement(
+                    statements,
+                    startOffset,
+                    token.Range.Start.Offset,
+                    token.Range.End.Offset,
+                    significant,
+                    endsWithColon: false,
+                    includeEmptyStatements);
                 significant.Clear();
                 startOffset = token.Range.End.Offset;
                 parenthesisDepth = 0;
@@ -643,7 +654,14 @@ internal sealed record VbaLogicalStatementSpan(
                     && !(significant.Count > 0
                         && significant[0].Text.Equals("Rem", StringComparison.OrdinalIgnoreCase)))
                 {
-                    AddStatement(statements, startOffset, token.Range.Start.Offset, token.Range.End.Offset, significant, true);
+                    AddStatement(
+                        statements,
+                        startOffset,
+                        token.Range.Start.Offset,
+                        token.Range.End.Offset,
+                        significant,
+                        endsWithColon: true,
+                        includeEmptyStatements);
                     significant.Clear();
                     startOffset = token.Range.End.Offset;
                     continued = false;
@@ -657,7 +675,14 @@ internal sealed record VbaLogicalStatementSpan(
             }
         }
 
-        AddStatement(statements, startOffset, textLength, textLength, significant, false);
+        AddStatement(
+            statements,
+            startOffset,
+            textLength,
+            textLength,
+            significant,
+            endsWithColon: false,
+            includeEmptyStatements);
         return statements;
     }
 
@@ -667,11 +692,19 @@ internal sealed record VbaLogicalStatementSpan(
         int endOffset,
         int nextOffset,
         IReadOnlyList<VbaToken> significant,
-        bool endsWithColon)
-        => statements.Add(new VbaLogicalStatementSpan(
+        bool endsWithColon,
+        bool includeEmptyStatements)
+    {
+        if (!includeEmptyStatements && significant.Count == 0)
+        {
+            return;
+        }
+
+        statements.Add(new VbaLogicalStatementSpan(
             startOffset,
             endOffset,
             nextOffset,
             significant.ToArray(),
             endsWithColon));
+    }
 }

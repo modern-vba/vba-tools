@@ -143,6 +143,11 @@ public static class VbaDocumentValidationDiagnosticCollector
         var diagnostics = new List<VbaValidationDiagnostic>();
         foreach (var declaration in tree.Module.CallableDeclarations)
         {
+            if (declaration.Parameters.Count < 2)
+            {
+                continue;
+            }
+
             AddDuplicateCallableParameterDiagnostics(
                 diagnostics,
                 declaration.Parameters.Select(parameter => new NamedSyntax(parameter.Name, parameter.Range)));
@@ -150,17 +155,28 @@ public static class VbaDocumentValidationDiagnosticCollector
 
         foreach (var declaration in tree.Module.Declarations.Where(declaration => declaration.Kind == VbaDeclarationKind.Event))
         {
+            var parameters = tree.Module.Declarations
+                .Where(parameter => parameter.Kind == VbaDeclarationKind.Parameter
+                    && parameter.ParentProcedureName is null
+                    && parameter.LineIndex == declaration.LineIndex)
+                .ToArray();
+            if (parameters.Length < 2)
+            {
+                continue;
+            }
+
             AddDuplicateCallableParameterDiagnostics(
                 diagnostics,
-                tree.Module.Declarations
-                    .Where(parameter => parameter.Kind == VbaDeclarationKind.Parameter
-                        && parameter.ParentProcedureName is null
-                        && parameter.LineIndex == declaration.LineIndex)
-                    .Select(parameter => new NamedSyntax(parameter.Name, parameter.Range)));
+                parameters.Select(parameter => new NamedSyntax(parameter.Name, parameter.Range)));
         }
 
         foreach (var argumentList in tree.Module.ArgumentLists)
         {
+            if (argumentList.Arguments.Count < 2)
+            {
+                continue;
+            }
+
             AddDuplicateNamedCallArgumentDiagnostics(
                 diagnostics,
                 argumentList.Arguments

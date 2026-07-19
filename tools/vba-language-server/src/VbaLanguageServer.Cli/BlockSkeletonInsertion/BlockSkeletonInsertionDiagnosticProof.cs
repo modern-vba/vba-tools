@@ -20,12 +20,16 @@ internal static class BlockSkeletonInsertionDiagnosticProof
         int replacementEndOffset,
         int delta)
     {
-        var originalSource = VbaSourceText.From(snapshot.Text);
+        var originalSource = snapshot.SourceText;
         var original = CreateErrorMultiset(snapshot.Diagnostics, originalSource);
-        var derivedOriginal = CreateErrorMultiset(
-            VbaDiagnosticPipeline.CollectDocument(snapshot.SyntaxTree, snapshot.Uri),
-            originalSource);
-        if (!MultisetsEqual(original, derivedOriginal))
+        if (!snapshot.IsOwnedByAnalysis
+            && !MultisetsEqual(
+                original,
+                CreateErrorMultiset(
+                    VbaDiagnosticPipeline.CollectDocument(
+                        snapshot.SyntaxTree,
+                        snapshot.Uri),
+                    originalSource)))
         {
             return false;
         }

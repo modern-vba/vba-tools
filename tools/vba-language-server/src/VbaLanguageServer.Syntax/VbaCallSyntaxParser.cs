@@ -410,7 +410,13 @@ internal static class VbaCallSyntaxParser
                     continue;
                 }
 
-                statements.Add(new CallStatement(significant.ToArray(), statementWasContinued));
+                if (significant.Count > 0)
+                {
+                    statements.Add(new CallStatement(
+                        significant.ToArray(),
+                        statementWasContinued));
+                }
+
                 significant.Clear();
                 statementWasContinued = false;
                 continue;
@@ -425,7 +431,13 @@ internal static class VbaCallSyntaxParser
                     continue;
                 }
 
-                statements.Add(new CallStatement(significant.ToArray(), statementWasContinued));
+                if (significant.Count > 0)
+                {
+                    statements.Add(new CallStatement(
+                        significant.ToArray(),
+                        statementWasContinued));
+                }
+
                 significant.Clear();
                 continued = false;
                 statementWasContinued = false;
@@ -438,7 +450,13 @@ internal static class VbaCallSyntaxParser
             }
         }
 
-        statements.Add(new CallStatement(significant.ToArray(), statementWasContinued));
+        if (significant.Count > 0)
+        {
+            statements.Add(new CallStatement(
+                significant.ToArray(),
+                statementWasContinued));
+        }
+
         return statements;
     }
 

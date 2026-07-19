@@ -63,7 +63,8 @@ internal static class VbaSyntaxTreeParser
         var tokenStream = VbaTokenStream.FromSourceText(sourceText);
         var physicalAnalysisSourceText = MaskPreprocessorDirectives(
             sourceText,
-            tokenStream);
+            tokenStream,
+            out var hasPreprocessorDirectives);
         var kind = GetModuleKind(uri);
         var diagnostics = new List<VbaSyntaxDiagnostic>();
         var codeStartLine = 0;
@@ -94,10 +95,12 @@ internal static class VbaSyntaxTreeParser
         var attributes = ParseAttributes(physicalAnalysisSourceText, codeStartLine);
         var options = ParseOptions(physicalAnalysisSourceText, codeStartLine);
         var identity = CreateIdentity(uri, sourceText, kind, attributes);
-        var parsedPreprocessor = VbaPreprocessorParser.Parse(
-            sourceText,
-            tokenStream,
-            codeStartLine);
+        var parsedPreprocessor = hasPreprocessorDirectives
+            ? VbaPreprocessorParser.Parse(
+                sourceText,
+                tokenStream,
+                codeStartLine)
+            : ParsedPreprocessor.Empty;
         var parsedMembers = ParseMembersAndDeclarations(
             physicalAnalysisSourceText,
             codeStartLine,
@@ -137,19 +140,24 @@ internal static class VbaSyntaxTreeParser
 
     private static VbaSourceText MaskPreprocessorDirectives(
         VbaSourceText sourceText,
-        VbaTokenStream tokenStream)
+        VbaTokenStream tokenStream,
+        out bool hasPreprocessorDirectives)
     {
-        var directives = tokenStream.Tokens
-            .Where(token => token.Kind == VbaTokenKind.PreprocessorDirective)
-            .ToArray();
-        if (directives.Length == 0)
+        hasPreprocessorDirectives = tokenStream.Tokens.Any(
+            token => token.Kind == VbaTokenKind.PreprocessorDirective);
+        if (!hasPreprocessorDirectives)
         {
             return sourceText;
         }
 
         var characters = sourceText.Text.ToCharArray();
-        foreach (var directive in directives)
+        foreach (var directive in tokenStream.Tokens)
         {
+            if (directive.Kind != VbaTokenKind.PreprocessorDirective)
+            {
+                continue;
+            }
+
             for (var offset = directive.Range.Start.Offset;
                 offset < directive.Range.End.Offset;
                 offset++)
@@ -169,7 +177,19 @@ internal static class VbaSyntaxTreeParser
         var attributes = new List<VbaModuleAttributeSyntax>();
         for (var index = startLine; index < sourceText.Lines.Count; index++)
         {
+            if (sourceText.IsBlankLine(index))
+            {
+                continue;
+            }
+
             var line = sourceText.Lines[index];
+            if (!line.Text.AsSpan().TrimStart().StartsWith(
+                "Attribute",
+                StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
             var match = AttributePattern.Match(line.Text);
             if (!match.Success)
             {
@@ -198,7 +218,19 @@ internal static class VbaSyntaxTreeParser
         var options = new List<VbaModuleOptionSyntax>();
         for (var index = startLine; index < sourceText.Lines.Count; index++)
         {
+            if (sourceText.IsBlankLine(index))
+            {
+                continue;
+            }
+
             var line = sourceText.Lines[index];
+            if (!line.Text.AsSpan().TrimStart().StartsWith(
+                "Option",
+                StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
             var match = OptionPattern.Match(line.Text);
             if (!match.Success)
             {
@@ -283,6 +315,11 @@ internal static class VbaSyntaxTreeParser
         var statements = new List<LogicalStatement>();
         for (var lineIndex = codeStartLine; lineIndex < sourceText.Lines.Count; lineIndex++)
         {
+            if (sourceText.IsBlankLine(lineIndex))
+            {
+                continue;
+            }
+
             var statement = CreateLogicalStatement(sourceText, lineIndex);
             statements.Add(statement);
             lineIndex = statement.Range.End.Line;
@@ -383,6 +420,11 @@ internal static class VbaSyntaxTreeParser
         for (var lineIndex = codeStartLine; lineIndex < sourceText.Lines.Count; lineIndex++)
         {
             var line = sourceText.Lines[lineIndex];
+            if (sourceText.IsBlankLine(lineIndex))
+            {
+                continue;
+            }
+
             var codeLine = VbaSourceText.StripApostropheComment(line.Text);
             if (string.IsNullOrWhiteSpace(codeLine))
             {
@@ -601,6 +643,12 @@ internal static class VbaSyntaxTreeParser
         for (var lineIndex = codeStartLine; lineIndex < sourceText.Lines.Count; lineIndex++)
         {
             var line = sourceText.Lines[lineIndex];
+            if (sourceText.IsBlankLine(lineIndex))
+            {
+                inLogicalContinuation = false;
+                continue;
+            }
+
             var lineContinuationDiagnostics = CollectLineContinuationDiagnostics(line).ToArray();
             diagnostics.AddRange(lineContinuationDiagnostics);
             diagnostics.AddRange(CollectStringDiagnostics(line));

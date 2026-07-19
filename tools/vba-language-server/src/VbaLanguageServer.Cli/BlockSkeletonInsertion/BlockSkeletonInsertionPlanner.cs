@@ -31,7 +31,13 @@ public static class BlockSkeletonInsertionPlanner
         BlockSkeletonInsertionPosition position,
         VbaIndentationStyle indentationStyle)
     {
-        if (snapshot.ModuleKind != snapshot.SyntaxTree.Module.Kind)
+        if (!snapshot.Text.Equals(
+                snapshot.SourceText.Text,
+                StringComparison.Ordinal)
+            || !snapshot.Text.Equals(
+                snapshot.SyntaxTree.Text,
+                StringComparison.Ordinal)
+            || snapshot.ModuleKind != snapshot.SyntaxTree.Module.Kind)
         {
             return null;
         }
@@ -41,7 +47,11 @@ public static class BlockSkeletonInsertionPlanner
             position.Line,
             position.Character);
         if (header is null
-            || !TryGetPostNativeContext(snapshot.Text, position, out var context))
+            || !TryGetPostNativeContext(
+                snapshot.Text,
+                snapshot.SourceText,
+                position,
+                out var context))
         {
             return null;
         }
@@ -67,11 +77,11 @@ public static class BlockSkeletonInsertionPlanner
 
     private static bool TryGetPostNativeContext(
         string text,
+        VbaSourceText source,
         BlockSkeletonInsertionPosition position,
         out PostNativeContext context)
     {
         context = default!;
-        var source = VbaSourceText.From(text);
         if (position.Line < 0
             || position.Line >= source.Lines.Count
             || position.Character < 0

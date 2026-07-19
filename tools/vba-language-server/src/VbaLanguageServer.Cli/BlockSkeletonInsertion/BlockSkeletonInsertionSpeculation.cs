@@ -40,6 +40,12 @@ internal static class BlockSkeletonInsertionSpeculation
             return false;
         }
 
+        if (firstFollowingContentLine is null
+            && TryProveTrustedDeclarationTail(snapshot, originalHeader))
+        {
+            return true;
+        }
+
         if (HasDisqualifyingHeaderDiagnostic(snapshot, originalHeader))
         {
             return false;
@@ -242,6 +248,37 @@ internal static class BlockSkeletonInsertionSpeculation
             insertionEndOffset,
             replacementEndOffset,
             delta);
+    }
+
+    private static bool TryProveTrustedDeclarationTail(
+        VbaVersionedDocumentSnapshot snapshot,
+        VbaBlockHeaderSyntax header)
+    {
+        if (!snapshot.IsOwnedByAnalysis
+            || !header.ConditionalCompilationBranchPath.IsEmpty)
+        {
+            return false;
+        }
+
+        var candidateBlock = FindBlock(snapshot.SyntaxTree, header);
+        if (candidateBlock is null
+            || candidateBlock.CloserRange is not null
+            || !VbaConditionalCompilationBranchFacts.IsBlockLocal(
+                snapshot.SyntaxTree,
+                candidateBlock,
+                header.ConditionalCompilationBranchPath,
+                requireCompleteStructure: true))
+        {
+            return false;
+        }
+
+        var syntaxErrors = snapshot.Diagnostics.SyntaxDiagnostics
+            .Where(diagnostic => IsError(diagnostic.Severity))
+            .ToArray();
+        return syntaxErrors.Length == 1
+            && IsDirectMissingTerminator(syntaxErrors[0], header)
+            && !snapshot.Diagnostics.DocumentValidationDiagnostics.Any(
+                diagnostic => IsError(diagnostic.Severity));
     }
 
     private static string NeutralizeRange(string text, int startOffset, int endOffset)
@@ -552,7 +589,7 @@ internal static class BlockSkeletonInsertionSpeculation
         int insertionEndOffset,
         int delta)
     {
-        var originalSource = VbaSourceText.From(snapshot.Text);
+        var originalSource = snapshot.SourceText;
         var originalBoundaryOffset = originalSource.Lines[originalBoundaryLine].StartOffset;
         if (originalBoundaryOffset < insertionEndOffset)
         {
@@ -725,12 +762,14 @@ internal static class BlockSkeletonInsertionSpeculation
             .Where(diagnostic => IsError(diagnostic.Severity))
             .Where(diagnostic => IsDirectMissingTerminator(diagnostic, header))
             .ToArray();
-        var derivedDirectMissingCount = VbaDiagnosticPipeline
-            .CollectDocument(snapshot.SyntaxTree, snapshot.Uri)
-            .SyntaxDiagnostics
-            .Count(diagnostic =>
-                IsError(diagnostic.Severity)
-                && IsDirectMissingTerminator(diagnostic, header));
+        var derivedDirectMissingCount = snapshot.IsOwnedByAnalysis
+            ? directMissing.Length
+            : VbaDiagnosticPipeline
+                .CollectDocument(snapshot.SyntaxTree, snapshot.Uri)
+                .SyntaxDiagnostics
+                .Count(diagnostic =>
+                    IsError(diagnostic.Severity)
+                    && IsDirectMissingTerminator(diagnostic, header));
         if (directMissing.Length != derivedDirectMissingCount)
         {
             return false;

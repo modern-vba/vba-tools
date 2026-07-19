@@ -18,32 +18,20 @@ public sealed record VbaProjectSnapshot(
     VbaSourceIndex SourceIndex);
 
 /// <summary>
-/// Represents one document tracked in workspace memory.
-/// </summary>
-/// <param name="Uri">The document URI.</param>
-/// <param name="Text">The latest document text.</param>
-/// <param name="SyntaxTree">The latest parsed syntax tree.</param>
-/// <param name="LastParseUpdateKind">The last parse update granularity.</param>
-/// <param name="LastMemberUpdate">The last safe ModuleMember update plan.</param>
-/// <param name="SourceDocument">The projected source document, when already available.</param>
-public sealed record VbaTrackedDocument(
-    string Uri,
-    string Text,
-    VbaSyntaxTree SyntaxTree,
-    VbaSyntaxTreeParseUpdateKind LastParseUpdateKind,
-    VbaModuleMemberIncrementalUpdate? LastMemberUpdate = null,
-    VbaSourceDocument? SourceDocument = null);
-
-/// <summary>
 /// Maintains open document text and creates project snapshots for language-server features.
 /// </summary>
 public sealed class VbaLanguageWorkspace
 {
     private readonly object gate = new();
     private readonly Dictionary<string, WorkspaceDocumentState> documents = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, AcceptedDocumentRevisionState> acceptedRevisions =
+        new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> excludedSourceUris = new(StringComparer.OrdinalIgnoreCase);
     private readonly VbaProjectSourceDocumentCache diskDocumentCache = new();
     private readonly VbaProjectSnapshotProvider snapshotProvider;
+    private readonly IVbaDocumentAnalysisBuildObserver analysisBuildObserver;
+    private long nextDocumentLifecycleEpoch;
+    private long nextDocumentReservationToken;
     private long workspaceVersion;
 
     /// <summary>
@@ -60,7 +48,19 @@ public sealed class VbaLanguageWorkspace
     internal VbaLanguageWorkspace(
         VbaProjectReferenceCatalogCache referenceCatalogCache,
         IVbaProjectReferenceCatalogLifecycleObserver lifecycleObserver)
+        : this(
+            referenceCatalogCache,
+            lifecycleObserver,
+            NullVbaDocumentAnalysisBuildObserver.Instance)
     {
+    }
+
+    internal VbaLanguageWorkspace(
+        VbaProjectReferenceCatalogCache referenceCatalogCache,
+        IVbaProjectReferenceCatalogLifecycleObserver lifecycleObserver,
+        IVbaDocumentAnalysisBuildObserver analysisBuildObserver)
+    {
+        this.analysisBuildObserver = analysisBuildObserver;
         ManifestWorkspace = new VbaProjectManifestWorkspace();
         snapshotProvider = new VbaProjectSnapshotProvider(
             referenceCatalogCache,
@@ -87,15 +87,36 @@ public sealed class VbaLanguageWorkspace
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        DocumentAnalysisReservation reservation;
         lock (gate)
         {
             var existing = GetDocumentState(uri);
-            var version = existing?.Authority == WorkspaceDocumentAuthority.OpenBuffer
-                ? (existing.Version ?? 0) + 1
+            var accepted = GetAcceptedRevisionState(uri);
+            var continuesOpenLifecycle =
+                accepted?.Authority == WorkspaceDocumentAuthority.OpenBuffer;
+            var version = continuesOpenLifecycle
+                ? (accepted!.Version ?? existing?.Version ?? -1) + 1
                 : 0;
-            RemoveExcludedSourceIdentity(uri);
-            return StoreDocument(uri, text, WorkspaceDocumentAuthority.OpenBuffer, version);
+            if (RemoveExcludedSourceIdentity(uri))
+            {
+                MarkWorkspaceChanged();
+            }
+            reservation = ReserveDocumentAnalysis(
+                continuesOpenLifecycle
+                    ? accepted!.Uri
+                    : uri,
+                WorkspaceDocumentAuthority.OpenBuffer,
+                version,
+                continuesOpenLifecycle
+                    ? accepted!.LifecycleEpoch
+                    : ++nextDocumentLifecycleEpoch,
+                existing?.Analysis);
         }
+
+        var buildResult =
+            BuildAndCommitDocumentAnalysis(reservation, text, cancellationToken);
+        WaitForAcceptedDocumentAnalysis(reservation, cancellationToken);
+        return buildResult.UpdateKind;
     }
 
     /// <summary>
@@ -113,11 +134,26 @@ public sealed class VbaLanguageWorkspace
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        DocumentAnalysisReservation reservation;
         lock (gate)
         {
-            RemoveExcludedSourceIdentity(uri);
-            return StoreDocument(uri, text, WorkspaceDocumentAuthority.OpenBuffer, version);
+            if (RemoveExcludedSourceIdentity(uri))
+            {
+                MarkWorkspaceChanged();
+            }
+            var existing = GetDocumentState(uri);
+            reservation = ReserveDocumentAnalysis(
+                uri,
+                WorkspaceDocumentAuthority.OpenBuffer,
+                version,
+                ++nextDocumentLifecycleEpoch,
+                existing?.Analysis);
         }
+
+        return BuildAndCommitDocumentAnalysis(
+            reservation,
+            text,
+            cancellationToken).UpdateKind;
     }
 
     /// <summary>
@@ -135,21 +171,29 @@ public sealed class VbaLanguageWorkspace
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        DocumentAnalysisReservation reservation;
         lock (gate)
         {
+            var accepted = GetAcceptedRevisionState(uri);
             var existing = GetDocumentState(uri);
-            if (existing?.Authority != WorkspaceDocumentAuthority.OpenBuffer
-                || version <= existing.Version)
+            if (accepted?.Authority != WorkspaceDocumentAuthority.OpenBuffer
+                || version <= accepted.Version)
             {
                 return null;
             }
 
-            return StoreDocument(
-                existing.Document.Uri,
-                text,
+            reservation = ReserveDocumentAnalysis(
+                accepted.Uri,
                 WorkspaceDocumentAuthority.OpenBuffer,
-                version);
+                version,
+                accepted.LifecycleEpoch,
+                existing?.Analysis);
         }
+
+        return BuildAndCommitDocumentAnalysis(
+            reservation,
+            text,
+            cancellationToken).UpdateKind;
     }
 
     /// <summary>
@@ -166,11 +210,14 @@ public sealed class VbaLanguageWorkspace
     {
         cancellationToken.ThrowIfCancellationRequested();
         InvalidateDiskDocument(uri);
+        DocumentAnalysisReservation reservation;
         lock (gate)
         {
             var exclusionRemoved = RemoveExcludedSourceIdentity(uri);
+            var accepted = GetAcceptedRevisionState(uri);
             var existing = GetDocumentState(uri);
-            if (existing?.Authority == WorkspaceDocumentAuthority.OpenBuffer)
+            if (accepted?.Authority == WorkspaceDocumentAuthority.OpenBuffer
+                || existing?.Authority == WorkspaceDocumentAuthority.OpenBuffer)
             {
                 if (exclusionRemoved)
                 {
@@ -180,9 +227,25 @@ public sealed class VbaLanguageWorkspace
                 return false;
             }
 
-            StoreDocument(uri, text, WorkspaceDocumentAuthority.DiskWatcher, version: null);
-            return true;
+            if (exclusionRemoved)
+            {
+                MarkWorkspaceChanged();
+            }
+
+            reservation = ReserveDocumentAnalysis(
+                uri,
+                WorkspaceDocumentAuthority.DiskWatcher,
+                version: null,
+                accepted?.Authority == WorkspaceDocumentAuthority.DiskWatcher
+                    ? accepted.LifecycleEpoch
+                    : ++nextDocumentLifecycleEpoch,
+                existing?.Analysis);
         }
+
+        return BuildAndCommitDocumentAnalysis(
+            reservation,
+            text,
+            cancellationToken).Committed;
     }
 
     /// <summary>
@@ -197,15 +260,31 @@ public sealed class VbaLanguageWorkspace
         InvalidateDiskDocument(uri);
         lock (gate)
         {
-            var key = FindDocumentKey(uri);
-            if (key is null
-                || documents[key].Authority != WorkspaceDocumentAuthority.OpenBuffer)
+            var revisionKey = FindAcceptedRevisionKey(uri);
+            var documentKey = FindDocumentKey(uri);
+            var hasOpenRevision = revisionKey is not null
+                && acceptedRevisions[revisionKey].Authority
+                    == WorkspaceDocumentAuthority.OpenBuffer;
+            var hasOpenDocument = documentKey is not null
+                && documents[documentKey].Authority
+                    == WorkspaceDocumentAuthority.OpenBuffer;
+            if (!hasOpenRevision && !hasOpenDocument)
             {
                 return false;
             }
 
-            documents.Remove(key);
-            MarkWorkspaceChanged();
+            if (hasOpenRevision)
+            {
+                acceptedRevisions.Remove(revisionKey!);
+                Monitor.PulseAll(gate);
+            }
+
+            if (hasOpenDocument)
+            {
+                documents.Remove(documentKey!);
+                MarkWorkspaceChanged();
+            }
+
             return true;
         }
     }
@@ -223,9 +302,15 @@ public sealed class VbaLanguageWorkspace
         lock (gate)
         {
             var exclusionAdded = AddExcludedSourceIdentity(uri);
-            var key = FindDocumentKey(uri);
-            if (key is not null
-                && documents[key].Authority == WorkspaceDocumentAuthority.OpenBuffer)
+            var revisionKey = FindAcceptedRevisionKey(uri);
+            var documentKey = FindDocumentKey(uri);
+            var hasOpenRevision = revisionKey is not null
+                && acceptedRevisions[revisionKey].Authority
+                    == WorkspaceDocumentAuthority.OpenBuffer;
+            var hasOpenDocument = documentKey is not null
+                && documents[documentKey].Authority
+                    == WorkspaceDocumentAuthority.OpenBuffer;
+            if (hasOpenRevision || hasOpenDocument)
             {
                 if (exclusionAdded)
                 {
@@ -235,8 +320,15 @@ public sealed class VbaLanguageWorkspace
                 return false;
             }
 
-            var removed = key is not null && documents.Remove(key);
-            if (exclusionAdded || removed)
+            if (revisionKey is not null)
+            {
+                acceptedRevisions.Remove(revisionKey);
+                Monitor.PulseAll(gate);
+            }
+
+            var documentRemoved = documentKey is not null
+                && documents.Remove(documentKey);
+            if (exclusionAdded || documentRemoved)
             {
                 MarkWorkspaceChanged();
             }
@@ -256,14 +348,23 @@ public sealed class VbaLanguageWorkspace
         cancellationToken.ThrowIfCancellationRequested();
         lock (gate)
         {
-            var key = FindDocumentKey(uri);
-            var removed = key is not null && documents.Remove(key);
-            if (removed)
+            var revisionKey = FindAcceptedRevisionKey(uri);
+            var documentKey = FindDocumentKey(uri);
+            var revisionRemoved = revisionKey is not null
+                && acceptedRevisions.Remove(revisionKey);
+            if (revisionRemoved)
+            {
+                Monitor.PulseAll(gate);
+            }
+
+            var documentRemoved = documentKey is not null
+                && documents.Remove(documentKey);
+            if (documentRemoved)
             {
                 MarkWorkspaceChanged();
             }
 
-            return removed;
+            return revisionRemoved || documentRemoved;
         }
     }
 
@@ -303,6 +404,23 @@ public sealed class VbaLanguageWorkspace
     }
 
     /// <summary>
+    /// Captures the immutable analysis currently committed for a tracked document.
+    /// </summary>
+    /// <param name="uri">The document URI.</param>
+    /// <param name="cancellationToken">A cancellation token for the lookup.</param>
+    /// <returns>The committed analysis, or null when the document is not tracked.</returns>
+    internal VbaDocumentAnalysis? GetDocumentAnalysis(
+        string uri,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (gate)
+        {
+            return GetDocumentState(uri)?.Analysis;
+        }
+    }
+
+    /// <summary>
     /// Captures one exact-version open document without project, disk, or reference resolution.
     /// </summary>
     /// <param name="uri">The document URI.</param>
@@ -318,9 +436,15 @@ public sealed class VbaLanguageWorkspace
         lock (gate)
         {
             var state = GetDocumentState(uri);
+            var accepted = GetAcceptedRevisionState(uri);
             return state?.Authority == WorkspaceDocumentAuthority.OpenBuffer
+                && accepted?.Authority == WorkspaceDocumentAuthority.OpenBuffer
+                && !accepted.HasPendingBuild
                 && state.Version == expectedVersion
-                    ? VbaVersionedDocumentSnapshot.Create(state.Document, expectedVersion)
+                && accepted.Version == expectedVersion
+                && state.LifecycleEpoch == accepted.LifecycleEpoch
+                && state.ReservationToken == accepted.ReservationToken
+                    ? state.VersionedSnapshot
                     : null;
         }
     }
@@ -400,41 +524,202 @@ public sealed class VbaLanguageWorkspace
         }
     }
 
-    private VbaSyntaxTreeParseUpdateKind StoreDocument(
+    private VbaDocumentAnalysis BuildDocumentAnalysis(
         string uri,
         string text,
-        WorkspaceDocumentAuthority authority,
-        int? version)
+        VbaDocumentAnalysis? previousAnalysis,
+        int? clientVersion,
+        CancellationToken cancellationToken)
     {
-        var existingKey = FindDocumentKey(uri);
-        var previousDocument = existingKey is null
-            ? null
-            : documents[existingKey].Document;
-        var parseResult = VbaSyntaxTree.ParseOrUpdate(uri, text, previousDocument?.SyntaxTree);
+        analysisBuildObserver.BeforeBuild(
+            new VbaDocumentAnalysisBuildContext(uri, clientVersion),
+            cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        var analysis = VbaDocumentAnalysis.Create(uri, text, previousAnalysis);
+        cancellationToken.ThrowIfCancellationRequested();
+        return analysis;
+    }
+
+    private DocumentAnalysisBuildResult BuildAndCommitDocumentAnalysis(
+        DocumentAnalysisReservation reservation,
+        string text,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var analysis = BuildDocumentAnalysis(
+                reservation.Uri,
+                text,
+                reservation.PreviousAnalysis,
+                reservation.Version,
+                cancellationToken);
+            lock (gate)
+            {
+                var committed = CommitDocumentAnalysis(reservation, analysis);
+                return new DocumentAnalysisBuildResult(
+                    analysis.LastParseUpdateKind,
+                    committed);
+            }
+        }
+        catch
+        {
+            lock (gate)
+            {
+                AbandonDocumentAnalysis(reservation);
+            }
+
+            throw;
+        }
+    }
+
+    private DocumentAnalysisReservation ReserveDocumentAnalysis(
+        string uri,
+        WorkspaceDocumentAuthority authority,
+        int? version,
+        long lifecycleEpoch,
+        VbaDocumentAnalysis? previousAnalysis)
+    {
+        var existingKey = FindAcceptedRevisionKey(uri);
+        if (existingKey is not null)
+        {
+            acceptedRevisions.Remove(existingKey);
+        }
+
+        var reservation = new DocumentAnalysisReservation(
+            uri,
+            authority,
+            version,
+            lifecycleEpoch,
+            ++nextDocumentReservationToken,
+            previousAnalysis);
+        acceptedRevisions[uri] = new AcceptedDocumentRevisionState(
+            reservation.Uri,
+            reservation.Authority,
+            reservation.Version,
+            reservation.LifecycleEpoch,
+            reservation.ReservationToken,
+            HasPendingBuild: true);
+        Monitor.PulseAll(gate);
+        return reservation;
+    }
+
+    private bool CommitDocumentAnalysis(
+        DocumentAnalysisReservation reservation,
+        VbaDocumentAnalysis analysis)
+    {
+        var acceptedKey = FindAcceptedRevisionKey(reservation.Uri);
+        if (acceptedKey is null)
+        {
+            return false;
+        }
+
+        var accepted = acceptedRevisions[acceptedKey];
+        if (accepted.Authority != reservation.Authority
+            || accepted.Version != reservation.Version
+            || accepted.LifecycleEpoch != reservation.LifecycleEpoch
+            || accepted.ReservationToken != reservation.ReservationToken
+            || !accepted.HasPendingBuild)
+        {
+            return false;
+        }
+
+        StoreDocumentAnalysis(reservation, analysis);
+        acceptedRevisions.Remove(acceptedKey);
+        acceptedRevisions[analysis.Uri] = accepted with
+        {
+            Uri = analysis.Uri,
+            HasPendingBuild = false
+        };
+        Monitor.PulseAll(gate);
+        return true;
+    }
+
+    private void AbandonDocumentAnalysis(DocumentAnalysisReservation reservation)
+    {
+        var acceptedKey = FindAcceptedRevisionKey(reservation.Uri);
+        if (acceptedKey is null)
+        {
+            return;
+        }
+
+        var accepted = acceptedRevisions[acceptedKey];
+        if (accepted.LifecycleEpoch == reservation.LifecycleEpoch
+            && accepted.ReservationToken == reservation.ReservationToken)
+        {
+            acceptedRevisions[acceptedKey] = accepted with { HasPendingBuild = false };
+            Monitor.PulseAll(gate);
+        }
+    }
+
+    private void WaitForAcceptedDocumentAnalysis(
+        DocumentAnalysisReservation reservation,
+        CancellationToken cancellationToken)
+    {
+        lock (gate)
+        {
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var committed = GetDocumentState(reservation.Uri);
+                if (committed?.LifecycleEpoch == reservation.LifecycleEpoch
+                    && committed.ReservationToken >= reservation.ReservationToken)
+                {
+                    return;
+                }
+
+                var accepted = GetAcceptedRevisionState(reservation.Uri);
+                if (accepted is null
+                    || accepted.LifecycleEpoch != reservation.LifecycleEpoch
+                    || !accepted.HasPendingBuild)
+                {
+                    return;
+                }
+
+                Monitor.Wait(gate, millisecondsTimeout: 50);
+            }
+        }
+    }
+
+    private void StoreDocumentAnalysis(
+        DocumentAnalysisReservation reservation,
+        VbaDocumentAnalysis analysis)
+    {
+        var existingKey = FindDocumentKey(analysis.Uri);
         if (existingKey is not null)
         {
             documents.Remove(existingKey);
         }
 
-        var syntaxTree = parseResult.SyntaxTree;
-        documents[uri] = new WorkspaceDocumentState(
-            new VbaTrackedDocument(
-                uri,
-                text,
-                syntaxTree,
-                parseResult.UpdateKind,
-                parseResult.MemberUpdate,
-                VbaSourceIndex.CreateDocument(uri, syntaxTree)),
-            authority,
-            version);
+        var document = new VbaTrackedDocument(
+            analysis.Uri,
+            analysis.Text,
+            analysis.SyntaxTree,
+            analysis.LastParseUpdateKind,
+            analysis.LastMemberUpdate,
+            analysis.SourceDocument);
+        documents[analysis.Uri] = new WorkspaceDocumentState(
+            document,
+            analysis,
+            reservation.Authority,
+            reservation.Version,
+            reservation.LifecycleEpoch,
+            reservation.ReservationToken,
+            reservation.Version is null
+                ? null
+                : VbaVersionedDocumentSnapshot.Create(analysis, reservation.Version.Value));
         MarkWorkspaceChanged();
-        return parseResult.UpdateKind;
     }
 
     private WorkspaceDocumentState? GetDocumentState(string uri)
     {
         var key = FindDocumentKey(uri);
         return key is null ? null : documents[key];
+    }
+
+    private AcceptedDocumentRevisionState? GetAcceptedRevisionState(string uri)
+    {
+        var key = FindAcceptedRevisionKey(uri);
+        return key is null ? null : acceptedRevisions[key];
     }
 
     private string? FindDocumentKey(string uri)
@@ -445,6 +730,17 @@ public sealed class VbaLanguageWorkspace
         }
 
         return documents.Keys.FirstOrDefault(candidate => SameDocumentIdentity(candidate, uri));
+    }
+
+    private string? FindAcceptedRevisionKey(string uri)
+    {
+        if (acceptedRevisions.ContainsKey(uri))
+        {
+            return uri;
+        }
+
+        return acceptedRevisions.Keys.FirstOrDefault(
+            candidate => SameDocumentIdentity(candidate, uri));
     }
 
     private bool AddExcludedSourceIdentity(string uri)
@@ -497,6 +793,30 @@ public sealed class VbaLanguageWorkspace
 
     private sealed record WorkspaceDocumentState(
         VbaTrackedDocument Document,
+        VbaDocumentAnalysis Analysis,
         WorkspaceDocumentAuthority Authority,
-        int? Version);
+        int? Version,
+        long LifecycleEpoch,
+        long ReservationToken,
+        VbaVersionedDocumentSnapshot? VersionedSnapshot);
+
+    private sealed record AcceptedDocumentRevisionState(
+        string Uri,
+        WorkspaceDocumentAuthority Authority,
+        int? Version,
+        long LifecycleEpoch,
+        long ReservationToken,
+        bool HasPendingBuild);
+
+    private sealed record DocumentAnalysisReservation(
+        string Uri,
+        WorkspaceDocumentAuthority Authority,
+        int? Version,
+        long LifecycleEpoch,
+        long ReservationToken,
+        VbaDocumentAnalysis? PreviousAnalysis);
+
+    private sealed record DocumentAnalysisBuildResult(
+        VbaSyntaxTreeParseUpdateKind UpdateKind,
+        bool Committed);
 }

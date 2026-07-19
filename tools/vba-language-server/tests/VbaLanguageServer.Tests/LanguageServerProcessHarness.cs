@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using VbaLanguageServer.SourceModel;
@@ -128,6 +129,12 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
 
         startInfo.ArgumentList.Add("run");
         startInfo.ArgumentList.Add("--no-build");
+        startInfo.ArgumentList.Add("--configuration");
+        startInfo.ArgumentList.Add(
+            typeof(LanguageServerProcessHarness).Assembly
+                .GetCustomAttribute<AssemblyConfigurationAttribute>()
+                ?.Configuration
+                ?? "Debug");
         startInfo.ArgumentList.Add("--project");
         startInfo.ArgumentList.Add(serverProjectPath);
 

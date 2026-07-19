@@ -514,7 +514,14 @@ public sealed record VbaSourceDocument(
     string Text,
     string ModuleName,
     IReadOnlyList<VbaSourceDefinition> Definitions,
-    VbaSyntaxTree? SyntaxTree = null);
+    VbaSyntaxTree? SyntaxTree = null)
+{
+    internal VbaSourceDocumentProjection? Projection { get; init; }
+}
+
+internal sealed record VbaSourceDocumentProjection(
+    VbaSyntaxTree SyntaxTree,
+    IReadOnlyList<VbaSourceDefinition> Definitions);
 
 /// <summary>
 /// Represents a definition or reference location.
@@ -970,7 +977,189 @@ public sealed class VbaSourceIndex
         definitions.AddRange(syntaxTree.Module.Declarations.Select(declaration =>
             CreateSourceDefinition(uri, moduleDefinition.Name, declaration)));
 
-        return new VbaSourceDocument(uri, syntaxTree.Text, moduleDefinition.Name, definitions, syntaxTree);
+        return CreateProjectedDocument(
+            uri,
+            syntaxTree,
+            moduleDefinition.Name,
+            definitions);
+    }
+
+    internal static VbaSourceDocument CreateDocument(
+        string uri,
+        VbaSyntaxTree syntaxTree,
+        VbaSyntaxTree? previousSyntaxTree,
+        VbaSourceDocument? previousDocument,
+        VbaModuleMemberIncrementalUpdate? memberUpdate)
+    {
+        if (!TryCreateReusableDefinitionMap(
+                uri,
+                syntaxTree,
+                previousSyntaxTree,
+                previousDocument,
+                memberUpdate,
+                out var moduleDefinition,
+                out var reusableDefinitions))
+        {
+            return CreateDocument(uri, syntaxTree);
+        }
+
+        var definitions = new List<VbaSourceDefinition>(
+            syntaxTree.Module.Declarations.Count + 1)
+        {
+            moduleDefinition
+        };
+        foreach (var declaration in syntaxTree.Module.Declarations)
+        {
+            definitions.Add(
+                reusableDefinitions.TryGetValue(declaration, out var definition)
+                    ? definition
+                    : CreateSourceDefinition(uri, moduleDefinition.Name, declaration));
+        }
+
+        return CreateProjectedDocument(
+            uri,
+            syntaxTree,
+            moduleDefinition.Name,
+            definitions);
+    }
+
+    private static bool TryCreateReusableDefinitionMap(
+        string uri,
+        VbaSyntaxTree syntaxTree,
+        VbaSyntaxTree? previousSyntaxTree,
+        VbaSourceDocument? previousDocument,
+        VbaModuleMemberIncrementalUpdate? memberUpdate,
+        out VbaSourceDefinition moduleDefinition,
+        out Dictionary<VbaDeclarationSyntax, VbaSourceDefinition> reusableDefinitions)
+    {
+        moduleDefinition = default!;
+        reusableDefinitions = default!;
+        if (previousSyntaxTree is null
+            || previousDocument is null
+            || memberUpdate is null
+            || !uri.Equals(previousSyntaxTree.Uri, StringComparison.Ordinal)
+            || !uri.Equals(previousDocument.Uri, StringComparison.Ordinal)
+            || !ReferenceEquals(previousDocument.SyntaxTree, previousSyntaxTree)
+            || !previousDocument.Text.Equals(previousSyntaxTree.Text, StringComparison.Ordinal)
+            || previousSyntaxTree.Module.Kind != syntaxTree.Module.Kind
+            || !previousSyntaxTree.Module.Identity.Name.Equals(
+                syntaxTree.Module.Identity.Name,
+                StringComparison.OrdinalIgnoreCase)
+            || previousDocument.Projection is not { } previousProjection
+            || !ReferenceEquals(previousProjection.SyntaxTree, previousSyntaxTree)
+            || !ReferenceEquals(
+                previousProjection.Definitions,
+                previousDocument.Definitions)
+            || previousDocument.Definitions.Count
+                != previousSyntaxTree.Module.Declarations.Count + 1
+            || !ContainsReference(
+                previousSyntaxTree.Module.Members,
+                memberUpdate.PreviousMember)
+            || !ContainsReference(
+                syntaxTree.Module.Members,
+                memberUpdate.CurrentMember))
+        {
+            return false;
+        }
+
+        var candidateModuleDefinition = previousDocument.Definitions[0];
+        if (!DefinitionMatchesModule(
+                candidateModuleDefinition,
+                uri,
+                syntaxTree.Module))
+        {
+            return false;
+        }
+
+        var candidates = new Dictionary<VbaDeclarationSyntax, VbaSourceDefinition>(
+            previousSyntaxTree.Module.Declarations.Count,
+            ReferenceEqualityComparer.Instance);
+        for (var index = 0;
+            index < previousSyntaxTree.Module.Declarations.Count;
+            index++)
+        {
+            var declaration = previousSyntaxTree.Module.Declarations[index];
+            var definition = previousDocument.Definitions[index + 1];
+            if (!DefinitionMatchesDeclaration(
+                    definition,
+                    uri,
+                    candidateModuleDefinition.Name,
+                    declaration))
+            {
+                return false;
+            }
+
+            candidates.Add(declaration, definition);
+        }
+
+        moduleDefinition = candidateModuleDefinition;
+        reusableDefinitions = candidates;
+        return true;
+    }
+
+    private static VbaSourceDocument CreateProjectedDocument(
+        string uri,
+        VbaSyntaxTree syntaxTree,
+        string moduleName,
+        IReadOnlyList<VbaSourceDefinition> definitions)
+        => new VbaSourceDocument(
+            uri,
+            syntaxTree.Text,
+            moduleName,
+            definitions,
+            syntaxTree)
+        {
+            Projection = new VbaSourceDocumentProjection(
+                syntaxTree,
+                definitions)
+        };
+
+    private static bool DefinitionMatchesModule(
+        VbaSourceDefinition definition,
+        string uri,
+        VbaModuleSyntax module)
+        => definition.Identity.Origin == VbaDefinitionOrigin.Source
+            && uri.Equals(definition.Identity.SourceUri, StringComparison.Ordinal)
+            && uri.Equals(definition.Uri, StringComparison.Ordinal)
+            && definition.Name.Equals(module.Identity.Name, StringComparison.Ordinal)
+            && definition.ModuleName.Equals(module.Identity.Name, StringComparison.Ordinal)
+            && definition.Kind == MapModuleKind(module.Kind)
+            && RangeMatches(definition.Range, module.Identity.Range);
+
+    private static bool DefinitionMatchesDeclaration(
+        VbaSourceDefinition definition,
+        string uri,
+        string moduleName,
+        VbaDeclarationSyntax declaration)
+        => definition.Identity.Origin == VbaDefinitionOrigin.Source
+            && uri.Equals(definition.Identity.SourceUri, StringComparison.Ordinal)
+            && uri.Equals(definition.Uri, StringComparison.Ordinal)
+            && definition.Name.Equals(declaration.Name, StringComparison.Ordinal)
+            && definition.ModuleName.Equals(moduleName, StringComparison.Ordinal)
+            && definition.Kind == MapDeclarationKind(declaration.Kind)
+            && definition.Visibility == MapVisibility(declaration.Visibility)
+            && RangeMatches(definition.Range, declaration.Range);
+
+    private static bool RangeMatches(VbaRange definitionRange, VbaSyntaxRange syntaxRange)
+        => definitionRange.Start.Line == syntaxRange.Start.Line
+            && definitionRange.Start.Character == syntaxRange.Start.Character
+            && definitionRange.End.Line == syntaxRange.End.Line
+            && definitionRange.End.Character == syntaxRange.End.Character;
+
+    private static bool ContainsReference<T>(
+        IReadOnlyList<T> items,
+        T candidate)
+        where T : class
+    {
+        foreach (var item in items)
+        {
+            if (ReferenceEquals(item, candidate))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static VbaSourceDefinition CreateModuleDefinition(string uri, VbaModuleSyntax module)

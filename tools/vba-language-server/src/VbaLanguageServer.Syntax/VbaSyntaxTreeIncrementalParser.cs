@@ -13,7 +13,7 @@ internal static class VbaSyntaxTreeIncrementalParser
     {
         result = default!;
         var previousSource = previousSyntaxTree.SourceText;
-        var currentSource = VbaSourceText.From(source);
+        var currentSource = VbaSourceText.Update(source, previousSource);
         if (previousSyntaxTree.Diagnostics.Count > 0
             || previousSyntaxTree.Module.Kind == VbaModuleKind.FormModule
             || !previousSyntaxTree.Uri.Equals(uri, StringComparison.OrdinalIgnoreCase)
@@ -27,7 +27,6 @@ internal static class VbaSyntaxTreeIncrementalParser
         {
             return false;
         }
-
         var previousMember = FindSingleContainingMember(
             previousSyntaxTree.Module.Members,
             oldStartLine,
@@ -73,7 +72,6 @@ internal static class VbaSyntaxTreeIncrementalParser
         {
             return false;
         }
-
         var syntaxTree = MergeSyntaxTree(
             uri,
             previousSyntaxTree,
@@ -203,16 +201,55 @@ internal static class VbaSyntaxTreeIncrementalParser
         VbaSyntaxRange oldRange,
         VbaSyntaxRange newRange)
     {
-        var merged = new List<T>();
-        merged.AddRange(previousItems.Where(item => getRange(item).End.Offset <= oldRange.Start.Offset));
-        merged.AddRange(parsedItems.Where(item => IsContainedBy(getRange(item), newRange)));
-
+        var merged = new List<T>(previousItems.Count + parsedItems.Count);
         var lineDelta = newRange.End.Line - oldRange.End.Line;
         var offsetDelta = newRange.End.Offset - oldRange.End.Offset;
-        merged.AddRange(previousItems
-            .Where(item => getRange(item).Start.Offset >= oldRange.End.Offset)
-            .Select(item => lineDelta == 0 && offsetDelta == 0 ? item : shift(item)));
+        var requiresShift = lineDelta != 0 || offsetDelta != 0;
+        var parsedItemsAdded = false;
+        foreach (var item in previousItems)
+        {
+            var range = getRange(item);
+            if (range.End.Offset <= oldRange.Start.Offset)
+            {
+                merged.Add(item);
+                continue;
+            }
+
+            if (range.Start.Offset < oldRange.End.Offset)
+            {
+                continue;
+            }
+
+            if (!parsedItemsAdded)
+            {
+                AddContainedItems(merged, parsedItems, getRange, newRange);
+                parsedItemsAdded = true;
+            }
+
+            merged.Add(requiresShift ? shift(item) : item);
+        }
+
+        if (!parsedItemsAdded)
+        {
+            AddContainedItems(merged, parsedItems, getRange, newRange);
+        }
+
         return merged;
+    }
+
+    private static void AddContainedItems<T>(
+        ICollection<T> destination,
+        IReadOnlyList<T> items,
+        Func<T, VbaSyntaxRange> getRange,
+        VbaSyntaxRange containingRange)
+    {
+        foreach (var item in items)
+        {
+            if (IsContainedBy(getRange(item), containingRange))
+            {
+                destination.Add(item);
+            }
+        }
     }
 
     private static VbaTokenStream MergeTokenStreams(
@@ -223,15 +260,95 @@ internal static class VbaSyntaxTreeIncrementalParser
         int lineDelta,
         int offsetDelta)
     {
-        var tokens = new List<VbaToken>();
-        tokens.AddRange(previousTokens.Tokens.Where(token => token.Range.End.Offset <= oldRange.Start.Offset));
-        tokens.AddRange(parsedTokens.Tokens.Where(token => IsContainedBy(token.Range, newRange)));
-        tokens.AddRange(previousTokens.Tokens
-            .Where(token => token.Range.Start.Offset >= oldRange.End.Offset)
-            .Select(token => lineDelta == 0 && offsetDelta == 0
-                ? token
-                : token with { Range = Shift(token.Range, lineDelta, offsetDelta) }));
+        var previous = previousTokens.Tokens;
+        var parsed = parsedTokens.Tokens;
+        var prefixEnd = FindFirstTokenEndingAfter(
+            previous,
+            oldRange.Start.Offset);
+        var suffixStart = FindFirstTokenStartingAtOrAfter(
+            previous,
+            oldRange.End.Offset);
+        var parsedStart = FindFirstTokenStartingAtOrAfter(
+            parsed,
+            newRange.Start.Offset);
+        var parsedEnd = FindFirstTokenStartingAtOrAfter(
+            parsed,
+            newRange.End.Offset);
+        var tokens = new List<VbaToken>(
+            prefixEnd + (parsedEnd - parsedStart) + (previous.Count - suffixStart));
+        for (var index = 0; index < prefixEnd; index++)
+        {
+            tokens.Add(previous[index]);
+        }
+
+        for (var index = parsedStart; index < parsed.Count; index++)
+        {
+            var token = parsed[index];
+            if (token.Range.Start.Offset > newRange.End.Offset)
+            {
+                break;
+            }
+
+            if (IsContainedBy(token.Range, newRange))
+            {
+                tokens.Add(token);
+            }
+        }
+
+        var requiresShift = lineDelta != 0 || offsetDelta != 0;
+        for (var index = suffixStart; index < previous.Count; index++)
+        {
+            var token = previous[index];
+            tokens.Add(requiresShift
+                ? token with { Range = Shift(token.Range, lineDelta, offsetDelta) }
+                : token);
+        }
+
         return new VbaTokenStream(tokens);
+    }
+
+    private static int FindFirstTokenEndingAfter(
+        IReadOnlyList<VbaToken> tokens,
+        int offset)
+    {
+        var low = 0;
+        var high = tokens.Count;
+        while (low < high)
+        {
+            var middle = low + ((high - low) / 2);
+            if (tokens[middle].Range.End.Offset <= offset)
+            {
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle;
+            }
+        }
+
+        return low;
+    }
+
+    private static int FindFirstTokenStartingAtOrAfter(
+        IReadOnlyList<VbaToken> tokens,
+        int offset)
+    {
+        var low = 0;
+        var high = tokens.Count;
+        while (low < high)
+        {
+            var middle = low + ((high - low) / 2);
+            if (tokens[middle].Range.Start.Offset < offset)
+            {
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle;
+            }
+        }
+
+        return low;
     }
 
     private static string MaskUnchangedMembers(
@@ -241,30 +358,46 @@ internal static class VbaSyntaxTreeIncrementalParser
         int memberStartLine,
         int memberEndLine)
     {
-        var masked = source.ToCharArray();
-        for (var index = 0; index < masked.Length; index++)
-        {
-            if (masked[index] is not '\r' and not '\n')
+        return string.Create(
+            source.Length,
+            (source, sourceText, previousModule, memberStartLine, memberEndLine),
+            static (masked, state) =>
             {
-                masked[index] = ' ';
-            }
-        }
+                masked.Fill(' ');
+                var searchOffset = 0;
+                while (searchOffset < state.source.Length)
+                {
+                    var relativeNewLineOffset = state.source
+                        .AsSpan(searchOffset)
+                        .IndexOfAny('\r', '\n');
+                    if (relativeNewLineOffset < 0)
+                    {
+                        break;
+                    }
 
-        var preservedLines = previousModule.Attributes
-            .Select(attribute => attribute.Range.Start.Line)
-            .Concat(previousModule.Options.Select(option => option.Range.Start.Line))
-            .Append(previousModule.Identity.Range.Start.Line)
-            .Where(line => line >= 0 && line < sourceText.Lines.Count)
-            .Concat(Enumerable.Range(memberStartLine, memberEndLine - memberStartLine + 1))
-            .Distinct();
-        foreach (var lineNumber in preservedLines)
-        {
-            var line = sourceText.Lines[lineNumber];
-            source.AsSpan(line.StartOffset, line.EndOffset - line.StartOffset)
-                .CopyTo(masked.AsSpan(line.StartOffset));
-        }
+                    var newLineOffset = searchOffset + relativeNewLineOffset;
+                    masked[newLineOffset] = state.source[newLineOffset];
+                    searchOffset = newLineOffset + 1;
+                }
 
-        return new string(masked);
+                var preservedLines = state.previousModule.Attributes
+                    .Select(attribute => attribute.Range.Start.Line)
+                    .Concat(state.previousModule.Options.Select(option => option.Range.Start.Line))
+                    .Append(state.previousModule.Identity.Range.Start.Line)
+                    .Where(line => line >= 0 && line < state.sourceText.Lines.Count)
+                    .Concat(Enumerable.Range(
+                        state.memberStartLine,
+                        state.memberEndLine - state.memberStartLine + 1))
+                    .Distinct();
+                foreach (var lineNumber in preservedLines)
+                {
+                    var line = state.sourceText.Lines[lineNumber];
+                    state.source.AsSpan(
+                            line.StartOffset,
+                            line.EndOffset - line.StartOffset)
+                        .CopyTo(masked[line.StartOffset..]);
+                }
+            });
     }
 
     private static bool TryFindChangedLineRange(
@@ -316,6 +449,11 @@ internal static class VbaSyntaxTreeIncrementalParser
     {
         var leftLine = leftSource.Lines[leftLineIndex];
         var rightLine = rightSource.Lines[rightLineIndex];
+        if (ReferenceEquals(leftLine, rightLine))
+        {
+            return true;
+        }
+
         var leftEndOffset = leftLineIndex + 1 < leftSource.Lines.Count
             ? leftSource.Lines[leftLineIndex + 1].StartOffset
             : leftSource.Text.Length;

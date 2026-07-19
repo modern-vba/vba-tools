@@ -2069,6 +2069,53 @@ public sealed class BlockSkeletonInsertionPlannerTests
     }
 
     [Fact]
+    public void Planner_rejects_source_coordinates_from_a_different_text()
+    {
+        const string uri = "file:///C:/work/MixedSnapshot.bas";
+        const string header = "Public Function Build() As String";
+        var snapshot = CreateSnapshot(uri, version: 5, text: $"{header}\n    ");
+        snapshot = snapshot with
+        {
+            SourceText = VbaSourceText.From(
+                $"{header}\n    \nPublic Sub Unrelated()\nEnd Sub")
+        };
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(0, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.Null(plan);
+    }
+
+    [Fact]
+    public void Planner_rejects_a_duplicated_eof_recovery_diagnostic()
+    {
+        const string uri = "file:///C:/work/DuplicateEofRecovery.bas";
+        const string header = "Public Function Build() As String";
+        var snapshot = CreateSnapshot(uri, version: 5, text: $"{header}\n    ");
+        var direct = Assert.Single(snapshot.Diagnostics.SyntaxDiagnostics, diagnostic =>
+            diagnostic.Code == "syntax.missingBlockTerminator"
+            && diagnostic.Message == "Block is missing 'End Function'.");
+        snapshot = snapshot with
+        {
+            Diagnostics = snapshot.Diagnostics with
+            {
+                SyntaxDiagnostics = snapshot.Diagnostics.SyntaxDiagnostics
+                    .Append(direct)
+                    .ToArray()
+            }
+        };
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(0, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.Null(plan);
+    }
+
+    [Fact]
     public void Planner_inserts_a_placeholder_free_select_case_skeleton()
     {
         const string uri = "file:///C:/work/SelectCase.bas";

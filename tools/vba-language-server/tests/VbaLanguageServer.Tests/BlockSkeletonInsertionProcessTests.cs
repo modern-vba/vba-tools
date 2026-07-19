@@ -1401,6 +1401,55 @@ public sealed class BlockSkeletonInsertionProcessTests
     }
 
     [Fact]
+    public async Task Closed_revision_returns_no_plan_and_reopen_uses_a_new_lifecycle()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+
+        const string uri = "file:///C:/work/Reopened.bas";
+        const string originalHeader = "Public Sub Original()";
+        const string reopenedHeader = "Public Function Reopened() As String";
+        await server.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(
+                uri,
+                version: 1,
+                text: $"{originalHeader}\n    "));
+        await server.SendNotificationAsync(
+            "textDocument/didClose",
+            new { textDocument = new { uri } });
+
+        var closed = await SendInsertionRequestAsync(
+            server,
+            id: 2,
+            uri,
+            version: 1,
+            character: originalHeader.Length);
+
+        await server.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(
+                uri,
+                version: 1,
+                text: $"{reopenedHeader}\n    "));
+        var reopened = await SendInsertionRequestAsync(
+            server,
+            id: 3,
+            uri,
+            version: 1,
+            character: reopenedHeader.Length);
+
+        Assert.Equal(
+            System.Text.Json.JsonValueKind.Null,
+            closed.GetProperty("result").ValueKind);
+        Assert.Equal(
+            "\nEnd Function",
+            reopened.GetProperty("result").GetProperty("textAfterCursor").GetString());
+
+        await server.ShutdownAsync(4);
+    }
+
+    [Fact]
     public async Task Conditional_branch_identity_is_bound_to_the_current_open_document_version()
     {
         await using var server = await LanguageServerProcessHarness.StartAsync();
