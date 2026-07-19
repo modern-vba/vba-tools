@@ -1,9 +1,110 @@
+using System.Text.Json;
+using VbaLanguageServer.Lsp;
 using Xunit;
 
 namespace VbaLanguageServer.Tests;
 
 public sealed class VbaInteractiveWorkSchedulerProcessTests
 {
+    [Fact]
+    public async Task Serial_worker_environment_produces_the_same_visible_query_results()
+    {
+        var concurrent = await RunVisibleResultScenarioAsync(serialWorker: false);
+        var serial = await RunVisibleResultScenarioAsync(serialWorker: true);
+
+        Assert.Equal(concurrent.Keys, serial.Keys);
+        foreach (var method in concurrent.Keys)
+        {
+            Assert.Equal(concurrent[method], serial[method]);
+        }
+    }
+
+    [Fact]
+    public async Task Server_wires_production_background_producers_to_the_scheduler()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-scheduler-background-wiring-").FullName;
+        var admissionDirectory = Directory.CreateDirectory(
+            Path.Combine(projectRoot, "admissions")).FullName;
+        var sourceDirectory = Directory.CreateDirectory(
+            Path.Combine(projectRoot, "src", "Book1")).FullName;
+        var sourcePath = Path.Combine(sourceDirectory, "Worker.bas");
+        var uri = new Uri(sourcePath).AbsoluteUri;
+        try
+        {
+            File.WriteAllText(
+                Path.Combine(projectRoot, "vba-project.json"),
+                JsonSerializer.Serialize(new
+                {
+                    schemaVersion = 1,
+                    projectName = "SchedulerBackgroundWiring",
+                    primaryDocument = "Book1",
+                    documents = new Dictionary<string, object>
+                    {
+                        ["Book1"] = new
+                        {
+                            kind = "excel",
+                            sourcePath = "src/Book1",
+                            templatePath = "src/Book1/Book1.xlsm",
+                            binPath = "bin/Book1/Book1.xlsm",
+                            publishPath = "publish/Book1/Book1.xlsm",
+                            references = Array.Empty<object>()
+                        }
+                    }
+                }));
+            const string text = "Attribute VB_Name = \"Worker\"\n"
+                + "Public Sub Run()\n"
+                + "End Sub\n";
+            File.WriteAllText(sourcePath, text);
+            await using var process = await LanguageServerProcessHarness.StartAsync(
+                environment: new Dictionary<string, string>
+                {
+                    ["VBA_TOOLS_INTERACTIVE_ADMISSION_DIRECTORY"] = admissionDirectory
+                });
+
+            await process.InitializeAsync();
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+            await process.WaitForDiagnosticsAsync(uri);
+            var didOpenPath = await WaitForMatchingFileCreatedAsync(
+                admissionDirectory,
+                fileName => fileName.EndsWith(
+                    "-mutation-textDocument_didOpen-none.completed",
+                    StringComparison.Ordinal),
+                TimeSpan.FromSeconds(5));
+            var diagnosticsPath = await WaitForMatchingFileCreatedAsync(
+                admissionDirectory,
+                fileName => fileName.EndsWith(
+                    "-request-textDocument_diagnostic-none.completed",
+                    StringComparison.Ordinal),
+                TimeSpan.FromSeconds(5));
+            var refreshPath = await WaitForMatchingFileCreatedAsync(
+                admissionDirectory,
+                fileName => fileName.EndsWith(
+                    "-request-vba_referenceCatalogRefresh-none.completed",
+                    StringComparison.Ordinal),
+                TimeSpan.FromSeconds(5));
+            var publicationPath = await WaitForMatchingFileCreatedAsync(
+                admissionDirectory,
+                fileName => fileName.EndsWith(
+                    "-request-vba_referenceCatalogPublication-none.completed",
+                    StringComparison.Ordinal),
+                TimeSpan.FromSeconds(5));
+            var didOpenSequence = ReadTimingValue(didOpenPath, "inputSequence");
+
+            Assert.Equal(didOpenSequence, ReadTimingValue(diagnosticsPath, "readFence"));
+            Assert.Equal(didOpenSequence, ReadTimingValue(refreshPath, "readFence"));
+            Assert.Equal(didOpenSequence, ReadTimingValue(publicationPath, "readFence"));
+
+            await process.ShutdownAsync(2);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task Server_accepts_explicit_cancellation_while_a_request_occupies_the_serial_lane()
     {
@@ -210,6 +311,12 @@ public sealed class VbaInteractiveWorkSchedulerProcessTests
                 await WaitForMatchingFileCreatedAsync(
                     admissionDirectory,
                     fileName => fileName.EndsWith("-number-3.admitted", StringComparison.Ordinal),
+                    TimeSpan.FromSeconds(5));
+                await WaitForMatchingFileCreatedAsync(
+                    admissionDirectory,
+                    fileName => fileName.EndsWith(
+                        "-mutation-textDocument_didChange-none.completed",
+                        StringComparison.Ordinal),
                     TimeSpan.FromSeconds(5));
 
                 Assert.False(File.Exists(cancelledFile));
@@ -791,6 +898,74 @@ public sealed class VbaInteractiveWorkSchedulerProcessTests
             }
         };
 
+    private static async Task<IReadOnlyDictionary<string, string>>
+        RunVisibleResultScenarioAsync(bool serialWorker)
+    {
+        var environment = new Dictionary<string, string>();
+        if (serialWorker)
+        {
+            environment[VbaInteractiveWorkSchedulerOptions.SerialWorkerEnvironmentVariable] = "1";
+        }
+
+        await using var process = await LanguageServerProcessHarness.StartAsync(
+            environment: environment);
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/SchedulerRollback.bas";
+        const string invocation = "    result = BuildValue(";
+        var text = string.Join('\n',
+        [
+            "Attribute VB_Name = \"SchedulerRollback\"",
+            "Public Sub Caller()",
+            "    Dim result As String",
+            invocation,
+            "End Sub",
+            "Public Function BuildValue(ByVal value As Long) As String",
+            "End Function"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+        await process.WaitForDiagnosticsAsync(uri);
+        var requests = new[]
+        {
+            (
+                Id: 10,
+                Method: "textDocument/completion",
+                Line: 3,
+                Character: "    result = Build".Length),
+            (
+                Id: 11,
+                Method: "textDocument/hover",
+                Line: 3,
+                Character: "    result = Build".Length),
+            (
+                Id: 12,
+                Method: "textDocument/signatureHelp",
+                Line: 3,
+                Character: invocation.Length)
+        };
+        var responses = await Task.WhenAll(requests.Select(request =>
+            process.SendRequestAsync(
+                request.Id,
+                request.Method,
+                new
+                {
+                    textDocument = new { uri },
+                    position = new
+                    {
+                        line = request.Line,
+                        character = request.Character
+                    }
+                })));
+        await process.ShutdownAsync(20);
+        return requests
+            .Zip(responses)
+            .ToDictionary(
+                pair => pair.First.Method,
+                pair => pair.Second.GetProperty("result").GetRawText(),
+                StringComparer.Ordinal);
+    }
+
     private static object CreateChangedDocument(string uri, int version, string text)
         => new
         {
@@ -881,4 +1056,10 @@ public sealed class VbaInteractiveWorkSchedulerProcessTests
     private static int CountCompletedFiles(string directory, string suffix)
         => Directory.EnumerateFiles(directory, "*.completed")
             .Count(path => path.EndsWith(suffix, StringComparison.Ordinal));
+
+    private static long ReadTimingValue(string path, string key)
+        => long.Parse(
+            File.ReadLines(path)
+                .Single(line => line.StartsWith($"{key}=", StringComparison.Ordinal))
+                [(key.Length + 1)..]);
 }

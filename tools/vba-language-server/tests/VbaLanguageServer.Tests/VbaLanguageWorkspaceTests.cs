@@ -635,6 +635,39 @@ public sealed class VbaLanguageWorkspaceTests
     }
 
     [Fact]
+    public async Task Project_snapshot_build_completed_after_invalidation_cannot_replace_newer_cache()
+    {
+        const string uri = "file:///C:/work/SnapshotRace.bas";
+        var buildObserver = new BlockingFirstProjectSnapshotBuildObserver();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.CreateBundled()),
+            NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+            NullVbaDocumentAnalysisBuildObserver.Instance,
+            buildObserver);
+        workspace.UpdateDocument(
+            uri,
+            "Attribute VB_Name = \"SnapshotRace\"\nPublic Sub OldProcedure()\nEnd Sub\n");
+        var oldBuild = Task.Run(() => workspace.CreateProjectSnapshot(uri));
+        await buildObserver.FirstBuildWaiting.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        workspace.UpdateDocument(
+            uri,
+            "Attribute VB_Name = \"SnapshotRace\"\nPublic Sub NewProcedure()\nEnd Sub\n");
+        var newSnapshot = workspace.CreateProjectSnapshot(uri);
+        buildObserver.ReleaseFirstBuild();
+        var oldSnapshot = await oldBuild.WaitAsync(TimeSpan.FromSeconds(5));
+        var reusedSnapshot = workspace.CreateProjectSnapshot(uri);
+
+        Assert.Contains(
+            oldSnapshot.SemanticInventory.GetDocumentDefinitions(uri),
+            definition => definition.Name == "OldProcedure");
+        Assert.Contains(
+            newSnapshot.SemanticInventory.GetDocumentDefinitions(uri),
+            definition => definition.Name == "NewProcedure");
+        Assert.Same(newSnapshot, reusedSnapshot);
+    }
+
+    [Fact]
     public void OpenDocumentChangesRequireIncreasingVersions()
     {
         const string uri = "file:///C:/work/VersionedWorker.bas";
@@ -895,6 +928,30 @@ public sealed class VbaLanguageWorkspaceTests
         yield return [AddPreamble(Encoding.UTF8.GetPreamble(), Encoding.UTF8.GetBytes(source))];
         yield return [AddPreamble(Encoding.Unicode.GetPreamble(), Encoding.Unicode.GetBytes(source))];
         yield return [new UTF8Encoding(encoderShouldEmitUTF8Identifier: false).GetBytes(source)];
+    }
+
+    private sealed class BlockingFirstProjectSnapshotBuildObserver
+        : IVbaProjectSnapshotBuildObserver
+    {
+        private readonly ManualResetEventSlim release = new();
+        private int observedBuilds;
+
+        public TaskCompletionSource FirstBuildWaiting { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void BeforeStore(long workspaceVersion, CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref observedBuilds) != 1)
+            {
+                return;
+            }
+
+            FirstBuildWaiting.TrySetResult();
+            release.Wait(cancellationToken);
+        }
+
+        public void ReleaseFirstBuild()
+            => release.Set();
     }
 
     private static byte[] AddPreamble(byte[] preamble, byte[] bytes)

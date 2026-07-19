@@ -37,6 +37,7 @@ internal sealed class VbaLspRequestExecution
     private readonly LspMessageTransport transport;
     private readonly VbaLanguageWorkspace workspace;
     private readonly IVbaLspRequestExecutionGate executionGate;
+    private int shutdownRequested;
 
     /// <summary>
     /// Creates a request executor over the transport and workspace boundaries.
@@ -56,239 +57,470 @@ internal sealed class VbaLspRequestExecution
     /// <summary>
     /// Gets whether a valid shutdown request has been handled.
     /// </summary>
-    public bool ShutdownRequested { get; private set; }
+    public bool ShutdownRequested => Volatile.Read(ref shutdownRequested) != 0;
+
+    /// <summary>
+    /// Captures one request's immutable document or project state on the ordered lane.
+    /// </summary>
+    public CapturedRequest Capture(
+        JsonObject request,
+        CancellationToken requestCancellationToken)
+    {
+        var id = GetResponseId(request);
+        if (!TryDecodeEnvelope(request, out var method, out var parameters))
+        {
+            return CapturedRequest.Direct(
+                id,
+                "<invalid-request>",
+                requestId: null,
+                RequestOutcome.Error(-32600, "Invalid Request"),
+                useExecutionGate: false);
+        }
+
+        var requestId = VbaLspRequestId.TryCreate(id, out var parsedRequestId)
+            ? parsedRequestId
+            : (VbaLspRequestId?)null;
+        try
+        {
+            requestCancellationToken.ThrowIfCancellationRequested();
+            return CaptureRequest(
+                id,
+                requestId,
+                method,
+                parameters,
+                requestCancellationToken);
+        }
+        catch (OperationCanceledException) when (requestCancellationToken.IsCancellationRequested)
+        {
+            return CapturedRequest.Direct(
+                id,
+                method,
+                requestId,
+                RequestOutcome.Error(-32800, "Request cancelled"),
+                useExecutionGate: false);
+        }
+        catch (Exception)
+        {
+            return CapturedRequest.Direct(
+                id,
+                method,
+                requestId,
+                RequestOutcome.Error(-32603, "Internal error"),
+                useExecutionGate: false);
+        }
+    }
 
     /// <summary>
     /// Executes one request and writes exactly one success or error response.
     /// </summary>
-    /// <param name="request">The JSON-RPC request object.</param>
-    /// <param name="requestCancellationToken">A cancellation token owned by this request.</param>
-    /// <param name="responseCancellationToken">A cancellation token for the response transport lifetime.</param>
-    public async Task ExecuteAsync(
+    public Task ExecuteAsync(
         JsonObject request,
         CancellationToken requestCancellationToken,
         CancellationToken responseCancellationToken,
         Action? releaseCancellationOwnership = null)
     {
-        var id = GetResponseId(request);
+        var captured = Capture(request, requestCancellationToken);
+        return ExecuteAsync(
+            captured,
+            requestCancellationToken,
+            responseCancellationToken,
+            releaseCancellationOwnership);
+    }
+
+    /// <summary>
+    /// Executes a previously captured request without consulting mutable workspace state.
+    /// </summary>
+    public async Task ExecuteAsync(
+        CapturedRequest captured,
+        CancellationToken requestCancellationToken,
+        CancellationToken responseCancellationToken,
+        Action? releaseCancellationOwnership = null)
+    {
         RequestOutcome outcome;
-        if (!TryDecodeEnvelope(request, out var method, out var parameters))
+        try
         {
-            outcome = RequestOutcome.Error(-32600, "Invalid Request");
-        }
-        else
-        {
-            try
+            requestCancellationToken.ThrowIfCancellationRequested();
+            if (captured.UseExecutionGate)
             {
-                var requestId = VbaLspRequestId.TryCreate(id, out var parsedRequestId)
-                    ? parsedRequestId
-                    : (VbaLspRequestId?)null;
-                requestCancellationToken.ThrowIfCancellationRequested();
                 await executionGate.WaitAsync(
-                    requestId,
-                    method,
+                    captured.RequestId,
+                    captured.Method,
                     requestCancellationToken);
-                outcome = ExecuteRequest(method, parameters, requestCancellationToken);
             }
-            catch (OperationCanceledException)
-                when (requestCancellationToken.IsCancellationRequested
-                    && !responseCancellationToken.IsCancellationRequested)
-            {
-                outcome = RequestOutcome.Error(-32800, "Request cancelled");
-            }
-            catch (OperationCanceledException)
-                when (responseCancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception)
-            {
-                outcome = RequestOutcome.Error(-32603, "Internal error");
-            }
+
+            requestCancellationToken.ThrowIfCancellationRequested();
+            outcome = await Task.Run(
+                () =>
+                {
+                    requestCancellationToken.ThrowIfCancellationRequested();
+                    var result = captured.Execute(requestCancellationToken);
+                    requestCancellationToken.ThrowIfCancellationRequested();
+                    return result;
+                },
+                requestCancellationToken);
+        }
+        catch (OperationCanceledException)
+            when (requestCancellationToken.IsCancellationRequested
+                && !responseCancellationToken.IsCancellationRequested)
+        {
+            outcome = RequestOutcome.Error(-32800, "Request cancelled");
+        }
+        catch (OperationCanceledException)
+            when (responseCancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            outcome = RequestOutcome.Error(-32603, "Internal error");
         }
 
         releaseCancellationOwnership?.Invoke();
         if (outcome.ErrorCode is int errorCode)
         {
             await transport.WriteErrorResponseAsync(
-                id,
+                captured.ResponseId,
                 errorCode,
                 outcome.ErrorMessage!,
                 responseCancellationToken);
             return;
         }
 
-        await transport.WriteResponseAsync(id, outcome.Result, responseCancellationToken);
+        await transport.WriteResponseAsync(
+            captured.ResponseId,
+            outcome.Result,
+            responseCancellationToken);
     }
 
-    private RequestOutcome ExecuteRequest(
+    private CapturedRequest CaptureRequest(
+        JsonNode? responseId,
+        VbaLspRequestId? requestId,
         string method,
         JsonNode? parameters,
         CancellationToken cancellationToken)
     {
-        switch (method)
+        CapturedRequest Captured(Func<CancellationToken, RequestOutcome> execute)
+            => new(responseId, requestId, method, execute, UseExecutionGate: true);
+
+        CapturedRequest Direct(RequestOutcome outcome)
+            => Captured(_ => outcome);
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return method switch
         {
-            case "initialize":
-                return parameters is JsonObject
-                    ? RequestOutcome.Success(VbaLspFeatureProjection.CreateInitializeResult(CapabilityContract))
-                    : RequestOutcome.InvalidParams();
-            case "shutdown":
-                if (parameters is not null)
+            "initialize" => parameters is JsonObject
+                ? Direct(RequestOutcome.Success(
+                    VbaLspFeatureProjection.CreateInitializeResult(CapabilityContract)))
+                : Direct(RequestOutcome.InvalidParams()),
+            "shutdown" => parameters is null
+                ? Captured(_ =>
                 {
-                    return RequestOutcome.InvalidParams();
-                }
-
-                ShutdownRequested = true;
-                return RequestOutcome.Success(null);
-            case "textDocument/completion":
-                return TryCreatePositionRequest(parameters, out var completionRequest)
-                    ? RequestOutcome.Success(WithSemanticInventory(
-                        completionRequest,
-                        cancellationToken,
-                        inventory => VbaLspFeatureProjection.CreateCompletionItems(
+                    Interlocked.Exchange(ref shutdownRequested, 1);
+                    return RequestOutcome.Success(null);
+                })
+                : Direct(RequestOutcome.InvalidParams()),
+            "textDocument/completion" =>
+                CapturePositionRequest(
+                    parameters,
+                    cancellationToken,
+                    (request, inventory, token) =>
+                    {
+                        token.ThrowIfCancellationRequested();
+                        return VbaLspFeatureProjection.CreateCompletionItems(
                             inventory.GetCompletionResult(
-                                completionRequest.Uri,
-                                completionRequest.Line,
-                                completionRequest.Character))))
-                    : RequestOutcome.InvalidParams();
-            case "textDocument/documentSymbol":
-                return TryCreateTextDocumentRequest(parameters, out var documentSymbolRequest)
-                    ? RequestOutcome.Success(WithSemanticInventory(
-                        documentSymbolRequest,
-                        cancellationToken,
-                        inventory => VbaLspFeatureProjection.CreateDocumentSymbols(
-                            inventory.GetDocumentDefinitions(documentSymbolRequest.Uri))))
-                    : RequestOutcome.InvalidParams();
-            case "textDocument/definition":
-                return TryCreatePositionRequest(parameters, out var definitionRequest)
-                    ? RequestOutcome.Success(WithSemanticInventory(
-                        definitionRequest,
-                        cancellationToken,
-                        inventory => VbaLspFeatureProjection.CreateLocation(
+                                request.Uri,
+                                request.Line,
+                                request.Character));
+                    },
+                    Captured,
+                    Direct),
+            "textDocument/documentSymbol" =>
+                CaptureTextDocumentRequest(
+                    parameters,
+                    cancellationToken,
+                    (request, inventory, token) =>
+                    {
+                        token.ThrowIfCancellationRequested();
+                        return VbaLspFeatureProjection.CreateDocumentSymbols(
+                            inventory.GetDocumentDefinitions(request.Uri));
+                    },
+                    Captured,
+                    Direct),
+            "textDocument/definition" =>
+                CapturePositionRequest(
+                    parameters,
+                    cancellationToken,
+                    (request, inventory, token) =>
+                    {
+                        token.ThrowIfCancellationRequested();
+                        return VbaLspFeatureProjection.CreateLocation(
                             inventory.ResolveDefinition(
-                                definitionRequest.Uri,
-                                definitionRequest.Line,
-                                definitionRequest.Character))))
-                    : RequestOutcome.InvalidParams();
-            case "textDocument/references":
-                return TryCreatePositionRequest(parameters, out var referencesRequest)
-                    ? RequestOutcome.Success(WithSemanticInventory(
-                        referencesRequest,
-                        cancellationToken,
-                        inventory => VbaLspFeatureProjection.CreateLocations(
+                                request.Uri,
+                                request.Line,
+                                request.Character));
+                    },
+                    Captured,
+                    Direct),
+            "textDocument/references" =>
+                CapturePositionRequest(
+                    parameters,
+                    cancellationToken,
+                    (request, inventory, token) =>
+                    {
+                        token.ThrowIfCancellationRequested();
+                        return VbaLspFeatureProjection.CreateLocations(
                             inventory.FindReferences(
-                                referencesRequest.Uri,
-                                referencesRequest.Line,
-                                referencesRequest.Character))))
-                    : RequestOutcome.InvalidParams();
-            case "workspace/symbol":
-                if (!TryCreateWorkspaceSymbolQuery(parameters, out var query))
-                {
-                    return RequestOutcome.InvalidParams();
-                }
-
-                var symbols = workspace.CreateProjectSnapshots(cancellationToken)
-                    .SelectMany(snapshot => snapshot.SemanticInventory.GetWorkspaceSymbols(query))
-                    .ToArray();
-                return RequestOutcome.Success(VbaLspFeatureProjection.CreateWorkspaceSymbols(symbols));
-            case "textDocument/hover":
-                return TryCreatePositionRequest(parameters, out var hoverRequest)
-                    ? RequestOutcome.Success(WithSemanticInventory(
-                        hoverRequest,
-                        cancellationToken,
-                        inventory => VbaLspFeatureProjection.CreateHover(
+                                request.Uri,
+                                request.Line,
+                                request.Character,
+                                token));
+                    },
+                    Captured,
+                    Direct),
+            "workspace/symbol" =>
+                CaptureWorkspaceSymbolRequest(
+                    parameters,
+                    cancellationToken,
+                    Captured,
+                    Direct),
+            "textDocument/hover" =>
+                CapturePositionRequest(
+                    parameters,
+                    cancellationToken,
+                    (request, inventory, token) =>
+                    {
+                        token.ThrowIfCancellationRequested();
+                        return VbaLspFeatureProjection.CreateHover(
                             inventory.ResolveSourceDefinition(
-                                hoverRequest.Uri,
-                                hoverRequest.Line,
-                                hoverRequest.Character))))
-                    : RequestOutcome.InvalidParams();
-            case "textDocument/signatureHelp":
-                return TryCreatePositionRequest(parameters, out var signatureRequest)
-                    ? RequestOutcome.Success(WithSemanticInventory(
-                        signatureRequest,
-                        cancellationToken,
-                        inventory => VbaLspFeatureProjection.CreateSignatureHelp(
+                                request.Uri,
+                                request.Line,
+                                request.Character));
+                    },
+                    Captured,
+                    Direct),
+            "textDocument/signatureHelp" =>
+                CapturePositionRequest(
+                    parameters,
+                    cancellationToken,
+                    (request, inventory, token) =>
+                    {
+                        token.ThrowIfCancellationRequested();
+                        return VbaLspFeatureProjection.CreateSignatureHelp(
                             inventory.GetSignatureHelp(
-                                signatureRequest.Uri,
-                                signatureRequest.Line,
-                                signatureRequest.Character))))
-                    : RequestOutcome.InvalidParams();
-            case "textDocument/prepareRename":
-                return TryCreatePositionRequest(parameters, out var prepareRenameRequest)
-                    ? RequestOutcome.Success(WithSemanticInventory(
-                        prepareRenameRequest,
-                        cancellationToken,
-                        inventory => inventory.PrepareRename(
-                            prepareRenameRequest.Uri,
-                            prepareRenameRequest.Line,
-                            prepareRenameRequest.Character)))
-                    : RequestOutcome.InvalidParams();
-            case "textDocument/rename":
-                return TryCreateRenameRequest(parameters, out var renameRequest)
-                    ? RequestOutcome.Success(WithSemanticInventory(
-                        renameRequest,
-                        cancellationToken,
-                        inventory =>
-                        {
-                            var renamePlan = inventory.CreateRenamePlan(
-                                renameRequest.Uri,
-                                renameRequest.Line,
-                                renameRequest.Character,
-                                renameRequest.NewName);
-                            return VbaLspFeatureProjection.CreateWorkspaceEdit(renamePlan?.Changes);
-                        }))
-                    : RequestOutcome.InvalidParams();
-            case "textDocument/formatting":
-                return TryCreateFormattingRequest(parameters, out var formattingRequest)
-                    ? RequestOutcome.Success(WithSemanticInventory(
-                        formattingRequest,
-                        cancellationToken,
-                        inventory => VbaLspFeatureProjection.CreateFormattingEdits(
-                            inventory.FormatDocument(formattingRequest.Uri, formattingRequest.IndentationStyle))))
-                    : RequestOutcome.InvalidParams();
-            case "vba/blockSkeletonInsertion":
-                return TryCreateBlockSkeletonInsertionRequest(parameters, out var skeletonRequest)
-                    ? RequestOutcome.Success(CreateBlockSkeletonInsertionPlan(
-                        skeletonRequest,
-                        cancellationToken))
-                    : RequestOutcome.InvalidParams();
-            case "textDocument/semanticTokens/full":
-                return TryCreateTextDocumentRequest(parameters, out var semanticTokensRequest)
-                    ? RequestOutcome.Success(WithSemanticInventory(
-                        semanticTokensRequest,
-                        cancellationToken,
-                        inventory => VbaLspFeatureProjection.CreateSemanticTokens(
-                            inventory.GetSemanticTokenData(semanticTokensRequest.Uri))))
-                    : RequestOutcome.InvalidParams();
-            default:
-                return RequestOutcome.Error(-32601, "Method not found");
-        }
+                                request.Uri,
+                                request.Line,
+                                request.Character));
+                    },
+                    Captured,
+                    Direct),
+            "textDocument/prepareRename" =>
+                CapturePositionRequest(
+                    parameters,
+                    cancellationToken,
+                    (request, inventory, token) =>
+                    {
+                        token.ThrowIfCancellationRequested();
+                        return inventory.PrepareRename(
+                            request.Uri,
+                            request.Line,
+                            request.Character);
+                    },
+                    Captured,
+                    Direct),
+            "textDocument/rename" =>
+                CaptureRenameRequest(
+                    parameters,
+                    cancellationToken,
+                    Captured,
+                    Direct),
+            "textDocument/formatting" =>
+                CaptureFormattingRequest(
+                    parameters,
+                    cancellationToken,
+                    Captured,
+                    Direct),
+            "vba/blockSkeletonInsertion" =>
+                CaptureBlockSkeletonRequest(
+                    parameters,
+                    cancellationToken,
+                    Captured,
+                    Direct),
+            "textDocument/semanticTokens/full" =>
+                CaptureTextDocumentRequest(
+                    parameters,
+                    cancellationToken,
+                    (request, inventory, token) =>
+                    {
+                        token.ThrowIfCancellationRequested();
+                        return VbaLspFeatureProjection.CreateSemanticTokens(
+                            inventory.GetSemanticTokenData(request.Uri, token));
+                    },
+                    Captured,
+                    Direct),
+            _ => Direct(RequestOutcome.Error(-32601, "Method not found"))
+        };
     }
 
-    private TResult WithSemanticInventory<TRequest, TResult>(
-        TRequest request,
+    private CapturedRequest CapturePositionRequest(
+        JsonNode? parameters,
         CancellationToken cancellationToken,
-        Func<VbaSemanticInventory, TResult> createResult)
-        where TRequest : ITextDocumentRequest
+        Func<TextDocumentPositionRequest, VbaSemanticInventory, CancellationToken, object?> createResult,
+        Func<Func<CancellationToken, RequestOutcome>, CapturedRequest> captured,
+        Func<RequestOutcome, CapturedRequest> direct)
     {
-        var snapshot = workspace.CreateProjectSnapshot(request.Uri, cancellationToken);
-        return createResult(snapshot.SemanticInventory);
+        if (!TryCreatePositionRequest(parameters, out var request))
+        {
+            return direct(RequestOutcome.InvalidParams());
+        }
+
+        var inventory = CaptureSemanticInventory(request.Uri, cancellationToken);
+        return captured(executionToken =>
+        {
+            executionToken.ThrowIfCancellationRequested();
+            var result = createResult(request, inventory, executionToken);
+            executionToken.ThrowIfCancellationRequested();
+            return RequestOutcome.Success(result);
+        });
     }
 
-    private BlockSkeletonInsertionPlan? CreateBlockSkeletonInsertionPlan(
-        BlockSkeletonInsertionRequest request,
-        CancellationToken cancellationToken)
+    private CapturedRequest CaptureTextDocumentRequest(
+        JsonNode? parameters,
+        CancellationToken cancellationToken,
+        Func<TextDocumentRequest, VbaSemanticInventory, CancellationToken, object?> createResult,
+        Func<Func<CancellationToken, RequestOutcome>, CapturedRequest> captured,
+        Func<RequestOutcome, CapturedRequest> direct)
     {
+        if (!TryCreateTextDocumentRequest(parameters, out var request))
+        {
+            return direct(RequestOutcome.InvalidParams());
+        }
+
+        var inventory = CaptureSemanticInventory(request.Uri, cancellationToken);
+        return captured(executionToken =>
+        {
+            executionToken.ThrowIfCancellationRequested();
+            var result = createResult(request, inventory, executionToken);
+            executionToken.ThrowIfCancellationRequested();
+            return RequestOutcome.Success(result);
+        });
+    }
+
+    private CapturedRequest CaptureWorkspaceSymbolRequest(
+        JsonNode? parameters,
+        CancellationToken cancellationToken,
+        Func<Func<CancellationToken, RequestOutcome>, CapturedRequest> captured,
+        Func<RequestOutcome, CapturedRequest> direct)
+    {
+        if (!TryCreateWorkspaceSymbolQuery(parameters, out var query))
+        {
+            return direct(RequestOutcome.InvalidParams());
+        }
+
+        var inventories = workspace.CreateProjectSnapshots(cancellationToken)
+            .Select(snapshot => snapshot.SemanticInventory)
+            .ToArray();
+        return captured(executionToken =>
+        {
+            var symbols = new List<VbaWorkspaceSymbol>();
+            foreach (var inventory in inventories)
+            {
+                executionToken.ThrowIfCancellationRequested();
+                symbols.AddRange(inventory.GetWorkspaceSymbols(query));
+            }
+
+            return RequestOutcome.Success(
+                VbaLspFeatureProjection.CreateWorkspaceSymbols(symbols));
+        });
+    }
+
+    private CapturedRequest CaptureRenameRequest(
+        JsonNode? parameters,
+        CancellationToken cancellationToken,
+        Func<Func<CancellationToken, RequestOutcome>, CapturedRequest> captured,
+        Func<RequestOutcome, CapturedRequest> direct)
+    {
+        if (!TryCreateRenameRequest(parameters, out var request))
+        {
+            return direct(RequestOutcome.InvalidParams());
+        }
+
+        var inventory = CaptureSemanticInventory(request.Uri, cancellationToken);
+        return captured(executionToken =>
+        {
+            executionToken.ThrowIfCancellationRequested();
+            var renamePlan = inventory.CreateRenamePlan(
+                request.Uri,
+                request.Line,
+                request.Character,
+                request.NewName,
+                executionToken);
+            executionToken.ThrowIfCancellationRequested();
+            return RequestOutcome.Success(
+                VbaLspFeatureProjection.CreateWorkspaceEdit(renamePlan?.Changes));
+        });
+    }
+
+    private CapturedRequest CaptureFormattingRequest(
+        JsonNode? parameters,
+        CancellationToken cancellationToken,
+        Func<Func<CancellationToken, RequestOutcome>, CapturedRequest> captured,
+        Func<RequestOutcome, CapturedRequest> direct)
+    {
+        if (!TryCreateFormattingRequest(parameters, out var request))
+        {
+            return direct(RequestOutcome.InvalidParams());
+        }
+
+        var inventory = CaptureSemanticInventory(request.Uri, cancellationToken);
+        return captured(executionToken =>
+        {
+            executionToken.ThrowIfCancellationRequested();
+            var edits = inventory.FormatDocument(
+                request.Uri,
+                request.IndentationStyle,
+                executionToken);
+            executionToken.ThrowIfCancellationRequested();
+            return RequestOutcome.Success(
+                VbaLspFeatureProjection.CreateFormattingEdits(edits));
+        });
+    }
+
+    private CapturedRequest CaptureBlockSkeletonRequest(
+        JsonNode? parameters,
+        CancellationToken cancellationToken,
+        Func<Func<CancellationToken, RequestOutcome>, CapturedRequest> captured,
+        Func<RequestOutcome, CapturedRequest> direct)
+    {
+        if (!TryCreateBlockSkeletonInsertionRequest(parameters, out var request))
+        {
+            return direct(RequestOutcome.InvalidParams());
+        }
+
         var snapshot = workspace.GetDocumentSnapshot(
             request.DocumentUri,
             request.DocumentVersion,
             cancellationToken);
-        return snapshot is null
-            ? null
-            : BlockSkeletonInsertionPlanner.CreatePlan(
-                snapshot,
-                request.Position,
-                request.IndentationStyle);
+        return captured(executionToken =>
+        {
+            executionToken.ThrowIfCancellationRequested();
+            var plan = snapshot is null
+                ? null
+                : BlockSkeletonInsertionPlanner.CreatePlan(
+                    snapshot,
+                    request.Position,
+                    request.IndentationStyle);
+            executionToken.ThrowIfCancellationRequested();
+            return RequestOutcome.Success(plan);
+        });
+    }
+
+    private VbaSemanticInventory CaptureSemanticInventory(
+        string uri,
+        CancellationToken cancellationToken)
+    {
+        var snapshot = workspace.CreateProjectSnapshot(uri, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        return snapshot.SemanticInventory;
     }
 
     private static bool TryDecodeEnvelope(
@@ -499,7 +731,28 @@ internal sealed class VbaLspRequestExecution
         BlockSkeletonInsertionPosition Position,
         VbaIndentationStyle IndentationStyle);
 
-    private sealed record RequestOutcome(object? Result, int? ErrorCode, string? ErrorMessage)
+    internal sealed record CapturedRequest(
+        JsonNode? ResponseId,
+        VbaLspRequestId? RequestId,
+        string Method,
+        Func<CancellationToken, RequestOutcome> Execute,
+        bool UseExecutionGate)
+    {
+        public static CapturedRequest Direct(
+            JsonNode? responseId,
+            string method,
+            VbaLspRequestId? requestId,
+            RequestOutcome outcome,
+            bool useExecutionGate)
+            => new(
+                responseId,
+                requestId,
+                method,
+                _ => outcome,
+                useExecutionGate);
+    }
+
+    internal sealed record RequestOutcome(object? Result, int? ErrorCode, string? ErrorMessage)
     {
         public static RequestOutcome Success(object? result) => new(result, null, null);
 

@@ -21,10 +21,54 @@ internal interface IReferenceCatalogLifecycle
     void DeactivateManifest(string uri);
 }
 
+internal interface IReferenceCatalogRuntimeLifecycle : IReferenceCatalogLifecycle
+{
+    void AttachScheduler(VbaInteractiveWorkScheduler scheduler);
+
+    Task StopAsync();
+}
+
+internal sealed class VbaInteractiveReferenceCatalogMutationLane
+    : IVbaProjectReferenceCatalogMutationLane
+{
+    private readonly VbaInteractiveWorkScheduler scheduler;
+
+    public VbaInteractiveReferenceCatalogMutationLane(VbaInteractiveWorkScheduler scheduler)
+    {
+        this.scheduler = scheduler;
+    }
+
+    public async Task CommitAsync(
+        string authorityKey,
+        Action commit,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(authorityKey);
+        ArgumentNullException.ThrowIfNull(commit);
+        cancellationToken.ThrowIfCancellationRequested();
+        var admission = await scheduler.AdmitRequiredMutationAsync(
+                "vba/referenceCatalogCommit",
+                schedulerCancellationToken =>
+                {
+                    schedulerCancellationToken.ThrowIfCancellationRequested();
+                    if (!cancellationToken.IsCancellationRequested)
+                    {
+                        commit();
+                    }
+
+                    return Task.CompletedTask;
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
+        await admission.Completion.ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+    }
+}
+
 /// <summary>
 /// Owns project-scoped reference catalog activation, trace publication, and background refresh.
 /// </summary>
-internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogLifecycle
+internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRuntimeLifecycle
 {
     private static readonly TimeSpan ShutdownWaitTimeout = TimeSpan.FromSeconds(1);
     private readonly VbaProjectReferenceCatalogCache catalogCache;
@@ -41,7 +85,12 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogLife
         new(StringComparer.Ordinal);
     private readonly HashSet<SharedReferenceCatalogWork> activeAutomaticWork = [];
     private readonly HashSet<Task> backgroundTasks = [];
+    private readonly Dictionary<string, ReferenceCatalogRefreshPlan> pendingLifecyclePlans =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> activeLifecycleAdmissions =
+        new(StringComparer.OrdinalIgnoreCase);
     private readonly CancellationTokenSource lifetimeCancellation = new();
+    private VbaInteractiveWorkScheduler? scheduler;
     private long lifecycleRevision;
     private bool stopping;
 
@@ -65,6 +114,35 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogLife
         this.transport = transport;
         this.lifecycleObserver =
             lifecycleObserver ?? NullVbaProjectReferenceCatalogLifecycleObserver.Instance;
+    }
+
+    /// <summary>
+    /// Attaches the runtime-owned scheduler before automatic lifecycle work starts.
+    /// </summary>
+    public void AttachScheduler(VbaInteractiveWorkScheduler interactiveScheduler)
+    {
+        ArgumentNullException.ThrowIfNull(interactiveScheduler);
+        lock (lifecycleGate)
+        {
+            if (scheduler is not null && !ReferenceEquals(scheduler, interactiveScheduler))
+            {
+                throw new InvalidOperationException(
+                    "The reference catalog coordinator is already attached to another scheduler.");
+            }
+
+            if (backgroundTasks.Count > 0 || lifecycleStates.Count > 0)
+            {
+                throw new InvalidOperationException(
+                    "The reference catalog scheduler must be attached before lifecycle work starts.");
+            }
+
+            scheduler = interactiveScheduler;
+        }
+
+        refreshService.AttachMutationLane(
+            new VbaInteractiveReferenceCatalogMutationLane(interactiveScheduler));
+        interactiveScheduler.RegisterCapacityObserver(
+            RetryOneScheduledLifecycle);
     }
 
     /// <summary>
@@ -106,6 +184,7 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogLife
         var removedFingerprints = new HashSet<string>(StringComparer.Ordinal);
         lock (lifecycleGate)
         {
+            pendingLifecyclePlans.Remove(uri);
             foreach (var scopeKey in lifecycleStates.Keys
                 .Where(key => key.StartsWith(scopePrefix, StringComparison.OrdinalIgnoreCase))
                 .ToArray())
@@ -153,25 +232,30 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogLife
             {
                 stopping = true;
                 cancel = true;
+                pendingLifecyclePlans.Clear();
             }
 
             tasks = backgroundTasks.ToArray();
         }
 
-        if (cancel)
-        {
-            lifetimeCancellation.Cancel();
-        }
+        var cancellation = cancel
+            ? lifetimeCancellation.CancelAsync()
+            : Task.CompletedTask;
 
         try
         {
-            await Task.WhenAll(tasks).WaitAsync(ShutdownWaitTimeout);
+            await Task.WhenAll(tasks.Append(cancellation)).WaitAsync(ShutdownWaitTimeout);
         }
         catch (TimeoutException)
         {
             // Non-cooperative TypeLib COM calls remain observed in the background
             // but must not prevent the language-server process from shutting down.
             return;
+        }
+        catch (Exception)
+        {
+            // Cancellation callbacks and already-observed background tasks may fault,
+            // but shutdown must still release retained lifecycle resources.
         }
 
         SharedReferenceCatalogWork[] retainedWork;
@@ -183,11 +267,135 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogLife
 
         foreach (var sharedWork in retainedWork)
         {
-            sharedWork.DisposeCancellation();
+            await sharedWork.DisposeCancellationWhenCompleteAsync();
         }
     }
 
     private void ScheduleLifecycle(ReferenceCatalogRefreshPlan plan)
+    {
+        VbaInteractiveWorkScheduler? interactiveScheduler;
+        var startAdmission = false;
+        lock (lifecycleGate)
+        {
+            if (stopping)
+            {
+                return;
+            }
+
+            interactiveScheduler = scheduler;
+            if (interactiveScheduler is not null)
+            {
+                pendingLifecyclePlans[plan.Uri] = plan;
+                startAdmission = activeLifecycleAdmissions.Add(plan.Uri);
+            }
+        }
+
+        if (interactiveScheduler is null)
+        {
+            ScheduleLifecycleCore(plan);
+            return;
+        }
+
+        if (startAdmission)
+        {
+            StartScheduledLifecycle(plan.Uri, interactiveScheduler);
+        }
+    }
+
+    private void RetryOneScheduledLifecycle()
+    {
+        VbaInteractiveWorkScheduler? interactiveScheduler;
+        string? uri;
+        lock (lifecycleGate)
+        {
+            interactiveScheduler = scheduler;
+            uri = !stopping
+                && interactiveScheduler is not null
+                && interactiveScheduler.IsAccepting
+                    ? pendingLifecyclePlans.Keys.FirstOrDefault(
+                        pendingUri => !activeLifecycleAdmissions.Contains(pendingUri))
+                    : null;
+            if (uri is not null)
+            {
+                activeLifecycleAdmissions.Add(uri);
+            }
+        }
+
+        if (interactiveScheduler is not null && uri is not null)
+        {
+            StartScheduledLifecycle(uri, interactiveScheduler);
+        }
+    }
+
+    private void StartScheduledLifecycle(
+        string uri,
+        VbaInteractiveWorkScheduler interactiveScheduler)
+    {
+        if (!interactiveScheduler.TryAdmitBackground(
+                VbaInteractiveBackgroundWorkType.ReferenceCatalogRefresh,
+                uri,
+                cancellationToken =>
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    ReferenceCatalogRefreshPlan? plan;
+                    lock (lifecycleGate)
+                    {
+                        pendingLifecyclePlans.Remove(uri, out plan);
+                    }
+
+                    if (plan is not null)
+                    {
+                        ScheduleLifecycleCore(plan);
+                    }
+
+                    return Task.CompletedTask;
+                },
+                out var admission))
+        {
+            lock (lifecycleGate)
+            {
+                activeLifecycleAdmissions.Remove(uri);
+            }
+
+            interactiveScheduler.RequestCapacityPump();
+            return;
+        }
+
+        var trackedAdmission = ObserveScheduledLifecycleAdmissionAsync(
+            uri,
+            interactiveScheduler,
+            admission.Completion);
+        lock (lifecycleGate)
+        {
+            backgroundTasks.Add(trackedAdmission);
+        }
+
+        ObserveBackgroundTask(trackedAdmission);
+    }
+
+    private async Task ObserveScheduledLifecycleAdmissionAsync(
+        string uri,
+        VbaInteractiveWorkScheduler interactiveScheduler,
+        Task completion)
+    {
+        await ObserveSchedulerAdmissionAsync(completion).ConfigureAwait(false);
+        var restart = false;
+        lock (lifecycleGate)
+        {
+            activeLifecycleAdmissions.Remove(uri);
+            restart = !stopping
+                && interactiveScheduler.IsAccepting
+                && pendingLifecyclePlans.ContainsKey(uri)
+                && activeLifecycleAdmissions.Add(uri);
+        }
+
+        if (restart)
+        {
+            StartScheduledLifecycle(uri, interactiveScheduler);
+        }
+    }
+
+    private void ScheduleLifecycleCore(ReferenceCatalogRefreshPlan plan)
     {
         var scheduledSelections = new List<ScheduledReferenceCatalogSelection>();
         var replacedFingerprints = new HashSet<string>(StringComparer.Ordinal);
@@ -239,6 +447,17 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogLife
             {
                 StartSelectionLifecycle(selection, automaticWork);
             }
+        }
+    }
+
+    private static async Task ObserveSchedulerAdmissionAsync(Task completion)
+    {
+        try
+        {
+            await completion.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
         }
     }
 
@@ -332,9 +551,12 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogLife
         {
             try
             {
-                await transport.WriteLogMessageAsync(
-                    2,
-                    $"Reference catalog lifecycle failed without changing committed editor metadata: {ex.Message}",
+                await PublishCatalogNotificationAsync(
+                    $"lifecycle-failure:{scheduledSelection.Context.ScopeKey}",
+                    token => transport.WriteLogMessageAsync(
+                        2,
+                        $"Reference catalog lifecycle failed without changing committed editor metadata: {ex.Message}",
+                        token),
                     cancellationToken);
             }
             catch (Exception)
@@ -475,8 +697,8 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogLife
 
         foreach (var sharedWork in workToCancel)
         {
-            sharedWork.Cancel();
-            sharedWork.DisposeCancellationWhenComplete();
+            sharedWork.DispatchCancellation();
+            _ = sharedWork.DisposeCancellationWhenCompleteAsync();
         }
     }
 
@@ -510,7 +732,7 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogLife
                     }
                 }
 
-                sharedWork.DisposeCancellation();
+                _ = sharedWork.DisposeCancellationWhenCompleteAsync();
             },
             CancellationToken.None,
             TaskContinuationOptions.ExecuteSynchronously,
@@ -521,9 +743,12 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogLife
         CancellationToken cancellationToken)
         => sessionMessage.PublishOnce
             ? WriteLogMessageOnceAsync(sessionMessage.Message, cancellationToken)
-            : transport.WriteLogMessageAsync(
-                sessionMessage.Message.Type,
-                sessionMessage.Message.Text,
+            : PublishCatalogNotificationAsync(
+                sessionMessage.Message.Key,
+                token => transport.WriteLogMessageAsync(
+                    sessionMessage.Message.Type,
+                    sessionMessage.Message.Text,
+                    token),
                 cancellationToken);
 
     private async Task PublishCatalogRefreshResultAsync(
@@ -537,9 +762,12 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogLife
 
         foreach (var message in ReferenceCatalogRefreshOutcome.CreateDiscoveryMessages(documentName, result))
         {
-            await transport.WriteLogMessageAsync(
-                message.Type,
-                message.Text,
+            await PublishCatalogNotificationAsync(
+                $"{documentName}:{result.ReferenceName}:{message.Key}",
+                token => transport.WriteLogMessageAsync(
+                    message.Type,
+                    message.Text,
+                    token),
                 cancellationToken);
         }
     }
@@ -550,6 +778,16 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogLife
         => WriteLogMessageOnceAsync(message.Type, message.Text, message.Key, cancellationToken);
 
     private async Task WriteLogMessageOnceAsync(
+        int type,
+        string message,
+        string key,
+        CancellationToken cancellationToken)
+        => await PublishCatalogNotificationAsync(
+            key,
+            token => WriteLogMessageOnceCoreAsync(type, message, key, token),
+            cancellationToken);
+
+    private async Task WriteLogMessageOnceCoreAsync(
         int type,
         string message,
         string key,
@@ -576,6 +814,57 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogLife
 
             throw;
         }
+    }
+
+    private async Task PublishCatalogNotificationAsync(
+        string authorityKey,
+        Func<CancellationToken, Task> publish,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        VbaInteractiveWorkScheduler? interactiveScheduler;
+        lock (lifecycleGate)
+        {
+            interactiveScheduler = scheduler;
+        }
+
+        if (interactiveScheduler is null)
+        {
+            await publish(cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        if (!interactiveScheduler.TryAdmitBackground(
+                VbaInteractiveBackgroundWorkType.ReferenceCatalogPublication,
+                authorityKey,
+                async schedulerCancellationToken =>
+                {
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        return;
+                    }
+
+                    using var linkedCancellation =
+                        CancellationTokenSource.CreateLinkedTokenSource(
+                            schedulerCancellationToken,
+                            cancellationToken);
+                    try
+                    {
+                        await publish(linkedCancellation.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                        when (cancellationToken.IsCancellationRequested
+                            && !schedulerCancellationToken.IsCancellationRequested)
+                    {
+                    }
+                },
+                out var admission))
+        {
+            return;
+        }
+
+        await admission.Completion.ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
     }
 
     private IReadOnlyList<ReferenceCatalogRefreshSessionMessage> CreateReferenceSelectionTraceMessages(
@@ -714,7 +1003,9 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogLife
 
     private sealed class SharedReferenceCatalogWork
     {
-        private int cancellationDisposed;
+        private readonly object cancellationGate = new();
+        private Task cancellationDispatch = System.Threading.Tasks.Task.CompletedTask;
+        private Task? cancellationDisposal;
 
         public SharedReferenceCatalogWork(
             Task<IReadOnlyList<VbaProjectReferenceCatalogRefreshResult>> task,
@@ -738,37 +1029,47 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogLife
 
         public IReadOnlySet<string> ReferenceNames { get; }
 
-        public void Cancel()
+        public void DispatchCancellation()
+        {
+            lock (cancellationGate)
+            {
+                if (cancellationDisposal is not null)
+                {
+                    return;
+                }
+
+                if (!Cancellation.IsCancellationRequested)
+                {
+                    cancellationDispatch = Cancellation.CancelAsync();
+                }
+            }
+        }
+
+        public Task DisposeCancellationWhenCompleteAsync()
+        {
+            lock (cancellationGate)
+            {
+                cancellationDisposal ??= DisposeCancellationCoreAsync(
+                    cancellationDispatch);
+                return cancellationDisposal;
+            }
+        }
+
+        private async Task DisposeCancellationCoreAsync(Task dispatch)
+        {
+            await ObserveAsync(Task);
+            await ObserveAsync(dispatch);
+            Cancellation.Dispose();
+        }
+
+        private static async Task ObserveAsync(Task task)
         {
             try
             {
-                Cancellation.Cancel();
+                await task;
             }
-            catch (ObjectDisposedException)
+            catch (Exception)
             {
-            }
-        }
-
-        public void DisposeCancellationWhenComplete()
-        {
-            if (Task.IsCompleted)
-            {
-                DisposeCancellation();
-                return;
-            }
-
-            _ = Task.ContinueWith(
-                _ => DisposeCancellation(),
-                CancellationToken.None,
-                TaskContinuationOptions.ExecuteSynchronously,
-                TaskScheduler.Default);
-        }
-
-        public void DisposeCancellation()
-        {
-            if (Interlocked.Exchange(ref cancellationDisposed, 1) == 0)
-            {
-                Cancellation.Dispose();
             }
         }
     }

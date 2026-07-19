@@ -20,7 +20,8 @@ internal sealed class VbaResolvedIdentifierOccurrenceIndex
     private readonly Func<string, int, int, VbaSourceDefinition?> resolveSourceDefinition;
     private readonly IReadOnlyList<VbaDocumentOccurrenceCache> documentOccurrenceCaches;
     private readonly ILookup<string, VbaDocumentOccurrenceCache> documentOccurrenceCachesByUri;
-    private readonly Lazy<IReadOnlyDictionary<VbaDefinitionIdentity, IReadOnlyList<VbaResolvedIdentifierOccurrence>>>
+    private readonly VbaCancellationSafeMemo<
+        IReadOnlyDictionary<VbaDefinitionIdentity, IReadOnlyList<VbaResolvedIdentifierOccurrence>>>
         occurrencesByIdentity;
 
     public VbaResolvedIdentifierOccurrenceIndex(
@@ -31,41 +32,66 @@ internal sealed class VbaResolvedIdentifierOccurrenceIndex
         documentOccurrenceCaches = documents
             .Select(document => new VbaDocumentOccurrenceCache(
                 document.Uri,
-                new Lazy<VbaResolvedDocumentOccurrenceSet>(
-                    () => ResolveDocumentOccurrences(document),
-                    LazyThreadSafetyMode.ExecutionAndPublication)))
+                document,
+                new VbaCancellationSafeMemo<VbaResolvedDocumentOccurrenceSet>()))
             .ToArray();
         documentOccurrenceCachesByUri = documentOccurrenceCaches.ToLookup(
             cache => cache.Uri,
             StringComparer.OrdinalIgnoreCase);
-        occurrencesByIdentity = new Lazy<
-            IReadOnlyDictionary<VbaDefinitionIdentity, IReadOnlyList<VbaResolvedIdentifierOccurrence>>>(
-                BuildOccurrenceReverseMap,
-                LazyThreadSafetyMode.ExecutionAndPublication);
+        occurrencesByIdentity = new VbaCancellationSafeMemo<
+            IReadOnlyDictionary<VbaDefinitionIdentity, IReadOnlyList<VbaResolvedIdentifierOccurrence>>>();
     }
 
-    public IReadOnlyList<VbaResolvedIdentifierOccurrence> GetDocumentOccurrences(string uri)
-        => GetDocumentOccurrenceSet(uri)?.Occurrences ?? [];
+    public IReadOnlyList<VbaResolvedIdentifierOccurrence> GetDocumentOccurrences(
+        string uri,
+        CancellationToken cancellationToken = default)
+        => GetDocumentOccurrenceSet(uri, cancellationToken)?.Occurrences ?? [];
 
-    public IReadOnlyDictionary<VbaRange, string> GetCanonicalNamesByRange(string uri)
-        => GetDocumentOccurrenceSet(uri)?.CanonicalNamesByRange
+    public IReadOnlyDictionary<VbaRange, string> GetCanonicalNamesByRange(
+        string uri,
+        CancellationToken cancellationToken = default)
+        => GetDocumentOccurrenceSet(uri, cancellationToken)?.CanonicalNamesByRange
             ?? EmptyCanonicalNamesByRange;
 
-    public IReadOnlyList<VbaResolvedIdentifierOccurrence> FindMatching(VbaSourceDefinition target)
-        => FindMatching(target.Identity);
+    public IReadOnlyList<VbaResolvedIdentifierOccurrence> FindMatching(
+        VbaSourceDefinition target,
+        CancellationToken cancellationToken = default)
+        => FindMatching(target.Identity, cancellationToken);
 
-    public IReadOnlyList<VbaResolvedIdentifierOccurrence> FindMatching(VbaDefinitionIdentity targetIdentity)
-        => occurrencesByIdentity.Value.TryGetValue(targetIdentity, out var matchingOccurrences)
+    public IReadOnlyList<VbaResolvedIdentifierOccurrence> FindMatching(
+        VbaDefinitionIdentity targetIdentity,
+        CancellationToken cancellationToken = default)
+        => occurrencesByIdentity.Get(
+                BuildOccurrenceReverseMap,
+                cancellationToken)
+            .TryGetValue(targetIdentity, out var matchingOccurrences)
             ? matchingOccurrences
             : [];
 
-    private VbaResolvedDocumentOccurrenceSet? GetDocumentOccurrenceSet(string uri)
-        => documentOccurrenceCachesByUri[uri].FirstOrDefault()?.Occurrences.Value;
+    private VbaResolvedDocumentOccurrenceSet? GetDocumentOccurrenceSet(
+        string uri,
+        CancellationToken cancellationToken)
+    {
+        var cache = documentOccurrenceCachesByUri[uri].FirstOrDefault();
+        return cache?.Occurrences.Get(
+            token => ResolveDocumentOccurrences(cache.Document, token),
+            cancellationToken);
+    }
 
     private IReadOnlyDictionary<VbaDefinitionIdentity, IReadOnlyList<VbaResolvedIdentifierOccurrence>>
-        BuildOccurrenceReverseMap()
-        => documentOccurrenceCaches
-            .SelectMany(cache => cache.Occurrences.Value.Occurrences)
+        BuildOccurrenceReverseMap(CancellationToken cancellationToken)
+    {
+        var occurrences = new List<VbaResolvedIdentifierOccurrence>();
+        foreach (var cache in documentOccurrenceCaches)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            occurrences.AddRange(cache.Occurrences.Get(
+                token => ResolveDocumentOccurrences(cache.Document, token),
+                cancellationToken).Occurrences);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return occurrences
             .Distinct(VbaResolvedIdentifierOccurrenceComparer.Instance)
             .GroupBy(occurrence => occurrence.Definition.Identity)
             .ToDictionary(
@@ -75,13 +101,17 @@ internal sealed class VbaResolvedIdentifierOccurrenceIndex
                     .ThenBy(occurrence => occurrence.Range.Start.Line)
                     .ThenBy(occurrence => occurrence.Range.Start.Character)
                     .ToArray());
+    }
 
-    private VbaResolvedDocumentOccurrenceSet ResolveDocumentOccurrences(VbaSourceDocument document)
+    private VbaResolvedDocumentOccurrenceSet ResolveDocumentOccurrences(
+        VbaSourceDocument document,
+        CancellationToken cancellationToken)
     {
         var occurrences = new List<VbaResolvedIdentifierOccurrence>();
         var syntaxTree = document.SyntaxTree ?? VbaSyntaxTree.ParseModule(document.Uri, document.Text);
         foreach (var token in syntaxTree.TokenStream.Tokens.Where(token => token.Kind == VbaTokenKind.Identifier))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var positionSyntax = syntaxTree.GetPositionSyntax(
                 token.Range.Start.Line,
                 token.Range.Start.Character);
@@ -112,6 +142,7 @@ internal sealed class VbaResolvedIdentifierOccurrenceIndex
                 definition));
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         var resolvedOccurrences = occurrences.ToArray();
         var canonicalNamesByRange = resolvedOccurrences
             .GroupBy(occurrence => occurrence.Range)
@@ -153,9 +184,47 @@ internal sealed class VbaResolvedIdentifierOccurrenceIndex
 
     private sealed record VbaDocumentOccurrenceCache(
         string Uri,
-        Lazy<VbaResolvedDocumentOccurrenceSet> Occurrences);
+        VbaSourceDocument Document,
+        VbaCancellationSafeMemo<VbaResolvedDocumentOccurrenceSet> Occurrences);
 
     private sealed record VbaResolvedDocumentOccurrenceSet(
         IReadOnlyList<VbaResolvedIdentifierOccurrence> Occurrences,
         IReadOnlyDictionary<VbaRange, string> CanonicalNamesByRange);
+}
+
+internal sealed class VbaCancellationSafeMemo<T>
+    where T : class
+{
+    private readonly SemaphoreSlim buildGate = new(1, 1);
+    private T? value;
+
+    public T Get(
+        Func<CancellationToken, T> create,
+        CancellationToken cancellationToken)
+    {
+        var cached = Volatile.Read(ref value);
+        if (cached is not null)
+        {
+            return cached;
+        }
+
+        buildGate.Wait(cancellationToken);
+        try
+        {
+            cached = value;
+            if (cached is not null)
+            {
+                return cached;
+            }
+
+            var created = create(cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            Volatile.Write(ref value, created);
+            return created;
+        }
+        finally
+        {
+            buildGate.Release();
+        }
+    }
 }

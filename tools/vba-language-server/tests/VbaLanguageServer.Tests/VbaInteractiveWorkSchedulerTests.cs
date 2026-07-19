@@ -48,6 +48,656 @@ public sealed class VbaInteractiveWorkSchedulerTests
     }
 
     [Fact]
+    public async Task Scheduler_runs_independent_reads_concurrently_after_their_shared_fence()
+    {
+        var firstStarted = CreateSignal();
+        var releaseFirst = CreateSignal();
+        var secondStarted = CreateSignal();
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var mutation = scheduler.AdmitMutation(_ => Task.CompletedTask);
+        await mutation.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+        var first = AdmitCapturedRead(
+            scheduler,
+            "textDocument/hover",
+            async cancellationToken =>
+            {
+                firstStarted.TrySetResult();
+                await releaseFirst.Task.WaitAsync(cancellationToken);
+            });
+        await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var second = AdmitCapturedRead(
+            scheduler,
+            "textDocument/completion",
+            _ =>
+            {
+                secondStarted.TrySetResult();
+                return Task.CompletedTask;
+            });
+
+        try
+        {
+            await secondStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(mutation.InputSequence, first.ReadFence);
+            Assert.Equal(first.ReadFence, second.ReadFence);
+        }
+        finally
+        {
+            releaseFirst.TrySetResult();
+        }
+
+        await Task.WhenAll(first.Completion, second.Completion)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task Scheduler_captures_read_state_before_a_later_mutation_commits()
+    {
+        var state = "old";
+        var captured = CreateSignal();
+        var releaseRead = CreateSignal();
+        var mutationCommitted = CreateSignal();
+        var observed = "";
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var read = scheduler.AdmitRequest(
+            requestId: null,
+            "textDocument/hover",
+            _ =>
+            {
+                var snapshot = state;
+                captured.TrySetResult();
+                return snapshot;
+            },
+            async (snapshot, cancellationToken) =>
+            {
+                await releaseRead.Task.WaitAsync(cancellationToken);
+                observed = snapshot;
+            });
+        await captured.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var mutation = scheduler.AdmitMutation(_ =>
+        {
+            state = "new";
+            mutationCommitted.TrySetResult();
+            return Task.CompletedTask;
+        });
+
+        await mutationCommitted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        releaseRead.TrySetResult();
+        await Task.WhenAll(read.Completion, mutation.Completion)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal("old", observed);
+        Assert.Equal("new", state);
+    }
+
+    [Fact]
+    public async Task Serial_rollback_waits_for_each_read_and_preserves_visible_results()
+    {
+        var firstStarted = CreateSignal();
+        var releaseFirst = CreateSignal();
+        var secondStarted = CreateSignal();
+        var results = new List<string>();
+        await using var scheduler = new VbaInteractiveWorkScheduler(
+            options: VbaInteractiveWorkSchedulerOptions.Serial);
+        var first = scheduler.AdmitRequest(
+            requestId: null,
+            "textDocument/hover",
+            async cancellationToken =>
+            {
+                firstStarted.TrySetResult();
+                await releaseFirst.Task.WaitAsync(cancellationToken);
+                results.Add("first");
+            });
+        await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var second = scheduler.AdmitRequest(
+            requestId: null,
+            "textDocument/completion",
+            _ =>
+            {
+                results.Add("second");
+                secondStarted.TrySetResult();
+                return Task.CompletedTask;
+            });
+
+        Assert.False(secondStarted.Task.IsCompleted);
+        releaseFirst.TrySetResult();
+        await Task.WhenAll(first.Completion, second.Completion)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(["first", "second"], results);
+    }
+
+    [Fact]
+    public async Task Scheduler_prioritizes_latency_critical_read_over_queued_bulk_read()
+    {
+        var blockerStarted = CreateSignal();
+        var releaseBlocker = CreateSignal();
+        var executionOrder = new List<string>();
+        await using var scheduler = new VbaInteractiveWorkScheduler(
+            options: new VbaInteractiveWorkSchedulerOptions(
+                CoalesceSupersededMutations: true,
+                EnableConcurrentReads: true,
+                MaxConcurrentReads: 1));
+        var blocker = AdmitCapturedRead(
+            scheduler,
+            "textDocument/definition",
+            async cancellationToken =>
+            {
+                blockerStarted.TrySetResult();
+                await releaseBlocker.Task.WaitAsync(cancellationToken);
+            });
+        await blockerStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var bulk = AdmitCapturedRead(
+            scheduler,
+            "textDocument/references",
+            _ =>
+            {
+                executionOrder.Add("bulk");
+                return Task.CompletedTask;
+            });
+        var interactive = AdmitCapturedRead(
+            scheduler,
+            "textDocument/completion",
+            _ =>
+            {
+                executionOrder.Add("interactive");
+                return Task.CompletedTask;
+            });
+
+        releaseBlocker.TrySetResult();
+        await Task.WhenAll(blocker.Completion, bulk.Completion, interactive.Completion)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(["interactive", "bulk"], executionOrder);
+    }
+
+    [Fact]
+    public async Task Bulk_read_cannot_occupy_the_reserved_interactive_execution_slot()
+    {
+        var firstBulkStarted = CreateSignal();
+        var releaseFirstBulk = CreateSignal();
+        var secondBulkStarted = CreateSignal();
+        var interactiveStarted = CreateSignal();
+        await using var scheduler = new VbaInteractiveWorkScheduler(
+            options: new VbaInteractiveWorkSchedulerOptions(
+                CoalesceSupersededMutations: true,
+                EnableConcurrentReads: true,
+                MaxConcurrentReads: 2,
+                MaxConcurrentBulkReads: 1));
+        var firstBulk = AdmitCapturedRead(
+            scheduler,
+            "textDocument/references",
+            async cancellationToken =>
+            {
+                firstBulkStarted.TrySetResult();
+                await releaseFirstBulk.Task.WaitAsync(cancellationToken);
+            });
+        await firstBulkStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var secondBulk = AdmitCapturedRead(
+            scheduler,
+            "textDocument/formatting",
+            _ =>
+            {
+                secondBulkStarted.TrySetResult();
+                return Task.CompletedTask;
+            });
+        var interactive = AdmitCapturedRead(
+            scheduler,
+            "textDocument/hover",
+            _ =>
+            {
+                interactiveStarted.TrySetResult();
+                return Task.CompletedTask;
+            });
+
+        try
+        {
+            await interactiveStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.False(secondBulkStarted.Task.IsCompleted);
+        }
+        finally
+        {
+            releaseFirstBulk.TrySetResult();
+        }
+
+        await Task.WhenAll(firstBulk.Completion, secondBulk.Completion, interactive.Completion)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(secondBulkStarted.Task.IsCompletedSuccessfully);
+    }
+
+    [Fact]
+    public async Task Background_load_preserves_one_latency_critical_execution_slot()
+    {
+        var blockerStarted = CreateSignal();
+        var releaseBlocker = CreateSignal();
+        var releaseBackground = CreateSignal();
+        var startedBackgroundCount = 0;
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var blocker = scheduler.AdmitBarrier(
+            "test/queue-read-run",
+            async cancellationToken =>
+            {
+                blockerStarted.TrySetResult();
+                await releaseBlocker.Task.WaitAsync(cancellationToken);
+            });
+        await blockerStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var background = Enumerable.Range(0, 4)
+            .Select(index => scheduler.AdmitBackground(
+                VbaInteractiveBackgroundWorkType.ReferenceCatalogPublication,
+                $"project:Book{index}",
+                async cancellationToken =>
+                {
+                    Interlocked.Increment(ref startedBackgroundCount);
+                    await releaseBackground.Task.WaitAsync(cancellationToken);
+                }))
+            .ToArray();
+        var interactive = Enumerable.Range(0, 12)
+            .Select(_ => AdmitCapturedRead(
+                scheduler,
+                "textDocument/completion",
+                _ => Task.CompletedTask))
+            .ToArray();
+
+        releaseBlocker.TrySetResult();
+        try
+        {
+            await interactive[^1].Completion.WaitAsync(TimeSpan.FromSeconds(1));
+            Assert.Equal(3, Volatile.Read(ref startedBackgroundCount));
+        }
+        finally
+        {
+            releaseBackground.TrySetResult();
+        }
+
+        await Task.WhenAll(
+                background.Select(admission => admission.Completion)
+                    .Concat(interactive.Select(admission => admission.Completion))
+                    .Append(blocker.Completion))
+            .WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task Captured_background_waiting_for_a_slot_does_not_block_a_later_mutation()
+    {
+        var releaseBackground = CreateSignal();
+        var backgroundStarted = Enumerable.Range(0, 3)
+            .Select(_ => CreateSignal())
+            .ToArray();
+        var waitingReadCaptured = CreateSignal();
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var activeBackground = Enumerable.Range(0, 3)
+            .Select(index => scheduler.AdmitBackground(
+                VbaInteractiveBackgroundWorkType.ReferenceCatalogPublication,
+                $"project:Book{index}",
+                async cancellationToken =>
+                {
+                    backgroundStarted[index].TrySetResult();
+                    await releaseBackground.Task.WaitAsync(cancellationToken);
+                }))
+            .ToArray();
+        await Task.WhenAll(backgroundStarted.Select(signal => signal.Task))
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        var waitingBackground = scheduler.AdmitRequest(
+            requestId: null,
+            "vba/reconcile",
+            _ =>
+            {
+                waitingReadCaptured.TrySetResult();
+                return true;
+            },
+            async (_, cancellationToken) =>
+                await releaseBackground.Task.WaitAsync(cancellationToken));
+
+        await waitingReadCaptured.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        var mutation = scheduler.AdmitMutation(
+            "textDocument/didChange",
+            _ => Task.CompletedTask);
+        await mutation.Completion.WaitAsync(TimeSpan.FromSeconds(1));
+
+        releaseBackground.TrySetResult();
+        await Task.WhenAll(
+                activeBackground.Select(admission => admission.Completion)
+                    .Append(waitingBackground.Completion))
+            .WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Theory]
+    [InlineData((int)VbaInteractiveBackgroundWorkType.DiagnosticsPublication)]
+    [InlineData((int)VbaInteractiveBackgroundWorkType.Reconciliation)]
+    [InlineData((int)VbaInteractiveBackgroundWorkType.ReferenceCatalogRefresh)]
+    [InlineData((int)VbaInteractiveBackgroundWorkType.ReferenceCatalogPublication)]
+    public async Task Sustained_latency_critical_reads_do_not_starve_background_work(
+        int backgroundWorkTypeValue)
+    {
+        var backgroundWorkType =
+            (VbaInteractiveBackgroundWorkType)backgroundWorkTypeValue;
+        var blockerStarted = CreateSignal();
+        var releaseBlocker = CreateSignal();
+        var executionOrder = new List<string>();
+        await using var scheduler = new VbaInteractiveWorkScheduler(
+            options: new VbaInteractiveWorkSchedulerOptions(
+                CoalesceSupersededMutations: true,
+                EnableConcurrentReads: true,
+                MaxConcurrentReads: 1));
+        var blocker = AdmitCapturedRead(
+            scheduler,
+            "textDocument/definition",
+            async cancellationToken =>
+            {
+                blockerStarted.TrySetResult();
+                await releaseBlocker.Task.WaitAsync(cancellationToken);
+            });
+        await blockerStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var background = scheduler.AdmitBackground(
+            backgroundWorkType,
+            "project:Book1",
+            _ =>
+            {
+                executionOrder.Add("background");
+                return Task.CompletedTask;
+            });
+        var interactive = Enumerable.Range(0, 12)
+            .Select(index => AdmitCapturedRead(
+                scheduler,
+                "textDocument/completion",
+                _ =>
+                {
+                    executionOrder.Add($"interactive-{index}");
+                    return Task.CompletedTask;
+                }))
+            .ToArray();
+
+        releaseBlocker.TrySetResult();
+        await Task.WhenAll(
+                interactive.Select(admission => admission.Completion)
+                    .Append(background.Completion)
+                    .Append(blocker.Completion))
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        var backgroundIndex = executionOrder.IndexOf("background");
+        Assert.InRange(backgroundIndex, 1, 6);
+        Assert.Contains("interactive-11", executionOrder[(backgroundIndex + 1)..]);
+    }
+
+    [Fact]
+    public async Task Pending_latest_only_background_work_coalesces_by_typed_authority()
+    {
+        var blockerStarted = CreateSignal();
+        var releaseBlocker = CreateSignal();
+        var executedRevisions = new List<int>();
+        await using var scheduler = new VbaInteractiveWorkScheduler(
+            options: new VbaInteractiveWorkSchedulerOptions(
+                CoalesceSupersededMutations: true,
+                EnableConcurrentReads: true,
+                MaxConcurrentReads: 1));
+        var blocker = AdmitCapturedRead(
+            scheduler,
+            "textDocument/hover",
+            async cancellationToken =>
+            {
+                blockerStarted.TrySetResult();
+                await releaseBlocker.Task.WaitAsync(cancellationToken);
+            });
+        await blockerStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var first = scheduler.AdmitBackground(
+            VbaInteractiveBackgroundWorkType.DiagnosticsPublication,
+            "file:///C:/work/Worker.bas",
+            _ =>
+            {
+                executedRevisions.Add(1);
+                return Task.CompletedTask;
+            });
+        var second = scheduler.AdmitBackground(
+            VbaInteractiveBackgroundWorkType.DiagnosticsPublication,
+            "file:///C:/work/Worker.bas",
+            _ =>
+            {
+                executedRevisions.Add(2);
+                return Task.CompletedTask;
+            });
+        var latest = scheduler.AdmitBackground(
+            VbaInteractiveBackgroundWorkType.DiagnosticsPublication,
+            "file:///C:/work/Worker.bas",
+            _ =>
+            {
+                executedRevisions.Add(3);
+                return Task.CompletedTask;
+            });
+
+        await Task.WhenAll(first.Completion, second.Completion)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Empty(executedRevisions);
+
+        releaseBlocker.TrySetResult();
+        await Task.WhenAll(blocker.Completion, latest.Completion)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal([3], executedRevisions);
+    }
+
+    [Fact]
+    public async Task Scheduler_bounds_owned_work_without_silently_dropping_mutations()
+    {
+        var firstStarted = CreateSignal();
+        var releaseFirst = CreateSignal();
+        var secondStarted = CreateSignal();
+        await using var scheduler = new VbaInteractiveWorkScheduler(
+            options: new VbaInteractiveWorkSchedulerOptions(
+                CoalesceSupersededMutations: true,
+                MaxOwnedWork: 2));
+        var first = scheduler.AdmitMutation(async cancellationToken =>
+        {
+            firstStarted.TrySetResult();
+            await releaseFirst.Task.WaitAsync(cancellationToken);
+        });
+        await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var second = scheduler.AdmitMutation(_ =>
+        {
+            secondStarted.TrySetResult();
+            return Task.CompletedTask;
+        });
+
+        Assert.Throws<VbaInteractiveWorkQueueFullException>(
+            () => scheduler.AdmitMutation(_ => Task.CompletedTask));
+        releaseFirst.TrySetResult();
+        await Task.WhenAll(first.Completion, second.Completion)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(secondStarted.Task.IsCompletedSuccessfully);
+    }
+
+    [Fact]
+    public async Task Terminal_completion_releases_owned_capacity_before_observers_run()
+    {
+        var firstStarted = CreateSignal();
+        var releaseFirst = CreateSignal();
+        await using var scheduler = new VbaInteractiveWorkScheduler(
+            options: new VbaInteractiveWorkSchedulerOptions(
+                CoalesceSupersededMutations: true,
+                MaxOwnedWork: 1));
+        var first = scheduler.AdmitMutation(async cancellationToken =>
+        {
+            firstStarted.TrySetResult();
+            await releaseFirst.Task.WaitAsync(cancellationToken);
+        });
+        await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var nextAdmission = first.Completion.ContinueWith(
+            _ => scheduler.AdmitMutation(_ => Task.CompletedTask),
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            new InlineTaskScheduler());
+
+        releaseFirst.TrySetResult();
+
+        var second = await nextAdmission.WaitAsync(TimeSpan.FromSeconds(5));
+        await Task.WhenAll(first.Completion, second.Completion)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task Try_background_admission_sheds_overflow_without_aborting_the_scheduler()
+    {
+        var blockerStarted = CreateSignal();
+        var releaseBlocker = CreateSignal();
+        await using var scheduler = new VbaInteractiveWorkScheduler(
+            options: new VbaInteractiveWorkSchedulerOptions(
+                CoalesceSupersededMutations: true,
+                MaxOwnedWork: 1));
+        var blocker = scheduler.AdmitMutation(async cancellationToken =>
+        {
+            blockerStarted.TrySetResult();
+            await releaseBlocker.Task.WaitAsync(cancellationToken);
+        });
+        await blockerStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var admitted = scheduler.TryAdmitBackground(
+            VbaInteractiveBackgroundWorkType.DiagnosticsPublication,
+            "file:///C:/work/Worker.bas",
+            _ => Task.CompletedTask,
+            out _);
+
+        Assert.False(admitted);
+        Assert.True(scheduler.IsAccepting);
+        releaseBlocker.TrySetResult();
+        await blocker.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+        var later = scheduler.AdmitMutation(_ => Task.CompletedTask);
+        await later.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task Required_exit_barrier_waits_for_capacity_at_the_owned_work_bound()
+    {
+        var blockerStarted = CreateSignal();
+        var releaseBlocker = CreateSignal();
+        var exitInvoked = CreateSignal();
+        await using var scheduler = new VbaInteractiveWorkScheduler(
+            options: new VbaInteractiveWorkSchedulerOptions(
+                CoalesceSupersededMutations: true,
+                MaxOwnedWork: 1));
+        var blocker = scheduler.AdmitMutation(async cancellationToken =>
+        {
+            blockerStarted.TrySetResult();
+            await releaseBlocker.Task.WaitAsync(cancellationToken);
+        });
+        await blockerStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var pendingExit = scheduler.AdmitRequiredBarrierAsync(
+            "exit",
+            _ =>
+            {
+                exitInvoked.TrySetResult();
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        Assert.False(pendingExit.IsCompleted);
+        releaseBlocker.TrySetResult();
+        var exit = await pendingExit.WaitAsync(TimeSpan.FromSeconds(5));
+        await Task.WhenAll(blocker.Completion, exit.Completion)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(exitInvoked.Task.IsCompletedSuccessfully);
+    }
+
+    [Fact]
+    public async Task Capacity_pump_rechecks_a_producer_that_rearms_during_notification()
+    {
+        var observationCount = 0;
+        var releaseAdmittedWork = CreateSignal();
+        var admittedCompletion = new TaskCompletionSource<Task>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        scheduler.RegisterCapacityObserver(() =>
+        {
+            if (Interlocked.Increment(ref observationCount) == 1)
+            {
+                scheduler.RequestCapacityPump();
+                return;
+            }
+
+            if (scheduler.TryAdmitBackground(
+                    VbaInteractiveBackgroundWorkType.DiagnosticsPublication,
+                    "file:///C:/work/Worker.bas",
+                    cancellationToken =>
+                        releaseAdmittedWork.Task.WaitAsync(cancellationToken),
+                    out var admission))
+            {
+                admittedCompletion.TrySetResult(admission.Completion);
+            }
+        });
+
+        scheduler.RequestCapacityPump();
+
+        var completion = await admittedCompletion.Task
+            .WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal(2, Volatile.Read(ref observationCount));
+        releaseAdmittedWork.TrySetResult();
+        await completion.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task Capacity_pump_round_robins_continuously_pending_producers()
+    {
+        var diagnosticsAdmissionCount = 0;
+        var firstDiagnosticsStarted = CreateSignal();
+        var secondDiagnosticsStarted = CreateSignal();
+        var catalogStarted = CreateSignal();
+        var releaseFirstDiagnostics = CreateSignal();
+        var releaseSecondDiagnostics = CreateSignal();
+        var releaseCatalog = CreateSignal();
+        await using var scheduler = new VbaInteractiveWorkScheduler(
+            options: new VbaInteractiveWorkSchedulerOptions(
+                CoalesceSupersededMutations: true,
+                MaxOwnedWork: 1));
+        scheduler.RegisterCapacityObserver(() =>
+        {
+            var attempt = Interlocked.Increment(ref diagnosticsAdmissionCount);
+            if (attempt > 2)
+            {
+                return;
+            }
+
+            scheduler.TryAdmitBackground(
+                VbaInteractiveBackgroundWorkType.DiagnosticsPublication,
+                $"file:///C:/work/Worker{attempt}.bas",
+                async cancellationToken =>
+                {
+                    (attempt == 1
+                        ? firstDiagnosticsStarted
+                        : secondDiagnosticsStarted).TrySetResult();
+                    await (attempt == 1
+                            ? releaseFirstDiagnostics.Task
+                            : releaseSecondDiagnostics.Task)
+                        .WaitAsync(cancellationToken);
+                },
+                out _);
+        });
+        scheduler.RegisterCapacityObserver(() =>
+        {
+            scheduler.TryAdmitBackground(
+                VbaInteractiveBackgroundWorkType.ReferenceCatalogRefresh,
+                "project:Book1",
+                async cancellationToken =>
+                {
+                    catalogStarted.TrySetResult();
+                    await releaseCatalog.Task.WaitAsync(cancellationToken);
+                },
+                out _);
+        });
+
+        scheduler.RequestCapacityPump();
+        await firstDiagnosticsStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        releaseFirstDiagnostics.TrySetResult();
+        try
+        {
+            await catalogStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            Assert.Equal(1, Volatile.Read(ref diagnosticsAdmissionCount));
+        }
+        finally
+        {
+            releaseSecondDiagnostics.TrySetResult();
+            releaseCatalog.TrySetResult();
+        }
+    }
+
+    [Fact]
     public async Task Scheduler_cancels_matching_request_without_waiting_for_the_serial_lane()
     {
         var requestStarted = CreateSignal();
@@ -247,6 +897,31 @@ public sealed class VbaInteractiveWorkSchedulerTests
         const int measuredCount = 512;
         var timingSink = new RecordingTimingSink();
         await using var scheduler = new VbaInteractiveWorkScheduler(timingSink);
+        var releaseLoad = CreateSignal();
+        var loadStarted = Enumerable.Range(0, 4)
+            .Select(_ => CreateSignal())
+            .ToArray();
+        var load = new[]
+        {
+            AdmitCapturedRead(
+                scheduler,
+                "textDocument/references",
+                cancellationToken => HoldLoadAsync(0, cancellationToken)),
+            scheduler.AdmitBackground(
+                VbaInteractiveBackgroundWorkType.DiagnosticsPublication,
+                "file:///C:/work/Worker.bas",
+                cancellationToken => HoldLoadAsync(1, cancellationToken)),
+            scheduler.AdmitBackground(
+                VbaInteractiveBackgroundWorkType.ReferenceCatalogRefresh,
+                "project:Book1",
+                cancellationToken => HoldLoadAsync(2, cancellationToken)),
+            scheduler.AdmitBackground(
+                VbaInteractiveBackgroundWorkType.Reconciliation,
+                "project:Book1",
+                cancellationToken => HoldLoadAsync(3, cancellationToken))
+        };
+        await Task.WhenAll(loadStarted.Take(3).Select(signal => signal.Task))
+            .WaitAsync(TimeSpan.FromSeconds(5));
 
         var warmup = Enumerable.Range(0, warmupCount)
             .Select(_ => scheduler.AdmitMutation(
@@ -281,6 +956,106 @@ public sealed class VbaInteractiveWorkSchedulerTests
         Assert.True(
             admissionP95 <= TimeSpan.FromMilliseconds(2),
             $"Mutation admission p95 was {admissionP95.TotalMilliseconds:F6} ms.");
+
+        releaseLoad.TrySetResult();
+        await Task.WhenAll(load.Select(admission => admission.Completion))
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        async Task HoldLoadAsync(int index, CancellationToken cancellationToken)
+        {
+            loadStarted[index].TrySetResult();
+            await releaseLoad.Task.WaitAsync(cancellationToken);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "Performance")]
+    public async Task Release_latency_critical_work_stays_within_budget_under_mixed_queued_load()
+    {
+        const int samplesPerClass = 64;
+        var blockerStarted = CreateSignal();
+        var releaseBlocker = CreateSignal();
+        var timingSink = new RecordingTimingSink();
+        await using var scheduler = new VbaInteractiveWorkScheduler(timingSink);
+        var blocker = scheduler.AdmitBarrier(
+            "test/mixed-load-gate",
+            async cancellationToken =>
+            {
+                blockerStarted.TrySetResult();
+                await releaseBlocker.Task.WaitAsync(cancellationToken);
+            });
+        await blockerStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var load = Enumerable.Range(0, samplesPerClass)
+            .SelectMany(index => new[]
+            {
+                AdmitCapturedRead(
+                    scheduler,
+                    "textDocument/references",
+                    _ => Task.CompletedTask),
+                scheduler.AdmitBackground(
+                    VbaInteractiveBackgroundWorkType.DiagnosticsPublication,
+                    $"diagnostics:{index}",
+                    _ => Task.CompletedTask),
+                scheduler.AdmitBackground(
+                    VbaInteractiveBackgroundWorkType.ReferenceCatalogRefresh,
+                    $"catalog:{index}",
+                    _ => Task.CompletedTask),
+                scheduler.AdmitBackground(
+                    VbaInteractiveBackgroundWorkType.Reconciliation,
+                    $"reconciliation:{index}",
+                    _ => Task.CompletedTask)
+            })
+            .ToArray();
+        var budgetByMethod = new Dictionary<string, (TimeSpan P95, TimeSpan P99)>
+        {
+            ["textDocument/completion"] = (
+                TimeSpan.FromMilliseconds(25),
+                TimeSpan.FromMilliseconds(50)),
+            ["textDocument/hover"] = (
+                TimeSpan.FromMilliseconds(25),
+                TimeSpan.FromMilliseconds(50)),
+            ["textDocument/signatureHelp"] = (
+                TimeSpan.FromMilliseconds(25),
+                TimeSpan.FromMilliseconds(50)),
+            ["vba/blockSkeletonInsertion"] = (
+                TimeSpan.FromMilliseconds(50),
+                TimeSpan.FromMilliseconds(75))
+        };
+        var latencyCritical = budgetByMethod.Keys
+            .SelectMany(method => Enumerable.Range(0, samplesPerClass)
+                .Select(_ => AdmitCapturedRead(
+                    scheduler,
+                    method,
+                    _ => Task.CompletedTask)))
+            .ToArray();
+
+        releaseBlocker.TrySetResult();
+        await Task.WhenAll(
+                load.Select(admission => admission.Completion)
+                    .Concat(latencyCritical.Select(admission => admission.Completion))
+                    .Append(blocker.Completion))
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        foreach (var (method, budget) in budgetByMethod)
+        {
+            var elapsed = timingSink.Completed
+                .Where(timing => timing.Method == method)
+                .Select(timing => timing.QueueTime + timing.ExecutionTime)
+                .ToArray();
+            var p95 = Percentile(elapsed, 0.95);
+            var p99 = Percentile(elapsed, 0.99);
+            output.WriteLine(
+                "{0} mixed-load scheduler latency p95={1:F6}ms p99={2:F6}ms",
+                method,
+                p95.TotalMilliseconds,
+                p99.TotalMilliseconds);
+            Assert.True(
+                p95 <= budget.P95,
+                $"{method} mixed-load p95 was {p95.TotalMilliseconds:F6} ms.");
+            Assert.True(
+                p99 <= budget.P99,
+                $"{method} mixed-load p99 was {p99.TotalMilliseconds:F6} ms.");
+        }
     }
 
     [Fact]
@@ -566,6 +1341,49 @@ public sealed class VbaInteractiveWorkSchedulerTests
     }
 
     [Fact]
+    public async Task Scheduler_abort_cancels_every_superseded_work_item_that_never_started()
+    {
+        var blockerStarted = CreateSignal();
+        var queuedMutationInvoked = false;
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var blocker = scheduler.AdmitBarrier(
+            "test/block",
+            async cancellationToken =>
+            {
+                blockerStarted.TrySetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            });
+        await blockerStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var first = scheduler.AdmitCoalescibleMutation(
+            "textDocument/didChange",
+            "file:///C:/work/Worker.bas",
+            _ =>
+            {
+                queuedMutationInvoked = true;
+                return Task.CompletedTask;
+            });
+        var latest = scheduler.AdmitCoalescibleMutation(
+            "textDocument/didChange",
+            "file:///C:/work/Worker.bas",
+            _ =>
+            {
+                queuedMutationInvoked = true;
+                return Task.CompletedTask;
+            });
+
+        await scheduler.StopAsync(VbaInteractiveStopReason.Abort)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => blocker.Completion);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => first.Completion);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => latest.Completion);
+        Assert.False(queuedMutationInvoked);
+    }
+
+    [Fact]
     public async Task Slow_cancellation_callback_does_not_hold_the_admission_lock()
     {
         var requestStarted = CreateSignal();
@@ -636,7 +1454,17 @@ public sealed class VbaInteractiveWorkSchedulerTests
     public async Task Coalescible_mutations_for_the_same_key_execute_only_the_latest_before_a_read_fence()
     {
         var executed = new List<string>();
+        var blockerStarted = CreateSignal();
+        var releaseBlocker = CreateSignal();
         await using var scheduler = new VbaInteractiveWorkScheduler();
+        var blocker = scheduler.AdmitBarrier(
+            "test/coalescing-gate",
+            async cancellationToken =>
+            {
+                blockerStarted.TrySetResult();
+                await releaseBlocker.Task.WaitAsync(cancellationToken);
+            });
+        await blockerStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         var versionTwo = scheduler.AdmitCoalescibleMutation(
             "textDocument/didChange",
@@ -655,7 +1483,8 @@ public sealed class VbaInteractiveWorkSchedulerTests
                 return Task.CompletedTask;
             });
 
-        await Task.WhenAll(versionTwo.Completion, versionThree.Completion)
+        releaseBlocker.TrySetResult();
+        await Task.WhenAll(blocker.Completion, versionTwo.Completion, versionThree.Completion)
             .WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.Equal(versionTwo.InputSequence + 1, versionThree.InputSequence);
@@ -844,8 +1673,32 @@ public sealed class VbaInteractiveWorkSchedulerTests
         Assert.True(allocatedBytes >= 0);
     }
 
+    private static VbaInteractiveWorkAdmission AdmitCapturedRead(
+        VbaInteractiveWorkScheduler scheduler,
+        string method,
+        Func<CancellationToken, Task> executeAsync)
+        => scheduler.AdmitRequest(
+            requestId: null,
+            method,
+            capture: static _ => true,
+            (_, cancellationToken) => executeAsync(cancellationToken));
+
     private static TaskCompletionSource CreateSignal()
         => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private sealed class InlineTaskScheduler : TaskScheduler
+    {
+        protected override IEnumerable<Task> GetScheduledTasks()
+            => [];
+
+        protected override void QueueTask(Task task)
+            => TryExecuteTask(task);
+
+        protected override bool TryExecuteTaskInline(
+            Task task,
+            bool taskWasPreviouslyQueued)
+            => TryExecuteTask(task);
+    }
 
     private static IReadOnlyList<ScenarioOperation> CreateRandomizedOperations(int seed)
     {
@@ -938,9 +1791,14 @@ public sealed class VbaInteractiveWorkSchedulerTests
     }
 
     private static TimeSpan Percentile95(IEnumerable<TimeSpan> values)
+        => Percentile(values, 0.95);
+
+    private static TimeSpan Percentile(
+        IEnumerable<TimeSpan> values,
+        double percentile)
     {
         var ordered = values.Order().ToArray();
-        var index = (int)Math.Ceiling(ordered.Length * 0.95) - 1;
+        var index = (int)Math.Ceiling(ordered.Length * percentile) - 1;
         return ordered[Math.Max(0, index)];
     }
 

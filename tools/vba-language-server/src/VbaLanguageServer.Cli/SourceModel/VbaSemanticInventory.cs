@@ -153,15 +153,20 @@ public sealed class VbaSemanticInventory
     public VbaDefinitionLocation? ResolveDefinition(string uri, int line, int character)
         => compatibilityIndex.ResolveDefinition(uri, line, character);
 
-    public IReadOnlyList<VbaDefinitionLocation> FindReferences(string uri, int line, int character)
+    public IReadOnlyList<VbaDefinitionLocation> FindReferences(
+        string uri,
+        int line,
+        int character,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var target = ResolveSourceDefinition(uri, line, character);
         if (target is null)
         {
             return [];
         }
 
-        return resolvedOccurrences.FindMatching(target)
+        var references = resolvedOccurrences.FindMatching(target, cancellationToken)
             .Select(occurrence => new VbaDefinitionLocation(occurrence.Uri, occurrence.Range))
             .GroupBy(reference => $"{reference.Uri}:{GetRangeKey(reference.Range)}", StringComparer.OrdinalIgnoreCase)
             .Select(group => group.First())
@@ -169,6 +174,8 @@ public sealed class VbaSemanticInventory
             .ThenBy(reference => reference.Range.Start.Line)
             .ThenBy(reference => reference.Range.Start.Character)
             .ToArray();
+        cancellationToken.ThrowIfCancellationRequested();
+        return references;
     }
 
     public VbaSourceDefinition? ResolveSourceDefinition(string uri, int line, int character)
@@ -184,8 +191,10 @@ public sealed class VbaSemanticInventory
         string uri,
         int line,
         int character,
-        string newName)
+        string newName,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (!IsIdentifierName(newName))
         {
             return null;
@@ -197,7 +206,7 @@ public sealed class VbaSemanticInventory
             return null;
         }
 
-        var changes = resolvedOccurrences.FindMatching(target)
+        var changes = resolvedOccurrences.FindMatching(target, cancellationToken)
             .GroupBy(occurrence => occurrence.Uri, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(
                 group => group.Key,
@@ -206,14 +215,21 @@ public sealed class VbaSemanticInventory
                     .ToArray(),
                 StringComparer.OrdinalIgnoreCase);
 
+        cancellationToken.ThrowIfCancellationRequested();
         return changes.Count == 0 ? null : new VbaRenamePlan(target.Range, changes);
     }
 
-    public VbaTextEdit? FormatDocument(string uri, VbaIndentationStyle indentationStyle)
-        => compatibilityIndex.FormatDocument(uri, indentationStyle);
+    public VbaTextEdit? FormatDocument(
+        string uri,
+        VbaIndentationStyle indentationStyle,
+        CancellationToken cancellationToken = default)
+        => compatibilityIndex.FormatDocument(uri, indentationStyle, cancellationToken);
 
-    public IReadOnlyList<int> GetSemanticTokenData(string uri)
+    public IReadOnlyList<int> GetSemanticTokenData(
+        string uri,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         lock (semanticTokenCacheGate)
         {
             if (semanticTokenDataCache.TryGetValue(uri, out var cachedData))
@@ -222,7 +238,10 @@ public sealed class VbaSemanticInventory
             }
         }
 
-        var data = VbaSemanticTokenBuilder.GetSemanticTokenData(GetSemanticTokens(uri));
+        var data = VbaSemanticTokenBuilder.GetSemanticTokenData(
+            GetSemanticTokens(uri, cancellationToken),
+            cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
         lock (semanticTokenCacheGate)
         {
             if (semanticTokenDataCache.TryGetValue(uri, out var cachedData))
@@ -235,8 +254,11 @@ public sealed class VbaSemanticInventory
         }
     }
 
-    internal IReadOnlyList<VbaSemanticToken> GetSemanticTokens(string uri)
+    internal IReadOnlyList<VbaSemanticToken> GetSemanticTokens(
+        string uri,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         lock (semanticTokenCacheGate)
         {
             if (semanticTokenCache.TryGetValue(uri, out var cachedTokens))
@@ -248,7 +270,9 @@ public sealed class VbaSemanticInventory
         var tokens = VbaSemanticTokenBuilder.GetSemanticTokens(
             sourceDocuments,
             uri,
-            resolvedOccurrences.GetDocumentOccurrences(uri));
+            resolvedOccurrences.GetDocumentOccurrences(uri, cancellationToken),
+            cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
         lock (semanticTokenCacheGate)
         {
             if (semanticTokenCache.TryGetValue(uri, out var cachedTokens))

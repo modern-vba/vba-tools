@@ -15,6 +15,7 @@ internal sealed class VbaDiagnosticsPublisher
     private readonly HashSet<string> activePublicationWorkers = new(StringComparer.OrdinalIgnoreCase);
     private readonly LspMessageTransport transport;
     private readonly VbaLanguageWorkspace workspace;
+    private VbaInteractiveWorkScheduler? scheduler;
 
     /// <summary>
     /// Creates a diagnostics publisher.
@@ -25,6 +26,33 @@ internal sealed class VbaDiagnosticsPublisher
     {
         this.transport = transport;
         this.workspace = workspace;
+    }
+
+    /// <summary>
+    /// Attaches the runtime-owned bounded scheduler before document work is admitted.
+    /// </summary>
+    public void AttachScheduler(VbaInteractiveWorkScheduler interactiveScheduler)
+    {
+        ArgumentNullException.ThrowIfNull(interactiveScheduler);
+        lock (gate)
+        {
+            if (scheduler is not null && !ReferenceEquals(scheduler, interactiveScheduler))
+            {
+                throw new InvalidOperationException(
+                    "The diagnostics publisher is already attached to another scheduler.");
+            }
+
+            if (activePublicationWorkers.Count > 0)
+            {
+                throw new InvalidOperationException(
+                    "The diagnostics scheduler must be attached before publication starts.");
+            }
+
+            scheduler = interactiveScheduler;
+        }
+
+        interactiveScheduler.RegisterCapacityObserver(
+            RetryOneScheduledPublication);
     }
 
     /// <summary>
@@ -49,7 +77,7 @@ internal sealed class VbaDiagnosticsPublisher
                 snapshot.ClientVersion,
                 snapshot.LifecycleEpoch,
                 snapshot.ReservationToken),
-            () => PublishDiagnosticsAsync(snapshot, CancellationToken.None));
+            cancellationToken => PublishDiagnosticsAsync(snapshot, cancellationToken));
         return Task.CompletedTask;
     }
 
@@ -66,14 +94,14 @@ internal sealed class VbaDiagnosticsPublisher
             uri,
             revision,
             () => true,
-            () => transport.WriteNotificationAsync(
+            publicationCancellationToken => transport.WriteNotificationAsync(
                 "textDocument/publishDiagnostics",
                 new
                 {
                     uri,
                     diagnostics = Array.Empty<object>()
                 },
-                CancellationToken.None));
+                publicationCancellationToken));
         return Task.CompletedTask;
     }
 
@@ -105,14 +133,21 @@ internal sealed class VbaDiagnosticsPublisher
                     message = error.Message
                 }
             ];
-        return transport.WriteNotificationAsync(
-            "textDocument/publishDiagnostics",
-            new
-            {
-                uri,
-                diagnostics
-            },
-            cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        var revision = ReservePublishRevision(uri);
+        EnqueuePublication(
+            uri,
+            revision,
+            () => true,
+            publicationCancellationToken => transport.WriteNotificationAsync(
+                "textDocument/publishDiagnostics",
+                new
+                {
+                    uri,
+                    diagnostics
+                },
+                publicationCancellationToken));
+        return Task.CompletedTask;
     }
 
     private Task PublishDiagnosticsAsync(
@@ -164,11 +199,13 @@ internal sealed class VbaDiagnosticsPublisher
         string uri,
         long revision,
         Func<bool> isStillPublishable,
-        Func<Task> publish)
+        Func<CancellationToken, Task> publish)
     {
+        VbaInteractiveWorkScheduler? interactiveScheduler;
         var startWorker = false;
         lock (gate)
         {
+            interactiveScheduler = scheduler;
             pendingPublications[uri] = new PendingDiagnosticsPublication(
                 revision,
                 isStillPublishable,
@@ -176,9 +213,117 @@ internal sealed class VbaDiagnosticsPublisher
             startWorker = activePublicationWorkers.Add(uri);
         }
 
+        if (interactiveScheduler is not null)
+        {
+            if (startWorker)
+            {
+                StartScheduledPublication(uri, interactiveScheduler);
+            }
+
+            return;
+        }
+
         if (startWorker)
         {
             _ = ProcessPublicationsAsync(uri);
+        }
+    }
+
+    private void RetryOneScheduledPublication()
+    {
+        VbaInteractiveWorkScheduler? interactiveScheduler;
+        string? uri;
+        lock (gate)
+        {
+            interactiveScheduler = scheduler;
+            uri = interactiveScheduler is not null && interactiveScheduler.IsAccepting
+                ? pendingPublications.Keys.FirstOrDefault(
+                    pendingUri => !activePublicationWorkers.Contains(pendingUri))
+                : null;
+            if (uri is not null)
+            {
+                activePublicationWorkers.Add(uri);
+            }
+        }
+
+        if (interactiveScheduler is not null && uri is not null)
+        {
+            StartScheduledPublication(uri, interactiveScheduler);
+        }
+    }
+
+    private void StartScheduledPublication(
+        string uri,
+        VbaInteractiveWorkScheduler interactiveScheduler)
+    {
+        if (!interactiveScheduler.TryAdmitBackground(
+                VbaInteractiveBackgroundWorkType.DiagnosticsPublication,
+                uri,
+                cancellationToken => PublishOneScheduledPublicationAsync(
+                    uri,
+                    cancellationToken),
+                out var admission))
+        {
+            lock (gate)
+            {
+                activePublicationWorkers.Remove(uri);
+            }
+
+            interactiveScheduler.RequestCapacityPump();
+            return;
+        }
+
+        _ = ObserveScheduledPublicationAsync(
+            uri,
+            interactiveScheduler,
+            admission.Completion);
+    }
+
+    private async Task PublishOneScheduledPublicationAsync(
+        string uri,
+        CancellationToken cancellationToken)
+    {
+        PendingDiagnosticsPublication? publication;
+        lock (gate)
+        {
+            pendingPublications.Remove(uri, out publication);
+        }
+
+        if (publication is null
+            || !IsLatestPublishRevision(uri, publication.Revision)
+            || !publication.IsStillPublishable())
+        {
+            return;
+        }
+
+        await publication.Publish(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task ObserveScheduledPublicationAsync(
+        string uri,
+        VbaInteractiveWorkScheduler interactiveScheduler,
+        Task completion)
+    {
+        try
+        {
+            await completion.ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+        }
+
+        var restart = false;
+        lock (gate)
+        {
+            activePublicationWorkers.Remove(uri);
+            restart = interactiveScheduler.IsAccepting
+                && pendingPublications.ContainsKey(uri)
+                && activePublicationWorkers.Add(uri);
+        }
+
+        if (restart)
+        {
+            StartScheduledPublication(uri, interactiveScheduler);
         }
     }
 
@@ -205,7 +350,7 @@ internal sealed class VbaDiagnosticsPublisher
                     continue;
                 }
 
-                await publication.Publish().ConfigureAwait(false);
+                await publication.Publish(CancellationToken.None).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException)
@@ -229,5 +374,5 @@ internal sealed class VbaDiagnosticsPublisher
     private sealed record PendingDiagnosticsPublication(
         long Revision,
         Func<bool> IsStillPublishable,
-        Func<Task> Publish);
+        Func<CancellationToken, Task> Publish);
 }

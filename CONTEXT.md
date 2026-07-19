@@ -624,10 +624,12 @@ _Avoid_: function block, top-level node, parse chunk
 
 **VbaInteractiveWorkScheduler**:
 The C# language-server module that continuously admits parsed LSP input while
-executing requests and workspace mutations through one FIFO compatibility
-lane. It owns request cancellation tokens and deterministic stop behavior; it
-does not make the TypeScript adapter authoritative for VBA semantics.
-_Avoid_: parallel request executor, extension-host scheduler, request thread
+committing workspace mutations and capturing immutable read state through one
+ordered FIFO mutation-and-capture lane. Captured reads execute on a bounded
+concurrent executor. The scheduler owns request cancellation, internal latency
+and fairness policy, and deterministic stop behavior; it does not make the
+TypeScript adapter authoritative for VBA semantics.
+_Avoid_: unbounded parallel request executor, extension-host scheduler, request thread
 
 **InputSequence**:
 The monotonic sequence assigned when `VbaInteractiveWorkScheduler` admits a
@@ -637,18 +639,21 @@ _Avoid_: document version, request id, execution index
 
 **ReadFence**:
 The latest relevant workspace-mutation `InputSequence` that precedes an
-admitted read. The single compatibility lane executes FIFO, so a read observes
-all admitted mutations through its `ReadFence`; non-mutating barriers and
-explicit cancellation controls do not advance it.
+admitted read. The ordered mutation-and-capture lane commits every earlier
+mutation before the read captures one immutable revision. Later mutations may
+commit while the captured read executes, but cannot alter that pinned revision;
+non-mutating barriers and explicit cancellation controls do not advance the
+fence.
 _Avoid_: cancellation version, response sequence, source revision
 
 **RequestCancellationOwnership**:
 The generation-specific association between one active numeric or string LSP
 request id and its request-scoped cancellation token. `$/cancelRequest` signals
-that owner outside the serial lane, while the request executor remains the
-single owner of its normal or `RequestCancelled` response. Ownership is
-released after choosing the terminal response and before writing it, so a
-completed id can be reused without an older generation removing the new owner.
+that owner outside the ordered mutation-and-capture lane, while the request
+executor remains the single owner of its normal or `RequestCancelled` response.
+Ownership is released after choosing the terminal response and before writing
+it, so a completed id can be reused without an older generation removing the
+new owner.
 _Avoid_: document-change cancellation, shared server token, response ownership
 
 ## Workspace Context
@@ -826,10 +831,10 @@ Dev: "How much source does an incremental parse replace?"
 Domain Expert: "It replaces the affected `ModuleMember`, not individual expression nodes."
 
 Dev: "Does a later `didChange` cancel an earlier completion or hover request?"
-Domain Expert: "No. It receives a later `InputSequence` and executes after the read in the compatibility lane. Only explicit `$/cancelRequest`, host abort, EOF, or terminal runtime failure signals `RequestCancellationOwnership`."
+Domain Expert: "No. Once the earlier read captures its immutable revision, the later `didChange` receives a later `InputSequence` and may commit through the ordered lane while that read continues on the pinned revision. Only explicit `$/cancelRequest`, host abort, EOF, or terminal runtime failure signals `RequestCancellationOwnership`."
 
 Dev: "Does explicit cancellation have to wait behind the request it cancels?"
-Domain Expert: "No. The input reader signals the matching owner immediately outside the lane, but `VbaLspRequestExecution` still writes exactly one normal or `RequestCancelled` response through the serialized transport."
+Domain Expert: "No. The input reader signals the matching owner immediately outside the ordered mutation-and-capture lane, but `VbaLspRequestExecution` still writes exactly one normal or `RequestCancelled` response through the serialized transport."
 
 Dev: "Did continuous admission change VBA document synchronization?"
 Domain Expert: "No. The server still advertises full-text synchronization. `VbaInteractiveWorkScheduler` changes admission and cancellation ownership, not the document text contract or the C# language-server authority."

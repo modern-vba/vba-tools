@@ -3,6 +3,25 @@ using VbaLanguageServer.SourceModel;
 
 namespace VbaLanguageServer.Workspace;
 
+internal interface IVbaProjectSnapshotBuildObserver
+{
+    void BeforeStore(long workspaceVersion, CancellationToken cancellationToken);
+}
+
+internal sealed class NullVbaProjectSnapshotBuildObserver
+    : IVbaProjectSnapshotBuildObserver
+{
+    public static NullVbaProjectSnapshotBuildObserver Instance { get; } = new();
+
+    private NullVbaProjectSnapshotBuildObserver()
+    {
+    }
+
+    public void BeforeStore(long workspaceVersion, CancellationToken cancellationToken)
+    {
+    }
+}
+
 /// <summary>
 /// Represents the document state used to create a project snapshot.
 /// </summary>
@@ -47,17 +66,21 @@ internal sealed class VbaProjectSnapshotProvider
     private readonly IVbaProjectManifestResolutionSource manifestResolutionSource;
     private readonly VbaProjectSnapshotBuilder snapshotBuilder;
     private readonly IVbaProjectReferenceCatalogLifecycleObserver lifecycleObserver;
+    private readonly IVbaProjectSnapshotBuildObserver buildObserver;
+    private long invalidationGeneration;
 
     public VbaProjectSnapshotProvider(
         VbaProjectReferenceCatalogCache referenceCatalogCache,
         VbaProjectSourceDocumentCache diskDocumentCache,
         IVbaProjectManifestResolutionSource manifestResolutionSource,
-        IVbaProjectReferenceCatalogLifecycleObserver? lifecycleObserver = null)
+        IVbaProjectReferenceCatalogLifecycleObserver? lifecycleObserver = null,
+        IVbaProjectSnapshotBuildObserver? buildObserver = null)
     {
         this.referenceCatalogCache = referenceCatalogCache;
         this.manifestResolutionSource = manifestResolutionSource;
         this.lifecycleObserver =
             lifecycleObserver ?? NullVbaProjectReferenceCatalogLifecycleObserver.Instance;
+        this.buildObserver = buildObserver ?? NullVbaProjectSnapshotBuildObserver.Instance;
         snapshotBuilder = new VbaProjectSnapshotBuilder(diskDocumentCache);
     }
 
@@ -71,8 +94,10 @@ internal sealed class VbaProjectSnapshotProvider
         var referenceCatalogState = referenceCatalogCache.CaptureSelectionState(
             resolution.ReferenceEntries);
         var cacheIdentity = VbaProjectSnapshotIdentity.Create(activeUri, resolution);
+        var capturedInvalidationGeneration = CaptureInvalidationGeneration();
         if (TryGetCachedSnapshot(
             cacheIdentity,
+            workspaceState.Version,
             manifestVersion,
             referenceCatalogState.Revision,
             cancellationToken,
@@ -92,10 +117,14 @@ internal sealed class VbaProjectSnapshotProvider
             resolution,
             inventorySnapshot.Documents,
             referenceCatalogState.CatalogSet);
+        buildObserver.BeforeStore(workspaceState.Version, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
         StoreCachedSnapshot(
             cacheIdentity,
+            workspaceState.Version,
             manifestVersion,
             referenceCatalogState.Revision,
+            capturedInvalidationGeneration,
             inventorySnapshot.SourceFiles,
             snapshot);
         return snapshot;
@@ -105,6 +134,7 @@ internal sealed class VbaProjectSnapshotProvider
     {
         lock (gate)
         {
+            invalidationGeneration++;
             cache.Clear();
         }
     }
@@ -113,6 +143,7 @@ internal sealed class VbaProjectSnapshotProvider
     {
         lock (gate)
         {
+            invalidationGeneration++;
             var keys = cache
                 .Where(pair =>
                     pair.Value.Snapshot.Resolution.ContainsUri(uri)
@@ -161,6 +192,7 @@ internal sealed class VbaProjectSnapshotProvider
 
     private bool TryGetCachedSnapshot(
         VbaProjectSnapshotIdentity cacheIdentity,
+        long expectedWorkspaceVersion,
         long expectedManifestVersion,
         long expectedReferenceCatalogRevision,
         CancellationToken cancellationToken,
@@ -170,6 +202,7 @@ internal sealed class VbaProjectSnapshotProvider
         lock (gate)
         {
             if (cache.TryGetValue(cacheIdentity.Key, out var cached)
+                && cached.WorkspaceVersion == expectedWorkspaceVersion
                 && cached.ManifestVersion == expectedManifestVersion)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -197,14 +230,30 @@ internal sealed class VbaProjectSnapshotProvider
 
     private void StoreCachedSnapshot(
         VbaProjectSnapshotIdentity cacheIdentity,
+        long snapshotWorkspaceVersion,
         long snapshotManifestVersion,
         long snapshotReferenceCatalogRevision,
+        long capturedInvalidationGeneration,
         IReadOnlyList<VbaProjectSourceFileState> sourceFiles,
         VbaProjectSnapshot snapshot)
     {
         lock (gate)
         {
+            if (invalidationGeneration != capturedInvalidationGeneration)
+            {
+                return;
+            }
+
+            if (cache.TryGetValue(cacheIdentity.Key, out var current)
+                && (current.WorkspaceVersion > snapshotWorkspaceVersion
+                    || current.ManifestVersion > snapshotManifestVersion
+                    || current.ReferenceCatalogRevision > snapshotReferenceCatalogRevision))
+            {
+                return;
+            }
+
             cache[cacheIdentity.Key] = new CachedProjectSnapshot(
+                snapshotWorkspaceVersion,
                 snapshotManifestVersion,
                 snapshotReferenceCatalogRevision,
                 sourceFiles,
@@ -213,10 +262,19 @@ internal sealed class VbaProjectSnapshotProvider
     }
 
     private sealed record CachedProjectSnapshot(
+        long WorkspaceVersion,
         long ManifestVersion,
         long ReferenceCatalogRevision,
         IReadOnlyList<VbaProjectSourceFileState> SourceFiles,
         VbaProjectSnapshot Snapshot);
+
+    private long CaptureInvalidationGeneration()
+    {
+        lock (gate)
+        {
+            return invalidationGeneration;
+        }
+    }
 
     private static bool SameDocumentIdentity(string leftUri, string rightUri)
     {

@@ -28,8 +28,10 @@ internal static class VbaSemanticTokenBuilder
     public static IReadOnlyList<VbaSemanticToken> GetSemanticTokens(
         IReadOnlyList<VbaSourceDocument> documents,
         string uri,
-        IReadOnlyList<VbaResolvedIdentifierOccurrence> resolvedOccurrences)
+        IReadOnlyList<VbaResolvedIdentifierOccurrence> resolvedOccurrences,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var currentDocument = documents.FirstOrDefault(document => SameUri(document.Uri, uri));
         if (currentDocument is null)
         {
@@ -40,6 +42,7 @@ internal static class VbaSemanticTokenBuilder
         var declarationRanges = new HashSet<string>(StringComparer.Ordinal);
         foreach (var definition in currentDocument.Definitions)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (!TryCreateSemanticToken(definition, isDeclaration: true, out var token))
             {
                 continue;
@@ -51,6 +54,7 @@ internal static class VbaSemanticTokenBuilder
 
         foreach (var occurrence in resolvedOccurrences)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (declarationRanges.Contains(GetRangeKey(occurrence.Range)))
             {
                 continue;
@@ -69,6 +73,7 @@ internal static class VbaSemanticTokenBuilder
             tokens.Add(referenceToken);
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         return tokens
             .GroupBy(token => $"{GetRangeKey(token.Range)}:{token.TokenType}:{string.Join(",", token.TokenModifiers)}", StringComparer.Ordinal)
             .Select(group => group.First())
@@ -82,13 +87,16 @@ internal static class VbaSemanticTokenBuilder
     /// </summary>
     /// <param name="tokens">The semantic tokens sorted in source order.</param>
     /// <returns>The encoded semantic token data.</returns>
-    public static IReadOnlyList<int> GetSemanticTokenData(IReadOnlyList<VbaSemanticToken> tokens)
+    public static IReadOnlyList<int> GetSemanticTokenData(
+        IReadOnlyList<VbaSemanticToken> tokens,
+        CancellationToken cancellationToken = default)
     {
         var data = new List<int>();
         var previousLine = 0;
         var previousStart = 0;
         foreach (var token in tokens)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var line = token.Range.Start.Line;
             var start = token.Range.Start.Character;
             var deltaLine = line - previousLine;

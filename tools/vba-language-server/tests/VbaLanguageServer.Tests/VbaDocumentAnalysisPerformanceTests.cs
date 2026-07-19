@@ -129,6 +129,7 @@ public sealed class VbaDocumentAnalysisPerformanceTests
                     header.Length);
                 measurements[index] = await ReadExecutionTimeAsync(
                     timingRoot,
+                    "vba/blockSkeletonInsertion",
                     measuredRequestId,
                     TimeSpan.FromSeconds(10));
             }
@@ -149,6 +150,109 @@ public sealed class VbaDocumentAnalysisPerformanceTests
                 Assert.True(
                     p99 <= TimeSpan.FromMilliseconds(75),
                     $"Block-skeleton processing p99 was {p99.TotalMilliseconds:F3} ms.");
+            }
+
+            await server.ShutdownAsync(requestId);
+        }
+        finally
+        {
+            Directory.Delete(timingRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "Performance")]
+    public async Task Release_warm_completion_hover_and_signature_help_stay_within_budget()
+    {
+        var warmupCount = IsReleaseBuild ? 20 : 2;
+        var measuredCount = IsReleaseBuild ? 200 : 5;
+        var timingRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-warm-query-performance-").FullName;
+        try
+        {
+            await using var server = await LanguageServerProcessHarness.StartAsync(
+                environment: new Dictionary<string, string>
+                {
+                    ["VBA_TOOLS_INTERACTIVE_ADMISSION_DIRECTORY"] = timingRoot
+                });
+            await server.InitializeAsync();
+            const string uri = "file:///C:/work/WarmQueryPerformance.bas";
+            const string invocation = "    result = BuildValue(";
+            var text = string.Join('\n',
+            [
+                "Attribute VB_Name = \"WarmQueryPerformance\"",
+                "Public Sub Caller()",
+                "    Dim result As String",
+                invocation,
+                "End Sub",
+                "Public Function BuildValue(ByVal value As Long) As String",
+                "End Function"
+            ]);
+            await server.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, version: 1, text));
+            await server.WaitForDiagnosticsAsync(uri);
+            var cases = new[]
+            {
+                new WarmQueryCase(
+                    "textDocument/completion",
+                    Line: 3,
+                    Character: "    result = Build".Length),
+                new WarmQueryCase(
+                    "textDocument/hover",
+                    Line: 3,
+                    Character: "    result = Build".Length),
+                new WarmQueryCase(
+                    "textDocument/signatureHelp",
+                    Line: 3,
+                    Character: invocation.Length)
+            };
+            var requestId = 10;
+            foreach (var queryCase in cases)
+            {
+                for (var index = 0; index < warmupCount; index++)
+                {
+                    await SendPositionRequestAsync(
+                        server,
+                        requestId++,
+                        queryCase,
+                        uri);
+                }
+
+                var measurements = new TimeSpan[measuredCount];
+                for (var index = 0; index < measurements.Length; index++)
+                {
+                    var measuredRequestId = requestId++;
+                    await SendPositionRequestAsync(
+                        server,
+                        measuredRequestId,
+                        queryCase,
+                        uri);
+                    measurements[index] = await ReadExecutionTimeAsync(
+                        timingRoot,
+                        queryCase.Method,
+                        measuredRequestId,
+                        TimeSpan.FromSeconds(10));
+                }
+
+                var p95 = Percentile(measurements, 0.95);
+                var p99 = Percentile(measurements, 0.99);
+                output.WriteLine(
+                    "{0} ({1}) p95={2:F3} ms, p99={3:F3} ms, samples={4}",
+                    queryCase.Method,
+                    BuildConfiguration,
+                    p95.TotalMilliseconds,
+                    p99.TotalMilliseconds,
+                    measurements.Length);
+                if (IsReleaseBuild)
+                {
+                    Assert.True(
+                        p95 <= TimeSpan.FromMilliseconds(25),
+                        $"{queryCase.Method} p95 was {p95.TotalMilliseconds:F3} ms.");
+                    Assert.True(
+                        p99 <= TimeSpan.FromMilliseconds(50),
+                        $"{queryCase.Method} p99 was {p99.TotalMilliseconds:F3} ms.");
+                }
             }
 
             await server.ShutdownAsync(requestId);
@@ -261,11 +365,13 @@ public sealed class VbaDocumentAnalysisPerformanceTests
 
     private static async Task<TimeSpan> ReadExecutionTimeAsync(
         string timingRoot,
+        string method,
         int requestId,
         TimeSpan timeout)
     {
+        var sanitizedMethod = method.Replace('/', '_');
         var suffix =
-            $"-request-vba_blockSkeletonInsertion-number-{requestId}.completed";
+            $"-request-{sanitizedMethod}-number-{requestId}.completed";
         var deadline = Stopwatch.StartNew();
         while (deadline.Elapsed < timeout)
         {
@@ -304,6 +410,28 @@ public sealed class VbaDocumentAnalysisPerformanceTests
             $"No completion timing was recorded for request {requestId}.");
     }
 
+    private static async Task SendPositionRequestAsync(
+        LanguageServerProcessHarness server,
+        int requestId,
+        WarmQueryCase queryCase,
+        string uri)
+    {
+        var response = await server.SendRequestAsync(
+            requestId,
+            queryCase.Method,
+            new
+            {
+                textDocument = new { uri },
+                position = new
+                {
+                    line = queryCase.Line,
+                    character = queryCase.Character
+                }
+            },
+            timeout: TimeSpan.FromSeconds(30));
+        Assert.True(response.TryGetProperty("result", out _));
+    }
+
     private static TimeSpan Percentile(
         IEnumerable<TimeSpan> values,
         double percentile)
@@ -312,4 +440,9 @@ public sealed class VbaDocumentAnalysisPerformanceTests
         var index = (int)Math.Ceiling(ordered.Length * percentile) - 1;
         return ordered[Math.Max(0, index)];
     }
+
+    private sealed record WarmQueryCase(
+        string Method,
+        int Line,
+        int Character);
 }

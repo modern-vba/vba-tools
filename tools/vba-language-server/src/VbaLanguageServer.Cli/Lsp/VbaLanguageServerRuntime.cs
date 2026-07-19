@@ -12,7 +12,8 @@ internal sealed class VbaLanguageServerRuntime
     private readonly LspMessageTransport transport;
     private readonly VbaLspRequestExecution requestExecution;
     private readonly VbaDocumentLifecycle documentLifecycle;
-    private readonly ReferenceCatalogRefreshCoordinator? catalogLifecycle;
+    private readonly IReferenceCatalogRuntimeLifecycle? catalogLifecycle;
+    private readonly VbaInteractiveWorkSchedulerOptions? schedulerOptions;
 
     /// <summary>
     /// Creates a language-server runtime from transport, request, and lifecycle components.
@@ -21,16 +22,19 @@ internal sealed class VbaLanguageServerRuntime
     /// <param name="requestExecution">The boundary used for request handling.</param>
     /// <param name="documentLifecycle">The document lifecycle handler used for notifications.</param>
     /// <param name="catalogLifecycle">The optional background catalog lifecycle owner.</param>
+    /// <param name="schedulerOptions">Optional scheduler options used by deterministic tests.</param>
     public VbaLanguageServerRuntime(
         LspMessageTransport transport,
         VbaLspRequestExecution requestExecution,
         VbaDocumentLifecycle documentLifecycle,
-        ReferenceCatalogRefreshCoordinator? catalogLifecycle = null)
+        IReferenceCatalogRuntimeLifecycle? catalogLifecycle = null,
+        VbaInteractiveWorkSchedulerOptions? schedulerOptions = null)
     {
         this.transport = transport;
         this.requestExecution = requestExecution;
         this.documentLifecycle = documentLifecycle;
         this.catalogLifecycle = catalogLifecycle;
+        this.schedulerOptions = schedulerOptions;
     }
 
     /// <summary>
@@ -79,7 +83,11 @@ internal sealed class VbaLanguageServerRuntime
             CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var scheduler = new VbaInteractiveWorkScheduler(
             VbaInteractiveWorkTimingFileSink.CreateFromEnvironment(),
-            failureSink: _ => responseLifetime.Cancel());
+            failureSink: _ => responseLifetime.Cancel(),
+            options: schedulerOptions
+                ?? VbaInteractiveWorkSchedulerOptions.CreateFromEnvironment());
+        documentLifecycle.AttachScheduler(scheduler);
+        catalogLifecycle?.AttachScheduler(scheduler);
         var gracefulExit = false;
         var shutdownAdmitted = false;
         try
@@ -106,9 +114,16 @@ internal sealed class VbaLanguageServerRuntime
                         scheduler.AdmitRequest(
                             requestId,
                             requestMethod,
-                            (requestCancellationToken, releaseCancellationOwnership) =>
-                                requestExecution.ExecuteAsync(
+                            requestCancellationToken =>
+                                requestExecution.Capture(
                                     message,
+                                    requestCancellationToken),
+                            (
+                                capturedRequest,
+                                requestCancellationToken,
+                                releaseCancellationOwnership) =>
+                                requestExecution.ExecuteAsync(
+                                    capturedRequest,
                                     requestCancellationToken,
                                     responseLifetime.Token,
                                     releaseCancellationOwnership));
@@ -117,19 +132,29 @@ internal sealed class VbaLanguageServerRuntime
                     {
                         try
                         {
-                            scheduler.AdmitBarrier(
+                            await scheduler.AdmitRequiredBarrierAsync(
                                 "<duplicate-request>",
                                 _ => transport.WriteErrorResponseAsync(
                                     message["id"],
                                     -32600,
                                     "Duplicate request id",
-                                    responseLifetime.Token));
+                                    responseLifetime.Token),
+                                responseLifetime.Token);
                         }
                         catch (ObjectDisposedException) when (!scheduler.IsAccepting)
                         {
                             return;
                         }
 
+                        continue;
+                    }
+                    catch (VbaInteractiveWorkQueueFullException)
+                    {
+                        await transport.WriteErrorResponseAsync(
+                            requestId is null ? null : message["id"],
+                            -32000,
+                            "Server busy",
+                            responseLifetime.Token);
                         continue;
                     }
                     catch (ObjectDisposedException) when (!scheduler.IsAccepting)
@@ -165,11 +190,15 @@ internal sealed class VbaLanguageServerRuntime
                     VbaInteractiveWorkAdmission exit;
                     try
                     {
-                        exit = scheduler.AdmitBarrier("exit", _ =>
-                        {
-                            Environment.ExitCode = requestExecution.ShutdownRequested ? 0 : 1;
-                            return Task.CompletedTask;
-                        });
+                        exit = await scheduler.AdmitRequiredBarrierAsync(
+                            "exit",
+                            _ =>
+                            {
+                                Environment.ExitCode =
+                                    requestExecution.ShutdownRequested ? 0 : 1;
+                                return Task.CompletedTask;
+                            },
+                            responseLifetime.Token);
                     }
                     catch (ObjectDisposedException) when (!scheduler.IsAccepting)
                     {
@@ -208,6 +237,11 @@ internal sealed class VbaLanguageServerRuntime
                         scheduler.AdmitBarrier(method, executeNotification);
                     }
                 }
+                catch (VbaInteractiveWorkQueueFullException)
+                {
+                    responseLifetime.Cancel();
+                    return;
+                }
                 catch (ObjectDisposedException) when (!scheduler.IsAccepting)
                 {
                     return;
@@ -226,17 +260,17 @@ internal sealed class VbaLanguageServerRuntime
 
             try
             {
-                await scheduler.StopAsync(
-                    gracefulExit
-                        ? VbaInteractiveStopReason.Complete
-                        : VbaInteractiveStopReason.Abort);
-            }
-            finally
-            {
                 if (catalogLifecycle is not null)
                 {
                     await catalogLifecycle.StopAsync();
                 }
+            }
+            finally
+            {
+                await scheduler.StopAsync(
+                    gracefulExit
+                        ? VbaInteractiveStopReason.Complete
+                        : VbaInteractiveStopReason.Abort);
             }
         }
     }

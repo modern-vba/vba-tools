@@ -191,9 +191,12 @@ internal sealed class VbaSourceFormatter
     /// <param name="document">The source document to format.</param>
     /// <param name="indentationStyle">The resolved editor indentation style.</param>
     /// <returns>The formatting edit, or null when no changes are required.</returns>
-    public VbaTextEdit? FormatDocument(VbaSourceDocument document, VbaIndentationStyle indentationStyle)
+    public VbaTextEdit? FormatDocument(
+        VbaSourceDocument document,
+        VbaIndentationStyle indentationStyle,
+        CancellationToken cancellationToken = default)
     {
-        var formattedText = FormatText(document, indentationStyle);
+        var formattedText = FormatText(document, indentationStyle, cancellationToken);
         if (string.Equals(formattedText, document.Text, StringComparison.Ordinal))
         {
             return null;
@@ -207,19 +210,26 @@ internal sealed class VbaSourceFormatter
             formattedText);
     }
 
-    private string FormatText(VbaSourceDocument document, VbaIndentationStyle indentationStyle)
+    private string FormatText(
+        VbaSourceDocument document,
+        VbaIndentationStyle indentationStyle,
+        CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var declarationRanges = document.Definitions
             .Select(definition => GetRangeKey(definition.Range))
             .ToHashSet(StringComparer.Ordinal);
         var syntaxTree = document.SyntaxTree ?? VbaSyntaxTree.ParseModule(document.Uri, document.Text);
         var formattingInput = VbaFormattingInput.FromSyntaxTree(syntaxTree);
         var indentationFormatting = VbaIndentationFormatting.FromInput(formattingInput);
-        var canonicalNamesByRange = resolvedOccurrences.GetCanonicalNamesByRange(document.Uri);
+        var canonicalNamesByRange = resolvedOccurrences.GetCanonicalNamesByRange(
+            document.Uri,
+            cancellationToken);
         var formattedLines = new List<string>(formattingInput.Lines.Count);
 
         foreach (var formattingLine in formattingInput.Lines)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var line = formattingLine.Text;
             var casedLine = FormatLineCasing(
                 line,

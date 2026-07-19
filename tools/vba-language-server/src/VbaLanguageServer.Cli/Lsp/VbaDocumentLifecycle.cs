@@ -8,6 +8,7 @@ namespace VbaLanguageServer.Lsp;
 /// </summary>
 internal sealed class VbaDocumentLifecycle
 {
+    private readonly VbaDiagnosticsPublisher diagnosticsPublisher;
     private readonly VbaDocumentChangePipeline pipeline;
 
     /// <summary>
@@ -19,13 +20,20 @@ internal sealed class VbaDocumentLifecycle
     public VbaDocumentLifecycle(
         LspMessageTransport transport,
         VbaLanguageWorkspace workspace,
-        ReferenceCatalogRefreshCoordinator catalogRefresh)
+        IReferenceCatalogLifecycle catalogRefresh)
     {
+        diagnosticsPublisher = new VbaDiagnosticsPublisher(transport, workspace);
         pipeline = new VbaDocumentChangePipeline(
             workspace,
             catalogRefresh,
-            new VbaDiagnosticsPublisher(transport, workspace));
+            diagnosticsPublisher);
     }
+
+    /// <summary>
+    /// Attaches background diagnostics to the runtime-owned scheduler.
+    /// </summary>
+    public void AttachScheduler(VbaInteractiveWorkScheduler scheduler)
+        => diagnosticsPublisher.AttachScheduler(scheduler);
 
     /// <summary>
     /// Records a valid textDocument/didOpen notification.

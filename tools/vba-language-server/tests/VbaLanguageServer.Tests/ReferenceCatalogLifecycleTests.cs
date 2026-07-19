@@ -118,6 +118,297 @@ public sealed class ReferenceCatalogLifecycleTests
     }
 
     [Fact]
+    public async Task Automatic_catalog_lifecycle_starts_through_the_background_scheduler()
+    {
+        var catalogCache = new VbaProjectReferenceCatalogCache(
+            VbaProjectReferenceCatalogSet.Empty);
+        var persistentStore = new CountingPersistentStore();
+        var refreshService = new VbaProjectReferenceCatalogRefreshService(
+            catalogCache,
+            new CountingDiscovery(),
+            persistentStore,
+            new InlineRefreshWorker());
+        await using var output = new MemoryStream();
+        var lifecycle = new ReferenceCatalogRefreshCoordinator(
+            catalogCache,
+            refreshService,
+            new VbaProjectManifestWorkspace(),
+            new LspMessageTransport(Stream.Null, output));
+        var timingSink = new SignallingTimingSink();
+        await using var scheduler = new VbaInteractiveWorkScheduler(
+            timingSink,
+            options: new VbaInteractiveWorkSchedulerOptions(
+                CoalesceSupersededMutations: true,
+                EnableConcurrentReads: true,
+                MaxConcurrentReads: 1,
+                MaxConcurrentBulkReads: 1));
+        var blockerStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseBlocker = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var blocker = scheduler.AdmitRequest(
+            requestId: null,
+            "textDocument/hover",
+            _ => new object(),
+            async (_, cancellationToken) =>
+            {
+                blockerStarted.TrySetResult();
+                await releaseBlocker.Task.WaitAsync(cancellationToken);
+            });
+        await blockerStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        lifecycle.AttachScheduler(scheduler);
+
+        lifecycle.ApplyManifestSelectionChange(
+            "file:///C:/work/Book1/vba-project.json",
+            CreateManifestText("Library A"));
+        await timingSink.WaitForAdmissionAsync("vba/referenceCatalogRefresh");
+
+        Assert.Equal(0, persistentStore.LoadCount);
+
+        releaseBlocker.TrySetResult();
+        await blocker.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+        await lifecycle.WaitForIdleAsync().WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(1, persistentStore.LoadCount);
+        await scheduler.StopAsync(VbaInteractiveStopReason.Complete);
+        await lifecycle.StopAsync();
+    }
+
+    [Fact]
+    public async Task Catalog_refresh_overflow_retries_only_the_latest_plan_after_capacity_returns()
+    {
+        const string uri = "file:///C:/work/Book1/vba-project.json";
+        var catalogCache = new VbaProjectReferenceCatalogCache(
+            VbaProjectReferenceCatalogSet.Empty);
+        var discovery = new CountingDiscovery();
+        var refreshService = new VbaProjectReferenceCatalogRefreshService(
+            catalogCache,
+            discovery,
+            persistentStore: null,
+            new InlineRefreshWorker());
+        await using var output = new MemoryStream();
+        var lifecycle = new ReferenceCatalogRefreshCoordinator(
+            catalogCache,
+            refreshService,
+            new VbaProjectManifestWorkspace(),
+            new LspMessageTransport(Stream.Null, output));
+        var blockerStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseBlocker = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var scheduler = new VbaInteractiveWorkScheduler(
+            options: new VbaInteractiveWorkSchedulerOptions(
+                CoalesceSupersededMutations: true,
+                MaxOwnedWork: 1));
+        var blocker = scheduler.AdmitMutation(async cancellationToken =>
+        {
+            blockerStarted.TrySetResult();
+            await releaseBlocker.Task.WaitAsync(cancellationToken);
+        });
+        await blockerStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        lifecycle.AttachScheduler(scheduler);
+
+        lifecycle.ApplyManifestSelectionChange(uri, CreateManifestText("Library A"));
+        lifecycle.ApplyManifestSelectionChange(uri, CreateManifestText("Library B"));
+        lifecycle.ApplyManifestSelectionChange(uri, CreateManifestText("Library C"));
+
+        Assert.Empty(discovery.ReferenceNames);
+        Assert.True(scheduler.IsAccepting);
+        releaseBlocker.TrySetResult();
+        await blocker.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+        await lifecycle.WaitForIdleAsync().WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(["Library C"], discovery.ReferenceNames);
+        await lifecycle.StopAsync();
+        await scheduler.StopAsync(VbaInteractiveStopReason.Complete);
+    }
+
+    [Fact]
+    public async Task Catalog_refresh_overflow_discards_a_plan_deactivated_before_capacity_returns()
+    {
+        const string uri = "file:///C:/work/Book1/vba-project.json";
+        var catalogCache = new VbaProjectReferenceCatalogCache(
+            VbaProjectReferenceCatalogSet.Empty);
+        var discovery = new CountingDiscovery();
+        var refreshService = new VbaProjectReferenceCatalogRefreshService(
+            catalogCache,
+            discovery,
+            persistentStore: null,
+            new InlineRefreshWorker());
+        await using var output = new MemoryStream();
+        var lifecycle = new ReferenceCatalogRefreshCoordinator(
+            catalogCache,
+            refreshService,
+            new VbaProjectManifestWorkspace(),
+            new LspMessageTransport(Stream.Null, output));
+        var blockerStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseBlocker = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var scheduler = new VbaInteractiveWorkScheduler(
+            options: new VbaInteractiveWorkSchedulerOptions(
+                CoalesceSupersededMutations: true,
+                MaxOwnedWork: 1));
+        var blocker = scheduler.AdmitMutation(async cancellationToken =>
+        {
+            blockerStarted.TrySetResult();
+            await releaseBlocker.Task.WaitAsync(cancellationToken);
+        });
+        await blockerStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        lifecycle.AttachScheduler(scheduler);
+
+        lifecycle.ApplyManifestSelectionChange(uri, CreateManifestText("Library A"));
+        lifecycle.ApplyManifestSelectionChange(uri, "{");
+
+        releaseBlocker.TrySetResult();
+        await blocker.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+        await lifecycle.WaitForIdleAsync().WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Empty(discovery.ReferenceNames);
+        await lifecycle.StopAsync();
+        await scheduler.StopAsync(VbaInteractiveStopReason.Complete);
+    }
+
+    [Fact]
+    public async Task Catalog_refresh_is_background_admitted_but_commit_waits_for_the_mutation_lane()
+    {
+        const string referenceName = "Library A";
+        var catalogCache = new VbaProjectReferenceCatalogCache(
+            VbaProjectReferenceCatalogSet.Empty);
+        var discovery = new NonCooperativeBlockingDiscovery();
+        var observer = new RecordingLifecycleObserver();
+        var refreshService = new VbaProjectReferenceCatalogRefreshService(
+            catalogCache,
+            discovery,
+            persistentStore: null,
+            new InlineRefreshWorker(),
+            observer);
+        await using var output = new MemoryStream();
+        var lifecycle = new ReferenceCatalogRefreshCoordinator(
+            catalogCache,
+            refreshService,
+            new VbaProjectManifestWorkspace(),
+            new LspMessageTransport(Stream.Null, output),
+            observer);
+        var timingSink = new SignallingTimingSink();
+        await using var scheduler = new VbaInteractiveWorkScheduler(timingSink);
+        lifecycle.AttachScheduler(scheduler);
+        lifecycle.ApplyManifestSelectionChange(
+            "file:///C:/work/Book1/vba-project.json",
+            CreateManifestText(referenceName));
+        await timingSink.WaitForAdmissionAsync("vba/referenceCatalogRefresh");
+        await discovery.DiscoveryStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var blockingMutationStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseBlockingMutation = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var blockingMutation = scheduler.AdmitMutation(
+            "test/block-catalog-commit",
+            async cancellationToken =>
+            {
+                blockingMutationStarted.TrySetResult();
+                await releaseBlockingMutation.Task.WaitAsync(cancellationToken);
+            });
+        await blockingMutationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        discovery.ReleaseDiscovery();
+        await timingSink.WaitForAdmissionAsync("vba/referenceCatalogCommit");
+
+        Assert.Equal(
+            VbaProjectReferenceCatalogSource.Unavailable,
+            catalogCache.GetCatalogSource(referenceName));
+        Assert.Equal(
+            0,
+            observer.Count(VbaProjectReferenceCatalogLifecycleOperation.Commit));
+
+        releaseBlockingMutation.TrySetResult();
+        await blockingMutation.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+        await lifecycle.WaitForIdleAsync().WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(
+            VbaProjectReferenceCatalogSource.Generated,
+            catalogCache.GetCatalogSource(referenceName));
+        Assert.Equal(
+            1,
+            observer.Count(VbaProjectReferenceCatalogLifecycleOperation.Commit));
+        await lifecycle.StopAsync();
+        await scheduler.StopAsync(VbaInteractiveStopReason.Complete);
+    }
+
+    [Fact]
+    public async Task Catalog_commit_waits_for_owned_capacity_without_losing_the_visible_commit()
+    {
+        await using var scheduler = new VbaInteractiveWorkScheduler(
+            options: new VbaInteractiveWorkSchedulerOptions(
+                CoalesceSupersededMutations: true,
+                MaxOwnedWork: 1));
+        var blockingMutationStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseBlockingMutation = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var blockingMutation = scheduler.AdmitMutation(
+            "test/fill-owned-capacity",
+            async cancellationToken =>
+            {
+                blockingMutationStarted.TrySetResult();
+                await releaseBlockingMutation.Task.WaitAsync(cancellationToken);
+            });
+        await blockingMutationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var commitCount = 0;
+        var mutationLane = new VbaInteractiveReferenceCatalogMutationLane(scheduler);
+
+        var commit = mutationLane.CommitAsync(
+            "project:Book1",
+            () => commitCount++,
+            CancellationToken.None);
+
+        Assert.False(commit.IsCompleted);
+        Assert.Equal(0, commitCount);
+        releaseBlockingMutation.TrySetResult();
+        await blockingMutation.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+        await commit.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(1, commitCount);
+        await scheduler.StopAsync(VbaInteractiveStopReason.Complete);
+    }
+
+    [Fact]
+    public async Task Cancelled_catalog_commit_capacity_wait_never_commits_late()
+    {
+        await using var scheduler = new VbaInteractiveWorkScheduler(
+            options: new VbaInteractiveWorkSchedulerOptions(
+                CoalesceSupersededMutations: true,
+                MaxOwnedWork: 1));
+        var blockerStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseBlocker = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var blocker = scheduler.AdmitMutation(async cancellationToken =>
+        {
+            blockerStarted.TrySetResult();
+            await releaseBlocker.Task.WaitAsync(cancellationToken);
+        });
+        await blockerStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var commitCount = 0;
+        var mutationLane = new VbaInteractiveReferenceCatalogMutationLane(scheduler);
+        using var cancellation = new CancellationTokenSource();
+        var commit = mutationLane.CommitAsync(
+            "project:Book1",
+            () => commitCount++,
+            cancellation.Token);
+
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => commit);
+        releaseBlocker.TrySetResult();
+        await blocker.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+        var later = scheduler.AdmitMutation(_ => Task.CompletedTask);
+        await later.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(0, commitCount);
+        await scheduler.StopAsync(VbaInteractiveStopReason.Complete);
+    }
+
+    [Fact]
     public async Task Opening_multiple_sources_activates_the_manifest_project_once()
     {
         var projectRoot = Directory.CreateTempSubdirectory("vba-ls-project-activation-").FullName;
@@ -334,6 +625,111 @@ public sealed class ReferenceCatalogLifecycleTests
         Assert.Equal(1, persistentStore.LoadCount);
         Assert.Equal(1, discovery.CallCount);
         await lifecycle.StopAsync();
+    }
+
+    [Fact]
+    public async Task Manifest_replacement_does_not_block_the_mutation_lane_on_a_cancellation_callback()
+    {
+        var catalogCache = new VbaProjectReferenceCatalogCache(
+            VbaProjectReferenceCatalogSet.Empty);
+        var persistentStore = new BlockingCancellationCallbackPersistentStore();
+        var refreshService = new VbaProjectReferenceCatalogRefreshService(
+            catalogCache,
+            new CountingDiscovery(),
+            persistentStore,
+            new InlineRefreshWorker());
+        await using var output = new MemoryStream();
+        var lifecycle = new ReferenceCatalogRefreshCoordinator(
+            catalogCache,
+            refreshService,
+            new VbaProjectManifestWorkspace(),
+            new LspMessageTransport(Stream.Null, output));
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        const string manifestUri = "file:///C:/work/Book1/vba-project.json";
+
+        lifecycle.ApplyManifestSelectionChange(
+            manifestUri,
+            CreateManifestText("Library A"));
+        await persistentStore.LoadStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var replacement = scheduler.AdmitMutation(
+            "test/replace-reference-selection",
+            _ =>
+            {
+                lifecycle.ApplyManifestSelectionChange(
+                    manifestUri,
+                    CreateManifestText("Library B"));
+                return Task.CompletedTask;
+            });
+        await persistentStore.CancellationCallbackStarted.Task
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        var laterMutation = scheduler.AdmitMutation(_ => Task.CompletedTask);
+
+        try
+        {
+            await replacement.Completion.WaitAsync(TimeSpan.FromMilliseconds(250));
+            await laterMutation.Completion.WaitAsync(TimeSpan.FromMilliseconds(250));
+        }
+        finally
+        {
+            persistentStore.ReleaseCancellationCallback();
+            await replacement.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+            await laterMutation.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+            await lifecycle.WaitForIdleAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            await lifecycle.StopAsync();
+            await scheduler.StopAsync(VbaInteractiveStopReason.Complete);
+        }
+    }
+
+    [Fact]
+    public async Task Manifest_deactivation_observes_a_throwing_cancellation_callback_off_the_mutation_lane()
+    {
+        var catalogCache = new VbaProjectReferenceCatalogCache(
+            VbaProjectReferenceCatalogSet.Empty);
+        var persistentStore = new ThrowingCancellationCallbackPersistentStore();
+        var refreshService = new VbaProjectReferenceCatalogRefreshService(
+            catalogCache,
+            new CountingDiscovery(),
+            persistentStore,
+            new InlineRefreshWorker());
+        await using var output = new MemoryStream();
+        var lifecycle = new ReferenceCatalogRefreshCoordinator(
+            catalogCache,
+            refreshService,
+            new VbaProjectManifestWorkspace(),
+            new LspMessageTransport(Stream.Null, output));
+        var schedulerFailures = new List<VbaInteractiveWorkFailure>();
+        await using var scheduler = new VbaInteractiveWorkScheduler(
+            failureSink: schedulerFailures.Add);
+        const string manifestUri = "file:///C:/work/Book1/vba-project.json";
+
+        lifecycle.ApplyManifestSelectionChange(
+            manifestUri,
+            CreateManifestText("Library A"));
+        await persistentStore.LoadStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var deactivation = scheduler.AdmitMutation(
+            "test/deactivate-reference-selection",
+            _ =>
+            {
+                lifecycle.DeactivateManifest(manifestUri);
+                return Task.CompletedTask;
+            });
+        try
+        {
+            await deactivation.Completion.WaitAsync(TimeSpan.FromSeconds(1));
+            var laterMutation = scheduler.AdmitMutation(_ => Task.CompletedTask);
+            await laterMutation.Completion.WaitAsync(TimeSpan.FromSeconds(1));
+
+            Assert.True(scheduler.IsAccepting);
+            Assert.Empty(schedulerFailures);
+        }
+        finally
+        {
+            await lifecycle.WaitForIdleAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            await lifecycle.StopAsync();
+            await scheduler.StopAsync(VbaInteractiveStopReason.Complete);
+        }
     }
 
     [Fact]
@@ -725,6 +1121,70 @@ public sealed class ReferenceCatalogLifecycleTests
         }
     }
 
+    [Fact]
+    public async Task Stop_is_bounded_when_cancellation_callback_cannot_return()
+    {
+        var catalogCache = new VbaProjectReferenceCatalogCache(
+            VbaProjectReferenceCatalogSet.Empty);
+        var persistentStore = new BlockingCancellationCallbackPersistentStore();
+        var refreshService = new VbaProjectReferenceCatalogRefreshService(
+            catalogCache,
+            new CountingDiscovery(),
+            persistentStore,
+            new InlineRefreshWorker());
+        await using var output = new MemoryStream();
+        var lifecycle = new ReferenceCatalogRefreshCoordinator(
+            catalogCache,
+            refreshService,
+            new VbaProjectManifestWorkspace(),
+            new LspMessageTransport(Stream.Null, output));
+
+        lifecycle.ApplyManifestSelectionChange(
+            "file:///C:/work/Book1/vba-project.json",
+            CreateManifestText("Blocked Library"));
+        await persistentStore.LoadStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var stop = Task.Run(lifecycle.StopAsync);
+        try
+        {
+            await persistentStore.CancellationCallbackStarted.Task
+                .WaitAsync(TimeSpan.FromSeconds(1));
+            await stop.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+        finally
+        {
+            persistentStore.ReleaseCancellationCallback();
+            await lifecycle.WaitForIdleAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            await stop.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
+    [Fact]
+    public async Task Stop_observes_a_throwing_cancellation_callback_without_faulting()
+    {
+        var catalogCache = new VbaProjectReferenceCatalogCache(
+            VbaProjectReferenceCatalogSet.Empty);
+        var persistentStore = new ThrowingCancellationCallbackPersistentStore();
+        var refreshService = new VbaProjectReferenceCatalogRefreshService(
+            catalogCache,
+            new CountingDiscovery(),
+            persistentStore,
+            new InlineRefreshWorker());
+        await using var output = new MemoryStream();
+        var lifecycle = new ReferenceCatalogRefreshCoordinator(
+            catalogCache,
+            refreshService,
+            new VbaProjectManifestWorkspace(),
+            new LspMessageTransport(Stream.Null, output));
+
+        lifecycle.ApplyManifestSelectionChange(
+            "file:///C:/work/Book1/vba-project.json",
+            CreateManifestText("Faulting Library"));
+        await persistentStore.LoadStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await lifecycle.StopAsync().WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
     private static async Task<TimeSpan> MeasurePositionRequestP95Async(
         VbaLspRequestExecution requestExecution,
         string method,
@@ -996,13 +1456,18 @@ public sealed class ReferenceCatalogLifecycleTests
 
     private sealed class CountingDiscovery : IVbaProjectReferenceCatalogDiscovery
     {
+        private readonly List<string> referenceNames = [];
+
         public int CallCount { get; private set; }
+
+        public IReadOnlyList<string> ReferenceNames => referenceNames;
 
         public Task<VbaProjectReferenceCatalogDiscoveryResult> DiscoverAsync(
             string referenceName,
             CancellationToken cancellationToken = default)
         {
             CallCount++;
+            referenceNames.Add(referenceName);
             return Task.FromResult(
                 VbaProjectReferenceCatalogDiscoveryResult.Failure(
                     referenceName,
@@ -1205,6 +1670,69 @@ public sealed class ReferenceCatalogLifecycleTests
             => release.TrySetResult();
     }
 
+    private sealed class BlockingCancellationCallbackPersistentStore
+        : IVbaProjectReferenceCatalogPersistentStore
+    {
+        private readonly TaskCompletionSource releaseCancellationCallback =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource releaseLoad =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource LoadStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource CancellationCallbackStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<VbaProjectReferenceCatalogPersistentLoadResult> LoadAsync(
+            string referenceName,
+            CancellationToken cancellationToken)
+        {
+            using var registration = cancellationToken.Register(() =>
+            {
+                CancellationCallbackStarted.TrySetResult();
+                releaseCancellationCallback.Task.GetAwaiter().GetResult();
+                releaseLoad.TrySetResult();
+            });
+            LoadStarted.TrySetResult();
+            await releaseLoad.Task;
+            cancellationToken.ThrowIfCancellationRequested();
+            return VbaProjectReferenceCatalogPersistentLoadResult.Miss();
+        }
+
+        public Task SaveAsync(
+            VbaProjectReferenceCatalogPersistentEntry entry,
+            CancellationToken cancellationToken)
+            => Task.CompletedTask;
+
+        public void ReleaseCancellationCallback()
+            => releaseCancellationCallback.TrySetResult();
+    }
+
+    private sealed class ThrowingCancellationCallbackPersistentStore
+        : IVbaProjectReferenceCatalogPersistentStore
+    {
+        public TaskCompletionSource LoadStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<VbaProjectReferenceCatalogPersistentLoadResult> LoadAsync(
+            string referenceName,
+            CancellationToken cancellationToken)
+        {
+            using var registration = cancellationToken.Register(
+                static () => throw new InvalidOperationException(
+                    "Expected cancellation callback failure."));
+            LoadStarted.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return VbaProjectReferenceCatalogPersistentLoadResult.Miss();
+        }
+
+        public Task SaveAsync(
+            VbaProjectReferenceCatalogPersistentEntry entry,
+            CancellationToken cancellationToken)
+            => Task.CompletedTask;
+    }
+
     private sealed class InlineRefreshWorker : IVbaProjectReferenceCatalogRefreshWorker
     {
         public Task<VbaProjectReferenceCatalogDiscoveryResult> DiscoverAsync(
@@ -1255,6 +1783,47 @@ public sealed class ReferenceCatalogLifecycleTests
                 return events.Count(lifecycleEvent =>
                     lifecycleEvent.Operation == operation);
             }
+        }
+    }
+
+    private sealed class SignallingTimingSink : IVbaInteractiveWorkTimingSink
+    {
+        private readonly object gate = new();
+        private readonly Dictionary<string, TaskCompletionSource> admissions =
+            new(StringComparer.Ordinal);
+
+        public Task WaitForAdmissionAsync(string method)
+        {
+            lock (gate)
+            {
+                if (!admissions.TryGetValue(method, out var signal))
+                {
+                    signal = new TaskCompletionSource(
+                        TaskCreationOptions.RunContinuationsAsynchronously);
+                    admissions[method] = signal;
+                }
+
+                return signal.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+        }
+
+        public void RecordAdmission(VbaInteractiveWorkAdmissionTiming timing)
+        {
+            lock (gate)
+            {
+                if (!admissions.TryGetValue(timing.Method, out var signal))
+                {
+                    signal = new TaskCompletionSource(
+                        TaskCreationOptions.RunContinuationsAsynchronously);
+                    admissions[timing.Method] = signal;
+                }
+
+                signal.TrySetResult();
+            }
+        }
+
+        public void RecordCompletion(VbaInteractiveWorkCompletionTiming timing)
+        {
         }
     }
 }

@@ -944,6 +944,36 @@ public sealed record VbaProjectReferenceCatalogRefreshResult(
     TimeSpan Elapsed = default,
     string? WarningMessage = null);
 
+internal interface IVbaProjectReferenceCatalogMutationLane
+{
+    Task CommitAsync(
+        string authorityKey,
+        Action commit,
+        CancellationToken cancellationToken);
+}
+
+internal sealed class InlineVbaProjectReferenceCatalogMutationLane
+    : IVbaProjectReferenceCatalogMutationLane
+{
+    public static InlineVbaProjectReferenceCatalogMutationLane Instance { get; } = new();
+
+    private InlineVbaProjectReferenceCatalogMutationLane()
+    {
+    }
+
+    public Task CommitAsync(
+        string authorityKey,
+        Action commit,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(authorityKey);
+        ArgumentNullException.ThrowIfNull(commit);
+        cancellationToken.ThrowIfCancellationRequested();
+        commit();
+        return Task.CompletedTask;
+    }
+}
+
 /// <summary>
 /// Refreshes missing reference catalogs for an active reference selection.
 /// </summary>
@@ -954,6 +984,9 @@ public sealed class VbaProjectReferenceCatalogRefreshService
     private readonly IVbaProjectReferenceCatalogPersistentStore? persistentStore;
     private readonly IVbaProjectReferenceCatalogRefreshWorker refreshWorker;
     private readonly IVbaProjectReferenceCatalogLifecycleObserver lifecycleObserver;
+    private readonly object mutationLaneGate = new();
+    private IVbaProjectReferenceCatalogMutationLane mutationLane =
+        InlineVbaProjectReferenceCatalogMutationLane.Instance;
 
     /// <summary>
     /// Creates a catalog refresh service.
@@ -1014,6 +1047,24 @@ public sealed class VbaProjectReferenceCatalogRefreshService
         this.persistentStore = persistentStore;
         this.refreshWorker = refreshWorker;
         this.lifecycleObserver = lifecycleObserver;
+    }
+
+    internal void AttachMutationLane(IVbaProjectReferenceCatalogMutationLane catalogMutationLane)
+    {
+        ArgumentNullException.ThrowIfNull(catalogMutationLane);
+        lock (mutationLaneGate)
+        {
+            if (!ReferenceEquals(
+                    mutationLane,
+                    InlineVbaProjectReferenceCatalogMutationLane.Instance)
+                && !ReferenceEquals(mutationLane, catalogMutationLane))
+            {
+                throw new InvalidOperationException(
+                    "The reference catalog refresh service is already attached to another mutation lane.");
+            }
+
+            mutationLane = catalogMutationLane;
+        }
     }
 
     /// <summary>
@@ -1132,7 +1183,10 @@ public sealed class VbaProjectReferenceCatalogRefreshService
                 discoveryResult = ValidateDiscoveryResultReferenceName(
                     referenceName,
                     discoveryResult);
-                reservation.StoreDiscoveryResult(referenceName, discoveryResult);
+                await CommitCatalogMutationAsync(
+                    referenceName,
+                    () => reservation.StoreDiscoveryResult(referenceName, discoveryResult),
+                    cancellationToken);
                 if (discoveryResult.HasUsableCatalog)
                 {
                     lifecycleObserver.Record(new VbaProjectReferenceCatalogLifecycleEvent(
@@ -1218,7 +1272,10 @@ public sealed class VbaProjectReferenceCatalogRefreshService
             if (loadResult.Entry is not null
                 && loadResult.Status == VbaProjectReferenceCatalogPersistentLoadStatus.Current)
             {
-                cache.StorePersistedCatalog(loadResult.Entry);
+                await CommitCatalogMutationAsync(
+                    referenceName,
+                    () => cache.StorePersistedCatalog(loadResult.Entry),
+                    cancellationToken);
                 lifecycleObserver.Record(new VbaProjectReferenceCatalogLifecycleEvent(
                     VbaProjectReferenceCatalogLifecycleOperation.Commit,
                     ReferenceName: referenceName));
@@ -1238,7 +1295,10 @@ public sealed class VbaProjectReferenceCatalogRefreshService
             if (loadResult.Entry is not null
                 && loadResult.Status == VbaProjectReferenceCatalogPersistentLoadStatus.Stale)
             {
-                cache.StoreStaleCatalog(loadResult.Entry.Catalog);
+                await CommitCatalogMutationAsync(
+                    referenceName,
+                    () => cache.StoreStaleCatalog(loadResult.Entry.Catalog),
+                    cancellationToken);
                 lifecycleObserver.Record(new VbaProjectReferenceCatalogLifecycleEvent(
                     VbaProjectReferenceCatalogLifecycleOperation.Commit,
                     ReferenceName: referenceName));
@@ -1281,6 +1341,23 @@ public sealed class VbaProjectReferenceCatalogRefreshService
         {
             return $"Persisted reference catalog cache for '{discoveryResult.ReferenceName}' could not be written: {ex.Message}";
         }
+    }
+
+    private Task CommitCatalogMutationAsync(
+        string authorityKey,
+        Action commit,
+        CancellationToken cancellationToken)
+    {
+        IVbaProjectReferenceCatalogMutationLane currentMutationLane;
+        lock (mutationLaneGate)
+        {
+            currentMutationLane = mutationLane;
+        }
+
+        return currentMutationLane.CommitAsync(
+            authorityKey,
+            commit,
+            cancellationToken);
     }
 
     private static VbaProjectReferenceCatalogDiscoveryResult ValidateDiscoveryResultReferenceName(

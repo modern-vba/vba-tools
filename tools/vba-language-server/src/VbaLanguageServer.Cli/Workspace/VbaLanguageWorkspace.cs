@@ -61,6 +61,19 @@ public sealed class VbaLanguageWorkspace
         VbaProjectReferenceCatalogCache referenceCatalogCache,
         IVbaProjectReferenceCatalogLifecycleObserver lifecycleObserver,
         IVbaDocumentAnalysisBuildObserver analysisBuildObserver)
+        : this(
+            referenceCatalogCache,
+            lifecycleObserver,
+            analysisBuildObserver,
+            NullVbaProjectSnapshotBuildObserver.Instance)
+    {
+    }
+
+    internal VbaLanguageWorkspace(
+        VbaProjectReferenceCatalogCache referenceCatalogCache,
+        IVbaProjectReferenceCatalogLifecycleObserver lifecycleObserver,
+        IVbaDocumentAnalysisBuildObserver analysisBuildObserver,
+        IVbaProjectSnapshotBuildObserver snapshotBuildObserver)
     {
         this.analysisBuildObserver = analysisBuildObserver;
         ManifestWorkspace = new VbaProjectManifestWorkspace();
@@ -68,7 +81,8 @@ public sealed class VbaLanguageWorkspace
             referenceCatalogCache,
             diskDocumentCache,
             ManifestWorkspace,
-            lifecycleObserver);
+            lifecycleObserver,
+            snapshotBuildObserver);
     }
 
     /// <summary>
