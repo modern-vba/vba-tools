@@ -421,6 +421,68 @@ public sealed class VbaLanguageWorkspace
     }
 
     /// <summary>
+    /// Captures the latest publishable diagnostics analysis and its ownership revision.
+    /// </summary>
+    /// <param name="uri">The document URI.</param>
+    /// <param name="cancellationToken">A cancellation token for the lookup.</param>
+    /// <returns>The diagnostics snapshot, or null when the document is not tracked.</returns>
+    internal VbaDocumentDiagnosticsSnapshot? GetDocumentDiagnosticsSnapshot(
+        string uri,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (gate)
+        {
+            var state = GetDocumentState(uri);
+            var accepted = GetAcceptedRevisionState(uri);
+            return state is not null
+                && accepted is not null
+                && !accepted.HasPendingBuild
+                && accepted.Authority == state.Authority
+                && accepted.Version == state.Version
+                && accepted.LifecycleEpoch == state.LifecycleEpoch
+                && accepted.ReservationToken == state.ReservationToken
+                    ? new VbaDocumentDiagnosticsSnapshot(
+                        state.Analysis,
+                        state.Version,
+                        state.LifecycleEpoch,
+                        state.ReservationToken)
+                    : null;
+        }
+    }
+
+    /// <summary>
+    /// Checks whether a captured diagnostics snapshot still owns the latest tracked revision.
+    /// </summary>
+    /// <param name="uri">The document URI.</param>
+    /// <param name="version">The captured client version, or null for disk-authoritative analysis.</param>
+    /// <param name="lifecycleEpoch">The captured document lifecycle epoch.</param>
+    /// <param name="reservationToken">The captured analysis reservation token.</param>
+    /// <returns>True when the captured snapshot is still the latest publishable revision.</returns>
+    internal bool IsLatestDiagnosticsSnapshot(
+        string uri,
+        int? version,
+        long lifecycleEpoch,
+        long reservationToken)
+    {
+        lock (gate)
+        {
+            var state = GetDocumentState(uri);
+            var accepted = GetAcceptedRevisionState(uri);
+            return state is not null
+                && accepted is not null
+                && !accepted.HasPendingBuild
+                && accepted.Authority == state.Authority
+                && accepted.Version == version
+                && state.Version == version
+                && accepted.LifecycleEpoch == lifecycleEpoch
+                && state.LifecycleEpoch == lifecycleEpoch
+                && accepted.ReservationToken == reservationToken
+                && state.ReservationToken == reservationToken;
+        }
+    }
+
+    /// <summary>
     /// Captures one exact-version open document without project, disk, or reference resolution.
     /// </summary>
     /// <param name="uri">The document URI.</param>
@@ -535,7 +597,11 @@ public sealed class VbaLanguageWorkspace
             new VbaDocumentAnalysisBuildContext(uri, clientVersion),
             cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
-        var analysis = VbaDocumentAnalysis.Create(uri, text, previousAnalysis);
+        var analysis = VbaDocumentAnalysis.Create(
+            uri,
+            text,
+            previousAnalysis,
+            clientVersion);
         cancellationToken.ThrowIfCancellationRequested();
         return analysis;
     }

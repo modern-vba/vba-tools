@@ -40,6 +40,7 @@ internal sealed class NullVbaDocumentAnalysisBuildObserver
 /// </summary>
 /// <param name="Uri">The canonical source URI.</param>
 /// <param name="Text">The complete source text.</param>
+/// <param name="ClientVersion">The client document version, or null for disk-authoritative analysis.</param>
 /// <param name="SourceText">The source-coordinate model for the text.</param>
 /// <param name="SyntaxTree">The syntax tree parsed from the text.</param>
 /// <param name="ModuleKind">The module kind projected from the syntax tree.</param>
@@ -50,6 +51,7 @@ internal sealed class NullVbaDocumentAnalysisBuildObserver
 internal sealed record VbaDocumentAnalysis(
     string Uri,
     string Text,
+    int? ClientVersion,
     VbaSourceText SourceText,
     VbaSyntaxTree SyntaxTree,
     VbaModuleKind ModuleKind,
@@ -61,7 +63,8 @@ internal sealed record VbaDocumentAnalysis(
     internal static VbaDocumentAnalysis Create(
         string uri,
         string text,
-        VbaDocumentAnalysis? previousAnalysis)
+        VbaDocumentAnalysis? previousAnalysis,
+        int? clientVersion)
     {
         var previousSyntaxTree = previousAnalysis?.SyntaxTree;
         var parseResult = VbaSyntaxTree.ParseOrUpdate(uri, text, previousSyntaxTree);
@@ -69,6 +72,7 @@ internal sealed record VbaDocumentAnalysis(
         return new VbaDocumentAnalysis(
             uri,
             text,
+            clientVersion,
             syntaxTree.SourceText,
             syntaxTree,
             syntaxTree.Module.Kind,
@@ -83,6 +87,19 @@ internal sealed record VbaDocumentAnalysis(
             parseResult.MemberUpdate);
     }
 }
+
+/// <summary>
+/// Captures a diagnostics publication candidate and the workspace revision that owns it.
+/// </summary>
+/// <param name="Analysis">The immutable document analysis to publish.</param>
+/// <param name="ClientVersion">The client document version, or null for disk-authoritative analysis.</param>
+/// <param name="LifecycleEpoch">The document lifecycle epoch that owns the analysis.</param>
+/// <param name="ReservationToken">The analysis reservation token that owns the analysis.</param>
+internal sealed record VbaDocumentDiagnosticsSnapshot(
+    VbaDocumentAnalysis Analysis,
+    int? ClientVersion,
+    long LifecycleEpoch,
+    long ReservationToken);
 
 /// <summary>
 /// Represents one document tracked in workspace memory or project source inventory.
