@@ -398,55 +398,46 @@ internal static class VbaSyntaxTreeIncrementalParser
         VbaSyntaxRange oldRange,
         VbaSyntaxRange newRange)
     {
-        var merged = new List<T>(previousItems.Count + parsedItems.Count);
         var lineDelta = newRange.End.Line - oldRange.End.Line;
         var offsetDelta = newRange.End.Offset - oldRange.End.Offset;
         var requiresShift = lineDelta != 0 || offsetDelta != 0;
-        var parsedItemsAdded = false;
-        foreach (var item in previousItems)
+        var prefixCount = 0;
+        while (prefixCount < previousItems.Count
+            && getRange(previousItems[prefixCount]).End.Offset <= oldRange.Start.Offset)
         {
-            var range = getRange(item);
-            if (range.End.Offset <= oldRange.Start.Offset)
-            {
-                merged.Add(item);
-                continue;
-            }
-
-            if (range.Start.Offset < oldRange.End.Offset)
-            {
-                continue;
-            }
-
-            if (!parsedItemsAdded)
-            {
-                AddContainedItems(merged, parsedItems, getRange, newRange);
-                parsedItemsAdded = true;
-            }
-
-            merged.Add(requiresShift ? shift(item) : item);
+            prefixCount++;
         }
 
-        if (!parsedItemsAdded)
+        var suffixStart = prefixCount;
+        while (suffixStart < previousItems.Count
+            && getRange(previousItems[suffixStart]).Start.Offset < oldRange.End.Offset)
         {
-            AddContainedItems(merged, parsedItems, getRange, newRange);
+            suffixStart++;
         }
 
-        return merged;
-    }
-
-    private static void AddContainedItems<T>(
-        ICollection<T> destination,
-        IReadOnlyList<T> items,
-        Func<T, VbaSyntaxRange> getRange,
-        VbaSyntaxRange containingRange)
-    {
-        foreach (var item in items)
+        var parsedStart = 0;
+        while (parsedStart < parsedItems.Count
+            && !IsContainedBy(getRange(parsedItems[parsedStart]), newRange))
         {
-            if (IsContainedBy(getRange(item), containingRange))
-            {
-                destination.Add(item);
-            }
+            parsedStart++;
         }
+
+        var parsedEnd = parsedStart;
+        while (parsedEnd < parsedItems.Count
+            && IsContainedBy(getRange(parsedItems[parsedEnd]), newRange))
+        {
+            parsedEnd++;
+        }
+
+        var suffixProjector = requiresShift ? shift : null;
+        return new VbaSegmentedSyntaxList<T>(
+            new VbaSegmentedSyntaxList<T>.Segment(previousItems, 0, prefixCount),
+            new VbaSegmentedSyntaxList<T>.Segment(parsedItems, parsedStart, parsedEnd - parsedStart),
+            new VbaSegmentedSyntaxList<T>.Segment(
+                previousItems,
+                suffixStart,
+                previousItems.Count - suffixStart,
+                suffixProjector));
     }
 
     private static VbaTokenStream MergeTokenStreams(
@@ -471,37 +462,18 @@ internal static class VbaSyntaxTreeIncrementalParser
         var parsedEnd = FindFirstTokenStartingAtOrAfter(
             parsed,
             newRange.End.Offset);
-        var tokens = new List<VbaToken>(
-            prefixEnd + (parsedEnd - parsedStart) + (previous.Count - suffixStart));
-        for (var index = 0; index < prefixEnd; index++)
-        {
-            tokens.Add(previous[index]);
-        }
-
-        for (var index = parsedStart; index < parsed.Count; index++)
-        {
-            var token = parsed[index];
-            if (token.Range.Start.Offset > newRange.End.Offset)
-            {
-                break;
-            }
-
-            if (IsContainedBy(token.Range, newRange))
-            {
-                tokens.Add(token);
-            }
-        }
-
         var requiresShift = lineDelta != 0 || offsetDelta != 0;
-        for (var index = suffixStart; index < previous.Count; index++)
-        {
-            var token = previous[index];
-            tokens.Add(requiresShift
-                ? token with { Range = Shift(token.Range, lineDelta, offsetDelta) }
-                : token);
-        }
-
-        return new VbaTokenStream(tokens);
+        Func<VbaToken, VbaToken>? suffixProjector = requiresShift
+            ? token => token with { Range = Shift(token.Range, lineDelta, offsetDelta) }
+            : null;
+        return new VbaTokenStream(new VbaSegmentedSyntaxList<VbaToken>(
+            new VbaSegmentedSyntaxList<VbaToken>.Segment(previous, 0, prefixEnd),
+            new VbaSegmentedSyntaxList<VbaToken>.Segment(parsed, parsedStart, parsedEnd - parsedStart),
+            new VbaSegmentedSyntaxList<VbaToken>.Segment(
+                previous,
+                suffixStart,
+                previous.Count - suffixStart,
+                suffixProjector)));
     }
 
     private static int FindFirstTokenEndingAfter(

@@ -139,6 +139,47 @@ public sealed class VbaSyntaxTreeIncrementalTests
             result.SyntaxTree.TokenStream.Tokens.Select(token => (token.Kind, token.Text, token.Range)));
     }
 
+    [Fact]
+    public void ParserKeepsShiftedSuffixSyntaxInLazySegmentsAfterMemberGrows()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var original = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Function BuildValue() As String",
+            "    BuildValue = \"old\"",
+            "End Function",
+            "",
+            "Public Sub Run()",
+            "    BuildValue",
+            "End Sub"
+        ]);
+        var updated = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Function BuildValue() As String",
+            "    Dim value As String",
+            "    value = \"new\"",
+            "    BuildValue = value",
+            "End Function",
+            "",
+            "Public Sub Run()",
+            "    BuildValue",
+            "End Sub"
+        ]);
+        var previous = VbaSyntaxTree.ParseModule(uri, original);
+
+        var result = VbaSyntaxTree.ParseOrUpdate(uri, updated, previous);
+
+        Assert.Equal(VbaSyntaxTreeParseUpdateKind.ModuleMember, result.UpdateKind);
+        AssertSegmentedWithLazySuffix(result.SyntaxTree.TokenStream.Tokens);
+        AssertSegmentedWithLazySuffix(result.SyntaxTree.Module.Members);
+        AssertSegmentedWithLazySuffix(result.SyntaxTree.Module.Declarations);
+        AssertSegmentedWithLazySuffix(result.SyntaxTree.Module.CallableDeclarations);
+        AssertSegmentedWithLazySuffix(result.SyntaxTree.Module.Statements);
+        AssertSegmentedWithoutEagerProjection(result.SyntaxTree.Module.Expressions);
+        AssertSegmentedWithoutEagerProjection(result.SyntaxTree.Module.ArgumentLists);
+        AssertSegmentedWithLazySuffix(result.SyntaxTree.Module.Blocks);
+    }
+
     [Theory]
     [InlineData("\n", "\n")]
     [InlineData("\r\n", "\r\n")]
@@ -399,7 +440,9 @@ public sealed class VbaSyntaxTreeIncrementalTests
         }
 
         var elapsed = new TimeSpan[measurements];
+        var projectionElapsed = new TimeSpan[measurements];
         var allocations = new long[measurements];
+        var projectionChecksum = 0L;
         VbaIncrementalParseObservation lastObservation = default;
         for (var index = 0; index < measurements; index++)
         {
@@ -413,18 +456,27 @@ public sealed class VbaSyntaxTreeIncrementalTests
             Assert.Equal(VbaIncrementalParseRoute.ModuleMemberSourceWindow, lastObservation.Route);
             Assert.Equal(VbaIncrementalParseFallbackReason.None, lastObservation.FallbackReason);
             Assert.True(lastObservation.ParseWindowUtf16Length < lastObservation.DocumentUtf16Length / 20);
+            var projectionStarted = Stopwatch.GetTimestamp();
+            foreach (var token in result.SyntaxTree.TokenStream.Tokens)
+            {
+                projectionChecksum += token.Range.End.Offset;
+            }
+
+            projectionElapsed[index] = Stopwatch.GetElapsedTime(projectionStarted);
             previous = result.SyntaxTree;
         }
 
         output.WriteLine(
-            "module member source window p50={0:F3} ms, p95={1:F3} ms, allocation p95={2} bytes, document={3}, window={4}, member={5}, fallback={6}",
+            "module member source window parse+segment p50={0:F3} ms, p95={1:F3} ms, absolute projection p95={2:F3} ms, allocation p95={3} bytes, document={4}, window={5}, member={6}, fallback={7}, projectionChecksum={8}",
             Percentile(elapsed, 0.50).TotalMilliseconds,
             Percentile(elapsed, 0.95).TotalMilliseconds,
+            Percentile(projectionElapsed, 0.95).TotalMilliseconds,
             Percentile(allocations, 0.95),
             lastObservation.DocumentUtf16Length,
             lastObservation.ParseWindowUtf16Length,
             lastObservation.MemberUtf16Length,
-            lastObservation.FallbackReason);
+            lastObservation.FallbackReason,
+            projectionChecksum);
     }
 
     private static void AssertSyntaxEquivalent(VbaSyntaxTree expected, VbaSyntaxTree actual)
@@ -581,6 +633,20 @@ public sealed class VbaSyntaxTreeIncrementalTests
         Assert.Equal(
             expected.Diagnostics.Select(diagnostic => (diagnostic.Code, diagnostic.Message, diagnostic.Range)),
             actual.Diagnostics.Select(diagnostic => (diagnostic.Code, diagnostic.Message, diagnostic.Range)));
+    }
+
+    private static void AssertSegmentedWithLazySuffix<T>(IReadOnlyList<T> items)
+    {
+        var segmented = AssertSegmentedWithoutEagerProjection(items);
+        Assert.True(segmented.LazyProjectedItemCount > 0);
+    }
+
+    private static IVbaSegmentedSyntaxList AssertSegmentedWithoutEagerProjection<T>(IReadOnlyList<T> items)
+    {
+        var segmented = Assert.IsAssignableFrom<IVbaSegmentedSyntaxList>(items);
+        Assert.True(segmented.SegmentCount >= 0);
+        Assert.Equal(0, segmented.EagerProjectedItemCount);
+        return segmented;
     }
 
     private static string ReplaceLine(string source, int lineIndex, string replacement)
