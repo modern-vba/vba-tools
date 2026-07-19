@@ -11,11 +11,13 @@ namespace VbaLanguageServer.Workspace;
 /// <param name="SourceDocuments">The source text documents included in the scope, keyed by URI.</param>
 /// <param name="ReferenceSelection">The active reference selection for the scope.</param>
 /// <param name="SourceIndex">The source index built from the scoped documents and reference catalogs.</param>
+/// <param name="SemanticInventory">The query-shaped semantic inventory for editor features.</param>
 public sealed record VbaProjectSnapshot(
     VbaProjectResolution Resolution,
     IReadOnlyDictionary<string, string> SourceDocuments,
     VbaProjectReferenceSelection? ReferenceSelection,
-    VbaSourceIndex SourceIndex);
+    VbaSourceIndex SourceIndex,
+    VbaSemanticInventory SemanticInventory);
 
 /// <summary>
 /// Maintains open document text and creates project snapshots for language-server features.

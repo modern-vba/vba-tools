@@ -142,41 +142,41 @@ internal sealed class VbaLspRequestExecution
                 return RequestOutcome.Success(null);
             case "textDocument/completion":
                 return TryCreatePositionRequest(parameters, out var completionRequest)
-                    ? RequestOutcome.Success(WithSourceIndex(
+                    ? RequestOutcome.Success(WithSemanticInventory(
                         completionRequest,
                         cancellationToken,
-                        sourceIndex => VbaLspFeatureProjection.CreateCompletionItems(
-                            sourceIndex.GetCompletionResult(
+                        inventory => VbaLspFeatureProjection.CreateCompletionItems(
+                            inventory.GetCompletionResult(
                                 completionRequest.Uri,
                                 completionRequest.Line,
                                 completionRequest.Character))))
                     : RequestOutcome.InvalidParams();
             case "textDocument/documentSymbol":
                 return TryCreateTextDocumentRequest(parameters, out var documentSymbolRequest)
-                    ? RequestOutcome.Success(WithSourceIndex(
+                    ? RequestOutcome.Success(WithSemanticInventory(
                         documentSymbolRequest,
                         cancellationToken,
-                        sourceIndex => VbaLspFeatureProjection.CreateDocumentSymbols(
-                            sourceIndex.GetDocumentDefinitions(documentSymbolRequest.Uri))))
+                        inventory => VbaLspFeatureProjection.CreateDocumentSymbols(
+                            inventory.GetDocumentDefinitions(documentSymbolRequest.Uri))))
                     : RequestOutcome.InvalidParams();
             case "textDocument/definition":
                 return TryCreatePositionRequest(parameters, out var definitionRequest)
-                    ? RequestOutcome.Success(WithSourceIndex(
+                    ? RequestOutcome.Success(WithSemanticInventory(
                         definitionRequest,
                         cancellationToken,
-                        sourceIndex => VbaLspFeatureProjection.CreateLocation(
-                            sourceIndex.ResolveDefinition(
+                        inventory => VbaLspFeatureProjection.CreateLocation(
+                            inventory.ResolveDefinition(
                                 definitionRequest.Uri,
                                 definitionRequest.Line,
                                 definitionRequest.Character))))
                     : RequestOutcome.InvalidParams();
             case "textDocument/references":
                 return TryCreatePositionRequest(parameters, out var referencesRequest)
-                    ? RequestOutcome.Success(WithSourceIndex(
+                    ? RequestOutcome.Success(WithSemanticInventory(
                         referencesRequest,
                         cancellationToken,
-                        sourceIndex => VbaLspFeatureProjection.CreateLocations(
-                            sourceIndex.FindReferences(
+                        inventory => VbaLspFeatureProjection.CreateLocations(
+                            inventory.FindReferences(
                                 referencesRequest.Uri,
                                 referencesRequest.Line,
                                 referencesRequest.Character))))
@@ -188,49 +188,49 @@ internal sealed class VbaLspRequestExecution
                 }
 
                 var symbols = workspace.CreateProjectSnapshots(cancellationToken)
-                    .SelectMany(snapshot => snapshot.SourceIndex.GetWorkspaceSymbols(query))
+                    .SelectMany(snapshot => snapshot.SemanticInventory.GetWorkspaceSymbols(query))
                     .ToArray();
                 return RequestOutcome.Success(VbaLspFeatureProjection.CreateWorkspaceSymbols(symbols));
             case "textDocument/hover":
                 return TryCreatePositionRequest(parameters, out var hoverRequest)
-                    ? RequestOutcome.Success(WithSourceIndex(
+                    ? RequestOutcome.Success(WithSemanticInventory(
                         hoverRequest,
                         cancellationToken,
-                        sourceIndex => VbaLspFeatureProjection.CreateHover(
-                            sourceIndex.ResolveSourceDefinition(
+                        inventory => VbaLspFeatureProjection.CreateHover(
+                            inventory.ResolveSourceDefinition(
                                 hoverRequest.Uri,
                                 hoverRequest.Line,
                                 hoverRequest.Character))))
                     : RequestOutcome.InvalidParams();
             case "textDocument/signatureHelp":
                 return TryCreatePositionRequest(parameters, out var signatureRequest)
-                    ? RequestOutcome.Success(WithSourceIndex(
+                    ? RequestOutcome.Success(WithSemanticInventory(
                         signatureRequest,
                         cancellationToken,
-                        sourceIndex => VbaLspFeatureProjection.CreateSignatureHelp(
-                            sourceIndex.GetSignatureHelp(
+                        inventory => VbaLspFeatureProjection.CreateSignatureHelp(
+                            inventory.GetSignatureHelp(
                                 signatureRequest.Uri,
                                 signatureRequest.Line,
                                 signatureRequest.Character))))
                     : RequestOutcome.InvalidParams();
             case "textDocument/prepareRename":
                 return TryCreatePositionRequest(parameters, out var prepareRenameRequest)
-                    ? RequestOutcome.Success(WithSourceIndex(
+                    ? RequestOutcome.Success(WithSemanticInventory(
                         prepareRenameRequest,
                         cancellationToken,
-                        sourceIndex => sourceIndex.PrepareRename(
+                        inventory => inventory.PrepareRename(
                             prepareRenameRequest.Uri,
                             prepareRenameRequest.Line,
                             prepareRenameRequest.Character)))
                     : RequestOutcome.InvalidParams();
             case "textDocument/rename":
                 return TryCreateRenameRequest(parameters, out var renameRequest)
-                    ? RequestOutcome.Success(WithSourceIndex(
+                    ? RequestOutcome.Success(WithSemanticInventory(
                         renameRequest,
                         cancellationToken,
-                        sourceIndex =>
+                        inventory =>
                         {
-                            var renamePlan = sourceIndex.CreateRenamePlan(
+                            var renamePlan = inventory.CreateRenamePlan(
                                 renameRequest.Uri,
                                 renameRequest.Line,
                                 renameRequest.Character,
@@ -240,11 +240,11 @@ internal sealed class VbaLspRequestExecution
                     : RequestOutcome.InvalidParams();
             case "textDocument/formatting":
                 return TryCreateFormattingRequest(parameters, out var formattingRequest)
-                    ? RequestOutcome.Success(WithSourceIndex(
+                    ? RequestOutcome.Success(WithSemanticInventory(
                         formattingRequest,
                         cancellationToken,
-                        sourceIndex => VbaLspFeatureProjection.CreateFormattingEdits(
-                            sourceIndex.FormatDocument(formattingRequest.Uri, formattingRequest.IndentationStyle))))
+                        inventory => VbaLspFeatureProjection.CreateFormattingEdits(
+                            inventory.FormatDocument(formattingRequest.Uri, formattingRequest.IndentationStyle))))
                     : RequestOutcome.InvalidParams();
             case "vba/blockSkeletonInsertion":
                 return TryCreateBlockSkeletonInsertionRequest(parameters, out var skeletonRequest)
@@ -254,25 +254,25 @@ internal sealed class VbaLspRequestExecution
                     : RequestOutcome.InvalidParams();
             case "textDocument/semanticTokens/full":
                 return TryCreateTextDocumentRequest(parameters, out var semanticTokensRequest)
-                    ? RequestOutcome.Success(WithSourceIndex(
+                    ? RequestOutcome.Success(WithSemanticInventory(
                         semanticTokensRequest,
                         cancellationToken,
-                        sourceIndex => VbaLspFeatureProjection.CreateSemanticTokens(
-                            sourceIndex.GetSemanticTokenData(semanticTokensRequest.Uri))))
+                        inventory => VbaLspFeatureProjection.CreateSemanticTokens(
+                            inventory.GetSemanticTokenData(semanticTokensRequest.Uri))))
                     : RequestOutcome.InvalidParams();
             default:
                 return RequestOutcome.Error(-32601, "Method not found");
         }
     }
 
-    private TResult WithSourceIndex<TRequest, TResult>(
+    private TResult WithSemanticInventory<TRequest, TResult>(
         TRequest request,
         CancellationToken cancellationToken,
-        Func<VbaSourceIndex, TResult> createResult)
+        Func<VbaSemanticInventory, TResult> createResult)
         where TRequest : ITextDocumentRequest
     {
         var snapshot = workspace.CreateProjectSnapshot(request.Uri, cancellationToken);
-        return createResult(snapshot.SourceIndex);
+        return createResult(snapshot.SemanticInventory);
     }
 
     private BlockSkeletonInsertionPlan? CreateBlockSkeletonInsertionPlan(

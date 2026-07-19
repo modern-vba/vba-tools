@@ -56,11 +56,15 @@ internal sealed class VbaProjectSnapshotBuilder
             scopedSourceDocuments,
             manifestContext.ReferenceSelection,
             referenceCatalogs);
+        var semanticInventory = VbaSemanticInventory.Create(
+            sourceIndex,
+            scopedSourceDocuments);
 
         return new VbaProjectSnapshot(
             resolution,
             scopedDocuments,
             manifestContext.ReferenceSelection,
-            sourceIndex);
+            sourceIndex,
+            semanticInventory);
     }
 }
