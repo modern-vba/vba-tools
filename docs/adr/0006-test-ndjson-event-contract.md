@@ -25,9 +25,14 @@ from `ProjectManifest.ProjectName` and `document` from the manifest document
 name. `testStarted` and `testFinished` identify tests with `module` and
 `procedure`. `testFinished` includes `outcome` (`passed`, `failed`, or `error`),
 `message` as a string, optional `durationMilliseconds`, and optional `location`
-when source location is available. `runFinished` includes `outcome` (`passed`
-when every test passed, otherwise `failed`) and `total`, `passed`, `failed`, and
-`errors` counts.
+when a `TestProcedureSourceLocation` is available. The location identifies the
+procedure declaration name in exported VBA source and applies independently of
+the test outcome. Its canonical shape is a file `uri` plus a `range` containing
+zero-based, UTF-16 `start` and `end` positions; the range is half-open and
+covers the declaration name. This specifies the previously optional `1.2`
+field without changing the schema version. `runFinished` includes `outcome`
+(`passed` when every test passed, otherwise `failed`) and `total`, `passed`,
+`failed`, and `errors` counts.
 
 Command-level failures such as manifest resolution errors, build failures,
 missing bin workbooks, Excel COM automation failures, workbook locks, and

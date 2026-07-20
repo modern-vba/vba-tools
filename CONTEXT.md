@@ -29,6 +29,21 @@ The VS Code extension package that activates VBA language support, launches the
 language server, and invokes `VbaDev` for project-level workflows.
 _Avoid_: language server, command-line tool
 
+**VbaDebugAdapter**:
+The internal Debug Adapter Protocol entry point hosted by the bundled `VbaDev`
+executable for `VbeDebugSession` lifecycle and Excel/VBIDE automation. It
+supports launch, ordinary source breakpoints, restart, termination, and
+`DebugLifecycleOutput`, but does not project VBE interactive state or VBA
+program output into VS Code.
+_Avoid_: TypeScript debug adapter, language server, user-facing tooling command
+
+**VbaLaunchConfiguration**:
+A VS Code `launch` configuration that selects a `WorkbookBackedProject`,
+`DocumentSourceSet`, and `DebugTargetProcedure` explicitly or through the active
+saved source position. `VscodeExtension` can synthesize it transiently for
+zero-configuration F5 without creating or changing `launch.json`.
+_Avoid_: attach configuration, test selector, command default
+
 **ToolingCommand**:
 A user-facing or automation-facing `VbaDev` command. It should have explicit
 inputs, outputs, side effects, and verification behavior.
@@ -39,6 +54,131 @@ A VS Code integrated terminal session opened by `VscodeExtension` for direct
 `VbaDev` use. It scopes command availability to that terminal environment
 rather than treating `VbaDev` as a machine-level PATH installation.
 _Avoid_: global CLI install, project command, automatic project creation
+
+**VbeDebugLaunch**:
+A workbook-backed launch initiated from VS Code that builds the current
+`DocumentSourceSet`, starts a selected VBA procedure from that build in visible
+Excel, displays the target code pane in the VBE, and hands interactive debugging
+to the VBE.
+_Avoid_: VS Code-owned VBA debugger, headless macro run
+
+**VbeDebugSession**:
+A VS Code Debug Adapter session that owns `VbeDebugLaunch` configuration,
+breakpoint transfer, and launch lifecycle while the VBE owns interactive
+debugging. It remains running until its launched Excel process exits, and any
+session termination force-terminates that process. One VS Code window owns at
+most one active session. Closing its `DebugWorkbook` also terminates the owned
+process and session. Restart replaces the process through a complete new launch.
+_Avoid_: language-server session, VBE debugging session, headless macro run
+
+**DebugExcelProcess**:
+The dedicated visible Excel process owned by one `VbeDebugSession`. It is
+separate from build automation and from the user's existing Excel sessions.
+It enables macros only while programmatically opening its `DebugWorkbook`;
+every workbook opened in the process belongs to the same session lifetime.
+_Avoid_: build process, active Excel session, shared Excel instance
+
+**DebugWorkbook**:
+The manifest-defined generated bin workbook opened directly by a
+`DebugExcelProcess`. It is a disposable build output rather than a source
+template or source of persistent workbook changes. Excel events are suppressed
+while it opens and re-enabled before its `DebugTargetProcedure` runs; open-time
+modal prompts remain user-facing.
+_Avoid_: temporary debug copy, source template, publish workbook
+
+**VbeBreakpoint**:
+A native, session-local VBE breakpoint associated with one executable physical
+line in an `ExportedVbaSource`. It is verified only after its source position
+maps exactly and the native VBE breakpoint command succeeds. Multiple
+colon-separated statements on that line retain the VBE's line-level stop
+semantics.
+_Avoid_: VS Code breakpoint, `Stop` statement, instrumented breakpoint
+
+**BreakpointTransfer**:
+The mapping of user-enabled ordinary VS Code line breakpoints from the selected
+`DocumentSourceSet` into native `VbeBreakpoint`s at the same executable
+physical line. User-disabled breakpoints and breakpoints outside that source set do
+not participate; an in-scope breakpoint that cannot map exactly makes the
+launch invalid rather than moving to another statement. Transfer is fixed
+before procedure execution; later breakpoint changes apply to the next
+`VbeDebugSession`. Participating VS Code breakpoints remain unverified while
+setup is pending; any mapping or native command failure invalidates the entire
+launch.
+_Avoid_: breakpoint instrumentation, workspace-wide breakpoint copy, breakpoint fallback
+
+**BreakpointSourceMap**:
+The content-verified mapping from `.bas`, `.cls`, and `.frm`
+`ExportedVbaSource` positions to the corresponding VBE code-module positions.
+Export-only attributes and designer records do not represent VBE code lines.
+_Avoid_: fixed line offset, raw file line number, form sidecar mapping
+
+**DebugCompilationContext**:
+The actual conditional-compilation environment of the generated
+`DebugWorkbook` in its `DebugExcelProcess`. It determines which `#If` branches
+can contain a `DebugTargetProcedure` or `VbeBreakpoint`; the launch
+configuration does not override its constants.
+_Avoid_: parser-inferred branch, launch-specific compiler constants, active-branch fallback
+
+**DebugTargetProcedure**:
+The parameterless public `Sub` in a standard module selected for a
+`VbeDebugLaunch`. It is inferred from the active source position unless the
+launch configuration explicitly identifies its document, module, and procedure.
+It must be active in the `DebugCompilationContext`. A public procedure remains
+eligible when its standard module contains `Option Private Module`.
+_Avoid_: active file, test selector, startup macro
+
+**VbeProcedureRun**:
+The execution of a `DebugTargetProcedure` by selecting it in its VBE code pane
+and invoking the native `Run Sub/UserForm` command. It supports an eligible
+procedure in an `Option Private Module`; command unavailability or failure
+invalidates launch.
+_Avoid_: Application.Run, generated wrapper procedure, macro-dialog invocation
+
+**VbeCommandContext**:
+The design-mode VBE state in which the intended code pane is active, its window
+has focus, and its exact physical line is selected before a native debug command
+is resolved and executed. A command that remains disabled in this context
+invalidates launch.
+_Avoid_: caption matching, SendKeys, background code-pane selection
+
+**VbeDebugEnvironment**:
+The user-owned VBE debugging preferences and facilities that govern interactive
+execution, including error trapping, compile-on-demand behavior, watches, and
+explicit `Stop` statements. `VbeDebugLaunch` does not normalize or repair them,
+so they may stop execution independently of transferred breakpoints.
+_Avoid_: adapter debug state, session defaults, managed VBE profile
+
+**DebugSourceSnapshot**:
+The saved `DocumentSourceSet` state from which one `VbeDebugLaunch` resolves its
+target, breakpoints, source map, and workbook build.
+_Avoid_: dirty editor buffer, stale build input, workspace snapshot
+
+**DebugSetupError**:
+A failure before the `DebugTargetProcedure` begins, including build, workbook
+open, source mapping, breakpoint setup, VBE compile failure, or
+`VbeProcedureRun` command failure. A modal VBE compile error may remain
+interactive without a timeout until the user dismisses it or cancels launch. A
+setup error prevents `VbeDebugLaunch` from becoming an interactive run.
+_Avoid_: VBA runtime error, break mode, failed assertion
+
+**VbeRuntimeError**:
+A VBA runtime error raised after the `DebugTargetProcedure` begins and presented
+through Excel or the VBE without ending the `VbeDebugSession`.
+_Avoid_: debug setup error, launch failure, test failure
+
+**DebugLifecycleOutput**:
+The build, prompt-wait, breakpoint-verification, procedure-run, setup-error, and
+Excel-process lifecycle messages emitted by `VbaDebugAdapter` to the VS Code
+Debug Console. It does not copy `Debug.Print`, Immediate Window content, or VBE
+runtime state.
+_Avoid_: VBA output stream, Immediate Window mirror, debug-state projection
+
+**DebugLaunchCancellation**:
+An explicit stop before or during `VbeDebugLaunch` completion. It preserves
+completed source saves, terminates any owned build or debug Excel process,
+removes incomplete build output, and reports cancellation rather than a
+`DebugSetupError`.
+_Avoid_: launch failure, graceful workbook close, source rollback
 
 **ConsoleEntryPoint**:
 The C# entry point that parses command-line arguments, invokes a
@@ -202,13 +342,28 @@ _Avoid_: filename-only test detection, implicit publish exclusion
 
 **TestExplorerNode**:
 A VS Code Testing API item representing a runnable or discoverable testing scope
-for workbook-backed VBA tests.
+for workbook-backed VBA tests. Project, document, and module nodes are runnable
+scopes; a discovered `TestProcedure` node may additionally carry its
+`TestProcedureSourceLocation`.
 _Avoid_: test result row, source symbol, command
 
 **TestProcedure**:
 A VBA procedure that the workbook-backed test runner can execute and report as
 an individual test after a `DocumentSourceSet` or project test run.
 _Avoid_: macro, module, assertion
+
+**TestProcedureSourceLocation**:
+The exported source URI and declaration-name range that identify one
+`TestProcedure` within its `DocumentSourceSet`. An unavailable or ambiguous
+location does not change the test outcome.
+_Avoid_: failure location, result location, test file location
+
+**TestDiscoverySnapshot**:
+The output-derived set of module and `TestProcedure` `TestExplorerNode`s for one
+`DocumentSourceSet`. It remains valid only while that document's exported VBA
+source and project definition remain unchanged, and its source locations refer
+to saved exported source rather than unsaved editor state.
+_Avoid_: test index, cached tests, static source discovery
 
 **TestRunError**:
 A project-level or document-level failure that prevents a workbook-backed test
@@ -225,6 +380,12 @@ A read/check-oriented `ToolingCommand` that reports whether the local Windows,
 Excel, COM, VBIDE, project prerequisites, and reference catalog availability can
 support workbook-backed automation and editor intelligence.
 _Avoid_: build, test run, repair command
+
+**DebugEnvironmentDiagnostic**:
+An `EnvironmentDiagnostic` active probe that uses a temporary Excel/VBE session
+to verify an actual native breakpoint stop, `VbeProcedureRun` completion, and
+`DebugExcelProcess` ownership without changing persistent project files.
+_Avoid_: debug launch, project mutation, static capability declaration
 
 ## Language
 
@@ -808,6 +969,126 @@ _Avoid_: monorepo, single repo
 
 ## Example Dialogue
 
+Dev: "Does a `VbeDebugSession` make VS Code the interactive VBA debugger?"
+Domain Expert: "No. VS Code owns launch configuration, breakpoint transfer, and launch lifecycle, while the VBE owns break mode, stepping, watches, and continuation."
+
+Dev: "Does F5 keep focus in VS Code while `VbeDebugLaunch` starts?"
+Domain Expert: "No. It displays both Excel and the target VBE code pane, and may move focus to the VBE where interactive debugging occurs."
+
+Dev: "Does `VscodeExtension` automate Excel while handling F5?"
+Domain Expert: "No. It launches `VbaDebugAdapter`; the bundled `VbaDev` process owns Excel COM, VBIDE automation, and the `DebugExcelProcess`."
+
+Dev: "Can `VbaLaunchConfiguration` specify only a module without a procedure?"
+Domain Expert: "No. Module and procedure are specified together or both inferred from the active saved source position. Project and document may independently narrow the selection."
+
+Dev: "Must a user create `launch.json` before pressing F5 in an eligible VBA procedure?"
+Domain Expert: "No. `VscodeExtension` synthesizes a transient `VbaLaunchConfiguration` from the active saved source. It fails ambiguous resolution without writing configuration or showing a target picker."
+
+Dev: "Does `VbaDebugAdapter` provide VS Code stack frames, variables, stepping, or expression evaluation?"
+Domain Expert: "No. It provides launch, ordinary source breakpoints, restart, termination, and output. The VBE alone owns interactive debug state and controls."
+
+Dev: "Does `DebugLifecycleOutput` copy `Debug.Print` into the VS Code Debug Console?"
+Domain Expert: "No. VBA output and runtime interaction stay in the VBE. VS Code receives only adapter lifecycle and setup messages."
+
+Dev: "Should `VbeDebugLaunch` change VBE error trapping or clear watches so only transferred breakpoints can stop execution?"
+Domain Expert: "No. `VbeDebugEnvironment` remains user-owned. Existing settings, watches, and `Stop` statements may stop execution independently."
+
+Dev: "Should the `VbeDebugSession` report that VS Code is stopped when the VBE enters break mode?"
+Domain Expert: "No. It remains running in VS Code until its launched Excel process exits; the VBE alone presents its break and run states."
+
+Dev: "Does ending a `VbeDebugSession` ask Excel to save changes?"
+Domain Expert: "No. Any session termination force-terminates its `DebugExcelProcess`; unsaved workbook changes and VBE state are lost."
+
+Dev: "Does `DebugLaunchCancellation` roll back saved source files or delete the previous completed bin workbook?"
+Domain Expert: "No. Completed saves remain. Cancellation removes only incomplete build output, preserves the previous bin before atomic replacement, and does not start visible Excel after cancellation."
+
+Dev: "Can one VS Code window run two `VbeDebugSession`s at the same time?"
+Domain Expert: "No. The initial product permits one active session per window and never ends or reuses that session implicitly for another launch."
+
+Dev: "Does Restart Debugging reuse the existing Excel process?"
+Domain Expert: "No. It force-terminates that process, saves current project files, captures a new `DebugSourceSnapshot`, rebuilds, and performs a complete new `VbeDebugLaunch`."
+
+Dev: "Does closing only the `DebugWorkbook` leave an empty debug Excel session running?"
+Domain Expert: "No. Once that workbook actually closes, its dedicated Excel process is force-terminated and the `VbeDebugSession` ends. Cancelling workbook close leaves both active."
+
+Dev: "Should a `VbeDebugSession` reuse the hidden Excel process that built the workbook?"
+Domain Expert: "No. It owns a fresh, visible `DebugExcelProcess` so breakpoint behavior and session lifetime are isolated from build automation and the user's existing Excel sessions."
+
+Dev: "Does debug launch lower macro security in the user's existing Excel sessions?"
+Domain Expert: "No. Macro enablement is scoped to the dedicated `DebugExcelProcess` while it opens the generated `DebugWorkbook`, and the setting is restored after open."
+
+Dev: "Can the target open another workbook in its `DebugExcelProcess`?"
+Domain Expert: "Yes, but every workbook in that process is session-owned and is lost if the process is force-terminated. Unrelated workbooks must stay in the user's other Excel sessions."
+
+Dev: "Should a `DebugExcelProcess` open a temporary workbook copy?"
+Domain Expert: "No. It opens the manifest-defined `DebugWorkbook` directly so workbook identity and relative paths remain faithful. Changes saved there are disposable and the next debug build overwrites them."
+
+Dev: "Does opening a `DebugWorkbook` run `Workbook_Open` before breakpoints are ready?"
+Domain Expert: "No. Excel events are suppressed while the workbook opens and re-enabled before the explicit `DebugTargetProcedure` runs. Startup logic must be exposed through an eligible wrapper to debug it."
+
+Dev: "Does `VbaDebugAdapter` suppress every prompt while opening a `DebugWorkbook`?"
+Domain Expert: "No. The `DebugExcelProcess` is visible before open, and open-time modal prompts remain available for the user to answer."
+
+Dev: "Does `VbeDebugLaunch` time out while an Excel open prompt is waiting?"
+Domain Expert: "No. It reports that Excel input is required and waits until the user answers or stops the session. Cancelling a prompt that prevents open makes the launch fail."
+
+Dev: "Can a `VbeDebugLaunch` skip the build and use an older workbook?"
+Domain Expert: "No. It builds the current `DocumentSourceSet` first so VS Code source locations and VBE statement locations describe the same source."
+
+Dev: "How does a `VbeDebugLaunch` choose its `DebugTargetProcedure`?"
+Domain Expert: "It uses the procedure containing the active source position by default. A launch configuration may explicitly identify the document, module, and procedure; ambiguous partial selection fails instead of guessing."
+
+Dev: "Can a private event handler or a class method be a `DebugTargetProcedure`?"
+Domain Expert: "No. A `DebugTargetProcedure` is a parameterless public `Sub` in a standard module. Other procedure forms require an explicit eligible wrapper."
+
+Dev: "Does `Option Private Module` make a public procedure ineligible as a `DebugTargetProcedure`?"
+Domain Expert: "No. Module-level project privacy does not exclude an otherwise eligible public procedure from VBE-driven execution."
+
+Dev: "Should `VbeProcedureRun` fall back to `Application.Run` when the native VBE command is unavailable?"
+Domain Expert: "No. It selects the target in its VBE code pane and invokes `Run Sub/UserForm`; a missing, disabled, or failing command is a `DebugSetupError`."
+
+Dev: "Can the adapter execute native VBE commands after changing only the code selection in a background window?"
+Domain Expert: "No. It must establish `VbeCommandContext` by activating and focusing the code pane before checking command availability. Commands that remain disabled still fail setup."
+
+Dev: "Should a modal VBE compile error time out or be replaced by parser diagnostics?"
+Domain Expert: "No. The adapter reports that VBE input is required and waits until the user dismisses it or cancels. Dismissal ends launch with `DebugSetupError`; VBE remains the compiler authority."
+
+Dev: "Should a `VbeDebugLaunch` insert `Stop` when a requested `VbeBreakpoint` cannot be set?"
+Domain Expert: "No. The launch fails instead of silently changing the requested debugging behavior."
+
+Dev: "Does a `VbeDebugLaunch` require at least one `VbeBreakpoint`?"
+Domain Expert: "No. With no participating breakpoints it runs the `DebugTargetProcedure` without adding an implicit stop-on-entry breakpoint."
+
+Dev: "Does a `VbeRuntimeError` fail and terminate the `VbeDebugSession`?"
+Domain Expert: "No. Only a `DebugSetupError` prevents launch. Once the target begins, runtime errors and break mode belong to Excel and the VBE, and the session remains active until its Excel process exits."
+
+Dev: "Can Doctor prove debug readiness without touching Excel?"
+Domain Expert: "No. `DebugEnvironmentDiagnostic` uses a temporary Excel/VBE session to enter break mode at a native breakpoint, continue and verify harmless procedure completion, prove process ownership, and then remove all temporary state."
+
+Dev: "Does `BreakpointTransfer` include a breakpoint that the user unchecked in VS Code?"
+Domain Expert: "No. A user-disabled breakpoint remains recorded in VS Code but does not participate in transfer or launch failure."
+
+Dev: "Does adding a VS Code breakpoint after procedure execution starts change the current VBE session?"
+Domain Expert: "No. `BreakpointTransfer` is fixed before execution. Later breakpoint changes remain in VS Code for the next `VbeDebugSession`."
+
+Dev: "Should `BreakpointTransfer` move a breakpoint from a comment to the next executable line?"
+Domain Expert: "No. An in-scope breakpoint must map to the same executable statement. If it cannot, the breakpoint is unverified and the `VbeDebugLaunch` fails before procedure execution."
+
+Dev: "Can `BreakpointTransfer` verify a native breakpoint by reading it back from VBIDE?"
+Domain Expert: "No. A participating breakpoint remains unverified until exact source mapping and the native VBE breakpoint command both succeed. A missing, disabled, or failing command invalidates the whole launch."
+
+Dev: "Can a VS Code breakpoint select the second colon-separated statement on one physical line?"
+Domain Expert: "No. `VbeBreakpoint` is line-level. The VBE chooses the first stoppable position on that line; a continuation line that the VBE rejects invalidates launch rather than moving the breakpoint."
+
+Dev: "Should a breakpoint in an inactive conditional-compilation branch move to the active branch?"
+Domain Expert: "No. `DebugCompilationContext` comes from the generated workbook in its actual Excel host. An inactive target or breakpoint makes setup fail, and launch configuration cannot replace compiler constants."
+
+Dev: "Can a `BreakpointSourceMap` subtract one fixed offset for `Attribute VB_Name`?"
+Domain Expert: "No. Exported source kinds contain different attribute and designer records. The map excludes export-only records and verifies the remaining code against the built VBE code module."
+
+Dev: "Can a `VbeDebugLaunch` build from disk while using target and breakpoint positions from an unsaved editor?"
+Domain Expert: "No. It first saves dirty files in the selected project, then captures one `DebugSourceSnapshot` for target resolution, breakpoint transfer, source mapping, and build input."
+
 Dev: "Should completion include a procedure from another folder?"
 Domain Expert: "Only when that folder belongs to the same `DocumentSourceSet` through `vba-project.json`. Without a `ProjectManifest`, an `AdHocVbaProject` indexes only the active source file's directory, so nested `common-modules` procedures are outside completion."
 
@@ -840,6 +1121,21 @@ Domain Expert: "No. `LanguageServerManifestResolution` reads the `ProjectManifes
 
 Dev: "Should Test Explorer show every `TestProcedure` before the first run?"
 Domain Expert: "No. It should show runnable `WorkbookBackedProject` and `DocumentSourceSet` nodes first, then add procedure-level nodes after test output identifies them."
+
+Dev: "Where should Go to Test on a discovered `TestProcedure` navigate?"
+Domain Expert: "To its `TestProcedureSourceLocation`: the declaration name in the owning `DocumentSourceSet`'s exported VBA source. The same location is valid whether the test passed or failed."
+
+Dev: "Should a `TestDiscoverySnapshot` keep its procedure nodes after their exported source changes?"
+Domain Expert: "No. Invalidate the document's output-derived module and procedure nodes so stale locations and selectors are not presented. Keep the project and document scopes runnable so the next test run can create a new snapshot."
+
+Dev: "Should a Test Explorer run use unsaved exported VBA source?"
+Domain Expert: "No. Save dirty `.bas`, `.cls`, and `.frm` files within the selected run scopes before invoking `VbaDev`; if a scoped file cannot be saved, report a `TestRunError` without starting the command. A no-build run may intentionally execute an older generated workbook, but navigation still targets the current saved exported source."
+
+Dev: "Should Go to Test on a module node navigate to its first procedure?"
+Domain Expert: "No. A module node is a runnable grouping scope with multiple possible targets. Precise source navigation belongs to each discovered `TestProcedure` node."
+
+Dev: "Should an unavailable `TestProcedureSourceLocation` make the test fail?"
+Domain Expert: "No. Keep the node and outcome, and report a non-failing source-location warning in Test Run output. Do not turn navigation availability into a `TestItem` discovery error or popup notification."
 
 Dev: "Is a workbook lock a failed `TestProcedure`?"
 Domain Expert: "No. It is a `TestRunError` on the project or document scope because the test run could not reach individual test execution."

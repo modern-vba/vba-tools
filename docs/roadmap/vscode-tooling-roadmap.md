@@ -120,8 +120,18 @@ Expected capabilities:
   individual test failures;
 - report user cancellation as a cancelled run scope, not as skipped tests or
   failed assertions;
-- map failures back to source locations when the test output provides enough
-  identity;
+- map every discovered `TestProcedure` node and failure message to the
+  declaration-name range when `testFinished` provides a
+  `TestProcedureSourceLocation`;
+- keep project, document, and module nodes as runnable scopes without assigning
+  a guessed source target;
+- invalidate a document's output-derived module and procedure nodes when its
+  exported source or project definition changes;
+- save dirty exported VBA source within the selected Test Explorer scopes
+  before invoking `vba-dev test`, and report a failed save as a `TestRunError`;
+- report unavailable or ambiguous source locations as non-failing Test Run
+  output warnings without changing test outcomes or showing popup
+  notifications;
 - avoid showing standalone VBA files that do not belong to a `ProjectManifest`
   in Test Explorer;
 - keep missing or unusable no-build generated output as a command error instead
