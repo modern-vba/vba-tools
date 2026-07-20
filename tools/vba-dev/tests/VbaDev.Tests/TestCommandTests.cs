@@ -108,6 +108,53 @@ public sealed class TestCommandTests
     }
 
     [Fact]
+    public void MissingModuleLocationIsOmittedWithoutChangingTheCompletedTestOutcome()
+    {
+        AssertUnavailableSourceLocation(
+            "Missing_Module",
+            "Test_Passes",
+            ("Other_Module.bas", "Attribute VB_Name = \"Other_Module\"\nPublic Sub Test_Passes()\nEnd Sub\n"));
+    }
+
+    [Fact]
+    public void MissingProcedureLocationIsOmittedWithoutChangingTheCompletedTestOutcome()
+    {
+        AssertUnavailableSourceLocation(
+            "Test_Module",
+            "Test_Missing",
+            ("Test_Module.bas", "Attribute VB_Name = \"Test_Module\"\nPublic Sub Test_Other()\nEnd Sub\n"));
+    }
+
+    [Fact]
+    public void DuplicateModuleIdentityOmitsLocationWithoutChangingTheCompletedTestOutcome()
+    {
+        AssertUnavailableSourceLocation(
+            "Test_Module",
+            "Test_Passes",
+            ("First.bas", "Attribute VB_Name = \"Test_Module\"\nPublic Sub Test_Passes()\nEnd Sub\n"),
+            ("Second.bas", "Attribute VB_Name = \"Test_Module\"\nPublic Sub Test_Passes()\nEnd Sub\n"));
+    }
+
+    [Fact]
+    public void DuplicateProcedureIdentityOmitsLocationWithoutChangingTheCompletedTestOutcome()
+    {
+        AssertUnavailableSourceLocation(
+            "Test_Module",
+            "Test_Passes",
+            ("Test_Module.bas", "Attribute VB_Name = \"Test_Module\"\nPublic Sub Test_Passes()\nEnd Sub\nPublic Sub Test_Passes()\nEnd Sub\n"));
+    }
+
+    [Fact]
+    public void UnavailableLocationDoesNotChangeTheCompletedFailureOutcome()
+    {
+        AssertUnavailableSourceLocation(
+            new WorkbookTestResultRow("Missing_Module", "Test_Fails", "NG", "Expected 1 but was 2"),
+            1,
+            "failed",
+            ("Other_Module.bas", "Attribute VB_Name = \"Other_Module\"\nPublic Sub Test_Fails()\nEnd Sub\n"));
+    }
+
+    [Fact]
     public void TestRunCreatesEventSequenceAsInternalModel()
     {
         var testRun = TestRun.FromResults("Project", "Book1", SampleResults());
@@ -383,6 +430,43 @@ public sealed class TestCommandTests
             new("Book1", "Test_Module", "Test_Fails", TestOutcome.Failed, "Expected 1 but was 2"),
             new("Book1", "Test_Module", "Test_Errors", TestOutcome.Error, "Runtime error")
         ];
+
+    private static void AssertUnavailableSourceLocation(
+        string moduleName,
+        string procedureName,
+        params (string FileName, string Content)[] sources)
+        => AssertUnavailableSourceLocation(
+            new WorkbookTestResultRow(moduleName, procedureName, "OK", ""),
+            0,
+            "passed",
+            sources);
+
+    private static void AssertUnavailableSourceLocation(
+        WorkbookTestResultRow resultRow,
+        int expectedExitCode,
+        string expectedOutcome,
+        params (string FileName, string Content)[] sources)
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        CreateWorkbookSource(root, "Book1", sources);
+        var binPath = Path.Combine(root, "bin", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
+        File.WriteAllText(binPath, "bin", Encoding.UTF8);
+        var runner = new FakeWorkbookTestRunner(resultRow);
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
+
+        var result = application.Run(["test", "--no-build", "--format", "ndjson"]);
+
+        Assert.Equal(expectedExitCode, result.ExitCode);
+        var finishedLine = result.StandardOutput
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Single(line => line.Contains("\"type\":\"testFinished\"", StringComparison.Ordinal));
+        using var finished = JsonDocument.Parse(finishedLine);
+        Assert.Equal(expectedOutcome, finished.RootElement.GetProperty("outcome").GetString());
+        Assert.False(finished.RootElement.TryGetProperty("location", out _));
+    }
 
     private static void CreateWorkbookSource(string root, string documentName, params (string FileName, string Content)[] sources)
     {

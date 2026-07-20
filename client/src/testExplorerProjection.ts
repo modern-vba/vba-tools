@@ -130,6 +130,11 @@ export class TestExplorerNodeIndex {
           continue;
         }
 
+        if (!event.location && event.module && event.procedure) {
+          testRun.appendOutput(
+            `Source location unavailable: ${event.module}.${event.procedure}\n`);
+        }
+
         const outcome = (event.outcome ?? '').toLowerCase();
         if (outcome === 'passed') {
           testRun.passed(item);

@@ -369,6 +369,92 @@ test('testFinished events discover module and TestProcedure nodes and mark passe
   assert.ok(controller.runs[0].events.includes(`passed:${procedureItem.id}`));
 });
 
+test('an unavailable source location preserves the procedure result and writes a non-failing warning', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([
+      [path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]
+    ]),
+    stdout: ndjson({
+      type: 'testFinished',
+      document: 'Book1',
+      module: 'Missing_Module',
+      procedure: 'Test_Passes',
+      outcome: 'passed',
+      message: ''
+    })
+  });
+  await explorer.refresh();
+  const documentItem = controller.items[0].children.items[0];
+
+  await explorer.run({ include: [documentItem] }, uncancelledToken());
+
+  const moduleItem = documentItem.children.items[0];
+  const procedureItem = moduleItem.children.items[0];
+  assert.equal(moduleItem.label, 'Missing_Module');
+  assert.equal(procedureItem.label, 'Test_Passes');
+  assert.equal(procedureItem.uriPath, undefined);
+  assert.equal(procedureItem.range, undefined);
+  assert.ok(controller.runs[0].events.includes(`passed:${procedureItem.id}`));
+  assert.deepEqual(controller.runs[0].outputs, [
+    'Source location unavailable: Missing_Module.Test_Passes\n'
+  ]);
+  assert.equal(controller.runs[0].events.some((event) => event.startsWith('errored:')), false);
+});
+
+test('each unavailable location warns without replacing passed or failed procedure outcomes', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const errorMessages: string[] = [];
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([
+      [path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]
+    ]),
+    stdout: ndjson(
+      {
+        type: 'testFinished',
+        document: 'Book1',
+        module: 'Test_Module',
+        procedure: 'Test_Passes',
+        outcome: 'passed',
+        message: ''
+      },
+      {
+        type: 'testFinished',
+        document: 'Book1',
+        module: 'Test_Module',
+        procedure: 'Test_Fails',
+        outcome: 'failed',
+        message: 'Expected 1 but was 2'
+      }
+    ),
+    exitCode: 1,
+    errorMessages
+  });
+  await explorer.refresh();
+  const documentItem = controller.items[0].children.items[0];
+
+  await explorer.run({ include: [documentItem] }, uncancelledToken());
+
+  const moduleItem = documentItem.children.items[0];
+  const passedItem = moduleItem.children.items[0];
+  const failedItem = moduleItem.children.items[1];
+  assert.equal(moduleItem.uriPath, undefined);
+  assert.equal(moduleItem.range, undefined);
+  assert.equal(passedItem.uriPath, undefined);
+  assert.equal(failedItem.uriPath, undefined);
+  assert.ok(controller.runs[0].events.includes(`passed:${passedItem.id}`));
+  assert.ok(controller.runs[0].events.includes(
+    `failed:${failedItem.id}:Expected 1 but was 2`));
+  assert.deepEqual(controller.runs[0].outputs, [
+    'Source location unavailable: Test_Module.Test_Passes\n',
+    'Source location unavailable: Test_Module.Test_Fails\n'
+  ]);
+  assert.equal(controller.runs[0].events.some((event) => event.startsWith('errored:')), false);
+  assert.deepEqual(errorMessages, []);
+});
+
 test('canonical source ranges are projected only onto TestProcedure nodes', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const sourcePath = path.join(projectRoot, 'src', 'Book1', 'Test_Module.bas');
@@ -823,6 +909,7 @@ function createExplorer(
       isDirty: boolean;
       save(): Promise<boolean>;
     }[];
+    errorMessages?: string[];
   }
 ) {
   const calls = options.calls ?? [];
@@ -875,7 +962,9 @@ function createExplorer(
       show: () => undefined
     },
     openTextDocuments: options.openTextDocuments ?? (() => []),
-    showErrorMessage: async () => undefined
+    showErrorMessage: async (message) => {
+      options.errorMessages?.push(message);
+    }
   });
 }
 
@@ -989,6 +1078,7 @@ class FakeTestItemCollection {
 class FakeTestRun {
   public readonly events: string[] = [];
   public readonly failureLocations: Array<{ itemId: string; location: unknown }> = [];
+  public readonly outputs: string[] = [];
 
   public started(item: TestExplorerItem): void {
     this.events.push(`started:${item.id}`);
@@ -1028,7 +1118,10 @@ class FakeTestRun {
     this.events.push(`cancelled:${item.id}`);
   }
 
-  public appendOutput(): void {
+  public appendOutput(output: string): void {
+    if (output.startsWith('Source location unavailable:')) {
+      this.outputs.push(output);
+    }
   }
 
   public end(): void {
