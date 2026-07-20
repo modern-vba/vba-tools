@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using VbaLanguageServer.ProjectModel;
+using VbaLanguageServer.Syntax;
 
 namespace VbaLanguageServer.Workspace;
 

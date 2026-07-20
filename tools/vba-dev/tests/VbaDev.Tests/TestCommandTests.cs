@@ -78,6 +78,111 @@ public sealed class TestCommandTests
     }
 
     [Fact]
+    public void Cp932SourceLocationUsesTheEstablishedVbaSourceDecoder()
+    {
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        const string moduleName = "テストモジュール";
+        const string procedureName = "Test_Run";
+        var source = $"Attribute VB_Name = \"{moduleName}\"\n' 日本語コメント\nPublic Sub {procedureName}()\nEnd Sub\n";
+        CreateWorkbookSource(root, "Book1", ("Encoded.bas", string.Empty));
+        var sourcePath = Path.Combine(root, "src", "Book1", "Encoded.bas");
+        File.WriteAllBytes(sourcePath, Encoding.GetEncoding(932).GetBytes(source));
+        var binPath = Path.Combine(root, "bin", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
+        File.WriteAllText(binPath, "bin", Encoding.UTF8);
+        var runner = new FakeWorkbookTestRunner(
+            new WorkbookTestResultRow(moduleName, procedureName, "OK", ""));
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
+
+        var result = application.Run(["test", "--no-build", "--format", "ndjson"]);
+
+        var finishedLine = result.StandardOutput
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Single(line => line.Contains("\"type\":\"testFinished\"", StringComparison.Ordinal));
+        using var finished = JsonDocument.Parse(finishedLine);
+        var location = finished.RootElement.GetProperty("location");
+        Assert.Equal(new Uri(sourcePath).AbsoluteUri, location.GetProperty("uri").GetString());
+        var range = location.GetProperty("range");
+        Assert.Equal(2, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(11, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(2, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(19, range.GetProperty("end").GetProperty("character").GetInt32());
+    }
+
+    [Fact]
+    public void Utf8NestedFilenameFallbackResolvesCaseInsensitiveMultilineProcedureIdentity()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        var nestedDirectory = Path.Combine(root, "src", "Book1", "nested");
+        Directory.CreateDirectory(nestedDirectory);
+        var sourcePath = Path.Combine(nestedDirectory, "Test_Module.bas");
+        var source = "' 日本語😀\nPublic Sub Scenario_Multi( _\n    ByVal value As String)\nEnd Sub\n";
+        File.WriteAllBytes(
+            sourcePath,
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false).GetBytes(source));
+        var binPath = Path.Combine(root, "bin", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
+        File.WriteAllText(binPath, "bin", Encoding.UTF8);
+        var runner = new FakeWorkbookTestRunner(
+            new WorkbookTestResultRow("test_module", "scenario_multi", "OK", ""));
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
+
+        var result = application.Run(["test", "--no-build", "--format", "ndjson"]);
+
+        var finishedLine = result.StandardOutput
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Single(line => line.Contains("\"type\":\"testFinished\"", StringComparison.Ordinal));
+        using var finished = JsonDocument.Parse(finishedLine);
+        var location = finished.RootElement.GetProperty("location");
+        Assert.Equal(new Uri(sourcePath).AbsoluteUri, location.GetProperty("uri").GetString());
+        var range = location.GetProperty("range");
+        Assert.Equal(1, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(11, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(1, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(25, range.GetProperty("end").GetProperty("character").GetInt32());
+    }
+
+    [Fact]
+    public void Utf16BomAttributeIdentityTakesPrecedenceOverTheSourceFilename()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        const string source = "Attribute VB_Name = \"Preferred_Module\"\n' 日本語😀\nPublic Sub Test_Utf16()\nEnd Sub\n";
+        CreateWorkbookSource(root, "Book1", ("WrongName.bas", string.Empty));
+        var sourcePath = Path.Combine(root, "src", "Book1", "WrongName.bas");
+        var encoding = Encoding.Unicode;
+        File.WriteAllBytes(
+            sourcePath,
+            encoding.GetPreamble().Concat(encoding.GetBytes(source)).ToArray());
+        var binPath = Path.Combine(root, "bin", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
+        File.WriteAllText(binPath, "bin", Encoding.UTF8);
+        var runner = new FakeWorkbookTestRunner(
+            new WorkbookTestResultRow("preferred_module", "TEST_UTF16", "OK", ""));
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
+
+        var result = application.Run(["test", "--no-build", "--format", "ndjson"]);
+
+        var finishedLine = result.StandardOutput
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Single(line => line.Contains("\"type\":\"testFinished\"", StringComparison.Ordinal));
+        using var finished = JsonDocument.Parse(finishedLine);
+        var location = finished.RootElement.GetProperty("location");
+        Assert.Equal(new Uri(sourcePath).AbsoluteUri, location.GetProperty("uri").GetString());
+        var range = location.GetProperty("range");
+        Assert.Equal(2, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(11, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(2, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(21, range.GetProperty("end").GetProperty("character").GetInt32());
+    }
+
+    [Fact]
     public void UnreadableSourceLocationDoesNotChangeTheCompletedTestOutcome()
     {
         using var temp = TempDirectory.Create();

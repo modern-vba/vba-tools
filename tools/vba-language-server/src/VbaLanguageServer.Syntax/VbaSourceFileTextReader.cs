@@ -1,11 +1,11 @@
 using System.Text;
 
-namespace VbaLanguageServer.Workspace;
+namespace VbaLanguageServer.Syntax;
 
 /// <summary>
-/// Reads VBA source text using the encodings commonly emitted by the VBE and source-control tools.
+/// Decodes VBA source text using the encodings commonly emitted by the VBE and source-control tools.
 /// </summary>
-internal static class VbaSourceFileTextReader
+public static class VbaSourceFileTextReader
 {
     private static readonly byte[] Utf8Preamble = [0xEF, 0xBB, 0xBF];
     private static readonly byte[] Utf16LittleEndianPreamble = [0xFF, 0xFE];
@@ -21,7 +21,12 @@ internal static class VbaSourceFileTextReader
         return Encoding.GetEncoding(932);
     });
 
-    internal static string Decode(byte[] bytes)
+    /// <summary>
+    /// Decodes one exported VBA source file from its byte representation.
+    /// </summary>
+    /// <param name="bytes">The complete source-file bytes.</param>
+    /// <returns>The decoded VBA source text.</returns>
+    public static string Decode(byte[] bytes)
     {
         if (bytes.Length == 0)
         {

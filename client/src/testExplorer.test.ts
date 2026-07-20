@@ -497,6 +497,63 @@ test('canonical source ranges are projected only onto TestProcedure nodes', asyn
   assert.equal(moduleItem.range, undefined);
 });
 
+test('canonical locations from every supported source encoding project onto procedures', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const cases = [
+    {
+      module: 'テストモジュール',
+      procedure: 'Test_Run',
+      sourcePath: path.join(projectRoot, 'src', 'Book1', 'Cp932.bas'),
+      range: { start: { line: 2, character: 11 }, end: { line: 2, character: 19 } }
+    },
+    {
+      module: 'test_module',
+      procedure: 'scenario_multi',
+      sourcePath: path.join(projectRoot, 'src', 'Book1', 'nested', 'Test_Module.bas'),
+      range: { start: { line: 1, character: 11 }, end: { line: 1, character: 25 } }
+    },
+    {
+      module: 'preferred_module',
+      procedure: 'TEST_UTF16',
+      sourcePath: path.join(projectRoot, 'src', 'Book1', 'Utf16.bas'),
+      range: { start: { line: 2, character: 11 }, end: { line: 2, character: 21 } }
+    }
+  ];
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([
+      [path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]
+    ]),
+    stdout: ndjson(...cases.map((item) => ({
+      type: 'testFinished',
+      document: 'Book1',
+      module: item.module,
+      procedure: item.procedure,
+      outcome: 'passed',
+      message: '',
+      location: {
+        uri: pathToFileURL(item.sourcePath).href,
+        range: item.range
+      }
+    })))
+  });
+  await explorer.refresh();
+  const documentItem = controller.items[0].children.items[0];
+
+  await explorer.run({ include: [documentItem] }, uncancelledToken());
+
+  assert.equal(documentItem.children.items.length, cases.length);
+  cases.forEach((expected, index) => {
+    const moduleItem = documentItem.children.items[index];
+    const procedureItem = moduleItem.children.items[0];
+    assert.equal(moduleItem.uriPath, undefined);
+    assert.equal(moduleItem.range, undefined);
+    assert.equal(procedureItem.uriPath, expected.sourcePath);
+    assert.deepEqual(procedureItem.range, expected.range);
+    assert.ok(controller.runs[0].events.includes(`passed:${procedureItem.id}`));
+  });
+});
+
 test('legacy result records are ignored by Test Explorer event projection', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const controller = new FakeTestController();

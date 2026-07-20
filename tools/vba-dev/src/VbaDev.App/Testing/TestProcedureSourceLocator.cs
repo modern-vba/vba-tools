@@ -60,7 +60,8 @@ public sealed class TestProcedureSourceLocator
     private static ParsedTestModule ParseModule(string sourcePath)
     {
         var uri = new Uri(Path.GetFullPath(sourcePath)).AbsoluteUri;
-        var tree = VbaSyntaxTree.ParseModule(uri, File.ReadAllText(sourcePath));
+        var source = VbaSourceFileTextReader.Decode(File.ReadAllBytes(sourcePath));
+        var tree = VbaSyntaxTree.ParseModule(uri, source);
         return new ParsedTestModule(uri, tree);
     }
 
