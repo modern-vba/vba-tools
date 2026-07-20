@@ -199,6 +199,13 @@ export async function activate(context: ExtensionContext): Promise<void> {
     workspaceRoots: workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [],
     findProjectManifests,
     readTextFile,
+    openTextDocuments: () => workspace.textDocuments
+      .filter((document) => document.uri.scheme === 'file')
+      .map((document) => ({
+        uriPath: document.uri.fsPath,
+        isDirty: document.isDirty,
+        save: () => document.save()
+      })),
     outputChannel,
     showErrorMessage: (message: string) => window.showErrorMessage(message)
   });

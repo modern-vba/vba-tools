@@ -15,6 +15,7 @@ import {
 export interface TestItemMetadata {
   kind: 'project' | 'document' | 'module' | 'procedure';
   projectRoot: string;
+  sourceSetPaths: readonly string[];
   documentName?: string | undefined;
   moduleName?: string | undefined;
   procedureName?: string | undefined;
@@ -63,6 +64,17 @@ export class TestExplorerNodeIndex {
       .filter((item) => !excluded.has(item.id));
   }
 
+  public selectedSourceSetPaths(items: readonly TestExplorerItem[]): string[] {
+    const sourceSetPaths = new Map<string, string>();
+    for (const item of items) {
+      for (const sourceSetPath of this.metadataById.get(item.id)?.sourceSetPaths ?? []) {
+        sourceSetPaths.set(path.normalize(sourceSetPath).toLowerCase(), sourceSetPath);
+      }
+    }
+
+    return [...sourceSetPaths.values()];
+  }
+
   public addProject(controller: TestControllerAdapter, project: WorkbookBackedTestProject): void {
     const projectItem = controller.createTestItem(
       projectItemId(project.projectRoot),
@@ -71,7 +83,10 @@ export class TestExplorerNodeIndex {
     );
     this.setItem(projectItem, {
       kind: 'project',
-      projectRoot: project.projectRoot
+      projectRoot: project.projectRoot,
+      sourceSetPaths: project.documents.map((document) => (
+        path.resolve(project.projectRoot, document.sourcePath)
+      ))
     });
 
     for (const document of project.documents) {
@@ -84,6 +99,7 @@ export class TestExplorerNodeIndex {
       this.setItem(documentItem, {
         kind: 'document',
         projectRoot: project.projectRoot,
+        sourceSetPaths: [path.resolve(project.projectRoot, document.sourcePath)],
         documentName: document.name
       });
     }
@@ -214,6 +230,7 @@ export class TestExplorerNodeIndex {
     this.setItem(moduleItem, {
       kind: 'module',
       projectRoot,
+      sourceSetPaths: this.metadataById.get(documentItem.id)?.sourceSetPaths ?? [],
       documentName,
       moduleName
     });
@@ -245,6 +262,7 @@ export class TestExplorerNodeIndex {
     this.setItem(procedureItem, {
       kind: 'procedure',
       projectRoot,
+      sourceSetPaths: this.metadataById.get(moduleItem.id)?.sourceSetPaths ?? [],
       documentName,
       moduleName,
       procedureName

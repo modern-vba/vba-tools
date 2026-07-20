@@ -86,6 +86,230 @@ test('Running a document node invokes vba-dev test ndjson with explicit project 
   ]);
 });
 
+test('a document run saves its dirty exported VBA source before starting vba-dev', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const sourcePath = path.join(projectRoot, 'src', 'Book1', 'Test_Module.bas');
+  const order: string[] = [];
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([
+      [path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]
+    ]),
+    openTextDocuments: () => [
+      {
+        uriPath: sourcePath,
+        isDirty: true,
+        save: async () => {
+          order.push(`save:${sourcePath}`);
+          return true;
+        }
+      }
+    ],
+    startProcess: () => {
+      order.push('process');
+      return completedProcess();
+    }
+  });
+  await explorer.refresh();
+  const documentItem = controller.items[0].children.items[0];
+
+  await explorer.run({ include: [documentItem] }, uncancelledToken());
+
+  assert.deepEqual(order, [`save:${sourcePath}`, 'process']);
+});
+
+test('a failed required source save records a Test Run error without starting vba-dev', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const sourcePath = path.join(projectRoot, 'src', 'Book1', 'Test_Module.bas');
+  let processStarted = false;
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([
+      [path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]
+    ]),
+    openTextDocuments: () => [
+      {
+        uriPath: sourcePath,
+        isDirty: true,
+        save: async () => false
+      }
+    ],
+    startProcess: () => {
+      processStarted = true;
+      return completedProcess();
+    }
+  });
+  await explorer.refresh();
+  const documentItem = controller.items[0].children.items[0];
+
+  await explorer.run({ include: [documentItem] }, uncancelledToken());
+
+  assert.equal(processStarted, false);
+  assert.deepEqual(controller.runs[0].events, [
+    `errored:${documentItem.id}:Could not save exported VBA source before the test run: ${sourcePath}`,
+    'end'
+  ]);
+});
+
+test('a throwing required source save records a Test Run error without starting vba-dev', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const sourcePath = path.join(projectRoot, 'src', 'Book1', 'Test_Module.bas');
+  let processStarted = false;
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([
+      [path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]
+    ]),
+    openTextDocuments: () => [
+      {
+        uriPath: sourcePath,
+        isDirty: true,
+        save: async () => {
+          throw new Error('synthetic save failure');
+        }
+      }
+    ],
+    startProcess: () => {
+      processStarted = true;
+      return completedProcess();
+    }
+  });
+  await explorer.refresh();
+  const documentItem = controller.items[0].children.items[0];
+
+  await explorer.run({ include: [documentItem] }, uncancelledToken());
+
+  assert.equal(processStarted, false);
+  assert.deepEqual(controller.runs[0].events, [
+    `errored:${documentItem.id}:Could not save exported VBA source before the test run: ${sourcePath}`,
+    'end'
+  ]);
+});
+
+test('cancellation during a required source save records a Test Run error without starting vba-dev', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const sourcePath = path.join(projectRoot, 'src', 'Book1', 'Test_Module.bas');
+  let cancelled = false;
+  let processStarted = false;
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([
+      [path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]
+    ]),
+    openTextDocuments: () => [
+      {
+        uriPath: sourcePath,
+        isDirty: true,
+        save: async () => {
+          cancelled = true;
+          return true;
+        }
+      }
+    ],
+    startProcess: () => {
+      processStarted = true;
+      return completedProcess();
+    }
+  });
+  await explorer.refresh();
+  const documentItem = controller.items[0].children.items[0];
+  const token: CommandCancellationToken = {
+    get isCancellationRequested() {
+      return cancelled;
+    },
+    onCancellationRequested: () => ({ dispose: () => undefined })
+  };
+
+  await explorer.run({ include: [documentItem] }, token);
+
+  assert.equal(processStarted, false);
+  assert.deepEqual(controller.runs[0].events, [
+    `errored:${documentItem.id}:Test run cancelled while saving exported VBA source: ${sourcePath}`,
+    'end'
+  ]);
+});
+
+test('a project run saves only dirty exported VBA sources in its document source sets', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const otherProjectRoot = path.join('C:', 'work', 'OtherProject');
+  const book1Module = path.join(projectRoot, 'src', 'Book1', 'Test_One.bas');
+  const book2Class = path.join(projectRoot, 'src', 'Book2', 'Nested', 'Test_Two.cls');
+  const book2Form = path.join(projectRoot, 'src', 'Book2', 'Test_Form.frm');
+  const saved: string[] = [];
+  const document = (uriPath: string, isDirty = true) => ({
+    uriPath,
+    isDirty,
+    save: async () => {
+      saved.push(uriPath);
+      return true;
+    }
+  });
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([
+      [path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1', 'Book2'])]
+    ]),
+    openTextDocuments: () => [
+      document(book1Module),
+      document(book2Class),
+      document(book2Form),
+      document(path.join(projectRoot, 'src', 'Book1', 'Test_One.frx')),
+      document(path.join(projectRoot, 'src', 'Book1', 'notes.txt')),
+      document(path.join(projectRoot, 'src', 'Book1', 'Clean.bas'), false),
+      document(path.join(otherProjectRoot, 'src', 'Book1', 'Outside.bas'))
+    ]
+  });
+  await explorer.refresh();
+
+  await explorer.run({ include: [controller.items[0]] }, uncancelledToken());
+
+  assert.deepEqual(saved, [book1Module, book2Class, book2Form]);
+});
+
+test('document module and procedure selections save only the owning document source set', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const book1Source = path.join(projectRoot, 'src', 'Book1', 'Test_Module.bas');
+  const book2Source = path.join(projectRoot, 'src', 'Book2', 'Test_Other.bas');
+  const saved: string[] = [];
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([
+      [path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1', 'Book2'])]
+    ]),
+    openTextDocuments: () => [book1Source, book2Source].map((uriPath) => ({
+      uriPath,
+      isDirty: true,
+      save: async () => {
+        saved.push(uriPath);
+        return true;
+      }
+    })),
+    stdout: ndjson({
+      type: 'testFinished',
+      document: 'Book1',
+      module: 'Test_Module',
+      procedure: 'Test_Passes',
+      outcome: 'passed',
+      message: ''
+    })
+  });
+  await explorer.refresh();
+  const documentItem = controller.items[0].children.items[0];
+
+  await explorer.run({ include: [documentItem] }, uncancelledToken());
+  assert.deepEqual(saved, [book1Source]);
+  const moduleItem = documentItem.children.items[0];
+  const procedureItem = moduleItem.children.items[0];
+
+  saved.splice(0, saved.length);
+  await explorer.run({ include: [moduleItem] }, uncancelledToken());
+  assert.deepEqual(saved, [book1Source]);
+
+  saved.splice(0, saved.length);
+  await explorer.run({ include: [procedureItem] }, uncancelledToken());
+  assert.deepEqual(saved, [book1Source]);
+});
+
 test('Test Explorer creates default and no-build run profiles', () => {
   const controller = new FakeTestController();
   createExplorer(controller, { manifests: new Map() });
@@ -594,6 +818,11 @@ function createExplorer(
     stderr?: string;
     exitCode?: number;
     startProcess?: TestControllerStartProcess;
+    openTextDocuments?: () => readonly {
+      uriPath: string;
+      isDirty: boolean;
+      save(): Promise<boolean>;
+    }[];
   }
 ) {
   const calls = options.calls ?? [];
@@ -645,8 +874,27 @@ function createExplorer(
       appendLine: (value) => output.push(`${value}\n`),
       show: () => undefined
     },
+    openTextDocuments: options.openTextDocuments ?? (() => []),
     showErrorMessage: async () => undefined
   });
+}
+
+function completedProcess() {
+  return {
+    onStdout: (listener: (value: string) => void) => listener(
+      '{"type":"runFinished","project":"BookProject","document":"Book1","outcome":"passed","total":0,"passed":0,"failed":0,"errors":0}\n'
+    ),
+    onStderr: (listener: (value: string) => void) => listener(''),
+    onExit: (listener: (exitCode: number | null, signal: NodeJS.Signals | null) => void) => listener(0, null),
+    kill: () => undefined
+  };
+}
+
+function uncancelledToken(): CommandCancellationToken {
+  return {
+    isCancellationRequested: false,
+    onCancellationRequested: () => ({ dispose: () => undefined })
+  };
 }
 
 function ndjson(...records: readonly Record<string, unknown>[]): string {

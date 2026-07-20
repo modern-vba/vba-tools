@@ -81,11 +81,18 @@ export interface WorkbookBackedTestExplorerOptions {
   workspaceRoots: readonly string[];
   findProjectManifests: (workspaceRoots: readonly string[]) => Promise<readonly string[]>;
   readTextFile: (filePath: string) => Promise<string>;
+  openTextDocuments: () => readonly SavableTextDocument[];
   capabilitiesProcess?: ProcessRunner | undefined;
   startProcess?: StartVbaDevProcess | undefined;
   outputChannel: VbaToolsOutputChannel;
   showErrorMessage: (message: string) => Thenable<unknown> | Promise<unknown>;
   requiredContract?: RequiredVbaDevContract | undefined;
+}
+
+export interface SavableTextDocument {
+  readonly uriPath: string;
+  readonly isDirty: boolean;
+  save(): PromiseLike<boolean>;
 }
 
 export interface WorkbookBackedTestExplorer {
@@ -161,12 +168,75 @@ async function runTests(
   const run = options.controller.createTestRun(request);
   try {
     const items = nodeIndex.selectedRunnableItems(request);
+    const saveError = await saveDirtySourcesInScope(options, nodeIndex, items, token);
+    if (saveError !== undefined) {
+      const errorItem = items[0];
+      if (errorItem) {
+        run.errored(errorItem, saveError);
+      }
+      return;
+    }
+
     for (const item of items) {
       await runTestItem(options, nodeIndex, run, item, token, runOptions);
     }
   } finally {
     run.end();
   }
+}
+
+async function saveDirtySourcesInScope(
+  options: WorkbookBackedTestExplorerOptions,
+  nodeIndex: TestExplorerNodeIndex,
+  items: readonly TestExplorerItem[],
+  token: CommandCancellationToken
+): Promise<string | undefined> {
+  const sourceSetPaths = nodeIndex.selectedSourceSetPaths(items);
+  for (const document of options.openTextDocuments()) {
+    if (
+      !document.isDirty
+      || !isExportedVbaSource(document.uriPath)
+      || !sourceSetPaths.some((sourceSetPath) => isPathWithin(document.uriPath, sourceSetPath))
+    ) {
+      continue;
+    }
+
+    if (token.isCancellationRequested) {
+      return `Test run cancelled before saving exported VBA source: ${document.uriPath}`;
+    }
+
+    let saved: boolean;
+    try {
+      saved = await document.save();
+    } catch {
+      return token.isCancellationRequested
+        ? `Test run cancelled while saving exported VBA source: ${document.uriPath}`
+        : `Could not save exported VBA source before the test run: ${document.uriPath}`;
+    }
+
+    if (token.isCancellationRequested) {
+      return `Test run cancelled while saving exported VBA source: ${document.uriPath}`;
+    }
+
+    if (!saved) {
+      return `Could not save exported VBA source before the test run: ${document.uriPath}`;
+    }
+  }
+
+  return undefined;
+}
+
+function isExportedVbaSource(filePath: string): boolean {
+  const extension = path.extname(filePath).toLowerCase();
+  return extension === '.bas' || extension === '.cls' || extension === '.frm';
+}
+
+function isPathWithin(filePath: string, directoryPath: string): boolean {
+  const relativePath = path.relative(path.resolve(directoryPath), path.resolve(filePath));
+  return relativePath.length > 0
+    && !relativePath.startsWith(`..${path.sep}`)
+    && relativePath !== '..'
+    && !path.isAbsolute(relativePath);
 }
 
 async function runTestItem(
