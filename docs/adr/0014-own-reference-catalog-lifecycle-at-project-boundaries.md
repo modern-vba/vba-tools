@@ -91,7 +91,7 @@ queries observe the new atomic commit automatically.
 
 Lifecycle operation counts are deterministic by scope, fingerprint, and
 revision. Source changes do not restart automatic work. Release tests must keep
-the p95 query-latency increase at or below five milliseconds while preload or
+the p95 query-latency increase at or below 10 milliseconds while preload or
 discovery is delayed. Shutdown tests must prove both that cooperative blocked
 work is cancelled without an external release and that non-cooperative work
 cannot make shutdown unbounded.

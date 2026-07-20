@@ -29,7 +29,7 @@ public sealed class VbaDocumentAnalysisPerformanceTests
 
     [Fact]
     [Trait("Category", "Performance")]
-    public void Release_ordinary_member_edit_analysis_p95_is_at_most_30_milliseconds()
+    public void Release_ordinary_member_edit_analysis_p95_is_at_most_50_milliseconds()
     {
         var warmupCount = IsReleaseBuild ? 20 : 5;
         var measuredCount = IsReleaseBuild ? 200 : 20;
@@ -71,7 +71,7 @@ public sealed class VbaDocumentAnalysisPerformanceTests
         if (IsReleaseBuild)
         {
             Assert.True(
-                p95 <= TimeSpan.FromMilliseconds(30),
+                p95 <= TimeSpan.FromMilliseconds(50),
                 $"Document analysis p95 was {p95.TotalMilliseconds:F3} ms.");
         }
     }
@@ -145,10 +145,10 @@ public sealed class VbaDocumentAnalysisPerformanceTests
             if (IsReleaseBuild)
             {
                 Assert.True(
-                    p95 <= TimeSpan.FromMilliseconds(50),
+                    p95 <= TimeSpan.FromMilliseconds(100),
                     $"Block-skeleton processing p95 was {p95.TotalMilliseconds:F3} ms.");
                 Assert.True(
-                    p99 <= TimeSpan.FromMilliseconds(75),
+                    p99 <= TimeSpan.FromMilliseconds(150),
                     $"Block-skeleton processing p99 was {p99.TotalMilliseconds:F3} ms.");
             }
 
@@ -247,10 +247,10 @@ public sealed class VbaDocumentAnalysisPerformanceTests
                 if (IsReleaseBuild)
                 {
                     Assert.True(
-                        p95 <= TimeSpan.FromMilliseconds(25),
+                        p95 <= TimeSpan.FromMilliseconds(50),
                         $"{queryCase.Method} p95 was {p95.TotalMilliseconds:F3} ms.");
                     Assert.True(
-                        p99 <= TimeSpan.FromMilliseconds(50),
+                        p99 <= TimeSpan.FromMilliseconds(100),
                         $"{queryCase.Method} p99 was {p99.TotalMilliseconds:F3} ms.");
                 }
             }

@@ -63,7 +63,7 @@ Scheduler instrumentation measures three monotonic intervals separately:
 The no-op sink is the production default. Deterministic process tests may
 enable file-backed timing and request gates through test environment variables.
 A Release benchmark records all three p95 values and requires mutation
-admission p95 at or below 2 milliseconds on the reference fixture.
+admission p95 at or below 5 milliseconds on the reference fixture.
 
 The server continues advertising LSP full-text document synchronization. This
 decision changes neither that contract nor the C# authority established by ADR

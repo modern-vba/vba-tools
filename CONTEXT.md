@@ -119,7 +119,9 @@ The project-local manifest, stored as `vba-project.json`, that identifies a
 `WorkbookBackedProject` and carries default values for VS Code commands and
 `VbaDev` operations. It is also the language server's source of truth for the
 `VbaProjectReferenceSelection` of each document definition; VS Code settings do
-not define project references for workbook-backed projects.
+not define project references for workbook-backed projects. A project-local
+`project.json` is not a `ProjectManifest` for language-server project-boundary
+or reference-selection behavior.
 _Avoid_: package file, extension settings, workspace settings
 
 **LanguageServerManifestResolution**:
@@ -170,7 +172,9 @@ is the Excel object library; for a Word document, this is the Word object
 library; and equivalent Office document kinds follow the same rule. It is the
 expected main reference for the document kind, but it contributes definitions
 only when that reference is present in the `VbaProjectReferenceSelection`. Other
-equal rank external matches remain ambiguous.
+equal rank external matches remain ambiguous. Host-generic root names such as
+`Application` and `ActiveWindow` come from whichever catalog is the active main
+reference and are not synthesized for projects without that reference.
 _Avoid_: active reference, preferred library, MainHostApplication
 
 **ProtectedVbaProjectReference**:
@@ -230,9 +234,12 @@ _Avoid_: workspace, repository, package
 
 **AdHocVbaProject**:
 A `VbaProject` inferred from exported source files when no containing
-`ProjectManifest` can be found. It provides source definitions and
-`LanguageVocabulary`, but it has no `VbaProjectReferenceSelection` and therefore
-does not contribute external reference completions.
+`ProjectManifest` can be found. It provides source definitions,
+`LanguageVocabulary`, and the always-active `VbaStandardLibraryReference`, but
+it has no manifest-controlled `VbaProjectReferenceSelection` and therefore does
+not contribute definitions from other external references. Its source boundary
+is the active source file's directory, not nested organization directories or
+the VS Code workspace root.
 _Avoid_: workbook-backed project, default Excel project, settings-backed project
 
 **VbaDefinition**:
@@ -240,18 +247,87 @@ An identifiable declaration in a `VbaProject` that editor features can refer to.
 _Avoid_: symbol, item, thing
 
 **VbaProjectReferenceDefinition**:
-A definition supplied by an active `VbaProjectReference` rather than by exported
-source files in a `VbaProject`. Office object model members, Scripting Runtime
-types, RegExp types, DAO/ADO types, and other referenced-library members are all
-`VbaProjectReferenceDefinition`s.
+A definition supplied by the always-active `VbaStandardLibraryReference` or by
+an active manifest-controlled `VbaProjectReference`, rather than by exported
+source files in a `VbaProject`. VBA standard-library constants, Office object
+model members, Scripting Runtime types, RegExp types, DAO/ADO types, and other
+referenced-library members are all `VbaProjectReferenceDefinition`s.
 _Avoid_: HostDefinition, ReferenceLibrary, built-in, standard library, external symbol
 
+**VbaStandardLibraryReference**:
+The always-active reference-catalog representation of the Visual Basic For
+Applications standard library. It is present in every `VbaProject`, including an
+`AdHocVbaProject`, independently of `ProjectManifest` reference selection, and
+supplies all supported VBA standard-library constants as structured external
+definitions. Those definitions retain their declaring owner, definition kind,
+declared type, documentation, completion presentation, and semantic-token facts;
+their reference origin keeps them outside `RenameTarget`. Its catalog-owned
+`VBA` qualifier is available in every project and exposes the standard library's
+public root surface, while still following ordinary `NameResolution` so a
+higher-rank source definition named `VBA` can shadow it. Its metadata is bundled
+with the language server and does not depend on TypeLib discovery, COM registry
+state, Office installation state, or `VbaProjectReferenceCatalogLifecycle`.
+_Avoid_: language vocabulary, implicit string list, host library
+
+**HostGlobalReferenceDefinition**:
+A root-level, read-only property `VbaProjectReferenceDefinition` supplied by an
+active `MainVbaProjectReference` and usable without an explicit host object such
+as `Application`; its owning main reference determines the host-specific type.
+Neither a document kind alone nor an `AdHocVbaProject` activates it when the
+owning `VbaProjectReference` is absent. Host-generic names such as
+`Application` and `ActiveWindow` are still catalog-derived host globals: Excel,
+Word, PowerPoint, and other hosts supply them only when their active main catalog
+exposes them. Excel-specific names such as `ActiveCell`, `ActiveSheet`,
+`ActiveWorkbook`, and `ThisWorkbook` are available only from the Excel main
+reference. Excel `ThisWorkbook` is modeled through this catalog-derived host
+global; source files are not promoted to document module instances by matching
+the reserved `ThisWorkbook` name, and document module/base-object member merging
+is outside this concept. Its hover declaration uses value-reference form such as
+`ActiveCell As Range`, not accessor-declaration form such as
+`Property ActiveCell As Range`. Host globals whose catalog type is deliberately
+unavailable, such as Excel `ActiveSheet`, do not gain guessed member completion
+from possible runtime object kinds. Member completion for a typed host global is
+derived from the declared catalog type, such as `Workbook` or `Range`; it does
+not inspect live host application state, open workbook contents, worksheet names,
+or active cell state.
+_Avoid_: built-in global, implicit host variable, language intrinsic
+
+**LibraryGlobalReferenceDefinition**:
+A root-level `VbaProjectReferenceDefinition` supplied whenever its owning
+`VbaProjectReference` is active, independently of which reference is the main
+host. VBA standard-library constants such as `vbCrLf` and public
+referenced-library enum members such as Excel `xlCenter` are
+`LibraryGlobalReferenceDefinition`s; their availability follows the activation
+rule of their respective owning references. Enum-member declaration labels use
+the catalog-provided declared type and do not infer a contextual enum type from
+the use site; for example, Excel `xlCenter` is shown as `xlCenter As Long` when
+the Excel catalog records the member type as `Long`.
+_Avoid_: language constant, host global, project constant
+
+**ReferenceDefinitionGlobalExposure**:
+The catalog-owned classification that determines whether a
+`VbaProjectReferenceDefinition` participates in unqualified `NameResolution`.
+A library global is exposed whenever its reference is active, a main-host
+global only when its reference is the `MainVbaProjectReference`, and an ordinary
+member never participates as a root definition. The classification reflects
+the referenced library's application-object, library-module, and enum binding
+metadata rather than identifier-name or owner-name rules. Generated and bundled
+catalogs preserve the same classification. Catalog members that are hidden or
+restricted are not ordinary completion roots; they contribute root candidates
+only when this classification has explicitly selected them as a library global
+or main-host global. A catalog that lacks this classification does not infer
+root exposure from owner names, hidden type names, or member names; its ordinary
+type and member metadata may remain usable, but root globals are absent until a
+refreshed catalog supplies explicit exposure metadata.
+_Avoid_: root member, static member, implicit completion
+
 **VbaProjectReferenceSelection**:
-The set of `VbaProjectReference`s whose `VbaProjectReferenceDefinition`s are
-active for a `VbaProject`. For language-server behavior, it is resolved from
-the `ProjectManifest` document definition; source template documents are not
-used as a reference-selection input, and VS Code host application settings do
-not participate in reference selection.
+The manifest-controlled set of non-baseline `VbaProjectReference`s whose
+`VbaProjectReferenceDefinition`s are active for a `VbaProject`, in addition to
+the always-active `VbaStandardLibraryReference`. For language-server behavior,
+it is resolved from the `ProjectManifest` document definition; source template
+documents are not used as a reference-selection input, and VS Code host
+application settings do not participate in reference selection.
 _Avoid_: HostApplicationSelection, mode, profile, target language
 
 **VbaProjectReferenceCatalog**:
@@ -259,7 +335,11 @@ A discoverable, cached, or bundled metadata source that maps active
 `VbaProjectReference`s to `VbaProjectReferenceDefinition`s,
 `CallableSignature`s, and catalog-owned qualifier aliases. If no catalog is
 available for an active reference, the reference remains active but contributes
-no external definitions.
+no external definitions. A legacy catalog may be partially usable when ordinary
+type, member, and signature metadata are present while newer exposure metadata
+is absent; in that case only `ReferenceDefinitionGlobalExposure` fails closed.
+The bundled `VbaStandardLibraryReference` catalog is baseline metadata rather
+than refreshable Office TypeLib metadata.
 _Avoid_: host catalog, object model snapshot, reference cache
 
 **VbaProjectReferenceCatalogIdentity**:
@@ -274,8 +354,17 @@ _Avoid_: manifest name, display name, reference description
 **VbaProjectReferenceQualifier**:
 A catalog-owned qualifier alias that lets a `QualifiedReference` address one
 active `VbaProjectReference` explicitly, such as `Excel`, `Word`, or
-`Scripting`. It is not stored in `vba-project.json` and is not mechanically derived
-from `Reference.Description` alone.
+`Scripting`, and includes always-active standard-library qualifiers such as
+`VBA`. It is not stored in `vba-project.json` and is not mechanically derived
+from `Reference.Description` alone. It participates in `NameResolution` at
+referenced-library rank, so a higher-rank source definition with the same name
+shadows the qualifier rather than the qualifier acting as an absolute reference
+escape hatch. When used with a trailing dot in completion, it exposes that
+reference catalog's public root surface: root-level types, exposed constants,
+and explicit `ReferenceDefinitionGlobalExposure` definitions, not hidden owners
+or restricted internal members. The exposed surface is still filtered by the
+active `CompletionExpectation`, so type, value, and creatable-type contexts see
+different role-compatible candidates.
 _Avoid_: manifest alias, display name, host name
 
 **VbaProjectReferenceCatalogAvailability**:
@@ -283,6 +372,9 @@ The operational state describing whether an active `VbaProjectReference` has a
 usable `VbaProjectReferenceCatalog`. Missing catalog availability can be
 reported through language-server output, status, or trace and through an
 `EnvironmentDiagnostic`, but it does not create source diagnostics by itself.
+A catalog with usable ordinary metadata but missing root-exposure metadata is
+available for the metadata it can prove, while its root-exposure contribution is
+stale and eligible for refresh.
 _Avoid_: source diagnostic, unresolved reference, compile error
 
 **ManifestReferenceConsistency**:
@@ -309,7 +401,8 @@ The project-scoped C# responsibility that reacts to project activation,
 effective `ProjectManifest` reference-selection changes, and deactivation. It
 schedules persisted-catalog preload and TypeLib discovery independently from
 ordinary VBA source edits. Completion, hover, signature help, and other editor
-queries only read committed catalog state.
+queries only read committed catalog state and do not wait for in-flight preload
+or discovery work to finish.
 _Avoid_: source-edit refresh, completion-time preload, per-document catalog reload
 
 **ReferenceSelectionFingerprint**:
@@ -330,7 +423,10 @@ _Avoid_: source revision, cache format version, LSP document version
 The latest usable bundled, persisted, stale-persisted, or generated catalog
 revision already committed for a reference. A cancelled or failed refresh does
 not replace or remove it; only a later successful atomic commit changes the
-editor-facing catalog.
+editor-facing catalog. While new catalog work is in flight, editor requests use
+this committed snapshot when it exists; if no committed snapshot exists for a
+reference, that reference contributes no editor candidates until a later request
+sees a successful commit.
 _Avoid_: in-flight catalog, failed discovery result, source diagnostic
 
 **SyntaxHighlighting**:
@@ -349,7 +445,9 @@ call-site named arguments, and positional arguments after named arguments are
 `VbaValidationDiagnostic`s, even when they are published as LSP errors. Some
 `VbaValidationDiagnostic`s are document-local, while others require project
 state such as `NameResolution`, `TypeResolution`, `VbaProjectReferenceSelection`,
-or available `VbaProjectReferenceCatalog`s.
+or available `VbaProjectReferenceCatalog`s. Reference-catalog availability,
+stale exposure metadata, missing host globals, and host-global assignment
+validity are not `VbaValidationDiagnostic`s in the current scope.
 _Avoid_: SyntaxDiagnostic, parser recovery diagnostic, raw compiler error
 
 **VbaSyntaxTree**:
@@ -409,7 +507,11 @@ text that looks like an identifier.
 _Avoid_: rename, spelling correction
 
 **LanguageVocabulary**:
-The fixed VBA words whose casing is defined by the language server rather than by a `VbaDefinition` or `VbaProjectReferenceDefinition`. It includes VBA keywords, intrinsic types, intrinsic constants, and literals.
+The fixed VBA words whose casing is defined by the language server rather than
+by a `VbaDefinition` or `VbaProjectReferenceDefinition`. It includes VBA
+keywords, intrinsic types, and literals. VBA standard-library constants are
+structured `VbaProjectReferenceDefinition`s supplied by the
+`VbaStandardLibraryReference`, not completion-only vocabulary strings.
 _Avoid_: host definition, project definition
 
 **CompletionExpectation**:
@@ -422,7 +524,39 @@ _Avoid_: keyword completion, declaration keyword
 
 **CompletionCandidate**:
 An editor proposal admitted by a `CompletionExpectation` after semantic resolution. It may originate from a `VbaDefinition`, `VbaProjectReferenceDefinition`, `LanguageVocabulary`, named `CallableParameter`, callable-owned line label, contextual branch statement, or `EndStatementCompletion`. Its insertion and replacement facts are complete before LSP projection, and proposals with the same label remain distinct when their effective insertion text differs.
+Candidate discovery reads only the already-admitted `VbaProject` source,
+language vocabulary, and committed reference-catalog definitions; it does not
+perform TypeLib discovery or reference-catalog refresh during an editor
+completion request, and it does not wait for in-flight catalog work. Hidden or
+restricted catalog definitions are omitted from ordinary completion unless they
+are admitted as exposed root definitions. Reference-qualified completion also
+filters exposed root definitions by the active role, so type positions, value
+positions, and creatable-type positions do not receive one mixed catalog list.
+When same-label candidates differ by semantic role or effective insertion text,
+they remain separate and rely on completion kind, detail, and icon metadata to
+identify the role. Only candidates with the same label, same effective insertion
+text, and equal resolution rank are eligible for the existing ambiguity or
+coalescing rules. Editor-facing ordering follows visible-source proximity before
+referenced-library candidates: procedure-local, current-module, public project,
+then standard or external reference catalog candidates. After an explicit
+`VbaProjectReferenceQualifier`, ordering is scoped to that qualifier's admitted
+surface and uses existing kind and label metadata without triggering additional
+catalog discovery.
 _Avoid_: completion definition, raw vocabulary
+
+**QualifierCompletionCandidate**:
+A `CompletionCandidate` that helps the user start a `QualifiedReference`, such
+as `ModuleIdentity.` or `VbaProjectReferenceQualifier.`. It is not a value,
+callable, or type definition by itself; after the qualifier is formed, member
+completion owns the next candidate set. Source module qualifiers and active
+reference qualifiers use the same qualifier-completion behavior. The displayed
+label is the qualifier name without the dot; the inserted text includes the
+trailing dot so member completion can continue from the qualified position. It
+is admitted only at positions whose `CompletionExpectation` can start a
+qualified reference, not after a completed expression or other closed grammar
+slot. It remains distinct from a same-name value, callable, type, or constant
+candidate because its effective insertion text forms a qualifier.
+_Avoid_: module value, namespace object, callable candidate
 
 **PropertyAccess**:
 The semantic capability retained when complementary `Property Get`, `Property Let`, or `Property Set` declarations are coalesced into one logical property. Source accessor identity distinguishes a legal Get/Let/Set family from duplicate accessors, while `Readable` and `Writable` capabilities are derived from source accessor kinds or TypeLib invoke metadata. `Unknown` remains loadable for legacy catalogs but admits no context-specific `CompletionCandidate` until refreshed.
@@ -542,7 +676,7 @@ An editor feature that shows the rich `CallableSignature` for a resolved call si
 _Avoid_: hover, tooltip, parameter hover
 
 **DeclarationLabel**:
-The editor-facing declaration summary for a non-callable `VbaDefinition` or `VbaProjectReferenceDefinition`, or the fallback when no richer `CallableSignature` is available. Constants, enums, and user-defined types include `Const`, `Enum`, or `Type`. Variables, parameters, enum members, and user-defined type members use declaration forms such as `Name As Type`; arrays keep `()` after the name. Parameter labels include effective `ByRef` metadata while omitting `ByVal`. `Static` and `WithEvents` are included when they apply, while visibility modifiers and unavailable implicit types are omitted.
+The editor-facing declaration summary for a non-callable `VbaDefinition` or `VbaProjectReferenceDefinition`, or the fallback when no richer `CallableSignature` is available. Constants, enums, and user-defined types include `Const`, `Enum`, or `Type`. Variables, parameters, enum members, root value properties such as `HostGlobalReferenceDefinition`s, and user-defined type members use declaration forms such as `Name As Type`; arrays keep `()` after the name. External enum members use the catalog-provided declared type rather than a contextual enum type inferred from the call or assignment site. Parameter labels include effective `ByRef` metadata while omitting `ByVal`. `Static` and `WithEvents` are included when they apply, while visibility modifiers and unavailable implicit types are omitted.
 _Avoid_: signature, display name, hover text, owner-qualified name
 
 **CallableParameter**:
@@ -578,8 +712,17 @@ _Avoid_: HostSignatureDiscovery, COM refresh, member scan, metadata scrape
 A source-defined `VbaDefinition` that can be renamed inside its `VbaProject`. `VbaProjectReferenceDefinition`s, string literals, and `DocumentationComment`s are not `RenameTarget`s.
 _Avoid_: renameable symbol, edit target
 
+**ExternalDefinitionNavigation**:
+The go-to-definition behavior for `VbaProjectReferenceDefinition`s supplied by
+reference catalogs. Until the VS Code extension exposes a read-only virtual
+catalog document provider with stable definition identities, external
+definitions do not return navigable locations. Hover, completion, rename
+rejection, and find-references behavior can still use the structured catalog
+definition.
+_Avoid_: vba-reference file, generated source file, decompiled definition
+
 **NameResolution**:
-The case-insensitive process of matching an identifier reference to the closest visible `VbaDefinition` or `VbaProjectReferenceDefinition`. Procedure-local definitions outrank current-module definitions, current-module definitions outrank public project definitions, and project definitions outrank referenced-library definitions, including reference qualifier names; among referenced-library definitions, a `MainVbaProjectReference` match outranks matches from other active `VbaProjectReference`s.
+The case-insensitive process of matching an identifier reference to the closest visible `VbaDefinition` or `VbaProjectReferenceDefinition`. Procedure-local definitions outrank current-module definitions, current-module definitions outrank public project definitions, and project definitions outrank referenced-library definitions. `HostGlobalReferenceDefinition`s, `LibraryGlobalReferenceDefinition`s, standard-library constants, and reference qualifier names all use referenced-library rank rather than shadowing source definitions. Among referenced-library definitions, a `MainVbaProjectReference` match outranks matches from other active `VbaProjectReference`s.
 _Avoid_: lookup, binding, search
 
 **ModuleIdentity**:
@@ -591,7 +734,7 @@ The process of matching an explicit VBA type annotation to a `VbaDefinition` or 
 _Avoid_: type inference, runtime type, guessed type
 
 **MemberChainResolution**:
-The process of resolving a sequence of member accesses by carrying each resolved member's declared result type to the next member access. It applies to both source `VbaDefinition`s and `VbaProjectReferenceDefinition`s when result type metadata is available; missing or ambiguous result types stop the chain.
+The process of resolving a sequence of member accesses by carrying each resolved member's declared result type to the next member access. It applies to both source `VbaDefinition`s and `VbaProjectReferenceDefinition`s when result type metadata is available; missing or ambiguous result types stop the chain. Host-object member chains use declared type metadata from the active source and reference catalogs only; they do not inspect a live Office application or workbook state.
 _Avoid_: host chain resolution, dotted lookup, chained lookup
 
 **ContinuedMemberChain**:
@@ -607,7 +750,7 @@ The nearest active `With ... End With` expression that supplies the implicit rec
 _Avoid_: with context, current object, implicit type
 
 **QualifiedReference**:
-An identifier reference written with a qualifier, such as `ModuleIdentity.MemberName`, `variable.MemberName`, or `Word.Application`. When the qualifier names a module, class, or form, only public members of that definition are visible from outside that module; when it names an active `VbaProjectReferenceQualifier`, only that reference's `VbaProjectReferenceDefinition`s are visible.
+An identifier reference written with a qualifier, such as `ModuleIdentity.MemberName`, `variable.MemberName`, or `Word.Application`. The qualifier itself follows `NameResolution`; a source definition named `Excel` or `Word` may therefore shadow a same-name `VbaProjectReferenceQualifier`. When the qualifier names a module, class, or form, only public members of that definition are visible from outside that module; when it names an active `VbaProjectReferenceQualifier`, only that reference's public root-surface `VbaProjectReferenceDefinition`s are visible.
 _Avoid_: dotted lookup, member access, qualified symbol
 
 **EventReference**:
@@ -666,13 +809,31 @@ _Avoid_: monorepo, single repo
 ## Example Dialogue
 
 Dev: "Should completion include a procedure from another folder?"
-Domain Expert: "No. In the MVP, the `VbaProject` is only the active file's folder, so sibling `.bas`, `.cls`, and `.frm` files are indexed."
+Domain Expert: "Only when that folder belongs to the same `DocumentSourceSet` through `vba-project.json`. Without a `ProjectManifest`, an `AdHocVbaProject` indexes only the active source file's directory, so nested `common-modules` procedures are outside completion."
+
+Dev: "Should a standard module name appear at statement level so I can write `Lib_Common.New_Foo`?"
+Domain Expert: "Yes, but as a `QualifierCompletionCandidate`, not as a value or callable definition. Once `Lib_Common.` exists, member completion should show the public members owned by that `ModuleIdentity`."
+
+Dev: "Should `Excel.` and `Scripting.` behave differently from `Lib_Common.` in completion?"
+Domain Expert: "No. They are also `QualifierCompletionCandidate`s when their owning `VbaProjectReferenceQualifier`s are active; after the qualifier is formed, member completion should show that reference qualifier's exposed definitions."
+
+Dev: "Should the completion label include the dot, like `Lib_Common.`?"
+Domain Expert: "No. The label is `Lib_Common`, while the insertion text is `Lib_Common.`. The label stays searchable as the qualifier name, and the inserted dot moves the editor into member completion."
+
+Dev: "What if a module qualifier and a function have the same label, like `Foo`?"
+Domain Expert: "They remain distinct when their effective insertion text or semantic role differs. A `Foo` qualifier inserts `Foo.` and carries qualifier detail, while a `Foo` function inserts `Foo` and carries callable detail. If the UI metadata is not enough to tell them apart, that is a presentation issue, not a name-resolution merge."
+
+Dev: "Should catalog candidates sort above source candidates because there may be many Office members?"
+Domain Expert: "No. Completion ordering follows source proximity before referenced-library candidates: procedure-local, current-module, public project, then standard or external catalog definitions. Explicit reference-qualified completion, such as `Excel.`, is already scoped to that reference and orders within the admitted surface."
+
+Dev: "Should `Lib_Common` appear after a completed call like `ExampleFunc() |`?"
+Domain Expert: "No. `QualifierCompletionCandidate`s follow the active `CompletionExpectation`; they appear where a qualified reference can start, not where the grammar has already closed the expression."
 
 Dev: "Is the VS Code workspace folder always the `WorkbookBackedProject`?"
 Domain Expert: "No. The `ProjectManifest` identifies the `WorkbookBackedProject`; a workspace can contain none, one, or several workbook-backed projects."
 
 Dev: "What happens when I edit a loose `.bas` file outside any `vba-project.json`?"
-Domain Expert: "It is an `AdHocVbaProject`: source definitions and `LanguageVocabulary` work, but no external `VbaProjectReferenceDefinition`s are active. Create a `WorkbookBackedProject` when reference-aware completions are needed."
+Domain Expert: "It is an `AdHocVbaProject`: source definitions, `LanguageVocabulary`, and definitions from the always-active `VbaStandardLibraryReference` work, but no manifest-controlled external references are active. Create a `WorkbookBackedProject` when other reference-aware completions are needed."
 
 Dev: "Should completion call `vba-dev` to resolve project references?"
 Domain Expert: "No. `LanguageServerManifestResolution` reads the `ProjectManifest` directly for editor features. `VbaDev` owns project creation, reference changes, doctor/repair, build, test, publish, and export; background catalog refresh may use tooling, but synchronous editor requests do not invoke the CLI."
@@ -710,6 +871,9 @@ Domain Expert: "No. `MainVbaProjectReference` identifies the expected precedence
 Dev: "If Excel and Word both define `Application`, which one does `Application` mean?"
 Domain Expert: "Source `VbaDefinition`s still win first. Among referenced-library definitions, the `MainVbaProjectReference` definition wins; if only non-main references tie, `NameResolution` stays ambiguous."
 
+Dev: "If a procedure declares `Dim ActiveCell As String`, does `ActiveCell` still mean Excel's active range?"
+Domain Expert: "No. Procedure-local source definitions outrank current-module definitions, public project definitions, and every referenced-library definition. The local `ActiveCell` is a `RenameTarget`; Excel's catalog `ActiveCell` is used only when no higher-rank source definition wins."
+
 Dev: "Should unqualified completion show both Excel and Word `Application`?"
 Domain Expert: "No. Unqualified external completion follows `NameResolution`; use `Word.` for Word-specific qualified completion."
 
@@ -725,8 +889,17 @@ Domain Expert: "No. Parenthesis-free `RaiseEvent` arguments are malformed statem
 Dev: "If an active reference has no usable catalog, should the editor mark source lines?"
 Domain Expert: "No. The reference stays active but contributes no external definitions. Report `VbaProjectReferenceCatalogAvailability` through language-server output, status, or trace and through `EnvironmentDiagnostic`, not through source diagnostics."
 
+Dev: "Should missing root-exposure metadata or unavailable host globals create source diagnostics?"
+Domain Expert: "No. They affect editor intelligence availability, not source validity. Report catalog, reference, and refresh state through output, trace, status, or `EnvironmentDiagnostic`."
+
 Dev: "Should completion wait while TypeLib metadata is being discovered?"
 Domain Expert: "No. Completion, hover, and signature help use the best committed `LastKnownGoodReferenceCatalog`. `VbaProjectReferenceCatalogRefresh` runs in the background after project activation or an effective reference-selection change."
+
+Dev: "Should root completion scan TypeLib metadata when many globals like `xlCenter` may be available?"
+Domain Expert: "No. `CompletionCandidate` discovery reads only already-admitted source, vocabulary, and committed reference-catalog definitions. Prefix filtering can remain editor-owned until measurement shows a need for server-side incomplete completion."
+
+Dev: "Should completion wait if the Excel reference catalog is currently refreshing?"
+Domain Expert: "No. Editor requests use the current `LastKnownGoodReferenceCatalog` when one is committed. If no committed snapshot exists yet, that reference simply contributes no candidates until a later request sees a successful commit."
 
 Dev: "Should every VBA `didChange` resolve the manifest and retry reference catalog work?"
 Domain Expert: "No. It updates source analysis and diagnostics only. `VbaProjectReferenceCatalogLifecycle` belongs to project activation and effective reference-selection changes."
@@ -776,6 +949,69 @@ Domain Expert: "Yes. Visibility does not hide an attached `DocumentationComment`
 Dev: "Can `Range` be renamed?"
 Domain Expert: "No. Excel object model members are `VbaProjectReferenceDefinition`s, not `RenameTarget`s."
 
+Dev: "Should F12 on `Range` or `xlCenter` open the synthetic `vba-reference://` URI?"
+Domain Expert: "No. `ExternalDefinitionNavigation` stays disabled until a read-only virtual catalog document provider exists. Returning an URI that the editor cannot open is not a useful go-to-definition result."
+
+Dev: "Does an Excel document kind activate `ActiveWorkbook` when the Excel object library is absent?"
+Domain Expert: "No. `ActiveWorkbook` is a `HostGlobalReferenceDefinition` supplied only when the Excel object library is the active `MainVbaProjectReference`; document kind alone does not synthesize the missing reference."
+
+Dev: "Are `Application` and `ActiveWindow` Excel-only globals?"
+Domain Expert: "No. They are host-generic `HostGlobalReferenceDefinition`s supplied by the active `MainVbaProjectReference` catalog when that host exposes them. Excel supplies Excel-typed values, Word supplies Word-typed values, and an ad-hoc project supplies neither."
+
+Dev: "Are `ActiveCell`, `ActiveSheet`, `ActiveWorkbook`, and `ThisWorkbook` also host-generic?"
+Domain Expert: "No. They are Excel-specific host globals and appear only when the Excel object library is the active `MainVbaProjectReference` and its catalog exposes them."
+
+Dev: "Should `ThisWorkbook.cls` be merged with the Excel `ThisWorkbook` host global?"
+Domain Expert: "No. Real Excel projects reserve the workbook document module name, and the language server does not infer document-module identity from that spelling. `ThisWorkbook` is handled as the Excel catalog's read-only host global; source document-module modeling is a separate concern."
+
+Dev: "Should `ActiveCell` be modeled as a global variable so that it can appear in completion?"
+Domain Expert: "No. It is a read-only property `HostGlobalReferenceDefinition`; its project-reference origin makes it available as a value while keeping it outside `RenameTarget`."
+
+Dev: "Should assigning to a read-only host global create a new source diagnostic in this work?"
+Domain Expert: "No. `HostGlobalReferenceDefinition` records that the value is read-only, but assignment diagnostics are outside this scope."
+
+Dev: "Should `ActiveCell` hover as `Property ActiveCell As Range`?"
+Domain Expert: "No. A root host global is presented as a value reference, so its `DeclarationLabel` is `ActiveCell As Range`; callable or indexed properties use `CallableSignature` when that richer shape is available."
+
+Dev: "Should `ActiveSheet.` show both worksheet and chart members?"
+Domain Expert: "No. `ActiveSheet` is a read-only `HostGlobalReferenceDefinition`, but its type is intentionally unavailable because the runtime object kind varies. Member completion after `ActiveSheet.` stays empty rather than guessing a union."
+
+Dev: "Should `ThisWorkbook.` or `ActiveCell.` inspect the currently open Excel workbook before showing members?"
+Domain Expert: "No. Typed host globals participate in `MemberChainResolution` through their declared catalog types, such as `Workbook` or `Range`. Completion does not depend on live Excel state, workbook contents, sheet names, or the active cell."
+
+Dev: "Does `ActiveWindow` exist in an ad-hoc project because several Office hosts expose that name?"
+Domain Expert: "No. Each host supplies its own typed `ActiveWindow` through its active `MainVbaProjectReference`; an ad-hoc project or a project missing that main reference has no such definition."
+
+Dev: "Should every member found under an Excel `Window` or `Workbook` be considered an unqualified host global?"
+Domain Expert: "No. `ReferenceDefinitionGlobalExposure` distinguishes ordinary type members from library globals and globals supplied only by the active main host."
+
+Dev: "Should hidden or restricted TypeLib members appear in normal completion?"
+Domain Expert: "No. Completion should show names users normally write. Hidden or restricted catalog members are suppressed unless `ReferenceDefinitionGlobalExposure` has explicitly selected them as exposed root definitions, such as a main-host global supplied through application-object binding. A hidden owner such as `_Global` is not exposed wholesale."
+
+Dev: "Should an older persisted catalog expose root globals by guessing from `_Global` or `Application` owner names?"
+Domain Expert: "No. Missing `ReferenceDefinitionGlobalExposure` metadata fails closed for root globals. The catalog can still supply ordinary type and member metadata that it proves, but root exposure waits for a refreshed catalog."
+
+Dev: "Can the language server recognize host globals by looking for an owner named `Application`?"
+Domain Expert: "No. `ReferenceDefinitionGlobalExposure` preserves the referenced library's application-object and library-global binding semantics; owner spelling does not establish global visibility."
+
+Dev: "Are `vbCrLf` and `xlCenter` the same kind of completion?"
+Domain Expert: "They are both structured `LibraryGlobalReferenceDefinition`s, but their owning references have different activation rules: `vbCrLf` comes from the always-active `VbaStandardLibraryReference`, while `xlCenter` is available only while its Excel `VbaProjectReference` is active."
+
+Dev: "Should `VBA.` work in an ad-hoc project?"
+Domain Expert: "Yes. `VbaStandardLibraryReference` is always active, so its `VBA` qualifier is available in every `VbaProject`, including an `AdHocVbaProject`. It still follows `NameResolution`, so a higher-rank source definition named `VBA` can shadow the qualifier."
+
+Dev: "Should `vbCrLf` require TypeLib discovery or an installed Office application?"
+Domain Expert: "No. `VbaStandardLibraryReference` is bundled baseline metadata. It is available immediately and independently of COM registry state, Office installation state, and `VbaProjectReferenceCatalogLifecycle`."
+
+Dev: "Is `vbCrLf` only a completion label because it is available in every project?"
+Domain Expert: "No. It is an external constant definition owned by `VBA.Constants`, with its declared `String` type, constant completion presentation, hover declaration, canonical casing, and semantic-token facts. Like every `VbaProjectReferenceDefinition`, it is not a `RenameTarget`, and a same-named source `VbaDefinition` still wins through `NameResolution`."
+
+Dev: "Should `xlCenter` hover as `XlHAlign` when I use it in an alignment property?"
+Domain Expert: "No. `DeclarationLabel` uses the catalog-provided type for the enum member itself and does not infer a contextual enum type from the use site. `vbCrLf` hovers as `Const vbCrLf As String`; Excel `xlCenter` hovers as `xlCenter As Long` when the Excel catalog records that member as `Long`."
+
+Dev: "Is `Application` ambiguous because the host exposes both a global value and a class with that name?"
+Domain Expert: "No. A value `CompletionExpectation` selects the read-only `HostGlobalReferenceDefinition`, while a type or creatable-type expectation selects the class `VbaProjectReferenceDefinition`; completion does not show both in one context."
+
 Dev: "What happens when two public modules expose the same name?"
 Domain Expert: "`NameResolution` treats equal-rank matches as ambiguous, so hover and go to definition should stay silent for that reference."
 
@@ -813,13 +1049,19 @@ Dev: "Does `Word.Application` mean the same thing as unqualified `Application`?"
 Domain Expert: "No. `Word.Application` is a `QualifiedReference` through the active Word `VbaProjectReferenceQualifier`; unqualified `Application` follows `MainVbaProjectReference` precedence."
 
 Dev: "What should `Word.` complete?"
-Domain Expert: "If no source definition named `Word` wins first, it completes root `VbaProjectReferenceDefinition`s from the active Word object library reference."
+Domain Expert: "If no source definition named `Word` wins first, it completes the active Word reference catalog's public root surface: root types, exposed constants, and explicit root exposure definitions."
+
+Dev: "Should `Excel.` show the same list in `Dim r As Excel.` and `x = Excel.`?"
+Domain Expert: "No. The reference qualifier exposes the catalog's public root surface, but `CompletionExpectation` still filters by role. Type contexts see type-compatible candidates, value contexts see value-compatible candidates, and creatable-type contexts see creatable class candidates."
+
+Dev: "Should `Excel._Global` or other hidden owner names become a way to browse internal catalog members?"
+Domain Expert: "No. A `VbaProjectReferenceQualifier` exposes the public root surface of the reference catalog. Hidden owners and restricted internal members are not completion entry points."
 
 Dev: "Where does the `Word` qualifier name come from?"
 Domain Expert: "From a `VbaProjectReferenceQualifier` supplied by the `VbaProjectReferenceCatalog`. It is not written in the `ProjectManifest` and is not parsed from `Reference.Description` alone."
 
 Dev: "If there is a source module named `Word`, does `Word.Application` still force the Word host?"
-Domain Expert: "No. Source `VbaDefinition`s outrank reference qualifier names, so `Word` resolves to the source module first."
+Domain Expert: "No. Source `VbaDefinition`s outrank reference qualifier names, so `Word` resolves to the source module first. The reference qualifier is not an absolute escape hatch; rename the source definition or remove the collision if the external reference qualifier is needed."
 
 Dev: "Does `Button_Click` resolve without reading form designer metadata?"
 Domain Expert: "Only when `Button` is explicitly declared as a `WithEvents` variable. That handler name is an `EventReference` to the `Click` event on the declared type."

@@ -179,13 +179,13 @@ barrier. Its latency window begins when that barrier releases, so it includes
 all queue selection, capture, and execution after the work becomes eligible
 but excludes time deliberately spent constructing the fixture.
 
-- mutation admission: p95 at or below 2 ms;
-- an ordinary edit in an 8,000-line module: p95 at or below 30 ms;
-- warm completion, hover, and signature help: p95 at or below 25 ms and p99 at
-  or below 50 ms;
-- guarded block-skeleton planning: p95 at or below 50 ms and p99 at or below
-  75 ms; and
-- delayed catalog refresh: interactive p95 increase at or below 5 ms.
+- mutation admission: p95 at or below 5 ms;
+- an ordinary edit in an 8,000-line module: p95 at or below 50 ms;
+- warm completion, hover, and signature help: p95 at or below 50 ms and p99 at
+  or below 100 ms;
+- guarded block-skeleton planning: p95 at or below 100 ms and p99 at or below
+  150 ms; and
+- delayed catalog refresh: interactive p95 increase at or below 10 ms.
 
 Deterministic structural and process tests complement timing benchmarks. They
 pin exact-version behavior, cancellation races, output framing, latest-only

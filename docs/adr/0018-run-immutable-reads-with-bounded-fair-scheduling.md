@@ -130,10 +130,10 @@ serialized output, bounded producer cancellation, graceful drain, abort, and
 the serial rollback.
 
 Release performance tests run simultaneous bulk, diagnostics, catalog, and
-reconciliation load. Mutation admission p95 must remain at or below 2
+reconciliation load. Mutation admission p95 must remain at or below 5
 milliseconds. Warm completion, hover, and signature help must remain at or
-below 25 milliseconds p95 and 50 milliseconds p99. Guarded Enter must remain
-at or below 50 milliseconds p95 and 75 milliseconds p99.
+below 50 milliseconds p95 and 100 milliseconds p99. Guarded Enter must remain
+at or below 100 milliseconds p95 and 150 milliseconds p99.
 
 This decision extends and partially supersedes ADR 0013's serial-default
 execution decision. ADR 0013's input sequence, read fence, cancellation

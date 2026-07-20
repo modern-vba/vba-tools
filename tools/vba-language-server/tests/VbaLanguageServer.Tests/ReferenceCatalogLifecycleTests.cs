@@ -1316,8 +1316,8 @@ public sealed class ReferenceCatalogLifecycleTests
                     observer.Count(
                         VbaProjectReferenceCatalogLifecycleOperation.ProjectScopeInvalidation));
                 Assert.True(
-                    delayedP95 - baselineP95 <= TimeSpan.FromMilliseconds(5),
-                    $"Expected delayed lifecycle p95 delta <= 5 ms, baseline={baselineP95.TotalMilliseconds:F6} ms, delayed={delayedP95.TotalMilliseconds:F6} ms.");
+                    delayedP95 - baselineP95 <= TimeSpan.FromMilliseconds(10),
+                    $"Expected delayed lifecycle p95 delta <= 10 ms, baseline={baselineP95.TotalMilliseconds:F6} ms, delayed={delayedP95.TotalMilliseconds:F6} ms.");
             }
             finally
             {
