@@ -70,6 +70,7 @@ export interface VbaDevTestLocation {
   uriPath: string;
   line: number;
   character: number;
+  range: VbaDevDiagnosticRange;
 }
 
 export class VbaDevOutputContractError extends Error {
@@ -278,13 +279,29 @@ function toTestLocation(value: unknown): VbaDevTestLocation | undefined {
   }
 
   const uriPath = toUriPath(getString(value.file) ?? getString(value.uriPath) ?? getString(value.uri));
+  const range = toRange(value.range);
+  if (uriPath && range) {
+    return {
+      uriPath,
+      line: range.start.line,
+      character: range.start.character,
+      range
+    };
+  }
+
   const line = getNumber(value.line);
   const character = getNumber(value.character) ?? getNumber(value.column) ?? 0;
   if (!uriPath || line === undefined) {
     return undefined;
   }
 
-  return { uriPath, line, character };
+  const position = { line, character };
+  return {
+    uriPath,
+    line,
+    character,
+    range: { start: position, end: position }
+  };
 }
 
 function toRange(value: unknown): VbaDevDiagnosticRange | undefined {

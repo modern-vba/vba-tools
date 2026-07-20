@@ -9,13 +9,15 @@ namespace VbaDev.App.Testing;
 /// <param name="Outcome">The normalized test outcome.</param>
 /// <param name="Message">The test result message.</param>
 /// <param name="Duration">The optional test duration.</param>
+/// <param name="Location">The optional exported-source declaration location.</param>
 public sealed record TestResultRecord(
     string Document,
     string Category,
     string TestName,
     string Outcome,
     string Message,
-    TimeSpan? Duration = null)
+    TimeSpan? Duration = null,
+    TestProcedureSourceLocation? Location = null)
 {
     /// <summary>
     /// Converts a raw workbook test result row into a normalized result record.

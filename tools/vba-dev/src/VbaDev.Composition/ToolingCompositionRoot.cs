@@ -85,7 +85,8 @@ public static class ToolingCompositionRoot
         var testCommand = new TestCommand(
             buildCommand,
             workbookTestRunner ?? new ExcelComWorkbookTestRunner(),
-            new TestResultOutputFormatter());
+            new TestResultOutputFormatter(),
+            new TestProcedureSourceLocator());
         var exportCommand = new ExportCommand(
             workbookModuleExporter ?? new ExcelComWorkbookModuleExporter());
         var importCommand = new ImportCommand(buildAutomation);

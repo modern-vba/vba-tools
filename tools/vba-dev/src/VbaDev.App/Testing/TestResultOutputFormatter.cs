@@ -87,7 +87,8 @@ public sealed class TestResultOutputFormatter
                 item.Procedure,
                 item.Outcome,
                 item.Message,
-                item.DurationMilliseconds),
+                item.DurationMilliseconds,
+                item.Location),
             RunFinishedTestRunEvent item => new RunFinishedJsonRecord(
                 item.Type,
                 item.Project,
@@ -120,7 +121,8 @@ public sealed class TestResultOutputFormatter
         string Procedure,
         string Outcome,
         string Message,
-        double? DurationMilliseconds);
+        double? DurationMilliseconds,
+        TestProcedureSourceLocation? Location);
 
     private sealed record RunFinishedJsonRecord(
         string Type,

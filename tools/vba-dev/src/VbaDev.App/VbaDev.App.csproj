@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\VbaDev.Domain\VbaDev.Domain.csproj" />
+    <ProjectReference Include="..\..\..\vba-language-server\src\VbaLanguageServer.Syntax\VbaLanguageServer.Syntax.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

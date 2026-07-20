@@ -117,6 +117,7 @@ public sealed record TestStartedTestRunEvent(
 /// <param name="Outcome">The normalized test outcome.</param>
 /// <param name="Message">The test result message.</param>
 /// <param name="DurationMilliseconds">The optional test duration in milliseconds.</param>
+/// <param name="Location">The optional exported-source declaration location.</param>
 public sealed record TestFinishedTestRunEvent(
     string Project,
     string Document,
@@ -124,7 +125,8 @@ public sealed record TestFinishedTestRunEvent(
     string Procedure,
     string Outcome,
     string Message,
-    double? DurationMilliseconds)
+    double? DurationMilliseconds,
+    TestProcedureSourceLocation? Location)
     : TestRunEvent("testFinished", Project, Document)
 {
     /// <summary>
@@ -141,7 +143,8 @@ public sealed record TestFinishedTestRunEvent(
             result.TestName,
             result.Outcome,
             result.Message,
-            result.Duration?.TotalMilliseconds);
+            result.Duration?.TotalMilliseconds,
+            result.Location);
 }
 
 /// <summary>

@@ -4,7 +4,6 @@ import {
   DiagnosticCollection,
   DiagnosticSeverity,
   Location,
-  Position,
   Range,
   TestController,
   TestItem,
@@ -28,11 +27,23 @@ import {
 
 export function createVscodeTestControllerAdapter(controller: TestController): TestControllerAdapter {
   return {
-    createTestItem: (id, label, uriPath) => controller.createTestItem(
-      id,
-      label,
-      uriPath ? Uri.file(uriPath) : undefined
-    ),
+    createTestItem: (id, label, uriPath, range) => {
+      const item = controller.createTestItem(
+        id,
+        label,
+        uriPath ? Uri.file(uriPath) : undefined
+      );
+      if (range) {
+        item.range = new Range(
+          range.start.line,
+          range.start.character,
+          range.end.line,
+          range.end.character
+        );
+      }
+
+      return item;
+    },
     replaceItems: (items) => controller.items.replace(items as TestItem[]),
     createRunProfile: (label, runHandler, isDefault) => {
       controller.createRunProfile(
@@ -121,7 +132,12 @@ function toTestMessage(message: string, location?: TestMessageLocation | undefin
   if (location) {
     testMessage.location = new Location(
       Uri.file(location.uriPath),
-      new Position(location.line, location.character)
+      new Range(
+        location.range.start.line,
+        location.range.start.character,
+        location.range.end.line,
+        location.range.end.character
+      )
     );
   }
 

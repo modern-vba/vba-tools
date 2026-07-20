@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using System.Runtime.InteropServices;
 using VbaDev.App.Testing;
 using VbaDev.App.Workbooks;
@@ -40,6 +41,70 @@ public sealed class TestCommandTests
             "{\"type\":\"runFinished\",\"project\":\"Project\",\"document\":\"Book1\",\"outcome\":\"failed\",\"total\":3,\"passed\":1,\"failed\":1,\"errors\":1}\n",
             result.StandardOutput);
         Assert.Equal(string.Empty, result.StandardError);
+    }
+
+    [Fact]
+    public void NdjsonTestFinishedIncludesTheUniqueProcedureDeclarationRange()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        CreateWorkbookSource(
+            root,
+            "Book1",
+            ("Test_Module.bas", "Attribute VB_Name = \"Test_Module\"\nOption Explicit\n\nPublic Sub Test_Passes()\nEnd Sub\n"));
+        var binPath = Path.Combine(root, "bin", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
+        File.WriteAllText(binPath, "bin", Encoding.UTF8);
+        var runner = new FakeWorkbookTestRunner(
+            new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
+
+        var result = application.Run(["test", "--no-build", "--format", "ndjson"]);
+
+        var finishedLine = result.StandardOutput
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Single(line => line.Contains("\"type\":\"testFinished\"", StringComparison.Ordinal));
+        using var finished = JsonDocument.Parse(finishedLine);
+        var location = finished.RootElement.GetProperty("location");
+        Assert.Equal(
+            new Uri(Path.Combine(root, "src", "Book1", "Test_Module.bas")).AbsoluteUri,
+            location.GetProperty("uri").GetString());
+        var range = location.GetProperty("range");
+        Assert.Equal(3, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(11, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(3, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(22, range.GetProperty("end").GetProperty("character").GetInt32());
+    }
+
+    [Fact]
+    public void UnreadableSourceLocationDoesNotChangeTheCompletedTestOutcome()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        CreateWorkbookSource(
+            root,
+            "Book1",
+            ("Test_Module.bas", "Attribute VB_Name = \"Test_Module\"\nPublic Sub Test_Passes()\nEnd Sub\n"));
+        var sourcePath = Path.Combine(root, "src", "Book1", "Test_Module.bas");
+        var binPath = Path.Combine(root, "bin", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
+        File.WriteAllText(binPath, "bin", Encoding.UTF8);
+        var runner = new FakeWorkbookTestRunner(
+            new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
+        using var sourceLock = new FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.None);
+
+        var result = application.Run(["test", "--no-build", "--format", "ndjson"]);
+
+        Assert.Equal(0, result.ExitCode);
+        var finishedLine = result.StandardOutput
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Single(line => line.Contains("\"type\":\"testFinished\"", StringComparison.Ordinal));
+        using var finished = JsonDocument.Parse(finishedLine);
+        Assert.Equal("passed", finished.RootElement.GetProperty("outcome").GetString());
+        Assert.False(finished.RootElement.TryGetProperty("location", out _));
     }
 
     [Fact]

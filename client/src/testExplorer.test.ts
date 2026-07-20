@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { CommandCancellationToken } from './devtoolCommand';
 import {
@@ -142,6 +143,48 @@ test('testFinished events discover module and TestProcedure nodes and mark passe
   assert.equal(moduleItem.label, 'Test_Module');
   assert.equal(procedureItem.label, 'Test_Passes');
   assert.ok(controller.runs[0].events.includes(`passed:${procedureItem.id}`));
+});
+
+test('canonical source ranges are projected only onto TestProcedure nodes', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const sourcePath = path.join(projectRoot, 'src', 'Book1', 'Test_Module.bas');
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([
+      [path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]
+    ]),
+    stdout: ndjson({
+      type: 'testFinished',
+      document: 'Book1',
+      module: 'Test_Module',
+      procedure: 'Test_Passes',
+      outcome: 'passed',
+      message: '',
+      location: {
+        uri: pathToFileURL(sourcePath).href,
+        range: {
+          start: { line: 3, character: 11 },
+          end: { line: 3, character: 22 }
+        }
+      }
+    })
+  });
+  await explorer.refresh();
+  const projectItem = controller.items[0];
+  const documentItem = projectItem.children.items[0];
+
+  await explorer.run({ include: [documentItem] }, { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) });
+
+  const moduleItem = documentItem.children.items[0];
+  const procedureItem = moduleItem.children.items[0];
+  assert.equal(procedureItem.uriPath, sourcePath);
+  assert.deepEqual(procedureItem.range, {
+    start: { line: 3, character: 11 },
+    end: { line: 3, character: 22 }
+  });
+  assert.equal(projectItem.range, undefined);
+  assert.equal(documentItem.range, undefined);
+  assert.equal(moduleItem.range, undefined);
 });
 
 test('legacy result records are ignored by Test Explorer event projection', async () => {
@@ -356,7 +399,52 @@ test('failed testFinished outcomes mark TestProcedure failed with message and so
   await explorer.run({ include: [documentItem] }, { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) });
 
   const procedureItem = documentItem.children.items[0].children.items[0];
+  assert.deepEqual(procedureItem.range, {
+    start: { line: 12, character: 4 },
+    end: { line: 12, character: 4 }
+  });
   assert.ok(controller.runs[0].events.includes(`failed:${procedureItem.id}:Expected 1 but was 2:${sourcePath}:12:4`));
+});
+
+test('failed TestProcedure items and messages share the canonical declaration range', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const sourcePath = path.join(projectRoot, 'src', 'Book1', 'Test_Module.bas');
+  const range = {
+    start: { line: 3, character: 11 },
+    end: { line: 3, character: 21 }
+  };
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([
+      [path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]
+    ]),
+    stdout: ndjson({
+      type: 'testFinished',
+      document: 'Book1',
+      module: 'Test_Module',
+      procedure: 'Test_Fails',
+      outcome: 'failed',
+      message: 'Expected 1 but was 2',
+      location: {
+        uri: pathToFileURL(sourcePath).href,
+        range
+      }
+    }),
+    exitCode: 1
+  });
+  await explorer.refresh();
+  const documentItem = controller.items[0].children.items[0];
+
+  await explorer.run({ include: [documentItem] }, { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) });
+
+  const procedureItem = documentItem.children.items[0].children.items[0];
+  assert.deepEqual(procedureItem.range, range);
+  assert.deepEqual(controller.runs[0].failureLocations, [
+    {
+      itemId: procedureItem.id,
+      location: { uriPath: sourcePath, range }
+    }
+  ]);
 });
 
 test('CLI command failures are reported as project-level or document-level TestRunError', async () => {
@@ -596,8 +684,16 @@ class FakeTestController implements TestControllerAdapter {
   }> = [];
   public readonly runs: FakeTestRun[] = [];
 
-  public createTestItem(id: string, label: string, uriPath?: string | undefined): TestExplorerItem {
-    return new FakeTestItem(id, label, uriPath);
+  public createTestItem(
+    id: string,
+    label: string,
+    uriPath?: string | undefined,
+    range?: {
+      start: { line: number; character: number };
+      end: { line: number; character: number };
+    } | undefined
+  ): TestExplorerItem {
+    return new FakeTestItem(id, label, uriPath, range);
   }
 
   public replaceItems(items: readonly TestExplorerItem[]): void {
@@ -625,7 +721,11 @@ class FakeTestItem implements TestExplorerItem {
   public constructor(
     public readonly id: string,
     public readonly label: string,
-    public readonly uriPath?: string | undefined
+    public readonly uriPath?: string | undefined,
+    public readonly range?: {
+      start: { line: number; character: number };
+      end: { line: number; character: number };
+    } | undefined
   ) {
   }
 }
@@ -640,6 +740,7 @@ class FakeTestItemCollection {
 
 class FakeTestRun {
   public readonly events: string[] = [];
+  public readonly failureLocations: Array<{ itemId: string; location: unknown }> = [];
 
   public started(item: TestExplorerItem): void {
     this.events.push(`started:${item.id}`);
@@ -652,10 +753,19 @@ class FakeTestRun {
   public failed(
     item: TestExplorerItem,
     message = '',
-    location?: { uriPath: string; line: number; character: number } | undefined
+    location?: {
+      uriPath: string;
+      range: {
+        start: { line: number; character: number };
+        end: { line: number; character: number };
+      };
+    } | undefined
   ): void {
     if (location) {
-      this.events.push(`failed:${item.id}:${message}:${location.uriPath}:${location.line}:${location.character}`);
+      this.failureLocations.push({ itemId: item.id, location });
+      this.events.push(
+        `failed:${item.id}:${message}:${location.uriPath}:${location.range.start.line}:${location.range.start.character}`
+      );
       return;
     }
 

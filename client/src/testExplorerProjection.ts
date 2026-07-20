@@ -209,8 +209,7 @@ export class TestExplorerNodeIndex {
       return undefined;
     }
 
-    const location = toTestMessageLocation(event.location);
-    const moduleItem = controller.createTestItem(id, moduleName, location?.uriPath);
+    const moduleItem = controller.createTestItem(id, moduleName);
     documentItem.children.add(moduleItem);
     this.setItem(moduleItem, {
       kind: 'module',
@@ -237,7 +236,11 @@ export class TestExplorerNodeIndex {
     }
 
     const location = toTestMessageLocation(event.location);
-    const procedureItem = controller.createTestItem(id, procedureName, location?.uriPath);
+    const procedureItem = controller.createTestItem(
+      id,
+      procedureName,
+      location?.uriPath,
+      event.location?.range);
     moduleItem.children.add(procedureItem);
     this.setItem(procedureItem, {
       kind: 'procedure',
@@ -273,8 +276,7 @@ function toTestMessageLocation(location: VbaDevTestEvent['location']): TestMessa
   return location
     ? {
       uriPath: location.uriPath,
-      line: location.line,
-      character: location.character
+      range: location.range
     }
     : undefined;
 }

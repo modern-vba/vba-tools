@@ -22,6 +22,7 @@ import {
 export interface TestExplorerItem {
   readonly id: string;
   readonly label: string;
+  readonly range?: TestSourceRange | undefined;
   readonly children: {
     add(item: TestExplorerItem): void;
   };
@@ -44,12 +45,26 @@ export interface TestRunLike {
 
 export interface TestMessageLocation {
   uriPath: string;
+  range: TestSourceRange;
+}
+
+export interface TestSourcePosition {
   line: number;
   character: number;
 }
 
+export interface TestSourceRange {
+  start: TestSourcePosition;
+  end: TestSourcePosition;
+}
+
 export interface TestControllerAdapter {
-  createTestItem(id: string, label: string, uriPath?: string | undefined): TestExplorerItem;
+  createTestItem(
+    id: string,
+    label: string,
+    uriPath?: string | undefined,
+    range?: TestSourceRange | undefined
+  ): TestExplorerItem;
   replaceItems(items: readonly TestExplorerItem[]): void;
   createRunProfile(
     label: string,

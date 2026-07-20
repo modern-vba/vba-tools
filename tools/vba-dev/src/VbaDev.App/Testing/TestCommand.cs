@@ -13,6 +13,7 @@ public sealed class TestCommand
     private readonly BuildCommand buildCommand;
     private readonly IWorkbookTestRunner workbookTestRunner;
     private readonly TestResultOutputFormatter outputFormatter;
+    private readonly TestProcedureSourceLocator sourceLocator;
 
     /// <summary>
     /// Creates the test command.
@@ -20,14 +21,17 @@ public sealed class TestCommand
     /// <param name="buildCommand">The build command used when the test request builds first.</param>
     /// <param name="workbookTestRunner">The workbook automation port used to execute tests.</param>
     /// <param name="outputFormatter">The formatter for text and machine-readable test output.</param>
+    /// <param name="sourceLocator">The exported-source procedure locator.</param>
     public TestCommand(
         BuildCommand buildCommand,
         IWorkbookTestRunner workbookTestRunner,
-        TestResultOutputFormatter outputFormatter)
+        TestResultOutputFormatter outputFormatter,
+        TestProcedureSourceLocator sourceLocator)
     {
         this.buildCommand = buildCommand;
         this.workbookTestRunner = workbookTestRunner;
         this.outputFormatter = outputFormatter;
+        this.sourceLocator = sourceLocator;
     }
 
     /// <summary>
@@ -54,10 +58,14 @@ public sealed class TestCommand
                 return CommandResult.UsageError($"Bin workbook was not found: {context.BinDocumentPath}");
             }
 
-            var testRun = TestRun.FromWorkbookRows(
+            var results = workbookTestRunner
+                .RunTests(context.BinDocumentPath, request.Selector)
+                .Select(row => TestResultRecord.FromWorkbookRow(context.DocumentName, row))
+                .ToArray();
+            var testRun = TestRun.FromResults(
                 context.Manifest.ProjectName,
                 context.DocumentName,
-                workbookTestRunner.RunTests(context.BinDocumentPath, request.Selector));
+                sourceLocator.Locate(context.DocumentSourceSetPath, results));
             var output = outputFormatter.Format(request.Format, testRun);
 
             return testRun.HasFailures
