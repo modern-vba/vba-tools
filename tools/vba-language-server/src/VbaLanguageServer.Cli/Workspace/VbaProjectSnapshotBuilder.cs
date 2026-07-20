@@ -8,10 +8,14 @@ namespace VbaLanguageServer.Workspace;
 /// </summary>
 internal sealed class VbaProjectSnapshotBuilder
 {
+    private readonly IVbaProjectDiskInventory diskInventory;
     private readonly VbaProjectSourceDocumentCache diskDocumentCache;
 
-    public VbaProjectSnapshotBuilder(VbaProjectSourceDocumentCache diskDocumentCache)
+    public VbaProjectSnapshotBuilder(
+        IVbaProjectDiskInventory diskInventory,
+        VbaProjectSourceDocumentCache diskDocumentCache)
     {
+        this.diskInventory = diskInventory;
         this.diskDocumentCache = diskDocumentCache;
     }
 
@@ -23,13 +27,18 @@ internal sealed class VbaProjectSnapshotBuilder
         IReadOnlyDictionary<string, bool> manifestBarrierOverrides,
         CancellationToken cancellationToken)
     {
-        var inventorySnapshot = VbaProjectSourceInventory.CreateInventorySnapshot(
+        var diskCapture = diskInventory.CaptureColdSources(
             resolution,
-            workspaceDocuments,
+            workspaceDocuments.Keys.ToArray(),
             excludedSourceUris,
-            diskDocumentCache,
-            cancellationToken,
-            manifestBarrierOverrides);
+            manifestBarrierOverrides,
+            cancellationToken);
+        var inventorySnapshot =
+            VbaProjectSourceInventory.CreateInventorySnapshot(
+                diskCapture,
+                workspaceDocuments,
+                diskDocumentCache,
+                cancellationToken);
         if (!inventorySnapshot.Documents.ContainsKey(activeUri)
             && workspaceDocuments.TryGetValue(activeUri, out var activeDocument))
         {
@@ -49,7 +58,7 @@ internal sealed class VbaProjectSnapshotBuilder
         var scopedSourceDocuments = scopedTrackedDocuments
             .ToDictionary(
                 pair => pair.Key,
-                pair => pair.Value.SourceDocument ?? VbaSourceIndex.CreateDocument(pair.Value.Uri, pair.Value.SyntaxTree),
+                pair => pair.Value.SourceDocument ?? VbaSourceDocumentProjector.Project(pair.Value.Uri, pair.Value.SyntaxTree),
                 StringComparer.OrdinalIgnoreCase);
         var manifestContext = LanguageServerManifestResolution.Create(
             resolution,

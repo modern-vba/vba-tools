@@ -137,7 +137,7 @@ internal sealed class VbaDocumentChangePipeline
             return;
         }
 
-        if (workspace.ChangeDocument(change.Uri, change.Version, change.Text, cancellationToken) is null)
+        if (!workspace.ChangeDocument(change.Uri, change.Version, change.Text, cancellationToken))
         {
             return;
         }
@@ -175,7 +175,7 @@ internal sealed class VbaDocumentChangePipeline
     private async Task ApplyWatchedFileReloadAsync(string uri, CancellationToken cancellationToken)
     {
         var localPath = VbaProjectResolver.TryGetLocalPath(uri);
-        if (localPath is null || !File.Exists(localPath))
+        if (localPath is null)
         {
             return;
         }
@@ -206,8 +206,9 @@ internal sealed class VbaDocumentChangePipeline
             return;
         }
 
-        var text = await VbaSourceFileTextReader.ReadAllTextAsync(localPath, cancellationToken);
-        if (!workspace.ReloadSourceDocument(uri, text, cancellationToken))
+        if (!workspace.ReloadSourceDocumentFromDisk(
+                uri,
+                cancellationToken))
         {
             return;
         }

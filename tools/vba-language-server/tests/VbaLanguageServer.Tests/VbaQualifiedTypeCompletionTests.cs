@@ -27,7 +27,7 @@ public sealed class VbaQualifiedTypeCompletionTests
             $"Attribute VB_Name = \"{qualifiedModuleName}\"",
             "Option Explicit"
         ]);
-        var index = VbaSourceIndex.Build(new Dictionary<string, string>
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string>
         {
             [MainUri] = mainSource,
             [qualifiedModuleUri] = qualifiedModuleSource
@@ -79,7 +79,7 @@ public sealed class VbaQualifiedTypeCompletionTests
                         "SharedType",
                         VbaSourceDefinitionKind.Class)
                 ]));
-        var index = VbaSourceIndex.Build(
+        var index = VbaSemanticInventoryFixture.Create(
             new Dictionary<string, string>
             {
                 [MainUri] = mainSource,

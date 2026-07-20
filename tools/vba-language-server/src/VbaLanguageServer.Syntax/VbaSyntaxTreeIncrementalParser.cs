@@ -9,7 +9,7 @@ internal static class VbaSyntaxTreeIncrementalParser
         string uri,
         string source,
         VbaSyntaxTree previousSyntaxTree,
-        out VbaSyntaxTreeParseResult result,
+        out VbaSyntaxTreeChangeSet result,
         out VbaIncrementalParseObservation observation)
     {
         result = default!;
@@ -36,7 +36,7 @@ internal static class VbaSyntaxTreeIncrementalParser
             return false;
         }
 
-        if (!previousSyntaxTree.Uri.Equals(uri, StringComparison.OrdinalIgnoreCase))
+        if (!previousSyntaxTree.Uri.Equals(uri, StringComparison.Ordinal))
         {
             observation = observation with
             {
@@ -157,17 +157,10 @@ internal static class VbaSyntaxTreeIncrementalParser
             previousMember,
             currentMember,
             currentSource);
-        var update = new VbaModuleMemberIncrementalUpdate(
-            previousMember,
-            currentMember,
-            oldStartLine,
-            oldEndLine,
-            newStartLine,
-            newEndLine);
-        result = new VbaSyntaxTreeParseResult(
+        result = new VbaSyntaxTreeChangeSet.ModuleMember(
             syntaxTree,
-            VbaSyntaxTreeParseUpdateKind.ModuleMember,
-            update);
+            previousMember,
+            currentMember);
         observation = new VbaIncrementalParseObservation(
             VbaIncrementalParseRoute.ModuleMemberSourceWindow,
             VbaIncrementalParseFallbackReason.None,

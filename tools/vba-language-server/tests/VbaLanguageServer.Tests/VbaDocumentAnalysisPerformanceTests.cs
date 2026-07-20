@@ -43,23 +43,23 @@ public sealed class VbaDocumentAnalysisPerformanceTests
 
         for (var index = 0; index < warmupCount; index++)
         {
-            var updateKind = workspace.ChangeDocument(
+            var accepted = workspace.ChangeDocument(
                 uri,
                 ++version,
                 index % 2 == 0 ? secondText : firstText);
-            Assert.Equal(VbaSyntaxTreeParseUpdateKind.ModuleMember, updateKind);
+            Assert.True(accepted);
         }
 
         var measurements = new TimeSpan[measuredCount];
         for (var index = 0; index < measurements.Length; index++)
         {
             var started = Stopwatch.GetTimestamp();
-            var updateKind = workspace.ChangeDocument(
+            var accepted = workspace.ChangeDocument(
                 uri,
                 ++version,
                 index % 2 == 0 ? secondText : firstText);
             measurements[index] = Stopwatch.GetElapsedTime(started);
-            Assert.Equal(VbaSyntaxTreeParseUpdateKind.ModuleMember, updateKind);
+            Assert.True(accepted);
         }
 
         var p95 = Percentile(measurements, 0.95);

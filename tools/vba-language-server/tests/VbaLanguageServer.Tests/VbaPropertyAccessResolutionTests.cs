@@ -29,14 +29,14 @@ public sealed class VbaPropertyAccessResolutionTests
             "    item.",
             "End Sub"
         ]);
-        var index = VbaSourceIndex.Build(new Dictionary<string, string>
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string>
         {
             [classUri] = classText,
             [workerUri] = workerText
         });
 
         var property = Assert.Single(
-            index.GetCompletionDefinitions(workerUri, 3, "    item.".Length),
+            index.GetCompletionResult(workerUri, 3, "    item.".Length).Definitions,
             definition => definition.Name == "Value");
 
         Assert.Equal(
@@ -66,14 +66,14 @@ public sealed class VbaPropertyAccessResolutionTests
             "    item.",
             "End Sub"
         ]);
-        var index = VbaSourceIndex.Build(new Dictionary<string, string>
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string>
         {
             [classUri] = classText,
             [workerUri] = workerText
         });
 
         var property = Assert.Single(
-            index.GetCompletionDefinitions(workerUri, 3, "    item.".Length),
+            index.GetCompletionResult(workerUri, 3, "    item.".Length).Definitions,
             definition => definition.Name == "Value");
 
         Assert.Equal(VbaPropertyAccess.Writable, property.PropertyAccess);
@@ -100,7 +100,7 @@ public sealed class VbaPropertyAccessResolutionTests
             "    result = item.Value",
             "End Sub"
         ]);
-        var index = VbaSourceIndex.Build(new Dictionary<string, string>
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string>
         {
             [classUri] = classText,
             [workerUri] = workerText
@@ -111,7 +111,7 @@ public sealed class VbaPropertyAccessResolutionTests
             .OrderBy(definition => definition.Range.Start.Line)
             .ToArray();
         var completionDefinition = Assert.Single(
-            index.GetCompletionDefinitions(workerUri, 3, "    item.".Length),
+            index.GetCompletionResult(workerUri, 3, "    item.".Length).Definitions,
             definition => definition.Name == "Value");
         var resolvedDefinition = index.ResolveSourceDefinition(
             workerUri,

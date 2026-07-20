@@ -126,6 +126,12 @@ CommonModules state, reference declarations, and machine prerequisites. Results
 are written to the VBA Tools output channel and surfaced as VS Code diagnostics
 where applicable.
 
+Doctor also performs an active debug-readiness probe in a temporary dedicated
+Excel/VBE session. It verifies native breakpoint control, runs a harmless
+temporary procedure through the native VBE command, and verifies debug-process
+ownership. It then removes all temporary state without changing project files.
+Excel or the VBE may appear briefly while this probe runs.
+
 ---
 
 ## Write Unit Tests
@@ -243,6 +249,36 @@ vba-dev build
 Use build when you want a generated workbook for manual inspection or when a
 project has no unit tests. Close the target workbook before building so Excel
 can replace the generated output.
+
+### Debug in the VBE (planned)
+
+> This workflow is planned and is not available in the current release.
+
+Pressing F5 in a parameterless public `Sub` in a standard module will save and
+rebuild the selected project, open its generated workbook in a dedicated visible
+Excel/VBE session, transfer enabled ordinary line breakpoints, and run that
+procedure. `Option Private Module` is supported. `launch.json` will be optional
+and used only to pin a target.
+
+Interactive debugging, including stepping, watches, the Immediate Window, and
+runtime errors, stays in the VBE. VS Code will start, restart, or stop the
+session and show progress. Unsupported or invalid breakpoints fail the launch;
+VBA Tools will not move them or insert `Stop` statements.
+
+The opened workbook is generated output. Saving it does not update exported VBA
+source or the source template, and the next F5 rebuild overwrites it. Make
+persistent VBA changes in exported source and persistent workbook-content
+changes in the source template.
+
+Open-time events such as `Workbook_Open` will not run automatically. Use an
+eligible wrapper `Sub` to debug startup logic. Excel and VBE prompts remain
+interactive without a timeout, and trusted access to the VBA project object
+model is required.
+
+Stopping or restarting debugging force-closes the dedicated Excel process
+without a save prompt. Unsaved changes in every workbook opened in that process
+are lost, so do not open unrelated workbooks there. When the Excel process
+exits, VS Code reports that the debug session has ended.
 
 ### Test
 

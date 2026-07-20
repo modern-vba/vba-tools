@@ -4,30 +4,13 @@ using VbaLanguageServer.Syntax;
 namespace VbaLanguageServer.Workspace;
 
 /// <summary>
-/// Caches parsed source documents loaded from disk for repeated project snapshots.
+/// Caches parsed and projected documents over syntax-free project disk facts.
 /// </summary>
 internal sealed class VbaProjectSourceDocumentCache
 {
-    private const int MaxStableReadAttempts = 3;
     private readonly object gate = new();
-    private readonly IVbaProjectFileSystem fileSystem;
-    private readonly Dictionary<string, CachedDocument> documents = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, int> activeLoads =
+    private readonly Dictionary<string, SourceState> states =
         new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, long> invalidationGenerations =
-        new(StringComparer.OrdinalIgnoreCase);
-
-    public VbaProjectSourceDocumentCache()
-        : this(SystemVbaProjectFileSystem.Instance)
-    {
-    }
-
-    internal VbaProjectSourceDocumentCache(IVbaProjectFileSystem fileSystem)
-    {
-        this.fileSystem = fileSystem;
-    }
-
-    internal IVbaProjectFileSystem FileSystem => fileSystem;
 
     public int Count
     {
@@ -35,166 +18,120 @@ internal sealed class VbaProjectSourceDocumentCache
         {
             lock (gate)
             {
-                return documents.Count;
+                return states.Values.Count(
+                    state => state.Document is not null);
             }
         }
     }
 
     /// <summary>
-    /// Gets a cached disk document or reloads it when the file identity has changed.
+    /// Gets the parsed projection for a disk fact or creates it when its
+    /// decoded content identity has changed.
     /// </summary>
-    /// <param name="uri">The canonical disk URI used for the source document.</param>
-    /// <param name="localPath">The local filesystem path to load.</param>
-    /// <param name="cancellationToken">A cancellation token for cache work.</param>
-    /// <returns>The tracked source document loaded from disk.</returns>
-    public VbaTrackedDocument GetOrLoadDocument(
-        string uri,
-        string localPath,
+    public VbaTrackedDocument GetOrCreateDocument(
+        VbaProjectDiskSource source,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var fullPath = Path.GetFullPath(localPath);
-        if (!fileSystem.TryGetSourceMetadata(fullPath, out var metadata))
-        {
-            throw new FileNotFoundException("Source file was not found.", fullPath);
-        }
-
-        long capturedInvalidationGeneration;
+        SourceState state;
+        long capturedGeneration;
         lock (gate)
         {
-            if (documents.TryGetValue(fullPath, out var cached)
-                && cached.Metadata == metadata)
+            if (!states.TryGetValue(source.FullPath, out state!))
+            {
+                state = new SourceState();
+                states.Add(source.FullPath, state);
+            }
+
+            if (state.Document is { } cached
+                && cached.ContentIdentity.Equals(
+                    source.ContentIdentity))
             {
                 return cached.Document;
             }
 
-            activeLoads.TryGetValue(fullPath, out var activeLoadCount);
-            activeLoads[fullPath] = activeLoadCount + 1;
-            invalidationGenerations.TryGetValue(
-                fullPath,
-                out capturedInvalidationGeneration);
+            state.Generation++;
+            capturedGeneration = state.Generation;
+            state.ActiveBuilds++;
         }
 
         try
         {
-            for (var attempt = 0;
-                attempt < MaxStableReadAttempts;
-                attempt++)
+            var syntaxTree = VbaSyntaxTree.ParseModule(
+                source.Uri,
+                source.Text);
+            var document = new VbaTrackedDocument(
+                source.Uri,
+                source.Text,
+                syntaxTree,
+                SourceDocument: VbaSourceDocumentProjector.Project(
+                    source.Uri,
+                    syntaxTree));
+            lock (gate)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (attempt > 0)
+                if (state.Document is { } concurrentlyCached
+                    && concurrentlyCached.ContentIdentity.Equals(
+                        source.ContentIdentity))
                 {
-                    lock (gate)
-                    {
-                        if (documents.TryGetValue(
-                                fullPath,
-                                out var retriedCached)
-                            && retriedCached.Metadata == metadata)
-                        {
-                            return retriedCached.Document;
-                        }
-                    }
+                    return concurrentlyCached.Document;
                 }
 
-                var sourceBytes = fileSystem.ReadSourceBytes(fullPath);
-                cancellationToken.ThrowIfCancellationRequested();
-                if (!fileSystem.TryGetSourceMetadata(
-                        fullPath,
-                        out var loadedMetadata))
+                if (state.Generation == capturedGeneration)
                 {
-                    throw new FileNotFoundException(
-                        "Source file was removed while it was being read.",
-                        fullPath);
+                    state.Document = new CachedDocument(
+                        source.ContentIdentity,
+                        document);
                 }
-
-                if (loadedMetadata != metadata)
-                {
-                    metadata = loadedMetadata;
-                    continue;
-                }
-
-                var text = VbaSourceFileTextReader.Decode(sourceBytes);
-                var syntaxTree = VbaSyntaxTree.ParseModule(uri, text);
-                var document = new VbaTrackedDocument(
-                    uri,
-                    text,
-                    syntaxTree,
-                    VbaSyntaxTreeParseUpdateKind.FullModule,
-                    SourceDocument: VbaSourceIndex.CreateDocument(
-                        uri,
-                        syntaxTree));
-                lock (gate)
-                {
-                    if (documents.TryGetValue(
-                            fullPath,
-                            out var concurrentlyCached)
-                        && concurrentlyCached.Metadata == loadedMetadata)
-                    {
-                        return concurrentlyCached.Document;
-                    }
-
-                    invalidationGenerations.TryGetValue(
-                        fullPath,
-                        out var currentInvalidationGeneration);
-                    if (currentInvalidationGeneration
-                        == capturedInvalidationGeneration)
-                    {
-                        documents[fullPath] = new CachedDocument(
-                            loadedMetadata,
-                            document);
-                    }
-                }
-
-                return document;
             }
 
-            throw new IOException(
-                $"Source file changed repeatedly while it was being read: {fullPath}");
+            return document;
         }
         finally
         {
             lock (gate)
             {
-                var remainingLoadCount = activeLoads[fullPath] - 1;
-                if (remainingLoadCount == 0)
+                state.ActiveBuilds--;
+                if (state.ActiveBuilds == 0
+                    && state.Document is null)
                 {
-                    activeLoads.Remove(fullPath);
-                    invalidationGenerations.Remove(fullPath);
-                }
-                else
-                {
-                    activeLoads[fullPath] = remainingLoadCount;
+                    states.Remove(source.FullPath);
                 }
             }
         }
     }
 
     /// <summary>
-    /// Invalidates a cached disk document after an explicit watcher event.
+    /// Releases the parsed projection retained for one disk source.
     /// </summary>
-    /// <param name="localPath">The local source path.</param>
     public void Invalidate(string localPath)
     {
         var fullPath = Path.GetFullPath(localPath);
         lock (gate)
         {
-            documents.Remove(fullPath);
-            if (activeLoads.ContainsKey(fullPath))
+            if (!states.TryGetValue(fullPath, out var state))
             {
-                invalidationGenerations.TryGetValue(
-                    fullPath,
-                    out var previousGeneration);
-                invalidationGenerations[fullPath] =
-                    previousGeneration + 1;
+                return;
             }
-            else
+
+            state.Generation++;
+            state.Document = null;
+            if (state.ActiveBuilds == 0)
             {
-                invalidationGenerations.Remove(fullPath);
+                states.Remove(fullPath);
             }
         }
     }
 
+    private sealed class SourceState
+    {
+        public long Generation { get; set; }
+
+        public int ActiveBuilds { get; set; }
+
+        public CachedDocument? Document { get; set; }
+    }
+
     private sealed record CachedDocument(
-        VbaProjectSourceFileMetadata Metadata,
+        VbaProjectDiskContentIdentity ContentIdentity,
         VbaTrackedDocument Document);
 }

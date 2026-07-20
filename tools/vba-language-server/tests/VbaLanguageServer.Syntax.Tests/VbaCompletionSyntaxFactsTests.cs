@@ -293,7 +293,7 @@ public sealed class VbaCompletionSyntaxFactsTests
 
         var result = VbaSyntaxTree.ParseOrUpdate(uri, updatedText, previous);
 
-        Assert.Equal(VbaSyntaxTreeParseUpdateKind.ModuleMember, result.UpdateKind);
+        Assert.IsType<VbaSyntaxTreeChangeSet.ModuleMember>(result);
         Assert.Equal(3, Assert.Single(result.SyntaxTree.Module.LineLabels).Range.Start.Line);
         var ifBlock = Assert.Single(result.SyntaxTree.Module.Blocks, block => block.Kind == VbaBlockKind.If);
         Assert.Equal(4, ifBlock.OpenerRange.Start.Line);

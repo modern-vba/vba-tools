@@ -12,6 +12,25 @@ namespace VbaLanguageServer.Tests;
 public sealed class VbaLanguageWorkspaceTests
 {
     [Fact]
+    public void DocumentMutationInterfaceDoesNotExposeParserImplementationMetadata()
+    {
+        var workspaceType = typeof(VbaLanguageWorkspace);
+
+        Assert.Equal(
+            typeof(void),
+            workspaceType.GetMethod(nameof(VbaLanguageWorkspace.UpdateDocument))!
+                .ReturnType);
+        Assert.Equal(
+            typeof(void),
+            workspaceType.GetMethod(nameof(VbaLanguageWorkspace.OpenDocument))!
+                .ReturnType);
+        Assert.Equal(
+            typeof(bool),
+            workspaceType.GetMethod(nameof(VbaLanguageWorkspace.ChangeDocument))!
+                .ReturnType);
+    }
+
+    [Fact]
     public void Warm_project_capture_reuses_the_immutable_workspace_state()
     {
         const string uri = "file:///C:/work/WarmState.bas";
@@ -265,13 +284,13 @@ public sealed class VbaLanguageWorkspaceTests
     }
 
     [Fact]
-    public void ProjectSnapshotReusesModuleMemberUpdatesForSafeDocumentChanges()
+    public void ProjectSnapshotReflectsSafeDocumentChanges()
     {
         const string uri = "file:///C:/work/Worker.bas";
         var workspace = new VbaLanguageWorkspace(
             new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.CreateBundled()));
 
-        var initialUpdate = workspace.UpdateDocument(uri, string.Join('\n', [
+        workspace.UpdateDocument(uri, string.Join('\n', [
             "Attribute VB_Name = \"Worker\"",
             "Public Function BuildValue() As String",
             "    BuildValue = \"old\"",
@@ -281,7 +300,7 @@ public sealed class VbaLanguageWorkspaceTests
             "    BuildValue",
             "End Sub"
         ]));
-        var incrementalUpdate = workspace.UpdateDocument(uri, string.Join('\n', [
+        workspace.UpdateDocument(uri, string.Join('\n', [
             "Attribute VB_Name = \"Worker\"",
             "Public Function BuildValue() As String",
             "    BuildValue = \"new\"",
@@ -298,8 +317,6 @@ public sealed class VbaLanguageWorkspaceTests
             line: 6,
             character: "    ".Length);
 
-        Assert.Equal(VbaSyntaxTreeParseUpdateKind.FullModule, initialUpdate);
-        Assert.Equal(VbaSyntaxTreeParseUpdateKind.ModuleMember, incrementalUpdate);
         Assert.NotNull(definition);
     }
 
@@ -929,13 +946,13 @@ public sealed class VbaLanguageWorkspaceTests
             "Public Sub NewerVersion()\nEnd Sub\n");
         var newerSnapshot = workspace.CreateProjectSnapshot(uri);
 
-        Assert.Null(olderUpdate);
-        Assert.Null(equalUpdate);
+        Assert.False(olderUpdate);
+        Assert.False(equalUpdate);
         Assert.Same(currentSnapshot, unchangedSnapshot);
         Assert.Contains(
             unchangedSnapshot.SemanticInventory.GetDocumentDefinitions(uri),
             definition => definition.Name == "CurrentVersion");
-        Assert.NotNull(newerUpdate);
+        Assert.True(newerUpdate);
         Assert.Contains(
             newerSnapshot.SemanticInventory.GetDocumentDefinitions(uri),
             definition => definition.Name == "NewerVersion");

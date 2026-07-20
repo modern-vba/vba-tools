@@ -15,12 +15,17 @@ public sealed class VbaDiagnosticsPublisherTests
     {
         const string uri = "file:///C:/work/Worker.bas";
         await using var output = new BlockingWriteStream();
+        await using var scheduler = new VbaInteractiveWorkScheduler();
         var workspace = new VbaLanguageWorkspace(
             new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.CreateBundled()));
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, output),
+            workspace);
+        publisher.AttachScheduler(scheduler);
         var pipeline = new VbaDocumentChangePipeline(
             workspace,
             new RecordingReferenceCatalogLifecycle(),
-            new VbaDiagnosticsPublisher(new LspMessageTransport(Stream.Null, output), workspace));
+            publisher);
 
         var apply = pipeline.ApplyAsync(
             new VbaTextDocumentOpenedChange(
@@ -123,12 +128,12 @@ public sealed class VbaDiagnosticsPublisherTests
         publisher.AttachScheduler(scheduler);
         workspace.OpenDocument(uri, 1, "Public Sub Run()\n    ");
         await publisher.PublishTrackedDiagnosticsAsync(uri, CancellationToken.None);
-        Assert.NotNull(workspace.ChangeDocument(
+        Assert.True(workspace.ChangeDocument(
             uri,
             2,
             "Public Sub Run()\nEnd Sub\n"));
         await publisher.PublishTrackedDiagnosticsAsync(uri, CancellationToken.None);
-        Assert.NotNull(workspace.ChangeDocument(
+        Assert.True(workspace.ChangeDocument(
             uri,
             3,
             "Public Sub Latest()\nEnd Sub\n"));
@@ -206,10 +211,12 @@ public sealed class VbaDiagnosticsPublisherTests
         var workspace = new VbaLanguageWorkspace(
             new VbaProjectReferenceCatalogCache(
                 VbaProjectReferenceCatalogSet.CreateBundled()));
+        await using var scheduler = new VbaInteractiveWorkScheduler();
         var publisher = new VbaDiagnosticsPublisher(
             new LspMessageTransport(Stream.Null, Stream.Null),
             workspace,
             new ThrowingPublicationObserver());
+        publisher.AttachScheduler(scheduler);
 
         Assert.Throws<InvalidOperationException>(
             () =>
@@ -263,11 +270,13 @@ public sealed class VbaDiagnosticsPublisherTests
     {
         const string uri = "file:///C:/work/Worker.bas";
         await using var output = new CapturingWriteStream();
+        await using var scheduler = new VbaInteractiveWorkScheduler();
         var workspace = new VbaLanguageWorkspace(
             new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.CreateBundled()));
         var publisher = new VbaDiagnosticsPublisher(
             new LspMessageTransport(Stream.Null, output),
             workspace);
+        publisher.AttachScheduler(scheduler);
         workspace.OpenDocument(
             uri,
             7,
@@ -288,12 +297,14 @@ public sealed class VbaDiagnosticsPublisherTests
     {
         const string uri = "file:///C:/work/Worker.bas";
         await using var output = new BlockingWriteStream();
+        await using var scheduler = new VbaInteractiveWorkScheduler();
         var workspace = new VbaLanguageWorkspace(
             new VbaProjectReferenceCatalogCache(
                 VbaProjectReferenceCatalogSet.CreateBundled()));
         var publisher = new VbaDiagnosticsPublisher(
             new LspMessageTransport(Stream.Null, output),
             workspace);
+        publisher.AttachScheduler(scheduler);
 
         var publish = publisher.PublishEmptyDiagnosticsAsync(
             uri,
@@ -311,12 +322,14 @@ public sealed class VbaDiagnosticsPublisherTests
     [Fact]
     public async Task Terminal_publications_release_per_uri_revision_state()
     {
+        await using var scheduler = new VbaInteractiveWorkScheduler();
         var workspace = new VbaLanguageWorkspace(
             new VbaProjectReferenceCatalogCache(
                 VbaProjectReferenceCatalogSet.CreateBundled()));
         var publisher = new VbaDiagnosticsPublisher(
             new LspMessageTransport(Stream.Null, Stream.Null),
             workspace);
+        publisher.AttachScheduler(scheduler);
 
         for (var index = 0; index < 32; index++)
         {
@@ -333,35 +346,6 @@ public sealed class VbaDiagnosticsPublisherTests
 
     [Fact]
     public async Task Failed_publication_restarts_the_latest_pending_revision_before_becoming_idle()
-    {
-        const string uri = "file:///C:/work/Worker.bas";
-        await using var output = new FailingThenCapturingWriteStream();
-        var workspace = new VbaLanguageWorkspace(
-            new VbaProjectReferenceCatalogCache(
-                VbaProjectReferenceCatalogSet.CreateBundled()));
-        var publisher = new VbaDiagnosticsPublisher(
-            new LspMessageTransport(Stream.Null, output),
-            workspace);
-
-        await publisher.PublishEmptyDiagnosticsAsync(
-            uri,
-            CancellationToken.None);
-        await output.FirstWriteStarted.Task
-            .WaitAsync(TimeSpan.FromSeconds(5));
-        await publisher.PublishEmptyDiagnosticsAsync(
-            uri,
-            CancellationToken.None);
-        var idle = publisher.WaitForIdleAsync(uri);
-
-        Assert.False(idle.IsCompleted);
-
-        output.ReleaseFirstWriteFailure();
-        await idle.WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.Equal(1, output.SuccessfulMessageCount);
-    }
-
-    [Fact]
-    public async Task Scheduled_failed_publication_restarts_the_latest_pending_revision_before_becoming_idle()
     {
         const string uri = "file:///C:/work/Worker.bas";
         await using var output = new FailingThenCapturingWriteStream();
@@ -389,9 +373,6 @@ public sealed class VbaDiagnosticsPublisherTests
         output.ReleaseFirstWriteFailure();
         await idle.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Equal(1, output.SuccessfulMessageCount);
-
-        await scheduler.StopAsync(VbaInteractiveStopReason.Complete)
-            .WaitAsync(TimeSpan.FromSeconds(5));
     }
 
     [Fact]
@@ -399,18 +380,20 @@ public sealed class VbaDiagnosticsPublisherTests
     {
         const string uri = "file:///C:/work/Worker.bas";
         await using var output = new CapturingWriteStream();
+        await using var scheduler = new VbaInteractiveWorkScheduler();
         var workspace = new VbaLanguageWorkspace(
             new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.CreateBundled()));
         var publisher = new VbaDiagnosticsPublisher(
             new LspMessageTransport(Stream.Null, output),
             workspace);
+        publisher.AttachScheduler(scheduler);
         workspace.OpenDocument(
             uri,
             1,
             "Public Sub Run()\n    ");
 
         await publisher.PublishTrackedDiagnosticsAsync(uri, CancellationToken.None);
-        Assert.NotNull(workspace.ChangeDocument(
+        Assert.True(workspace.ChangeDocument(
             uri,
             2,
             "Public Sub Run()\nEnd Sub\n"));
@@ -436,11 +419,13 @@ public sealed class VbaDiagnosticsPublisherTests
     {
         const string uri = "file:///C:/work/Worker.bas";
         await using var output = new CapturingWriteStream();
+        await using var scheduler = new VbaInteractiveWorkScheduler();
         var workspace = new VbaLanguageWorkspace(
             new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.CreateBundled()));
         var publisher = new VbaDiagnosticsPublisher(
             new LspMessageTransport(Stream.Null, output),
             workspace);
+        publisher.AttachScheduler(scheduler);
         workspace.OpenDocument(
             uri,
             1,
@@ -467,11 +452,13 @@ public sealed class VbaDiagnosticsPublisherTests
     {
         const string uri = "file:///C:/work/Worker.bas";
         await using var output = new CapturingWriteStream();
+        await using var scheduler = new VbaInteractiveWorkScheduler();
         var workspace = new VbaLanguageWorkspace(
             new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.CreateBundled()));
         var publisher = new VbaDiagnosticsPublisher(
             new LspMessageTransport(Stream.Null, output),
             workspace);
+        publisher.AttachScheduler(scheduler);
         workspace.OpenDocument(
             uri,
             1,

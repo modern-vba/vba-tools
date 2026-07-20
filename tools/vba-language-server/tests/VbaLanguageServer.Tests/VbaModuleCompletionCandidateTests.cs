@@ -63,7 +63,7 @@ public sealed class VbaModuleCompletionCandidateTests
         var line = prefix.Count(character => character == '\n');
         var lineStart = prefix.LastIndexOf('\n');
         var character = marker - lineStart - 1;
-        var index = VbaSourceIndex.Build(new Dictionary<string, string>
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string>
         {
             [uri] = markedSource.Remove(marker, 1)
         });

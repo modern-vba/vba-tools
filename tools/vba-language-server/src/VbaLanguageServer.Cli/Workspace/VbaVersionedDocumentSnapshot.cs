@@ -25,10 +25,6 @@ public sealed record VbaVersionedDocumentSnapshot(
 {
     public VbaSourceText SourceText { get; init; } = SyntaxTree.SourceText;
 
-    public VbaSyntaxTreeParseUpdateKind LastParseUpdateKind { get; init; }
-
-    public VbaModuleMemberIncrementalUpdate? LastMemberUpdate { get; init; }
-
     internal VbaDocumentAnalysis? Analysis { get; init; }
 
     internal bool IsOwnedByAnalysis
@@ -40,9 +36,7 @@ public sealed record VbaVersionedDocumentSnapshot(
             && ReferenceEquals(SyntaxTree, analysis.SyntaxTree)
             && ModuleKind == analysis.ModuleKind
             && ReferenceEquals(SourceDocument, analysis.SourceDocument)
-            && ReferenceEquals(Diagnostics, analysis.Diagnostics)
-            && LastParseUpdateKind == analysis.LastParseUpdateKind
-            && ReferenceEquals(LastMemberUpdate, analysis.LastMemberUpdate);
+            && ReferenceEquals(Diagnostics, analysis.Diagnostics);
 
     internal static VbaVersionedDocumentSnapshot Create(VbaDocumentAnalysis analysis)
     {
@@ -61,8 +55,6 @@ public sealed record VbaVersionedDocumentSnapshot(
             analysis.SourceDocument)
         {
             SourceText = analysis.SourceText,
-            LastParseUpdateKind = analysis.LastParseUpdateKind,
-            LastMemberUpdate = analysis.LastMemberUpdate,
             Analysis = analysis
         };
     }

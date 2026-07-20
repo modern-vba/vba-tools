@@ -21,14 +21,6 @@ internal static class VbaSourceFileTextReader
         return Encoding.GetEncoding(932);
     });
 
-    public static string ReadAllText(string path)
-        => Decode(File.ReadAllBytes(path));
-
-    public static async Task<string> ReadAllTextAsync(
-        string path,
-        CancellationToken cancellationToken = default)
-        => Decode(await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false));
-
     internal static string Decode(byte[] bytes)
     {
         if (bytes.Length == 0)

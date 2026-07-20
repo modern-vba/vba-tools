@@ -15,6 +15,185 @@ public sealed class VbaSyntaxTreeIncrementalTests
     }
 
     [Fact]
+    public void ExactUriAndTextReuseTheSameTree()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        const string source = "Public Sub Run()\nEnd Sub";
+        var previous = VbaSyntaxTree.ParseModule(uri, source);
+
+        var changeSet = VbaSyntaxTree.ParseOrUpdate(uri, source, previous);
+
+        Assert.IsType<VbaSyntaxTreeChangeSet.Unchanged>(changeSet);
+        Assert.Same(previous, changeSet.SyntaxTree);
+    }
+
+    [Fact]
+    public void UriSpellingChangeRequiresModuleRecomputation()
+    {
+        const string source =
+            "Public Sub Run()\n"
+            + "    Debug.Print \"old\"\n"
+            + "End Sub";
+        const string updated =
+            "Public Sub Run()\n"
+            + "    Debug.Print \"new\"\n"
+            + "End Sub";
+        var previous = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            source);
+
+        var changeSet = VbaSyntaxTree.ParseOrUpdate(
+            "file:///C:/work/worker.bas",
+            updated,
+            previous);
+
+        Assert.IsType<VbaSyntaxTreeChangeSet.Module>(changeSet);
+        Assert.NotSame(previous, changeSet.SyntaxTree);
+        Assert.Equal(
+            "file:///C:/work/worker.bas",
+            changeSet.SyntaxTree.Uri);
+    }
+
+    [Fact]
+    public void PubliclyConstructedTreeCannotProveExactReuse()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        const string source = "Public Sub Run()\nEnd Sub";
+        var parsed = VbaSyntaxTree.ParseModule(uri, source);
+        var publicTree = new VbaSyntaxTree(
+            parsed.Uri,
+            parsed.Text,
+            parsed.TokenStream,
+            parsed.Module,
+            parsed.Diagnostics);
+
+        var changeSet = VbaSyntaxTree.ParseOrUpdate(uri, source, publicTree);
+
+        Assert.IsType<VbaSyntaxTreeChangeSet.Module>(changeSet);
+        Assert.NotSame(publicTree, changeSet.SyntaxTree);
+        AssertSyntaxEquivalent(parsed, changeSet.SyntaxTree);
+    }
+
+    [Fact]
+    public void WithModifiedTextCannotReuseStaleParserArtifacts()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        const string original =
+            "Public Sub Run()\n"
+            + "    Debug.Print \"old\"\n"
+            + "End Sub";
+        const string updated =
+            "Public Sub Run()\n"
+            + "    Debug.Print \"new\"\n"
+            + "End Sub";
+        var previous = VbaSyntaxTree.ParseModule(uri, original);
+        var stale = previous with
+        {
+            Text = updated
+        };
+        var expected = VbaSyntaxTree.ParseModule(uri, updated);
+
+        var changeSet = VbaSyntaxTree.ParseOrUpdate(uri, updated, stale);
+
+        Assert.IsType<VbaSyntaxTreeChangeSet.Module>(changeSet);
+        Assert.Equal(updated, changeSet.SyntaxTree.Text);
+        Assert.NotSame(stale.TokenStream, changeSet.SyntaxTree.TokenStream);
+        Assert.NotSame(stale.Module, changeSet.SyntaxTree.Module);
+        AssertSyntaxEquivalent(expected, changeSet.SyntaxTree);
+    }
+
+    [Fact]
+    public void WithModifiedUriCannotProveExactReuse()
+    {
+        const string originalUri = "file:///C:/work/Worker.bas";
+        const string modifiedUri = "file:///C:/work/Worker.cls";
+        const string source = "Public Sub Run()\nEnd Sub";
+        var previous = VbaSyntaxTree.ParseModule(originalUri, source);
+        var stale = previous with
+        {
+            Uri = modifiedUri
+        };
+        var expected = VbaSyntaxTree.ParseModule(modifiedUri, source);
+
+        var changeSet = VbaSyntaxTree.ParseOrUpdate(modifiedUri, source, stale);
+
+        Assert.IsType<VbaSyntaxTreeChangeSet.Module>(changeSet);
+        Assert.Equal(VbaModuleKind.ClassModule, changeSet.SyntaxTree.Module.Kind);
+        AssertSyntaxEquivalent(expected, changeSet.SyntaxTree);
+    }
+
+    [Fact]
+    public void WithModifiedModuleCannotProveExactReuse()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        const string source = "Public Sub Run()\nEnd Sub";
+        var previous = VbaSyntaxTree.ParseModule(uri, source);
+        var stale = previous with
+        {
+            Module = previous.Module with
+            {
+                Kind = VbaModuleKind.ClassModule
+            }
+        };
+        var expected = VbaSyntaxTree.ParseModule(uri, source);
+
+        var changeSet = VbaSyntaxTree.ParseOrUpdate(uri, source, stale);
+
+        Assert.IsType<VbaSyntaxTreeChangeSet.Module>(changeSet);
+        Assert.Equal(VbaModuleKind.StandardModule, changeSet.SyntaxTree.Module.Kind);
+        AssertSyntaxEquivalent(expected, changeSet.SyntaxTree);
+    }
+
+    [Fact]
+    public void ChangeSetVariantsHaveNoPublicConstructors()
+    {
+        var variants = new[]
+        {
+            typeof(VbaSyntaxTreeChangeSet.Unchanged),
+            typeof(VbaSyntaxTreeChangeSet.Module),
+            typeof(VbaSyntaxTreeChangeSet.ModuleMember)
+        };
+
+        Assert.All(variants, variant => Assert.Empty(variant.GetConstructors()));
+        Assert.All(variants, variant => Assert.True(variant.IsSealed));
+    }
+
+    [Fact]
+    public void PublicChangeSetSurfaceExposesOnlySemanticReuseProofs()
+    {
+        var assembly = typeof(VbaSyntaxTree).Assembly;
+        var parseOrUpdate = Assert.Single(
+            typeof(VbaSyntaxTree).GetMethods(),
+            method => method.Name == nameof(VbaSyntaxTree.ParseOrUpdate));
+        var variants = assembly.GetExportedTypes()
+            .Where(type => type.BaseType == typeof(VbaSyntaxTreeChangeSet))
+            .OrderBy(type => type.Name)
+            .ToArray();
+
+        Assert.Equal(typeof(VbaSyntaxTreeChangeSet), parseOrUpdate.ReturnType);
+        Assert.Equal(
+            [
+                typeof(VbaSyntaxTreeChangeSet.Module),
+                typeof(VbaSyntaxTreeChangeSet.ModuleMember),
+                typeof(VbaSyntaxTreeChangeSet.Unchanged)
+            ],
+            variants);
+        Assert.Equal(
+            ["CurrentMember", "PreviousMember", "SyntaxTree"],
+            typeof(VbaSyntaxTreeChangeSet.ModuleMember)
+                .GetProperties()
+                .Select(property => property.Name)
+                .Order()
+                .ToArray());
+        Assert.Null(assembly.GetType(
+            "VbaLanguageServer.Syntax.VbaSyntaxTreeParseResult"));
+        Assert.Null(assembly.GetType(
+            "VbaLanguageServer.Syntax.VbaSyntaxTreeParseUpdateKind"));
+        Assert.Null(assembly.GetType(
+            "VbaLanguageServer.Syntax.VbaModuleMemberIncrementalUpdate"));
+    }
+
+    [Fact]
     public void LanguageServerSourceHasNoLegacyIncrementalFullDocumentMaskOrEagerProjectionSelfReport()
     {
         var testDirectory = Path.GetDirectoryName(GetCurrentSourceFilePath());
@@ -91,7 +270,7 @@ public sealed class VbaSyntaxTreeIncrementalTests
             previous,
             out var observation);
 
-        Assert.Equal(VbaSyntaxTreeParseUpdateKind.ModuleMember, result.UpdateKind);
+        Assert.IsType<VbaSyntaxTreeChangeSet.ModuleMember>(result);
         Assert.Equal(
             VbaIncrementalParseRoute.ModuleMemberSourceWindow,
             observation.Route);
@@ -107,7 +286,7 @@ public sealed class VbaSyntaxTreeIncrementalTests
     }
 
     [Fact]
-    public void ParserReportsModuleMemberUpdateForSafeCallableBodyEdit()
+    public void ParserReturnsModuleMemberProofForSafeCallableBodyEdit()
     {
         var original = string.Join('\n', [
             "Attribute VB_Name = \"Worker\"",
@@ -133,12 +312,9 @@ public sealed class VbaSyntaxTreeIncrementalTests
 
         var result = VbaSyntaxTree.ParseOrUpdate("file:///C:/work/Worker.bas", updated, previous);
 
-        Assert.Equal(VbaSyntaxTreeParseUpdateKind.ModuleMember, result.UpdateKind);
-        Assert.NotNull(result.MemberUpdate);
-        Assert.Equal("BuildValue", result.MemberUpdate.PreviousMember.Name);
-        Assert.Equal("BuildValue", result.MemberUpdate.CurrentMember.Name);
-        Assert.Equal(2, result.MemberUpdate.PreviousStartLine);
-        Assert.Equal(2, result.MemberUpdate.CurrentStartLine);
+        var memberChange = Assert.IsType<VbaSyntaxTreeChangeSet.ModuleMember>(result);
+        Assert.Equal("BuildValue", memberChange.PreviousMember.Name);
+        Assert.Equal("BuildValue", memberChange.CurrentMember.Name);
         Assert.Contains(result.SyntaxTree.Module.CallableDeclarations, declaration => declaration.Name == "BuildValue");
         Assert.Contains(result.SyntaxTree.Module.CallableDeclarations, declaration => declaration.Name == "Run");
         Assert.Same(
@@ -178,7 +354,7 @@ public sealed class VbaSyntaxTreeIncrementalTests
         var incrementalRun = result.SyntaxTree.Module.CallableDeclarations.Single(member => member.Name == "Run");
         var fullRun = fullParse.Module.CallableDeclarations.Single(member => member.Name == "Run");
 
-        Assert.Equal(VbaSyntaxTreeParseUpdateKind.ModuleMember, result.UpdateKind);
+        Assert.IsType<VbaSyntaxTreeChangeSet.ModuleMember>(result);
         Assert.Equal(fullRun.Range, incrementalRun.Range);
         Assert.Equal(fullRun.BlockRange, incrementalRun.BlockRange);
         Assert.Equal(
@@ -202,7 +378,7 @@ public sealed class VbaSyntaxTreeIncrementalTests
         var full = VbaSyntaxTree.ParseModule(uri, updated);
 
         Assert.Equal(VbaIncrementalParseFallbackReason.None, observation.FallbackReason);
-        Assert.Equal(VbaSyntaxTreeParseUpdateKind.ModuleMember, result.UpdateKind);
+        Assert.IsType<VbaSyntaxTreeChangeSet.ModuleMember>(result);
         AssertSyntaxEquivalent(full, result.SyntaxTree);
         AssertSegmentedWithLazySuffix(result.SyntaxTree.Module.Members);
         AssertSegmentedWithLazySuffix(result.SyntaxTree.Module.Declarations);
@@ -256,7 +432,7 @@ public sealed class VbaSyntaxTreeIncrementalTests
         var incremental = VbaSyntaxTree.ParseOrUpdate(uri, updated, previous);
         var full = VbaSyntaxTree.ParseModule(uri, updated);
 
-        Assert.Equal(VbaSyntaxTreeParseUpdateKind.ModuleMember, incremental.UpdateKind);
+        Assert.IsType<VbaSyntaxTreeChangeSet.ModuleMember>(incremental);
         Assert.Equal(full.Module.Range, incremental.SyntaxTree.Module.Range);
         Assert.Equal(
             full.TokenStream.Tokens.Select(token => (token.Kind, token.Text, token.Range)),
@@ -299,7 +475,7 @@ public sealed class VbaSyntaxTreeIncrementalTests
         var result = VbaSyntaxTree.ParseOrUpdate(uri, updated, previous);
         var full = VbaSyntaxTree.ParseModule(uri, updated);
 
-        Assert.Equal(VbaSyntaxTreeParseUpdateKind.FullModule, result.UpdateKind);
+        Assert.IsType<VbaSyntaxTreeChangeSet.Module>(result);
         Assert.Equal(
             full.TokenStream.Tokens.Select(token => (token.Kind, token.Text, token.Range)),
             result.SyntaxTree.TokenStream.Tokens.Select(token => (token.Kind, token.Text, token.Range)));
@@ -345,10 +521,8 @@ public sealed class VbaSyntaxTreeIncrementalTests
         var boundaryResult = VbaSyntaxTree.ParseOrUpdate("file:///C:/work/Worker.bas", boundaryChanged, previous);
         var recoveryResult = VbaSyntaxTree.ParseOrUpdate("file:///C:/work/Worker.bas", malformed, previous);
 
-        Assert.Equal(VbaSyntaxTreeParseUpdateKind.FullModule, boundaryResult.UpdateKind);
-        Assert.Null(boundaryResult.MemberUpdate);
-        Assert.Equal(VbaSyntaxTreeParseUpdateKind.FullModule, recoveryResult.UpdateKind);
-        Assert.Null(recoveryResult.MemberUpdate);
+        Assert.IsType<VbaSyntaxTreeChangeSet.Module>(boundaryResult);
+        Assert.IsType<VbaSyntaxTreeChangeSet.Module>(recoveryResult);
         Assert.Contains(recoveryResult.SyntaxTree.Diagnostics, diagnostic => diagnostic.Code == "syntax.unterminatedStringLiteral");
     }
 
@@ -384,7 +558,7 @@ public sealed class VbaSyntaxTreeIncrementalTests
         var incremental = VbaSyntaxTree.ParseOrUpdate(uri, updated, previous, out var observation);
         var full = VbaSyntaxTree.ParseModule(uri, updated);
 
-        Assert.Equal(VbaSyntaxTreeParseUpdateKind.ModuleMember, incremental.UpdateKind);
+        Assert.IsType<VbaSyntaxTreeChangeSet.ModuleMember>(incremental);
         Assert.Equal(VbaIncrementalParseRoute.ModuleMemberSourceWindow, observation.Route);
         AssertSyntaxEquivalent(full, incremental.SyntaxTree);
     }
@@ -408,7 +582,7 @@ public sealed class VbaSyntaxTreeIncrementalTests
 
         var result = VbaSyntaxTree.ParseOrUpdate(uri, updated, previous, out var observation);
 
-        Assert.Equal(VbaSyntaxTreeParseUpdateKind.FullModule, result.UpdateKind);
+        Assert.IsType<VbaSyntaxTreeChangeSet.Module>(result);
         Assert.Equal(VbaIncrementalParseFallbackReason.MemberBoundaryTouched, observation.FallbackReason);
     }
 
@@ -448,7 +622,7 @@ public sealed class VbaSyntaxTreeIncrementalTests
             var incremental = VbaSyntaxTree.ParseOrUpdate(uri, next, previous, out var observation);
             var full = VbaSyntaxTree.ParseModule(uri, next);
 
-            Assert.Equal(VbaSyntaxTreeParseUpdateKind.ModuleMember, incremental.UpdateKind);
+            Assert.IsType<VbaSyntaxTreeChangeSet.ModuleMember>(incremental);
             Assert.Equal(VbaIncrementalParseRoute.ModuleMemberSourceWindow, observation.Route);
             AssertSyntaxEquivalent(full, incremental.SyntaxTree);
             source = next;
@@ -469,7 +643,7 @@ public sealed class VbaSyntaxTreeIncrementalTests
             var source = iteration % 2 == 0 ? second : first;
             var result = VbaSyntaxTree.ParseOrUpdate(uri, source, previous);
 
-            Assert.Equal(VbaSyntaxTreeParseUpdateKind.ModuleMember, result.UpdateKind);
+            Assert.IsType<VbaSyntaxTreeChangeSet.ModuleMember>(result);
             previous = result.SyntaxTree;
         }
 
@@ -499,7 +673,7 @@ public sealed class VbaSyntaxTreeIncrementalTests
             Assert.Equal(
                 VbaIncrementalParseFallbackReason.None,
                 observation.FallbackReason);
-            Assert.Equal(VbaSyntaxTreeParseUpdateKind.ModuleMember, result.UpdateKind);
+            Assert.IsType<VbaSyntaxTreeChangeSet.ModuleMember>(result);
             previous = result.SyntaxTree;
         }
 
@@ -543,9 +717,7 @@ public sealed class VbaSyntaxTreeIncrementalTests
             Assert.Equal(
                 VbaIncrementalParseFallbackReason.None,
                 observation.FallbackReason);
-            Assert.Equal(
-                VbaSyntaxTreeParseUpdateKind.ModuleMember,
-                incremental.UpdateKind);
+            Assert.IsType<VbaSyntaxTreeChangeSet.ModuleMember>(incremental);
             AssertSyntaxEquivalent(full, incremental.SyntaxTree);
             source = next;
             previous = incremental.SyntaxTree;
@@ -573,7 +745,7 @@ public sealed class VbaSyntaxTreeIncrementalTests
         {
             var source = index % 2 == 0 ? second : first;
             var result = VbaSyntaxTree.ParseOrUpdate(uri, source, previous, out var observation);
-            Assert.Equal(VbaSyntaxTreeParseUpdateKind.ModuleMember, result.UpdateKind);
+            Assert.IsType<VbaSyntaxTreeChangeSet.ModuleMember>(result);
             Assert.Equal(VbaIncrementalParseRoute.ModuleMemberSourceWindow, observation.Route);
             previous = result.SyntaxTree;
         }
@@ -591,7 +763,7 @@ public sealed class VbaSyntaxTreeIncrementalTests
             var result = VbaSyntaxTree.ParseOrUpdate(uri, source, previous, out lastObservation);
             elapsed[index] = Stopwatch.GetElapsedTime(started);
             allocations[index] = GC.GetAllocatedBytesForCurrentThread() - beforeAllocated;
-            Assert.Equal(VbaSyntaxTreeParseUpdateKind.ModuleMember, result.UpdateKind);
+            Assert.IsType<VbaSyntaxTreeChangeSet.ModuleMember>(result);
             Assert.Equal(VbaIncrementalParseRoute.ModuleMemberSourceWindow, lastObservation.Route);
             Assert.Equal(VbaIncrementalParseFallbackReason.None, lastObservation.FallbackReason);
             Assert.True(lastObservation.ParseWindowUtf16Length < lastObservation.DocumentUtf16Length / 20);

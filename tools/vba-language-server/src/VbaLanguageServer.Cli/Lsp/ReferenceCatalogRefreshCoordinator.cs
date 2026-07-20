@@ -10,7 +10,34 @@ internal sealed record ReferenceCatalogRefreshSessionMessage(
 
 internal sealed record ReferenceCatalogRefreshPlan(
     string Uri,
-    IReadOnlyList<VbaProjectReferenceSelectionContext> Selections);
+    IReadOnlyList<VbaProjectReferenceSelectionContext> Selections,
+    long Revision,
+    IReadOnlyDictionary<string, long> ScopeRevisions);
+
+internal interface IReferenceCatalogRefreshPlanObserver
+{
+    void AfterPlanReservedBeforePost(string uri, long revision);
+
+    void BeforePlanCommit(string uri, long revision);
+}
+
+internal sealed class NullReferenceCatalogRefreshPlanObserver
+    : IReferenceCatalogRefreshPlanObserver
+{
+    public static NullReferenceCatalogRefreshPlanObserver Instance { get; } = new();
+
+    private NullReferenceCatalogRefreshPlanObserver()
+    {
+    }
+
+    public void AfterPlanReservedBeforePost(string uri, long revision)
+    {
+    }
+
+    public void BeforePlanCommit(string uri, long revision)
+    {
+    }
+}
 
 internal interface IReferenceCatalogLifecycle
 {
@@ -76,22 +103,24 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
     private readonly VbaProjectManifestWorkspace manifestWorkspace;
     private readonly LspMessageTransport transport;
     private readonly IVbaProjectReferenceCatalogLifecycleObserver lifecycleObserver;
+    private readonly IReferenceCatalogRefreshPlanObserver planObserver;
     private readonly object diagnosticGate = new();
     private readonly HashSet<string> publishedDiagnostics = new(StringComparer.Ordinal);
     private readonly object lifecycleGate = new();
+    private readonly object lifecyclePlanGate = new();
     private readonly Dictionary<string, ReferenceCatalogLifecycleState> lifecycleStates =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, SharedReferenceCatalogWork> sharedAutomaticWork =
         new(StringComparer.Ordinal);
     private readonly HashSet<SharedReferenceCatalogWork> activeAutomaticWork = [];
     private readonly HashSet<Task> backgroundTasks = [];
-    private readonly Dictionary<string, ReferenceCatalogRefreshPlan> pendingLifecyclePlans =
-        new(StringComparer.OrdinalIgnoreCase);
-    private readonly HashSet<string> activeLifecycleAdmissions =
+    private readonly Dictionary<string, long> latestLifecycleScopeRevisions =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly CancellationTokenSource lifetimeCancellation = new();
     private VbaInteractiveWorkScheduler? scheduler;
+    private VbaLatestOnlyBackgroundMailbox? lifecycleMailbox;
     private long lifecycleRevision;
+    private long lifecyclePlanRevision;
     private bool stopping;
 
     /// <summary>
@@ -106,7 +135,8 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
         VbaProjectReferenceCatalogRefreshService refreshService,
         VbaProjectManifestWorkspace manifestWorkspace,
         LspMessageTransport transport,
-        IVbaProjectReferenceCatalogLifecycleObserver? lifecycleObserver = null)
+        IVbaProjectReferenceCatalogLifecycleObserver? lifecycleObserver = null,
+        IReferenceCatalogRefreshPlanObserver? planObserver = null)
     {
         this.catalogCache = catalogCache;
         this.refreshService = refreshService;
@@ -114,6 +144,8 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
         this.transport = transport;
         this.lifecycleObserver =
             lifecycleObserver ?? NullVbaProjectReferenceCatalogLifecycleObserver.Instance;
+        this.planObserver =
+            planObserver ?? NullReferenceCatalogRefreshPlanObserver.Instance;
     }
 
     /// <summary>
@@ -122,27 +154,37 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
     public void AttachScheduler(VbaInteractiveWorkScheduler interactiveScheduler)
     {
         ArgumentNullException.ThrowIfNull(interactiveScheduler);
-        lock (lifecycleGate)
+        lock (lifecyclePlanGate)
         {
-            if (scheduler is not null && !ReferenceEquals(scheduler, interactiveScheduler))
+            lock (lifecycleGate)
             {
-                throw new InvalidOperationException(
-                    "The reference catalog coordinator is already attached to another scheduler.");
-            }
+                if (scheduler is not null && !ReferenceEquals(scheduler, interactiveScheduler))
+                {
+                    throw new InvalidOperationException(
+                        "The reference catalog coordinator is already attached to another scheduler.");
+                }
 
-            if (backgroundTasks.Count > 0 || lifecycleStates.Count > 0)
-            {
-                throw new InvalidOperationException(
-                    "The reference catalog scheduler must be attached before lifecycle work starts.");
-            }
+                if (lifecycleMailbox is not null)
+                {
+                    return;
+                }
 
-            scheduler = interactiveScheduler;
+                if (backgroundTasks.Count > 0 || lifecycleStates.Count > 0)
+                {
+                    throw new InvalidOperationException(
+                        "The reference catalog scheduler must be attached before lifecycle work starts.");
+                }
+
+                scheduler = interactiveScheduler;
+                lifecycleMailbox = new VbaLatestOnlyBackgroundMailbox(
+                    interactiveScheduler,
+                    VbaInteractiveBackgroundWorkType.ReferenceCatalogRefresh,
+                    StringComparer.OrdinalIgnoreCase);
+            }
         }
 
         refreshService.AttachMutationLane(
             new VbaInteractiveReferenceCatalogMutationLane(interactiveScheduler));
-        interactiveScheduler.RegisterCapacityObserver(
-            RetryOneScheduledLifecycle);
     }
 
     /// <summary>
@@ -153,7 +195,7 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
     {
         if (TryCreateLifecyclePlan(uri, text: "", out var plan))
         {
-            ScheduleLifecycle(plan);
+            ScheduleLifecycle(plan, beforePost: null);
         }
     }
 
@@ -170,8 +212,9 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
             return;
         }
 
-        RemoveMissingManifestScopes(uri, plan.Selections);
-        ScheduleLifecycle(plan);
+        ScheduleLifecycle(
+            plan,
+            () => RemoveMissingManifestScopes(uri, plan.Selections));
     }
 
     /// <summary>
@@ -182,16 +225,27 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
     {
         var scopePrefix = CreateManifestScopePrefix(uri);
         var removedFingerprints = new HashSet<string>(StringComparer.Ordinal);
-        lock (lifecycleGate)
+        lock (lifecyclePlanGate)
         {
-            pendingLifecyclePlans.Remove(uri);
-            foreach (var scopeKey in lifecycleStates.Keys
-                .Where(key => key.StartsWith(scopePrefix, StringComparison.OrdinalIgnoreCase))
-                .ToArray())
+            VbaLatestOnlyBackgroundMailbox? mailbox;
+            lock (lifecycleGate)
             {
-                removedFingerprints.Add(lifecycleStates[scopeKey].Fingerprint);
-                lifecycleStates.Remove(scopeKey);
+                mailbox = lifecycleMailbox;
+                foreach (var scopeKey in latestLifecycleScopeRevisions.Keys
+                    .Concat(lifecycleStates.Keys)
+                    .Where(key => key.StartsWith(scopePrefix, StringComparison.OrdinalIgnoreCase))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray())
+                {
+                    latestLifecycleScopeRevisions.Remove(scopeKey);
+                    if (lifecycleStates.Remove(scopeKey, out var state))
+                    {
+                        removedFingerprints.Add(state.Fingerprint);
+                    }
+                }
             }
+
+            mailbox?.Discard(uri);
         }
 
         CancelUnusedSharedWork(removedFingerprints);
@@ -205,17 +259,20 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
         while (true)
         {
             Task[] tasks;
+            Task mailboxIdle;
             lock (lifecycleGate)
             {
                 tasks = backgroundTasks.ToArray();
+                mailboxIdle = lifecycleMailbox?.WaitForIdleAsync()
+                    ?? Task.CompletedTask;
             }
 
-            if (tasks.Length == 0)
+            if (tasks.Length == 0 && mailboxIdle.IsCompletedSuccessfully)
             {
                 return;
             }
 
-            await Task.WhenAll(tasks);
+            await Task.WhenAll(tasks.Append(mailboxIdle));
         }
     }
 
@@ -225,26 +282,39 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
     public async Task StopAsync()
     {
         Task[] tasks;
+        VbaLatestOnlyBackgroundMailbox? mailbox;
         var cancel = false;
-        lock (lifecycleGate)
+        lock (lifecyclePlanGate)
         {
-            if (!stopping)
+            lock (lifecycleGate)
             {
-                stopping = true;
-                cancel = true;
-                pendingLifecyclePlans.Clear();
+                if (!stopping)
+                {
+                    stopping = true;
+                    cancel = true;
+                    latestLifecycleScopeRevisions.Clear();
+                }
+
+                mailbox = lifecycleMailbox;
+                tasks = backgroundTasks.ToArray();
             }
 
-            tasks = backgroundTasks.ToArray();
+            mailbox?.Stop();
         }
 
         var cancellation = cancel
             ? lifetimeCancellation.CancelAsync()
             : Task.CompletedTask;
+        var mailboxIdle = mailbox?.WaitForIdleAsync()
+            ?? Task.CompletedTask;
 
         try
         {
-            await Task.WhenAll(tasks.Append(cancellation)).WaitAsync(ShutdownWaitTimeout);
+            await Task.WhenAll(
+                    tasks
+                        .Append(cancellation)
+                        .Append(mailboxIdle))
+                .WaitAsync(ShutdownWaitTimeout);
         }
         catch (TimeoutException)
         {
@@ -271,127 +341,60 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
         }
     }
 
-    private void ScheduleLifecycle(ReferenceCatalogRefreshPlan plan)
+    private void ScheduleLifecycle(
+        ReferenceCatalogRefreshPlan plan,
+        Action? beforePost)
     {
-        VbaInteractiveWorkScheduler? interactiveScheduler;
-        var startAdmission = false;
-        lock (lifecycleGate)
+        lock (lifecyclePlanGate)
         {
-            if (stopping)
+            VbaLatestOnlyBackgroundMailbox mailbox;
+            ReferenceCatalogRefreshPlan scheduledPlan;
+            lock (lifecycleGate)
             {
-                return;
+                if (stopping)
+                {
+                    return;
+                }
+
+                mailbox = lifecycleMailbox
+                    ?? throw new InvalidOperationException(
+                        "The reference catalog scheduler must be attached before lifecycle work starts.");
+                var revision = ++lifecyclePlanRevision;
+                var scopeRevisions = plan.Selections
+                    .Select(selection => selection.ScopeKey)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(
+                        scopeKey => scopeKey,
+                        _ => revision,
+                        StringComparer.OrdinalIgnoreCase);
+                foreach (var scopeRevision in scopeRevisions)
+                {
+                    latestLifecycleScopeRevisions[scopeRevision.Key] =
+                        scopeRevision.Value;
+                }
+
+                scheduledPlan = plan with
+                {
+                    Revision = revision,
+                    ScopeRevisions = scopeRevisions
+                };
             }
 
-            interactiveScheduler = scheduler;
-            if (interactiveScheduler is not null)
-            {
-                pendingLifecyclePlans[plan.Uri] = plan;
-                startAdmission = activeLifecycleAdmissions.Add(plan.Uri);
-            }
-        }
-
-        if (interactiveScheduler is null)
-        {
-            ScheduleLifecycleCore(plan);
-            return;
-        }
-
-        if (startAdmission)
-        {
-            StartScheduledLifecycle(plan.Uri, interactiveScheduler);
-        }
-    }
-
-    private void RetryOneScheduledLifecycle()
-    {
-        VbaInteractiveWorkScheduler? interactiveScheduler;
-        string? uri;
-        lock (lifecycleGate)
-        {
-            interactiveScheduler = scheduler;
-            uri = !stopping
-                && interactiveScheduler is not null
-                && interactiveScheduler.IsAccepting
-                    ? pendingLifecyclePlans.Keys.FirstOrDefault(
-                        pendingUri => !activeLifecycleAdmissions.Contains(pendingUri))
-                    : null;
-            if (uri is not null)
-            {
-                activeLifecycleAdmissions.Add(uri);
-            }
-        }
-
-        if (interactiveScheduler is not null && uri is not null)
-        {
-            StartScheduledLifecycle(uri, interactiveScheduler);
-        }
-    }
-
-    private void StartScheduledLifecycle(
-        string uri,
-        VbaInteractiveWorkScheduler interactiveScheduler)
-    {
-        if (!interactiveScheduler.TryAdmitBackground(
-                VbaInteractiveBackgroundWorkType.ReferenceCatalogRefresh,
-                uri,
+            planObserver.AfterPlanReservedBeforePost(
+                scheduledPlan.Uri,
+                scheduledPlan.Revision);
+            beforePost?.Invoke();
+            mailbox.Post(
+                scheduledPlan.Uri,
                 cancellationToken =>
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    ReferenceCatalogRefreshPlan? plan;
-                    lock (lifecycleGate)
-                    {
-                        pendingLifecyclePlans.Remove(uri, out plan);
-                    }
-
-                    if (plan is not null)
-                    {
-                        ScheduleLifecycleCore(plan);
-                    }
-
+                    planObserver.BeforePlanCommit(
+                        scheduledPlan.Uri,
+                        scheduledPlan.Revision);
+                    ScheduleLifecycleCore(scheduledPlan);
                     return Task.CompletedTask;
-                },
-                out var admission))
-        {
-            lock (lifecycleGate)
-            {
-                activeLifecycleAdmissions.Remove(uri);
-            }
-
-            interactiveScheduler.RequestCapacityPump();
-            return;
-        }
-
-        var trackedAdmission = ObserveScheduledLifecycleAdmissionAsync(
-            uri,
-            interactiveScheduler,
-            admission.Completion);
-        lock (lifecycleGate)
-        {
-            backgroundTasks.Add(trackedAdmission);
-        }
-
-        ObserveBackgroundTask(trackedAdmission);
-    }
-
-    private async Task ObserveScheduledLifecycleAdmissionAsync(
-        string uri,
-        VbaInteractiveWorkScheduler interactiveScheduler,
-        Task completion)
-    {
-        await ObserveSchedulerAdmissionAsync(completion).ConfigureAwait(false);
-        var restart = false;
-        lock (lifecycleGate)
-        {
-            activeLifecycleAdmissions.Remove(uri);
-            restart = !stopping
-                && interactiveScheduler.IsAccepting
-                && pendingLifecyclePlans.ContainsKey(uri)
-                && activeLifecycleAdmissions.Add(uri);
-        }
-
-        if (restart)
-        {
-            StartScheduledLifecycle(uri, interactiveScheduler);
+                });
         }
     }
 
@@ -408,6 +411,13 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
 
             foreach (var selection in plan.Selections)
             {
+                if (!IsCurrentLifecycleScopeCore(
+                        plan,
+                        selection.ScopeKey))
+                {
+                    continue;
+                }
+
                 var fingerprint = CreateSelectionFingerprint(selection);
                 if (lifecycleStates.TryGetValue(selection.ScopeKey, out var current)
                     && current.Fingerprint.Equals(fingerprint, StringComparison.Ordinal))
@@ -447,17 +457,6 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
             {
                 StartSelectionLifecycle(selection, automaticWork);
             }
-        }
-    }
-
-    private static async Task ObserveSchedulerAdmissionAsync(Task completion)
-    {
-        try
-        {
-            await completion.ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
         }
     }
 
@@ -822,16 +821,12 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        VbaInteractiveWorkScheduler? interactiveScheduler;
+        VbaInteractiveWorkScheduler interactiveScheduler;
         lock (lifecycleGate)
         {
-            interactiveScheduler = scheduler;
-        }
-
-        if (interactiveScheduler is null)
-        {
-            await publish(cancellationToken).ConfigureAwait(false);
-            return;
+            interactiveScheduler = scheduler
+                ?? throw new InvalidOperationException(
+                    "The reference catalog scheduler must be attached before publication starts.");
         }
 
         if (!interactiveScheduler.TryAdmitBackground(
@@ -941,9 +936,23 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
             return false;
         }
 
-        plan = new ReferenceCatalogRefreshPlan(uri, selections);
+        plan = new ReferenceCatalogRefreshPlan(
+            uri,
+            selections,
+            Revision: 0,
+            ScopeRevisions:
+                new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase));
         return true;
     }
+
+    private bool IsCurrentLifecycleScopeCore(
+        ReferenceCatalogRefreshPlan plan,
+        string scopeKey)
+        => plan.ScopeRevisions.TryGetValue(scopeKey, out var planRevision)
+            && latestLifecycleScopeRevisions.TryGetValue(
+                scopeKey,
+                out var latestRevision)
+            && latestRevision == planRevision;
 
     private void RemoveMissingManifestScopes(
         string uri,
@@ -956,13 +965,18 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
         var removedFingerprints = new HashSet<string>(StringComparer.Ordinal);
         lock (lifecycleGate)
         {
-            foreach (var scopeKey in lifecycleStates.Keys
+            foreach (var scopeKey in latestLifecycleScopeRevisions.Keys
+                .Concat(lifecycleStates.Keys)
                 .Where(key => key.StartsWith(scopePrefix, StringComparison.OrdinalIgnoreCase))
                 .Where(key => !retainedScopes.Contains(key))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray())
             {
-                removedFingerprints.Add(lifecycleStates[scopeKey].Fingerprint);
-                lifecycleStates.Remove(scopeKey);
+                latestLifecycleScopeRevisions.Remove(scopeKey);
+                if (lifecycleStates.Remove(scopeKey, out var state))
+                {
+                    removedFingerprints.Add(state.Fingerprint);
+                }
             }
         }
 

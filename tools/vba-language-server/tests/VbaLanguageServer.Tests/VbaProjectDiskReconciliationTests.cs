@@ -10,6 +10,357 @@ namespace VbaLanguageServer.Tests;
 public sealed class VbaProjectDiskReconciliationTests
 {
     [Fact]
+    public void Project_reconciler_exposes_only_the_new_runtime_names()
+    {
+        var assembly = typeof(VbaProjectReconciler).Assembly;
+
+        Assert.Null(
+            assembly.GetType(
+                "VbaLanguageServer.Lsp."
+                + "VbaProjectDiskReconciliationCoordinator"));
+        Assert.Null(
+            typeof(VbaProjectReconciler).GetMethod(
+                "TriggerAsync"));
+        Assert.NotNull(
+            typeof(VbaProjectReconciler).GetMethod(
+                nameof(VbaProjectReconciler.ReconcileAsync)));
+    }
+
+    [Fact]
+    public void Authority_generation_change_at_lease_rejects_before_manifest_write()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-reconcile-authority-lease-").FullName;
+        try
+        {
+            WriteProjectManifest(
+                projectRoot,
+                "src/Book1",
+                "Visual Basic For Applications");
+            var manifestPath = Path.Combine(
+                projectRoot,
+                "vba-project.json");
+            var manifestUri = ToFileUri(manifestPath);
+            var originalManifestText = File.ReadAllText(manifestPath);
+            var replacementManifestText = CreateProjectManifestText(
+                "src/Book1",
+                "Microsoft Excel 16.0 Object Library");
+            var firstPath = Path.Combine(
+                projectRoot,
+                "src",
+                "Book1",
+                "First.bas");
+            var secondPath = Path.Combine(
+                projectRoot,
+                "src",
+                "Book1",
+                "Second.bas");
+            var firstUri = ToFileUri(firstPath);
+            var secondUri = ToFileUri(secondPath);
+            var firstText = CreateModule("First", "RunFirst");
+            var secondText = CreateModule("Second", "RunSecond");
+            File.WriteAllText(firstPath, firstText);
+            File.WriteAllText(secondPath, secondText);
+            var leaseObserver =
+                new RecordingAuthorityLeaseObserver();
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()),
+                NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+                NullVbaDocumentAnalysisBuildObserver.Instance,
+                NullVbaProjectSnapshotBuildObserver.Instance,
+                SystemVbaProjectFileSystem.Instance,
+                leaseObserver);
+            workspace.UpdateDocument(firstUri, firstText);
+            _ = workspace.CreateProjectSnapshot(firstUri);
+            workspace.UpdateDocument(secondUri, secondText);
+
+            VbaProjectReconciliationScopePlan stalePlan;
+            using (var capture =
+                workspace.CaptureProjectReconciliation())
+            {
+                stalePlan = CreateManifestReloadPlan(
+                    Assert.Single(capture.Scopes),
+                    replacementManifestText);
+            }
+
+            leaseObserver.AuthorityLeaseAcquiredAction = () =>
+                Assert.True(workspace.CloseDocument(firstUri));
+            var rejected = workspace
+                .TryCommitProjectReconciliationScope(
+                    stalePlan,
+                    CancellationToken.None);
+
+            Assert.Equal(
+                VbaProjectReconciliationCommitOutcome.RejectedBeforeWrite,
+                rejected.Outcome);
+            Assert.True(rejected.RequiresFollowUp);
+            Assert.All(
+                rejected.Progress,
+                item => Assert.Equal(
+                    VbaProjectReconciliationProgressKind.MutationRejected,
+                    item.Kind));
+            Assert.Empty(rejected.Effects);
+            Assert.Equal(
+                originalManifestText,
+                workspace.ManifestWorkspace
+                    .GetReconciliationBaseline(manifestUri)
+                    .Text);
+
+            VbaProjectReconciliationScopePlan freshPlan;
+            using (var capture =
+                workspace.CaptureProjectReconciliation())
+            {
+                var freshScope = Assert.Single(capture.Scopes);
+                Assert.Equal(secondUri, freshScope.ActiveUri);
+                freshPlan = CreateManifestReloadPlan(
+                    freshScope,
+                    replacementManifestText);
+            }
+
+            var committed = workspace
+                .TryCommitProjectReconciliationScope(
+                    freshPlan,
+                    CancellationToken.None);
+
+            Assert.Equal(
+                VbaProjectReconciliationCommitOutcome.Committed,
+                committed.Outcome);
+            Assert.True(committed.RequiresFollowUp);
+            Assert.Contains(
+                committed.Progress,
+                item => item.Kind
+                    == VbaProjectReconciliationProgressKind
+                        .ManifestCommitted);
+            var selection = Assert.Single(
+                committed.Effects
+                    .OfType<ReconciledManifestSelectionChangedEffect>());
+            Assert.Equal(manifestUri, selection.Uri);
+            Assert.Equal(replacementManifestText, selection.Text);
+            Assert.Equal(
+                replacementManifestText,
+                workspace.ManifestWorkspace
+                    .GetReconciliationBaseline(manifestUri)
+                    .Text);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Scope_stop_retains_revision_watermark_and_dispatches_committed_effects()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-reconcile-scope-cancellation-").FullName;
+        try
+        {
+            WriteProjectManifest(projectRoot);
+            var sourceRoot = Path.Combine(
+                projectRoot,
+                "src",
+                "Book1");
+            var callerUri = ToFileUri(
+                Path.Combine(sourceRoot, "Caller.bas"));
+            var firstPath = Path.Combine(sourceRoot, "First.bas");
+            var secondPath = Path.Combine(sourceRoot, "Second.bas");
+            var firstUri = ToFileUri(firstPath);
+            var secondUri = ToFileUri(secondPath);
+            File.WriteAllText(
+                firstPath,
+                CreateModule("First", "BuildFirstBefore"));
+            File.WriteAllText(
+                secondPath,
+                CreateModule("Second", "BuildSecondBefore"));
+            var buildObserver =
+                new ArmableBlockingAnalysisBuildObserver();
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()),
+                NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+                buildObserver);
+            workspace.UpdateDocument(
+                callerUri,
+                CreateModule("Caller", "Run"));
+            _ = workspace.CreateProjectSnapshot(callerUri);
+            File.WriteAllText(
+                firstPath,
+                CreateModule("First", "BuildFirstAfter"));
+            File.WriteAllText(
+                secondPath,
+                CreateModule("Second", "BuildSecondStaleScan"));
+            buildObserver.Arm();
+            var diagnostics = new RecordingDiagnostics();
+            var commitObserver = new RecordingCommitObserver();
+            await using var scheduler = CreateSerialScheduler();
+            await using var reconciler =
+                new VbaProjectReconciler(
+                    workspace,
+                    diagnostics,
+                    cadence: Timeout.InfiniteTimeSpan,
+                    commitObserver: commitObserver);
+            reconciler.AttachScheduler(scheduler);
+
+            var pending = reconciler.ReconcileAsync();
+            await buildObserver.Blocked.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            var newestSecondText =
+                CreateModule("Second", "BuildSecondNewest");
+            File.WriteAllText(secondPath, newestSecondText);
+            Assert.True(
+                workspace.ReloadSourceDocument(
+                    secondUri,
+                    newestSecondText));
+            var stop = reconciler.StopAsync();
+            try
+            {
+                await commitObserver.CancellationObserved.Task
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            finally
+            {
+                buildObserver.Release();
+            }
+
+            await stop.WaitAsync(TimeSpan.FromSeconds(5));
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                async () => await pending
+                    .WaitAsync(TimeSpan.FromSeconds(5)));
+
+            Assert.Contains(firstUri, diagnostics.TrackedUris);
+            Assert.DoesNotContain(secondUri, diagnostics.TrackedUris);
+            Assert.Equal(
+                newestSecondText,
+                workspace.GetDocumentText(secondUri));
+            var snapshot = workspace.CreateProjectSnapshot(callerUri);
+            Assert.Contains(
+                snapshot.SemanticInventory.GetWorkspaceSymbols(
+                    "BuildFirstAfter"),
+                symbol => symbol.Uri == firstUri);
+            Assert.Contains(
+                snapshot.SemanticInventory.GetWorkspaceSymbols(
+                    "BuildSecondNewest"),
+                symbol => symbol.Uri == secondUri);
+            Assert.Empty(
+                snapshot.SemanticInventory.GetWorkspaceSymbols(
+                    "BuildSecondStaleScan"));
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Queued_required_mutation_cannot_overtake_reconciliation_effects()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-reconcile-effect-order-").FullName;
+        try
+        {
+            WriteProjectManifest(projectRoot);
+            var sourceRoot = Path.Combine(
+                projectRoot,
+                "src",
+                "Book1");
+            var callerUri = ToFileUri(
+                Path.Combine(sourceRoot, "Caller.bas"));
+            var helperPath = Path.Combine(sourceRoot, "Helper.bas");
+            var helperUri = ToFileUri(helperPath);
+            File.WriteAllText(
+                helperPath,
+                CreateModule("Helper", "BuildBefore"));
+            var buildObserver =
+                new ArmableBlockingAnalysisBuildObserver();
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()),
+                NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+                buildObserver);
+            workspace.UpdateDocument(
+                callerUri,
+                CreateModule("Caller", "Run"));
+            _ = workspace.CreateProjectSnapshot(callerUri);
+            File.WriteAllText(
+                helperPath,
+                CreateModule("Helper", "BuildReconciled"));
+            buildObserver.Arm();
+            var effects = new OrderedEffectDiagnostics(helperUri);
+            var timing = new CommitEffectTimingSink(effects);
+            await using var scheduler = new VbaInteractiveWorkScheduler(
+                timing,
+                options: new VbaInteractiveWorkSchedulerOptions(
+                    CoalesceSupersededMutations: true,
+                    MaxOwnedWork: 2));
+            await using var reconciler =
+                new VbaProjectReconciler(
+                    workspace,
+                    effects,
+                    cadence: Timeout.InfiniteTimeSpan);
+            reconciler.AttachScheduler(scheduler);
+
+            var pending = reconciler.ReconcileAsync();
+            await buildObserver.Blocked.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            var newestText =
+                CreateModule("Helper", "BuildNewest");
+            File.WriteAllText(helperPath, newestText);
+            var effectObservedAtNewerMutation = false;
+            VbaInteractiveWorkAdmission newerMutation;
+            try
+            {
+                newerMutation =
+                    await scheduler.AdmitRequiredMutationAsync(
+                            "test/newer-source-reload",
+                            cancellationToken =>
+                            {
+                                effectObservedAtNewerMutation =
+                                    effects.EffectObserved;
+                                effects.Events.Enqueue("newer-mutation");
+                                workspace.ReloadSourceDocument(
+                                    helperUri,
+                                    newestText,
+                                    cancellationToken);
+                                return Task.CompletedTask;
+                            },
+                            CancellationToken.None)
+                        .WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            finally
+            {
+                buildObserver.Release();
+            }
+
+            await Task.WhenAll(
+                    pending,
+                    newerMutation.Completion,
+                    timing.CommitCompleted.Task)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.True(
+                timing.EffectObservedBeforeCommitCompletion);
+            Assert.True(effectObservedAtNewerMutation);
+            Assert.Equal(
+                ["reconciliation-effect", "newer-mutation"],
+                effects.Events.ToArray());
+            Assert.Equal(newestText, workspace.GetDocumentText(helperUri));
+            var snapshot = workspace.CreateProjectSnapshot(callerUri);
+            Assert.Contains(
+                snapshot.SemanticInventory.GetWorkspaceSymbols(
+                    "BuildNewest"),
+                symbol => symbol.Uri == helperUri);
+            Assert.Empty(
+                snapshot.SemanticInventory.GetWorkspaceSymbols(
+                    "BuildReconciled"));
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Manual_cycle_makes_watcher_less_disk_change_visible()
     {
         var projectRoot = Directory.CreateTempSubdirectory("vba-ls-reconcile-").FullName;
@@ -52,12 +403,12 @@ public sealed class VbaProjectDiskReconciliationTests
                     CoalesceSupersededMutations: true,
                     MaxOwnedWork: 1));
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
             var refreshedSnapshot = workspace.CreateProjectSnapshot(callerUri);
 
@@ -70,6 +421,70 @@ public sealed class VbaProjectDiskReconciliationTests
             Assert.DoesNotContain(
                 refreshedSnapshot.SemanticInventory.GetWorkspaceSymbols("BuildValue"),
                 symbol => symbol.Uri == helperUri);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Manual_cycle_detects_changed_content_when_file_metadata_is_unchanged()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-reconcile-same-metadata-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(projectRoot, "Helper.bas");
+            var sourceUri = ToFileUri(sourcePath);
+            var before = CreateModule("Helper", "BuildValue");
+            var after = CreateModule("Helper", "BuildOther");
+            Assert.Equal(
+                System.Text.Encoding.UTF8.GetByteCount(before),
+                System.Text.Encoding.UTF8.GetByteCount(after));
+            File.WriteAllText(sourcePath, before);
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()));
+            var staleSnapshot =
+                workspace.CreateProjectSnapshot(sourceUri);
+            var initialLength = new FileInfo(sourcePath).Length;
+            var initialLastWriteTimeUtc =
+                File.GetLastWriteTimeUtc(sourcePath);
+
+            File.WriteAllText(sourcePath, after);
+            File.SetLastWriteTimeUtc(
+                sourcePath,
+                initialLastWriteTimeUtc);
+            var changedMetadata = new FileInfo(sourcePath);
+            Assert.Equal(initialLength, changedMetadata.Length);
+            Assert.Equal(
+                initialLastWriteTimeUtc.Ticks,
+                changedMetadata.LastWriteTimeUtc.Ticks);
+
+            await using var scheduler = CreateSerialScheduler();
+            await using var reconciliation =
+                new VbaProjectReconciler(
+                    workspace,
+                    cadence: Timeout.InfiniteTimeSpan);
+            reconciliation.AttachScheduler(scheduler);
+            await reconciliation.ReconcileAsync()
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            var refreshedSnapshot =
+                workspace.CreateProjectSnapshot(sourceUri);
+
+            Assert.Contains(
+                staleSnapshot.SemanticInventory.GetWorkspaceSymbols(
+                    "BuildValue"),
+                symbol => symbol.Uri == sourceUri);
+            Assert.Contains(
+                refreshedSnapshot.SemanticInventory.GetWorkspaceSymbols(
+                    "BuildOther"),
+                symbol => symbol.Uri == sourceUri);
+            Assert.DoesNotContain(
+                refreshedSnapshot.SemanticInventory.GetWorkspaceSymbols(
+                    "BuildValue"),
+                symbol => symbol.Uri == sourceUri);
         }
         finally
         {
@@ -95,25 +510,25 @@ public sealed class VbaProjectDiskReconciliationTests
             File.WriteAllText(secondPath, CreateModule("Second", "BuildSecondBefore"));
             var workspace = CreateWorkspace(callerUri);
             _ = workspace.CreateProjectSnapshot(callerUri);
-            var boundary = new CountingDiskSourceBoundary(
-                new VbaFileSystemProjectDiskSourceBoundary());
+            var boundary = new CountingDiskObservationSource(
+                new VbaFileSystemProjectDiskInventory());
             var diagnostics = new RecordingDiagnostics();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     diagnostics,
-                    sourceBoundary: boundary,
+                    diskObservationSource: boundary,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
             File.WriteAllText(firstPath, CreateModule("First", "BuildFirstAfter"));
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
             Assert.Contains(firstUri, diagnostics.TrackedUris);
 
             File.WriteAllText(secondPath, CreateModule("Second", "BuildSecondAfter"));
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.Equal(2, boundary.ScanCount);
@@ -143,16 +558,16 @@ public sealed class VbaProjectDiskReconciliationTests
             var diagnostics = new RecordingDiagnostics();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     diagnostics,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
             File.WriteAllText(helperPath, CreateModule("Helper", "BuildAfter"));
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.Equal(
@@ -200,14 +615,14 @@ public sealed class VbaProjectDiskReconciliationTests
             var diagnostics = new RecordingDiagnostics();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     diagnostics,
                     cadence: Timeout.InfiniteTimeSpan,
                     commitObserver: commitObserver);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.Equal(1, commitObserver.ScopeFenceValidationCount);
@@ -224,7 +639,7 @@ public sealed class VbaProjectDiskReconciliationTests
     }
 
     [Fact]
-    public async Task Manifest_mutation_invalidates_the_source_scope_fence_cache()
+    public async Task Manifest_mutation_schedules_a_fresh_source_scope_plan()
     {
         var projectRoot = Directory.CreateTempSubdirectory(
             "vba-ls-reconcile-manifest-fence-cache-").FullName;
@@ -265,17 +680,17 @@ public sealed class VbaProjectDiskReconciliationTests
             var diagnostics = new RecordingDiagnostics();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     diagnostics,
                     cadence: Timeout.InfiniteTimeSpan,
                     commitObserver: commitObserver);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
-            Assert.Equal(3, commitObserver.ScopeFenceValidationCount);
+            Assert.Equal(2, commitObserver.ScopeFenceValidationCount);
             Assert.Equal(
                 sourcePaths.Length,
                 diagnostics.TrackedUris
@@ -285,6 +700,245 @@ public sealed class VbaProjectDiskReconciliationTests
         finally
         {
             Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Stale_scope_rejection_does_not_block_a_fresh_peer_scope()
+    {
+        var workspaceRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-reconcile-scope-isolation-").FullName;
+        try
+        {
+            var firstRoot = Path.Combine(workspaceRoot, "AProject");
+            var secondRoot = Path.Combine(workspaceRoot, "BProject");
+            WriteProjectManifest(firstRoot);
+            WriteProjectManifest(secondRoot);
+            var firstSourcePath = Path.Combine(
+                firstRoot,
+                "src",
+                "Book1",
+                "First.bas");
+            var secondSourcePath = Path.Combine(
+                secondRoot,
+                "src",
+                "Book1",
+                "Second.bas");
+            var firstSourceUri = ToFileUri(firstSourcePath);
+            var secondSourceUri = ToFileUri(secondSourcePath);
+            File.WriteAllText(
+                firstSourcePath,
+                CreateModule("First", "BuildFirstBefore"));
+            File.WriteAllText(
+                secondSourcePath,
+                CreateModule("Second", "BuildSecondBefore"));
+            var firstCallerUri = ToFileUri(Path.Combine(
+                firstRoot,
+                "src",
+                "Book1",
+                "Caller.bas"));
+            var secondCallerUri = ToFileUri(Path.Combine(
+                secondRoot,
+                "src",
+                "Book1",
+                "Caller.bas"));
+            var workspace = CreateWorkspace(firstCallerUri);
+            workspace.UpdateDocument(
+                secondCallerUri,
+                CreateModule("Caller", "RunSecond"));
+            _ = workspace.CreateProjectSnapshot(firstCallerUri);
+            _ = workspace.CreateProjectSnapshot(secondCallerUri);
+            string firstAuthorityKey;
+            using (var capture =
+                workspace.CaptureProjectReconciliation())
+            {
+                Assert.Equal(2, capture.Scopes.Count);
+                firstAuthorityKey = Assert.Single(
+                    capture.Scopes,
+                    scope => Path.GetFullPath(
+                            scope.Resolution.ManifestPath!)
+                        .Equals(
+                            Path.GetFullPath(
+                                Path.Combine(
+                                    firstRoot,
+                                    "vba-project.json")),
+                            StringComparison.OrdinalIgnoreCase))
+                    .AuthorityKey;
+            }
+
+            File.WriteAllText(
+                firstSourcePath,
+                CreateModule("First", "BuildFirstAfter"));
+            File.WriteAllText(
+                secondSourcePath,
+                CreateModule("Second", "BuildSecondAfter"));
+            var firstManifestUri = ToFileUri(
+                Path.Combine(firstRoot, "vba-project.json"));
+            var invalidated = false;
+            var commitObserver = new RecordingCommitObserver
+            {
+                ScopeFenceValidatedAction = (authorityKey, _) =>
+                {
+                    if (invalidated
+                        || !authorityKey.Equals(
+                            firstAuthorityKey,
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        return;
+                    }
+
+                    invalidated = true;
+                    Assert.True(
+                        workspace.ManifestWorkspace.ReloadManifest(
+                            firstManifestUri));
+                }
+            };
+            var diagnostics = new RecordingDiagnostics();
+            var diskInventory = new FailAfterScanCountDiskObservationSource(
+                new VbaFileSystemProjectDiskInventory(),
+                allowedScanCount: 2);
+            await using var scheduler = CreateSerialScheduler();
+            await using var reconciler =
+                new VbaProjectReconciler(
+                    workspace,
+                    diagnostics,
+                    diskObservationSource: diskInventory,
+                    cadence: Timeout.InfiniteTimeSpan,
+                    commitObserver: commitObserver);
+            reconciler.AttachScheduler(scheduler);
+
+            await Assert.ThrowsAsync<IOException>(
+                async () => await reconciler.ReconcileAsync()
+                    .WaitAsync(TimeSpan.FromSeconds(5)));
+
+            Assert.True(invalidated);
+            Assert.DoesNotContain(
+                firstSourceUri,
+                diagnostics.TrackedUris);
+            Assert.Contains(
+                secondSourceUri,
+                diagnostics.TrackedUris);
+            using var committed =
+                workspace.CaptureProjectReconciliation();
+            var firstScope = Assert.Single(
+                committed.Scopes,
+                scope => scope.AuthorityKey.Equals(
+                    firstAuthorityKey,
+                    StringComparison.OrdinalIgnoreCase));
+            Assert.Contains(
+                firstScope.KnownSources,
+                source => source.Uri == firstSourceUri
+                    && source.Text.Contains(
+                        "BuildFirstBefore",
+                        StringComparison.Ordinal));
+            var secondScope = Assert.Single(
+                committed.Scopes,
+                scope => !scope.AuthorityKey.Equals(
+                    firstAuthorityKey,
+                    StringComparison.OrdinalIgnoreCase));
+            Assert.Contains(
+                secondScope.KnownSources,
+                source => source.Uri == secondSourceUri
+                    && source.Text.Contains(
+                        "BuildSecondAfter",
+                        StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(workspaceRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Effect_failure_does_not_undo_or_block_peer_scope_commits()
+    {
+        var workspaceRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-reconcile-effect-isolation-").FullName;
+        try
+        {
+            var firstRoot = Path.Combine(workspaceRoot, "AProject");
+            var secondRoot = Path.Combine(workspaceRoot, "BProject");
+            WriteProjectManifest(firstRoot);
+            WriteProjectManifest(secondRoot);
+            var firstSourcePath = Path.Combine(
+                firstRoot,
+                "src",
+                "Book1",
+                "First.bas");
+            var secondSourcePath = Path.Combine(
+                secondRoot,
+                "src",
+                "Book1",
+                "Second.bas");
+            var firstSourceUri = ToFileUri(firstSourcePath);
+            var secondSourceUri = ToFileUri(secondSourcePath);
+            File.WriteAllText(
+                firstSourcePath,
+                CreateModule("First", "BuildFirstBefore"));
+            File.WriteAllText(
+                secondSourcePath,
+                CreateModule("Second", "BuildSecondBefore"));
+            var firstCallerUri = ToFileUri(Path.Combine(
+                firstRoot,
+                "src",
+                "Book1",
+                "Caller.bas"));
+            var secondCallerUri = ToFileUri(Path.Combine(
+                secondRoot,
+                "src",
+                "Book1",
+                "Caller.bas"));
+            var workspace = CreateWorkspace(firstCallerUri);
+            workspace.UpdateDocument(
+                secondCallerUri,
+                CreateModule("Caller", "RunSecond"));
+            _ = workspace.CreateProjectSnapshot(firstCallerUri);
+            _ = workspace.CreateProjectSnapshot(secondCallerUri);
+            File.WriteAllText(
+                firstSourcePath,
+                CreateModule("First", "BuildFirstAfter"));
+            File.WriteAllText(
+                secondSourcePath,
+                CreateModule("Second", "BuildSecondAfter"));
+            var diagnostics = new ThrowingDiagnostics(firstSourceUri);
+            var failures = new RecordingReconciliationFailures();
+            await using var scheduler = CreateSerialScheduler();
+            await using var reconciler =
+                new VbaProjectReconciler(
+                    workspace,
+                    diagnostics,
+                    cadence: Timeout.InfiniteTimeSpan,
+                    failureObserver: failures);
+            reconciler.AttachScheduler(scheduler);
+
+            await reconciler.ReconcileAsync()
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Contains(
+                failures.Errors,
+                error => error is InvalidOperationException);
+            Assert.Contains(
+                secondSourceUri,
+                diagnostics.TrackedUris);
+            using var committed =
+                workspace.CaptureProjectReconciliation();
+            Assert.Equal(2, committed.Scopes.Count);
+            Assert.Contains(
+                committed.Scopes.SelectMany(scope => scope.KnownSources),
+                source => source.Uri == firstSourceUri
+                    && source.Text.Contains(
+                        "BuildFirstAfter",
+                        StringComparison.Ordinal));
+            Assert.Contains(
+                committed.Scopes.SelectMany(scope => scope.KnownSources),
+                source => source.Uri == secondSourceUri
+                    && source.Text.Contains(
+                        "BuildSecondAfter",
+                        StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(workspaceRoot, recursive: true);
         }
     }
 
@@ -338,18 +992,18 @@ public sealed class VbaProjectDiskReconciliationTests
             File.WriteAllText(helperPath, CreateModule("Helper", "BuildA"));
             var workspace = CreateWorkspace(callerUri);
             _ = workspace.CreateProjectSnapshot(callerUri);
-            var boundary = new BlockingDiskSourceBoundary();
+            var boundary = new BlockingDiskObservationSource();
             var diagnostics = new RecordingDiagnostics();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     diagnostics,
-                    sourceBoundary: boundary,
+                    diskObservationSource: boundary,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            var firstTrigger = reconciliation.TriggerAsync();
+            var firstTrigger = reconciliation.ReconcileAsync();
             await boundary.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
             File.WriteAllText(helperPath, CreateModule("Helper", "BuildC"));
             workspace.UpdateDocument(
@@ -357,7 +1011,7 @@ public sealed class VbaProjectDiskReconciliationTests
                 "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    ' changed\nEnd Sub");
             _ = workspace.CreateProjectSnapshot(callerUri);
             boundary.Complete(CreateScan(
-                boundary.Scope,
+                boundary.CapturedObservation,
                 File.ReadAllText(Path.Combine(projectRoot, "vba-project.json")),
                 (helperPath, CreateModule("Helper", "BuildB"))));
             await firstTrigger.WaitAsync(TimeSpan.FromSeconds(5));
@@ -366,12 +1020,12 @@ public sealed class VbaProjectDiskReconciliationTests
                 workspace.GetDocumentText(helperUri));
 
             await using var nextReconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     diagnostics,
                     cadence: Timeout.InfiniteTimeSpan);
             nextReconciliation.AttachScheduler(scheduler);
-            await nextReconciliation.TriggerAsync()
+            await nextReconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.Contains(
@@ -414,13 +1068,13 @@ public sealed class VbaProjectDiskReconciliationTests
             var diagnostics = new RecordingDiagnostics();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     diagnostics,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
             var snapshot = workspace.CreateProjectSnapshot(callerUri);
 
@@ -487,19 +1141,19 @@ public sealed class VbaProjectDiskReconciliationTests
             var diagnostics = new RecordingDiagnostics();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     diagnostics,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.Equal(innerText, workspace.GetDocumentText(innerUri));
             Assert.DoesNotContain(innerUri, diagnostics.EmptyUris);
             using (var capture =
-                workspace.CaptureDiskReconciliationScopes())
+                workspace.CaptureProjectReconciliation())
             {
                 var outerScope = Assert.Single(capture.Scopes);
                 Assert.DoesNotContain(
@@ -553,24 +1207,20 @@ public sealed class VbaProjectDiskReconciliationTests
                     nestedManifestUri,
                     documentVersion: 1,
                     CreateProjectManifestText()).Accepted);
-            var boundary = new BlockingFirstDiskSourceBoundary(
-                new VbaFileSystemProjectDiskSourceBoundary());
+            var boundary = new BlockingFirstDiskObservationSource(
+                new VbaFileSystemProjectDiskInventory());
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
-                    sourceBoundary: boundary,
+                    diskObservationSource: boundary,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            var trigger = reconciliation.TriggerAsync();
+            var trigger = reconciliation.ReconcileAsync();
             await boundary.Started.Task.WaitAsync(
                 TimeSpan.FromSeconds(2));
-            var staleScan =
-                await new VbaFileSystemProjectDiskSourceBoundary()
-                    .ScanAsync(
-                        boundary.Scope,
-                        CancellationToken.None);
+            var staleScan = boundary.CapturedObservation;
             Assert.Contains(
                 innerPath,
                 staleScan.ExistingNonOwnedSourcePaths);
@@ -581,7 +1231,7 @@ public sealed class VbaProjectDiskReconciliationTests
             await trigger.WaitAsync(TimeSpan.FromSeconds(5));
 
             using var capture =
-                workspace.CaptureDiskReconciliationScopes();
+                workspace.CaptureProjectReconciliation();
             Assert.Contains(
                 Assert.Single(capture.Scopes).KnownSources,
                 source => source.Uri == innerUri);
@@ -606,13 +1256,13 @@ public sealed class VbaProjectDiskReconciliationTests
             File.WriteAllText(helperPath, CreateModule("Helper", "BuildValue"));
             var workspace = CreateWorkspace(callerUri);
             var first = workspace.CreateProjectSnapshot(callerUri);
-            var boundary = new CountingDiskSourceBoundary(
-                new VbaFileSystemProjectDiskSourceBoundary());
+            var boundary = new CountingDiskObservationSource(
+                new VbaFileSystemProjectDiskInventory());
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
-                    sourceBoundary: boundary,
+                    diskObservationSource: boundary,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
@@ -623,10 +1273,9 @@ public sealed class VbaProjectDiskReconciliationTests
             Assert.Same(first, third);
             Assert.Equal(0, boundary.ScanCount);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
             Assert.Equal(1, boundary.ScanCount);
-            Assert.Single(boundary.AuthorityKeys);
         }
         finally
         {
@@ -662,12 +1311,12 @@ public sealed class VbaProjectDiskReconciliationTests
             _ = workspace.CreateProjectSnapshot(callerUri);
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.Equal(0, workspace.RetainedSourceRevisionCount);
@@ -724,6 +1373,7 @@ public sealed class VbaProjectDiskReconciliationTests
             var provider = new VbaProjectSnapshotProvider(
                 new VbaProjectReferenceCatalogCache(
                     VbaProjectReferenceCatalogSet.Empty),
+                new VbaFileSystemProjectDiskInventory(),
                 new VbaProjectSourceDocumentCache(),
                 new VbaProjectManifestWorkspace(),
                 buildObserver: observer);
@@ -797,7 +1447,7 @@ public sealed class VbaProjectDiskReconciliationTests
                 workspace,
                 callerUri,
                 closeDocument));
-            using (var remaining = workspace.CaptureDiskReconciliationScopes())
+            using (var remaining = workspace.CaptureProjectReconciliation())
             {
                 var scope = Assert.Single(remaining.Scopes);
                 Assert.Equal(peerUri, scope.ActiveUri);
@@ -807,7 +1457,7 @@ public sealed class VbaProjectDiskReconciliationTests
                 workspace,
                 peerUri,
                 closeDocument));
-            using var retired = workspace.CaptureDiskReconciliationScopes();
+            using var retired = workspace.CaptureProjectReconciliation();
 
             Assert.Empty(retired.Scopes);
             Assert.Equal(0, workspace.RetainedProjectSnapshotCount);
@@ -930,15 +1580,15 @@ public sealed class VbaProjectDiskReconciliationTests
             var manifestEvents = new RecordingManifestEvents();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     manifestEvents: manifestEvents,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.Empty(manifestEvents.ValidationFailures);
@@ -1111,23 +1761,19 @@ public sealed class VbaProjectDiskReconciliationTests
             File.Delete(Path.Combine(
                 projectRoot,
                 "vba-project.json"));
-            var boundary = new BlockingDiskSourceBoundary();
+            var boundary = new BlockingDiskObservationSource();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
-                    sourceBoundary: boundary,
+                    diskObservationSource: boundary,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            var pending = reconciliation.TriggerAsync();
+            var pending = reconciliation.ReconcileAsync();
             await boundary.Started.Task
                 .WaitAsync(TimeSpan.FromSeconds(5));
-            var scan =
-                await new VbaFileSystemProjectDiskSourceBoundary()
-                    .ScanAsync(
-                        boundary.Scope,
-                        CancellationToken.None);
+            var scan = boundary.CapturedObservation;
             var operationCount = fileSystem.OperationCount;
             fileSystem.RejectOperations = true;
             boundary.Complete(scan);
@@ -1301,7 +1947,7 @@ public sealed class VbaProjectDiskReconciliationTests
                 outerUri,
                 closeDocument));
             using var remaining =
-                workspace.CaptureDiskReconciliationScopes();
+                workspace.CaptureProjectReconciliation();
 
             var scope = Assert.Single(remaining.Scopes);
             Assert.Equal(innerUri, scope.ActiveUri);
@@ -1362,7 +2008,7 @@ public sealed class VbaProjectDiskReconciliationTests
             releaseCapture.TrySetResult();
             _ = await staleBuild.WaitAsync(TimeSpan.FromSeconds(2));
             using var reconciliation =
-                workspace.CaptureDiskReconciliationScopes();
+                workspace.CaptureProjectReconciliation();
 
             Assert.Empty(reconciliation.Scopes);
             Assert.Equal(0, workspace.RetainedProjectSnapshotCount);
@@ -1497,7 +2143,7 @@ public sealed class VbaProjectDiskReconciliationTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void Last_disk_source_deletion_retires_project_state(
+    public async Task Last_disk_source_deletion_retires_project_state(
         bool reconciledDeletion)
     {
         var projectRoot = Directory.CreateTempSubdirectory(
@@ -1521,26 +2167,27 @@ public sealed class VbaProjectDiskReconciliationTests
                 callerUri,
                 callerText));
             _ = workspace.CreateProjectSnapshot(callerUri);
-            long capturedWorkspaceRevision;
-            using (var capture =
-                workspace.CaptureDiskReconciliationScopes())
-            {
-                capturedWorkspaceRevision =
-                    Assert.Single(capture.Scopes)
-                        .CapturedWorkspaceRevision;
-            }
-
             Assert.True(workspace.RetainedProjectDiskDocumentCount > 0);
             File.Delete(callerPath);
-            var deleted = reconciledDeletion
-                ? workspace.DeleteReconciledSourceDocument(
-                    callerUri,
-                    capturedWorkspaceRevision)
-                : workspace.DeleteSourceDocument(callerUri);
+            if (reconciledDeletion)
+            {
+                await using var scheduler =
+                    new VbaInteractiveWorkScheduler();
+                await using var reconciler =
+                    new VbaProjectReconciler(
+                        workspace,
+                        cadence: Timeout.InfiniteTimeSpan);
+                reconciler.AttachScheduler(scheduler);
+                await reconciler.ReconcileAsync()
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            else
+            {
+                Assert.True(workspace.DeleteSourceDocument(callerUri));
+            }
 
-            Assert.True(deleted);
             using var retired =
-                workspace.CaptureDiskReconciliationScopes();
+                workspace.CaptureProjectReconciliation();
             Assert.Empty(retired.Scopes);
             Assert.Equal(0, workspace.RetainedProjectSnapshotCount);
             Assert.Equal(
@@ -1574,23 +2221,25 @@ public sealed class VbaProjectDiskReconciliationTests
                 secondUri,
                 "Attribute VB_Name = \"Second\"\nPublic Sub Run()\nEnd Sub");
             _ = workspace.CreateProjectSnapshot(firstUri);
-            var boundary = new CountingDiskSourceBoundary(
-                new VbaFileSystemProjectDiskSourceBoundary());
+            var boundary = new CountingDiskObservationSource(
+                new VbaFileSystemProjectDiskInventory());
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
-                    sourceBoundary: boundary,
+                    diskObservationSource: boundary,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.Equal(1, boundary.ScanCount);
             Assert.DoesNotContain(
-                boundary.AuthorityKeys,
-                key => key.Contains(secondRoot, StringComparison.OrdinalIgnoreCase));
+                boundary.RootPaths,
+                root => root.Contains(
+                    secondRoot,
+                    StringComparison.OrdinalIgnoreCase));
         }
         finally
         {
@@ -1641,20 +2290,31 @@ public sealed class VbaProjectDiskReconciliationTests
                     CreateModule("Helper", "BuildAfter"));
             }
 
-            var boundary = new GatedConcurrencyDiskSourceBoundary(
+            string[] expectedTrackedUris;
+            using (var capture = workspace.CaptureProjectReconciliation())
+            {
+                expectedTrackedUris = capture.Scopes
+                    .OrderBy(
+                        scope => scope.AuthorityKey,
+                        StringComparer.OrdinalIgnoreCase)
+                    .Select(scope => scope.KnownSources.Single().Uri)
+                    .ToArray();
+            }
+
+            var boundary = new GatedConcurrencyDiskObservationSource(
                 expectedScopeCount: projectRoots.Length,
-                new VbaFileSystemProjectDiskSourceBoundary());
+                new VbaFileSystemProjectDiskInventory());
             var diagnostics = new RecordingDiagnostics();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     diagnostics,
-                    sourceBoundary: boundary,
+                    diskObservationSource: boundary,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            var trigger = reconciliation.TriggerAsync();
+            var trigger = reconciliation.ReconcileAsync();
             await boundary.FirstWaveStarted.Task
                 .WaitAsync(TimeSpan.FromSeconds(2));
             var startedEveryScopeBeforeRelease =
@@ -1664,12 +2324,6 @@ public sealed class VbaProjectDiskReconciliationTests
 
             Assert.False(startedEveryScopeBeforeRelease);
             Assert.Equal(2, boundary.MaxConcurrency);
-            var expectedTrackedUris = boundary.Scopes
-                .OrderBy(
-                    scope => scope.AuthorityKey,
-                    StringComparer.OrdinalIgnoreCase)
-                .Select(scope => scope.KnownSources.Single().Uri)
-                .ToArray();
             Assert.Equal(expectedTrackedUris, diagnostics.TrackedUris);
         }
         finally
@@ -1700,13 +2354,13 @@ public sealed class VbaProjectDiskReconciliationTests
             var manifestEvents = new RecordingManifestEvents();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     manifestEvents: manifestEvents,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
             var manifestSnapshot = workspace.CreateProjectSnapshot(callerUri);
 
@@ -1718,52 +2372,6 @@ public sealed class VbaProjectDiskReconciliationTests
                 Path.GetFullPath(Path.Combine(projectRoot, "vba-project.json")),
                 manifestSnapshot.Resolution.ManifestPath);
             Assert.Single(manifestEvents.SelectionChanges);
-        }
-        finally
-        {
-            Directory.Delete(projectRoot, recursive: true);
-        }
-    }
-
-    [Fact]
-    public async Task Disk_boundary_treats_document_kind_as_opaque_scope_data()
-    {
-        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-reconcile-kind-").FullName;
-        try
-        {
-            var sourcePath = Path.Combine(projectRoot, "Module1.bas");
-            File.WriteAllText(sourcePath, CreateModule("Module1", "BuildValue"));
-            var resolution = new VbaProjectResolution(
-                VbaProjectResolutionKind.ManifestDocument,
-                projectRoot,
-                ManifestPath: Path.Combine(projectRoot, "vba-project.json"),
-                DocumentName: "Document1",
-                DocumentKind: "FutureHostDocument");
-            var scope = new VbaProjectDiskReconciliationScope(
-                "future-host",
-                ToFileUri(sourcePath),
-                resolution,
-                CapturedWorkspaceRevision: 0,
-                ManifestCandidates:
-                [
-                    new VbaProjectDiskManifestCandidate(
-                        ToFileUri(Path.Combine(projectRoot, "vba-project.json")),
-                        CapturedRevision: 0,
-                        new VbaProjectDiskManifestBaseline(
-                            Exists: false,
-                            Text: null))
-                ],
-                KnownSources: []);
-
-            var scan = await new VbaFileSystemProjectDiskSourceBoundary()
-                .ScanAsync(scope, CancellationToken.None);
-
-            Assert.Contains(
-                scan.Sources,
-                source => source.Uri == ToFileUri(sourcePath));
-            Assert.Equal(
-                "FutureHostDocument",
-                scope.Resolution.DocumentKind);
         }
         finally
         {
@@ -1784,16 +2392,16 @@ public sealed class VbaProjectDiskReconciliationTests
             File.WriteAllText(helperPath, CreateModule("Helper", "BuildValue"));
             var workspace = CreateWorkspace(callerUri);
             _ = workspace.CreateProjectSnapshot(callerUri);
-            var boundary = new BlockingDiskSourceBoundary();
+            var boundary = new BlockingDiskObservationSource();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
-                    sourceBoundary: boundary,
+                    diskObservationSource: boundary,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            var trigger = reconciliation.TriggerAsync();
+            var trigger = reconciliation.ReconcileAsync();
             await boundary.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
             var mutation = await scheduler.AdmitRequiredMutationAsync(
                     "test/reconciliation-does-not-own-lane",
@@ -1803,7 +2411,7 @@ public sealed class VbaProjectDiskReconciliationTests
             await mutation.Completion.WaitAsync(TimeSpan.FromSeconds(2));
 
             boundary.Complete(CreateScan(
-                boundary.Scope,
+                boundary.CapturedObservation,
                 File.ReadAllText(Path.Combine(projectRoot, "vba-project.json"))));
             await trigger.WaitAsync(TimeSpan.FromSeconds(5));
         }
@@ -1827,16 +2435,16 @@ public sealed class VbaProjectDiskReconciliationTests
             File.WriteAllText(helperPath, CreateModule("Helper", "BuildDisk"));
             var workspace = CreateWorkspace(callerUri);
             _ = workspace.CreateProjectSnapshot(callerUri);
-            var boundary = new BlockingDiskSourceBoundary();
+            var boundary = new BlockingDiskObservationSource();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
-                    sourceBoundary: boundary,
+                    diskObservationSource: boundary,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            var trigger = reconciliation.TriggerAsync();
+            var trigger = reconciliation.ReconcileAsync();
             await boundary.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
             var watcher = await scheduler.AdmitRequiredMutationAsync(
                     "workspace/didChangeWatchedFiles",
@@ -1854,7 +2462,7 @@ public sealed class VbaProjectDiskReconciliationTests
                 .WaitAsync(TimeSpan.FromSeconds(2));
             await watcher.Completion.WaitAsync(TimeSpan.FromSeconds(2));
             boundary.Complete(CreateScan(
-                boundary.Scope,
+                boundary.CapturedObservation,
                 File.ReadAllText(Path.Combine(projectRoot, "vba-project.json")),
                 (helperPath, CreateModule("Helper", "BuildStaleScan"))));
 
@@ -1886,16 +2494,16 @@ public sealed class VbaProjectDiskReconciliationTests
             File.WriteAllText(helperPath, CreateModule("Helper", "BuildDisk"));
             var workspace = CreateWorkspace(callerUri);
             _ = workspace.CreateProjectSnapshot(callerUri);
-            var boundary = new BlockingDiskSourceBoundary();
+            var boundary = new BlockingDiskObservationSource();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
-                    sourceBoundary: boundary,
+                    diskObservationSource: boundary,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            var trigger = reconciliation.TriggerAsync();
+            var trigger = reconciliation.ReconcileAsync();
             await boundary.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
             var opened = await scheduler.AdmitRequiredMutationAsync(
                     "textDocument/didOpen",
@@ -1911,7 +2519,7 @@ public sealed class VbaProjectDiskReconciliationTests
                 .WaitAsync(TimeSpan.FromSeconds(2));
             await opened.Completion.WaitAsync(TimeSpan.FromSeconds(2));
             boundary.Complete(CreateScan(
-                boundary.Scope,
+                boundary.CapturedObservation,
                 File.ReadAllText(Path.Combine(projectRoot, "vba-project.json")),
                 (helperPath, CreateModule("Helper", "BuildStaleScan"))));
 
@@ -1947,16 +2555,16 @@ public sealed class VbaProjectDiskReconciliationTests
                 version: 1,
                 CreateModule("Helper", "BuildOpen"));
             _ = workspace.CreateProjectSnapshot(callerUri);
-            var boundary = new BlockingDiskSourceBoundary();
+            var boundary = new BlockingDiskObservationSource();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
-                    sourceBoundary: boundary,
+                    diskObservationSource: boundary,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            var trigger = reconciliation.TriggerAsync();
+            var trigger = reconciliation.ReconcileAsync();
             await boundary.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
             var closed = await scheduler.AdmitRequiredMutationAsync(
                     "textDocument/didClose",
@@ -1969,7 +2577,7 @@ public sealed class VbaProjectDiskReconciliationTests
                 .WaitAsync(TimeSpan.FromSeconds(2));
             await closed.Completion.WaitAsync(TimeSpan.FromSeconds(2));
             boundary.Complete(CreateScan(
-                boundary.Scope,
+                boundary.CapturedObservation,
                 File.ReadAllText(Path.Combine(projectRoot, "vba-project.json")),
                 (helperPath, CreateModule("Helper", "BuildStaleScan"))));
 
@@ -2006,23 +2614,28 @@ public sealed class VbaProjectDiskReconciliationTests
                 CreateModule("Helper", "BuildCurrent"));
             var workspace = CreateWorkspace(callerUri);
             _ = workspace.CreateProjectSnapshot(callerUri);
-            var boundary = new BlockingFirstDiskSourceBoundary(
-                new VbaFileSystemProjectDiskSourceBoundary());
+            long retiredGeneration;
+            using (var captured = workspace.CaptureProjectReconciliation())
+            {
+                retiredGeneration = Assert.Single(captured.Scopes)
+                    .AuthorityGeneration;
+            }
+
+            var boundary = new BlockingFirstDiskObservationSource(
+                new VbaFileSystemProjectDiskInventory());
             var diagnostics = new RecordingDiagnostics();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     diagnostics,
-                    sourceBoundary: boundary,
+                    diskObservationSource: boundary,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            var trigger = reconciliation.TriggerAsync();
+            var trigger = reconciliation.ReconcileAsync();
             await boundary.Started.Task.WaitAsync(
                 TimeSpan.FromSeconds(2));
-            var retiredGeneration =
-                boundary.Scope.AuthorityGeneration;
             Assert.True(workspace.RemoveDocument(callerUri));
             workspace.UpdateDocument(
                 callerUri,
@@ -2031,7 +2644,7 @@ public sealed class VbaProjectDiskReconciliationTests
                 + "End Sub");
             _ = workspace.CreateProjectSnapshot(callerUri);
             using (var current =
-                workspace.CaptureDiskReconciliationScopes())
+                workspace.CaptureProjectReconciliation())
             {
                 Assert.NotEqual(
                     retiredGeneration,
@@ -2040,7 +2653,7 @@ public sealed class VbaProjectDiskReconciliationTests
             }
 
             boundary.Complete(CreateScan(
-                boundary.Scope,
+                boundary.CapturedObservation,
                 File.ReadAllText(Path.Combine(
                     projectRoot,
                     "vba-project.json")),
@@ -2085,25 +2698,30 @@ public sealed class VbaProjectDiskReconciliationTests
                 version: 1,
                 secondText);
             _ = workspace.CreateProjectSnapshot(firstUri);
-            var boundary = new BlockingDiskSourceBoundary();
+            long capturedGeneration;
+            using (var captured = workspace.CaptureProjectReconciliation())
+            {
+                capturedGeneration = Assert.Single(captured.Scopes)
+                    .AuthorityGeneration;
+            }
+
+            var boundary = new BlockingDiskObservationSource();
             var diagnostics = new RecordingDiagnostics();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     diagnostics,
-                    sourceBoundary: boundary,
+                    diskObservationSource: boundary,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            var trigger = reconciliation.TriggerAsync();
+            var trigger = reconciliation.ReconcileAsync();
             await boundary.Started.Task.WaitAsync(
                 TimeSpan.FromSeconds(2));
-            var capturedGeneration =
-                boundary.Scope.AuthorityGeneration;
             Assert.True(workspace.CloseDocument(firstUri));
             using (var current =
-                workspace.CaptureDiskReconciliationScopes())
+                workspace.CaptureProjectReconciliation())
             {
                 var reanchored = Assert.Single(current.Scopes);
                 Assert.Equal(secondUri, reanchored.ActiveUri);
@@ -2117,7 +2735,7 @@ public sealed class VbaProjectDiskReconciliationTests
                 "Stale.bas");
             var staleUri = ToFileUri(stalePath);
             boundary.Complete(CreateScan(
-                boundary.Scope,
+                boundary.CapturedObservation,
                 File.ReadAllText(Path.Combine(
                     projectRoot,
                     "vba-project.json")),
@@ -2148,25 +2766,25 @@ public sealed class VbaProjectDiskReconciliationTests
             var workspace = CreateWorkspace(callerUri);
             var initial = workspace.CreateProjectSnapshot(callerUri);
             File.WriteAllText(helperPath, CreateModule("Helper", "BuildAfter"));
-            var boundary = new FailOnceDiskSourceBoundary(
-                new VbaFileSystemProjectDiskSourceBoundary());
+            var boundary = new FailOnceDiskObservationSource(
+                new VbaFileSystemProjectDiskInventory());
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
-                    sourceBoundary: boundary,
+                    diskObservationSource: boundary,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
             await Assert.ThrowsAsync<IOException>(
-                () => reconciliation.TriggerAsync());
+                () => reconciliation.ReconcileAsync());
             var stillStale = workspace.CreateProjectSnapshot(callerUri);
 
             Assert.Same(initial, stillStale);
             Assert.Empty(
                 stillStale.SemanticInventory.GetWorkspaceSymbols("BuildAfter"));
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
             var refreshed = workspace.CreateProjectSnapshot(callerUri);
             Assert.NotEmpty(
@@ -2191,17 +2809,17 @@ public sealed class VbaProjectDiskReconciliationTests
             File.WriteAllText(helperPath, CreateModule("Helper", "BuildBefore"));
             var workspace = CreateWorkspace(callerUri);
             var initial = workspace.CreateProjectSnapshot(callerUri);
-            var boundary = new BlockingDiskSourceBoundary();
+            var boundary = new BlockingDiskObservationSource();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
-                    sourceBoundary: boundary,
+                    diskObservationSource: boundary,
                     cadence: Timeout.InfiniteTimeSpan,
                     shutdownTimeout: TimeSpan.FromMilliseconds(50));
             reconciliation.AttachScheduler(scheduler);
 
-            var trigger = reconciliation.TriggerAsync();
+            var trigger = reconciliation.ReconcileAsync();
             await boundary.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
             var transientUri = ToFileUri(
                 Path.Combine(projectRoot, "transient", "Late.bas"));
@@ -2215,7 +2833,7 @@ public sealed class VbaProjectDiskReconciliationTests
             await stop.WaitAsync(TimeSpan.FromMilliseconds(500));
             Assert.Equal(0, workspace.RetainedSourceRevisionCount);
             boundary.Complete(CreateScan(
-                boundary.Scope,
+                boundary.CapturedObservation,
                 File.ReadAllText(Path.Combine(projectRoot, "vba-project.json")),
                 (helperPath, CreateModule("Helper", "BuildTooLate"))));
 
@@ -2255,18 +2873,18 @@ public sealed class VbaProjectDiskReconciliationTests
                 CreateProjectManifestText(
                     "src",
                     "Microsoft Excel 16.0 Object Library"));
-            var boundary = new BlockingSecondDiskSourceBoundary(
-                new VbaFileSystemProjectDiskSourceBoundary());
+            var boundary = new BlockingSecondDiskObservationSource(
+                new VbaFileSystemProjectDiskInventory());
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
-                    sourceBoundary: boundary,
+                    diskObservationSource: boundary,
                     cadence: Timeout.InfiniteTimeSpan,
                     shutdownTimeout: TimeSpan.FromMilliseconds(500));
             reconciliation.AttachScheduler(scheduler);
 
-            var trigger = reconciliation.TriggerAsync();
+            var trigger = reconciliation.ReconcileAsync();
             await boundary.SecondScanStarted.Task
                 .WaitAsync(TimeSpan.FromSeconds(5));
             await reconciliation.StopAsync()
@@ -2294,17 +2912,17 @@ public sealed class VbaProjectDiskReconciliationTests
                 Path.Combine(projectRoot, "src", "Book1", "Caller.bas"));
             var workspace = CreateWorkspace(callerUri);
             _ = workspace.CreateProjectSnapshot(callerUri);
-            var boundary = new BlockingDiskSourceBoundary();
+            var boundary = new BlockingDiskObservationSource();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
-                    sourceBoundary: boundary,
+                    diskObservationSource: boundary,
                     cadence: Timeout.InfiniteTimeSpan,
                     shutdownTimeout: TimeSpan.FromMilliseconds(50));
             reconciliation.AttachScheduler(scheduler);
 
-            var trigger = reconciliation.TriggerAsync();
+            var trigger = reconciliation.ReconcileAsync();
             await boundary.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
             await reconciliation.StopAsync()
                 .WaitAsync(TimeSpan.FromMilliseconds(500));
@@ -2340,7 +2958,7 @@ public sealed class VbaProjectDiskReconciliationTests
             File.WriteAllText(helperPath, CreateModule("Helper", "BuildBefore"));
             var workspace = CreateWorkspace(callerUri);
             var initial = workspace.CreateProjectSnapshot(callerUri);
-            var boundary = new BlockingDiskSourceBoundary();
+            var boundary = new BlockingDiskObservationSource();
             var timing = new CommitAdmissionTimingSink();
             await using var scheduler = new VbaInteractiveWorkScheduler(
                 timing,
@@ -2348,14 +2966,14 @@ public sealed class VbaProjectDiskReconciliationTests
                     CoalesceSupersededMutations: true,
                     MaxOwnedWork: 2));
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
-                    sourceBoundary: boundary,
+                    diskObservationSource: boundary,
                     cadence: Timeout.InfiniteTimeSpan,
                     shutdownTimeout: TimeSpan.FromMilliseconds(50));
             reconciliation.AttachScheduler(scheduler);
 
-            var trigger = reconciliation.TriggerAsync();
+            var trigger = reconciliation.ReconcileAsync();
             await boundary.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
             var blockerStarted = new TaskCompletionSource(
                 TaskCreationOptions.RunContinuationsAsynchronously);
@@ -2368,7 +2986,7 @@ public sealed class VbaProjectDiskReconciliationTests
                 });
             await blockerStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
             boundary.Complete(CreateScan(
-                boundary.Scope,
+                boundary.CapturedObservation,
                 File.ReadAllText(Path.Combine(projectRoot, "vba-project.json")),
                 (helperPath, CreateModule("Helper", "BuildTooLate"))));
             await timing.CommitAdmitted.Task
@@ -2399,7 +3017,7 @@ public sealed class VbaProjectDiskReconciliationTests
         var projectRoot = Directory.CreateTempSubdirectory(
             "vba-ls-reconcile-stop-callback-").FullName;
         using var boundary =
-            new CancellationCallbackBlockingDiskSourceBoundary();
+            new CancellationCallbackBlockingDiskObservationSource();
         try
         {
             WriteProjectManifest(projectRoot);
@@ -2409,14 +3027,14 @@ public sealed class VbaProjectDiskReconciliationTests
             _ = workspace.CreateProjectSnapshot(callerUri);
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
-                    sourceBoundary: boundary,
+                    diskObservationSource: boundary,
                     cadence: Timeout.InfiniteTimeSpan,
                     shutdownTimeout: TimeSpan.FromMilliseconds(50));
             reconciliation.AttachScheduler(scheduler);
 
-            var trigger = reconciliation.TriggerAsync();
+            var trigger = reconciliation.ReconcileAsync();
             await boundary.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
             var stop = Task.Run(() => reconciliation.StopAsync());
             await boundary.CancellationStarted.Task
@@ -2431,7 +3049,7 @@ public sealed class VbaProjectDiskReconciliationTests
             }
 
             boundary.Complete(CreateScan(
-                boundary.Scope,
+                boundary.CapturedObservation,
                 File.ReadAllText(Path.Combine(projectRoot, "vba-project.json"))));
             await Assert.ThrowsAnyAsync<OperationCanceledException>(
                 () => trigger);
@@ -2455,19 +3073,19 @@ public sealed class VbaProjectDiskReconciliationTests
                 Path.Combine(projectRoot, "src", "Book1", "Caller.bas"));
             var workspace = CreateWorkspace(callerUri);
             _ = workspace.CreateProjectSnapshot(callerUri);
-            var boundary = new BlockingDiskSourceBoundary();
+            var boundary = new BlockingDiskObservationSource();
             var failures = new RecordingReconciliationFailures();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
-                    sourceBoundary: boundary,
+                    diskObservationSource: boundary,
                     cadence: Timeout.InfiniteTimeSpan,
                     shutdownTimeout: TimeSpan.FromMilliseconds(50),
                     failureObserver: failures);
             reconciliation.AttachScheduler(scheduler);
 
-            _ = reconciliation.TriggerAsync();
+            _ = reconciliation.ReconcileAsync();
             await boundary.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
             await reconciliation.StopAsync()
                 .WaitAsync(TimeSpan.FromMilliseconds(500));
@@ -2612,12 +3230,12 @@ public sealed class VbaProjectDiskReconciliationTests
                     "Microsoft Excel 16.0 Object Library"));
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
             var nested = workspace.CreateProjectSnapshot(callerUri);
 
@@ -2679,16 +3297,16 @@ public sealed class VbaProjectDiskReconciliationTests
             var manifestEvents = new RecordingManifestEvents();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     manifestEvents: manifestEvents,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
             using (var reconciledCapture =
-                workspace.CaptureDiskReconciliationScopes())
+                workspace.CaptureProjectReconciliation())
             {
                 Assert.Equal(
                     Path.GetFullPath(outerManifestPath),
@@ -2699,7 +3317,7 @@ public sealed class VbaProjectDiskReconciliationTests
 
             var outer =
                 workspace.CreateProjectSnapshot(innerUri);
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
             var stableOuter =
                 workspace.CreateProjectSnapshot(innerUri);
@@ -2792,32 +3410,30 @@ public sealed class VbaProjectDiskReconciliationTests
                         out _));
             _ = workspace.CreateProjectSnapshot(firstUri);
             File.Delete(nestedManifestPath);
-            var boundary = new BlockingDiskSourceBoundary();
+            var boundary = new BlockingDiskObservationSource();
             var manifestEvents = new RecordingManifestEvents();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     manifestEvents: manifestEvents,
-                    sourceBoundary: boundary,
+                    diskObservationSource: boundary,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            var pending = reconciliation.TriggerAsync();
+            var pending = reconciliation.ReconcileAsync();
             await boundary.Started.Task
                 .WaitAsync(TimeSpan.FromSeconds(5));
-            var scan =
-                await new VbaFileSystemProjectDiskSourceBoundary()
-                    .ScanAsync(
-                        boundary.Scope,
-                        CancellationToken.None);
+            var scan = boundary.CapturedObservation;
             workspace.UpdateDocument(secondUri, secondText);
             workspace.UpdateDocument(looseUri, looseText);
             boundary.Complete(scan);
             await pending.WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.Equal(
-                [firstUri, secondUri, looseUri],
+                new[] { firstUri, secondUri, looseUri }.OrderBy(
+                    uri => uri,
+                    StringComparer.OrdinalIgnoreCase),
                 manifestEvents.AuthorityTransferredSourceUris);
             Assert.Contains(
                 nestedManifestUri,
@@ -2892,16 +3508,16 @@ public sealed class VbaProjectDiskReconciliationTests
             File.Delete(nestedManifestPath);
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             using var capture =
-                workspace.CaptureDiskReconciliationScopes();
+                workspace.CaptureProjectReconciliation();
             var effectiveOuter = Assert.Single(capture.Scopes);
             Assert.Equal(
                 Path.GetFullPath(nestedManifestPath),
@@ -2986,16 +3602,16 @@ public sealed class VbaProjectDiskReconciliationTests
             File.Delete(innerManifestPath);
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             using var capture =
-                workspace.CaptureDiskReconciliationScopes();
+                workspace.CaptureProjectReconciliation();
             var middle = Assert.Single(capture.Scopes);
             Assert.Equal(
                 Path.GetFullPath(middleManifestPath),
@@ -3090,17 +3706,17 @@ public sealed class VbaProjectDiskReconciliationTests
             var manifestEvents = new RecordingManifestEvents();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     manifestEvents: manifestEvents,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             using (var capture =
-                workspace.CaptureDiskReconciliationScopes())
+                workspace.CaptureProjectReconciliation())
             {
                 var effectiveMiddle = Assert.Single(capture.Scopes);
                 Assert.Equal(
@@ -3200,17 +3816,17 @@ public sealed class VbaProjectDiskReconciliationTests
             var manifestEvents = new RecordingManifestEvents();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     manifestEvents: manifestEvents,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             using var capture =
-                workspace.CaptureDiskReconciliationScopes();
+                workspace.CaptureProjectReconciliation();
             var effectiveOuter = Assert.Single(capture.Scopes);
             Assert.Equal(
                 Path.GetFullPath(outerManifestPath),
@@ -3283,16 +3899,16 @@ public sealed class VbaProjectDiskReconciliationTests
             File.Delete(innerManifestPath);
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             using var capture =
-                workspace.CaptureDiskReconciliationScopes();
+                workspace.CaptureProjectReconciliation();
             var adHoc = Assert.Single(capture.Scopes);
             Assert.Equal(
                 VbaProjectResolutionKind.AdHoc,
@@ -3359,25 +3975,31 @@ public sealed class VbaProjectDiskReconciliationTests
             _ = workspace.CreateProjectSnapshot(innerUri);
             File.Delete(outerManifestPath);
             File.Delete(innerManifestPath);
-            var boundary = new BlockingDiskSourceBoundary();
+            var boundary = new BlockingDiskObservationSource();
             var manifestEvents = new RecordingManifestEvents();
+            var authorityKindsAtEffectDispatch =
+                new List<VbaProjectResolutionKind>();
+            manifestEvents.AuthorityTransferObserved = _ =>
+            {
+                using var capture =
+                    workspace.CaptureProjectReconciliation();
+                authorityKindsAtEffectDispatch.AddRange(
+                    capture.Scopes.Select(
+                        scope => scope.Resolution.Kind));
+            };
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     manifestEvents: manifestEvents,
-                    sourceBoundary: boundary,
+                    diskObservationSource: boundary,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            var pending = reconciliation.TriggerAsync();
+            var pending = reconciliation.ReconcileAsync();
             await boundary.Started.Task
                 .WaitAsync(TimeSpan.FromSeconds(5));
-            var scan =
-                await new VbaFileSystemProjectDiskSourceBoundary()
-                    .ScanAsync(
-                        boundary.Scope,
-                        CancellationToken.None);
+            var scan = boundary.CapturedObservation;
             workspace.UpdateDocument(peerUri, peerText);
             boundary.Complete(scan);
             await pending.WaitAsync(TimeSpan.FromSeconds(5));
@@ -3395,6 +4017,13 @@ public sealed class VbaProjectDiskReconciliationTests
                 VbaProjectResolutionKind.AdHoc,
                 workspace.ManifestWorkspace
                     .Resolve(peerUri).Kind);
+            Assert.NotEmpty(authorityKindsAtEffectDispatch);
+            Assert.Contains(
+                VbaProjectResolutionKind.AdHoc,
+                authorityKindsAtEffectDispatch);
+            Assert.DoesNotContain(
+                VbaProjectResolutionKind.ManifestDocument,
+                authorityKindsAtEffectDispatch);
         }
         finally
         {
@@ -3442,26 +4071,41 @@ public sealed class VbaProjectDiskReconciliationTests
             _ = workspace.CreateProjectSnapshot(innerUri);
             File.Delete(outerManifestPath);
             File.Delete(innerManifestPath);
-            var boundary = new BlockingFirstDiskSourceBoundary(
-                new VbaFileSystemProjectDiskSourceBoundary());
+            var boundary = new BlockingFirstDiskObservationSource(
+                new VbaFileSystemProjectDiskInventory());
             var manifestEvents = new RecordingManifestEvents();
+            var rejectedPassHadNoEffects = false;
+            var commitObserver = new RecordingCommitObserver
+            {
+                ScopeFenceValidatedAction = (_, validationCount) =>
+                {
+                    if (validationCount != 2)
+                    {
+                        return;
+                    }
+
+                    rejectedPassHadNoEffects =
+                        manifestEvents.DeletedUris.Count == 0
+                        && manifestEvents.SelectionChanges.Count == 0
+                        && manifestEvents.ValidationFailures.Count == 0
+                        && manifestEvents
+                            .AuthorityTransferredSourceUris.Count == 0;
+                }
+            };
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     manifestEvents: manifestEvents,
-                    sourceBoundary: boundary,
-                    cadence: Timeout.InfiniteTimeSpan);
+                    diskObservationSource: boundary,
+                    cadence: Timeout.InfiniteTimeSpan,
+                    commitObserver: commitObserver);
             reconciliation.AttachScheduler(scheduler);
 
-            var pending = reconciliation.TriggerAsync();
+            var pending = reconciliation.ReconcileAsync();
             await boundary.Started.Task
                 .WaitAsync(TimeSpan.FromSeconds(5));
-            var staleScan =
-                await new VbaFileSystemProjectDiskSourceBoundary()
-                    .ScanAsync(
-                        boundary.Scope,
-                        CancellationToken.None);
+            var staleScan = boundary.CapturedObservation;
             Assert.True(
                 workspace.ManifestWorkspace
                     .ReloadManifest(innerManifestUri));
@@ -3469,8 +4113,9 @@ public sealed class VbaProjectDiskReconciliationTests
             await pending.WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.True(boundary.ScanCount >= 2);
+            Assert.True(rejectedPassHadNoEffects);
             using var capture =
-                workspace.CaptureDiskReconciliationScopes();
+                workspace.CaptureProjectReconciliation();
             Assert.Equal(
                 VbaProjectResolutionKind.AdHoc,
                 Assert.Single(capture.Scopes)
@@ -3543,17 +4188,17 @@ public sealed class VbaProjectDiskReconciliationTests
             var manifestEvents = new RecordingManifestEvents();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     manifestEvents: manifestEvents,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             using var capture =
-                workspace.CaptureDiskReconciliationScopes();
+                workspace.CaptureProjectReconciliation();
             var outer = Assert.Single(capture.Scopes);
             Assert.Equal(
                 Path.GetFullPath(innerManifestPath),
@@ -3629,17 +4274,17 @@ public sealed class VbaProjectDiskReconciliationTests
             var manifestEvents = new RecordingManifestEvents();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     manifestEvents: manifestEvents,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             using var capture =
-                workspace.CaptureDiskReconciliationScopes();
+                workspace.CaptureProjectReconciliation();
             var outer = Assert.Single(capture.Scopes);
             Assert.Equal(
                 Path.GetFullPath(innerManifestPath),
@@ -3727,17 +4372,17 @@ public sealed class VbaProjectDiskReconciliationTests
             var manifestEvents = new RecordingManifestEvents();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     manifestEvents: manifestEvents,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             using var capture =
-                workspace.CaptureDiskReconciliationScopes();
+                workspace.CaptureProjectReconciliation();
             var outer = Assert.Single(capture.Scopes);
             Assert.Equal(
                 Path.GetFullPath(innerManifestPath),
@@ -3843,23 +4488,23 @@ public sealed class VbaProjectDiskReconciliationTests
                             .ReloadManifest(secondManifestUri));
                 }
             };
-            var boundary = new CountingDiskSourceBoundary(
-                new VbaFileSystemProjectDiskSourceBoundary());
+            var boundary = new CountingDiskObservationSource(
+                new VbaFileSystemProjectDiskInventory());
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     manifestEvents: manifestEvents,
-                    sourceBoundary: boundary,
+                    diskObservationSource: boundary,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.Equal(3, boundary.ScanCount);
             using (var capture =
-                workspace.CaptureDiskReconciliationScopes())
+                workspace.CaptureProjectReconciliation())
             {
                 var outer = Assert.Single(capture.Scopes);
                 Assert.False(
@@ -3868,9 +4513,9 @@ public sealed class VbaProjectDiskReconciliationTests
                             VbaProjectResolver.TryGetLocalPath(
                                 secondManifestUri)!)]);
                 var finalScan =
-                    await new VbaFileSystemProjectDiskSourceBoundary()
-                        .ScanAsync(
-                            outer,
+                    await new VbaFileSystemProjectDiskInventory()
+                        .ObserveReconciliationAsync(
+                            CreateObservationRequest(outer),
                             CancellationToken.None);
                 Assert.Contains(
                     finalScan.Sources,
@@ -3920,7 +4565,7 @@ public sealed class VbaProjectDiskReconciliationTests
             _ = workspace.CreateProjectSnapshot(outerUri);
             int activeCandidateCount;
             using (var initialCapture =
-                workspace.CaptureDiskReconciliationScopes())
+                workspace.CaptureProjectReconciliation())
             {
                 activeCandidateCount = Assert.Single(
                     initialCapture.Scopes)
@@ -3929,7 +4574,7 @@ public sealed class VbaProjectDiskReconciliationTests
             var siblingCount = activeCandidateCount + 1;
             Assert.True(
                 siblingCount + 1
-                < VbaProjectDiskReconciliationCoordinator
+                < VbaProjectReconciler
                     .MaximumImmediateFollowUpPasses);
             var siblingSourceUris = new List<string>(
                 siblingCount);
@@ -3979,18 +4624,18 @@ public sealed class VbaProjectDiskReconciliationTests
                                 siblingManifestUris[nextIndex]));
                 }
             };
-            var boundary = new CountingDiskSourceBoundary(
-                new VbaFileSystemProjectDiskSourceBoundary());
+            var boundary = new CountingDiskObservationSource(
+                new VbaFileSystemProjectDiskInventory());
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     manifestEvents: manifestEvents,
-                    sourceBoundary: boundary,
+                    diskObservationSource: boundary,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.Equal(
@@ -4062,26 +4707,26 @@ public sealed class VbaProjectDiskReconciliationTests
                 nestedManifestPath,
                 "{\"schemaVersion\":");
             var boundary =
-                new RepairManifestOnSecondScanDiskSourceBoundary(
-                    new VbaFileSystemProjectDiskSourceBoundary(),
+                new RepairManifestOnSecondScanDiskObservationSource(
+                    new VbaFileSystemProjectDiskInventory(),
                     nestedManifestPath,
                     CreateProjectManifestText());
             var manifestEvents = new RecordingManifestEvents();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     manifestEvents: manifestEvents,
-                    sourceBoundary: boundary,
+                    diskObservationSource: boundary,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.Equal(3, boundary.ScanCount);
             using var capture =
-                workspace.CaptureDiskReconciliationScopes();
+                workspace.CaptureProjectReconciliation();
             var outer = Assert.Single(capture.Scopes);
             Assert.DoesNotContain(
                 outer.KnownSources,
@@ -4122,17 +4767,17 @@ public sealed class VbaProjectDiskReconciliationTests
             workspace.ManifestWorkspace
                 .RetireInactiveState([], []);
             var boundary =
-                new ChurningInvalidManifestDiskSourceBoundary(
+                new ChurningInvalidManifestDiskObservationSource(
                     projectRoot);
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
-                    sourceBoundary: boundary,
+                    diskObservationSource: boundary,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.Equal(expectedHardCap, boundary.ScanCount);
@@ -4162,18 +4807,18 @@ public sealed class VbaProjectDiskReconciliationTests
             workspace.ManifestWorkspace
                 .RetireInactiveState([], []);
             var boundary =
-                new ChurningInvalidManifestDiskSourceBoundary(
+                new ChurningInvalidManifestDiskObservationSource(
                     projectRoot,
                     useSamePath: true);
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
-                    sourceBoundary: boundary,
+                    diskObservationSource: boundary,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.Equal(expectedHardCap, boundary.ScanCount);
@@ -4237,7 +4882,7 @@ public sealed class VbaProjectDiskReconciliationTests
                 invalidUpdate.Status);
             Assert.False(invalidUpdate.RetainedLastKnownGood);
             using (var staleCapture =
-                workspace.CaptureDiskReconciliationScopes())
+                workspace.CaptureProjectReconciliation())
             {
                 var stale = Assert.Single(staleCapture.Scopes);
                 Assert.Equal(
@@ -4253,17 +4898,17 @@ public sealed class VbaProjectDiskReconciliationTests
 
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             using var capture =
-                workspace.CaptureDiskReconciliationScopes();
+                workspace.CaptureProjectReconciliation();
             var outer = Assert.Single(capture.Scopes);
             Assert.Equal(
                 Path.GetFullPath(innerManifestPath),
@@ -4317,17 +4962,17 @@ public sealed class VbaProjectDiskReconciliationTests
             var manifestEvents = new RecordingManifestEvents();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     manifestEvents: manifestEvents,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             using var capture =
-                workspace.CaptureDiskReconciliationScopes();
+                workspace.CaptureProjectReconciliation();
             var adHoc = Assert.Single(capture.Scopes);
             Assert.Equal(
                 VbaProjectResolutionKind.ManifestDocument,
@@ -4387,16 +5032,16 @@ public sealed class VbaProjectDiskReconciliationTests
                     out _));
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             using var capture =
-                workspace.CaptureDiskReconciliationScopes();
+                workspace.CaptureProjectReconciliation();
             var scope = Assert.Single(capture.Scopes);
             Assert.Equal(
                 Path.GetFullPath(Path.Combine(
@@ -4565,15 +5210,15 @@ public sealed class VbaProjectDiskReconciliationTests
             var manifestEvents = new RecordingManifestEvents();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     manifestEvents: manifestEvents,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             var converged =
@@ -4595,16 +5240,16 @@ public sealed class VbaProjectDiskReconciliationTests
                 manifestEvents.ValidationFailures,
                 failure => failure.Uri == nestedManifestUri);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
             Assert.Single(
                 manifestEvents.ValidationFailures,
                 failure => failure.Uri == nestedManifestUri);
 
             WriteProjectManifest(nestedRoot);
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             var recovered =
@@ -4684,14 +5329,14 @@ public sealed class VbaProjectDiskReconciliationTests
             var manifestEvents = new RecordingManifestEvents();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     manifestEvents: manifestEvents,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
             Assert.Empty(
                 manifestEvents.AuthorityTransferredSourceUris);
@@ -4701,9 +5346,9 @@ public sealed class VbaProjectDiskReconciliationTests
                 CreateProjectManifestText(
                     "src/Book1",
                     "Microsoft Excel 16.0 Object Library"));
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.Equal(
@@ -4791,20 +5436,22 @@ public sealed class VbaProjectDiskReconciliationTests
             var manifestEvents = new RecordingManifestEvents();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     manifestEvents: manifestEvents,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
             WriteProjectManifest(nestedRoot);
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.Equal(
-                [nestedUri, looseUri],
+                new[] { nestedUri, looseUri }.OrderBy(
+                    uri => uri,
+                    StringComparer.OrdinalIgnoreCase),
                 manifestEvents.AuthorityTransferredSourceUris);
             Assert.Equal(
                 VbaProjectResolutionKind.ManifestDocument,
@@ -4819,13 +5466,15 @@ public sealed class VbaProjectDiskReconciliationTests
 
             manifestEvents.AuthorityTransferredSourceUris.Clear();
             File.Delete(nestedManifestPath);
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.Equal(
-                [nestedUri, looseUri],
+                new[] { nestedUri, looseUri }.OrderBy(
+                    uri => uri,
+                    StringComparer.OrdinalIgnoreCase),
                 manifestEvents.AuthorityTransferredSourceUris);
             Assert.Empty(
                 manifestEvents.ValidationRecoveredUris);
@@ -4882,19 +5531,19 @@ public sealed class VbaProjectDiskReconciliationTests
             await using var initialScheduler =
                 CreateSerialScheduler();
             await using (var initialReconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     cadence: Timeout.InfiniteTimeSpan))
             {
                 initialReconciliation.AttachScheduler(
                     initialScheduler);
-                await initialReconciliation.TriggerAsync()
+                await initialReconciliation.ReconcileAsync()
                     .WaitAsync(TimeSpan.FromSeconds(5));
-                await initialReconciliation.TriggerAsync()
+                await initialReconciliation.ReconcileAsync()
                     .WaitAsync(TimeSpan.FromSeconds(5));
             }
             using (var invalidCapture =
-                workspace.CaptureDiskReconciliationScopes())
+                workspace.CaptureProjectReconciliation())
             {
                 var invalid = Assert.Single(
                     invalidCapture.Scopes);
@@ -4907,24 +5556,20 @@ public sealed class VbaProjectDiskReconciliationTests
             }
 
             WriteProjectManifest(nestedRoot);
-            var boundary = new BlockingDiskSourceBoundary();
+            var boundary = new BlockingDiskObservationSource();
             var manifestEvents = new RecordingManifestEvents();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     manifestEvents: manifestEvents,
-                    sourceBoundary: boundary,
+                    diskObservationSource: boundary,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
-            var pending = reconciliation.TriggerAsync();
+            var pending = reconciliation.ReconcileAsync();
             await boundary.Started.Task
                 .WaitAsync(TimeSpan.FromSeconds(5));
-            var scan =
-                await new VbaFileSystemProjectDiskSourceBoundary()
-                    .ScanAsync(
-                        boundary.Scope,
-                        CancellationToken.None);
+            var scan = boundary.CapturedObservation;
             workspace.UpdateDocument(nestedUri, nestedText);
             boundary.Complete(scan);
             await pending.WaitAsync(TimeSpan.FromSeconds(5));
@@ -4997,14 +5642,14 @@ public sealed class VbaProjectDiskReconciliationTests
             var manifestEvents = new RecordingManifestEvents();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     manifestEvents: manifestEvents,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.Empty(
@@ -5067,13 +5712,13 @@ public sealed class VbaProjectDiskReconciliationTests
             var manifestEvents = new RecordingManifestEvents();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     manifestEvents: manifestEvents,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.Equal(
@@ -5142,16 +5787,16 @@ public sealed class VbaProjectDiskReconciliationTests
             var manifestEvents = new RecordingManifestEvents();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     manifestEvents: manifestEvents,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
             workspace.UpdateDocument(childUri, childText);
             using (var initialCapture =
-                workspace.CaptureDiskReconciliationScopes())
+                workspace.CaptureProjectReconciliation())
             {
                 Assert.Single(initialCapture.Scopes);
             }
@@ -5163,7 +5808,7 @@ public sealed class VbaProjectDiskReconciliationTests
             File.Delete(childManifestPath);
             File.Delete(parentManifestPath);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.Equal(
@@ -5226,21 +5871,21 @@ public sealed class VbaProjectDiskReconciliationTests
             var manifestEvents = new RecordingManifestEvents();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     manifestEvents: manifestEvents,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
             Assert.Single(
                 manifestEvents.ValidationFailures,
                 failure => failure.Uri == nestedManifestUri);
             File.Delete(nestedManifestPath);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.Equal(
@@ -5304,7 +5949,7 @@ public sealed class VbaProjectDiskReconciliationTests
             _ = workspace.CreateProjectSnapshot(callerUri);
 
             using var capture =
-                workspace.CaptureDiskReconciliationScopes();
+                workspace.CaptureProjectReconciliation();
             var scope = Assert.Single(capture.Scopes);
             Assert.Equal(
                 Path.GetFullPath(Path.Combine(
@@ -5372,7 +6017,7 @@ public sealed class VbaProjectDiskReconciliationTests
                 1,
                 workspace.RetainedProjectScopeInvalidationStateCount);
             using (var capture =
-                workspace.CaptureDiskReconciliationScopes())
+                workspace.CaptureProjectReconciliation())
             {
                 Assert.Equal(2, capture.Scopes.Count);
                 var innerScope = Assert.Single(
@@ -5464,7 +6109,7 @@ public sealed class VbaProjectDiskReconciliationTests
             _ = workspace.CreateProjectSnapshot(firstUri);
 
             using (var firstCapture =
-                workspace.CaptureDiskReconciliationScopes())
+                workspace.CaptureProjectReconciliation())
             {
                 var firstScope = Assert.Single(firstCapture.Scopes);
                 Assert.Equal("Book1", firstScope.Resolution.DocumentName);
@@ -5476,7 +6121,7 @@ public sealed class VbaProjectDiskReconciliationTests
             _ = workspace.CreateProjectSnapshot(secondUri);
 
             using var secondCapture =
-                workspace.CaptureDiskReconciliationScopes();
+                workspace.CaptureProjectReconciliation();
             Assert.Equal(2, secondCapture.Scopes.Count);
             Assert.Contains(
                 secondCapture.Scopes,
@@ -5530,16 +6175,16 @@ public sealed class VbaProjectDiskReconciliationTests
             WriteProjectManifest(nestedProjectRoot);
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             using var capture =
-                workspace.CaptureDiskReconciliationScopes();
+                workspace.CaptureProjectReconciliation();
             Assert.Equal(2, capture.Scopes.Count);
             var innerScope = Assert.Single(
                 capture.Scopes,
@@ -5647,13 +6292,13 @@ public sealed class VbaProjectDiskReconciliationTests
             var manifestEvents = new RecordingManifestEvents();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     manifestEvents: manifestEvents,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
             var refreshed = workspace.CreateProjectSnapshot(callerUri);
 
@@ -5707,21 +6352,21 @@ public sealed class VbaProjectDiskReconciliationTests
             var diagnostics = new RecordingDiagnostics();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     diagnostics,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.Equal(legacyText, workspace.GetDocumentText(legacyUri));
             Assert.DoesNotContain(legacyUri, diagnostics.EmptyUris);
             using var capture =
-                workspace.CaptureDiskReconciliationScopes();
+                workspace.CaptureProjectReconciliation();
             var scope = Assert.Single(capture.Scopes);
             Assert.Equal(
                 Path.GetFullPath(Path.Combine(
@@ -5760,20 +6405,20 @@ public sealed class VbaProjectDiskReconciliationTests
                     "src/Book1",
                     "Microsoft Excel 16.0 Object Library"));
             var manifestEvents = new RecordingManifestEvents();
-            var boundary = new CountingDiskSourceBoundary(
-                new VbaFileSystemProjectDiskSourceBoundary());
+            var boundary = new CountingDiskObservationSource(
+                new VbaFileSystemProjectDiskInventory());
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     manifestEvents: manifestEvents,
-                    sourceBoundary: boundary,
+                    diskObservationSource: boundary,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.Equal(3, boundary.ScanCount);
@@ -5807,15 +6452,15 @@ public sealed class VbaProjectDiskReconciliationTests
             var manifestEvents = new RecordingManifestEvents();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     manifestEvents: manifestEvents,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
             var resolution = workspace.ManifestWorkspace.Resolve(callerUri);
 
@@ -5834,7 +6479,7 @@ public sealed class VbaProjectDiskReconciliationTests
             const string secondInvalidText =
                 "{\"schemaVersion\":1,\"documents\":";
             File.WriteAllText(manifestPath, secondInvalidText);
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
             var retainedResolution =
                 workspace.ManifestWorkspace.Resolve(callerUri);
@@ -5921,34 +6566,45 @@ public sealed class VbaProjectDiskReconciliationTests
                 Path.Combine(projectRoot, "src", "Book1", "Caller.bas"));
             var workspace = CreateWorkspace(callerUri);
             _ = workspace.CreateProjectSnapshot(callerUri);
+            string initialAuthorityKey;
+            using (var initial = workspace.CaptureProjectReconciliation())
+            {
+                initialAuthorityKey = Assert.Single(initial.Scopes).AuthorityKey;
+            }
+
             File.WriteAllText(
                 Path.Combine(projectRoot, "vba-project.json"),
                 CreateProjectManifestText(
                     "src",
                     "Microsoft Excel 16.0 Object Library"));
-            var boundary = new CountingDiskSourceBoundary(
-                new VbaFileSystemProjectDiskSourceBoundary());
+            var boundary = new CountingDiskObservationSource(
+                new VbaFileSystemProjectDiskInventory());
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
-                    sourceBoundary: boundary,
+                    diskObservationSource: boundary,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
             var changedSnapshot = workspace.CreateProjectSnapshot(callerUri);
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.Equal(
                 Path.GetFullPath(Path.Combine(projectRoot, "src")),
                 changedSnapshot.Resolution.RootPath);
             Assert.Equal(3, boundary.ScanCount);
-            Assert.Single(
-                boundary.AuthorityKeys.Distinct(
-                    StringComparer.OrdinalIgnoreCase));
+            using (var current = workspace.CaptureProjectReconciliation())
+            {
+                Assert.Equal(
+                    initialAuthorityKey,
+                    Assert.Single(current.Scopes).AuthorityKey,
+                    ignoreCase: true);
+            }
+
             Assert.Equal(
                 Path.GetFullPath(Path.Combine(projectRoot, "src", "Book1")),
                 boundary.RootPaths[0]);
@@ -6003,13 +6659,13 @@ public sealed class VbaProjectDiskReconciliationTests
             var manifestEvents = new RecordingManifestEvents();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     manifestEvents: manifestEvents,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
             workspace.UpdateDocument(
                 secondUri,
@@ -6061,13 +6717,13 @@ public sealed class VbaProjectDiskReconciliationTests
             var manifestEvents = new RecordingManifestEvents();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     manifestEvents: manifestEvents,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
             var afterReconciliation =
                 workspace.CreateProjectSnapshot(callerUri);
@@ -6121,14 +6777,14 @@ public sealed class VbaProjectDiskReconciliationTests
             File.Delete(manifestPath);
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.True(
@@ -6147,7 +6803,7 @@ public sealed class VbaProjectDiskReconciliationTests
                 0,
                 workspace.ManifestWorkspace.RetainedLastKnownGoodCount);
             using (var overlayCapture =
-                workspace.CaptureDiskReconciliationScopes())
+                workspace.CaptureProjectReconciliation())
             {
                 Assert.Equal(
                     Path.GetFullPath(manifestPath),
@@ -6216,12 +6872,12 @@ public sealed class VbaProjectDiskReconciliationTests
             File.WriteAllText(manifestPath, latestDiskText);
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.Equal(
@@ -6295,13 +6951,13 @@ public sealed class VbaProjectDiskReconciliationTests
             var manifestEvents = new RecordingManifestEvents();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     manifestEvents: manifestEvents,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.True(
@@ -6347,17 +7003,17 @@ public sealed class VbaProjectDiskReconciliationTests
             var manifestUri = ToFileUri(manifestPath);
             var workspace = CreateWorkspace(callerUri);
             _ = workspace.CreateProjectSnapshot(callerUri);
-            var boundary = new BlockingFirstDiskSourceBoundary(
-                new VbaFileSystemProjectDiskSourceBoundary());
+            var boundary = new BlockingFirstDiskObservationSource(
+                new VbaFileSystemProjectDiskInventory());
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
-                    sourceBoundary: boundary,
+                    diskObservationSource: boundary,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            var trigger = reconciliation.TriggerAsync();
+            var trigger = reconciliation.ReconcileAsync();
             await boundary.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
             var watchedText = CreateProjectManifestText(
                 "src/Book1",
@@ -6376,7 +7032,7 @@ public sealed class VbaProjectDiskReconciliationTests
                 .WaitAsync(TimeSpan.FromSeconds(2));
             await watched.Completion.WaitAsync(TimeSpan.FromSeconds(2));
             boundary.Complete(CreateScan(
-                boundary.Scope,
+                boundary.CapturedObservation,
                 CreateProjectManifestText(
                     "src/Book1",
                     "Microsoft Excel 16.0 Object Library")));
@@ -6415,14 +7071,14 @@ public sealed class VbaProjectDiskReconciliationTests
             var manifestEvents = new RecordingManifestEvents();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
-                new VbaProjectDiskReconciliationCoordinator(
+                new VbaProjectReconciler(
                     workspace,
                     manifestEvents: manifestEvents,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
             File.Delete(manifestPath);
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
             var deletedSnapshot = workspace.CreateProjectSnapshot(callerUri);
 
@@ -6436,7 +7092,7 @@ public sealed class VbaProjectDiskReconciliationTests
                 CreateProjectManifestText(
                     "src/Book1",
                     "Microsoft Excel 16.0 Object Library"));
-            await reconciliation.TriggerAsync()
+            await reconciliation.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
             var addedSnapshot = workspace.CreateProjectSnapshot(callerUri);
 
@@ -6539,6 +7195,51 @@ public sealed class VbaProjectDiskReconciliationTests
             "End Function"
         ]);
 
+    private static VbaProjectReconciliationScopePlan
+        CreateManifestReloadPlan(
+            VbaProjectReconciliationScope scope,
+            string manifestText)
+    {
+        var manifestPath = scope.Resolution.ManifestPath
+            ?? throw new InvalidOperationException(
+                "The test scope requires a manifest authority.");
+        var manifestUri = ToFileUri(manifestPath);
+        var candidate = Assert.Single(
+            scope.ManifestCandidates,
+            item => item.Uri.Equals(
+                manifestUri,
+                StringComparison.OrdinalIgnoreCase));
+        var resolution =
+            VbaProjectManifestWorkspace.ResolveManifestText(
+                scope.ActiveUri,
+                manifestUri,
+                manifestText);
+        var change = new ReloadManifestChange(
+            scope.AuthorityKey,
+            manifestUri,
+            manifestText,
+            candidate.CapturedRevision,
+            scope.ActiveUri,
+            resolution,
+            null,
+            scope.ManifestBarriers.Revision,
+            scope.AuthorityGeneration,
+            false,
+            false,
+            scope.KnownSources
+                .Select(source => source.Uri)
+                .ToArray())
+        {
+            PreviousResolution = scope.Resolution,
+            CapturedOpenSourceUris = scope.OpenSourceUris
+        };
+        return new VbaProjectReconciliationScopePlan(
+            scope.AuthorityKey,
+            scope.ManifestBarriers.Revision,
+            scope.AuthorityGeneration,
+            [change]);
+    }
+
     private static VbaLanguageWorkspace CreateWorkspace(string callerUri)
     {
         var workspace = new VbaLanguageWorkspace(
@@ -6568,8 +7269,8 @@ public sealed class VbaProjectDiskReconciliationTests
                 CoalesceSupersededMutations: true,
                 MaxOwnedWork: 1));
 
-    private static VbaProjectDiskScopeScan CreateScan(
-        VbaProjectDiskReconciliationScope scope,
+    private static VbaProjectDiskObservation CreateScan(
+        VbaProjectDiskObservation observation,
         string manifestText,
         params (string Path, string Text)[] replacements)
     {
@@ -6577,33 +7278,56 @@ public sealed class VbaProjectDiskReconciliationTests
             replacement => Path.GetFullPath(replacement.Path),
             replacement => replacement.Text,
             StringComparer.OrdinalIgnoreCase);
-        var sources = scope.KnownSources
+        var sources = observation.Sources
             .Select(
-                source => new VbaProjectDiskSource(
-                    source.Uri,
-                    source.FullPath,
-                    replacementsByPath.TryGetValue(
+                source =>
+                {
+                    var text = replacementsByPath.TryGetValue(
                         source.FullPath,
                         out var replacement)
                             ? replacement
-                            : source.Text))
+                            : source.Text;
+                    return new VbaProjectDiskSource(
+                        source.Uri,
+                        source.FullPath,
+                        text,
+                        new VbaProjectSourceFileMetadata(
+                            text.Length,
+                            LastWriteTimeUtcTicks: 0),
+                        VbaProjectDiskContentIdentity.FromText(text));
+                })
             .ToArray();
-        VbaProjectDiskManifest? manifest = null;
-        var manifestUri = scope.ManifestCandidates
-            .FirstOrDefault(candidate => candidate.Baseline.Exists)
-            ?.Uri
-            ?? scope.ManifestCandidates.FirstOrDefault()?.Uri;
-        if (manifestUri is not null
-            && VbaProjectResolver.TryGetLocalPath(manifestUri) is { } manifestPath)
+        var manifest = observation.Manifest is null
+            ? null
+            : observation.Manifest with { Text = manifestText };
+        return observation with
         {
-            manifest = new VbaProjectDiskManifest(
-                manifestUri,
-                Path.GetFullPath(manifestPath),
-                manifestText);
-        }
-
-        return new VbaProjectDiskScopeScan(sources, manifest);
+            Sources = sources,
+            Manifest = manifest
+        };
     }
+
+    private static VbaProjectDiskObservationRequest CreateObservationRequest(
+        VbaProjectReconciliationScope scope)
+        => new(
+            new VbaProjectDiskProjectScope(
+                scope.Resolution.Kind,
+                scope.Resolution.RootPath,
+                scope.Resolution.ManifestPath),
+            scope.ManifestCandidates
+                .Select(candidate => new VbaProjectDiskManifestProbe(
+                    candidate.Uri,
+                    candidate.Baseline.Exists))
+                .ToArray(),
+            scope.ManifestBarriers.Overrides
+                .Select(barrierOverride =>
+                    new VbaProjectDiskManifestBarrierOverride(
+                        barrierOverride.Key,
+                        barrierOverride.Value))
+                .ToArray(),
+            scope.ObservedManifestBarrierCandidates
+                .Select(candidate => candidate.Uri)
+                .ToArray());
 
     private static string ToFileUri(string path)
         => new Uri(Path.GetFullPath(path)).AbsoluteUri;
@@ -6631,11 +7355,69 @@ public sealed class VbaProjectDiskReconciliationTests
     {
         public int ScopeFenceValidationCount { get; private set; }
 
+        public TaskCompletionSource CancellationObserved { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Action<string, int>? ScopeFenceValidatedAction { get; set; }
+
         public void ScopeFenceValidated(
             string authorityKey,
             long manifestBarrierRevision,
             long authorityGeneration)
-            => ScopeFenceValidationCount++;
+        {
+            ScopeFenceValidationCount++;
+            ScopeFenceValidatedAction?.Invoke(
+                authorityKey,
+                ScopeFenceValidationCount);
+        }
+
+        public void ReconciliationCancellationObserved()
+            => CancellationObserved.TrySetResult();
+    }
+
+    private sealed class RecordingAuthorityLeaseObserver
+        : IVbaProjectReconciliationAuthorityLeaseObserver
+    {
+        public Action? AuthorityLeaseAcquiredAction { get; set; }
+
+        public void AuthorityLeaseAcquired(
+            string authorityKey,
+            long authorityGeneration)
+        {
+            var action = AuthorityLeaseAcquiredAction;
+            AuthorityLeaseAcquiredAction = null;
+            action?.Invoke();
+        }
+    }
+
+    private sealed class ArmableBlockingAnalysisBuildObserver
+        : IVbaDocumentAnalysisBuildObserver
+    {
+        private readonly TaskCompletionSource release = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int armed;
+
+        public TaskCompletionSource Blocked { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void Arm()
+            => Volatile.Write(ref armed, 1);
+
+        public void Release()
+            => release.TrySetResult();
+
+        public void BeforeBuild(
+            VbaDocumentAnalysisBuildContext context,
+            CancellationToken cancellationToken)
+        {
+            if (Interlocked.Exchange(ref armed, 0) == 0)
+            {
+                return;
+            }
+
+            Blocked.TrySetResult();
+            release.Task.GetAwaiter().GetResult();
+        }
     }
 
     private sealed class RecordingManifestEvents
@@ -6653,6 +7435,8 @@ public sealed class VbaProjectDiskReconciliationTests
         public List<string> AuthorityTransferredSourceUris { get; } = [];
 
         public Action<string>? ValidationFailureObserved { get; set; }
+
+        public Action<string>? AuthorityTransferObserved { get; set; }
 
         public void ManifestSelectionChanged(
             string uri,
@@ -6682,7 +7466,10 @@ public sealed class VbaProjectDiskReconciliationTests
         public void ProjectAuthorityTransferred(
             string sourceUri,
             CancellationToken cancellationToken)
-            => AuthorityTransferredSourceUris.Add(sourceUri);
+        {
+            AuthorityTransferredSourceUris.Add(sourceUri);
+            AuthorityTransferObserved?.Invoke(sourceUri);
+        }
 
     }
 
@@ -6692,8 +7479,11 @@ public sealed class VbaProjectDiskReconciliationTests
         public TaskCompletionSource<IOException> Observed { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
+        public List<Exception> Errors { get; } = [];
+
         public void ReconciliationFailed(Exception error)
         {
+            Errors.Add(error);
             if (error is IOException ioError)
             {
                 Observed.TrySetResult(ioError);
@@ -6717,6 +7507,79 @@ public sealed class VbaProjectDiskReconciliationTests
 
         public void RecordCompletion(VbaInteractiveWorkCompletionTiming timing)
         {
+        }
+    }
+
+    private sealed class OrderedEffectDiagnostics
+        : IVbaProjectDiskReconciliationDiagnostics
+    {
+        private readonly string targetUri;
+        private int effectObserved;
+
+        public OrderedEffectDiagnostics(string targetUri)
+        {
+            this.targetUri = targetUri;
+        }
+
+        public System.Collections.Concurrent.ConcurrentQueue<string> Events
+            { get; } = new();
+
+        public bool EffectObserved
+            => Volatile.Read(ref effectObserved) != 0;
+
+        public void EnqueueTrackedDiagnostics(
+            string uri,
+            CancellationToken cancellationToken)
+        {
+            if (!string.Equals(
+                uri,
+                targetUri,
+                StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            Interlocked.Exchange(ref effectObserved, 1);
+            Events.Enqueue("reconciliation-effect");
+        }
+
+        public void EnqueueEmptyDiagnostics(
+            string uri,
+            CancellationToken cancellationToken)
+        {
+        }
+    }
+
+    private sealed class CommitEffectTimingSink
+        : IVbaInteractiveWorkTimingSink
+    {
+        private readonly OrderedEffectDiagnostics effects;
+
+        public CommitEffectTimingSink(
+            OrderedEffectDiagnostics effects)
+        {
+            this.effects = effects;
+        }
+
+        public TaskCompletionSource CommitCompleted { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public bool EffectObservedBeforeCommitCompletion { get; private set; }
+
+        public void RecordAdmission(VbaInteractiveWorkAdmissionTiming timing)
+        {
+        }
+
+        public void RecordCompletion(VbaInteractiveWorkCompletionTiming timing)
+        {
+            if (timing.Method != "vba/reconcile/commit")
+            {
+                return;
+            }
+
+            EffectObservedBeforeCommitCompletion =
+                effects.EffectObserved;
+            CommitCompleted.TrySetResult();
         }
     }
 
@@ -6928,47 +7791,129 @@ public sealed class VbaProjectDiskReconciliationTests
         }
     }
 
-    private sealed class CountingDiskSourceBoundary
-        : IVbaProjectDiskSourceBoundary
+    private abstract class DelegatingDiskObservationSource
+        : IVbaProjectDiskObservationSource
     {
-        private readonly IVbaProjectDiskSourceBoundary inner;
+        protected DelegatingDiskObservationSource(
+            IVbaProjectDiskObservationSource inner)
+        {
+        }
+
+        public abstract Task<VbaProjectDiskObservation>
+            ObserveReconciliationAsync(
+                VbaProjectDiskObservationRequest request,
+                CancellationToken cancellationToken);
+    }
+
+    private sealed class CountingDiskObservationSource
+        : DelegatingDiskObservationSource
+    {
+        private readonly IVbaProjectDiskObservationSource inner;
         private int scanCount;
 
-        public CountingDiskSourceBoundary(
-            IVbaProjectDiskSourceBoundary inner)
+        public CountingDiskObservationSource(
+            IVbaProjectDiskObservationSource inner)
+            : base(inner)
         {
             this.inner = inner;
         }
 
         public int ScanCount => Volatile.Read(ref scanCount);
 
-        public List<string> AuthorityKeys { get; } = [];
-
         public List<string> RootPaths { get; } = [];
 
-        public Task<VbaProjectDiskScopeScan> ScanAsync(
-            VbaProjectDiskReconciliationScope scope,
+        public override Task<VbaProjectDiskObservation> ObserveReconciliationAsync(
+            VbaProjectDiskObservationRequest request,
             CancellationToken cancellationToken)
         {
             Interlocked.Increment(ref scanCount);
-            lock (AuthorityKeys)
+            lock (RootPaths)
             {
-                AuthorityKeys.Add(scope.AuthorityKey);
-                RootPaths.Add(scope.Resolution.RootPath);
+                RootPaths.Add(request.Project.RootPath);
             }
 
-            return inner.ScanAsync(scope, cancellationToken);
+            return inner.ObserveReconciliationAsync(
+                request,
+                cancellationToken);
         }
     }
 
-    private sealed class BlockingSecondDiskSourceBoundary
-        : IVbaProjectDiskSourceBoundary
+    private sealed class FailAfterScanCountDiskObservationSource
+        : DelegatingDiskObservationSource
     {
-        private readonly IVbaProjectDiskSourceBoundary inner;
+        private readonly IVbaProjectDiskObservationSource inner;
+        private readonly int allowedScanCount;
         private int scanCount;
 
-        public BlockingSecondDiskSourceBoundary(
-            IVbaProjectDiskSourceBoundary inner)
+        public FailAfterScanCountDiskObservationSource(
+            IVbaProjectDiskObservationSource inner,
+            int allowedScanCount)
+            : base(inner)
+        {
+            this.inner = inner;
+            this.allowedScanCount = allowedScanCount;
+        }
+
+        public override Task<VbaProjectDiskObservation>
+            ObserveReconciliationAsync(
+                VbaProjectDiskObservationRequest request,
+                CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref scanCount) > allowedScanCount)
+            {
+                throw new IOException(
+                    "The test stopped reconciliation after the initial scopes.");
+            }
+
+            return inner.ObserveReconciliationAsync(
+                request,
+                cancellationToken);
+        }
+    }
+
+    private sealed class ThrowingDiagnostics
+        : IVbaProjectDiskReconciliationDiagnostics
+    {
+        private readonly string throwingUri;
+
+        public ThrowingDiagnostics(string throwingUri)
+        {
+            this.throwingUri = throwingUri;
+        }
+
+        public List<string> TrackedUris { get; } = [];
+
+        public void EnqueueTrackedDiagnostics(
+            string uri,
+            CancellationToken cancellationToken)
+        {
+            if (uri.Equals(
+                    throwingUri,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    "The test diagnostics effect failed.");
+            }
+
+            TrackedUris.Add(uri);
+        }
+
+        public void EnqueueEmptyDiagnostics(
+            string uri,
+            CancellationToken cancellationToken)
+        {
+        }
+    }
+
+    private sealed class BlockingSecondDiskObservationSource
+        : DelegatingDiskObservationSource
+    {
+        private readonly IVbaProjectDiskObservationSource inner;
+        private int scanCount;
+
+        public BlockingSecondDiskObservationSource(
+            IVbaProjectDiskObservationSource inner)
+            : base(inner)
         {
             this.inner = inner;
         }
@@ -6978,8 +7923,8 @@ public sealed class VbaProjectDiskReconciliationTests
 
         public int ScanCount => Volatile.Read(ref scanCount);
 
-        public async Task<VbaProjectDiskScopeScan> ScanAsync(
-            VbaProjectDiskReconciliationScope scope,
+        public override async Task<VbaProjectDiskObservation> ObserveReconciliationAsync(
+            VbaProjectDiskObservationRequest request,
             CancellationToken cancellationToken)
         {
             if (Interlocked.Increment(ref scanCount) == 2)
@@ -6990,23 +7935,24 @@ public sealed class VbaProjectDiskReconciliationTests
                     cancellationToken);
             }
 
-            return await inner.ScanAsync(
-                scope,
+            return await inner.ObserveReconciliationAsync(
+                request,
                 cancellationToken);
         }
     }
 
-    private sealed class BlockingFirstDiskSourceBoundary
-        : IVbaProjectDiskSourceBoundary
+    private sealed class BlockingFirstDiskObservationSource
+        : DelegatingDiskObservationSource
     {
-        private readonly IVbaProjectDiskSourceBoundary inner;
-        private readonly TaskCompletionSource<VbaProjectDiskScopeScan>
+        private readonly IVbaProjectDiskObservationSource inner;
+        private readonly TaskCompletionSource<VbaProjectDiskObservation>
             completion = new(
                 TaskCreationOptions.RunContinuationsAsynchronously);
         private int scanCount;
 
-        public BlockingFirstDiskSourceBoundary(
-            IVbaProjectDiskSourceBoundary inner)
+        public BlockingFirstDiskObservationSource(
+            IVbaProjectDiskObservationSource inner)
+            : base(inner)
         {
             this.inner = inner;
         }
@@ -7014,39 +7960,48 @@ public sealed class VbaProjectDiskReconciliationTests
         public TaskCompletionSource Started { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public VbaProjectDiskReconciliationScope Scope { get; private set; } =
+        public VbaProjectDiskObservationRequest Request { get; private set; } =
+            default!;
+
+        public VbaProjectDiskObservation CapturedObservation { get; private set; } =
             default!;
 
         public int ScanCount => Volatile.Read(ref scanCount);
 
-        public Task<VbaProjectDiskScopeScan> ScanAsync(
-            VbaProjectDiskReconciliationScope scope,
+        public override async Task<VbaProjectDiskObservation> ObserveReconciliationAsync(
+            VbaProjectDiskObservationRequest request,
             CancellationToken cancellationToken)
         {
             if (Interlocked.Increment(ref scanCount) != 1)
             {
-                return inner.ScanAsync(scope, cancellationToken);
+                return await inner.ObserveReconciliationAsync(
+                    request,
+                    cancellationToken);
             }
 
-            Scope = scope;
+            Request = request;
+            CapturedObservation = await inner.ObserveReconciliationAsync(
+                request,
+                cancellationToken);
             Started.TrySetResult();
-            return completion.Task;
+            return await completion.Task;
         }
 
-        public void Complete(VbaProjectDiskScopeScan scan)
+        public void Complete(VbaProjectDiskObservation scan)
             => completion.TrySetResult(scan);
     }
 
-    private sealed class ChurningInvalidManifestDiskSourceBoundary
-        : IVbaProjectDiskSourceBoundary
+    private sealed class ChurningInvalidManifestDiskObservationSource
+        : DelegatingDiskObservationSource
     {
         private readonly string projectRoot;
         private readonly bool useSamePath;
         private int scanCount;
 
-        public ChurningInvalidManifestDiskSourceBoundary(
+        public ChurningInvalidManifestDiskObservationSource(
             string projectRoot,
             bool useSamePath = false)
+            : base(new VbaFileSystemProjectDiskInventory())
         {
             this.projectRoot = projectRoot;
             this.useSamePath = useSamePath;
@@ -7054,8 +8009,8 @@ public sealed class VbaProjectDiskReconciliationTests
 
         public int ScanCount => Volatile.Read(ref scanCount);
 
-        public Task<VbaProjectDiskScopeScan> ScanAsync(
-            VbaProjectDiskReconciliationScope scope,
+        public override Task<VbaProjectDiskObservation> ObserveReconciliationAsync(
+            VbaProjectDiskObservationRequest request,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -7069,7 +8024,7 @@ public sealed class VbaProjectDiskReconciliationTests
                     $"Churn{attempt}",
                     "vba-project.json");
             return Task.FromResult(
-                new VbaProjectDiskScopeScan(
+                new VbaProjectDiskObservation(
                     Sources: [],
                     new VbaProjectDiskManifest(
                         ToFileUri(manifestPath),
@@ -7078,18 +8033,19 @@ public sealed class VbaProjectDiskReconciliationTests
         }
     }
 
-    private sealed class RepairManifestOnSecondScanDiskSourceBoundary
-        : IVbaProjectDiskSourceBoundary
+    private sealed class RepairManifestOnSecondScanDiskObservationSource
+        : DelegatingDiskObservationSource
     {
-        private readonly IVbaProjectDiskSourceBoundary inner;
+        private readonly IVbaProjectDiskObservationSource inner;
         private readonly string manifestPath;
         private readonly string repairedText;
         private int scanCount;
 
-        public RepairManifestOnSecondScanDiskSourceBoundary(
-            IVbaProjectDiskSourceBoundary inner,
+        public RepairManifestOnSecondScanDiskObservationSource(
+            IVbaProjectDiskObservationSource inner,
             string manifestPath,
             string repairedText)
+            : base(inner)
         {
             this.inner = inner;
             this.manifestPath = manifestPath;
@@ -7098,8 +8054,8 @@ public sealed class VbaProjectDiskReconciliationTests
 
         public int ScanCount => Volatile.Read(ref scanCount);
 
-        public Task<VbaProjectDiskScopeScan> ScanAsync(
-            VbaProjectDiskReconciliationScope scope,
+        public override Task<VbaProjectDiskObservation> ObserveReconciliationAsync(
+            VbaProjectDiskObservationRequest request,
             CancellationToken cancellationToken)
         {
             if (Interlocked.Increment(ref scanCount) == 2)
@@ -7109,42 +8065,62 @@ public sealed class VbaProjectDiskReconciliationTests
                     repairedText);
             }
 
-            return inner.ScanAsync(scope, cancellationToken);
+            return inner.ObserveReconciliationAsync(request, cancellationToken);
         }
     }
 
-    private sealed class BlockingDiskSourceBoundary
-        : IVbaProjectDiskSourceBoundary
+    private sealed class BlockingDiskObservationSource
+        : DelegatingDiskObservationSource
     {
-        private readonly TaskCompletionSource<VbaProjectDiskScopeScan> completion =
+        private readonly IVbaProjectDiskObservationSource inner;
+        private readonly TaskCompletionSource<VbaProjectDiskObservation> completion =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public TaskCompletionSource Started { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public VbaProjectDiskReconciliationScope Scope { get; private set; } = default!;
+        public VbaProjectDiskObservationRequest Request { get; private set; } = default!;
 
-        public Task<VbaProjectDiskScopeScan> ScanAsync(
-            VbaProjectDiskReconciliationScope scope,
-            CancellationToken cancellationToken)
+        public VbaProjectDiskObservation CapturedObservation { get; private set; } =
+            default!;
+
+        public BlockingDiskObservationSource()
+            : this(new VbaFileSystemProjectDiskInventory())
         {
-            Scope = scope;
-            Started.TrySetResult();
-            return completion.Task;
         }
 
-        public void Complete(VbaProjectDiskScopeScan scan)
+        private BlockingDiskObservationSource(
+            IVbaProjectDiskObservationSource inner)
+            : base(inner)
+        {
+            this.inner = inner;
+        }
+
+        public override async Task<VbaProjectDiskObservation> ObserveReconciliationAsync(
+            VbaProjectDiskObservationRequest request,
+            CancellationToken cancellationToken)
+        {
+            Request = request;
+            CapturedObservation = await inner.ObserveReconciliationAsync(
+                request,
+                cancellationToken);
+            Started.TrySetResult();
+            return await completion.Task;
+        }
+
+        public void Complete(VbaProjectDiskObservation scan)
             => completion.TrySetResult(scan);
 
         public void Fail(Exception error)
             => completion.TrySetException(error);
     }
 
-    private sealed class CancellationCallbackBlockingDiskSourceBoundary
-        : IVbaProjectDiskSourceBoundary,
+    private sealed class CancellationCallbackBlockingDiskObservationSource
+        : DelegatingDiskObservationSource,
           IDisposable
     {
-        private readonly TaskCompletionSource<VbaProjectDiskScopeScan> completion =
+        private readonly IVbaProjectDiskObservationSource inner;
+        private readonly TaskCompletionSource<VbaProjectDiskObservation> completion =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly ManualResetEventSlim releaseCancellation = new(false);
         private CancellationTokenRegistration cancellationRegistration;
@@ -7155,13 +8131,31 @@ public sealed class VbaProjectDiskReconciliationTests
         public TaskCompletionSource CancellationStarted { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public VbaProjectDiskReconciliationScope Scope { get; private set; } = default!;
+        public VbaProjectDiskObservationRequest Request { get; private set; } = default!;
 
-        public Task<VbaProjectDiskScopeScan> ScanAsync(
-            VbaProjectDiskReconciliationScope scope,
+        public VbaProjectDiskObservation CapturedObservation { get; private set; } =
+            default!;
+
+        public CancellationCallbackBlockingDiskObservationSource()
+            : this(new VbaFileSystemProjectDiskInventory())
+        {
+        }
+
+        private CancellationCallbackBlockingDiskObservationSource(
+            IVbaProjectDiskObservationSource inner)
+            : base(inner)
+        {
+            this.inner = inner;
+        }
+
+        public override async Task<VbaProjectDiskObservation> ObserveReconciliationAsync(
+            VbaProjectDiskObservationRequest request,
             CancellationToken cancellationToken)
         {
-            Scope = scope;
+            Request = request;
+            CapturedObservation = await inner.ObserveReconciliationAsync(
+                request,
+                cancellationToken);
             cancellationRegistration = cancellationToken.Register(
                 () =>
                 {
@@ -7169,10 +8163,10 @@ public sealed class VbaProjectDiskReconciliationTests
                     releaseCancellation.Wait();
                 });
             Started.TrySetResult();
-            return completion.Task;
+            return await completion.Task;
         }
 
-        public void Complete(VbaProjectDiskScopeScan scan)
+        public void Complete(VbaProjectDiskObservation scan)
             => completion.TrySetResult(scan);
 
         public void ReleaseCancellationCallback()
@@ -7187,20 +8181,21 @@ public sealed class VbaProjectDiskReconciliationTests
         }
     }
 
-    private sealed class GatedConcurrencyDiskSourceBoundary
-        : IVbaProjectDiskSourceBoundary
+    private sealed class GatedConcurrencyDiskObservationSource
+        : DelegatingDiskObservationSource
     {
         private readonly int expectedScopeCount;
-        private readonly IVbaProjectDiskSourceBoundary inner;
+        private readonly IVbaProjectDiskObservationSource inner;
         private readonly TaskCompletionSource release =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int active;
         private int maxConcurrency;
         private int started;
 
-        public GatedConcurrencyDiskSourceBoundary(
+        public GatedConcurrencyDiskObservationSource(
             int expectedScopeCount,
-            IVbaProjectDiskSourceBoundary inner)
+            IVbaProjectDiskObservationSource inner)
+            : base(inner)
         {
             this.expectedScopeCount = expectedScopeCount;
             this.inner = inner;
@@ -7214,15 +8209,15 @@ public sealed class VbaProjectDiskReconciliationTests
 
         public int MaxConcurrency => Volatile.Read(ref maxConcurrency);
 
-        public List<VbaProjectDiskReconciliationScope> Scopes { get; } = [];
+        public List<VbaProjectDiskObservationRequest> Requests { get; } = [];
 
-        public async Task<VbaProjectDiskScopeScan> ScanAsync(
-            VbaProjectDiskReconciliationScope scope,
+        public override async Task<VbaProjectDiskObservation> ObserveReconciliationAsync(
+            VbaProjectDiskObservationRequest request,
             CancellationToken cancellationToken)
         {
-            lock (Scopes)
+            lock (Requests)
             {
-                Scopes.Add(scope);
+                Requests.Add(request);
             }
 
             var current = Interlocked.Increment(ref active);
@@ -7241,7 +8236,7 @@ public sealed class VbaProjectDiskReconciliationTests
             try
             {
                 await release.Task.WaitAsync(cancellationToken);
-                return await inner.ScanAsync(scope, cancellationToken);
+                return await inner.ObserveReconciliationAsync(request, cancellationToken);
             }
             finally
             {
@@ -7269,24 +8264,25 @@ public sealed class VbaProjectDiskReconciliationTests
         }
     }
 
-    private sealed class FailOnceDiskSourceBoundary
-        : IVbaProjectDiskSourceBoundary
+    private sealed class FailOnceDiskObservationSource
+        : DelegatingDiskObservationSource
     {
-        private readonly IVbaProjectDiskSourceBoundary inner;
+        private readonly IVbaProjectDiskObservationSource inner;
         private int attempts;
 
-        public FailOnceDiskSourceBoundary(
-            IVbaProjectDiskSourceBoundary inner)
+        public FailOnceDiskObservationSource(
+            IVbaProjectDiskObservationSource inner)
+            : base(inner)
         {
             this.inner = inner;
         }
 
-        public Task<VbaProjectDiskScopeScan> ScanAsync(
-            VbaProjectDiskReconciliationScope scope,
+        public override Task<VbaProjectDiskObservation> ObserveReconciliationAsync(
+            VbaProjectDiskObservationRequest request,
             CancellationToken cancellationToken)
             => Interlocked.Increment(ref attempts) == 1
-                ? Task.FromException<VbaProjectDiskScopeScan>(
+                ? Task.FromException<VbaProjectDiskObservation>(
                     new IOException("Expected reconciliation scan failure."))
-                : inner.ScanAsync(scope, cancellationToken);
+                : inner.ObserveReconciliationAsync(request, cancellationToken);
     }
 }

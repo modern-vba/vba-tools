@@ -28,7 +28,7 @@ public sealed class VbaSemanticResolutionTests
 
         foreach (var selection in selections)
         {
-            var index = VbaSourceIndex.Build(
+            var index = VbaSemanticInventoryFixture.Create(
                 new Dictionary<string, string> { [uri] = text },
                 selection,
                 VbaProjectReferenceCatalogSet.CreateBundled());
@@ -62,7 +62,7 @@ public sealed class VbaSemanticResolutionTests
             "    value = VBA.",
             "End Sub"
         ]);
-        var index = VbaSourceIndex.Build(
+        var index = VbaSemanticInventoryFixture.Create(
             new Dictionary<string, string> { [uri] = text },
             referenceSelection: null,
             VbaProjectReferenceCatalogSet.CreateBundled());
@@ -90,7 +90,7 @@ public sealed class VbaSemanticResolutionTests
             "    value = vbCrLf",
             "End Sub"
         ]);
-        var index = VbaSourceIndex.Build(
+        var index = VbaSemanticInventoryFixture.Create(
             new Dictionary<string, string> { [uri] = text },
             referenceSelection: null,
             VbaProjectReferenceCatalogSet.CreateBundled());
@@ -115,7 +115,7 @@ public sealed class VbaSemanticResolutionTests
             "    value = vbCrLf",
             "End Sub"
         ]);
-        var index = VbaSourceIndex.Build(
+        var index = VbaSemanticInventoryFixture.Create(
             new Dictionary<string, string> { [uri] = text },
             referenceSelection: null,
             VbaProjectReferenceCatalogSet.CreateBundled());
@@ -137,13 +137,13 @@ public sealed class VbaSemanticResolutionTests
             "End Sub"
         ]);
         var catalogs = VbaProjectReferenceCatalogSet.CreateBundled();
-        var excelIndex = VbaSourceIndex.Build(
+        var excelIndex = VbaSemanticInventoryFixture.Create(
             new Dictionary<string, string> { [uri] = text },
             VbaProjectReferenceSelection.Create(
                 ProjectDocument.ExcelKind,
                 [new VbaProjectReference(referenceName)]),
             catalogs);
-        var adHocIndex = VbaSourceIndex.Build(
+        var adHocIndex = VbaSemanticInventoryFixture.Create(
             new Dictionary<string, string> { [uri] = text },
             referenceSelection: null,
             catalogs);
@@ -177,17 +177,17 @@ public sealed class VbaSemanticResolutionTests
             "End Sub"
         ]);
         var catalogs = VbaProjectReferenceCatalogSet.CreateBundled();
-        var excelIndex = VbaSourceIndex.Build(
+        var excelIndex = VbaSemanticInventoryFixture.Create(
             new Dictionary<string, string> { [uri] = text },
             VbaProjectReferenceSelection.Create(
                 ProjectDocument.ExcelKind,
                 [new VbaProjectReference(excelReferenceName)]),
             catalogs);
-        var adHocIndex = VbaSourceIndex.Build(
+        var adHocIndex = VbaSemanticInventoryFixture.Create(
             new Dictionary<string, string> { [uri] = text },
             referenceSelection: null,
             catalogs);
-        var differentMainHostIndex = VbaSourceIndex.Build(
+        var differentMainHostIndex = VbaSemanticInventoryFixture.Create(
             new Dictionary<string, string> { [uri] = text },
             new VbaProjectReferenceSelection(
                 [
@@ -197,7 +197,7 @@ public sealed class VbaSemanticResolutionTests
                 new MainVbaProjectReference(officeReferenceName),
                 MissingExpectedMainReference: null),
             catalogs);
-        var missingExcelReferenceIndex = VbaSourceIndex.Build(
+        var missingExcelReferenceIndex = VbaSemanticInventoryFixture.Create(
             new Dictionary<string, string> { [uri] = text },
             VbaProjectReferenceSelection.Create(
                 ProjectDocument.ExcelKind,
@@ -495,11 +495,11 @@ public sealed class VbaSemanticResolutionTests
                     ParentTypeName: "Range",
                     PropertyAccess: VbaPropertyAccess.Readable)
             ]);
-        var unavailableTypeIndex = VbaSourceIndex.Build(
+        var unavailableTypeIndex = VbaSemanticInventoryFixture.Create(
             new Dictionary<string, string> { [uri] = text },
             selection,
             VbaProjectReferenceCatalogSet.Empty.WithCatalog(unavailableTypeCatalog));
-        var ambiguousTypeIndex = VbaSourceIndex.Build(
+        var ambiguousTypeIndex = VbaSemanticInventoryFixture.Create(
             new Dictionary<string, string> { [uri] = text },
             selection,
             VbaProjectReferenceCatalogSet.Empty.WithCatalog(ambiguousTypeCatalog));
@@ -580,7 +580,7 @@ public sealed class VbaSemanticResolutionTests
                                 PropertyAccess: VbaPropertyAccess.Readable)
                         ])
                 ]));
-        var index = VbaSourceIndex.Build(
+        var index = VbaSemanticInventoryFixture.Create(
             new Dictionary<string, string>
             {
                 [workerUri] = workerText,
@@ -697,13 +697,13 @@ public sealed class VbaSemanticResolutionTests
                     GlobalExposure: ReferenceDefinitionGlobalExposure.MainHostGlobal)
             ]);
         var catalogs = VbaProjectReferenceCatalogSet.Empty.WithCatalog(catalog);
-        var mainHostIndex = VbaSourceIndex.Build(
+        var mainHostIndex = VbaSemanticInventoryFixture.Create(
             new Dictionary<string, string> { [uri] = text },
             VbaProjectReferenceSelection.Create(
                 ProjectDocument.ExcelKind,
                 [new VbaProjectReference(referenceName)]),
             catalogs);
-        var secondaryReferenceIndex = VbaSourceIndex.Build(
+        var secondaryReferenceIndex = VbaSemanticInventoryFixture.Create(
             new Dictionary<string, string> { [uri] = text },
             VbaProjectReferenceSelection.Create(
                 "word",
@@ -740,7 +740,7 @@ public sealed class VbaSemanticResolutionTests
             "    Dim typed As ",
             "End Sub"
         ]);
-        var index = VbaSourceIndex.Build(
+        var index = VbaSemanticInventoryFixture.Create(
             new Dictionary<string, string> { [uri] = text },
             VbaProjectReferenceSelection.Create(
                 "word",
@@ -840,7 +840,7 @@ public sealed class VbaSemanticResolutionTests
             "Public Function SourceValue() As String",
             "End Function"
         ]);
-        var index = VbaSourceIndex.Build(
+        var index = VbaSemanticInventoryFixture.Create(
             new Dictionary<string, string>
             {
                 [workerUri] = workerText,
@@ -870,7 +870,7 @@ public sealed class VbaSemanticResolutionTests
             "    app.Run(",
             "End Sub"
         ]);
-        var index = VbaSourceIndex.Build(
+        var index = VbaSemanticInventoryFixture.Create(
             new Dictionary<string, string> { [uri] = text },
             VbaProjectReferenceSelection.Create(
                 ProjectDocument.ExcelKind,
@@ -907,7 +907,7 @@ public sealed class VbaSemanticResolutionTests
         ]);
         var index = BuildIndex(uri, text);
 
-        var appCompletionLabels = index.GetCompletionDefinitions(uri, 4, "    value = app.".Length)
+        var appCompletionLabels = index.GetCompletionResult(uri, 4, "    value = app.".Length).Definitions
             .Select(definition => definition.Name)
             .ToArray();
         Assert.Contains("Run", appCompletionLabels);
@@ -919,11 +919,11 @@ public sealed class VbaSemanticResolutionTests
         Assert.Equal("Application", runDefinition?.ParentTypeName);
         Assert.Equal("Function Run(Macro, [Arg1])", index.GetSignatureHelp(uri, 5, "    app.Run(".Length)?.Signature.Label);
 
-        var dictionaryCompletionLabels = index.GetCompletionDefinitions(uri, 7, "    dict.".Length)
+        var dictionaryCompletionLabels = index.GetCompletionResult(uri, 7, "    dict.".Length).Definitions
             .Select(definition => definition.Name)
             .ToArray();
         Assert.Contains("Exists", dictionaryCompletionLabels);
-        Assert.Empty(index.GetCompletionDefinitions(uri, 9, "    unknown.".Length));
+        Assert.Empty(index.GetCompletionResult(uri, 9, "    unknown.".Length).Definitions);
     }
 
     [Fact]
@@ -954,13 +954,13 @@ public sealed class VbaSemanticResolutionTests
                 [applicationUri] = sourceApplicationText
             });
 
-        var sourceLabels = index.GetCompletionDefinitions(workerUri, 4, "    sourceApp.".Length)
+        var sourceLabels = index.GetCompletionResult(workerUri, 4, "    sourceApp.".Length).Definitions
             .Select(definition => definition.Name)
             .ToArray();
         Assert.Contains("SourceOnly", sourceLabels);
         Assert.DoesNotContain("Run", sourceLabels);
 
-        var referenceLabels = index.GetCompletionDefinitions(workerUri, 6, "    excelApp.".Length)
+        var referenceLabels = index.GetCompletionResult(workerUri, 6, "    excelApp.".Length).Definitions
             .Select(definition => definition.Name)
             .ToArray();
         Assert.Contains("Run", referenceLabels);
@@ -994,7 +994,7 @@ public sealed class VbaSemanticResolutionTests
         ]);
         var index = BuildIndex(uri, text);
 
-        var workbookLabels = index.GetCompletionDefinitions(uri, 4, "    app.Workbooks.".Length)
+        var workbookLabels = index.GetCompletionResult(uri, 4, "    app.Workbooks.".Length).Definitions
             .Select(definition => definition.Name)
             .ToArray();
         Assert.Contains("Open", workbookLabels);
@@ -1122,7 +1122,7 @@ public sealed class VbaSemanticResolutionTests
                 [worksheetServiceUri] = worksheetServiceText
             });
 
-        var labels = index.GetCompletionDefinitions(workerUri, 3, "    WsSrv.".Length)
+        var labels = index.GetCompletionResult(workerUri, 3, "    WsSrv.".Length).Definitions
             .Select(definition => definition.Name)
             .ToArray();
 
@@ -1620,7 +1620,7 @@ public sealed class VbaSemanticResolutionTests
                         ]),
                     ParentTypeName: "GeneratedType")
             ]);
-        var index = VbaSourceIndex.Build(
+        var index = VbaSemanticInventoryFixture.Create(
             new Dictionary<string, string> { [uri] = text },
             selection,
             VbaProjectReferenceCatalogSet.Empty.WithCatalog(catalog));
@@ -1726,7 +1726,7 @@ public sealed class VbaSemanticResolutionTests
                         CallableKind: VbaCallableKind.Sub),
                     ParentTypeName: "GeneratedType")
             ]);
-        var index = VbaSourceIndex.Build(
+        var index = VbaSemanticInventoryFixture.Create(
             new Dictionary<string, string> { [uri] = text },
             selection,
             VbaProjectReferenceCatalogSet.Empty.WithCatalog(catalog));
@@ -1783,7 +1783,7 @@ public sealed class VbaSemanticResolutionTests
                         CallableKind: VbaCallableKind.Function),
                     ParentTypeName: "GeneratedPublisher")
             ]);
-        var index = VbaSourceIndex.Build(
+        var index = VbaSemanticInventoryFixture.Create(
             new Dictionary<string, string> { [uri] = text },
             VbaProjectReferenceSelection.Create(
                 ProjectDocument.ExcelKind,
@@ -1862,11 +1862,11 @@ public sealed class VbaSemanticResolutionTests
         Assert.Equal(["Values", "Fallback"], signatureHelp!.Signature.Parameters.Select(parameter => parameter.Name).ToArray());
     }
 
-    private static VbaSourceIndex BuildIndex(string uri, string text)
+    private static VbaSemanticInventory BuildIndex(string uri, string text)
         => BuildIndex(new Dictionary<string, string> { [uri] = text });
 
-    private static VbaSourceIndex BuildIndex(IReadOnlyDictionary<string, string> sourceDocuments)
-        => VbaSourceIndex.Build(
+    private static VbaSemanticInventory BuildIndex(IReadOnlyDictionary<string, string> sourceDocuments)
+        => VbaSemanticInventoryFixture.Create(
             sourceDocuments,
             VbaProjectReferenceSelection.Create(
                 ProjectDocument.ExcelKind,

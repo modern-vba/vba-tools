@@ -31,7 +31,7 @@ public sealed class SourceFormattingTests
             insertSpaces ? "  End If" : "\tEnd If",
             "End Sub"
         ]);
-        var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = source });
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string> { [uri] = source });
 
         var edit = index.FormatDocument(
             uri,
@@ -61,9 +61,9 @@ public sealed class SourceFormattingTests
             "    End If",
             "End Sub"
         ]);
-        var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = source });
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string> { [uri] = source });
 
-        var edit = index.FormatDocument(uri, tabSize: 4);
+        var edit = index.FormatDocument(uri, VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
 
         Assert.NotNull(edit);
         Assert.Equal(expected, edit.NewText);
@@ -86,9 +86,9 @@ public sealed class SourceFormattingTests
             "    End If",
             "End Sub"
         ]);
-        var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = source });
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string> { [uri] = source });
 
-        var edit = index.FormatDocument(uri, tabSize: 4);
+        var edit = index.FormatDocument(uri, VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
 
         Assert.NotNull(edit);
         Assert.Equal(expected, edit.NewText);
@@ -105,9 +105,9 @@ public sealed class SourceFormattingTests
             "    End If",
             "End Sub"
         ]);
-        var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = source });
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string> { [uri] = source });
 
-        var edit = index.FormatDocument(uri, tabSize: 4);
+        var edit = index.FormatDocument(uri, VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
 
         Assert.Null(edit);
     }
@@ -136,9 +136,9 @@ public sealed class SourceFormattingTests
             "    '* @brief public sub if true string false nothing",
             "End Sub"
         ]);
-        var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = source });
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string> { [uri] = source });
 
-        var edit = index.FormatDocument(uri, tabSize: 4);
+        var edit = index.FormatDocument(uri, VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
 
         Assert.NotNull(edit);
         Assert.Equal(expected, edit.NewText);
@@ -162,9 +162,9 @@ public sealed class SourceFormattingTests
             "    value = \"if true string",
             "End Sub"
         ]);
-        var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = source });
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string> { [uri] = source });
 
-        var edit = index.FormatDocument(uri, tabSize: 4);
+        var edit = index.FormatDocument(uri, VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
 
         Assert.NotNull(edit);
         Assert.Equal(expected, edit.NewText);
@@ -192,9 +192,9 @@ public sealed class SourceFormattingTests
             "    unresolvedname = localValue",
             "End Sub"
         ]);
-        var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = source });
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string> { [uri] = source });
 
-        var edit = index.FormatDocument(uri, tabSize: 4);
+        var edit = index.FormatDocument(uri, VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
 
         Assert.NotNull(edit);
         Assert.Equal(expected, edit.NewText);
@@ -214,9 +214,9 @@ public sealed class SourceFormattingTests
             "    Values(0) = Fallback",
             "End Sub"
         ]);
-        var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = source });
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string> { [uri] = source });
 
-        var edit = index.FormatDocument(uri, tabSize: 4);
+        var edit = index.FormatDocument(uri, VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
 
         Assert.NotNull(edit);
         Assert.Equal(expected, edit.NewText);
@@ -264,7 +264,7 @@ public sealed class SourceFormattingTests
             "    sharedThing = \"x\"",
             "End Sub"
         ]);
-        var index = VbaSourceIndex.Build(new Dictionary<string, string>
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string>
         {
             [builderUri] = builderSource,
             [firstUri] = firstSource,
@@ -272,7 +272,7 @@ public sealed class SourceFormattingTests
             [workerUri] = workerSource
         });
 
-        var edit = index.FormatDocument(workerUri, tabSize: 4);
+        var edit = index.FormatDocument(workerUri, VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
 
         Assert.NotNull(edit);
         Assert.Equal(expected, edit.NewText);
@@ -308,14 +308,14 @@ public sealed class SourceFormattingTests
             "    Widget . CreateValue",
             "End Sub"
         ]);
-        var index = VbaSourceIndex.Build(new Dictionary<string, string>
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string>
         {
             [builderUri] = builderSource,
             [widgetUri] = widgetSource,
             [workerUri] = workerSource
         });
 
-        var edit = index.FormatDocument(workerUri, tabSize: 4);
+        var edit = index.FormatDocument(workerUri, VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
 
         Assert.NotNull(edit);
         Assert.Equal(expected, edit.NewText);
@@ -361,7 +361,7 @@ public sealed class SourceFormattingTests
             "    duplicatemodule.samename",
             "End Sub"
         ]);
-        var index = VbaSourceIndex.Build(new Dictionary<string, string>
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string>
         {
             [builderUri] = builderSource,
             [firstUri] = firstSource,
@@ -369,7 +369,7 @@ public sealed class SourceFormattingTests
             [workerUri] = workerSource
         });
 
-        var edit = index.FormatDocument(workerUri, tabSize: 4);
+        var edit = index.FormatDocument(workerUri, VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
 
         Assert.NotNull(edit);
         Assert.Equal(expected, edit.NewText);
@@ -399,9 +399,9 @@ public sealed class SourceFormattingTests
             "    app.Workbooks.Open",
             "End Sub"
         ]);
-        var index = BuildExcelReferenceIndex(new Dictionary<string, string> { [uri] = source });
+        var index = BuildExcelReferenceInventory(new Dictionary<string, string> { [uri] = source });
 
-        var edit = index.FormatDocument(uri, tabSize: 4);
+        var edit = index.FormatDocument(uri, VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
 
         Assert.NotNull(edit);
         Assert.Equal(expected, edit.NewText);
@@ -425,11 +425,11 @@ public sealed class SourceFormattingTests
             "    excel.application",
             "End Sub"
         ]);
-        var index = BuildExcelReferenceIndex(
+        var index = BuildExcelReferenceInventory(
             new Dictionary<string, string> { [uri] = source },
             VbaProjectReferenceCatalogSet.Empty);
 
-        var edit = index.FormatDocument(uri, tabSize: 4);
+        var edit = index.FormatDocument(uri, VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
 
         Assert.NotNull(edit);
         Assert.Equal(expected, edit.NewText);
@@ -457,9 +457,9 @@ public sealed class SourceFormattingTests
             "    unknown.run",
             "End Sub"
         ]);
-        var index = BuildExcelReferenceIndex(new Dictionary<string, string> { [uri] = source });
+        var index = BuildExcelReferenceInventory(new Dictionary<string, string> { [uri] = source });
 
-        var edit = index.FormatDocument(uri, tabSize: 4);
+        var edit = index.FormatDocument(uri, VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
 
         Assert.NotNull(edit);
         Assert.Equal(expected, edit.NewText);
@@ -533,9 +533,9 @@ public sealed class SourceFormattingTests
             "    If True Then value = 1",
             "End Sub"
         ]);
-        var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = source });
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string> { [uri] = source });
 
-        var edit = index.FormatDocument(uri, tabSize: 4);
+        var edit = index.FormatDocument(uri, VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
 
         Assert.NotNull(edit);
         Assert.Equal(expected, edit.NewText);
@@ -557,9 +557,9 @@ public sealed class SourceFormattingTests
             "        Fallback)",
             "End Sub"
         ]);
-        var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = source });
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string> { [uri] = source });
 
-        var edit = index.FormatDocument(uri, tabSize: 2);
+        var edit = index.FormatDocument(uri, VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 2));
 
         Assert.NotNull(edit);
         Assert.Equal(expected, edit.NewText);
@@ -591,9 +591,9 @@ public sealed class SourceFormattingTests
             "Private Sub Cleanup()",
             "End Sub"
         ]);
-        var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = source });
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string> { [uri] = source });
 
-        var edit = index.FormatDocument(uri, tabSize: 4);
+        var edit = index.FormatDocument(uri, VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
 
         Assert.NotNull(edit);
         Assert.Equal(expected, edit.NewText);
@@ -617,9 +617,9 @@ public sealed class SourceFormattingTests
             "value = 1",
             "End Sub"
         ]);
-        var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = source });
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string> { [uri] = source });
 
-        var edit = index.FormatDocument(uri, tabSize: 4);
+        var edit = index.FormatDocument(uri, VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
 
         Assert.NotNull(edit);
         Assert.Equal(expected, edit.NewText);
@@ -653,18 +653,18 @@ public sealed class SourceFormattingTests
             "    caption = \"ok\"",
             "End Sub"
         ]);
-        var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = source });
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string> { [uri] = source });
 
-        var edit = index.FormatDocument(uri, tabSize: 4);
+        var edit = index.FormatDocument(uri, VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
 
         Assert.NotNull(edit);
         Assert.Equal(expected, edit.NewText);
     }
 
-    private static VbaSourceIndex BuildExcelReferenceIndex(
+    private static VbaSemanticInventory BuildExcelReferenceInventory(
         IReadOnlyDictionary<string, string> sourceDocuments,
         VbaProjectReferenceCatalogSet? referenceCatalogs = null)
-        => VbaSourceIndex.Build(
+        => VbaSemanticInventoryFixture.Create(
             sourceDocuments,
             VbaProjectReferenceSelection.Create(
                 ProjectDocument.ExcelKind,

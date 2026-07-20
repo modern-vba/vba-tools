@@ -194,15 +194,16 @@ public sealed class VbaNestedProjectBoundaryTests
                 "OuterBook",
                 "excel",
                 []);
-            var scan = await new VbaFileSystemProjectDiskSourceBoundary()
-                .ScanAsync(
-                    new VbaProjectDiskReconciliationScope(
-                        "outer",
-                        new Uri(outerPath).AbsoluteUri,
-                        resolution,
-                        CapturedWorkspaceRevision: 0,
-                        ManifestCandidates: [],
-                        KnownSources: []),
+            var scan = await new VbaFileSystemProjectDiskInventory()
+                .ObserveReconciliationAsync(
+                    new VbaProjectDiskObservationRequest(
+                        new VbaProjectDiskProjectScope(
+                            resolution.Kind,
+                            resolution.RootPath,
+                            resolution.ManifestPath),
+                        manifestCandidates: [],
+                        barrierOverrides: [],
+                        observedManifestBarrierUris: []),
                     CancellationToken.None);
 
             Assert.Contains(

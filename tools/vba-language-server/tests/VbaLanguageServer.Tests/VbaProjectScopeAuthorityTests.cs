@@ -304,6 +304,7 @@ public sealed class VbaProjectScopeAuthorityTests
         var provider = new VbaProjectSnapshotProvider(
             new VbaProjectReferenceCatalogCache(
                 VbaProjectReferenceCatalogSet.CreateBundled()),
+            new VbaFileSystemProjectDiskInventory(),
             new VbaProjectSourceDocumentCache(),
             manifestSource);
 

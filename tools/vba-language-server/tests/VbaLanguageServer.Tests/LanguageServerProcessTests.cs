@@ -4536,7 +4536,7 @@ public sealed class LanguageServerProcessTests
             var tokenText = lines[line].Substring(character, length);
             tokens.Add(new DecodedSemanticToken(
                 tokenText,
-                VbaSourceIndex.SemanticTokenTypes[tokenTypeIndex],
+                VbaSemanticTokenLegend.Types[tokenTypeIndex],
                 DecodeSemanticTokenModifiers(modifierBits),
                 line,
                 character,
@@ -4547,7 +4547,7 @@ public sealed class LanguageServerProcessTests
     }
 
     private static IReadOnlyList<string> DecodeSemanticTokenModifiers(int modifierBits)
-        => VbaSourceIndex.SemanticTokenModifiers
+        => VbaSemanticTokenLegend.Modifiers
             .Where((_, index) => (modifierBits & (1 << index)) != 0)
             .ToArray();
 

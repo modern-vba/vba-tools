@@ -62,6 +62,16 @@ cannot lose the wake-up or monopolize every released slot. Every admitted or
 superseded item still receives one terminal completion and releases its queue
 and cancellation ownership before that completion becomes observable.
 
+`VbaLatestOnlyBackgroundMailbox` is the shared non-generic composition Module
+for that policy. It directly leverages the concrete
+`VbaInteractiveWorkScheduler`; it does not add another scheduler Adapter or
+inheritance hierarchy. The Module owns the pending map, active-authority set,
+ready FIFO, capacity retry, completion restart, idle observation, discard, and
+stop behavior. It takes the latest pending delegate when execution starts, not
+when scheduler admission succeeds. Scheduler calls, terminal callbacks, and
+state observers run outside the mailbox lock. Producer Modules retain
+domain-specific revision, freshness, tombstone, and selection rules.
+
 Pending reads use deterministic aging. Latency-critical, normal, bulk, and
 background work start with decreasing base scores. Each higher-class dispatch
 ages waiting lower classes until they tie and win by earlier input sequence.
@@ -72,8 +82,11 @@ Diagnostics capture their immutable analysis and client version before
 background admission. Their URI mailbox retains at most one pending revision
 and one queued or in-flight scheduler admission. Source and manifest mutations
 never await transport writes. The runtime attaches the diagnostics publisher
-to the scheduler, so publication is bounded, latest-checked, serialized by
-`LspMessageTransport`, and owned by shutdown.
+to the scheduler before any publication; there is no scheduler-null direct
+publication path. Publication is therefore bounded, latest-checked, serialized
+by `LspMessageTransport`, and owned by shutdown. Document lifecycle stops the
+mailbox before the scheduler drains or aborts, so pending revisions become
+terminal exactly once without late admission.
 
 Reference-catalog discovery remains on its dedicated low-impact worker because
 TypeLib COM calls may not cooperate with cancellation. The scheduler fairly
@@ -87,6 +100,16 @@ best-effort background admission. Shutdown dispatches producer cancellation
 with `CancelAsync` and observes both callbacks and external tasks inside the
 same bounded timeout. It then drains or aborts scheduler-owned work, so a late
 catalog task cannot admit work after the scheduler closes.
+
+The reference-catalog mailbox owns only refresh-start replacement and
+admission. Trace and result publication remain non-latest, best-effort
+scheduler work. Each refresh plan carries coordinator-owned revisions for its
+selection `ScopeKey` values. Replacement reserves every selected scope, while
+manifest deactivation or document removal invalidates every matching scope
+revision even after the mailbox has taken an older plan for execution. Plan
+execution skips only stale selections, preserving fresh peer scopes in the same
+plan. A stale source-keyed plan therefore cannot recreate catalog lifecycle
+state after its manifest authority changes or is removed.
 
 Explicit request cancellation remains request-id-owned and cooperative.
 Cancellation is checked during references, rename, formatting, semantic-token,

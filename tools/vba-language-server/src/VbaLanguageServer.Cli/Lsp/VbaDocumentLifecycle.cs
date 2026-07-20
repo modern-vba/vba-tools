@@ -40,8 +40,13 @@ internal sealed class VbaDocumentLifecycle
     public void AttachScheduler(VbaInteractiveWorkScheduler scheduler)
         => diagnosticsPublisher.AttachScheduler(scheduler);
 
-    internal VbaProjectDiskReconciliationCoordinator
-        CreateDiskReconciliationCoordinator()
+    /// <summary>
+    /// Stops pending document-owned background work before scheduler shutdown.
+    /// </summary>
+    public void Stop()
+        => diagnosticsPublisher.Stop();
+
+    internal VbaProjectReconciler CreateProjectReconciler()
         => new(
             workspace,
             diagnosticsPublisher,

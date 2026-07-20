@@ -28,8 +28,13 @@ derived from one source state:
 - `VbaSourceText` coordinates;
 - syntax tree and module kind;
 - projected source definitions and semantic shape;
-- category-preserving syntax and document-validation diagnostics; and
-- parse granularity plus safe `ModuleMember` update metadata.
+- category-preserving syntax and document-validation diagnostics.
+
+The analysis build consumes `SyntaxChangeSet` only while projecting the next
+source document. An `Unchanged` proof may reuse the whole owned projection, and
+a `ModuleMember` proof may reuse definitions outside that member. The committed
+analysis, tracked document, and exact-version snapshot do not retain parser
+route or update metadata.
 
 The workspace reserves an accepted revision under its state lock, builds the
 analysis outside that lock, and performs a short compare-and-commit. A
@@ -66,8 +71,14 @@ conservative speculative proof.
 
 Document analysis itself is host-neutral. The currently shipped document
 experience targets Excel projects, while future Word, PowerPoint, or other VBA
-hosts can supply project and catalog inputs at their existing boundaries
+hosts can supply project and catalog inputs at their existing seams
 without adding host conditions to document analysis.
+
+Workspace document mutation methods expose lifecycle outcomes rather than
+parser implementation facts. `UpdateDocument` and `OpenDocument` return
+nothing. `ChangeDocument` reports whether the client revision was accepted for
+reservation; a later competing revision may still prevent that build from
+committing.
 
 ## Considered options
 
@@ -84,8 +95,8 @@ without adding host conditions to document analysis.
 
 ## Consequences
 
-Features can share exact text, coordinates, syntax, source definitions,
-diagnostics, and incremental metadata without reprojection. While a newer build
+Features can share exact text, coordinates, syntax, source definitions, and
+diagnostics without reprojection. While a newer build
 is pending, guarded Enter returns no plan for either the superseded committed
 version or the not-yet-committed version.
 

@@ -21,7 +21,7 @@ public sealed class VbaCompletionCandidateDeduplicationTests
             "Attribute VB_Name = \"String\"",
             "Attribute VB_Exposed = True"
         ]);
-        var index = VbaSourceIndex.Build(new Dictionary<string, string>
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string>
         {
             [workerUri] = workerSource,
             [classUri] = classSource
@@ -57,7 +57,7 @@ public sealed class VbaCompletionCandidateDeduplicationTests
             "    result = Convert(",
             "End Sub"
         ]);
-        var index = VbaSourceIndex.Build(new Dictionary<string, string>
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string>
         {
             [uri] = source
         });

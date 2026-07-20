@@ -38,10 +38,9 @@ public sealed class VbaSemanticInventoryTests
             referenceSelection: null,
             referenceCatalogs: VbaProjectReferenceCatalogSet.Empty);
 
-        Assert.DoesNotContain(
-            typeof(VbaSemanticInventory).GetFields(
-                BindingFlags.Instance | BindingFlags.NonPublic),
-            field => field.FieldType == typeof(VbaSourceIndex));
+        Assert.Null(
+            typeof(VbaSemanticInventory).Assembly.GetType(
+                "VbaLanguageServer.SourceModel.VbaSourceIndex"));
         Assert.Equal(
             ["Caller", "Main", "value"],
             inventory.GetDocumentDefinitions(callerUri).Select(definition => definition.Name));
@@ -166,6 +165,106 @@ public sealed class VbaSemanticInventoryTests
     }
 
     [Fact]
+    public void Inventory_owns_source_definitions_and_nested_signature_parameters()
+    {
+        const string uri = "file:///C:/work/MutableInput.bas";
+        const string source =
+            """
+            Attribute VB_Name = "MutableInput"
+            Public Function OriginalProcedure(value As String) As String
+            End Function
+            Public Sub Caller()
+                OriginalProcedure(
+            End Sub
+
+            """;
+        var projectedDocument = VbaSourceDocumentProjector.Project(
+            uri,
+            VbaSyntaxTree.ParseModule(uri, source));
+        var projectedProcedure = projectedDocument.Definitions
+            .Single(definition => definition.Name == "OriginalProcedure");
+        var mutableParameters = projectedProcedure.Signature!.Parameters.ToList();
+        var originalProcedure = projectedProcedure
+            with
+            {
+                Signature = projectedProcedure.Signature
+                    with
+                    {
+                        Parameters = mutableParameters
+                    }
+            };
+        var mutableDefinitions = projectedDocument.Definitions
+            .Select(definition => definition.Name == "OriginalProcedure"
+                ? originalProcedure
+                : definition)
+            .ToList();
+        var mutableDocument = new VbaSourceDocument(
+            uri,
+            source,
+            projectedDocument.ModuleName,
+            mutableDefinitions,
+            projectedDocument.SyntaxTree);
+        var sourceDocuments = new Dictionary<string, VbaSourceDocument>
+        {
+            [uri] = mutableDocument
+        };
+        var expectedInventory = VbaSemanticInventory.Create(sourceDocuments);
+        var inventory = VbaSemanticInventory.Create(sourceDocuments);
+        var expectedSemanticTokenData = expectedInventory
+            .GetSemanticTokenData(uri)
+            .ToArray();
+
+        mutableDefinitions.Clear();
+        mutableDefinitions.Add(originalProcedure with { Name = "InjectedProcedure" });
+        mutableParameters.Clear();
+        mutableParameters.Add(new VbaCallableParameter("injected"));
+
+        var definitions = inventory.GetDocumentDefinitions(uri);
+        Assert.Equal(
+            ["MutableInput", "OriginalProcedure", "value", "Caller"],
+            definitions.Select(definition => definition.Name));
+        var mutableDefinitionView =
+            Assert.IsAssignableFrom<IList<VbaSourceDefinition>>(definitions);
+        Assert.True(mutableDefinitionView.IsReadOnly);
+        Assert.Throws<NotSupportedException>(mutableDefinitionView.Clear);
+
+        Assert.Contains(
+            inventory.GetWorkspaceSymbols("Original"),
+            symbol => symbol.Name == "OriginalProcedure");
+        Assert.DoesNotContain(
+            inventory.GetWorkspaceSymbols("Injected"),
+            symbol => symbol.Name == "InjectedProcedure");
+
+        var completion = inventory.GetCompletionResult(uri, 4, "    ".Length);
+        Assert.Contains(
+            completion.Candidates,
+            candidate => candidate.Label == "OriginalProcedure");
+        Assert.DoesNotContain(
+            completion.Candidates,
+            candidate => candidate.Label == "InjectedProcedure");
+
+        var signatureHelp = Assert.IsType<VbaSignatureHelp>(
+            inventory.GetSignatureHelp(
+                uri,
+                4,
+                "    OriginalProcedure(".Length));
+        Assert.Equal(
+            ["value"],
+            signatureHelp.Signature.Parameters.Select(parameter => parameter.Name));
+        var mutableParameterView =
+            Assert.IsAssignableFrom<IList<VbaCallableParameter>>(
+                signatureHelp.Signature.Parameters);
+        Assert.True(mutableParameterView.IsReadOnly);
+        Assert.Throws<NotSupportedException>(mutableParameterView.Clear);
+
+        var semanticTokenData = inventory.GetSemanticTokenData(uri);
+        Assert.Equal(expectedSemanticTokenData, semanticTokenData);
+        var mutableSemanticTokenData = Assert.IsAssignableFrom<IList<int>>(semanticTokenData);
+        Assert.True(mutableSemanticTokenData.IsReadOnly);
+        Assert.Throws<NotSupportedException>(mutableSemanticTokenData.Clear);
+    }
+
+    [Fact]
     public void Randomized_rename_and_delete_sequences_preserve_workspace_symbol_results()
     {
         const string uri = "file:///C:/work/Randomized.bas";
@@ -200,7 +299,7 @@ public sealed class VbaSemanticInventoryTests
         IReadOnlyDictionary<string, string> sourceTexts)
         => sourceTexts.ToDictionary(
             pair => pair.Key,
-            pair => VbaSourceIndex.CreateDocument(
+            pair => VbaSourceDocumentProjector.Project(
                 pair.Key,
                 VbaSyntaxTree.ParseModule(pair.Key, pair.Value)),
             StringComparer.OrdinalIgnoreCase);

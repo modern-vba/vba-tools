@@ -4,17 +4,54 @@ using VbaLanguageServer.Syntax;
 namespace VbaLanguageServer.SourceModel;
 
 /// <summary>
+/// Owns the semantic token legend shared by protocol advertisement and token encoding.
+/// </summary>
+internal static class VbaSemanticTokenLegend
+{
+    public static readonly IReadOnlyList<string> Types = [
+        "namespace",
+        "type",
+        "class",
+        "enum",
+        "interface",
+        "struct",
+        "typeParameter",
+        "parameter",
+        "variable",
+        "property",
+        "field",
+        "enumMember",
+        "event",
+        "function",
+        "method"
+    ];
+
+    public static readonly IReadOnlyList<string> Modifiers = [
+        "declaration",
+        "definition",
+        "readonly",
+        "static",
+        "deprecated",
+        "abstract",
+        "async",
+        "modification",
+        "documentation",
+        "defaultLibrary"
+    ];
+}
+
+/// <summary>
 /// Builds semantic tokens and LSP token data from source definitions and resolved references.
 /// </summary>
 internal static class VbaSemanticTokenBuilder
 {
     private static readonly IReadOnlyDictionary<string, int> SemanticTokenTypeIndexes =
-        VbaSourceIndex.SemanticTokenTypes
+        VbaSemanticTokenLegend.Types
             .Select((tokenType, index) => new { tokenType, index })
             .ToDictionary(item => item.tokenType, item => item.index, StringComparer.Ordinal);
 
     private static readonly IReadOnlyDictionary<string, int> SemanticTokenModifierIndexes =
-        VbaSourceIndex.SemanticTokenModifiers
+        VbaSemanticTokenLegend.Modifiers
             .Select((modifier, index) => new { modifier, index })
             .ToDictionary(item => item.modifier, item => item.index, StringComparer.Ordinal);
 

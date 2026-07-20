@@ -30,14 +30,33 @@ snapshot authority. Together they own:
 - project-scoped `VbaSemanticInventory` construction.
 
 Feature handlers do not resolve manifests, enumerate source files, read
-catalogs, or build an alternate source index. A warm project-snapshot hit
+catalogs, or build an alternate semantic inventory. A warm project-snapshot hit
 returns before source enumeration, disk stat/read, or project-wide semantic
 construction. Open buffers remain authoritative over equivalent disk sources.
-Project-snapshot construction and background reconciliation route their
-manifest and exported-source I/O through one host-neutral project filesystem
-boundary. Deterministic tests count every operation at that boundary and
-require a warm interactive capture to add no manifest read, source enumeration,
-metadata query, source read, or project/semantic rebuild.
+The deep `VbaProjectDiskInventory` Module provides one shared filesystem
+Implementation and cache for cold project-snapshot materialization, watched
+source reload, and background reconciliation. `VbaProjectReconciler` depends on
+it through a one-method observation Seam whose immutable disk-only request
+contains the resolved project disk scope, ordered manifest probes, barrier
+overrides, and observed barrier URIs. Authority keys, authority generations,
+workspace, source, and manifest revisions, known-source baselines, and
+open-document state stay in the reconciler and workspace reconciliation scope;
+the inventory does not receive them or decide whether an observation may
+commit. Production
+and deterministic test Adapters use that same narrow observation Interface.
+The filesystem Adapter owns source extension enumeration,
+recursive versus top-directory scope, nested-manifest ownership, path/URI
+identity, stable reads, decoding, decoded-text reuse, and manifest probes. It
+returns syntax-free facts with an opaque `DiskContentIdentity`.
+`VbaProjectSourceDocumentCache` parses and projects those facts without
+filesystem access. Its watched-source operation validates ownership,
+invalidates the prior decoded fact, and stable-reads one source without project
+enumeration. Cold capture may reuse decoded text only while metadata and the
+explicit invalidation generation remain unchanged; reconciliation always
+stable-reads bytes, even when length and timestamp are unchanged. Deterministic
+tests count every operation at the inventory Seam and require a warm
+interactive capture to add no inventory call, manifest read, source
+enumeration, metadata query, source read, or project/semantic rebuild.
 Disk changes become visible through accepted watcher events, reconciliation,
 or an explicit reload; an unreported raw disk write may remain stale while the
 warm snapshot is valid.
@@ -45,16 +64,30 @@ warm snapshot is valid.
 Background reconciliation keeps a stable authority identity separate from a
 manifest's mutable content identity. A manifest-backed authority is keyed by
 manifest path and document name; an ad-hoc authority is keyed by its inferred
-root. Filesystem scans run outside the ordered mutation lane with at most two
-scopes in flight, and their results commit in stable authority order only after
-source, manifest-overlay, and workspace revision fences still match. Accepted
-commits advance source-by-source disk baselines. Invalid manifest text advances
-only the observed-disk baseline, preserves any last-known-good effective
-manifest, and publishes one validation diagnostic until the text changes. If
-no last-known-good manifest exists, a cold interactive request that first
-discovers the invalid disk text records it and returns a manifest error. Once
-validation has recorded that invalid disk state, the file stops acting as an
-ownership barrier and later resolution falls back without rereading it.
+root. Source changes are compared by `DiskContentIdentity`, not file metadata.
+Filesystem scans run outside the ordered mutation lane with at most two
+scopes in flight. The deep `VbaProjectReconciler` Module converts each result
+into one ordered `VbaProjectReconciliationScopePlan`; plans commit in stable
+authority order through one required scheduler mutation per scope. The
+workspace exposes the narrow `CaptureProjectReconciliation` and
+`TryCommitProjectReconciliationScope` Seam. A stale fence rejects only that
+scope, so fresh peer scopes still commit. Manifest authority replacement and
+snapshot authority transfer share one mutation. Remaining source mutations
+wait for a fresh follow-up plan when that transfer invalidates their captured
+authority.
+
+Accepted commits advance source-by-source disk baselines. Invalid manifest text
+advances only the observed-disk baseline, preserves any last-known-good
+effective manifest, and publishes one validation diagnostic until the text
+changes. If no last-known-good manifest exists, a cold interactive request that
+first discovers the invalid disk text records it and returns a manifest error.
+Once validation has recorded that invalid disk state, the file stops acting as
+an ownership barrier and later resolution falls back without rereading it.
+Diagnostics and manifest lifecycle notifications are ephemeral effects. Each
+accepted scope dispatches its effects in stable order synchronously inside that
+scope's required scheduler mutation, after committing authority state and before
+releasing the ordered lane. A failed effect is reported without rolling back
+authority state or blocking later effects or peer scopes.
 
 An accepted manifest mutation requests an immediate reconciliation follow-up
 so newly exposed ancestors and descendants converge without waiting for the
@@ -83,23 +116,29 @@ inactive manifest history are pruned. Open manifest overlays and manifest state
 needed by a still-active ancestor or descendant boundary remain retained.
 
 Source revision journals retain entries only while an overlapping snapshot or
-reconciliation capture can still need them. Completed captures release their
-watermark leases and prune acknowledged history. Shutdown cancels
-reconciliation, waits for a bounded grace period, rejects late commits, and
-observes a non-cooperative scan if it finishes after detachment.
+reconciliation capture can still need them. Cancellation may dispose a capture
+while its filesystem scan is in flight. Once scanning completes, its watermark
+lease remains alive through ordered scope commits so a mid-scope stop cannot
+prune newer source-revision fences. Completed captures release their leases and
+prune acknowledged history. Shutdown cancels reconciliation, waits for a bounded
+grace period, rejects late commits, and observes a non-cooperative scan if it
+finishes after detachment.
 
 `VbaDocumentAnalysis` owns text, coordinates, syntax, projected source
-definitions, document diagnostics, and incremental parse metadata for one
-accepted revision. Exact-version features, including guarded Enter, capture
-that committed analysis. They do not resolve a project, inspect a catalog, or
-recompute diagnostics.
+definitions, and document diagnostics for one accepted revision. Its build
+consumes `SyntaxChangeSet` only while projecting the next source document; the
+committed analysis retains neither parser route nor update metadata.
+Exact-version features, including guarded Enter, capture that committed
+analysis. They do not resolve a project, inspect a catalog, or recompute
+diagnostics.
 
 `VbaSemanticInventory` is the only project-scope editor-query authority. It
 owns one immutable definition-candidate inventory, semantic resolution, lazy
-occurrence shards, formatting, and semantic-token caches. `VbaSourceIndex`
-query instances form a compatibility facade that delegates to an inventory; no
-raw index is stored in a project snapshot or used as an interactive
-coordination path.
+occurrence shards, formatting, and semantic-token caches. The internal
+`VbaSourceDocumentProjector` maps parsed syntax to immutable source definitions
+and owns safe member-local definition reuse. The internal
+`VbaSemanticTokenLegend` owns protocol token metadata. Neither Module creates
+an alternate project-scope query authority.
 
 ### Interactive work scheduler
 
@@ -117,11 +156,14 @@ retain response ownership even when responses finish out of order, and
 `LspMessageTransport` serializes complete output frames.
 
 Latency-critical reads reserve capacity ahead of normal, bulk, and background
-work. Deterministic aging prevents starvation. Authority-keyed mailboxes
-coalesce advisory diagnostics and catalog work to the latest pending state
-without allowing a full queue to block the mutation lane. Diagnostics revision
-reservation, pending-mailbox replacement, and worker ownership commit under
-one gate, so concurrent producers cannot restore an older pending revision.
+work. Deterministic aging prevents starvation.
+`VbaLatestOnlyBackgroundMailbox` owns pending replacement, active authority,
+ready FIFO, capacity retry, and stop behavior for advisory diagnostics and
+catalog refresh-start work. It takes the latest delegate at execution start
+without allowing a full queue to block the mutation lane. Diagnostics serialize
+revision reservation and mailbox posting in producer order, while revision
+freshness remains in the producer Module. Concurrent producers therefore
+cannot restore an older pending revision.
 
 ## Hot-path stages
 
@@ -150,6 +192,10 @@ Reference-catalog preload and discovery are project-lifecycle background work,
 not source-edit work. Interactive requests read the best committed catalog and
 never await discovery. A catalog commit re-enters the ordered mutation lane and
 invalidates only scopes whose selected reference state changed.
+Refresh-start plans fence each selected `ScopeKey`, independently of the source
+or manifest URI used as the mailbox authority. Manifest replacement, document
+removal, and deactivation invalidate the affected scope revisions. Execution
+skips stale selections without discarding fresh peer scopes from the same plan.
 
 ## Safety fallback matrix
 

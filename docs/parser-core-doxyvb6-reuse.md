@@ -1,4 +1,4 @@
-# Parser Core DoxyVB6 Reuse Boundary
+# Parser Core DoxyVB6 Reuse Seam
 
 ## Purpose
 
@@ -7,13 +7,13 @@ The Full VbaSyntaxTree Parser Core PRD treats `VbaLanguageServer.Syntax` as a
 syntax model should remain usable by a future DoxyVB6 adapter that needs VBA
 module structure and source ranges for documentation generation.
 
-This document records that reuse boundary. It complements ADR 0010, which
+This document records the reusable parser Seam. It complements ADR 0010, which
 selects a hand-written reusable C# parser core and keeps direct DoxyVB6
 integration outside the initial parser replacement work.
 
-## Dependency Boundary
+## Dependency Seam
 
-`VbaLanguageServer.Syntax` is the dependency boundary for reusable parsing. It
+`VbaLanguageServer.Syntax` is the dependency Seam for reusable parsing. It
 must not depend on:
 
 - LSP request or response types;
@@ -27,6 +27,18 @@ Consumers may reference `VbaLanguageServer.Syntax` for lexical and syntactic VBA
 structure. VbaLanguageServer-specific layers derive `VbaDefinition`,
 `CallableSignature`, diagnostics projection, semantic tokens, and LSP responses
 from that syntax model outside the parser core.
+
+The reusable incremental Interface is
+`VbaSyntaxTree.ParseOrUpdate(uri, source, previousSyntaxTree)`. It returns a
+closed `VbaSyntaxTreeChangeSet` hierarchy whose `Unchanged`, `ModuleMember`, and
+`Module` variants expose only semantic reuse proofs. A future Adapter may use
+those proofs to reuse its own derived model, but it must not infer the parser's
+source-window route or depend on line-difference, fallback, or segment
+observations. Variant constructors are internal, so only the parser
+Implementation creates proofs. The parser also validates that the previous
+tree is an unmodified parser-produced value before issuing an `Unchanged` or
+`ModuleMember` proof; public construction or record copying with replaced core
+properties conservatively returns `Module`.
 
 ## DoxyVB6 Adapter Inputs
 
@@ -50,6 +62,8 @@ A future DoxyVB6 adapter may consume the following syntax information from
   code declarations;
 - `VbaTokenStream` when documentation tooling needs trivia-sensitive lexical
   information such as comments, line continuations, or preprocessor directives.
+- `VbaSyntaxTreeChangeSet` when repeated full-text parses should safely reuse an
+  unchanged tree or derived artifacts outside one replaced `ModuleMember`.
 
 The adapter should translate parser-core syntax nodes into DoxyVB6's own
 documentation model. It should not require the parser core to know about

@@ -119,7 +119,7 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
                 "    value = generated.",
                 "End Sub"
             ]);
-            var index = VbaSourceIndex.Build(
+            var index = VbaSemanticInventoryFixture.Create(
                 new Dictionary<string, string> { [uri] = source },
                 VbaProjectReferenceSelection.Create(
                     ProjectDocument.ExcelKind,
@@ -127,10 +127,10 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
                 VbaProjectReferenceCatalogSet.Empty.WithCatalog(legacyEntry.Catalog));
 
             Assert.DoesNotContain(
-                index.GetCompletionDefinitions(uri, 2, "    value = ".Length),
+                index.GetCompletionResult(uri, 2, "    value = ".Length).Definitions,
                 definition => definition.Name == "GeneratedMember");
             Assert.Contains(
-                index.GetCompletionDefinitions(uri, 4, "    value = generated.".Length),
+                index.GetCompletionResult(uri, 4, "    value = generated.".Length).Definitions,
                 definition => definition.Name == "GeneratedMember");
         }
         finally
@@ -184,7 +184,7 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
             Assert.Null(generatedMethod.Signature?.CallableKind);
 
             const string uri = "file:///C:/work/Worker.bas";
-            var sourceIndex = VbaSourceIndex.Build(
+            var inventory = VbaSemanticInventoryFixture.Create(
                 new Dictionary<string, string>
                 {
                     [uri] = string.Join('\n', [
@@ -201,7 +201,7 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
                 VbaProjectReferenceCatalogSet.Empty.WithCatalog(entry.Catalog));
             Assert.Equal(
                 "GeneratedMethod(Value) As String",
-                sourceIndex.GetSignatureHelp(uri, 3, "    generated.GeneratedMethod(".Length)?.Signature.Label);
+                inventory.GetSignatureHelp(uri, 3, "    generated.GeneratedMethod(".Length)?.Signature.Label);
         }
         finally
         {
@@ -526,8 +526,8 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
             };
 
             var results = await service.RefreshAsync(selection);
-            var index = VbaSourceIndex.Build(sourceDocuments, selection, cache.Current);
-            var memberCompletion = index.GetCompletionDefinitions(uri, 3, "    generated.".Length)
+            var index = VbaSemanticInventoryFixture.Create(sourceDocuments, selection, cache.Current);
+            var memberCompletion = index.GetCompletionResult(uri, 3, "    generated.".Length).Definitions
                 .Select(definition => definition.Name)
                 .ToArray();
             var memberDefinition = index.ResolveSourceDefinition(
@@ -821,9 +821,10 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
                 "End Sub"
             ])
         };
-        return VbaSourceIndex
-            .Build(sourceDocuments, selection, cache.Current)
-            .GetCompletionDefinitions(uri, 3, "    generated.".Length)
+        return VbaSemanticInventoryFixture
+            .Create(sourceDocuments, selection, cache.Current)
+            .GetCompletionResult(uri, 3, "    generated.".Length)
+            .Definitions
             .Select(definition => definition.Name)
             .ToArray();
     }

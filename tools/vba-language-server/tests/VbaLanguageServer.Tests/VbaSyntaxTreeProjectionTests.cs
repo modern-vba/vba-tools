@@ -33,7 +33,7 @@ public sealed class VbaSyntaxTreeProjectionTests
     }
 
     [Fact]
-    public void ParserReportsModuleMemberUpdateForSafeCallableBodyEdit()
+    public void ParserReturnsModuleMemberProofForSafeCallableBodyEdit()
     {
         const string uri = "file:///C:/work/Worker.bas";
         var original = string.Join('\n', [
@@ -60,7 +60,7 @@ public sealed class VbaSyntaxTreeProjectionTests
 
         var result = VbaSyntaxTree.ParseOrUpdate(uri, updated, previousSyntaxTree);
 
-        Assert.Equal(VbaSyntaxTreeParseUpdateKind.ModuleMember, result.UpdateKind);
+        Assert.IsType<VbaSyntaxTreeChangeSet.ModuleMember>(result);
         Assert.Contains(result.SyntaxTree.Module.CallableDeclarations, declaration => declaration.Name == "BuildValue");
         Assert.Contains(result.SyntaxTree.Module.CallableDeclarations, declaration => declaration.Name == "Run");
     }
@@ -80,7 +80,7 @@ public sealed class VbaSyntaxTreeProjectionTests
         ]);
         var updated = original.Replace("value = 1", "value = 2", StringComparison.Ordinal);
         var previousTree = VbaSyntaxTree.ParseModule(uri, original);
-        var previousDocument = VbaSourceIndex.CreateDocument(uri, previousTree);
+        var previousDocument = VbaSourceDocumentProjector.Project(uri, previousTree);
         var corruptedDefinitions = previousDocument.Definitions
             .Select(definition => definition.Name == "Before"
                 ? definition with { Documentation = "stale projection" }
@@ -91,16 +91,14 @@ public sealed class VbaSyntaxTreeProjectionTests
             Definitions = corruptedDefinitions
         };
         var parseResult = VbaSyntaxTree.ParseOrUpdate(uri, updated, previousTree);
-        var clean = VbaSourceIndex.CreateDocument(uri, parseResult.SyntaxTree);
+        var clean = VbaSourceDocumentProjector.Project(uri, parseResult.SyntaxTree);
 
-        var projected = VbaSourceIndex.CreateDocument(
+        var projected = VbaSourceDocumentProjector.Project(
             uri,
-            parseResult.SyntaxTree,
-            previousTree,
-            corruptedDocument,
-            parseResult.MemberUpdate);
+            parseResult,
+            corruptedDocument);
 
-        Assert.Equal(VbaSyntaxTreeParseUpdateKind.ModuleMember, parseResult.UpdateKind);
+        Assert.IsType<VbaSyntaxTreeChangeSet.ModuleMember>(parseResult);
         Assert.Equal(clean.Definitions, projected.Definitions);
         Assert.DoesNotContain(
             projected.Definitions,
@@ -108,7 +106,61 @@ public sealed class VbaSyntaxTreeProjectionTests
     }
 
     [Fact]
-    public void ParserFallsBackToFullModuleRebuildWhenMemberRecoveryIsRequired()
+    public void Unchanged_source_projection_reuses_the_owned_projection()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        const string source =
+            "Attribute VB_Name = \"Worker\"\n"
+            + "Public Sub Run()\n"
+            + "End Sub\n";
+        var syntaxTree = VbaSyntaxTree.ParseModule(uri, source);
+        var previousDocument =
+            VbaSourceDocumentProjector.Project(uri, syntaxTree);
+        var changeSet =
+            VbaSyntaxTree.ParseOrUpdate(uri, source, syntaxTree);
+
+        var projected = VbaSourceDocumentProjector.Project(
+            uri,
+            changeSet,
+            previousDocument);
+
+        Assert.IsType<VbaSyntaxTreeChangeSet.Unchanged>(changeSet);
+        Assert.Same(previousDocument, projected);
+    }
+
+    [Fact]
+    public void Owned_projection_freezes_definitions_before_unchanged_reuse()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        const string source =
+            "Attribute VB_Name = \"Worker\"\n"
+            + "Public Sub Run()\n"
+            + "End Sub\n";
+        var syntaxTree = VbaSyntaxTree.ParseModule(uri, source);
+        var previousDocument =
+            VbaSourceDocumentProjector.Project(uri, syntaxTree);
+        var definitions = Assert.IsAssignableFrom<IList<VbaSourceDefinition>>(
+            previousDocument.Definitions);
+
+        Assert.True(definitions.IsReadOnly);
+        Assert.Throws<NotSupportedException>(
+            definitions.Clear);
+
+        var changeSet =
+            VbaSyntaxTree.ParseOrUpdate(uri, source, syntaxTree);
+        var projected = VbaSourceDocumentProjector.Project(
+            uri,
+            changeSet,
+            previousDocument);
+
+        Assert.Same(previousDocument, projected);
+        Assert.Same(
+            previousDocument.Definitions,
+            projected.Definitions);
+    }
+
+    [Fact]
+    public void ParserRequiresModuleRecomputationWhenMemberRecoveryIsRequired()
     {
         const string uri = "file:///C:/work/Worker.bas";
         var original = string.Join('\n', [
@@ -135,7 +187,7 @@ public sealed class VbaSyntaxTreeProjectionTests
 
         var result = VbaSyntaxTree.ParseOrUpdate(uri, malformed, previousSyntaxTree);
 
-        Assert.Equal(VbaSyntaxTreeParseUpdateKind.FullModule, result.UpdateKind);
+        Assert.IsType<VbaSyntaxTreeChangeSet.Module>(result);
         Assert.DoesNotContain(result.SyntaxTree.Module.CallableDeclarations, declaration => declaration.Name == "BuildValue");
         Assert.Contains(result.SyntaxTree.Module.CallableDeclarations, declaration => declaration.Name == "Run");
     }
@@ -218,7 +270,7 @@ public sealed class VbaSyntaxTreeProjectionTests
     }
 
     [Fact]
-    public void SourceIndexProjectsArrayCallableParametersAsParameterDefinitions()
+    public void SourceProjectionMapsArrayCallableParametersAsParameterDefinitions()
     {
         const string uri = "file:///C:/work/Worker.bas";
         var source = string.Join('\n', [
@@ -226,9 +278,9 @@ public sealed class VbaSyntaxTreeProjectionTests
             "Public Sub Run(ByRef Values() As String, ByVal Fallback As String)",
             "End Sub"
         ]);
-        var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = source });
+        var inventory = VbaSemanticInventoryFixture.Create(new Dictionary<string, string> { [uri] = source });
 
-        var definitions = index.GetDocumentDefinitions(uri);
+        var definitions = inventory.GetDocumentDefinitions(uri);
 
         var run = Assert.Single(definitions, definition =>
             definition.Name == "Run"
@@ -392,7 +444,7 @@ public sealed class VbaSyntaxTreeProjectionTests
     }
 
     [Fact]
-    public void SourceIndexProjectsSyntaxTreeDeclarationsForEditorFeatures()
+    public void SourceProjectionMapsSyntaxTreeDeclarationsForEditorFeatures()
     {
         const string uri = "file:///C:/work/Compat.bas";
         var source = string.Join('\n', [
@@ -406,7 +458,7 @@ public sealed class VbaSyntaxTreeProjectionTests
             "End Function"
         ]);
         var syntaxTree = VbaSyntaxTree.ParseModule(uri, source);
-        var index = VbaSourceIndex.BuildFromSyntaxTrees(new Dictionary<string, VbaSyntaxTree> { [uri] = syntaxTree });
+        var inventory = VbaSemanticInventoryFixture.CreateFromSyntaxTrees(new Dictionary<string, VbaSyntaxTree> { [uri] = syntaxTree });
 
         Assert.Contains(syntaxTree.Module.Declarations, declaration =>
             declaration.Name == "BufferSize"
@@ -423,15 +475,17 @@ public sealed class VbaSyntaxTreeProjectionTests
             && declaration.Kind == VbaDeclarationKind.Procedure
             && declaration.Visibility == VbaDeclarationVisibility.Private);
 
-        var buildValue = Assert.Single(index.GetDocumentDefinitions(uri), definition => definition.Name == "BuildValue");
+        var buildValue = Assert.Single(inventory.GetDocumentDefinitions(uri), definition => definition.Name == "BuildValue");
         Assert.Equal("Function BuildValue([Prefix As String]) As String", buildValue.Signature?.Label);
-        Assert.Contains(index.GetWorkspaceSymbols("shared"), symbol => symbol.Name == "SharedName");
-        Assert.Contains(index.GetSemanticTokens(uri), token =>
+        Assert.Contains(inventory.GetWorkspaceSymbols("shared"), symbol => symbol.Name == "SharedName");
+        Assert.Contains(inventory.GetSemanticTokens(uri), token =>
             token.Text == "SharedName"
             && token.TokenType == "field"
             && token.TokenModifiers.Contains("declaration"));
 
-        var edit = Assert.IsType<VbaTextEdit>(index.FormatDocument(uri, tabSize: 4));
+        var edit = Assert.IsType<VbaTextEdit>(inventory.FormatDocument(
+            uri,
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4)));
         Assert.Contains("Global Const BufferSize As Long = 260", edit.NewText);
         Assert.Contains("Global SharedName As String", edit.NewText);
     }

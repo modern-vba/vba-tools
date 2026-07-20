@@ -305,7 +305,7 @@ public sealed class VbaCallArgumentAvailabilityTests
         var text = string.Join('\n', lines);
         var callLineIndex = Array.IndexOf(lines, callLine);
         var syntaxTree = VbaSyntaxTree.ParseModule(uri, text);
-        var document = VbaSourceIndex.CreateDocument(uri, syntaxTree);
+        var document = VbaSourceDocumentProjector.Project(uri, syntaxTree);
         referenceCatalogs ??= VbaProjectReferenceCatalogSet.Empty;
         var nameResolution = new VbaNameResolutionService(
             [document],

@@ -97,11 +97,11 @@ public sealed class VbaEventReferenceTests
         Assert.Null(index.ResolveSourceDefinition(workerUri, 6, "Private Sub ".Length));
     }
 
-    private static VbaSourceIndex BuildIndex(string uri, string text)
+    private static VbaSemanticInventory BuildIndex(string uri, string text)
         => BuildIndex(new Dictionary<string, string> { [uri] = text });
 
-    private static VbaSourceIndex BuildIndex(IReadOnlyDictionary<string, string> sourceDocuments)
-        => VbaSourceIndex.Build(
+    private static VbaSemanticInventory BuildIndex(IReadOnlyDictionary<string, string> sourceDocuments)
+        => VbaSemanticInventoryFixture.Create(
             sourceDocuments,
             VbaProjectReferenceSelection.Create(
                 ProjectDocument.ExcelKind,

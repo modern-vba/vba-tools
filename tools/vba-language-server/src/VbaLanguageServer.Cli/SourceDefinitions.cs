@@ -501,7 +501,7 @@ public sealed record VbaCompletionResult(IReadOnlyList<VbaCompletionCandidate> C
 }
 
 /// <summary>
-/// Represents one parsed source document in the source index.
+/// Represents one parsed source document used by semantic inventory construction.
 /// </summary>
 /// <param name="Uri">The document URI.</param>
 /// <param name="Text">The complete source text.</param>
@@ -572,297 +572,12 @@ public sealed record VbaSemanticToken(
     IReadOnlyList<string> TokenModifiers);
 
 /// <summary>
-/// Indexes parsed VBA source documents and serves editor-intelligence queries over their definitions.
+/// Projects parsed VBA syntax into immutable source definitions and safely
+/// reuses unchanged definitions after a member-local parse.
 /// </summary>
-public sealed class VbaSourceIndex
+internal static class VbaSourceDocumentProjector
 {
-    /// <summary>
-    /// Gets the semantic token legend types advertised to LSP clients.
-    /// </summary>
-    public static readonly IReadOnlyList<string> SemanticTokenTypes = [
-        "namespace",
-        "type",
-        "class",
-        "enum",
-        "interface",
-        "struct",
-        "typeParameter",
-        "parameter",
-        "variable",
-        "property",
-        "field",
-        "enumMember",
-        "event",
-        "function",
-        "method"
-    ];
-
-    /// <summary>
-    /// Gets the semantic token legend modifiers advertised to LSP clients.
-    /// </summary>
-    public static readonly IReadOnlyList<string> SemanticTokenModifiers = [
-        "declaration",
-        "definition",
-        "readonly",
-        "static",
-        "deprecated",
-        "abstract",
-        "async",
-        "modification",
-        "documentation",
-        "defaultLibrary"
-    ];
-
-    private readonly VbaSemanticInventory semanticInventory;
-
-    private VbaSourceIndex(
-        IReadOnlyList<VbaSourceDocument> documents,
-        VbaProjectReferenceSelection? referenceSelection,
-        VbaProjectReferenceCatalogSet referenceCatalogs)
-        : this(VbaSemanticInventory.Create(
-            documents.ToDictionary(
-                document => document.Uri,
-                document => document,
-                StringComparer.OrdinalIgnoreCase),
-            referenceSelection,
-            referenceCatalogs))
-    {
-    }
-
-    private VbaSourceIndex(VbaSemanticInventory semanticInventory)
-    {
-        this.semanticInventory = semanticInventory;
-    }
-
-    /// <summary>
-    /// Builds a source index from raw source text documents.
-    /// </summary>
-    /// <param name="sourceDocuments">The source text keyed by document URI.</param>
-    /// <param name="referenceSelection">The active VBA project reference selection.</param>
-    /// <param name="referenceCatalogs">The available reference catalogs.</param>
-    /// <returns>The built source index.</returns>
-    public static VbaSourceIndex Build(
-        IReadOnlyDictionary<string, string> sourceDocuments,
-        VbaProjectReferenceSelection? referenceSelection = null,
-        VbaProjectReferenceCatalogSet? referenceCatalogs = null)
-    {
-        var parsedDocuments = sourceDocuments
-            .Select(entry => ParseDocument(entry.Key, entry.Value))
-            .ToArray();
-        return new VbaSourceIndex(
-            parsedDocuments,
-            referenceSelection,
-            referenceCatalogs ?? VbaProjectReferenceCatalogSet.Empty);
-    }
-
-    /// <summary>
-    /// Builds a source index from already parsed syntax trees.
-    /// </summary>
-    /// <param name="sourceDocuments">The syntax trees keyed by document URI.</param>
-    /// <param name="referenceSelection">The active VBA project reference selection.</param>
-    /// <param name="referenceCatalogs">The available reference catalogs.</param>
-    /// <returns>The built source index.</returns>
-    public static VbaSourceIndex BuildFromSyntaxTrees(
-        IReadOnlyDictionary<string, VbaSyntaxTree> sourceDocuments,
-        VbaProjectReferenceSelection? referenceSelection = null,
-        VbaProjectReferenceCatalogSet? referenceCatalogs = null)
-    {
-        var parsedDocuments = sourceDocuments
-            .Select(entry => CreateDocument(entry.Key, entry.Value))
-            .ToArray();
-        return new VbaSourceIndex(
-            parsedDocuments,
-            referenceSelection,
-            referenceCatalogs ?? VbaProjectReferenceCatalogSet.Empty);
-    }
-
-    /// <summary>
-    /// Builds a source index from already parsed and projected source documents.
-    /// </summary>
-    /// <param name="sourceDocuments">The projected source documents keyed by document URI.</param>
-    /// <param name="referenceSelection">The active VBA project reference selection.</param>
-    /// <param name="referenceCatalogs">The available reference catalogs.</param>
-    /// <returns>The built source index.</returns>
-    public static VbaSourceIndex BuildFromSourceDocuments(
-        IReadOnlyDictionary<string, VbaSourceDocument> sourceDocuments,
-        VbaProjectReferenceSelection? referenceSelection = null,
-        VbaProjectReferenceCatalogSet? referenceCatalogs = null)
-    {
-        return new VbaSourceIndex(
-            sourceDocuments.Values.ToArray(),
-            referenceSelection,
-            referenceCatalogs ?? VbaProjectReferenceCatalogSet.Empty);
-    }
-
-    /// <summary>
-    /// Gets definitions declared in a document.
-    /// </summary>
-    /// <param name="uri">The document URI.</param>
-    /// <returns>The document definitions, or an empty list when the document is not indexed.</returns>
-    public IReadOnlyList<VbaSourceDefinition> GetDocumentDefinitions(string uri)
-        => semanticInventory.GetDocumentDefinitions(uri);
-
-    /// <summary>
-    /// Searches workspace symbols across indexed source documents.
-    /// </summary>
-    /// <param name="query">The optional symbol name substring.</param>
-    /// <returns>The matching non-local source symbols.</returns>
-    public IReadOnlyList<VbaWorkspaceSymbol> GetWorkspaceSymbols(string query)
-        => semanticInventory.GetWorkspaceSymbols(query);
-
-    /// <summary>
-    /// Finds source references to the definition at a document position.
-    /// </summary>
-    /// <param name="uri">The document URI containing the position.</param>
-    /// <param name="line">The zero-based line.</param>
-    /// <param name="character">The zero-based character.</param>
-    /// <returns>The matching reference locations across indexed source documents.</returns>
-    public IReadOnlyList<VbaDefinitionLocation> FindReferences(string uri, int line, int character)
-        => semanticInventory.FindReferences(uri, line, character);
-
-    /// <summary>
-    /// Gets semantic tokens for one document.
-    /// </summary>
-    /// <param name="uri">The document URI.</param>
-    /// <returns>The semantic tokens before LSP encoding.</returns>
-    public IReadOnlyList<VbaSemanticToken> GetSemanticTokens(string uri)
-        => semanticInventory.GetSemanticTokens(uri);
-
-    /// <summary>
-    /// Gets LSP delta-encoded semantic token data for one document.
-    /// </summary>
-    /// <param name="uri">The document URI.</param>
-    /// <returns>The encoded semantic token integer data.</returns>
-    public IReadOnlyList<int> GetSemanticTokenData(string uri)
-        => semanticInventory.GetSemanticTokenData(uri);
-
-    /// <summary>
-    /// Gets completion definitions visible at a document position.
-    /// </summary>
-    /// <param name="uri">The document URI.</param>
-    /// <param name="line">The zero-based line.</param>
-    /// <param name="character">The zero-based character.</param>
-    /// <returns>The completion candidate definitions.</returns>
-    public IReadOnlyList<VbaSourceDefinition> GetCompletionDefinitions(string uri, int line, int character)
-        => GetCompletionResult(uri, line, character).Definitions;
-
-    /// <summary>
-    /// Gets the complete editor-neutral candidates valid at a document position.
-    /// </summary>
-    /// <param name="uri">The document URI.</param>
-    /// <param name="line">The zero-based line.</param>
-    /// <param name="character">The zero-based character.</param>
-    /// <returns>The completion result for the position.</returns>
-    public VbaCompletionResult GetCompletionResult(string uri, int line, int character)
-        => semanticInventory.GetCompletionResult(uri, line, character);
-
-    /// <summary>
-    /// Resolves the definition location for the reference at a document position.
-    /// </summary>
-    /// <param name="uri">The document URI.</param>
-    /// <param name="line">The zero-based line.</param>
-    /// <param name="character">The zero-based character.</param>
-    /// <returns>The definition location, or null when the reference is unresolved or ambiguous.</returns>
-    public VbaDefinitionLocation? ResolveDefinition(string uri, int line, int character)
-        => semanticInventory.ResolveDefinition(uri, line, character);
-
-    /// <summary>
-    /// Resolves the source definition for the reference at a document position.
-    /// </summary>
-    /// <param name="uri">The document URI.</param>
-    /// <param name="line">The zero-based line.</param>
-    /// <param name="character">The zero-based character.</param>
-    /// <returns>The resolved definition, or null when unresolved or ambiguous.</returns>
-    public VbaSourceDefinition? ResolveSourceDefinition(string uri, int line, int character)
-        => semanticInventory.ResolveSourceDefinition(uri, line, character);
-
-    /// <summary>
-    /// Gets signature help for the call site at a document position.
-    /// </summary>
-    /// <param name="uri">The document URI.</param>
-    /// <param name="line">The zero-based line.</param>
-    /// <param name="character">The zero-based character.</param>
-    /// <returns>The signature help result, or null when no callable target resolves.</returns>
-    public VbaSignatureHelp? GetSignatureHelp(string uri, int line, int character)
-        => semanticInventory.GetSignatureHelp(uri, line, character);
-
-    /// <summary>
-    /// Gets the rename target range when the symbol at a document position can be renamed.
-    /// </summary>
-    /// <param name="uri">The document URI containing the rename position.</param>
-    /// <param name="line">The zero-based line.</param>
-    /// <param name="character">The zero-based character.</param>
-    /// <returns>The rename target range, or null when rename is unavailable.</returns>
-    public VbaRange? PrepareRename(string uri, int line, int character)
-        => semanticInventory.PrepareRename(uri, line, character);
-
-    /// <summary>
-    /// Creates workspace edits for renaming the source definition at a document position.
-    /// </summary>
-    /// <param name="uri">The document URI containing the rename position.</param>
-    /// <param name="line">The zero-based line.</param>
-    /// <param name="character">The zero-based character.</param>
-    /// <param name="newName">The requested new identifier name.</param>
-    /// <returns>The edits keyed by URI, or null when the rename is not valid.</returns>
-    public IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>>? CreateRenameChanges(
-        string uri,
-        int line,
-        int character,
-        string newName)
-        => CreateRenamePlan(uri, line, character, newName)?.Changes;
-
-    /// <summary>
-    /// Creates a validated rename plan for the source definition at a document position.
-    /// </summary>
-    /// <param name="uri">The document URI containing the rename position.</param>
-    /// <param name="line">The zero-based line.</param>
-    /// <param name="character">The zero-based character.</param>
-    /// <param name="newName">The requested new identifier name.</param>
-    /// <returns>The rename plan, or null when rename is not valid.</returns>
-    public VbaRenamePlan? CreateRenamePlan(
-        string uri,
-        int line,
-        int character,
-        string newName)
-        => semanticInventory.CreateRenamePlan(uri, line, character, newName);
-
-    /// <summary>
-    /// Formats a document and returns a whole-document replacement edit when formatting changes text.
-    /// </summary>
-    /// <param name="uri">The document URI.</param>
-    /// <param name="tabSize">The number of spaces used per indentation level.</param>
-    /// <returns>The formatting edit, or null when the document is unknown or already formatted.</returns>
-    public VbaTextEdit? FormatDocument(
-        string uri,
-        int tabSize,
-        CancellationToken cancellationToken = default)
-        => FormatDocument(
-            uri,
-            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, tabSize),
-            cancellationToken);
-
-    /// <summary>
-    /// Formats a document and returns a whole-document replacement edit when formatting changes text.
-    /// </summary>
-    /// <param name="uri">The document URI.</param>
-    /// <param name="indentationStyle">The resolved editor indentation style.</param>
-    /// <returns>The formatting edit, or null when the document is unknown or already formatted.</returns>
-    public VbaTextEdit? FormatDocument(
-        string uri,
-        VbaIndentationStyle indentationStyle,
-        CancellationToken cancellationToken = default)
-        => semanticInventory.FormatDocument(
-            uri,
-            indentationStyle,
-            cancellationToken);
-
-    private static VbaSourceDocument ParseDocument(string uri, string text)
-    {
-        var syntaxTree = VbaSyntaxTree.ParseModule(uri, text);
-        return CreateDocument(uri, syntaxTree);
-    }
-
-    internal static VbaSourceDocument CreateDocument(string uri, VbaSyntaxTree syntaxTree)
+    public static VbaSourceDocument Project(string uri, VbaSyntaxTree syntaxTree)
     {
         var definitions = new List<VbaSourceDefinition>();
         var moduleDefinition = CreateModuleDefinition(uri, syntaxTree.Module);
@@ -877,23 +592,31 @@ public sealed class VbaSourceIndex
             definitions);
     }
 
-    internal static VbaSourceDocument CreateDocument(
+    public static VbaSourceDocument Project(
         string uri,
-        VbaSyntaxTree syntaxTree,
-        VbaSyntaxTree? previousSyntaxTree,
-        VbaSourceDocument? previousDocument,
-        VbaModuleMemberIncrementalUpdate? memberUpdate)
+        VbaSyntaxTreeChangeSet changeSet,
+        VbaSourceDocument? previousDocument)
     {
-        if (!TryCreateReusableDefinitionMap(
+        var syntaxTree = changeSet.SyntaxTree;
+        if (changeSet is VbaSyntaxTreeChangeSet.Unchanged
+            && IsOwnedProjection(
                 uri,
                 syntaxTree,
-                previousSyntaxTree,
+                previousDocument))
+        {
+            return previousDocument!;
+        }
+
+        if (changeSet is not VbaSyntaxTreeChangeSet.ModuleMember memberChange
+            || !TryCreateReusableDefinitionMap(
+                uri,
+                syntaxTree,
                 previousDocument,
-                memberUpdate,
+                memberChange,
                 out var moduleDefinition,
                 out var reusableDefinitions))
         {
-            return CreateDocument(uri, syntaxTree);
+            return Project(uri, syntaxTree);
         }
 
         var definitions = new List<VbaSourceDefinition>(
@@ -916,20 +639,35 @@ public sealed class VbaSourceIndex
             definitions);
     }
 
+    private static bool IsOwnedProjection(
+        string uri,
+        VbaSyntaxTree syntaxTree,
+        VbaSourceDocument? previousDocument)
+        => previousDocument is not null
+            && uri.Equals(syntaxTree.Uri, StringComparison.Ordinal)
+            && uri.Equals(previousDocument.Uri, StringComparison.Ordinal)
+            && ReferenceEquals(previousDocument.SyntaxTree, syntaxTree)
+            && previousDocument.Text.Equals(syntaxTree.Text, StringComparison.Ordinal)
+            && previousDocument.Projection is { } previousProjection
+            && ReferenceEquals(previousProjection.SyntaxTree, syntaxTree)
+            && ReferenceEquals(
+                previousProjection.Definitions,
+                previousDocument.Definitions);
+
     private static bool TryCreateReusableDefinitionMap(
         string uri,
         VbaSyntaxTree syntaxTree,
-        VbaSyntaxTree? previousSyntaxTree,
         VbaSourceDocument? previousDocument,
-        VbaModuleMemberIncrementalUpdate? memberUpdate,
+        VbaSyntaxTreeChangeSet.ModuleMember memberChange,
         out VbaSourceDefinition moduleDefinition,
         out Dictionary<VbaDeclarationSyntax, VbaSourceDefinition> reusableDefinitions)
     {
         moduleDefinition = default!;
         reusableDefinitions = default!;
+        var previousSyntaxTree = previousDocument?.SyntaxTree;
         if (previousSyntaxTree is null
             || previousDocument is null
-            || memberUpdate is null
+            || !uri.Equals(syntaxTree.Uri, StringComparison.Ordinal)
             || !uri.Equals(previousSyntaxTree.Uri, StringComparison.Ordinal)
             || !uri.Equals(previousDocument.Uri, StringComparison.Ordinal)
             || !ReferenceEquals(previousDocument.SyntaxTree, previousSyntaxTree)
@@ -947,10 +685,10 @@ public sealed class VbaSourceIndex
                 != previousSyntaxTree.Module.Declarations.Count + 1
             || !ContainsReference(
                 previousSyntaxTree.Module.Members,
-                memberUpdate.PreviousMember)
+                memberChange.PreviousMember)
             || !ContainsReference(
                 syntaxTree.Module.Members,
-                memberUpdate.CurrentMember))
+                memberChange.CurrentMember))
         {
             return false;
         }
@@ -995,17 +733,21 @@ public sealed class VbaSourceIndex
         VbaSyntaxTree syntaxTree,
         string moduleName,
         IReadOnlyList<VbaSourceDefinition> definitions)
-        => new VbaSourceDocument(
+    {
+        IReadOnlyList<VbaSourceDefinition> frozenDefinitions =
+            Array.AsReadOnly(definitions.ToArray());
+        return new VbaSourceDocument(
             uri,
             syntaxTree.Text,
             moduleName,
-            definitions,
+            frozenDefinitions,
             syntaxTree)
         {
             Projection = new VbaSourceDocumentProjection(
                 syntaxTree,
-                definitions)
+                frozenDefinitions)
         };
+    }
 
     private static bool DefinitionMatchesModule(
         VbaSourceDefinition definition,

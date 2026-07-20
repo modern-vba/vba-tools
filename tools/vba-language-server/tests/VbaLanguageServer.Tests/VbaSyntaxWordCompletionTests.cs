@@ -19,7 +19,7 @@ public sealed class VbaSyntaxWordCompletionTests
         var prefix = markedSource[..markerOffset];
         var line = prefix.Count(character => character == '\n');
         var character = markerOffset - prefix.LastIndexOf('\n') - 1;
-        var index = VbaSourceIndex.Build(new Dictionary<string, string>
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string>
         {
             [uri] = markedSource.Remove(markerOffset, 1)
         });
@@ -47,7 +47,7 @@ public sealed class VbaSyntaxWordCompletionTests
         var prefix = markedSource[..markerOffset];
         var line = prefix.Count(character => character == '\n');
         var character = markerOffset - prefix.LastIndexOf('\n') - 1;
-        var index = VbaSourceIndex.Build(new Dictionary<string, string>
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string>
         {
             [uri] = markedSource.Remove(markerOffset, 1)
         });
@@ -79,7 +79,7 @@ public sealed class VbaSyntaxWordCompletionTests
         var line = prefix.Count(character => character == '\n');
         var character = markerOffset - prefix.LastIndexOf('\n') - 1;
         var source = markedSource.Remove(markerOffset, 1);
-        var index = VbaSourceIndex.Build(new Dictionary<string, string>
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string>
         {
             [uri] = source
         });
@@ -112,7 +112,7 @@ public sealed class VbaSyntaxWordCompletionTests
         var prefix = markedSource[..markerOffset];
         var line = prefix.Count(character => character == '\n');
         var character = markerOffset - prefix.LastIndexOf('\n') - 1;
-        var index = VbaSourceIndex.Build(new Dictionary<string, string>
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string>
         {
             [uri] = markedSource.Remove(markerOffset, 1)
         });

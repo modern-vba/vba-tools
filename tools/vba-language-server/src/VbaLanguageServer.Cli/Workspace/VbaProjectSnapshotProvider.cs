@@ -53,6 +53,31 @@ internal sealed record VbaProjectManifestRetentionScope(
     string ActiveUri,
     string RootPath);
 
+internal interface IVbaProjectReconciliationAuthorityLeaseObserver
+{
+    void AuthorityLeaseAcquired(
+        string authorityKey,
+        long authorityGeneration);
+}
+
+internal sealed class NullVbaProjectReconciliationAuthorityLeaseObserver
+    : IVbaProjectReconciliationAuthorityLeaseObserver
+{
+    public static
+        NullVbaProjectReconciliationAuthorityLeaseObserver Instance
+        { get; } = new();
+
+    private NullVbaProjectReconciliationAuthorityLeaseObserver()
+    {
+    }
+
+    public void AuthorityLeaseAcquired(
+        string authorityKey,
+        long authorityGeneration)
+    {
+    }
+}
+
 /// <summary>
 /// Represents the stable cache identity for one project snapshot scope.
 /// </summary>
@@ -88,10 +113,13 @@ internal sealed class VbaProjectSnapshotProvider
         new(StringComparer.OrdinalIgnoreCase);
     private readonly VbaProjectReferenceCatalogCache referenceCatalogCache;
     private readonly IVbaProjectManifestResolutionSource manifestResolutionSource;
+    private readonly IVbaProjectDiskInventory diskInventory;
     private readonly VbaProjectSourceDocumentCache diskDocumentCache;
     private readonly VbaProjectSnapshotBuilder snapshotBuilder;
     private readonly IVbaProjectReferenceCatalogLifecycleObserver lifecycleObserver;
     private readonly IVbaProjectSnapshotBuildObserver buildObserver;
+    private readonly IVbaProjectReconciliationAuthorityLeaseObserver
+        reconciliationAuthorityLeaseObserver;
     private readonly Dictionary<string, ProjectScopeInvalidationState> scopeInvalidationStates =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, WarmProjectScopeSeed> scopeAuthoritySeeds =
@@ -104,18 +132,27 @@ internal sealed class VbaProjectSnapshotProvider
 
     public VbaProjectSnapshotProvider(
         VbaProjectReferenceCatalogCache referenceCatalogCache,
+        IVbaProjectDiskInventory diskInventory,
         VbaProjectSourceDocumentCache diskDocumentCache,
         IVbaProjectManifestResolutionSource manifestResolutionSource,
         IVbaProjectReferenceCatalogLifecycleObserver? lifecycleObserver = null,
-        IVbaProjectSnapshotBuildObserver? buildObserver = null)
+        IVbaProjectSnapshotBuildObserver? buildObserver = null,
+        IVbaProjectReconciliationAuthorityLeaseObserver?
+            reconciliationAuthorityLeaseObserver = null)
     {
         this.referenceCatalogCache = referenceCatalogCache;
+        this.diskInventory = diskInventory;
         this.diskDocumentCache = diskDocumentCache;
         this.manifestResolutionSource = manifestResolutionSource;
         this.lifecycleObserver =
             lifecycleObserver ?? NullVbaProjectReferenceCatalogLifecycleObserver.Instance;
         this.buildObserver = buildObserver ?? NullVbaProjectSnapshotBuildObserver.Instance;
-        snapshotBuilder = new VbaProjectSnapshotBuilder(diskDocumentCache);
+        this.reconciliationAuthorityLeaseObserver =
+            reconciliationAuthorityLeaseObserver
+            ?? NullVbaProjectReconciliationAuthorityLeaseObserver.Instance;
+        snapshotBuilder = new VbaProjectSnapshotBuilder(
+            diskInventory,
+            diskDocumentCache);
     }
 
     public VbaProjectSnapshot CreateProjectSnapshot(
@@ -295,7 +332,7 @@ internal sealed class VbaProjectSnapshotProvider
                 capturedInvalidation,
                 capture.SupersededCacheIdentity,
                 inventorySnapshot.Documents.Keys,
-                inventorySnapshot.SourceFiles,
+                inventorySnapshot.DiskSources,
                 snapshot,
                 workspaceState.Documents.Keys.ToArray());
             return snapshot;
@@ -501,9 +538,9 @@ internal sealed class VbaProjectSnapshotProvider
             {
                 if (cache.TryGetValue(cacheKey, out var cached))
                 {
-                    foreach (var sourceFile in cached.SourceFiles)
+                    foreach (var sourcePath in cached.DiskSourcePaths)
                     {
-                        diskPathsToInvalidate.Add(sourceFile.FullPath);
+                        diskPathsToInvalidate.Add(sourcePath);
                     }
                 }
 
@@ -608,6 +645,7 @@ internal sealed class VbaProjectSnapshotProvider
 
         foreach (var diskPath in diskPathsToInvalidate)
         {
+            diskInventory.InvalidateSource(diskPath);
             diskDocumentCache.Invalidate(diskPath);
         }
     }
@@ -632,16 +670,16 @@ internal sealed class VbaProjectSnapshotProvider
         }
     }
 
-    public IReadOnlyList<VbaProjectDiskReconciliationScope>
-        CaptureDiskReconciliationScopes(long capturedWorkspaceRevision)
+    public IReadOnlyList<VbaProjectReconciliationScope>
+        CaptureReconciliationScopes(long capturedWorkspaceRevision)
     {
         lock (gate)
         {
-            var scopes = new List<VbaProjectDiskReconciliationScope>();
+            var scopes = new List<VbaProjectReconciliationScope>();
             foreach (var (authorityKey, baseline) in reconciliationBaselines)
             {
                 scopes.Add(
-                    new VbaProjectDiskReconciliationScope(
+                    new VbaProjectReconciliationScope(
                         authorityKey,
                         baseline.ActiveUri,
                         baseline.Resolution,
@@ -649,7 +687,7 @@ internal sealed class VbaProjectSnapshotProvider
                         GetManifestCandidateUris(
                                 baseline.ActiveUri,
                                 baseline.Resolution)
-                            .Select(uri => new VbaProjectDiskManifestCandidate(
+                            .Select(uri => new VbaProjectReconciliationManifestCandidate(
                                 uri,
                                 CapturedRevision: 0,
                                 new VbaProjectDiskManifestBaseline(
@@ -795,53 +833,158 @@ internal sealed class VbaProjectSnapshotProvider
         }
     }
 
-    public void CommitReconciledManifestScope(
+    public bool TryUseReconciliationAuthority<TResult>(
         string authorityKey,
+        long capturedManifestBarrierRevision,
+        long capturedAuthorityGeneration,
+        Func<ReconciliationAuthorityLease, TResult> commit,
+        out TResult result)
+    {
+        ArgumentNullException.ThrowIfNull(commit);
+        lock (gate)
+        {
+            if (!TryGetCurrentReconciliationBaseline(
+                    authorityKey,
+                    capturedManifestBarrierRevision,
+                    capturedAuthorityGeneration,
+                    out var baseline))
+            {
+                result = default!;
+                return false;
+            }
+
+            reconciliationAuthorityLeaseObserver.AuthorityLeaseAcquired(
+                authorityKey,
+                capturedAuthorityGeneration);
+            if (!TryGetCurrentReconciliationBaseline(
+                    authorityKey,
+                    capturedManifestBarrierRevision,
+                    capturedAuthorityGeneration,
+                    out baseline))
+            {
+                result = default!;
+                return false;
+            }
+
+            var lease = new ReconciliationAuthorityLease(
+                this,
+                authorityKey,
+                baseline);
+            try
+            {
+                result = commit(lease);
+                return true;
+            }
+            finally
+            {
+                lease.Release();
+            }
+        }
+    }
+
+    private bool TryGetCurrentReconciliationBaseline(
+        string authorityKey,
+        long capturedManifestBarrierRevision,
+        long capturedAuthorityGeneration,
+        out ReconciliationBaseline baseline)
+        => reconciliationBaselines.TryGetValue(
+                authorityKey,
+                out baseline!)
+            && baseline.Generation == capturedAuthorityGeneration
+            && manifestResolutionSource.CaptureScopeBarrierRevision(
+                    baseline.ActiveUri,
+                    baseline.Resolution)
+                == capturedManifestBarrierRevision;
+
+    private void CommitReconciledManifestScopeLocked(
+        string authorityKey,
+        ReconciliationBaseline baseline,
         string activeUri,
         VbaProjectResolution resolution,
         bool retainPreviousAuthority,
         IReadOnlyList<string> retainedPreviousSourceUris,
         IReadOnlyList<string> trackedUris)
     {
-        lock (gate)
+        if (!Monitor.IsEntered(gate))
         {
-            if (!reconciliationBaselines.TryGetValue(
-                    authorityKey,
-                    out var baseline))
+            throw new InvalidOperationException(
+                "Reconciliation authority commits require an active lease.");
+        }
+
+        _ = TransferReconciliationScope(
+            authorityKey,
+            baseline,
+            activeUri,
+            resolution,
+            replacementKnownSources: null,
+            retainPreviousAuthority,
+            retainedPreviousSourceUris,
+            trackedUris);
+
+        var previousCacheIdentity =
+            VbaProjectSnapshotIdentity.Create(
+                baseline.ActiveUri,
+                baseline.Resolution);
+        var committedCacheIdentity =
+            VbaProjectSnapshotIdentity.Create(
+                activeUri,
+                resolution);
+        if (!previousCacheIdentity.Key.Equals(
+                committedCacheIdentity.Key,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            cache.Remove(previousCacheIdentity.Key);
+            scopeInvalidationStates.Remove(previousCacheIdentity.Key);
+            scopeAuthoritySeeds.Remove(previousCacheIdentity.Key);
+            RebuildScopeAuthorityLookup();
+        }
+    }
+
+    internal sealed class ReconciliationAuthorityLease
+    {
+        private readonly VbaProjectSnapshotProvider owner;
+        private readonly string authorityKey;
+        private readonly ReconciliationBaseline baseline;
+        private bool active = true;
+        private bool authorityCommitted;
+
+        internal ReconciliationAuthorityLease(
+            VbaProjectSnapshotProvider owner,
+            string authorityKey,
+            ReconciliationBaseline baseline)
+        {
+            this.owner = owner;
+            this.authorityKey = authorityKey;
+            this.baseline = baseline;
+        }
+
+        public void CommitManifestScope(
+            string activeUri,
+            VbaProjectResolution resolution,
+            bool retainPreviousAuthority,
+            IReadOnlyList<string> retainedPreviousSourceUris,
+            IReadOnlyList<string> trackedUris)
+        {
+            ObjectDisposedException.ThrowIf(!active, this);
+            if (authorityCommitted)
             {
-                return;
+                throw new InvalidOperationException(
+                    "A reconciliation authority lease can commit only once.");
             }
 
-            _ = TransferReconciliationScope(
+            owner.CommitReconciledManifestScopeLocked(
                 authorityKey,
                 baseline,
                 activeUri,
                 resolution,
-                replacementKnownSources: null,
                 retainPreviousAuthority,
                 retainedPreviousSourceUris,
                 trackedUris);
-
-            var previousCacheIdentity =
-                VbaProjectSnapshotIdentity.Create(
-                    baseline.ActiveUri,
-                    baseline.Resolution);
-            var committedCacheIdentity =
-                VbaProjectSnapshotIdentity.Create(
-                    activeUri,
-                    resolution);
-            if (!previousCacheIdentity.Key.Equals(
-                    committedCacheIdentity.Key,
-                    StringComparison.OrdinalIgnoreCase))
-            {
-                cache.Remove(previousCacheIdentity.Key);
-                scopeInvalidationStates.Remove(
-                    previousCacheIdentity.Key);
-                scopeAuthoritySeeds.Remove(
-                    previousCacheIdentity.Key);
-                RebuildScopeAuthorityLookup();
-            }
+            authorityCommitted = true;
         }
+
+        internal void Release()
+            => active = false;
     }
 
     private string? TransferReconciliationScope(
@@ -1163,7 +1306,7 @@ internal sealed class VbaProjectSnapshotProvider
         CapturedProjectScopeInvalidation capturedInvalidation,
         VbaProjectSnapshotIdentity? supersededCacheIdentity,
         IEnumerable<string> sourceUris,
-        IReadOnlyList<VbaProjectSourceFileState> sourceFiles,
+        IReadOnlyList<VbaProjectDiskSource> diskSources,
         VbaProjectSnapshot snapshot,
         IReadOnlyList<string> trackedUris)
     {
@@ -1203,7 +1346,9 @@ internal sealed class VbaProjectSnapshotProvider
                 snapshotWorkspaceVersion,
                 snapshotManifestVersion,
                 snapshotReferenceCatalogRevision,
-                sourceFiles,
+                diskSources
+                    .Select(source => source.FullPath)
+                    .ToArray(),
                 snapshot);
             scopeState.IsMaterialized = true;
             scopeAuthoritySeeds[cacheIdentity.Key] =
@@ -1216,8 +1361,7 @@ internal sealed class VbaProjectSnapshotProvider
             _ = RegisterReconciliationScope(
                 scopeState.ActiveUri,
                 scopeState.Resolution,
-                sourceFiles,
-                snapshot,
+                diskSources,
                 trackedUris);
             if (supersededCacheIdentity is not null
                 && !supersededCacheIdentity.Key.Equals(
@@ -1238,8 +1382,7 @@ internal sealed class VbaProjectSnapshotProvider
     private string? RegisterReconciliationScope(
         string activeUri,
         VbaProjectResolution resolution,
-        IReadOnlyList<VbaProjectSourceFileState> sourceFiles,
-        VbaProjectSnapshot snapshot,
+        IReadOnlyList<VbaProjectDiskSource> diskSources,
         IReadOnlyList<string> trackedUris)
     {
         var authorityKey = CreateReconciliationAuthorityKey(
@@ -1254,7 +1397,7 @@ internal sealed class VbaProjectSnapshotProvider
                 out var mappedAuthorityKey)
                 ? mappedAuthorityKey
                 : authorityKey;
-        var knownSources = CreateKnownSources(sourceFiles, snapshot);
+        var knownSources = CreateKnownSources(diskSources);
         if (!reconciliationBaselines.TryGetValue(
                 previousAuthorityKey,
                 out var previousBaseline))
@@ -1285,27 +1428,15 @@ internal sealed class VbaProjectSnapshotProvider
     }
 
     private static IReadOnlyList<VbaProjectDiskKnownSource> CreateKnownSources(
-        IReadOnlyList<VbaProjectSourceFileState> sourceFiles,
-        VbaProjectSnapshot snapshot)
-    {
-        var knownSources = new List<VbaProjectDiskKnownSource>();
-        foreach (var sourceFile in sourceFiles)
-        {
-            var fullPath = Path.GetFullPath(sourceFile.FullPath);
-            var uri = new Uri(fullPath).AbsoluteUri;
-            if (!snapshot.SourceDocuments.TryGetValue(uri, out var sourceText))
-            {
-                continue;
-            }
-
-            knownSources.Add(new VbaProjectDiskKnownSource(
-                uri,
-                fullPath,
-                sourceText));
-        }
-
-        return knownSources;
-    }
+        IReadOnlyList<VbaProjectDiskSource> diskSources)
+        => diskSources
+            .Select(
+                source => new VbaProjectDiskKnownSource(
+                    source.Uri,
+                    source.FullPath,
+                    source.Text,
+                    source.ContentIdentity))
+            .ToArray();
 
     private static string CreateReconciliationAuthorityKey(
         string activeUri,
@@ -1363,10 +1494,10 @@ internal sealed class VbaProjectSnapshotProvider
         long WorkspaceVersion,
         long ManifestVersion,
         long ReferenceCatalogRevision,
-        IReadOnlyList<VbaProjectSourceFileState> SourceFiles,
+        IReadOnlyList<string> DiskSourcePaths,
         VbaProjectSnapshot Snapshot);
 
-    private sealed record ReconciliationBaseline(
+    internal sealed record ReconciliationBaseline(
         string ActiveUri,
         VbaProjectResolution Resolution,
         IReadOnlyList<VbaProjectDiskKnownSource> KnownSources,
@@ -1453,6 +1584,7 @@ internal sealed class VbaProjectSnapshotProvider
 
         foreach (var diskPath in diskPathsToInvalidate)
         {
+            diskInventory.InvalidateSource(diskPath);
             diskDocumentCache.Invalidate(diskPath);
         }
     }

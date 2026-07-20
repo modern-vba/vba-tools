@@ -47,13 +47,19 @@ public sealed class VbaSemanticInventory
         VbaProjectReferenceSelection? referenceSelection = null,
         VbaProjectReferenceCatalogSet? referenceCatalogs = null)
     {
-        var documents = sourceDocuments.Values.ToArray();
+        var documents = FreezeList(
+            sourceDocuments.Values.Select(CaptureDocument));
+        var capturedReferenceSelection = CaptureReferenceSelection(referenceSelection);
         var catalogs = referenceCatalogs ?? VbaProjectReferenceCatalogSet.Empty;
+        var activeReferenceDefinitions = FreezeList(
+            catalogs
+                .GetActiveDefinitions(capturedReferenceSelection)
+                .Select(CaptureDefinition));
         var definitionCandidates = new VbaNameCandidateInventory(
             documents,
-            referenceSelection,
+            capturedReferenceSelection,
             catalogs,
-            catalogs.GetActiveDefinitions(referenceSelection));
+            activeReferenceDefinitions);
         return new VbaSemanticInventory(
             documents,
             definitionCandidates);
@@ -195,9 +201,10 @@ public sealed class VbaSemanticInventory
             }
         }
 
-        var data = VbaSemanticTokenBuilder.GetSemanticTokenData(
-            GetSemanticTokens(uri, cancellationToken),
-            cancellationToken);
+        var data = FreezeList(
+            VbaSemanticTokenBuilder.GetSemanticTokenData(
+                GetSemanticTokens(uri, cancellationToken),
+                cancellationToken));
         cancellationToken.ThrowIfCancellationRequested();
         lock (semanticTokenCacheGate)
         {
@@ -224,11 +231,16 @@ public sealed class VbaSemanticInventory
             }
         }
 
-        var tokens = VbaSemanticTokenBuilder.GetSemanticTokens(
-            sourceDocuments,
-            uri,
-            resolvedOccurrences.GetDocumentOccurrences(uri, cancellationToken),
-            cancellationToken);
+        var tokens = FreezeList(
+            VbaSemanticTokenBuilder.GetSemanticTokens(
+                    sourceDocuments,
+                    uri,
+                    resolvedOccurrences.GetDocumentOccurrences(uri, cancellationToken),
+                    cancellationToken)
+                .Select(token => token with
+                {
+                    TokenModifiers = FreezeList(token.TokenModifiers)
+                }));
         cancellationToken.ThrowIfCancellationRequested();
         lock (semanticTokenCacheGate)
         {
@@ -244,6 +256,37 @@ public sealed class VbaSemanticInventory
 
     private static string GetRangeKey(VbaRange range)
         => $"{range.Start.Line}:{range.Start.Character}:{range.End.Line}:{range.End.Character}";
+
+    private static VbaSourceDocument CaptureDocument(VbaSourceDocument document)
+        => new(
+            document.Uri,
+            document.Text,
+            document.ModuleName,
+            FreezeList(document.Definitions.Select(CaptureDefinition)),
+            document.SyntaxTree);
+
+    internal static VbaSourceDefinition CaptureDefinition(VbaSourceDefinition definition)
+        => definition.Signature is null
+            ? definition
+            : definition with
+            {
+                Signature = definition.Signature with
+                {
+                    Parameters = FreezeList(definition.Signature.Parameters)
+                }
+            };
+
+    private static VbaProjectReferenceSelection? CaptureReferenceSelection(
+        VbaProjectReferenceSelection? referenceSelection)
+        => referenceSelection is null
+            ? null
+            : referenceSelection with
+            {
+                References = FreezeList(referenceSelection.References)
+            };
+
+    private static IReadOnlyList<T> FreezeList<T>(IEnumerable<T> values)
+        => Array.AsReadOnly(values.ToArray());
 
     private static bool IsIdentifierName(string value)
         => Regex.IsMatch(

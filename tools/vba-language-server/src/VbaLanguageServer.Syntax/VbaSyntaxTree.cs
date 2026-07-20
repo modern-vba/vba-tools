@@ -15,6 +15,7 @@ public sealed record VbaSyntaxTree(
     VbaModuleSyntax Module,
     IReadOnlyList<VbaSyntaxDiagnostic> Diagnostics)
 {
+    private readonly ParserProvenance? parserProvenance;
     private VbaPositionSyntaxIndex? positionSyntaxIndex;
     private VbaSourceText? sourceText;
 
@@ -27,6 +28,12 @@ public sealed record VbaSyntaxTree(
         : this(uri, sourceText.Text, tokenStream, module, diagnostics)
     {
         this.sourceText = sourceText;
+        parserProvenance = new ParserProvenance(
+            uri,
+            sourceText.Text,
+            tokenStream,
+            module,
+            diagnostics);
     }
 
     /// <summary>
@@ -73,43 +80,55 @@ public sealed record VbaSyntaxTree(
     }
 
     /// <summary>
-    /// Parses source text and classifies whether the change can be treated as a member-level update.
+    /// Parses source text and returns the semantic reuse proof available to a consumer.
     /// </summary>
     /// <param name="uri">The document URI associated with the source text.</param>
     /// <param name="source">The complete source text to parse.</param>
-    /// <param name="previousSyntaxTree">The previous syntax tree for incremental classification.</param>
-    /// <returns>The parsed syntax tree and update kind.</returns>
-    public static VbaSyntaxTreeParseResult ParseOrUpdate(
+    /// <param name="previousSyntaxTree">The previous syntax tree from the same consumer.</param>
+    /// <returns>
+    /// A syntax change set that requires module recomputation unless it proves either exact
+    /// tree reuse or one safely replaced module member.
+    /// </returns>
+    /// <remarks>
+    /// Reuse is available only when <paramref name="previousSyntaxTree"/> is an unmodified
+    /// result produced by this parser. Publicly constructed or modified trees are accepted
+    /// as inputs but conservatively require module recomputation.
+    /// </remarks>
+    public static VbaSyntaxTreeChangeSet ParseOrUpdate(
         string uri,
         string source,
         VbaSyntaxTree? previousSyntaxTree)
         => ParseOrUpdate(uri, source, previousSyntaxTree, out _);
 
-    internal static VbaSyntaxTreeParseResult ParseOrUpdate(
+    internal static VbaSyntaxTreeChangeSet ParseOrUpdate(
         string uri,
         string source,
         VbaSyntaxTree? previousSyntaxTree,
         out VbaIncrementalParseObservation observation)
     {
+        var hasValidPreviousProvenance =
+            previousSyntaxTree?.HasValidParserProvenance() == true;
         observation = VbaIncrementalParseObservation.FullModule(
             source.Length,
             previousSyntaxTree is null
                 ? VbaIncrementalParseFallbackReason.NoPreviousTree
-                : VbaIncrementalParseFallbackReason.DifferentialGuardFailed);
-        if (previousSyntaxTree is not null
-            && previousSyntaxTree.Uri.Equals(uri, StringComparison.OrdinalIgnoreCase)
+                : hasValidPreviousProvenance
+                    ? VbaIncrementalParseFallbackReason.DifferentialGuardFailed
+                    : VbaIncrementalParseFallbackReason.PreviousTreeProvenanceInvalid);
+        if (hasValidPreviousProvenance
+            && previousSyntaxTree is not null
+            && previousSyntaxTree.Uri.Equals(uri, StringComparison.Ordinal)
             && previousSyntaxTree.Text.Equals(source, StringComparison.Ordinal))
         {
             observation = VbaIncrementalParseObservation.Reuse(
                 previousSyntaxTree.Text.Length,
                 previousSyntaxTree.Module.Kind,
                 previousSyntaxTree.Module.Identity.Name);
-            return new VbaSyntaxTreeParseResult(
-                previousSyntaxTree,
-                VbaSyntaxTreeParseUpdateKind.ModuleMember);
+            return new VbaSyntaxTreeChangeSet.Unchanged(previousSyntaxTree);
         }
 
-        if (previousSyntaxTree is not null
+        if (hasValidPreviousProvenance
+            && previousSyntaxTree is not null
             && VbaSyntaxTreeIncrementalParser.TryParseModuleMember(
                 uri,
                 source,
@@ -120,9 +139,40 @@ public sealed record VbaSyntaxTree(
             return incrementalResult;
         }
 
-        return new VbaSyntaxTreeParseResult(
-            ParseModule(uri, source),
-            VbaSyntaxTreeParseUpdateKind.FullModule);
+        return new VbaSyntaxTreeChangeSet.Module(ParseModule(uri, source));
+    }
+
+    private bool HasValidParserProvenance()
+        => parserProvenance?.Matches(this) == true;
+
+    private sealed class ParserProvenance
+    {
+        private readonly string uri;
+        private readonly string text;
+        private readonly VbaTokenStream tokenStream;
+        private readonly VbaModuleSyntax module;
+        private readonly IReadOnlyList<VbaSyntaxDiagnostic> diagnostics;
+
+        public ParserProvenance(
+            string uri,
+            string text,
+            VbaTokenStream tokenStream,
+            VbaModuleSyntax module,
+            IReadOnlyList<VbaSyntaxDiagnostic> diagnostics)
+        {
+            this.uri = uri;
+            this.text = text;
+            this.tokenStream = tokenStream;
+            this.module = module;
+            this.diagnostics = diagnostics;
+        }
+
+        public bool Matches(VbaSyntaxTree syntaxTree)
+            => string.Equals(syntaxTree.Uri, uri, StringComparison.Ordinal)
+                && string.Equals(syntaxTree.Text, text, StringComparison.Ordinal)
+                && ReferenceEquals(syntaxTree.TokenStream, tokenStream)
+                && ReferenceEquals(syntaxTree.Module, module)
+                && ReferenceEquals(syntaxTree.Diagnostics, diagnostics);
     }
 }
 
@@ -148,6 +198,7 @@ internal enum VbaIncrementalParseFallbackReason
     SliceParseDiagnostics,
     MemberShapeChanged,
     ModuleIdentityChanged,
+    PreviousTreeProvenanceInvalid,
     DifferentialGuardFailed
 }
 
@@ -191,47 +242,3 @@ internal readonly record struct VbaIncrementalParseObservation(
             VbaModuleKind.StandardModule,
             null);
 }
-
-/// <summary>
-/// Identifies the granularity of a syntax tree update.
-/// </summary>
-public enum VbaSyntaxTreeParseUpdateKind
-{
-    /// <summary>
-    /// The full module should be refreshed.
-    /// </summary>
-    FullModule,
-
-    /// <summary>
-    /// A single module member changed without touching its block boundary.
-    /// </summary>
-    ModuleMember
-}
-
-/// <summary>
-/// Describes a safe ModuleMember-level update plan produced during parsing.
-/// </summary>
-/// <param name="PreviousMember">The member that contained the previous changed line range.</param>
-/// <param name="CurrentMember">The member that contains the current changed line range.</param>
-/// <param name="PreviousStartLine">The first changed line in the previous text.</param>
-/// <param name="PreviousEndLine">The last changed line in the previous text.</param>
-/// <param name="CurrentStartLine">The first changed line in the current text.</param>
-/// <param name="CurrentEndLine">The last changed line in the current text.</param>
-public sealed record VbaModuleMemberIncrementalUpdate(
-    VbaModuleMemberSyntax PreviousMember,
-    VbaModuleMemberSyntax CurrentMember,
-    int PreviousStartLine,
-    int PreviousEndLine,
-    int CurrentStartLine,
-    int CurrentEndLine);
-
-/// <summary>
-/// Contains a parsed syntax tree and the update granularity inferred during parsing.
-/// </summary>
-/// <param name="SyntaxTree">The parsed syntax tree.</param>
-/// <param name="UpdateKind">The inferred update kind.</param>
-/// <param name="MemberUpdate">The ModuleMember update plan when a single member can be updated safely.</param>
-public sealed record VbaSyntaxTreeParseResult(
-    VbaSyntaxTree SyntaxTree,
-    VbaSyntaxTreeParseUpdateKind UpdateKind,
-    VbaModuleMemberIncrementalUpdate? MemberUpdate = null);

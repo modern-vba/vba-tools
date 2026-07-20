@@ -1,6 +1,7 @@
 using VbaLanguageServer.Diagnostics;
 using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.SourceModel;
+using VbaLanguageServer.Syntax;
 using VbaLanguageServer.Workspace;
 using Xunit;
 
@@ -55,7 +56,7 @@ public sealed class VbaWorkspaceSymbolAndReferenceTests
     {
         const string helperUri = "file:///C:/work/Helpers.bas";
         const string callerUri = "file:///C:/work/Caller.bas";
-        var index = VbaSourceIndex.Build(new Dictionary<string, string>
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string>
         {
             [helperUri] = string.Join('\n', [
                 "Attribute VB_Name = \"Helpers\"",
@@ -81,7 +82,7 @@ public sealed class VbaWorkspaceSymbolAndReferenceTests
     {
         const string helperUri = "file:///C:/work/Helpers.bas";
         const string callerUri = "file:///C:/work/Caller.bas";
-        var index = VbaSourceIndex.Build(
+        var index = VbaSemanticInventoryFixture.Create(
             new Dictionary<string, string>
             {
                 [helperUri] = string.Join('\n', [
@@ -154,7 +155,7 @@ public sealed class VbaWorkspaceSymbolAndReferenceTests
                     ParentTypeName: "SecondType",
                     PropertyAccess: VbaPropertyAccess.Readable)
             ]);
-        var index = VbaSourceIndex.Build(
+        var index = VbaSemanticInventoryFixture.Create(
             new Dictionary<string, string>
             {
                 [uri] = string.Join('\n', [
@@ -177,7 +178,7 @@ public sealed class VbaWorkspaceSymbolAndReferenceTests
         var secondDefinition = Assert.IsType<VbaSourceDefinition>(
             index.ResolveSourceDefinition(uri, 6, "    second.".Length));
         var completionDefinition = Assert.Single(
-            index.GetCompletionDefinitions(uri, 7, "    first.".Length),
+            index.GetCompletionResult(uri, 7, "    first.".Length).Definitions,
             definition => definition.Name == "Name");
 
         Assert.Equal(firstDefinition.Location, secondDefinition.Location);
@@ -219,7 +220,7 @@ public sealed class VbaWorkspaceSymbolAndReferenceTests
             "    Helpers.BuildValue",
             "End Sub"
         ]);
-        var index = VbaSourceIndex.Build(new Dictionary<string, string>
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string>
         {
             [helperUri] = helperText,
             [callerUri] = callerText
@@ -273,7 +274,7 @@ public sealed class VbaWorkspaceSymbolAndReferenceTests
             "    sharedvalue = sharedVALUE + 1",
             "End Sub"
         ]);
-        var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = text });
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string> { [uri] = text });
         var expectedLocations = new[]
         {
             LocationKey(uri, new VbaRange(new VbaPosition(2, 8), new VbaPosition(2, 19))),
@@ -305,7 +306,9 @@ public sealed class VbaWorkspaceSymbolAndReferenceTests
                             .OrderBy(key => key, StringComparer.OrdinalIgnoreCase)
                             .ToArray();
                     default:
-                        var edit = Assert.IsType<VbaTextEdit>(index.FormatDocument(uri, tabSize: 4));
+                        var edit = Assert.IsType<VbaTextEdit>(index.FormatDocument(
+                            uri,
+                            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4)));
                         Assert.Contains("    SharedValue = SharedValue + 1", edit.NewText, StringComparison.Ordinal);
                         return expectedLocations;
                 }
@@ -367,7 +370,7 @@ public sealed class VbaWorkspaceSymbolAndReferenceTests
     public void PrepareRenameRejectsExternalReferenceDefinitions()
     {
         const string uri = "file:///C:/work/Caller.bas";
-        var index = VbaSourceIndex.Build(
+        var index = VbaSemanticInventoryFixture.Create(
             new Dictionary<string, string>
             {
                 [uri] = string.Join('\n', [

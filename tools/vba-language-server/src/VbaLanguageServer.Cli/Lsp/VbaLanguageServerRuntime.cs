@@ -14,8 +14,8 @@ internal sealed class VbaLanguageServerRuntime
     private readonly VbaDocumentLifecycle documentLifecycle;
     private readonly IReferenceCatalogRuntimeLifecycle? catalogLifecycle;
     private readonly VbaInteractiveWorkSchedulerOptions? schedulerOptions;
-    private readonly IVbaProjectDiskReconciliationRuntimeLifecycle?
-        diskReconciliationLifecycle;
+    private readonly IVbaProjectReconciliationRuntimeLifecycle?
+        projectReconciliationLifecycle;
 
     /// <summary>
     /// Creates a language-server runtime from transport, request, and lifecycle components.
@@ -25,22 +25,22 @@ internal sealed class VbaLanguageServerRuntime
     /// <param name="documentLifecycle">The document lifecycle handler used for notifications.</param>
     /// <param name="catalogLifecycle">The optional background catalog lifecycle owner.</param>
     /// <param name="schedulerOptions">Optional scheduler options used by deterministic tests.</param>
-    /// <param name="diskReconciliationLifecycle">The optional background disk reconciliation owner.</param>
+    /// <param name="projectReconciliationLifecycle">The optional background project reconciliation owner.</param>
     public VbaLanguageServerRuntime(
         LspMessageTransport transport,
         VbaLspRequestExecution requestExecution,
         VbaDocumentLifecycle documentLifecycle,
         IReferenceCatalogRuntimeLifecycle? catalogLifecycle = null,
         VbaInteractiveWorkSchedulerOptions? schedulerOptions = null,
-        IVbaProjectDiskReconciliationRuntimeLifecycle?
-            diskReconciliationLifecycle = null)
+        IVbaProjectReconciliationRuntimeLifecycle?
+            projectReconciliationLifecycle = null)
     {
         this.transport = transport;
         this.requestExecution = requestExecution;
         this.documentLifecycle = documentLifecycle;
         this.catalogLifecycle = catalogLifecycle;
         this.schedulerOptions = schedulerOptions;
-        this.diskReconciliationLifecycle = diskReconciliationLifecycle;
+        this.projectReconciliationLifecycle = projectReconciliationLifecycle;
     }
 
     /// <summary>
@@ -71,14 +71,14 @@ internal sealed class VbaLanguageServerRuntime
             workspace.ManifestWorkspace,
             transport);
         var documentLifecycle = new VbaDocumentLifecycle(transport, workspace, catalogRefresh);
-        var diskReconciliation =
-            documentLifecycle.CreateDiskReconciliationCoordinator();
+        var projectReconciler =
+            documentLifecycle.CreateProjectReconciler();
         return new VbaLanguageServerRuntime(
             transport,
             requestExecution,
             documentLifecycle,
             catalogRefresh,
-            diskReconciliationLifecycle: diskReconciliation);
+            projectReconciliationLifecycle: projectReconciler);
     }
 
     /// <summary>
@@ -102,7 +102,7 @@ internal sealed class VbaLanguageServerRuntime
                 ?? VbaInteractiveWorkSchedulerOptions.CreateFromEnvironment());
         documentLifecycle.AttachScheduler(scheduler);
         catalogLifecycle?.AttachScheduler(scheduler);
-        diskReconciliationLifecycle?.AttachScheduler(scheduler);
+        projectReconciliationLifecycle?.AttachScheduler(scheduler);
         var gracefulExit = false;
         var shutdownAdmitted = false;
         try
@@ -268,6 +268,7 @@ internal sealed class VbaLanguageServerRuntime
         }
         finally
         {
+            documentLifecycle.Stop();
             if (!gracefulExit)
             {
                 responseCancellation.Request();
@@ -277,9 +278,9 @@ internal sealed class VbaLanguageServerRuntime
             {
                 try
                 {
-                    if (diskReconciliationLifecycle is not null)
+                    if (projectReconciliationLifecycle is not null)
                     {
-                        await diskReconciliationLifecycle.StopAsync();
+                        await projectReconciliationLifecycle.StopAsync();
                     }
                 }
                 finally

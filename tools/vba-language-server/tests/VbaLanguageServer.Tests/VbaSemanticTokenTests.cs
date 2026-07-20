@@ -17,7 +17,7 @@ public sealed class VbaSemanticTokenTests
             "    value = vbCrLf",
             "End Sub"
         ]);
-        var index = VbaSourceIndex.Build(
+        var index = VbaSemanticInventoryFixture.Create(
             new Dictionary<string, string> { [uri] = text },
             referenceSelection: null,
             VbaProjectReferenceCatalogSet.CreateBundled());
@@ -45,7 +45,7 @@ public sealed class VbaSemanticTokenTests
             "    MissingIdentifier",
             "End Sub"
         ]);
-        var index = VbaSourceIndex.Build(
+        var index = VbaSemanticInventoryFixture.Create(
             new Dictionary<string, string> { [uri] = text },
             VbaProjectReferenceSelection.Create(
                 ProjectDocument.ExcelKind,
@@ -80,7 +80,7 @@ public sealed class VbaSemanticTokenTests
             "    Scripting.Dictionary",
             "End Sub"
         ]);
-        var index = VbaSourceIndex.Build(
+        var index = VbaSemanticInventoryFixture.Create(
             new Dictionary<string, string> { [uri] = text },
             VbaProjectReferenceSelection.Create(
                 ProjectDocument.ExcelKind,
@@ -117,7 +117,7 @@ public sealed class VbaSemanticTokenTests
                 KeywordCollisionDefinition(referenceName, "Property"),
                 KeywordCollisionDefinition(referenceName, "Sub")
             ]));
-        var index = VbaSourceIndex.Build(
+        var index = VbaSemanticInventoryFixture.Create(
             new Dictionary<string, string> { [uri] = text },
             VbaProjectReferenceSelection.Create(
                 "keyword-collision",
@@ -149,7 +149,7 @@ public sealed class VbaSemanticTokenTests
             referenceName,
             ["DocumentationCommentCollision"],
             [KeywordCollisionDefinition(referenceName, "Details")]));
-        var index = VbaSourceIndex.Build(
+        var index = VbaSemanticInventoryFixture.Create(
             new Dictionary<string, string> { [uri] = text },
             VbaProjectReferenceSelection.Create(
                 "documentation-comment-collision",
@@ -166,7 +166,7 @@ public sealed class VbaSemanticTokenTests
     }
 
     [Fact]
-    public void SemanticTokenDataIsCachedWithinSourceIndexSnapshot()
+    public void SemanticTokenDataIsCachedWithinSemanticInventorySnapshot()
     {
         const string uri = "file:///C:/work/Worker.bas";
         var text = string.Join('\n', [
@@ -177,10 +177,10 @@ public sealed class VbaSemanticTokenTests
             "    value = 1",
             "End Sub"
         ]);
-        var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = text });
+        var inventory = VbaSemanticInventoryFixture.Create(new Dictionary<string, string> { [uri] = text });
 
-        var firstData = index.GetSemanticTokenData(uri);
-        var secondData = index.GetSemanticTokenData(uri);
+        var firstData = inventory.GetSemanticTokenData(uri);
+        var secondData = inventory.GetSemanticTokenData(uri);
 
         Assert.Same(firstData, secondData);
     }
@@ -229,7 +229,7 @@ public sealed class VbaSemanticTokenTests
             "Attribute VB_Name = \"DialogForm\"",
             "Option Explicit"
         ]);
-        var index = VbaSourceIndex.Build(
+        var index = VbaSemanticInventoryFixture.Create(
             new Dictionary<string, string>
             {
                 [workerUri] = workerText,
@@ -308,7 +308,7 @@ public sealed class VbaSemanticTokenTests
             "    Values(0) = Fallback",
             "End Sub"
         ]);
-        var index = VbaSourceIndex.Build(new Dictionary<string, string> { [uri] = text });
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string> { [uri] = text });
 
         var tokens = index.GetSemanticTokens(uri);
 

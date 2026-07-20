@@ -27,8 +27,8 @@ internal sealed class VbaLspRequestExecution
         [
             ".", " ", "(", ",", ":", ";", "+", "-", "*", "/", "\\", "^", "&", "=", "<", ">"
         ],
-        SemanticTokenTypes: VbaSourceIndex.SemanticTokenTypes,
-        SemanticTokenModifiers: VbaSourceIndex.SemanticTokenModifiers,
+        SemanticTokenTypes: VbaSemanticTokenLegend.Types,
+        SemanticTokenModifiers: VbaSemanticTokenLegend.Modifiers,
         SemanticTokensFull: true,
         SemanticTokensRange: false,
         ServerName: "vba-language-server",

@@ -47,24 +47,13 @@ public sealed class VbaInteractiveWorkSchedulerTests
         Assert.DoesNotContain(
             typeof(VbaLspRequestExecution).GetFields(
                 BindingFlags.Instance | BindingFlags.NonPublic),
-            field => field.FieldType.Name
-                is "VbaProjectSnapshot" or "VbaSourceIndex");
+            field => field.FieldType.Name == "VbaProjectSnapshot");
         Assert.DoesNotContain(
             workspaceField.FieldType.GetMethods(),
             method => method.ReturnType.Name == "VbaProjectSnapshot"
-                || method.ReturnType.Name == "VbaSourceIndex"
                 || method.GetParameters().Any(
                     parameter => parameter.ParameterType.Name
-                        is "VbaProjectSnapshot" or "VbaSourceIndex"));
-        Assert.DoesNotContain(
-            typeof(VbaLspRequestExecution).Assembly
-                .GetTypes()
-                .SelectMany(type => type.GetMethods(
-                    BindingFlags.Instance
-                    | BindingFlags.Static
-                    | BindingFlags.Public
-                    | BindingFlags.NonPublic)),
-            method => method.Name == "WithSourceIndex");
+                        == "VbaProjectSnapshot"));
     }
 
     [Fact]

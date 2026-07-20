@@ -929,7 +929,7 @@ public sealed class VbaCompletionCandidateResolutionTests
             }
         }
 
-        var index = VbaSourceIndex.Build(
+        var index = VbaSemanticInventoryFixture.Create(
             sources,
             reference?.Selection,
             reference?.Catalogs);

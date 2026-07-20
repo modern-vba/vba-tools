@@ -33,11 +33,11 @@ or mixed-revision shard.
 The inventory implements all editor-query behavior directly through its owned
 maps, `VbaSemanticResolution`, resolved-occurrence shards, formatter, and token
 caches. It neither stores nor delegates to a raw `VbaSourceIndex`.
-`VbaSourceIndex` query instances remain as a compatibility facade for existing
-library and test callers; the facade constructs and delegates to
-`VbaSemanticInventory`, not the reverse. Static protocol metadata and source
-projection helpers do not make that class a project-scope authority. LSP
-request capture and project snapshots expose only the inventory.
+The former `VbaSourceIndex` compatibility facade is removed. Source projection
+is owned by the internal `VbaSourceDocumentProjector`, while semantic-token
+protocol metadata is owned by the internal `VbaSemanticTokenLegend`. LSP
+request capture, project snapshots, and behavioral tests query only the
+inventory.
 
 Reference selection and catalog definitions are immutable data inputs to the
 inventory. Host behavior is expressed at that boundary through the manifest's
@@ -57,11 +57,17 @@ reused safely, the project snapshot provider rebuilds the affected project
 scope instead of switching an interactive caller to a raw index.
 
 Behavioral tests assert explicit source, reference, precedence, ambiguity,
-identity, and range results without using the compatibility facade as an
-oracle. Structural tests keep the inventory free of a `VbaSourceIndex` field
-and require its semantic-resolution services to share one candidate inventory.
-Any reuse optimization must use private semantic fingerprints or rebuild
-conservatively.
+identity, and range results through the inventory Interface. Test setup may use
+an internal fixture to parse and project source text, but that fixture does not
+serve editor queries or create a second project-scope authority. Structural
+tests require the former facade type to remain absent and the inventory's
+semantic-resolution implementation to share one candidate inventory. Any reuse
+optimization must use private semantic fingerprints or rebuild conservatively.
+
+`VbaLanguageServer.Cli` is an executable deployment project, not a supported
+library Interface. If editor-query semantics later need a reusable Interface,
+that Interface must be designed deliberately in a separate
+library project rather than inferred from public types in the executable.
 
 Because inventory shards are scoped to one committed project snapshot, any
 declaration-shape, visibility, type, module identity, manifest,

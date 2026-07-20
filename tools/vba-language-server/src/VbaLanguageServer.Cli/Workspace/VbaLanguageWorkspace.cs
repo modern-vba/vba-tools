@@ -20,7 +20,7 @@ public sealed record VbaProjectSnapshot(
 /// <summary>
 /// Maintains open document text and creates project snapshots for language-server features.
 /// </summary>
-public sealed class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCapture
+public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCapture
 {
     private readonly object gate = new();
     private readonly Dictionary<string, WorkspaceDocumentState> documents = new(StringComparer.OrdinalIgnoreCase);
@@ -28,6 +28,7 @@ public sealed class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCapture
         new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> excludedSourceUris = new(StringComparer.OrdinalIgnoreCase);
     private readonly VbaSourceRevisionHistory sourceRevisionHistory = new();
+    private readonly IVbaProjectDiskInventory diskInventory;
     private readonly VbaProjectSourceDocumentCache diskDocumentCache;
     private readonly VbaProjectSnapshotProvider snapshotProvider;
     private readonly IVbaDocumentAnalysisBuildObserver analysisBuildObserver;
@@ -39,7 +40,7 @@ public sealed class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCapture
     /// <summary>
     /// Creates a language workspace.
     /// </summary>
-    /// <param name="referenceCatalogCache">The reference catalog cache used when building source indexes.</param>
+    /// <param name="referenceCatalogCache">The reference catalog cache used when building semantic inventories.</param>
     public VbaLanguageWorkspace(VbaProjectReferenceCatalogCache referenceCatalogCache)
         : this(
             referenceCatalogCache,
@@ -88,23 +89,34 @@ public sealed class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCapture
         IVbaProjectReferenceCatalogLifecycleObserver lifecycleObserver,
         IVbaDocumentAnalysisBuildObserver analysisBuildObserver,
         IVbaProjectSnapshotBuildObserver snapshotBuildObserver,
-        IVbaProjectFileSystem projectFileSystem)
+        IVbaProjectFileSystem projectFileSystem,
+        IVbaProjectReconciliationAuthorityLeaseObserver?
+            reconciliationAuthorityLeaseObserver = null)
     {
         this.analysisBuildObserver = analysisBuildObserver;
-        diskDocumentCache = new VbaProjectSourceDocumentCache(projectFileSystem);
+        diskInventory =
+            new VbaFileSystemProjectDiskInventory(projectFileSystem);
+        diskDocumentCache = new VbaProjectSourceDocumentCache();
         ManifestWorkspace = new VbaProjectManifestWorkspace(projectFileSystem);
         snapshotProvider = new VbaProjectSnapshotProvider(
             referenceCatalogCache,
+            diskInventory,
             diskDocumentCache,
             ManifestWorkspace,
             lifecycleObserver,
-            snapshotBuildObserver);
+            snapshotBuildObserver,
+            reconciliationAuthorityLeaseObserver);
     }
 
     /// <summary>
     /// Gets the focused manifest authority shared by snapshots, trace resolution, and lifecycle work.
     /// </summary>
     internal VbaProjectManifestWorkspace ManifestWorkspace { get; }
+
+    /// <summary>
+    /// Gets the disk inventory shared by cold snapshot capture and reconciliation.
+    /// </summary>
+    internal IVbaProjectDiskInventory DiskInventory => diskInventory;
 
     internal int RetainedSourceRevisionCount
     {
@@ -156,8 +168,7 @@ public sealed class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCapture
     /// <param name="uri">The document URI.</param>
     /// <param name="text">The latest source text.</param>
     /// <param name="cancellationToken">A cancellation token for the update.</param>
-    /// <returns>The parse update kind for the new syntax tree.</returns>
-    public VbaSyntaxTreeParseUpdateKind UpdateDocument(
+    public void UpdateDocument(
         string uri,
         string text,
         CancellationToken cancellationToken = default)
@@ -189,10 +200,8 @@ public sealed class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCapture
                 existing?.Analysis);
         }
 
-        var buildResult =
-            BuildAndCommitDocumentAnalysis(reservation, text, cancellationToken);
+        BuildAndCommitDocumentAnalysis(reservation, text, cancellationToken);
         WaitForAcceptedDocumentAnalysis(reservation, cancellationToken);
-        return buildResult.UpdateKind;
     }
 
     /// <summary>
@@ -202,8 +211,7 @@ public sealed class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCapture
     /// <param name="version">The client document version.</param>
     /// <param name="text">The complete document text.</param>
     /// <param name="cancellationToken">A cancellation token for the update.</param>
-    /// <returns>The parse update kind for the opened source.</returns>
-    public VbaSyntaxTreeParseUpdateKind OpenDocument(
+    public void OpenDocument(
         string uri,
         int version,
         string text,
@@ -226,10 +234,10 @@ public sealed class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCapture
                 existing?.Analysis);
         }
 
-        return BuildAndCommitDocumentAnalysis(
+        BuildAndCommitDocumentAnalysis(
             reservation,
             text,
-            cancellationToken).UpdateKind;
+            cancellationToken);
     }
 
     /// <summary>
@@ -239,8 +247,8 @@ public sealed class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCapture
     /// <param name="version">The client document version.</param>
     /// <param name="text">The complete document text.</param>
     /// <param name="cancellationToken">A cancellation token for the update.</param>
-    /// <returns>The parse update kind, or null when the change was stale or the document was not open.</returns>
-    public VbaSyntaxTreeParseUpdateKind? ChangeDocument(
+    /// <returns>True when the revision was reserved; false when it was stale or the document was not open.</returns>
+    public bool ChangeDocument(
         string uri,
         int version,
         string text,
@@ -255,7 +263,7 @@ public sealed class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCapture
             if (accepted?.Authority != WorkspaceDocumentAuthority.OpenBuffer
                 || version <= accepted.Version)
             {
-                return null;
+                return false;
             }
 
             reservation = ReserveDocumentAnalysis(
@@ -266,10 +274,11 @@ public sealed class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCapture
                 existing?.Analysis);
         }
 
-        return BuildAndCommitDocumentAnalysis(
+        BuildAndCommitDocumentAnalysis(
             reservation,
             text,
-            cancellationToken).UpdateKind;
+            cancellationToken);
+        return true;
     }
 
     /// <summary>
@@ -286,6 +295,49 @@ public sealed class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCapture
     {
         cancellationToken.ThrowIfCancellationRequested();
         InvalidateDiskDocument(uri);
+        return ReloadSourceDocumentCore(
+            uri,
+            text,
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Reloads one watched source through the shared disk inventory.
+    /// </summary>
+    internal bool ReloadSourceDocumentFromDisk(
+        string uri,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var localPath = VbaProjectResolver.TryGetLocalPath(uri);
+        if (localPath is null)
+        {
+            return false;
+        }
+
+        var manifestCapture = ManifestWorkspace.CaptureResolution(uri);
+        var source = diskInventory.CaptureWatchedSource(
+            manifestCapture.Resolution,
+            uri,
+            manifestCapture.Barriers.Overrides,
+            cancellationToken);
+        if (source is null)
+        {
+            return false;
+        }
+
+        diskDocumentCache.Invalidate(localPath);
+        return ReloadSourceDocumentCore(
+            uri,
+            source.Text,
+            cancellationToken);
+    }
+
+    private bool ReloadSourceDocumentCore(
+        string uri,
+        string text,
+        CancellationToken cancellationToken)
+    {
         DocumentAnalysisReservation reservation;
         lock (gate)
         {
@@ -321,10 +373,10 @@ public sealed class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCapture
         return BuildAndCommitDocumentAnalysis(
             reservation,
             text,
-            cancellationToken).Committed;
+            cancellationToken);
     }
 
-    internal bool ReloadReconciledSourceDocument(
+    private bool ReloadReconciledSourceDocument(
         string uri,
         string text,
         long capturedWorkspaceRevision,
@@ -362,7 +414,7 @@ public sealed class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCapture
         return BuildAndCommitDocumentAnalysis(
             reservation,
             text,
-            cancellationToken).Committed;
+            cancellationToken);
     }
 
     /// <summary>
@@ -472,7 +524,7 @@ public sealed class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCapture
         return true;
     }
 
-    internal bool DeleteReconciledSourceDocument(
+    private bool DeleteReconciledSourceDocument(
         string uri,
         long capturedWorkspaceRevision,
         CancellationToken cancellationToken = default)
@@ -846,8 +898,8 @@ public sealed class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCapture
         }
     }
 
-    internal VbaProjectDiskReconciliationCapture
-        CaptureDiskReconciliationScopes()
+    internal VbaProjectReconciliationCapture
+        CaptureProjectReconciliation()
     {
         lock (gate)
         {
@@ -863,7 +915,7 @@ public sealed class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCapture
                     .Select(state => state.Document.Uri)
                     .ToArray();
                 var scopes = snapshotProvider
-                    .CaptureDiskReconciliationScopes(
+                    .CaptureReconciliationScopes(
                         capturedWorkspaceRevision)
                 .Select(
                     scope =>
@@ -921,7 +973,7 @@ public sealed class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCapture
                                     var manifestCapture = ManifestWorkspace
                                         .CaptureReconciliationState(uri);
                                     return new
-                                        VbaProjectDiskManifestCandidate(
+                                        VbaProjectReconciliationManifestCandidate(
                                             uri,
                                             manifestCapture.Revision,
                                             manifestCapture.Baseline)
@@ -960,7 +1012,7 @@ public sealed class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCapture
                         };
                     })
                 .ToArray();
-                return new VbaProjectDiskReconciliationCapture(
+                return new VbaProjectReconciliationCapture(
                     scopes,
                     revisionCapture);
             }
@@ -970,63 +1022,6 @@ public sealed class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCapture
                 throw;
             }
         }
-    }
-
-    internal void CommitReconciledSourceBaseline(
-        string authorityKey,
-        string uri,
-        string fullPath,
-        string text)
-        => snapshotProvider.CommitReconciledSourceBaseline(
-            authorityKey,
-            new VbaProjectDiskKnownSource(
-                uri,
-                Path.GetFullPath(fullPath),
-                text));
-
-    internal void CommitDeletedReconciledSourceBaseline(
-        string authorityKey,
-        string uri)
-        => snapshotProvider.CommitDeletedReconciledSourceBaseline(
-            authorityKey,
-            uri);
-
-    internal void ReleaseReconciledSourceOwnership(
-        string authorityKey,
-        string uri)
-        => snapshotProvider.ReleaseReconciledSourceOwnership(
-            authorityKey,
-            uri);
-
-    internal bool IsReconciliationScopeCurrent(
-        string authorityKey,
-        long capturedManifestBarrierRevision,
-        long capturedAuthorityGeneration)
-        => snapshotProvider.IsReconciliationScopeCurrent(
-            authorityKey,
-            capturedManifestBarrierRevision,
-            capturedAuthorityGeneration);
-
-    internal void CommitReconciledManifestScope(
-        string authorityKey,
-        string activeUri,
-        VbaProjectResolution resolution,
-        bool retainPreviousAuthority,
-        IReadOnlyList<string> retainedPreviousSourceUris)
-    {
-        IReadOnlyList<string> trackedUris;
-        lock (gate)
-        {
-            trackedUris = CaptureTrackedDocumentUris();
-        }
-
-        snapshotProvider.CommitReconciledManifestScope(
-            authorityKey,
-            activeUri,
-            resolution,
-            retainPreviousAuthority,
-            retainedPreviousSourceUris,
-            trackedUris);
     }
 
     private VbaDocumentAnalysis BuildDocumentAnalysis(
@@ -1049,7 +1044,7 @@ public sealed class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCapture
         return analysis;
     }
 
-    private DocumentAnalysisBuildResult BuildAndCommitDocumentAnalysis(
+    private bool BuildAndCommitDocumentAnalysis(
         DocumentAnalysisReservation reservation,
         string text,
         CancellationToken cancellationToken)
@@ -1064,10 +1059,7 @@ public sealed class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCapture
                 cancellationToken);
             lock (gate)
             {
-                var committed = CommitDocumentAnalysis(reservation, analysis);
-                return new DocumentAnalysisBuildResult(
-                    analysis.LastParseUpdateKind,
-                    committed);
+                return CommitDocumentAnalysis(reservation, analysis);
             }
         }
         catch
@@ -1203,8 +1195,6 @@ public sealed class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCapture
             analysis.Uri,
             analysis.Text,
             analysis.SyntaxTree,
-            analysis.LastParseUpdateKind,
-            analysis.LastMemberUpdate,
             analysis.SourceDocument);
         documents[analysis.Uri] = new WorkspaceDocumentState(
             document,
@@ -1304,6 +1294,7 @@ public sealed class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCapture
         var localPath = VbaProjectResolver.TryGetLocalPath(uri);
         if (localPath is not null)
         {
+            diskInventory.InvalidateSource(localPath);
             diskDocumentCache.Invalidate(localPath);
         }
     }
@@ -1385,7 +1376,4 @@ public sealed class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCapture
         long ReservationToken,
         VbaDocumentAnalysis? PreviousAnalysis);
 
-    private sealed record DocumentAnalysisBuildResult(
-        VbaSyntaxTreeParseUpdateKind UpdateKind,
-        bool Committed);
 }

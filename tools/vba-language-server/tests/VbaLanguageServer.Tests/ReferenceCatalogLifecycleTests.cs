@@ -9,14 +9,21 @@ using Xunit.Abstractions;
 
 namespace VbaLanguageServer.Tests;
 
-public sealed class ReferenceCatalogLifecycleTests
+public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
 {
     private readonly ITestOutputHelper testOutput;
+    private readonly VbaInteractiveWorkScheduler defaultScheduler = new();
 
     public ReferenceCatalogLifecycleTests(ITestOutputHelper output)
     {
         testOutput = output;
     }
+
+    public Task InitializeAsync()
+        => Task.CompletedTask;
+
+    public async Task DisposeAsync()
+        => await defaultScheduler.StopAsync(VbaInteractiveStopReason.Abort);
 
     [Fact]
     public async Task Ordinary_source_change_updates_analysis_without_restarting_reference_lifecycle()
@@ -30,7 +37,7 @@ public sealed class ReferenceCatalogLifecycleTests
         var pipeline = new VbaDocumentChangePipeline(
             workspace,
             lifecycle,
-            new VbaDiagnosticsPublisher(transport, workspace));
+            CreateDiagnosticsPublisher(transport, workspace));
         const string uri = "file:///C:/work/Book1/Worker.bas";
         var openedText = string.Join('\n',
         [
@@ -121,7 +128,7 @@ public sealed class ReferenceCatalogLifecycleTests
             var pipeline = new VbaDocumentChangePipeline(
                 workspace,
                 lifecycle,
-                new VbaDiagnosticsPublisher(transport, workspace));
+                CreateDiagnosticsPublisher(transport, workspace));
             const string sourceText =
                 "Attribute VB_Name = \"Worker\"\n"
                 + "Public Sub Run()\n"
@@ -211,7 +218,7 @@ public sealed class ReferenceCatalogLifecycleTests
             var pipeline = new VbaDocumentChangePipeline(
                 workspace,
                 lifecycle,
-                new VbaDiagnosticsPublisher(transport, workspace));
+                CreateDiagnosticsPublisher(transport, workspace));
             const string sourceText =
                 "Attribute VB_Name = \"Worker\"\n"
                 + "Public Sub Run()\n"
@@ -309,7 +316,7 @@ public sealed class ReferenceCatalogLifecycleTests
             var pipeline = new VbaDocumentChangePipeline(
                 workspace,
                 lifecycle,
-                new VbaDiagnosticsPublisher(transport, workspace));
+                CreateDiagnosticsPublisher(transport, workspace));
             const string sourceText =
                 "Attribute VB_Name = \"Worker\"\n"
                 + "Public Sub Run()\n"
@@ -386,6 +393,7 @@ public sealed class ReferenceCatalogLifecycleTests
             manifestWorkspace,
             transport,
             observer);
+        lifecycle.AttachScheduler(defaultScheduler);
         const string manifestUri = "file:///C:/work/Book1/vba-project.json";
         var manifestText = CreateManifestText("Library A", "Library B");
 
@@ -532,6 +540,75 @@ public sealed class ReferenceCatalogLifecycleTests
     }
 
     [Fact]
+    public async Task Concurrent_plan_posts_cannot_restore_an_older_reserved_plan()
+    {
+        const string uri = "file:///C:/work/Book1/vba-project.json";
+        var catalogCache = new VbaProjectReferenceCatalogCache(
+            VbaProjectReferenceCatalogSet.Empty);
+        var discovery = new CountingDiscovery();
+        var refreshService = new VbaProjectReferenceCatalogRefreshService(
+            catalogCache,
+            discovery,
+            persistentStore: null,
+            new InlineRefreshWorker());
+        var planObserver = new BlockingFirstPlanReservationObserver();
+        await using var output = new MemoryStream();
+        var lifecycle = new ReferenceCatalogRefreshCoordinator(
+            catalogCache,
+            refreshService,
+            new VbaProjectManifestWorkspace(),
+            new LspMessageTransport(Stream.Null, output),
+            lifecycleObserver: null,
+            planObserver: planObserver);
+        var blockerStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseBlocker = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var scheduler = new VbaInteractiveWorkScheduler(
+            options: new VbaInteractiveWorkSchedulerOptions(
+                CoalesceSupersededMutations: true,
+                MaxOwnedWork: 1));
+        var blocker = scheduler.AdmitMutation(async cancellationToken =>
+        {
+            blockerStarted.TrySetResult();
+            await releaseBlocker.Task.WaitAsync(cancellationToken);
+        });
+        await blockerStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        lifecycle.AttachScheduler(scheduler);
+
+        var older = Task.Run(
+            () => lifecycle.ApplyManifestSelectionChange(
+                uri,
+                CreateManifestText("Library A")));
+        await planObserver.FirstPlanReserved.Task
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        var latestStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var latest = Task.Run(
+            () =>
+            {
+                latestStarted.TrySetResult();
+                lifecycle.ApplyManifestSelectionChange(
+                    uri,
+                    CreateManifestText("Library B"));
+            });
+        await latestStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await Task.Delay(TimeSpan.FromMilliseconds(100));
+
+        Assert.False(latest.IsCompleted);
+
+        planObserver.ReleaseFirstPlan();
+        await Task.WhenAll(older, latest).WaitAsync(TimeSpan.FromSeconds(5));
+        releaseBlocker.TrySetResult();
+        await blocker.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+        await lifecycle.WaitForIdleAsync().WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(["Library B"], discovery.ReferenceNames);
+        await lifecycle.StopAsync();
+        await scheduler.StopAsync(VbaInteractiveStopReason.Complete);
+    }
+
+    [Fact]
     public async Task Catalog_refresh_overflow_discards_a_plan_deactivated_before_capacity_returns()
     {
         const string uri = "file:///C:/work/Book1/vba-project.json";
@@ -575,6 +652,304 @@ public sealed class ReferenceCatalogLifecycleTests
         Assert.Empty(discovery.ReferenceNames);
         await lifecycle.StopAsync();
         await scheduler.StopAsync(VbaInteractiveStopReason.Complete);
+    }
+
+    [Fact]
+    public async Task Deactivation_rejects_a_plan_already_taken_by_the_mailbox()
+    {
+        const string uri = "file:///C:/work/Book1/vba-project.json";
+        var catalogCache = new VbaProjectReferenceCatalogCache(
+            VbaProjectReferenceCatalogSet.Empty);
+        var persistentStore = new CountingPersistentStore();
+        var discovery = new CountingDiscovery();
+        var refreshService = new VbaProjectReferenceCatalogRefreshService(
+            catalogCache,
+            discovery,
+            persistentStore,
+            new InlineRefreshWorker());
+        var planObserver = new BlockingFirstPlanObserver();
+        await using var output = new MemoryStream();
+        var lifecycle = new ReferenceCatalogRefreshCoordinator(
+            catalogCache,
+            refreshService,
+            new VbaProjectManifestWorkspace(),
+            new LspMessageTransport(Stream.Null, output),
+            lifecycleObserver: null,
+            planObserver: planObserver);
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        lifecycle.AttachScheduler(scheduler);
+
+        lifecycle.ApplyManifestSelectionChange(
+            uri,
+            CreateManifestText("Library A"));
+        await planObserver.FirstPlanStarted.Task
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        lifecycle.DeactivateManifest(uri);
+        planObserver.ReleaseFirstPlan();
+        await lifecycle.WaitForIdleAsync().WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(0, persistentStore.LoadCount);
+        Assert.Empty(discovery.ReferenceNames);
+        await lifecycle.StopAsync();
+        await scheduler.StopAsync(VbaInteractiveStopReason.Complete);
+    }
+
+    [Fact]
+    public async Task Manifest_change_supersedes_a_source_plan_already_taken_by_the_mailbox()
+    {
+        var projectRoot =
+            Directory.CreateTempSubdirectory("vba-ls-source-plan-change-").FullName;
+        try
+        {
+            var sourcePath = WriteProject(projectRoot, "Library A");
+            var sourceUri = new Uri(sourcePath).AbsoluteUri;
+            var manifestUri = new Uri(
+                Path.Combine(projectRoot, "vba-project.json")).AbsoluteUri;
+            var catalogCache = new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.Empty);
+            var discovery = new CountingDiscovery();
+            var refreshService = new VbaProjectReferenceCatalogRefreshService(
+                catalogCache,
+                discovery,
+                persistentStore: null,
+                new InlineRefreshWorker());
+            var planObserver = new BlockingFirstPlanObserver();
+            await using var output = new MemoryStream();
+            var lifecycle = new ReferenceCatalogRefreshCoordinator(
+                catalogCache,
+                refreshService,
+                new VbaProjectManifestWorkspace(),
+                new LspMessageTransport(Stream.Null, output),
+                lifecycleObserver: null,
+                planObserver: planObserver);
+            await using var scheduler = new VbaInteractiveWorkScheduler();
+            lifecycle.AttachScheduler(scheduler);
+
+            try
+            {
+                lifecycle.ActivateProject(sourceUri);
+                await planObserver.FirstPlanStarted.Task
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+
+                lifecycle.ApplyManifestSelectionChange(
+                    manifestUri,
+                    CreateManifestText("Library B"));
+                planObserver.ReleaseFirstPlan();
+                await lifecycle.WaitForIdleAsync()
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+
+                Assert.Equal(["Library B"], discovery.ReferenceNames);
+            }
+            finally
+            {
+                planObserver.ReleaseFirstPlan();
+                await lifecycle.StopAsync();
+                await scheduler.StopAsync(VbaInteractiveStopReason.Complete);
+            }
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Manifest_change_invalidates_a_taken_source_scope_removed_from_the_manifest()
+    {
+        var projectRoot =
+            Directory.CreateTempSubdirectory("vba-ls-source-scope-removal-").FullName;
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(projectRoot, "src", "Book1"));
+            var book2SourceDirectory = Path.Combine(projectRoot, "src", "Book2");
+            Directory.CreateDirectory(book2SourceDirectory);
+            var manifestPath = Path.Combine(projectRoot, "vba-project.json");
+            File.WriteAllText(
+                manifestPath,
+                CreateTwoDocumentManifestText(
+                    "Disk Book1 Library",
+                    "Removed Library"));
+            var sourceUri = new Uri(
+                Path.Combine(book2SourceDirectory, "Worker.bas")).AbsoluteUri;
+            var manifestUri = new Uri(manifestPath).AbsoluteUri;
+            var catalogCache = new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.Empty);
+            var discovery = new CountingDiscovery();
+            var refreshService = new VbaProjectReferenceCatalogRefreshService(
+                catalogCache,
+                discovery,
+                persistentStore: null,
+                new InlineRefreshWorker());
+            var planObserver = new BlockingFirstPlanObserver();
+            await using var output = new MemoryStream();
+            var lifecycle = new ReferenceCatalogRefreshCoordinator(
+                catalogCache,
+                refreshService,
+                new VbaProjectManifestWorkspace(),
+                new LspMessageTransport(Stream.Null, output),
+                lifecycleObserver: null,
+                planObserver: planObserver);
+            await using var scheduler = new VbaInteractiveWorkScheduler();
+            lifecycle.AttachScheduler(scheduler);
+
+            try
+            {
+                lifecycle.ActivateProject(sourceUri);
+                await planObserver.FirstPlanStarted.Task
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+
+                lifecycle.ApplyManifestSelectionChange(
+                    manifestUri,
+                    CreateManifestText("Retained Library"));
+                planObserver.ReleaseFirstPlan();
+                await lifecycle.WaitForIdleAsync()
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+
+                Assert.Equal(["Retained Library"], discovery.ReferenceNames);
+            }
+            finally
+            {
+                planObserver.ReleaseFirstPlan();
+                await lifecycle.StopAsync();
+                await scheduler.StopAsync(VbaInteractiveStopReason.Complete);
+            }
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Manifest_deactivation_rejects_a_source_plan_already_taken_by_the_mailbox()
+    {
+        var projectRoot =
+            Directory.CreateTempSubdirectory("vba-ls-source-plan-deactivate-").FullName;
+        try
+        {
+            var sourcePath = WriteProject(projectRoot, "Library A");
+            var sourceUri = new Uri(sourcePath).AbsoluteUri;
+            var manifestUri = new Uri(
+                Path.Combine(projectRoot, "vba-project.json")).AbsoluteUri;
+            var catalogCache = new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.Empty);
+            var persistentStore = new CountingPersistentStore();
+            var discovery = new CountingDiscovery();
+            var refreshService = new VbaProjectReferenceCatalogRefreshService(
+                catalogCache,
+                discovery,
+                persistentStore,
+                new InlineRefreshWorker());
+            var planObserver = new BlockingFirstPlanObserver();
+            await using var output = new MemoryStream();
+            var lifecycle = new ReferenceCatalogRefreshCoordinator(
+                catalogCache,
+                refreshService,
+                new VbaProjectManifestWorkspace(),
+                new LspMessageTransport(Stream.Null, output),
+                lifecycleObserver: null,
+                planObserver: planObserver);
+            await using var scheduler = new VbaInteractiveWorkScheduler();
+            lifecycle.AttachScheduler(scheduler);
+
+            try
+            {
+                lifecycle.ActivateProject(sourceUri);
+                await planObserver.FirstPlanStarted.Task
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+
+                lifecycle.DeactivateManifest(manifestUri);
+                planObserver.ReleaseFirstPlan();
+                await lifecycle.WaitForIdleAsync()
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+
+                Assert.Equal(0, persistentStore.LoadCount);
+                Assert.Empty(discovery.ReferenceNames);
+            }
+            finally
+            {
+                planObserver.ReleaseFirstPlan();
+                await lifecycle.StopAsync();
+                await scheduler.StopAsync(VbaInteractiveStopReason.Complete);
+            }
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Stale_scope_does_not_discard_a_fresh_peer_in_the_same_plan()
+    {
+        var projectRoot =
+            Directory.CreateTempSubdirectory("vba-ls-scope-plan-fence-").FullName;
+        try
+        {
+            var book1SourceDirectory = Path.Combine(projectRoot, "src", "Book1");
+            Directory.CreateDirectory(book1SourceDirectory);
+            Directory.CreateDirectory(Path.Combine(projectRoot, "src", "Book2"));
+            var manifestPath = Path.Combine(projectRoot, "vba-project.json");
+            File.WriteAllText(
+                manifestPath,
+                CreateTwoDocumentManifestText(
+                    "Latest Library",
+                    "Disk Peer Library"));
+            var sourceUri = new Uri(
+                Path.Combine(book1SourceDirectory, "Worker.bas")).AbsoluteUri;
+            var manifestUri = new Uri(manifestPath).AbsoluteUri;
+            var catalogCache = new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.Empty);
+            var discovery = new CountingDiscovery();
+            var refreshService = new VbaProjectReferenceCatalogRefreshService(
+                catalogCache,
+                discovery,
+                persistentStore: null,
+                new InlineRefreshWorker());
+            var planObserver = new BlockingFirstPlanObserver();
+            await using var output = new MemoryStream();
+            var lifecycle = new ReferenceCatalogRefreshCoordinator(
+                catalogCache,
+                refreshService,
+                new VbaProjectManifestWorkspace(),
+                new LspMessageTransport(Stream.Null, output),
+                lifecycleObserver: null,
+                planObserver: planObserver);
+            await using var scheduler = new VbaInteractiveWorkScheduler();
+            lifecycle.AttachScheduler(scheduler);
+
+            try
+            {
+                lifecycle.ApplyManifestSelectionChange(
+                    manifestUri,
+                    CreateTwoDocumentManifestText(
+                        "Stale Library",
+                        "Fresh Peer Library"));
+                await planObserver.FirstPlanStarted.Task
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+
+                lifecycle.ActivateProject(sourceUri);
+                planObserver.ReleaseFirstPlan();
+                await lifecycle.WaitForIdleAsync()
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+
+                Assert.Equal(
+                    ["Fresh Peer Library", "Latest Library"],
+                    discovery.ReferenceNames
+                        .OrderBy(referenceName => referenceName, StringComparer.Ordinal)
+                        .ToArray());
+            }
+            finally
+            {
+                planObserver.ReleaseFirstPlan();
+                await lifecycle.StopAsync();
+                await scheduler.StopAsync(VbaInteractiveStopReason.Complete);
+            }
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
     }
 
     [Fact]
@@ -741,6 +1116,7 @@ public sealed class ReferenceCatalogLifecycleTests
                 refreshService,
                 new VbaProjectManifestWorkspace(),
                 new LspMessageTransport(Stream.Null, output));
+            lifecycle.AttachScheduler(defaultScheduler);
 
             lifecycle.ActivateProject(new Uri(firstSourcePath).AbsoluteUri);
             await lifecycle.WaitForIdleAsync();
@@ -782,6 +1158,7 @@ public sealed class ReferenceCatalogLifecycleTests
             new VbaProjectManifestWorkspace(),
             new LspMessageTransport(Stream.Null, output),
             observer);
+        lifecycle.AttachScheduler(defaultScheduler);
         const string manifestUri = "file:///C:/work/Book1/vba-project.json";
         var firstSelection = CreateManifestText("Library A");
 
@@ -841,6 +1218,7 @@ public sealed class ReferenceCatalogLifecycleTests
             new VbaProjectManifestWorkspace(),
             new LspMessageTransport(Stream.Null, output),
             observer);
+        lifecycle.AttachScheduler(defaultScheduler);
 
         lifecycle.ApplyManifestSelectionChange(
             "file:///C:/work/Book1/vba-project.json",
@@ -889,6 +1267,7 @@ public sealed class ReferenceCatalogLifecycleTests
             refreshService,
             new VbaProjectManifestWorkspace(),
             new LspMessageTransport(Stream.Null, output));
+        lifecycle.AttachScheduler(defaultScheduler);
 
         lifecycle.ApplyManifestSelectionChange(
             "file:///C:/work/Book1/vba-project.json",
@@ -918,6 +1297,7 @@ public sealed class ReferenceCatalogLifecycleTests
             refreshService,
             new VbaProjectManifestWorkspace(),
             new LspMessageTransport(Stream.Null, output));
+        lifecycle.AttachScheduler(defaultScheduler);
         var manifestText = CreateManifestText("Shared Library");
 
         lifecycle.ApplyManifestSelectionChange(
@@ -953,6 +1333,7 @@ public sealed class ReferenceCatalogLifecycleTests
             new VbaProjectManifestWorkspace(),
             new LspMessageTransport(Stream.Null, output));
         await using var scheduler = new VbaInteractiveWorkScheduler();
+        lifecycle.AttachScheduler(scheduler);
         const string manifestUri = "file:///C:/work/Book1/vba-project.json";
 
         lifecycle.ApplyManifestSelectionChange(
@@ -1009,6 +1390,7 @@ public sealed class ReferenceCatalogLifecycleTests
         var schedulerFailures = new List<VbaInteractiveWorkFailure>();
         await using var scheduler = new VbaInteractiveWorkScheduler(
             failureSink: schedulerFailures.Add);
+        lifecycle.AttachScheduler(scheduler);
         const string manifestUri = "file:///C:/work/Book1/vba-project.json";
 
         lifecycle.ApplyManifestSelectionChange(
@@ -1061,6 +1443,7 @@ public sealed class ReferenceCatalogLifecycleTests
             new VbaProjectManifestWorkspace(),
             new LspMessageTransport(Stream.Null, output),
             observer);
+        lifecycle.AttachScheduler(defaultScheduler);
         const string manifestUri = "file:///C:/work/Book1/vba-project.json";
 
         lifecycle.ApplyManifestSelectionChange(
@@ -1127,6 +1510,7 @@ public sealed class ReferenceCatalogLifecycleTests
             refreshService,
             new VbaProjectManifestWorkspace(),
             new LspMessageTransport(Stream.Null, output));
+        lifecycle.AttachScheduler(defaultScheduler);
 
         lifecycle.ApplyManifestSelectionChange(
             "file:///C:/work/ProjectA/vba-project.json",
@@ -1170,6 +1554,7 @@ public sealed class ReferenceCatalogLifecycleTests
             refreshService,
             new VbaProjectManifestWorkspace(),
             new LspMessageTransport(Stream.Null, output));
+        lifecycle.AttachScheduler(defaultScheduler);
         const string manifestUri = "file:///C:/work/Book1/vba-project.json";
 
         lifecycle.ApplyManifestSelectionChange(
@@ -1237,10 +1622,11 @@ public sealed class ReferenceCatalogLifecycleTests
                 workspace.ManifestWorkspace,
                 transport,
                 observer);
+            lifecycle.AttachScheduler(defaultScheduler);
             var pipeline = new VbaDocumentChangePipeline(
                 workspace,
                 lifecycle,
-                new VbaDiagnosticsPublisher(transport, workspace));
+                CreateDiagnosticsPublisher(transport, workspace));
 
             lifecycle.ActivateProject(sourceUri);
             await persistentStore.LoadStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -1420,6 +1806,7 @@ public sealed class ReferenceCatalogLifecycleTests
             new VbaProjectManifestWorkspace(),
             new LspMessageTransport(Stream.Null, output),
             observer);
+        lifecycle.AttachScheduler(defaultScheduler);
 
         lifecycle.ApplyManifestSelectionChange(
             "file:///C:/work/Book1/vba-project.json",
@@ -1451,6 +1838,7 @@ public sealed class ReferenceCatalogLifecycleTests
             refreshService,
             new VbaProjectManifestWorkspace(),
             new LspMessageTransport(Stream.Null, output));
+        lifecycle.AttachScheduler(defaultScheduler);
 
         lifecycle.ApplyManifestSelectionChange(
             "file:///C:/work/Book1/vba-project.json",
@@ -1488,6 +1876,7 @@ public sealed class ReferenceCatalogLifecycleTests
             refreshService,
             new VbaProjectManifestWorkspace(),
             new LspMessageTransport(Stream.Null, output));
+        lifecycle.AttachScheduler(defaultScheduler);
 
         lifecycle.ApplyManifestSelectionChange(
             "file:///C:/work/Book1/vba-project.json",
@@ -1526,6 +1915,7 @@ public sealed class ReferenceCatalogLifecycleTests
             refreshService,
             new VbaProjectManifestWorkspace(),
             new LspMessageTransport(Stream.Null, output));
+        lifecycle.AttachScheduler(defaultScheduler);
 
         lifecycle.ApplyManifestSelectionChange(
             "file:///C:/work/Book1/vba-project.json",
@@ -1533,6 +1923,15 @@ public sealed class ReferenceCatalogLifecycleTests
         await persistentStore.LoadStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         await lifecycle.StopAsync().WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
+    private VbaDiagnosticsPublisher CreateDiagnosticsPublisher(
+        LspMessageTransport transport,
+        VbaLanguageWorkspace workspace)
+    {
+        var publisher = new VbaDiagnosticsPublisher(transport, workspace);
+        publisher.AttachScheduler(defaultScheduler);
+        return publisher;
     }
 
     private static async Task<TimeSpan> MeasurePositionRequestP95Async(
@@ -1584,6 +1983,7 @@ public sealed class ReferenceCatalogLifecycleTests
                     projectRoot));
             var provider = new VbaProjectSnapshotProvider(
                 new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty),
+                new VbaFileSystemProjectDiskInventory(),
                 new VbaProjectSourceDocumentCache(),
                 resolutionSource,
                 observer);
@@ -1712,6 +2112,11 @@ public sealed class ReferenceCatalogLifecycleTests
         });
 
     private static string CreateTwoDocumentManifestText(string referenceName)
+        => CreateTwoDocumentManifestText(referenceName, referenceName);
+
+    private static string CreateTwoDocumentManifestText(
+        string book1ReferenceName,
+        string book2ReferenceName)
         => JsonSerializer.Serialize(new
         {
             schemaVersion = 1,
@@ -1719,8 +2124,8 @@ public sealed class ReferenceCatalogLifecycleTests
             primaryDocument = "Book1",
             documents = new Dictionary<string, object>
             {
-                ["Book1"] = CreateDocument("src/Book1", referenceName),
-                ["Book2"] = CreateDocument("src/Book2", referenceName)
+                ["Book1"] = CreateDocument("src/Book1", book1ReferenceName),
+                ["Book2"] = CreateDocument("src/Book2", book2ReferenceName)
             }
         });
 
@@ -1765,6 +2170,64 @@ public sealed class ReferenceCatalogLifecycleTests
                 .Select(referenceName => new VbaProjectReference(referenceName))
                 .ToArray());
 
+    private sealed class BlockingFirstPlanReservationObserver
+        : IReferenceCatalogRefreshPlanObserver
+    {
+        private readonly TaskCompletionSource releaseFirstPlan = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int observationCount;
+
+        public TaskCompletionSource FirstPlanReserved { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void AfterPlanReservedBeforePost(string uri, long revision)
+        {
+            if (Interlocked.Increment(ref observationCount) != 1)
+            {
+                return;
+            }
+
+            FirstPlanReserved.TrySetResult();
+            releaseFirstPlan.Task.GetAwaiter().GetResult();
+        }
+
+        public void BeforePlanCommit(string uri, long revision)
+        {
+        }
+
+        public void ReleaseFirstPlan()
+            => releaseFirstPlan.TrySetResult();
+    }
+
+    private sealed class BlockingFirstPlanObserver
+        : IReferenceCatalogRefreshPlanObserver
+    {
+        private readonly TaskCompletionSource releaseFirstPlan = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int observationCount;
+
+        public TaskCompletionSource FirstPlanStarted { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void AfterPlanReservedBeforePost(string uri, long revision)
+        {
+        }
+
+        public void BeforePlanCommit(string uri, long revision)
+        {
+            if (Interlocked.Increment(ref observationCount) != 1)
+            {
+                return;
+            }
+
+            FirstPlanStarted.TrySetResult();
+            releaseFirstPlan.Task.GetAwaiter().GetResult();
+        }
+
+        public void ReleaseFirstPlan()
+            => releaseFirstPlan.TrySetResult();
+    }
+
     private sealed class RecordingReferenceCatalogLifecycle : IReferenceCatalogLifecycle
     {
         public int ProjectActivationCount { get; private set; }
@@ -1806,18 +2269,42 @@ public sealed class ReferenceCatalogLifecycleTests
 
     private sealed class CountingDiscovery : IVbaProjectReferenceCatalogDiscovery
     {
+        private readonly object gate = new();
         private readonly List<string> referenceNames = [];
+        private int callCount;
 
-        public int CallCount { get; private set; }
+        public int CallCount
+        {
+            get
+            {
+                lock (gate)
+                {
+                    return callCount;
+                }
+            }
+        }
 
-        public IReadOnlyList<string> ReferenceNames => referenceNames;
+        public IReadOnlyList<string> ReferenceNames
+        {
+            get
+            {
+                lock (gate)
+                {
+                    return referenceNames.ToArray();
+                }
+            }
+        }
 
         public Task<VbaProjectReferenceCatalogDiscoveryResult> DiscoverAsync(
             string referenceName,
             CancellationToken cancellationToken = default)
         {
-            CallCount++;
-            referenceNames.Add(referenceName);
+            lock (gate)
+            {
+                callCount++;
+                referenceNames.Add(referenceName);
+            }
+
             return Task.FromResult(
                 VbaProjectReferenceCatalogDiscoveryResult.Failure(
                     referenceName,

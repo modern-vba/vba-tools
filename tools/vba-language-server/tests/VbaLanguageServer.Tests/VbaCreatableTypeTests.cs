@@ -13,7 +13,7 @@ public sealed class VbaCreatableTypeTests
         const string moduleUri = "file:///C:/work/Types.bas";
         const string classUri = "file:///C:/work/Worker.cls";
         const string formUri = "file:///C:/work/Dialog.frm";
-        var index = VbaSourceIndex.Build(new Dictionary<string, string>
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string>
         {
             [moduleUri] = string.Join('\n', [
                 "Attribute VB_Name = \"Types\"",

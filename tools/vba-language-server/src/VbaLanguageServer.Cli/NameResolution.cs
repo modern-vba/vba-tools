@@ -718,7 +718,9 @@ internal sealed class VbaNameCandidateInventory
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .SelectMany(qualifier => referenceCatalogs
                 .GetQualifiedDefinitions(referenceSelection, qualifier)
-                .Select(definition => new VbaQualifiedReferenceDefinition(qualifier, definition)))
+                .Select(definition => new VbaQualifiedReferenceDefinition(
+                    qualifier,
+                    VbaSemanticInventory.CaptureDefinition(definition))))
             .ToArray();
         qualifiedReferenceDefinitionsByQualifier = qualifiedReferenceDefinitions.ToLookup(
             candidate => candidate.Qualifier,

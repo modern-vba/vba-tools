@@ -405,9 +405,10 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
         var refreshTask = service.RefreshAsync(selection);
         await discovery.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        var beforeRefresh = VbaSourceIndex
-            .Build(sourceDocuments, selection, cache.Current)
-            .GetCompletionDefinitions(uri, 2, "    Dim value As ".Length)
+        var beforeRefresh = VbaSemanticInventoryFixture
+            .Create(sourceDocuments, selection, cache.Current)
+            .GetCompletionResult(uri, 2, "    Dim value As ".Length)
+            .Definitions
             .Select(definition => definition.Name)
             .ToArray();
         Assert.DoesNotContain("GeneratedType", beforeRefresh);
@@ -415,9 +416,10 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
         discovery.Release();
         await refreshTask;
 
-        var afterRefresh = VbaSourceIndex
-            .Build(sourceDocuments, selection, cache.Current)
-            .GetCompletionDefinitions(uri, 2, "    Dim value As ".Length)
+        var afterRefresh = VbaSemanticInventoryFixture
+            .Create(sourceDocuments, selection, cache.Current)
+            .GetCompletionResult(uri, 2, "    Dim value As ".Length)
+            .Definitions
             .Select(definition => definition.Name)
             .ToArray();
         Assert.Contains("GeneratedType", afterRefresh);
@@ -576,8 +578,8 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
         };
 
         var results = await service.RefreshAsync(selection);
-        var index = VbaSourceIndex.Build(sourceDocuments, selection, cache.Current);
-        var memberCompletion = index.GetCompletionDefinitions(uri, 3, "    generated.".Length)
+        var index = VbaSemanticInventoryFixture.Create(sourceDocuments, selection, cache.Current);
+        var memberCompletion = index.GetCompletionResult(uri, 3, "    generated.".Length).Definitions
             .Select(definition => definition.Name)
             .ToArray();
 
@@ -612,13 +614,13 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
         };
 
         await service.RefreshAsync(selection);
-        var index = VbaSourceIndex.Build(sourceDocuments, selection, cache.Current);
+        var index = VbaSemanticInventoryFixture.Create(sourceDocuments, selection, cache.Current);
 
         var typeCompletion = index.GetCompletionResult(uri, 2, "    Dim regex As ".Length);
         Assert.Contains(typeCompletion.Definitions, definition =>
             definition.Name == "RegExp"
             && definition.Kind == VbaSourceDefinitionKind.Class);
-        var memberCompletion = index.GetCompletionDefinitions(uri, 3, "    regex.".Length);
+        var memberCompletion = index.GetCompletionResult(uri, 3, "    regex.".Length).Definitions;
         Assert.Contains(memberCompletion, definition =>
             definition.Name == "Pattern"
             && definition.Kind == VbaSourceDefinitionKind.Property);
@@ -668,9 +670,10 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
         var result = Assert.Single(results);
         Assert.True(result.DiscoveryResult.IsFailure);
         Assert.Contains("TypeLib registry is unavailable.", result.DiscoveryResult.ErrorMessage, StringComparison.Ordinal);
-        var definitions = VbaSourceIndex
-            .Build(sourceDocuments, selection, cache.Current)
-            .GetCompletionDefinitions(uri, 5, 4)
+        var definitions = VbaSemanticInventoryFixture
+            .Create(sourceDocuments, selection, cache.Current)
+            .GetCompletionResult(uri, 5, 4)
+            .Definitions
             .Select(definition => definition.Name)
             .ToArray();
         Assert.Contains("BuildValue", definitions);

@@ -46,8 +46,6 @@ internal sealed class NullVbaDocumentAnalysisBuildObserver
 /// <param name="ModuleKind">The module kind projected from the syntax tree.</param>
 /// <param name="SourceDocument">The source definitions and semantic shape projected from the syntax tree.</param>
 /// <param name="Diagnostics">The category-preserving document-local diagnostics.</param>
-/// <param name="LastParseUpdateKind">The parse granularity used to create the analysis.</param>
-/// <param name="LastMemberUpdate">The safe ModuleMember update metadata, when available.</param>
 internal sealed record VbaDocumentAnalysis(
     string Uri,
     string Text,
@@ -56,9 +54,7 @@ internal sealed record VbaDocumentAnalysis(
     VbaSyntaxTree SyntaxTree,
     VbaModuleKind ModuleKind,
     VbaSourceDocument SourceDocument,
-    VbaDiagnosticPipelineResult Diagnostics,
-    VbaSyntaxTreeParseUpdateKind LastParseUpdateKind,
-    VbaModuleMemberIncrementalUpdate? LastMemberUpdate)
+    VbaDiagnosticPipelineResult Diagnostics)
 {
     internal static VbaDocumentAnalysis Create(
         string uri,
@@ -67,8 +63,8 @@ internal sealed record VbaDocumentAnalysis(
         int? clientVersion)
     {
         var previousSyntaxTree = previousAnalysis?.SyntaxTree;
-        var parseResult = VbaSyntaxTree.ParseOrUpdate(uri, text, previousSyntaxTree);
-        var syntaxTree = parseResult.SyntaxTree;
+        var changeSet = VbaSyntaxTree.ParseOrUpdate(uri, text, previousSyntaxTree);
+        var syntaxTree = changeSet.SyntaxTree;
         return new VbaDocumentAnalysis(
             uri,
             text,
@@ -76,15 +72,11 @@ internal sealed record VbaDocumentAnalysis(
             syntaxTree.SourceText,
             syntaxTree,
             syntaxTree.Module.Kind,
-            VbaSourceIndex.CreateDocument(
+            VbaSourceDocumentProjector.Project(
                 uri,
-                syntaxTree,
-                previousSyntaxTree,
-                previousAnalysis?.SourceDocument,
-                parseResult.MemberUpdate),
-            VbaDiagnosticPipeline.CollectDocument(syntaxTree, uri),
-            parseResult.UpdateKind,
-            parseResult.MemberUpdate);
+                changeSet,
+                previousAnalysis?.SourceDocument),
+            VbaDiagnosticPipeline.CollectDocument(syntaxTree, uri));
     }
 }
 
@@ -107,13 +99,9 @@ internal sealed record VbaDocumentDiagnosticsSnapshot(
 /// <param name="Uri">The document URI.</param>
 /// <param name="Text">The latest document text.</param>
 /// <param name="SyntaxTree">The latest parsed syntax tree.</param>
-/// <param name="LastParseUpdateKind">The last parse update granularity.</param>
-/// <param name="LastMemberUpdate">The last safe ModuleMember update plan.</param>
 /// <param name="SourceDocument">The projected source document, when already available.</param>
 public sealed record VbaTrackedDocument(
     string Uri,
     string Text,
     VbaSyntaxTree SyntaxTree,
-    VbaSyntaxTreeParseUpdateKind LastParseUpdateKind,
-    VbaModuleMemberIncrementalUpdate? LastMemberUpdate = null,
     VbaSourceDocument? SourceDocument = null);

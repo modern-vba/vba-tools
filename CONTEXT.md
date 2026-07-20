@@ -393,6 +393,47 @@ _Avoid_: debug launch, project mutation, static capability declaration
 A set of exported VBA source files that belong to the same logical VBA project. When a source file belongs to a `ProjectManifest` document definition, the project boundary is that document's `DocumentSourceSet`; otherwise the ad-hoc project boundary is the folder containing the active `.bas`, `.cls`, or `.frm` file.
 _Avoid_: workspace, repository, package
 
+**VbaProjectDiskInventory**:
+The syntax-free disk capture for one resolved `VbaProject`. It owns `.bas`,
+`.cls`, and `.frm` enumeration, recursive versus top-directory scope,
+descendant `ProjectManifest` ownership, path/URI identity, stable byte reads,
+source decoding, decoded-text reuse, and manifest probes. Cold snapshot capture
+may reuse decoded text only while file metadata and the explicit invalidation
+generation remain unchanged. Watched-source capture performs ownership
+validation, invalidation, and one stable source read without enumerating the
+project. `ProjectReconciliation` always rereads source bytes even when metadata
+is unchanged. Its one-method reconciliation observation Seam accepts an
+immutable disk-only request containing the resolved project disk scope,
+ordered manifest probes, barrier overrides, and observed barrier URIs. The
+shared filesystem inventory instance and decoded-source cache remain the same
+ones used by cold and watched capture. The request does not contain an
+authority key, authority generation, workspace, source, or manifest revisions,
+known sources, or open-document state; those remain in
+`VbaProjectReconciler` and the workspace reconciliation Seam. The inventory
+does not parse syntax, apply open-buffer priority, or decide whether a captured
+authority may commit.
+_Avoid_: raw filesystem reader, source document cache, semantic inventory
+
+**DiskContentIdentity**:
+An opaque equality identity derived from decoded exported-source text by
+`VbaProjectDiskInventory`. Equal decoded text has equal identity even across
+invalidation and reread; changed decoded text has a different identity.
+Callers compare it without depending on timestamps, lengths, bytes, hashes, or
+parser state.
+_Avoid_: file metadata, source revision, syntax identity
+
+**ProjectReconciliation**:
+The watcher-miss convergence operation owned by the deep `VbaProjectReconciler`
+Module. It scans immutable disk facts in parallel, converts each authority into
+one ordered `VbaProjectReconciliationScopePlan`, and commits each plan through
+one required scheduler mutation. A stale authority fence rejects only that
+scope; fresh peer scopes still commit. Manifest transitions request a fresh
+follow-up plan instead of applying source mutations captured under the former
+authority. Each accepted scope dispatches diagnostics and manifest notification
+effects synchronously inside its required scheduler mutation, after the
+workspace commit and before the ordered lane is released.
+_Avoid_: flat reconciliation batch, out-of-lane effect dispatch, workspace helper sequence
+
 **AdHocVbaProject**:
 A `VbaProject` inferred from exported source files when no containing
 `ProjectManifest` can be found. It provides source definitions,
@@ -618,6 +659,20 @@ syntax structure those editor features depend on. It does not include
 compile-time type inference or unresolved-name diagnostics in the current
 scope.
 _Avoid_: regex scan result, semantic model, compiler
+
+**SyntaxChangeSet**:
+The reusable parser result represented by `VbaSyntaxTreeChangeSet`, pairing a
+complete current `VbaSyntaxTree` with only the semantic reuse proof a consumer
+may trust. `Unchanged` proves exact
+URI and text equality plus whole-tree reuse, `ModuleMember` identifies the
+previous and current `ModuleMember` whose surrounding syntax may be reused, and
+`Module` requires module-derived artifacts to be recomputed. It does not expose
+the incremental parser route, changed line ranges, source-window dimensions,
+fallback reason, segment counters, or other implementation observations.
+Only an unmodified parser-produced tree can establish `Unchanged` or
+`ModuleMember`; a publicly constructed tree or a tree whose URI, text, token
+stream, module, or diagnostics were replaced fails closed to `Module`.
+_Avoid_: parse update kind, incremental parser report, source-window result
 
 **VbaTokenStream**:
 The source-range-preserving lexical token sequence produced before
@@ -934,6 +989,15 @@ concurrent executor. The scheduler owns request cancellation, internal latency
 and fairness policy, and deterministic stop behavior; it does not make the
 TypeScript adapter authoritative for VBA semantics.
 _Avoid_: unbounded parallel request executor, extension-host scheduler, request thread
+
+**VbaLatestOnlyBackgroundMailbox**:
+The non-generic composition Module that retains at most one pending
+background delegate per authority, takes the latest delegate when execution
+starts, and leverages `VbaInteractiveWorkScheduler` for bounded admission. It
+owns active authority, ready FIFO, capacity retry, terminal completion, idle,
+discard, and stop behavior. Producer Modules retain revision, freshness,
+tombstone, and selection meaning.
+_Avoid_: scheduler Adapter, producer-local retry loop, unbounded background queue
 
 **InputSequence**:
 The monotonic sequence assigned when `VbaInteractiveWorkScheduler` admits a

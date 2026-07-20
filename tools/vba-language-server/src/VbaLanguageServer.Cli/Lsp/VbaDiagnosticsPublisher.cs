@@ -29,18 +29,15 @@ internal sealed class VbaDiagnosticsPublisher
     : IVbaProjectDiskReconciliationDiagnostics
 {
     private readonly object gate = new();
+    private readonly object enqueueGate = new();
     private readonly Dictionary<string, long> latestPublishRevisions = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, long> terminalPublishRevisions =
         new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, PendingDiagnosticsPublication> pendingPublications =
-        new(StringComparer.OrdinalIgnoreCase);
-    private readonly HashSet<string> activePublicationWorkers = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, List<TaskCompletionSource>>
-        idleWaiters = new(StringComparer.OrdinalIgnoreCase);
     private readonly LspMessageTransport transport;
     private readonly VbaLanguageWorkspace workspace;
     private readonly IVbaDiagnosticsPublicationObserver publicationObserver;
     private VbaInteractiveWorkScheduler? scheduler;
+    private VbaLatestOnlyBackgroundMailbox? publicationMailbox;
 
     /// <summary>
     /// Creates a diagnostics publisher.
@@ -78,25 +75,29 @@ internal sealed class VbaDiagnosticsPublisher
     public void AttachScheduler(VbaInteractiveWorkScheduler interactiveScheduler)
     {
         ArgumentNullException.ThrowIfNull(interactiveScheduler);
-        lock (gate)
+        lock (enqueueGate)
         {
-            if (scheduler is not null && !ReferenceEquals(scheduler, interactiveScheduler))
+            lock (gate)
             {
-                throw new InvalidOperationException(
-                    "The diagnostics publisher is already attached to another scheduler.");
-            }
+                if (scheduler is not null && !ReferenceEquals(scheduler, interactiveScheduler))
+                {
+                    throw new InvalidOperationException(
+                        "The diagnostics publisher is already attached to another scheduler.");
+                }
 
-            if (activePublicationWorkers.Count > 0)
-            {
-                throw new InvalidOperationException(
-                    "The diagnostics scheduler must be attached before publication starts.");
-            }
+                if (publicationMailbox is not null)
+                {
+                    return;
+                }
 
-            scheduler = interactiveScheduler;
+                scheduler = interactiveScheduler;
+                publicationMailbox = new VbaLatestOnlyBackgroundMailbox(
+                    interactiveScheduler,
+                    VbaInteractiveBackgroundWorkType.DiagnosticsPublication,
+                    StringComparer.OrdinalIgnoreCase,
+                    CompleteTerminalRevisionState);
+            }
         }
-
-        interactiveScheduler.RegisterCapacityObserver(
-            RetryOneScheduledPublication);
     }
 
     /// <summary>
@@ -204,23 +205,31 @@ internal sealed class VbaDiagnosticsPublisher
     /// </summary>
     internal Task WaitForIdleAsync(string uri)
     {
+        VbaLatestOnlyBackgroundMailbox mailbox;
         lock (gate)
         {
-            if (IsTerminalIdleLocked(uri))
+            mailbox = publicationMailbox
+                ?? throw new InvalidOperationException(
+                    "The diagnostics scheduler must be attached before publication starts.");
+        }
+
+        return mailbox.WaitForIdleAsync(uri);
+    }
+
+    /// <summary>
+    /// Stops pending diagnostics before the runtime-owned scheduler stops.
+    /// </summary>
+    internal void Stop()
+    {
+        lock (enqueueGate)
+        {
+            VbaLatestOnlyBackgroundMailbox? mailbox;
+            lock (gate)
             {
-                return Task.CompletedTask;
+                mailbox = publicationMailbox;
             }
 
-            var waiter = new TaskCompletionSource(
-                TaskCreationOptions.RunContinuationsAsynchronously);
-            if (!idleWaiters.TryGetValue(uri, out var waiters))
-            {
-                waiters = [];
-                idleWaiters.Add(uri, waiters);
-            }
-
-            waiters.Add(waiter);
-            return waiter.Task;
+            mailbox?.Stop();
         }
     }
 
@@ -263,20 +272,45 @@ internal sealed class VbaDiagnosticsPublisher
         Func<bool> isStillPublishable,
         Func<CancellationToken, Task> publish)
     {
-        VbaInteractiveWorkScheduler? interactiveScheduler;
+        var revisionObserved = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         long revision;
-        var startWorker = false;
-        lock (gate)
+        lock (enqueueGate)
         {
-            latestPublishRevisions.TryGetValue(uri, out var previous);
-            revision = previous + 1;
-            latestPublishRevisions[uri] = revision;
-            interactiveScheduler = scheduler;
-            pendingPublications[uri] = new PendingDiagnosticsPublication(
-                revision,
-                isStillPublishable,
-                publish);
-            startWorker = activePublicationWorkers.Add(uri);
+            VbaLatestOnlyBackgroundMailbox mailbox;
+            lock (gate)
+            {
+                mailbox = publicationMailbox
+                    ?? throw new InvalidOperationException(
+                        "The diagnostics scheduler must be attached before publication starts.");
+                latestPublishRevisions.TryGetValue(uri, out var previous);
+                revision = previous + 1;
+                latestPublishRevisions[uri] = revision;
+            }
+
+            mailbox.Post(
+                uri,
+                async cancellationToken =>
+                {
+                    await revisionObserved.Task.ConfigureAwait(false);
+                    if (!IsLatestPublishRevision(uri, revision)
+                        || !isStillPublishable())
+                    {
+                        return;
+                    }
+
+                    try
+                    {
+                        await publish(cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (IOException)
+                    {
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                    }
+                },
+                () => MarkPublishRevisionTerminal(uri, revision));
         }
 
         try
@@ -285,208 +319,7 @@ internal sealed class VbaDiagnosticsPublisher
         }
         finally
         {
-            DispatchPublicationWorker(
-                uri,
-                interactiveScheduler,
-                startWorker);
-        }
-    }
-
-    private void DispatchPublicationWorker(
-        string uri,
-        VbaInteractiveWorkScheduler? interactiveScheduler,
-        bool startWorker)
-    {
-        if (interactiveScheduler is not null)
-        {
-            if (startWorker)
-            {
-                StartScheduledPublication(uri, interactiveScheduler);
-            }
-
-            return;
-        }
-
-        if (startWorker)
-        {
-            _ = ProcessPublicationsAsync(uri);
-        }
-    }
-
-    private void RetryOneScheduledPublication()
-    {
-        VbaInteractiveWorkScheduler? interactiveScheduler;
-        string? uri;
-        lock (gate)
-        {
-            interactiveScheduler = scheduler;
-            uri = interactiveScheduler is not null && interactiveScheduler.IsAccepting
-                ? pendingPublications.Keys.FirstOrDefault(
-                    pendingUri => !activePublicationWorkers.Contains(pendingUri))
-                : null;
-            if (uri is not null)
-            {
-                activePublicationWorkers.Add(uri);
-            }
-        }
-
-        if (interactiveScheduler is not null && uri is not null)
-        {
-            StartScheduledPublication(uri, interactiveScheduler);
-        }
-    }
-
-    private void StartScheduledPublication(
-        string uri,
-        VbaInteractiveWorkScheduler interactiveScheduler)
-    {
-        if (!interactiveScheduler.TryAdmitBackground(
-                VbaInteractiveBackgroundWorkType.DiagnosticsPublication,
-                uri,
-                cancellationToken => PublishOneScheduledPublicationAsync(
-                    uri,
-                    cancellationToken),
-                out var admission))
-        {
-            lock (gate)
-            {
-                activePublicationWorkers.Remove(uri);
-                CompleteIdleWaitersLocked(uri);
-            }
-
-            interactiveScheduler.RequestCapacityPump();
-            return;
-        }
-
-        _ = ObserveScheduledPublicationAsync(
-            uri,
-            interactiveScheduler,
-            admission.Completion);
-    }
-
-    private async Task PublishOneScheduledPublicationAsync(
-        string uri,
-        CancellationToken cancellationToken)
-    {
-        PendingDiagnosticsPublication? publication;
-        lock (gate)
-        {
-            pendingPublications.Remove(uri, out publication);
-        }
-
-        if (publication is null)
-        {
-            return;
-        }
-
-        try
-        {
-            if (!IsLatestPublishRevision(uri, publication.Revision)
-                || !publication.IsStillPublishable())
-            {
-                return;
-            }
-
-            await publication.Publish(cancellationToken).ConfigureAwait(false);
-        }
-        catch (IOException)
-        {
-        }
-        catch (ObjectDisposedException)
-        {
-        }
-        finally
-        {
-            MarkPublishRevisionTerminal(uri, publication.Revision);
-        }
-    }
-
-    private async Task ObserveScheduledPublicationAsync(
-        string uri,
-        VbaInteractiveWorkScheduler interactiveScheduler,
-        Task completion)
-    {
-        try
-        {
-            await completion.ConfigureAwait(false);
-        }
-        catch (Exception)
-        {
-        }
-
-        var restart = false;
-        lock (gate)
-        {
-            activePublicationWorkers.Remove(uri);
-            restart = interactiveScheduler.IsAccepting
-                && pendingPublications.ContainsKey(uri)
-                && activePublicationWorkers.Add(uri);
-            CompleteIdleWaitersLocked(uri);
-        }
-
-        if (restart)
-        {
-            StartScheduledPublication(uri, interactiveScheduler);
-        }
-    }
-
-    private async Task ProcessPublicationsAsync(string uri)
-    {
-        var restart = false;
-        try
-        {
-            while (true)
-            {
-                await Task.Yield();
-                PendingDiagnosticsPublication publication;
-                lock (gate)
-                {
-                    if (!pendingPublications.Remove(uri, out publication!))
-                    {
-                        return;
-                    }
-                }
-
-                try
-                {
-                    if (!IsLatestPublishRevision(uri, publication.Revision)
-                        || !publication.IsStillPublishable())
-                    {
-                        continue;
-                    }
-
-                    await publication.Publish(CancellationToken.None).ConfigureAwait(false);
-                }
-                finally
-                {
-                    MarkPublishRevisionTerminal(uri, publication.Revision);
-                }
-            }
-        }
-        catch (OperationCanceledException)
-        {
-        }
-        catch (IOException)
-        {
-        }
-        catch (ObjectDisposedException)
-        {
-        }
-        finally
-        {
-            lock (gate)
-            {
-                activePublicationWorkers.Remove(uri);
-                restart = scheduler is null
-                    && pendingPublications.ContainsKey(uri)
-                    && activePublicationWorkers.Add(uri);
-                CompleteIdleWaitersLocked(uri);
-            }
-
-            if (restart)
-            {
-                _ = ProcessPublicationsAsync(uri);
-            }
+            revisionObserved.TrySetResult();
         }
     }
 
@@ -503,43 +336,38 @@ internal sealed class VbaDiagnosticsPublisher
             {
                 terminalPublishRevisions[uri] = revision;
             }
-
-            CompleteIdleWaitersLocked(uri);
         }
     }
 
-    private bool IsTerminalIdleLocked(string uri)
+    private void CompleteTerminalRevisionState(string uri)
     {
-        latestPublishRevisions.TryGetValue(uri, out var latestRevision);
-        terminalPublishRevisions.TryGetValue(uri, out var terminalRevision);
-        return !pendingPublications.ContainsKey(uri)
-            && !activePublicationWorkers.Contains(uri)
-            && terminalRevision >= latestRevision;
-    }
+        VbaLatestOnlyBackgroundMailbox? mailbox;
+        lock (gate)
+        {
+            mailbox = publicationMailbox;
+        }
 
-    private void CompleteIdleWaitersLocked(string uri)
-    {
-        if (!IsTerminalIdleLocked(uri))
+        if (mailbox is null || !mailbox.IsIdle(uri))
         {
             return;
         }
 
-        idleWaiters.Remove(uri, out var waiters);
-        latestPublishRevisions.Remove(uri);
-        terminalPublishRevisions.Remove(uri);
-        if (waiters is null)
+        lock (gate)
         {
-            return;
-        }
+            if (!mailbox.IsIdle(uri))
+            {
+                return;
+            }
 
-        foreach (var waiter in waiters)
-        {
-            waiter.TrySetResult();
+            latestPublishRevisions.TryGetValue(uri, out var latestRevision);
+            terminalPublishRevisions.TryGetValue(uri, out var terminalRevision);
+            if (terminalRevision < latestRevision)
+            {
+                return;
+            }
+
+            latestPublishRevisions.Remove(uri);
+            terminalPublishRevisions.Remove(uri);
         }
     }
-
-    private sealed record PendingDiagnosticsPublication(
-        long Revision,
-        Func<bool> IsStillPublishable,
-        Func<CancellationToken, Task> Publish);
 }

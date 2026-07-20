@@ -40,7 +40,7 @@ public sealed class VbaVersionedDocumentSnapshotTests
             observer.Release();
         }
 
-        Assert.NotNull(await changeTask.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.True(await changeTask.WaitAsync(TimeSpan.FromSeconds(5)));
         Assert.Equal(
             versionTwoText,
             workspace.GetDocumentSnapshot(uri, expectedVersion: 2)?.Text);
@@ -66,7 +66,7 @@ public sealed class VbaVersionedDocumentSnapshotTests
 
         try
         {
-            Assert.NotNull(workspace.ChangeDocument(uri, version: 3, versionThreeText));
+            Assert.True(workspace.ChangeDocument(uri, version: 3, versionThreeText));
             Assert.Equal(
                 versionThreeText,
                 workspace.GetDocumentSnapshot(uri, expectedVersion: 3)?.Text);
@@ -76,7 +76,7 @@ public sealed class VbaVersionedDocumentSnapshotTests
             observer.Release();
         }
 
-        Assert.NotNull(await versionTwoTask.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.True(await versionTwoTask.WaitAsync(TimeSpan.FromSeconds(5)));
         Assert.Null(workspace.GetDocumentSnapshot(uri, expectedVersion: 2));
         Assert.Equal(
             versionThreeText,
@@ -139,15 +139,15 @@ public sealed class VbaVersionedDocumentSnapshotTests
         {
             Assert.Null(workspace.GetDocumentSnapshot(uri, expectedVersion: 1));
             Assert.Null(workspace.GetDocumentSnapshot(uri, expectedVersion: 2));
-            Assert.Null(workspace.ChangeDocument(uri, version: 1, versionOneText));
-            Assert.Null(workspace.ChangeDocument(uri, version: 2, versionTwoText));
+            Assert.False(workspace.ChangeDocument(uri, version: 1, versionOneText));
+            Assert.False(workspace.ChangeDocument(uri, version: 2, versionTwoText));
         }
         finally
         {
             observer.Release();
         }
 
-        Assert.NotNull(await changeTask.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.True(await changeTask.WaitAsync(TimeSpan.FromSeconds(5)));
         Assert.Equal(
             versionTwoText,
             workspace.GetDocumentSnapshot(uri, expectedVersion: 2)?.Text);
@@ -181,7 +181,7 @@ public sealed class VbaVersionedDocumentSnapshotTests
             observer.Release();
         }
 
-        Assert.NotNull(
+        Assert.True(
             await closingLifecycleTask.WaitAsync(TimeSpan.FromSeconds(5)));
         Assert.Equal(
             reopenedText,
@@ -278,7 +278,7 @@ public sealed class VbaVersionedDocumentSnapshotTests
         Assert.Null(workspace.GetDocumentSnapshot(uri, expectedVersion: 1));
         Assert.Null(workspace.GetDocumentSnapshot(uri, expectedVersion: 2));
 
-        Assert.NotNull(
+        Assert.True(
             workspace.ChangeDocument(uri, version: 3, recoveredText));
         var recovered = Assert.IsType<VbaVersionedDocumentSnapshot>(
             workspace.GetDocumentSnapshot(uri, expectedVersion: 3));
@@ -306,7 +306,7 @@ public sealed class VbaVersionedDocumentSnapshotTests
         Assert.Same(malformed.SyntaxTree, malformed.SourceDocument.SyntaxTree);
         Assert.NotEmpty(malformed.Diagnostics.SyntaxDiagnostics);
 
-        Assert.NotNull(
+        Assert.True(
             workspace.ChangeDocument(uri, version: 2, recoveredText));
         var recovered = Assert.IsType<VbaVersionedDocumentSnapshot>(
             workspace.GetDocumentSnapshot(uri, expectedVersion: 2));
@@ -359,14 +359,14 @@ public sealed class VbaVersionedDocumentSnapshotTests
         var previous = Assert.IsType<VbaVersionedDocumentSnapshot>(
             workspace.GetDocumentSnapshot(uri, expectedVersion: 1));
 
-        var updateKind = workspace.ChangeDocument(uri, version: 2, versionTwoText);
+        var accepted = workspace.ChangeDocument(uri, version: 2, versionTwoText);
         var current = Assert.IsType<VbaVersionedDocumentSnapshot>(
             workspace.GetDocumentSnapshot(uri, expectedVersion: 2));
-        var clean = VbaSourceIndex.CreateDocument(
+        var clean = VbaSourceDocumentProjector.Project(
             uri,
             VbaSyntaxTree.ParseModule(uri, versionTwoText));
 
-        Assert.Equal(VbaSyntaxTreeParseUpdateKind.ModuleMember, updateKind);
+        Assert.True(accepted);
         Assert.Same(
             FindDefinition(previous.SourceDocument, "Before"),
             FindDefinition(current.SourceDocument, "Before"));
@@ -495,8 +495,6 @@ public sealed class VbaVersionedDocumentSnapshotTests
         Assert.Contains(
             snapshot.SourceDocument.Definitions,
             definition => definition.Name == "Run");
-        Assert.Equal(VbaSyntaxTreeParseUpdateKind.FullModule, snapshot.LastParseUpdateKind);
-        Assert.Null(snapshot.LastMemberUpdate);
         Assert.Contains(
             snapshot.Diagnostics.SyntaxDiagnostics,
             diagnostic => diagnostic.Code == "syntax.missingBlockTerminator"

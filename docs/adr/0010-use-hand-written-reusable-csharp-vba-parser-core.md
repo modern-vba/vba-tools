@@ -22,9 +22,20 @@ parsing, trivia retention, and incomplete-code completion behavior.
 
 The parser core must not depend on LSP, VS Code, workbook automation, or
 `VbaDev` command behavior. It is owned by VbaLanguageServer for now, but its
-syntax model and public API should remain reusable enough for a future DoxyVB6
+syntax model and public Interface should remain reusable enough for a future DoxyVB6
 adapter to consume without forcing DoxyVB6 integration into the initial parser
 replacement work.
+
+`VbaSyntaxTree.ParseOrUpdate` returns the closed `SyntaxChangeSet` hierarchy.
+Each variant carries the complete current tree and exposes only a semantic
+reuse proof: `Unchanged`, `ModuleMember`, or `Module`. Constructors are
+internal, so external consumers can inspect proofs but cannot manufacture
+them. Parser routes, line-difference calculations, fallback reasons,
+source-window dimensions, and segment counters remain implementation
+observations. Only an unmodified parser-produced previous tree carries the
+internal provenance required for an `Unchanged` or `ModuleMember` proof;
+publicly constructed or modified trees remain valid inputs but return
+`Module`.
 
 ## Considered Options
 
@@ -40,10 +51,11 @@ replacement work.
 
 ## Consequences
 
-`VbaLanguageServer.Syntax` becomes the parser ownership boundary. Language
+`VbaLanguageServer.Syntax` becomes the parser ownership Seam. Language
 server features derive `VbaDefinition`s, `CallableSignature`s,
 `SyntaxDiagnostic`s, semantic tokens, completion context, and formatting inputs
-from `VbaSyntaxTree` instead of scanning source text directly. The initial
+from `VbaSyntaxTree` and consume `SyntaxChangeSet` during projection instead of
+scanning source text directly. The initial
 parser scope does not include unresolved-name diagnostics, duplicate
 declaration diagnostics, type mismatch diagnostics, invalid assignment target
 diagnostics, or broader VBA compiler-compatibility diagnostics.
