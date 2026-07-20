@@ -35,7 +35,7 @@ internal sealed class VbaLspRequestExecution
         ServerVersion: "0.1.0");
 
     private readonly LspMessageTransport transport;
-    private readonly VbaLanguageWorkspace workspace;
+    private readonly IVbaInteractiveWorkspaceCapture workspace;
     private readonly IVbaLspRequestExecutionGate executionGate;
     private int shutdownRequested;
 
@@ -43,10 +43,10 @@ internal sealed class VbaLspRequestExecution
     /// Creates a request executor over the transport and workspace boundaries.
     /// </summary>
     /// <param name="transport">The transport used to write the request response.</param>
-    /// <param name="workspace">The workspace used to create language feature snapshots.</param>
+    /// <param name="workspace">The boundary used to capture immutable language feature state.</param>
     public VbaLspRequestExecution(
         LspMessageTransport transport,
-        VbaLanguageWorkspace workspace,
+        IVbaInteractiveWorkspaceCapture workspace,
         IVbaLspRequestExecutionGate? executionGate = null)
     {
         this.transport = transport;
@@ -108,23 +108,6 @@ internal sealed class VbaLspRequestExecution
                 RequestOutcome.Error(-32603, "Internal error"),
                 useExecutionGate: false);
         }
-    }
-
-    /// <summary>
-    /// Executes one request and writes exactly one success or error response.
-    /// </summary>
-    public Task ExecuteAsync(
-        JsonObject request,
-        CancellationToken requestCancellationToken,
-        CancellationToken responseCancellationToken,
-        Action? releaseCancellationOwnership = null)
-    {
-        var captured = Capture(request, requestCancellationToken);
-        return ExecuteAsync(
-            captured,
-            requestCancellationToken,
-            responseCancellationToken,
-            releaseCancellationOwnership);
     }
 
     /// <summary>
@@ -416,9 +399,8 @@ internal sealed class VbaLspRequestExecution
             return direct(RequestOutcome.InvalidParams());
         }
 
-        var inventories = workspace.CreateProjectSnapshots(cancellationToken)
-            .Select(snapshot => snapshot.SemanticInventory)
-            .ToArray();
+        var inventories =
+            workspace.CaptureWorkspaceSemanticInventories(cancellationToken);
         return captured(executionToken =>
         {
             var symbols = new List<VbaWorkspaceSymbol>();
@@ -496,7 +478,7 @@ internal sealed class VbaLspRequestExecution
             return direct(RequestOutcome.InvalidParams());
         }
 
-        var snapshot = workspace.GetDocumentSnapshot(
+        var snapshot = workspace.CaptureExactDocumentSnapshot(
             request.DocumentUri,
             request.DocumentVersion,
             cancellationToken);
@@ -518,9 +500,10 @@ internal sealed class VbaLspRequestExecution
         string uri,
         CancellationToken cancellationToken)
     {
-        var snapshot = workspace.CreateProjectSnapshot(uri, cancellationToken);
+        var inventory =
+            workspace.CaptureProjectSemanticInventory(uri, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
-        return snapshot.SemanticInventory;
+        return inventory;
     }
 
     private static bool TryDecodeEnvelope(

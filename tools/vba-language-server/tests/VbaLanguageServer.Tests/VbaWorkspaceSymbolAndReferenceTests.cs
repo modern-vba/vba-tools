@@ -347,7 +347,10 @@ public sealed class VbaWorkspaceSymbolAndReferenceTests
             ]));
 
             var snapshot = workspace.CreateProjectSnapshot(book1Uri);
-            var references = snapshot.SourceIndex.FindReferences(book1Uri, 1, "Public Function ".Length);
+            var references = snapshot.SemanticInventory.FindReferences(
+                book1Uri,
+                1,
+                "Public Function ".Length);
 
             Assert.Equal(2, references.Count);
             Assert.Contains(references, reference => reference.Uri == book1Uri);

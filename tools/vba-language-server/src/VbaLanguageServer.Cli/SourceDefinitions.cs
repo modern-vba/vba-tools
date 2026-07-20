@@ -1,5 +1,4 @@
 using System.Text.Json.Serialization;
-using System.Text.RegularExpressions;
 using VbaLanguageServer.Diagnostics;
 using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.Syntax;
@@ -614,27 +613,25 @@ public sealed class VbaSourceIndex
         "defaultLibrary"
     ];
 
-    private readonly IReadOnlyList<VbaSourceDocument> documents;
-    private readonly VbaSemanticResolution semanticResolution;
-    private readonly VbaResolutionPolicy resolutionPolicy;
-    private readonly VbaResolvedIdentifierOccurrenceIndex resolvedOccurrences;
-    private readonly VbaSourceFormatter sourceFormatter;
-    private readonly object semanticTokenCacheGate = new();
-    private readonly Dictionary<string, IReadOnlyList<VbaSemanticToken>> semanticTokenCache = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, IReadOnlyList<int>> semanticTokenDataCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly VbaSemanticInventory semanticInventory;
 
     private VbaSourceIndex(
         IReadOnlyList<VbaSourceDocument> documents,
         VbaProjectReferenceSelection? referenceSelection,
         VbaProjectReferenceCatalogSet referenceCatalogs)
+        : this(VbaSemanticInventory.Create(
+            documents.ToDictionary(
+                document => document.Uri,
+                document => document,
+                StringComparer.OrdinalIgnoreCase),
+            referenceSelection,
+            referenceCatalogs))
     {
-        this.documents = documents;
-        resolutionPolicy = new VbaResolutionPolicy();
-        semanticResolution = new VbaSemanticResolution(documents, referenceSelection, referenceCatalogs, resolutionPolicy);
-        resolvedOccurrences = new VbaResolvedIdentifierOccurrenceIndex(
-            documents,
-            semanticResolution.ResolveSourceDefinition);
-        sourceFormatter = new VbaSourceFormatter(semanticResolution, resolvedOccurrences);
+    }
+
+    private VbaSourceIndex(VbaSemanticInventory semanticInventory)
+    {
+        this.semanticInventory = semanticInventory;
     }
 
     /// <summary>
@@ -703,10 +700,7 @@ public sealed class VbaSourceIndex
     /// <param name="uri">The document URI.</param>
     /// <returns>The document definitions, or an empty list when the document is not indexed.</returns>
     public IReadOnlyList<VbaSourceDefinition> GetDocumentDefinitions(string uri)
-        => documents
-            .FirstOrDefault(document => SameUri(document.Uri, uri))
-            ?.Definitions
-            ?? Array.Empty<VbaSourceDefinition>();
+        => semanticInventory.GetDocumentDefinitions(uri);
 
     /// <summary>
     /// Searches workspace symbols across indexed source documents.
@@ -714,23 +708,7 @@ public sealed class VbaSourceIndex
     /// <param name="query">The optional symbol name substring.</param>
     /// <returns>The matching non-local source symbols.</returns>
     public IReadOnlyList<VbaWorkspaceSymbol> GetWorkspaceSymbols(string query)
-    {
-        var normalizedQuery = query ?? "";
-        return documents
-            .SelectMany(document => document.Definitions)
-            .Where(definition => definition.Visibility != VbaSourceDefinitionVisibility.Local)
-            .Where(definition => !VbaProjectReferenceCatalogSet.IsExternalDefinition(definition))
-            .Where(definition => string.IsNullOrWhiteSpace(normalizedQuery)
-                || definition.Name.Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase))
-            .Select(definition => new VbaWorkspaceSymbol(
-                definition.Name,
-                definition.Kind,
-                definition.Uri,
-                definition.Range))
-            .OrderBy(symbol => symbol.Name, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(symbol => symbol.Uri, StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-    }
+        => semanticInventory.GetWorkspaceSymbols(query);
 
     /// <summary>
     /// Finds source references to the definition at a document position.
@@ -740,22 +718,7 @@ public sealed class VbaSourceIndex
     /// <param name="character">The zero-based character.</param>
     /// <returns>The matching reference locations across indexed source documents.</returns>
     public IReadOnlyList<VbaDefinitionLocation> FindReferences(string uri, int line, int character)
-    {
-        var target = ResolveSourceDefinition(uri, line, character);
-        if (target is null)
-        {
-            return [];
-        }
-
-        return resolvedOccurrences.FindMatching(target)
-            .Select(occurrence => new VbaDefinitionLocation(occurrence.Uri, occurrence.Range))
-            .GroupBy(reference => $"{reference.Uri}:{GetRangeKey(reference.Range)}", StringComparer.OrdinalIgnoreCase)
-            .Select(group => group.First())
-            .OrderBy(reference => reference.Uri, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(reference => reference.Range.Start.Line)
-            .ThenBy(reference => reference.Range.Start.Character)
-            .ToArray();
-    }
+        => semanticInventory.FindReferences(uri, line, character);
 
     /// <summary>
     /// Gets semantic tokens for one document.
@@ -763,30 +726,7 @@ public sealed class VbaSourceIndex
     /// <param name="uri">The document URI.</param>
     /// <returns>The semantic tokens before LSP encoding.</returns>
     public IReadOnlyList<VbaSemanticToken> GetSemanticTokens(string uri)
-    {
-        lock (semanticTokenCacheGate)
-        {
-            if (semanticTokenCache.TryGetValue(uri, out var cachedTokens))
-            {
-                return cachedTokens;
-            }
-        }
-
-        var tokens = VbaSemanticTokenBuilder.GetSemanticTokens(
-            documents,
-            uri,
-            resolvedOccurrences.GetDocumentOccurrences(uri));
-        lock (semanticTokenCacheGate)
-        {
-            if (semanticTokenCache.TryGetValue(uri, out var cachedTokens))
-            {
-                return cachedTokens;
-            }
-
-            semanticTokenCache[uri] = tokens;
-            return tokens;
-        }
-    }
+        => semanticInventory.GetSemanticTokens(uri);
 
     /// <summary>
     /// Gets LSP delta-encoded semantic token data for one document.
@@ -794,27 +734,7 @@ public sealed class VbaSourceIndex
     /// <param name="uri">The document URI.</param>
     /// <returns>The encoded semantic token integer data.</returns>
     public IReadOnlyList<int> GetSemanticTokenData(string uri)
-    {
-        lock (semanticTokenCacheGate)
-        {
-            if (semanticTokenDataCache.TryGetValue(uri, out var cachedData))
-            {
-                return cachedData;
-            }
-        }
-
-        var data = VbaSemanticTokenBuilder.GetSemanticTokenData(GetSemanticTokens(uri));
-        lock (semanticTokenCacheGate)
-        {
-            if (semanticTokenDataCache.TryGetValue(uri, out var cachedData))
-            {
-                return cachedData;
-            }
-
-            semanticTokenDataCache[uri] = data;
-            return data;
-        }
-    }
+        => semanticInventory.GetSemanticTokenData(uri);
 
     /// <summary>
     /// Gets completion definitions visible at a document position.
@@ -834,7 +754,7 @@ public sealed class VbaSourceIndex
     /// <param name="character">The zero-based character.</param>
     /// <returns>The completion result for the position.</returns>
     public VbaCompletionResult GetCompletionResult(string uri, int line, int character)
-        => semanticResolution.GetCompletionResult(uri, line, character);
+        => semanticInventory.GetCompletionResult(uri, line, character);
 
     /// <summary>
     /// Resolves the definition location for the reference at a document position.
@@ -844,13 +764,7 @@ public sealed class VbaSourceIndex
     /// <param name="character">The zero-based character.</param>
     /// <returns>The definition location, or null when the reference is unresolved or ambiguous.</returns>
     public VbaDefinitionLocation? ResolveDefinition(string uri, int line, int character)
-    {
-        var definition = ResolveSourceDefinition(uri, line, character);
-        return definition is null
-            || definition.Identity.Origin == VbaDefinitionOrigin.ProjectReference
-                ? null
-                : definition.Location;
-    }
+        => semanticInventory.ResolveDefinition(uri, line, character);
 
     /// <summary>
     /// Resolves the source definition for the reference at a document position.
@@ -860,7 +774,7 @@ public sealed class VbaSourceIndex
     /// <param name="character">The zero-based character.</param>
     /// <returns>The resolved definition, or null when unresolved or ambiguous.</returns>
     public VbaSourceDefinition? ResolveSourceDefinition(string uri, int line, int character)
-        => semanticResolution.ResolveSourceDefinition(uri, line, character);
+        => semanticInventory.ResolveSourceDefinition(uri, line, character);
 
     /// <summary>
     /// Gets signature help for the call site at a document position.
@@ -870,7 +784,7 @@ public sealed class VbaSourceIndex
     /// <param name="character">The zero-based character.</param>
     /// <returns>The signature help result, or null when no callable target resolves.</returns>
     public VbaSignatureHelp? GetSignatureHelp(string uri, int line, int character)
-        => semanticResolution.GetSignatureHelp(uri, line, character);
+        => semanticInventory.GetSignatureHelp(uri, line, character);
 
     /// <summary>
     /// Gets the rename target range when the symbol at a document position can be renamed.
@@ -880,12 +794,7 @@ public sealed class VbaSourceIndex
     /// <param name="character">The zero-based character.</param>
     /// <returns>The rename target range, or null when rename is unavailable.</returns>
     public VbaRange? PrepareRename(string uri, int line, int character)
-    {
-        var target = ResolveSourceDefinition(uri, line, character);
-        return target is null || !resolutionPolicy.IsRenameTarget(target)
-            ? null
-            : target.Range;
-    }
+        => semanticInventory.PrepareRename(uri, line, character);
 
     /// <summary>
     /// Creates workspace edits for renaming the source definition at a document position.
@@ -915,29 +824,7 @@ public sealed class VbaSourceIndex
         int line,
         int character,
         string newName)
-    {
-        if (!IsIdentifierName(newName))
-        {
-            return null;
-        }
-
-        var target = ResolveSourceDefinition(uri, line, character);
-        if (target is null || !resolutionPolicy.IsRenameTarget(target))
-        {
-            return null;
-        }
-
-        var changes = resolvedOccurrences.FindMatching(target)
-            .GroupBy(occurrence => occurrence.Uri, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(
-                group => group.Key,
-                group => (IReadOnlyList<VbaTextEdit>)group
-                    .Select(occurrence => new VbaTextEdit(occurrence.Range, newName))
-                    .ToArray(),
-                StringComparer.OrdinalIgnoreCase);
-
-        return changes.Count == 0 ? null : new VbaRenamePlan(target.Range, changes);
-    }
+        => semanticInventory.CreateRenamePlan(uri, line, character, newName);
 
     /// <summary>
     /// Formats a document and returns a whole-document replacement edit when formatting changes text.
@@ -964,16 +851,10 @@ public sealed class VbaSourceIndex
         string uri,
         VbaIndentationStyle indentationStyle,
         CancellationToken cancellationToken = default)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        var document = documents.FirstOrDefault(candidate => SameUri(candidate.Uri, uri));
-        return document is null
-            ? null
-            : sourceFormatter.FormatDocument(document, indentationStyle, cancellationToken);
-    }
-
-    private static string GetRangeKey(VbaRange range)
-        => $"{range.Start.Line}:{range.Start.Character}:{range.End.Line}:{range.End.Character}";
+        => semanticInventory.FormatDocument(
+            uri,
+            indentationStyle,
+            cancellationToken);
 
     private static VbaSourceDocument ParseDocument(string uri, string text)
     {
@@ -1327,14 +1208,4 @@ public sealed class VbaSourceIndex
 
     private static VbaTypeReference MapTypeReference(VbaTypeReferenceSyntax typeReference)
         => new(typeReference.Name, typeReference.Qualifier);
-
-    private static bool IsIdentifierName(string value)
-        => Regex.IsMatch(
-            value,
-            "^[A-Za-z_][A-Za-z0-9_]*$",
-            RegexOptions.CultureInvariant);
-
-    private static bool SameUri(string left, string right)
-        => string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
-
 }

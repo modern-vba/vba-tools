@@ -308,7 +308,19 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
         requestCancellations = [];
     private readonly HashSet<VbaInteractiveWorkCancellationOwner> activeCancellations = [];
     private readonly List<ActiveRead> activeReads = [];
-    private readonly List<ScheduledWork> pendingReads = [];
+    private readonly LinkedList<ScheduledWork>[] pendingReadsByClass =
+    [
+        [],
+        [],
+        [],
+        []
+    ];
+    private readonly long[] fairnessClockByClass = new long[4];
+    private readonly long[] fairnessResetByClass = new long[4];
+    private readonly Dictionary<
+        string,
+        Dictionary<string, LinkedListNode<ScheduledWork>>>
+        pendingBackgroundByMethod = new(StringComparer.Ordinal);
     private readonly List<Action> capacityObservers = [];
     private readonly IVbaInteractiveWorkTimingSink timingSink;
     private readonly Action<VbaInteractiveWorkFailure> failureSink;
@@ -323,6 +335,7 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
     private long nextInputSequence;
     private long latestMutationSequence;
     private int ownedWorkCount;
+    private int pendingReadCount;
     private int requiredAdmissionWaiterCount;
     private int nextCapacityObserverIndex;
     private bool capacityPumpActive;
@@ -526,42 +539,6 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
             coalescingKey: null,
             requestId: null,
             (cancellationToken, _) => executeAsync(cancellationToken),
-            advancesReadFence: false);
-
-    /// <summary>
-    /// Admits a request without waiting for its execution.
-    /// </summary>
-    public VbaInteractiveWorkAdmission AdmitRequest(
-        VbaLspRequestId? requestId,
-        Func<CancellationToken, Task> executeAsync)
-        => AdmitRequest(requestId, "<request>", executeAsync);
-
-    /// <summary>
-    /// Admits a named request without waiting for its execution.
-    /// </summary>
-    public VbaInteractiveWorkAdmission AdmitRequest(
-        VbaLspRequestId? requestId,
-        string method,
-        Func<CancellationToken, Task> executeAsync)
-        => AdmitRequest(
-            requestId,
-            method,
-            (cancellationToken, _) => executeAsync(cancellationToken));
-
-    /// <summary>
-    /// Admits a request that explicitly releases cancellation ownership after choosing its terminal response.
-    /// </summary>
-    public VbaInteractiveWorkAdmission AdmitRequest(
-        VbaLspRequestId? requestId,
-        string method,
-        Func<CancellationToken, Action, Task> executeAsync)
-        => Admit(
-            VbaInteractiveWorkKind.Request,
-            method,
-            captureRead: null,
-            coalescingKey: null,
-            requestId,
-            executeAsync,
             advancesReadFence: false);
 
     /// <summary>
@@ -899,7 +876,7 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
             {
                 await ObserveCompletedReadsAsync();
                 ScheduledWork? work;
-                if (pendingReads.Count > 0)
+                if (pendingReadCount > 0)
                 {
                     await CollectQueuedReadRunAsync();
                     if (TryDequeueEligibleRead(out var pendingRead))
@@ -989,28 +966,19 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
             }
             && work.CoalescingKey is { } workKey)
         {
-            for (var index = pendingReads.Count - 1; index >= 0; index--)
+            if (pendingBackgroundByMethod.TryGetValue(
+                    work.Method,
+                    out var pendingByKey)
+                && pendingByKey.TryGetValue(workKey, out var pendingNode))
             {
-                var pending = pendingReads[index];
-                if (pending.ReadPolicy is not
-                    {
-                        WorkClass: VbaInteractiveWorkClass.Background
-                    }
-                    || pending.CoalescingKey is not { } pendingKey
-                    || !pending.Method.Equals(work.Method, StringComparison.Ordinal)
-                    || !pendingKey.Equals(workKey, StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                pendingReads.RemoveAt(index);
+                var pending = RemovePendingRead(pendingNode);
                 await CompleteSupersededWorkAsync(pending);
             }
         }
 
         if (await CaptureReadAsync(work))
         {
-            pendingReads.Add(work);
+            AddPendingRead(work);
         }
     }
 
@@ -1022,15 +990,25 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
             return false;
         }
 
-        var pendingIndex = -1;
-        var bestScore = int.MinValue;
+        LinkedListNode<ScheduledWork>? selectedNode = null;
+        var bestScore = long.MinValue;
         var activeNonLatencyCriticalReads = ActiveNonLatencyCriticalReadCount();
         var maximumNonLatencyCriticalReads =
             Math.Max(1, options.MaxConcurrentReads - 1);
-        for (var index = 0; index < pendingReads.Count; index++)
+        // Within one class, the FIFO head has observed at least as much aging
+        // as every later item and also wins the input-sequence tie-break.
+        for (var classIndex = 0;
+             classIndex < pendingReadsByClass.Length;
+             classIndex++)
         {
-            var pending = pendingReads[index];
-            var workClass = pending.ReadPolicy!.Value.WorkClass;
+            var candidateNode = pendingReadsByClass[classIndex].First;
+            if (candidateNode is null)
+            {
+                continue;
+            }
+
+            var candidate = candidateNode.Value;
+            var workClass = candidate.ReadPolicy!.Value.WorkClass;
             if (workClass != VbaInteractiveWorkClass.LatencyCritical
                 && activeNonLatencyCriticalReads >= maximumNonLatencyCriticalReads)
             {
@@ -1043,40 +1021,103 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
                 continue;
             }
 
-            var score = BasePriority(workClass) + pending.FairnessAge * 50;
+            var fairnessAge = fairnessClockByClass[classIndex]
+                - Math.Max(
+                    candidate.FairnessClockAtAdmission,
+                    fairnessResetByClass[classIndex]);
+            var score = BasePriority(workClass) + fairnessAge * 50;
             if (score < bestScore)
             {
                 continue;
             }
 
             if (score == bestScore
-                && pendingIndex >= 0
-                && pending.InputSequence > pendingReads[pendingIndex].InputSequence)
+                && selectedNode is not null
+                && candidate.InputSequence > selectedNode.Value.InputSequence)
             {
                 continue;
             }
 
-            pendingIndex = index;
+            selectedNode = candidateNode;
             bestScore = score;
         }
 
-        if (pendingIndex < 0)
+        if (selectedNode is null)
         {
             return false;
         }
 
-        work = pendingReads[pendingIndex];
-        pendingReads.RemoveAt(pendingIndex);
-        var selectedPriority = BasePriority(work.ReadPolicy!.Value.WorkClass);
-        foreach (var pending in pendingReads)
+        work = RemovePendingRead(selectedNode);
+        var selectedWorkClass = work.ReadPolicy!.Value.WorkClass;
+        var selectedClassIndex = (int)selectedWorkClass;
+        fairnessResetByClass[selectedClassIndex] =
+            fairnessClockByClass[selectedClassIndex];
+        for (var classIndex = 0;
+             classIndex < pendingReadsByClass.Length;
+             classIndex++)
         {
-            if (BasePriority(pending.ReadPolicy!.Value.WorkClass) < selectedPriority)
+            if (BasePriority((VbaInteractiveWorkClass)classIndex)
+                < BasePriority(selectedWorkClass))
             {
-                pending.FairnessAge++;
+                fairnessClockByClass[classIndex]++;
             }
         }
 
         return true;
+    }
+
+    private void AddPendingRead(ScheduledWork work)
+    {
+        var workClass = work.ReadPolicy!.Value.WorkClass;
+        var classIndex = (int)workClass;
+        work.FairnessClockAtAdmission = fairnessClockByClass[classIndex];
+        var node = pendingReadsByClass[classIndex].AddLast(work);
+        pendingReadCount++;
+        if (workClass != VbaInteractiveWorkClass.Background
+            || work.CoalescingKey is not { } workKey)
+        {
+            return;
+        }
+
+        if (!pendingBackgroundByMethod.TryGetValue(
+                work.Method,
+                out var pendingByKey))
+        {
+            pendingByKey = new Dictionary<
+                string,
+                LinkedListNode<ScheduledWork>>(
+                StringComparer.OrdinalIgnoreCase);
+            pendingBackgroundByMethod.Add(work.Method, pendingByKey);
+        }
+
+        pendingByKey.Add(workKey, node);
+    }
+
+    private ScheduledWork RemovePendingRead(
+        LinkedListNode<ScheduledWork> node)
+    {
+        var work = node.Value;
+        var workClass = work.ReadPolicy!.Value.WorkClass;
+        pendingReadsByClass[(int)workClass].Remove(node);
+        pendingReadCount--;
+        if (workClass != VbaInteractiveWorkClass.Background
+            || work.CoalescingKey is not { } workKey
+            || !pendingBackgroundByMethod.TryGetValue(
+                work.Method,
+                out var pendingByKey)
+            || !pendingByKey.TryGetValue(workKey, out var indexedNode)
+            || !ReferenceEquals(indexedNode, node))
+        {
+            return work;
+        }
+
+        pendingByKey.Remove(workKey);
+        if (pendingByKey.Count == 0)
+        {
+            pendingBackgroundByMethod.Remove(work.Method);
+        }
+
+        return work;
     }
 
     private static int BasePriority(VbaInteractiveWorkClass workClass)
@@ -1661,7 +1702,7 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
         VbaInteractiveWorkCancellationOwner Cancellation,
         TaskCompletionSource Completion)
     {
-        public int FairnessAge { get; set; }
+        public long FairnessClockAtAdmission { get; set; }
 
         public VbaInteractiveCapturedRead? CapturedRead { get; set; }
     }

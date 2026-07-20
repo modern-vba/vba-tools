@@ -10,123 +10,60 @@ namespace VbaLanguageServer.SourceModel;
 /// </summary>
 public sealed class VbaSemanticInventory
 {
-    private readonly VbaSourceIndex compatibilityIndex;
     private readonly IReadOnlyList<VbaSourceDocument> sourceDocuments;
+    private readonly VbaNameCandidateInventory definitionCandidates;
     private readonly VbaResolutionPolicy resolutionPolicy = new();
+    private readonly VbaSemanticResolution semanticResolution;
     private readonly VbaResolvedIdentifierOccurrenceIndex resolvedOccurrences;
+    private readonly VbaSourceFormatter sourceFormatter;
     private readonly object semanticTokenCacheGate = new();
     private readonly Dictionary<string, IReadOnlyList<VbaSemanticToken>> semanticTokenCache =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, IReadOnlyList<int>> semanticTokenDataCache =
         new(StringComparer.OrdinalIgnoreCase);
-    private readonly IReadOnlyDictionary<string, IReadOnlyList<VbaSourceDefinition>> definitionsByDocument;
-    private readonly IReadOnlyList<VbaSourceDefinition> workspaceSymbolDefinitions;
 
     private VbaSemanticInventory(
-        VbaSourceIndex compatibilityIndex,
         IReadOnlyList<VbaSourceDocument> sourceDocuments,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaSourceDefinition>> definitionsByDocument,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaSourceDefinition>> definitionsByNormalizedName,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaSourceDefinition>> definitionsByModule,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaSourceDefinition>> definitionsByType,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaSourceDefinition>> definitionsByParentType,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaSourceDefinition>> definitionsByQualifier,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaSourceDefinition>> definitionsByCallableIdentity,
-        IReadOnlyList<VbaSourceDefinition> workspaceSymbolDefinitions)
+        VbaNameCandidateInventory definitionCandidates)
     {
-        this.compatibilityIndex = compatibilityIndex;
         this.sourceDocuments = sourceDocuments;
-        this.definitionsByDocument = definitionsByDocument;
-        DefinitionsByNormalizedName = definitionsByNormalizedName;
-        DefinitionsByModule = definitionsByModule;
-        DefinitionsByType = definitionsByType;
-        DefinitionsByParentType = definitionsByParentType;
-        DefinitionsByQualifier = definitionsByQualifier;
-        DefinitionsByCallableIdentity = definitionsByCallableIdentity;
-        this.workspaceSymbolDefinitions = workspaceSymbolDefinitions;
+        this.definitionCandidates = definitionCandidates;
+        semanticResolution = new VbaSemanticResolution(
+            definitionCandidates,
+            resolutionPolicy);
         resolvedOccurrences = new VbaResolvedIdentifierOccurrenceIndex(
             sourceDocuments,
-            compatibilityIndex.ResolveSourceDefinition);
+            semanticResolution.ResolveSourceDefinition);
+        sourceFormatter = new VbaSourceFormatter(
+            semanticResolution,
+            resolvedOccurrences);
     }
 
     /// <summary>
-    /// Gets definitions grouped by normalized definition name.
-    /// </summary>
-    public IReadOnlyDictionary<string, IReadOnlyList<VbaSourceDefinition>> DefinitionsByNormalizedName { get; }
-
-    /// <summary>
-    /// Gets definitions grouped by declaring module or reference root.
-    /// </summary>
-    public IReadOnlyDictionary<string, IReadOnlyList<VbaSourceDefinition>> DefinitionsByModule { get; }
-
-    /// <summary>
-    /// Gets type-like definitions grouped by normalized type name.
-    /// </summary>
-    public IReadOnlyDictionary<string, IReadOnlyList<VbaSourceDefinition>> DefinitionsByType { get; }
-
-    /// <summary>
-    /// Gets member definitions grouped by normalized parent type name.
-    /// </summary>
-    public IReadOnlyDictionary<string, IReadOnlyList<VbaSourceDefinition>> DefinitionsByParentType { get; }
-
-    /// <summary>
-    /// Gets definitions grouped by their qualification root.
-    /// </summary>
-    public IReadOnlyDictionary<string, IReadOnlyList<VbaSourceDefinition>> DefinitionsByQualifier { get; }
-
-    /// <summary>
-    /// Gets callable definitions grouped by module, parent type, name, and callable label.
-    /// </summary>
-    public IReadOnlyDictionary<string, IReadOnlyList<VbaSourceDefinition>> DefinitionsByCallableIdentity { get; }
-
-    /// <summary>
-    /// Creates a semantic inventory from an existing compatibility index and projected source documents.
+    /// Creates a semantic inventory from projected source documents and active reference metadata.
     /// </summary>
     public static VbaSemanticInventory Create(
-        VbaSourceIndex compatibilityIndex,
-        IReadOnlyDictionary<string, VbaSourceDocument> sourceDocuments)
+        IReadOnlyDictionary<string, VbaSourceDocument> sourceDocuments,
+        VbaProjectReferenceSelection? referenceSelection = null,
+        VbaProjectReferenceCatalogSet? referenceCatalogs = null)
     {
-        var allDefinitions = sourceDocuments.Values
-            .SelectMany(document => document.Definitions)
-            .ToArray();
+        var documents = sourceDocuments.Values.ToArray();
+        var catalogs = referenceCatalogs ?? VbaProjectReferenceCatalogSet.Empty;
+        var definitionCandidates = new VbaNameCandidateInventory(
+            documents,
+            referenceSelection,
+            catalogs,
+            catalogs.GetActiveDefinitions(referenceSelection));
         return new VbaSemanticInventory(
-            compatibilityIndex,
-            sourceDocuments.Values.ToArray(),
-            sourceDocuments.ToDictionary(
-                pair => pair.Key,
-                pair => (IReadOnlyList<VbaSourceDefinition>)pair.Value.Definitions,
-                StringComparer.OrdinalIgnoreCase),
-            GroupDefinitions(
-                allDefinitions,
-                definition => Normalize(definition.Name)),
-            GroupDefinitions(
-                allDefinitions,
-                definition => Normalize(definition.ModuleName)),
-            GroupDefinitions(
-                allDefinitions.Where(IsTypeDefinition),
-                definition => Normalize(definition.Name)),
-            GroupDefinitions(
-                allDefinitions.Where(definition => !string.IsNullOrWhiteSpace(definition.ParentTypeName)),
-                definition => Normalize(definition.ParentTypeName!)),
-            GroupDefinitions(
-                allDefinitions,
-                definition => Normalize(definition.TypeReference?.Qualifier ?? definition.ModuleName)),
-            GroupDefinitions(
-                allDefinitions.Where(definition => definition.Signature is not null),
-                CreateCallableIdentityKey),
-            allDefinitions
-                .Where(definition => definition.Visibility != VbaSourceDefinitionVisibility.Local)
-                .Where(definition => !VbaProjectReferenceCatalogSet.IsExternalDefinition(definition))
-                .ToArray());
+            documents,
+            definitionCandidates);
     }
 
     /// <summary>
     /// Gets definitions declared in a document.
     /// </summary>
     public IReadOnlyList<VbaSourceDefinition> GetDocumentDefinitions(string uri)
-        => definitionsByDocument.TryGetValue(uri, out var definitions)
-            ? definitions
-            : Array.Empty<VbaSourceDefinition>();
+        => definitionCandidates.GetDocumentDefinitions(uri);
 
     /// <summary>
     /// Searches workspace symbols across indexed source documents.
@@ -134,7 +71,7 @@ public sealed class VbaSemanticInventory
     public IReadOnlyList<VbaWorkspaceSymbol> GetWorkspaceSymbols(string query)
     {
         var normalizedQuery = query ?? "";
-        return workspaceSymbolDefinitions
+        return definitionCandidates.GetWorkspaceSymbolDefinitions()
             .Where(definition => string.IsNullOrWhiteSpace(normalizedQuery)
                 || definition.Name.Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase))
             .Select(definition => new VbaWorkspaceSymbol(
@@ -148,10 +85,16 @@ public sealed class VbaSemanticInventory
     }
 
     public VbaCompletionResult GetCompletionResult(string uri, int line, int character)
-        => compatibilityIndex.GetCompletionResult(uri, line, character);
+        => semanticResolution.GetCompletionResult(uri, line, character);
 
     public VbaDefinitionLocation? ResolveDefinition(string uri, int line, int character)
-        => compatibilityIndex.ResolveDefinition(uri, line, character);
+    {
+        var definition = ResolveSourceDefinition(uri, line, character);
+        return definition is null
+            || definition.Identity.Origin == VbaDefinitionOrigin.ProjectReference
+                ? null
+                : definition.Location;
+    }
 
     public IReadOnlyList<VbaDefinitionLocation> FindReferences(
         string uri,
@@ -179,13 +122,18 @@ public sealed class VbaSemanticInventory
     }
 
     public VbaSourceDefinition? ResolveSourceDefinition(string uri, int line, int character)
-        => compatibilityIndex.ResolveSourceDefinition(uri, line, character);
+        => semanticResolution.ResolveSourceDefinition(uri, line, character);
 
     public VbaSignatureHelp? GetSignatureHelp(string uri, int line, int character)
-        => compatibilityIndex.GetSignatureHelp(uri, line, character);
+        => semanticResolution.GetSignatureHelp(uri, line, character);
 
     public VbaRange? PrepareRename(string uri, int line, int character)
-        => compatibilityIndex.PrepareRename(uri, line, character);
+    {
+        var target = ResolveSourceDefinition(uri, line, character);
+        return target is null || !resolutionPolicy.IsRenameTarget(target)
+            ? null
+            : target.Range;
+    }
 
     public VbaRenamePlan? CreateRenamePlan(
         string uri,
@@ -223,7 +171,16 @@ public sealed class VbaSemanticInventory
         string uri,
         VbaIndentationStyle indentationStyle,
         CancellationToken cancellationToken = default)
-        => compatibilityIndex.FormatDocument(uri, indentationStyle, cancellationToken);
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var document = definitionCandidates.FindDocument(uri);
+        return document is null
+            ? null
+            : sourceFormatter.FormatDocument(
+                document,
+                indentationStyle,
+                cancellationToken);
+    }
 
     public IReadOnlyList<int> GetSemanticTokenData(
         string uri,
@@ -284,33 +241,6 @@ public sealed class VbaSemanticInventory
             return tokens;
         }
     }
-
-    private static IReadOnlyDictionary<string, IReadOnlyList<VbaSourceDefinition>> GroupDefinitions(
-        IEnumerable<VbaSourceDefinition> definitions,
-        Func<VbaSourceDefinition, string> getKey)
-        => definitions
-            .GroupBy(getKey, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(
-                group => group.Key,
-                group => (IReadOnlyList<VbaSourceDefinition>)group.ToArray(),
-                StringComparer.OrdinalIgnoreCase);
-
-    private static bool IsTypeDefinition(VbaSourceDefinition definition)
-        => definition.Kind is VbaSourceDefinitionKind.Class
-            or VbaSourceDefinitionKind.Enum
-            or VbaSourceDefinitionKind.Form
-            or VbaSourceDefinitionKind.Type;
-
-    private static string CreateCallableIdentityKey(VbaSourceDefinition definition)
-        => string.Join(
-            "|",
-            Normalize(definition.ModuleName),
-            Normalize(definition.ParentTypeName ?? ""),
-            Normalize(definition.Name),
-            Normalize(definition.Signature?.Label ?? ""));
-
-    private static string Normalize(string value)
-        => value.Trim().ToUpperInvariant();
 
     private static string GetRangeKey(VbaRange range)
         => $"{range.Start.Line}:{range.Start.Character}:{range.End.Line}:{range.End.Character}";

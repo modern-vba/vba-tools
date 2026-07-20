@@ -14,6 +14,8 @@ internal sealed class VbaLanguageServerRuntime
     private readonly VbaDocumentLifecycle documentLifecycle;
     private readonly IReferenceCatalogRuntimeLifecycle? catalogLifecycle;
     private readonly VbaInteractiveWorkSchedulerOptions? schedulerOptions;
+    private readonly IVbaProjectDiskReconciliationRuntimeLifecycle?
+        diskReconciliationLifecycle;
 
     /// <summary>
     /// Creates a language-server runtime from transport, request, and lifecycle components.
@@ -23,18 +25,22 @@ internal sealed class VbaLanguageServerRuntime
     /// <param name="documentLifecycle">The document lifecycle handler used for notifications.</param>
     /// <param name="catalogLifecycle">The optional background catalog lifecycle owner.</param>
     /// <param name="schedulerOptions">Optional scheduler options used by deterministic tests.</param>
+    /// <param name="diskReconciliationLifecycle">The optional background disk reconciliation owner.</param>
     public VbaLanguageServerRuntime(
         LspMessageTransport transport,
         VbaLspRequestExecution requestExecution,
         VbaDocumentLifecycle documentLifecycle,
         IReferenceCatalogRuntimeLifecycle? catalogLifecycle = null,
-        VbaInteractiveWorkSchedulerOptions? schedulerOptions = null)
+        VbaInteractiveWorkSchedulerOptions? schedulerOptions = null,
+        IVbaProjectDiskReconciliationRuntimeLifecycle?
+            diskReconciliationLifecycle = null)
     {
         this.transport = transport;
         this.requestExecution = requestExecution;
         this.documentLifecycle = documentLifecycle;
         this.catalogLifecycle = catalogLifecycle;
         this.schedulerOptions = schedulerOptions;
+        this.diskReconciliationLifecycle = diskReconciliationLifecycle;
     }
 
     /// <summary>
@@ -65,11 +71,14 @@ internal sealed class VbaLanguageServerRuntime
             workspace.ManifestWorkspace,
             transport);
         var documentLifecycle = new VbaDocumentLifecycle(transport, workspace, catalogRefresh);
+        var diskReconciliation =
+            documentLifecycle.CreateDiskReconciliationCoordinator();
         return new VbaLanguageServerRuntime(
             transport,
             requestExecution,
             documentLifecycle,
-            catalogRefresh);
+            catalogRefresh,
+            diskReconciliationLifecycle: diskReconciliation);
     }
 
     /// <summary>
@@ -79,15 +88,21 @@ internal sealed class VbaLanguageServerRuntime
     /// <returns>A task that completes when the runtime stops.</returns>
     public async Task RunAsync(CancellationToken cancellationToken = default)
     {
-        using var responseLifetime =
-            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var responseLifetime = new CancellationTokenSource();
+        var responseCancellation =
+            new ResponseLifetimeCancellation(responseLifetime);
+        using var hostCancellationRegistration = cancellationToken.Register(
+            static state =>
+                ((ResponseLifetimeCancellation)state!).Request(),
+            responseCancellation);
         var scheduler = new VbaInteractiveWorkScheduler(
             VbaInteractiveWorkTimingFileSink.CreateFromEnvironment(),
-            failureSink: _ => responseLifetime.Cancel(),
+            failureSink: _ => responseCancellation.Request(),
             options: schedulerOptions
                 ?? VbaInteractiveWorkSchedulerOptions.CreateFromEnvironment());
         documentLifecycle.AttachScheduler(scheduler);
         catalogLifecycle?.AttachScheduler(scheduler);
+        diskReconciliationLifecycle?.AttachScheduler(scheduler);
         var gracefulExit = false;
         var shutdownAdmitted = false;
         try
@@ -97,7 +112,7 @@ internal sealed class VbaLanguageServerRuntime
                 var message = await transport.ReadMessageAsync(responseLifetime.Token);
                 if (message is null)
                 {
-                    responseLifetime.Cancel();
+                    responseCancellation.Request();
                     return;
                 }
 
@@ -183,7 +198,7 @@ internal sealed class VbaLanguageServerRuntime
                     if (!shutdownAdmitted && !requestExecution.ShutdownRequested)
                     {
                         Environment.ExitCode = 1;
-                        responseLifetime.Cancel();
+                        responseCancellation.Request();
                         return;
                     }
 
@@ -239,7 +254,7 @@ internal sealed class VbaLanguageServerRuntime
                 }
                 catch (VbaInteractiveWorkQueueFullException)
                 {
-                    responseLifetime.Cancel();
+                    responseCancellation.Request();
                     return;
                 }
                 catch (ObjectDisposedException) when (!scheduler.IsAccepting)
@@ -255,22 +270,40 @@ internal sealed class VbaLanguageServerRuntime
         {
             if (!gracefulExit)
             {
-                responseLifetime.Cancel();
+                responseCancellation.Request();
             }
 
             try
             {
-                if (catalogLifecycle is not null)
+                try
                 {
-                    await catalogLifecycle.StopAsync();
+                    if (diskReconciliationLifecycle is not null)
+                    {
+                        await diskReconciliationLifecycle.StopAsync();
+                    }
+                }
+                finally
+                {
+                    try
+                    {
+                        if (catalogLifecycle is not null)
+                        {
+                            await catalogLifecycle.StopAsync();
+                        }
+                    }
+                    finally
+                    {
+                        await scheduler.StopAsync(
+                            gracefulExit
+                                ? VbaInteractiveStopReason.Complete
+                                : VbaInteractiveStopReason.Abort);
+                    }
                 }
             }
             finally
             {
-                await scheduler.StopAsync(
-                    gracefulExit
-                        ? VbaInteractiveStopReason.Complete
-                        : VbaInteractiveStopReason.Abort);
+                hostCancellationRegistration.Dispose();
+                await responseCancellation.ObserveAsync();
             }
         }
     }
@@ -361,6 +394,44 @@ internal sealed class VbaLanguageServerRuntime
                 return;
             default:
                 return;
+        }
+    }
+
+    private sealed class ResponseLifetimeCancellation(
+        CancellationTokenSource lifetime)
+    {
+        private readonly object gate = new();
+        private Task? dispatch;
+
+        public void Request()
+        {
+            lock (gate)
+            {
+                dispatch ??= lifetime.CancelAsync();
+            }
+        }
+
+        public async Task ObserveAsync()
+        {
+            Task? cancellationDispatch;
+            lock (gate)
+            {
+                cancellationDispatch = dispatch;
+            }
+
+            if (cancellationDispatch is null)
+            {
+                return;
+            }
+
+            try
+            {
+                await cancellationDispatch.ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // Cancellation callback failures must not escape shutdown or go unobserved.
+            }
         }
     }
 

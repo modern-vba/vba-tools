@@ -83,13 +83,16 @@ public sealed class VbaDiagnosticsPublisherTests
         releaseBlocker.TrySetResult();
         await blocker.Completion.WaitAsync(TimeSpan.FromSeconds(5));
         await output.WriteStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var idle = publisher.WaitForIdleAsync(uri);
         var stop = scheduler.StopAsync(VbaInteractiveStopReason.Complete);
 
         Assert.False(timingSink.IsCompleted("textDocument/diagnostic"));
+        Assert.False(idle.IsCompleted);
         Assert.False(stop.IsCompleted);
 
         output.ReleaseWrites();
         await timingSink.WaitForCompletionAsync("textDocument/diagnostic");
+        await idle.WaitAsync(TimeSpan.FromSeconds(5));
         await stop.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
@@ -135,12 +138,88 @@ public sealed class VbaDiagnosticsPublisherTests
         Assert.True(scheduler.IsAccepting);
         releaseBlocker.TrySetResult();
         await blocker.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+        await publisher.WaitForIdleAsync(uri)
+            .WaitAsync(TimeSpan.FromSeconds(5));
 
         var messages = ReadJsonMessages(
             await output.WaitForMessageCountAsync(1));
         var parameters = Assert.IsType<JsonObject>(
             Assert.Single(messages)["params"]);
         Assert.Equal(3, parameters["version"]?.GetValue<int>());
+    }
+
+    [Fact]
+    public async Task Concurrent_enqueue_cannot_replace_a_newer_pending_revision_with_an_older_one()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        await using var output = new CapturingWriteStream();
+        var blockerStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseBlocker = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var scheduler = new VbaInteractiveWorkScheduler(
+            options: new VbaInteractiveWorkSchedulerOptions(
+                CoalesceSupersededMutations: true,
+                MaxOwnedWork: 1));
+        var blocker = scheduler.AdmitMutation(async cancellationToken =>
+        {
+            blockerStarted.TrySetResult();
+            await releaseBlocker.Task.WaitAsync(cancellationToken);
+        });
+        await blockerStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()));
+        var observer = new BlockingFirstRevisionObserver();
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, output),
+            workspace,
+            observer);
+        publisher.AttachScheduler(scheduler);
+
+        var first = Task.Run(
+            () => publisher.PublishEmptyDiagnosticsAsync(
+                uri,
+                CancellationToken.None));
+        await observer.FirstRevisionReserved.Task
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        await publisher.PublishEmptyDiagnosticsAsync(
+            uri,
+            CancellationToken.None);
+        observer.ReleaseFirstRevision();
+        await first.WaitAsync(TimeSpan.FromSeconds(5));
+
+        releaseBlocker.TrySetResult();
+        await blocker.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+        await publisher.WaitForIdleAsync(uri)
+            .WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal(1, output.MessageCount);
+
+        await scheduler.StopAsync(VbaInteractiveStopReason.Complete)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task Publication_observer_failure_cannot_strand_pending_diagnostics()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()));
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, Stream.Null),
+            workspace,
+            new ThrowingPublicationObserver());
+
+        Assert.Throws<InvalidOperationException>(
+            () =>
+            {
+                _ = publisher.PublishEmptyDiagnosticsAsync(
+                    uri,
+                    CancellationToken.None);
+            });
+        await publisher.WaitForIdleAsync(uri)
+            .WaitAsync(TimeSpan.FromSeconds(2));
     }
 
     [Fact]
@@ -205,6 +284,117 @@ public sealed class VbaDiagnosticsPublisherTests
     }
 
     [Fact]
+    public async Task Idle_wait_completes_only_after_the_latest_tombstone_is_terminal()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        await using var output = new BlockingWriteStream();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()));
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, output),
+            workspace);
+
+        var publish = publisher.PublishEmptyDiagnosticsAsync(
+            uri,
+            CancellationToken.None);
+        await output.WriteStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var idle = publisher.WaitForIdleAsync(uri);
+
+        Assert.True(publish.IsCompletedSuccessfully);
+        Assert.False(idle.IsCompleted);
+
+        output.ReleaseWrites();
+        await idle.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task Terminal_publications_release_per_uri_revision_state()
+    {
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()));
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, Stream.Null),
+            workspace);
+
+        for (var index = 0; index < 32; index++)
+        {
+            var uri = $"file:///C:/work/Retired{index}.bas";
+            await publisher.PublishEmptyDiagnosticsAsync(
+                uri,
+                CancellationToken.None);
+            await publisher.WaitForIdleAsync(uri)
+                .WaitAsync(TimeSpan.FromSeconds(2));
+        }
+
+        Assert.Equal(0, publisher.RetainedRevisionStateCount);
+    }
+
+    [Fact]
+    public async Task Failed_publication_restarts_the_latest_pending_revision_before_becoming_idle()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        await using var output = new FailingThenCapturingWriteStream();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()));
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, output),
+            workspace);
+
+        await publisher.PublishEmptyDiagnosticsAsync(
+            uri,
+            CancellationToken.None);
+        await output.FirstWriteStarted.Task
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        await publisher.PublishEmptyDiagnosticsAsync(
+            uri,
+            CancellationToken.None);
+        var idle = publisher.WaitForIdleAsync(uri);
+
+        Assert.False(idle.IsCompleted);
+
+        output.ReleaseFirstWriteFailure();
+        await idle.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(1, output.SuccessfulMessageCount);
+    }
+
+    [Fact]
+    public async Task Scheduled_failed_publication_restarts_the_latest_pending_revision_before_becoming_idle()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        await using var output = new FailingThenCapturingWriteStream();
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()));
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, output),
+            workspace);
+        publisher.AttachScheduler(scheduler);
+
+        await publisher.PublishEmptyDiagnosticsAsync(
+            uri,
+            CancellationToken.None);
+        await output.FirstWriteStarted.Task
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        await publisher.PublishEmptyDiagnosticsAsync(
+            uri,
+            CancellationToken.None);
+        var idle = publisher.WaitForIdleAsync(uri);
+
+        Assert.False(idle.IsCompleted);
+
+        output.ReleaseFirstWriteFailure();
+        await idle.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(1, output.SuccessfulMessageCount);
+
+        await scheduler.StopAsync(VbaInteractiveStopReason.Complete)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
     public async Task SupersededQueuedDiagnosticsDoNotPublishOlderClientVersion()
     {
         const string uri = "file:///C:/work/Worker.bas";
@@ -228,7 +418,8 @@ public sealed class VbaDiagnosticsPublisherTests
 
         var messages = ReadJsonMessages(
             await output.WaitForMessageCountAsync(1));
-        await DrainQueuedPublicationsAsync();
+        await publisher.WaitForIdleAsync(uri)
+            .WaitAsync(TimeSpan.FromSeconds(5));
 
         messages = ReadJsonMessages(output.ReadText());
         var parameters = Assert.IsType<JsonObject>(
@@ -261,7 +452,8 @@ public sealed class VbaDiagnosticsPublisherTests
 
         var messages = ReadJsonMessages(
             await output.WaitForMessageCountAsync(1));
-        await DrainQueuedPublicationsAsync();
+        await publisher.WaitForIdleAsync(uri)
+            .WaitAsync(TimeSpan.FromSeconds(5));
 
         messages = ReadJsonMessages(output.ReadText());
         var parameters = Assert.IsType<JsonObject>(
@@ -296,7 +488,8 @@ public sealed class VbaDiagnosticsPublisherTests
 
         var messages = ReadJsonMessages(
             await output.WaitForMessageCountAsync(1));
-        await DrainQueuedPublicationsAsync();
+        await publisher.WaitForIdleAsync(uri)
+            .WaitAsync(TimeSpan.FromSeconds(5));
 
         messages = ReadJsonMessages(output.ReadText());
         var parameters = Assert.IsType<JsonObject>(
@@ -306,14 +499,6 @@ public sealed class VbaDiagnosticsPublisherTests
             messages.SkipWhile(message =>
                 Assert.IsType<JsonObject>(message["params"])["version"]?.GetValue<int>() != 2),
             message => Assert.IsType<JsonObject>(message["params"])["version"]?.GetValue<int>() == 1);
-    }
-
-    private static async Task DrainQueuedPublicationsAsync()
-    {
-        for (var i = 0; i < 8; i++)
-        {
-            await Task.Yield();
-        }
     }
 
     private static IReadOnlyList<JsonObject> ReadJsonMessages(string text)
@@ -447,6 +632,40 @@ public sealed class VbaDiagnosticsPublisherTests
             TaskCompletionSource Completion);
     }
 
+    private sealed class BlockingFirstRevisionObserver
+        : IVbaDiagnosticsPublicationObserver
+    {
+        private readonly TaskCompletionSource firstRevisionReserved =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource releaseFirstRevision =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource FirstRevisionReserved
+            => firstRevisionReserved;
+
+        public void AfterRevisionReserved(string uri, long revision)
+        {
+            if (revision != 1)
+            {
+                return;
+            }
+
+            firstRevisionReserved.TrySetResult();
+            releaseFirstRevision.Task.GetAwaiter().GetResult();
+        }
+
+        public void ReleaseFirstRevision()
+            => releaseFirstRevision.TrySetResult();
+    }
+
+    private sealed class ThrowingPublicationObserver
+        : IVbaDiagnosticsPublicationObserver
+    {
+        public void AfterRevisionReserved(string uri, long revision)
+            => throw new InvalidOperationException(
+                "Injected diagnostics observer failure.");
+    }
+
     private sealed class CapturingWriteStream : Stream
     {
         private readonly MemoryStream buffer = new();
@@ -548,6 +767,70 @@ public sealed class VbaDiagnosticsPublisherTests
             }
 
             return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class FailingThenCapturingWriteStream : Stream
+    {
+        private readonly MemoryStream buffer = new();
+        private readonly TaskCompletionSource firstWriteStarted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource releaseFirstWriteFailure =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int writeAttempts;
+
+        public TaskCompletionSource FirstWriteStarted => firstWriteStarted;
+
+        public int SuccessfulMessageCount { get; private set; }
+
+        public override bool CanRead => false;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => true;
+
+        public override long Length => 0;
+
+        public override long Position { get; set; }
+
+        public void ReleaseFirstWriteFailure()
+            => releaseFirstWriteFailure.TrySetResult();
+
+        public override void Flush()
+        {
+        }
+
+        public override Task FlushAsync(CancellationToken cancellationToken)
+        {
+            SuccessfulMessageCount++;
+            return Task.CompletedTask;
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+            => throw new NotSupportedException();
+
+        public override long Seek(long offset, SeekOrigin origin)
+            => throw new NotSupportedException();
+
+        public override void SetLength(long value)
+            => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count)
+            => throw new NotSupportedException();
+
+        public override async ValueTask WriteAsync(
+            ReadOnlyMemory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.Increment(ref writeAttempts) == 1)
+            {
+                firstWriteStarted.TrySetResult();
+                await releaseFirstWriteFailure.Task
+                    .WaitAsync(cancellationToken);
+                throw new IOException("Injected diagnostics transport failure.");
+            }
+
+            this.buffer.Write(buffer.Span);
         }
     }
 

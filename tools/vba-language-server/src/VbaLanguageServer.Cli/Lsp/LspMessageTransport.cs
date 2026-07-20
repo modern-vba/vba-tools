@@ -185,14 +185,19 @@ internal sealed class LspMessageTransport
 
     private async Task WriteMessageAsync(object message, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var content = JsonSerializer.SerializeToUtf8Bytes(message, JsonOptions);
-        var header = Encoding.ASCII.GetBytes($"Content-Length: {content.Length}\r\n\r\n");
+        var headerText = $"Content-Length: {content.Length}\r\n\r\n";
+        var headerLength = Encoding.ASCII.GetByteCount(headerText);
+        var frame = new byte[headerLength + content.Length];
+        Encoding.ASCII.GetBytes(headerText, frame);
+        content.CopyTo(frame.AsSpan(headerLength));
         await outputLock.WaitAsync(cancellationToken);
         try
         {
-            await output.WriteAsync(header, cancellationToken);
-            await output.WriteAsync(content, cancellationToken);
-            await output.FlushAsync(cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            await output.WriteAsync(frame, CancellationToken.None);
+            await output.FlushAsync(CancellationToken.None);
         }
         finally
         {

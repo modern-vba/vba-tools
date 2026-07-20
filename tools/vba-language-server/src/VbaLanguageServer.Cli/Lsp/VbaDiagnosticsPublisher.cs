@@ -3,18 +3,43 @@ using VbaLanguageServer.Workspace;
 
 namespace VbaLanguageServer.Lsp;
 
+internal interface IVbaDiagnosticsPublicationObserver
+{
+    void AfterRevisionReserved(string uri, long revision);
+}
+
+internal sealed class NullVbaDiagnosticsPublicationObserver
+    : IVbaDiagnosticsPublicationObserver
+{
+    public static NullVbaDiagnosticsPublicationObserver Instance { get; } = new();
+
+    private NullVbaDiagnosticsPublicationObserver()
+    {
+    }
+
+    public void AfterRevisionReserved(string uri, long revision)
+    {
+    }
+}
+
 /// <summary>
 /// Publishes document diagnostics to the LSP transport.
 /// </summary>
 internal sealed class VbaDiagnosticsPublisher
+    : IVbaProjectDiskReconciliationDiagnostics
 {
     private readonly object gate = new();
     private readonly Dictionary<string, long> latestPublishRevisions = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, long> terminalPublishRevisions =
+        new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, PendingDiagnosticsPublication> pendingPublications =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> activePublicationWorkers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, List<TaskCompletionSource>>
+        idleWaiters = new(StringComparer.OrdinalIgnoreCase);
     private readonly LspMessageTransport transport;
     private readonly VbaLanguageWorkspace workspace;
+    private readonly IVbaDiagnosticsPublicationObserver publicationObserver;
     private VbaInteractiveWorkScheduler? scheduler;
 
     /// <summary>
@@ -22,10 +47,29 @@ internal sealed class VbaDiagnosticsPublisher
     /// </summary>
     /// <param name="transport">The transport used to publish diagnostics.</param>
     /// <param name="workspace">The workspace that owns parsed syntax trees.</param>
-    public VbaDiagnosticsPublisher(LspMessageTransport transport, VbaLanguageWorkspace workspace)
+    public VbaDiagnosticsPublisher(
+        LspMessageTransport transport,
+        VbaLanguageWorkspace workspace,
+        IVbaDiagnosticsPublicationObserver? publicationObserver = null)
     {
         this.transport = transport;
         this.workspace = workspace;
+        this.publicationObserver = publicationObserver
+            ?? NullVbaDiagnosticsPublicationObserver.Instance;
+    }
+
+    internal int RetainedRevisionStateCount
+    {
+        get
+        {
+            lock (gate)
+            {
+                return latestPublishRevisions.Keys
+                    .Concat(terminalPublishRevisions.Keys)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Count();
+            }
+        }
     }
 
     /// <summary>
@@ -68,10 +112,8 @@ internal sealed class VbaDiagnosticsPublisher
             return PublishEmptyDiagnosticsAsync(uri, cancellationToken);
         }
 
-        var revision = ReservePublishRevision(uri);
         EnqueuePublication(
             uri,
-            revision,
             () => workspace.IsLatestDiagnosticsSnapshot(
                 snapshot.Analysis.Uri,
                 snapshot.ClientVersion,
@@ -89,10 +131,8 @@ internal sealed class VbaDiagnosticsPublisher
     public Task PublishEmptyDiagnosticsAsync(string uri, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var revision = ReservePublishRevision(uri);
         EnqueuePublication(
             uri,
-            revision,
             () => true,
             publicationCancellationToken => transport.WriteNotificationAsync(
                 "textDocument/publishDiagnostics",
@@ -134,10 +174,8 @@ internal sealed class VbaDiagnosticsPublisher
                 }
             ];
         cancellationToken.ThrowIfCancellationRequested();
-        var revision = ReservePublishRevision(uri);
         EnqueuePublication(
             uri,
-            revision,
             () => true,
             publicationCancellationToken => transport.WriteNotificationAsync(
                 "textDocument/publishDiagnostics",
@@ -148,6 +186,42 @@ internal sealed class VbaDiagnosticsPublisher
                 },
                 publicationCancellationToken));
         return Task.CompletedTask;
+    }
+
+    void IVbaProjectDiskReconciliationDiagnostics.EnqueueTrackedDiagnostics(
+        string uri,
+        CancellationToken cancellationToken)
+        => _ = PublishTrackedDiagnosticsAsync(uri, cancellationToken);
+
+    void IVbaProjectDiskReconciliationDiagnostics.EnqueueEmptyDiagnostics(
+        string uri,
+        CancellationToken cancellationToken)
+        => _ = PublishEmptyDiagnosticsAsync(uri, cancellationToken);
+
+    /// <summary>
+    /// Waits until the latest diagnostics revision for one URI is terminal and
+    /// no publication for that URI is pending or active.
+    /// </summary>
+    internal Task WaitForIdleAsync(string uri)
+    {
+        lock (gate)
+        {
+            if (IsTerminalIdleLocked(uri))
+            {
+                return Task.CompletedTask;
+            }
+
+            var waiter = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            if (!idleWaiters.TryGetValue(uri, out var waiters))
+            {
+                waiters = [];
+                idleWaiters.Add(uri, waiters);
+            }
+
+            waiters.Add(waiter);
+            return waiter.Task;
+        }
     }
 
     private Task PublishDiagnosticsAsync(
@@ -175,17 +249,6 @@ internal sealed class VbaDiagnosticsPublisher
             cancellationToken);
     }
 
-    private long ReservePublishRevision(string uri)
-    {
-        lock (gate)
-        {
-            latestPublishRevisions.TryGetValue(uri, out var previous);
-            var next = previous + 1;
-            latestPublishRevisions[uri] = next;
-            return next;
-        }
-    }
-
     private bool IsLatestPublishRevision(string uri, long revision)
     {
         lock (gate)
@@ -197,14 +260,17 @@ internal sealed class VbaDiagnosticsPublisher
 
     private void EnqueuePublication(
         string uri,
-        long revision,
         Func<bool> isStillPublishable,
         Func<CancellationToken, Task> publish)
     {
         VbaInteractiveWorkScheduler? interactiveScheduler;
+        long revision;
         var startWorker = false;
         lock (gate)
         {
+            latestPublishRevisions.TryGetValue(uri, out var previous);
+            revision = previous + 1;
+            latestPublishRevisions[uri] = revision;
             interactiveScheduler = scheduler;
             pendingPublications[uri] = new PendingDiagnosticsPublication(
                 revision,
@@ -213,6 +279,24 @@ internal sealed class VbaDiagnosticsPublisher
             startWorker = activePublicationWorkers.Add(uri);
         }
 
+        try
+        {
+            publicationObserver.AfterRevisionReserved(uri, revision);
+        }
+        finally
+        {
+            DispatchPublicationWorker(
+                uri,
+                interactiveScheduler,
+                startWorker);
+        }
+    }
+
+    private void DispatchPublicationWorker(
+        string uri,
+        VbaInteractiveWorkScheduler? interactiveScheduler,
+        bool startWorker)
+    {
         if (interactiveScheduler is not null)
         {
             if (startWorker)
@@ -267,6 +351,7 @@ internal sealed class VbaDiagnosticsPublisher
             lock (gate)
             {
                 activePublicationWorkers.Remove(uri);
+                CompleteIdleWaitersLocked(uri);
             }
 
             interactiveScheduler.RequestCapacityPump();
@@ -289,14 +374,31 @@ internal sealed class VbaDiagnosticsPublisher
             pendingPublications.Remove(uri, out publication);
         }
 
-        if (publication is null
-            || !IsLatestPublishRevision(uri, publication.Revision)
-            || !publication.IsStillPublishable())
+        if (publication is null)
         {
             return;
         }
 
-        await publication.Publish(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (!IsLatestPublishRevision(uri, publication.Revision)
+                || !publication.IsStillPublishable())
+            {
+                return;
+            }
+
+            await publication.Publish(cancellationToken).ConfigureAwait(false);
+        }
+        catch (IOException)
+        {
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        finally
+        {
+            MarkPublishRevisionTerminal(uri, publication.Revision);
+        }
     }
 
     private async Task ObserveScheduledPublicationAsync(
@@ -319,6 +421,7 @@ internal sealed class VbaDiagnosticsPublisher
             restart = interactiveScheduler.IsAccepting
                 && pendingPublications.ContainsKey(uri)
                 && activePublicationWorkers.Add(uri);
+            CompleteIdleWaitersLocked(uri);
         }
 
         if (restart)
@@ -329,6 +432,7 @@ internal sealed class VbaDiagnosticsPublisher
 
     private async Task ProcessPublicationsAsync(string uri)
     {
+        var restart = false;
         try
         {
             while (true)
@@ -339,18 +443,24 @@ internal sealed class VbaDiagnosticsPublisher
                 {
                     if (!pendingPublications.Remove(uri, out publication!))
                     {
-                        activePublicationWorkers.Remove(uri);
                         return;
                     }
                 }
 
-                if (!IsLatestPublishRevision(uri, publication.Revision)
-                    || !publication.IsStillPublishable())
+                try
                 {
-                    continue;
-                }
+                    if (!IsLatestPublishRevision(uri, publication.Revision)
+                        || !publication.IsStillPublishable())
+                    {
+                        continue;
+                    }
 
-                await publication.Publish(CancellationToken.None).ConfigureAwait(false);
+                    await publication.Publish(CancellationToken.None).ConfigureAwait(false);
+                }
+                finally
+                {
+                    MarkPublishRevisionTerminal(uri, publication.Revision);
+                }
             }
         }
         catch (OperationCanceledException)
@@ -367,7 +477,64 @@ internal sealed class VbaDiagnosticsPublisher
             lock (gate)
             {
                 activePublicationWorkers.Remove(uri);
+                restart = scheduler is null
+                    && pendingPublications.ContainsKey(uri)
+                    && activePublicationWorkers.Add(uri);
+                CompleteIdleWaitersLocked(uri);
             }
+
+            if (restart)
+            {
+                _ = ProcessPublicationsAsync(uri);
+            }
+        }
+    }
+
+    private void MarkPublishRevisionTerminal(
+        string uri,
+        long revision)
+    {
+        lock (gate)
+        {
+            terminalPublishRevisions.TryGetValue(
+                uri,
+                out var previousTerminalRevision);
+            if (revision > previousTerminalRevision)
+            {
+                terminalPublishRevisions[uri] = revision;
+            }
+
+            CompleteIdleWaitersLocked(uri);
+        }
+    }
+
+    private bool IsTerminalIdleLocked(string uri)
+    {
+        latestPublishRevisions.TryGetValue(uri, out var latestRevision);
+        terminalPublishRevisions.TryGetValue(uri, out var terminalRevision);
+        return !pendingPublications.ContainsKey(uri)
+            && !activePublicationWorkers.Contains(uri)
+            && terminalRevision >= latestRevision;
+    }
+
+    private void CompleteIdleWaitersLocked(string uri)
+    {
+        if (!IsTerminalIdleLocked(uri))
+        {
+            return;
+        }
+
+        idleWaiters.Remove(uri, out var waiters);
+        latestPublishRevisions.Remove(uri);
+        terminalPublishRevisions.Remove(uri);
+        if (waiters is null)
+        {
+            return;
+        }
+
+        foreach (var waiter in waiters)
+        {
+            waiter.TrySetResult();
         }
     }
 

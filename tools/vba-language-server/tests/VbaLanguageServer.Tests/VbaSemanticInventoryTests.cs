@@ -1,3 +1,4 @@
+using System.Reflection;
 using VbaLanguageServer.SourceModel;
 using VbaLanguageServer.Syntax;
 using Xunit;
@@ -7,7 +8,7 @@ namespace VbaLanguageServer.Tests;
 public sealed class VbaSemanticInventoryTests
 {
     [Fact]
-    public void Inventory_matches_compatibility_index_for_definition_oriented_queries()
+    public void Inventory_serves_definition_oriented_queries_from_project_source()
     {
         const string callerUri = "file:///C:/work/Caller.bas";
         const string libraryUri = "file:///C:/work/Library.bas";
@@ -18,7 +19,7 @@ public sealed class VbaSemanticInventoryTests
                 Attribute VB_Name = "Caller"
                 Public Sub Main()
                     Dim value As String
-                    value = ReadValue("id")
+                    value = ReadValue(
                 End Sub
 
                 """,
@@ -32,40 +33,74 @@ public sealed class VbaSemanticInventoryTests
                 """
         };
         var sourceDocuments = CreateSourceDocuments(sourceTexts);
-        var compatibilityIndex = VbaSourceIndex.BuildFromSourceDocuments(sourceDocuments);
-        var inventory = VbaSemanticInventory.Create(compatibilityIndex, sourceDocuments);
+        var inventory = VbaSemanticInventory.Create(
+            sourceDocuments,
+            referenceSelection: null,
+            referenceCatalogs: VbaProjectReferenceCatalogSet.Empty);
 
+        Assert.DoesNotContain(
+            typeof(VbaSemanticInventory).GetFields(
+                BindingFlags.Instance | BindingFlags.NonPublic),
+            field => field.FieldType == typeof(VbaSourceIndex));
         Assert.Equal(
-            compatibilityIndex.GetDocumentDefinitions(callerUri),
-            inventory.GetDocumentDefinitions(callerUri));
+            ["Caller", "Main", "value"],
+            inventory.GetDocumentDefinitions(callerUri).Select(definition => definition.Name));
+
+        var workspaceSymbol = Assert.Single(inventory.GetWorkspaceSymbols("Read"));
+        Assert.Equal("ReadValue", workspaceSymbol.Name);
+        Assert.Equal(VbaSourceDefinitionKind.Procedure, workspaceSymbol.Kind);
+        Assert.Equal(libraryUri, workspaceSymbol.Uri);
+
+        var completion = inventory.GetCompletionResult(callerUri, 3, "    value = ".Length);
+        var completionCandidate = Assert.Single(
+            completion.Candidates,
+            candidate => candidate.Kind == VbaCompletionCandidateKind.Definition
+                && candidate.Label == "ReadValue");
+        Assert.Equal(libraryUri, completionCandidate.Definition?.Uri);
+        Assert.Equal(VbaResolutionPolicy.ProjectRank, completionCandidate.SortRank);
+
+        var resolvedDefinition = Assert.IsType<VbaSourceDefinition>(
+            inventory.ResolveSourceDefinition(
+                callerUri,
+                3,
+                "    value = ReadValue".Length));
+        Assert.Equal("ReadValue", resolvedDefinition.Name);
+        Assert.Equal(libraryUri, resolvedDefinition.Uri);
         Assert.Equal(
-            compatibilityIndex.GetWorkspaceSymbols("Read"),
-            inventory.GetWorkspaceSymbols("Read"));
-        Assert.Equal(
-            compatibilityIndex.GetCompletionResult(callerUri, 3, "    value = ".Length).Candidates,
-            inventory.GetCompletionResult(callerUri, 3, "    value = ".Length).Candidates);
-        Assert.Equal(
-            compatibilityIndex.ResolveDefinition(callerUri, 3, "    value = ReadValue".Length),
+            new VbaDefinitionLocation(libraryUri, resolvedDefinition.Range),
             inventory.ResolveDefinition(callerUri, 3, "    value = ReadValue".Length));
-        Assert.Equal(
-            compatibilityIndex.ResolveSourceDefinition(callerUri, 3, "    value = ReadValue".Length),
-            inventory.ResolveSourceDefinition(callerUri, 3, "    value = ReadValue".Length));
-        Assert.Equal(
-            compatibilityIndex.GetSignatureHelp(callerUri, 3, "    value = ReadValue(".Length),
+
+        var signatureHelp = Assert.IsType<VbaSignatureHelp>(
             inventory.GetSignatureHelp(callerUri, 3, "    value = ReadValue(".Length));
+        Assert.Equal("Function ReadValue(ByRef Key As String) As String", signatureHelp.Signature.Label);
+        Assert.Equal(0, signatureHelp.ActiveParameter);
+
+        var references = inventory.FindReferences(
+            callerUri,
+            3,
+            "    value = ReadValue".Length);
+        Assert.Equal(3, references.Count);
         Assert.Equal(
-            compatibilityIndex.FindReferences(callerUri, 3, "    value = ReadValue".Length),
-            inventory.FindReferences(callerUri, 3, "    value = ReadValue".Length));
-        AssertSameRenamePlan(
-            compatibilityIndex.CreateRenamePlan(callerUri, 3, "    value = ReadValue".Length, "ReadText"),
-            inventory.CreateRenamePlan(callerUri, 3, "    value = ReadValue".Length, "ReadText"));
-        Assert.Equal(
-            compatibilityIndex.GetSemanticTokenData(callerUri),
-            inventory.GetSemanticTokenData(callerUri));
+            [(callerUri, 3), (libraryUri, 1), (libraryUri, 2)],
+            references
+                .Select(reference => (reference.Uri, reference.Range.Start.Line))
+                .OrderBy(reference => reference.Uri, StringComparer.OrdinalIgnoreCase));
+
+        var renamePlan = Assert.IsType<VbaRenamePlan>(
+            inventory.CreateRenamePlan(
+                callerUri,
+                3,
+                "    value = ReadValue".Length,
+                "ReadText"));
+        Assert.Equal(resolvedDefinition.Range, renamePlan.TargetRange);
+        Assert.Equal([callerUri, libraryUri], renamePlan.Changes.Keys.Order(StringComparer.OrdinalIgnoreCase));
+        Assert.All(
+            renamePlan.Changes.SelectMany(pair => pair.Value),
+            edit => Assert.Equal("ReadText", edit.NewText));
     }
 
     [Fact]
-    public void Inventory_builds_query_shaped_definition_maps()
+    public void Inventory_does_not_expose_legacy_definition_maps()
     {
         const string uri = "file:///C:/work/Inventory.bas";
         var sourceDocuments = CreateSourceDocuments(new Dictionary<string, string>
@@ -84,17 +119,50 @@ public sealed class VbaSemanticInventoryTests
 
                 """
         });
-        var compatibilityIndex = VbaSourceIndex.BuildFromSourceDocuments(sourceDocuments);
-        var inventory = VbaSemanticInventory.Create(compatibilityIndex, sourceDocuments);
+        var inventory = VbaSemanticInventory.Create(sourceDocuments);
 
-        Assert.True(inventory.DefinitionsByNormalizedName.ContainsKey("FINDCUSTOMER"));
-        Assert.True(inventory.DefinitionsByModule.ContainsKey("INVENTORY"));
-        Assert.True(inventory.DefinitionsByType.ContainsKey("CUSTOMER"));
-        Assert.NotNull(inventory.DefinitionsByParentType);
-        Assert.NotNull(inventory.DefinitionsByQualifier);
-        Assert.Contains(
-            inventory.DefinitionsByCallableIdentity.Values.SelectMany(definitions => definitions),
-            definition => definition.Name == "FindCustomer");
+        Assert.Equal(
+            ["Customer", "CustomerKind", "FindCustomer", "Inventory", "Name", "Retail"],
+            inventory.GetWorkspaceSymbols("")
+                .Select(symbol => symbol.Name)
+                .Order(StringComparer.OrdinalIgnoreCase));
+        Assert.DoesNotContain(
+            typeof(VbaSemanticInventory).GetProperties(BindingFlags.Instance | BindingFlags.Public),
+            property => property.Name is
+                "DefinitionsByNormalizedName"
+                or "DefinitionsByModule"
+                or "DefinitionsByType"
+                or "DefinitionsByParentType"
+                or "DefinitionsByQualifier"
+                or "DefinitionsByCallableIdentity");
+    }
+
+    [Fact]
+    public void Inventory_shares_one_definition_candidate_inventory_with_semantic_resolution()
+    {
+        const string uri = "file:///C:/work/Inventory.bas";
+        var sourceDocuments = CreateSourceDocuments(new Dictionary<string, string>
+        {
+            [uri] =
+                """
+                Attribute VB_Name = "Inventory"
+                Public Function FindCustomer(Id As String) As String
+                End Function
+
+                """
+        });
+        var inventory = VbaSemanticInventory.Create(sourceDocuments);
+
+        var definitionCandidates = GetRequiredFieldValue<VbaNameCandidateInventory>(inventory);
+        var semanticResolution = GetRequiredFieldValue<VbaSemanticResolution>(inventory);
+        var nameResolution = GetRequiredFieldValue<VbaNameResolutionService>(semanticResolution);
+
+        Assert.Same(
+            definitionCandidates,
+            GetRequiredFieldValue<VbaNameCandidateInventory>(semanticResolution));
+        Assert.Same(
+            definitionCandidates,
+            GetRequiredFieldValue<VbaNameCandidateInventory>(nameResolution));
     }
 
     [Fact]
@@ -113,12 +181,18 @@ public sealed class VbaSemanticInventoryTests
             {
                 [uri] = CreateModule("Randomized", procedureNames)
             });
-            var compatibilityIndex = VbaSourceIndex.BuildFromSourceDocuments(sourceDocuments);
-            var inventory = VbaSemanticInventory.Create(compatibilityIndex, sourceDocuments);
+            var inventory = VbaSemanticInventory.Create(sourceDocuments);
 
             Assert.Equal(
-                compatibilityIndex.GetWorkspaceSymbols("Procedure"),
-                inventory.GetWorkspaceSymbols("Procedure"));
+                procedureNames.Order(StringComparer.OrdinalIgnoreCase),
+                inventory.GetWorkspaceSymbols("Procedure").Select(symbol => symbol.Name));
+            Assert.All(
+                inventory.GetWorkspaceSymbols("Procedure"),
+                symbol =>
+                {
+                    Assert.Equal(VbaSourceDefinitionKind.Procedure, symbol.Kind);
+                    Assert.Equal(uri, symbol.Uri);
+                });
         }
     }
 
@@ -146,21 +220,13 @@ public sealed class VbaSemanticInventoryTests
         return string.Join('\n', lines);
     }
 
-    private static void AssertSameRenamePlan(VbaRenamePlan? expected, VbaRenamePlan? actual)
+    private static T GetRequiredFieldValue<T>(object owner)
+        where T : class
     {
-        Assert.Equal(expected?.TargetRange, actual?.TargetRange);
-        Assert.Equal(
-            FlattenRenameChanges(expected),
-            FlattenRenameChanges(actual));
+        var field = Assert.Single(
+            owner.GetType().GetFields(BindingFlags.Instance | BindingFlags.NonPublic),
+            candidate => candidate.FieldType == typeof(T));
+        return Assert.IsType<T>(field.GetValue(owner));
     }
 
-    private static IReadOnlyList<string> FlattenRenameChanges(VbaRenamePlan? plan)
-        => plan?.Changes
-            .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
-            .SelectMany(pair => pair.Value
-                .OrderBy(edit => edit.Range.Start.Line)
-                .ThenBy(edit => edit.Range.Start.Character)
-                .Select(edit => $"{pair.Key}:{edit.Range}:{edit.NewText}"))
-            .ToArray()
-            ?? [];
 }

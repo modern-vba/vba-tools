@@ -10,28 +10,28 @@ namespace VbaLanguageServer.Workspace;
 /// <param name="Resolution">The project boundary resolution.</param>
 /// <param name="SourceDocuments">The source text documents included in the scope, keyed by URI.</param>
 /// <param name="ReferenceSelection">The active reference selection for the scope.</param>
-/// <param name="SourceIndex">The source index built from the scoped documents and reference catalogs.</param>
 /// <param name="SemanticInventory">The query-shaped semantic inventory for editor features.</param>
 public sealed record VbaProjectSnapshot(
     VbaProjectResolution Resolution,
     IReadOnlyDictionary<string, string> SourceDocuments,
     VbaProjectReferenceSelection? ReferenceSelection,
-    VbaSourceIndex SourceIndex,
     VbaSemanticInventory SemanticInventory);
 
 /// <summary>
 /// Maintains open document text and creates project snapshots for language-server features.
 /// </summary>
-public sealed class VbaLanguageWorkspace
+public sealed class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCapture
 {
     private readonly object gate = new();
     private readonly Dictionary<string, WorkspaceDocumentState> documents = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, AcceptedDocumentRevisionState> acceptedRevisions =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> excludedSourceUris = new(StringComparer.OrdinalIgnoreCase);
-    private readonly VbaProjectSourceDocumentCache diskDocumentCache = new();
+    private readonly VbaSourceRevisionHistory sourceRevisionHistory = new();
+    private readonly VbaProjectSourceDocumentCache diskDocumentCache;
     private readonly VbaProjectSnapshotProvider snapshotProvider;
     private readonly IVbaDocumentAnalysisBuildObserver analysisBuildObserver;
+    private VbaWorkspaceSnapshotState? workspaceSnapshotState;
     private long nextDocumentLifecycleEpoch;
     private long nextDocumentReservationToken;
     private long workspaceVersion;
@@ -74,9 +74,25 @@ public sealed class VbaLanguageWorkspace
         IVbaProjectReferenceCatalogLifecycleObserver lifecycleObserver,
         IVbaDocumentAnalysisBuildObserver analysisBuildObserver,
         IVbaProjectSnapshotBuildObserver snapshotBuildObserver)
+        : this(
+            referenceCatalogCache,
+            lifecycleObserver,
+            analysisBuildObserver,
+            snapshotBuildObserver,
+            SystemVbaProjectFileSystem.Instance)
+    {
+    }
+
+    internal VbaLanguageWorkspace(
+        VbaProjectReferenceCatalogCache referenceCatalogCache,
+        IVbaProjectReferenceCatalogLifecycleObserver lifecycleObserver,
+        IVbaDocumentAnalysisBuildObserver analysisBuildObserver,
+        IVbaProjectSnapshotBuildObserver snapshotBuildObserver,
+        IVbaProjectFileSystem projectFileSystem)
     {
         this.analysisBuildObserver = analysisBuildObserver;
-        ManifestWorkspace = new VbaProjectManifestWorkspace();
+        diskDocumentCache = new VbaProjectSourceDocumentCache(projectFileSystem);
+        ManifestWorkspace = new VbaProjectManifestWorkspace(projectFileSystem);
         snapshotProvider = new VbaProjectSnapshotProvider(
             referenceCatalogCache,
             diskDocumentCache,
@@ -89,6 +105,50 @@ public sealed class VbaLanguageWorkspace
     /// Gets the focused manifest authority shared by snapshots, trace resolution, and lifecycle work.
     /// </summary>
     internal VbaProjectManifestWorkspace ManifestWorkspace { get; }
+
+    internal int RetainedSourceRevisionCount
+    {
+        get
+        {
+            lock (gate)
+            {
+                return sourceRevisionHistory.Count;
+            }
+        }
+    }
+
+    internal int RetainedProjectSnapshotSourceRevisionCount
+        => snapshotProvider.RetainedSourceRevisionCount;
+
+    internal int RetainedProjectSnapshotCount
+        => snapshotProvider.RetainedProjectSnapshotCount;
+
+    internal int RetainedProjectScopeInvalidationStateCount
+        => snapshotProvider.RetainedScopeInvalidationStateCount;
+
+    internal int RetainedReconciliationScopeCount
+        => snapshotProvider.RetainedReconciliationScopeCount;
+
+    internal int RetainedReconciliationAuthorityCount
+        => snapshotProvider.RetainedReconciliationAuthorityCount;
+
+    internal int RetainedProjectDiskDocumentCount
+        => snapshotProvider.RetainedDiskDocumentCount;
+
+    internal int RetainedManifestStateCount
+        => ManifestWorkspace.RetainedStateCount;
+
+    internal int RetainedManifestEffectiveRevisionCount
+        => ManifestWorkspace.RetainedEffectiveScopeRevisionCount;
+
+    internal int RetainedManifestReconciliationRevisionCount
+        => ManifestWorkspace.RetainedReconciliationRevisionCount;
+
+    internal int RetainedManifestReconciliationBaselineCount
+        => ManifestWorkspace.RetainedReconciliationBaselineCount;
+
+    internal int RetainedManifestLastKnownGoodCount
+        => ManifestWorkspace.RetainedLastKnownGoodCount;
 
     /// <summary>
     /// Updates or adds an open document and parses its latest source text.
@@ -264,6 +324,47 @@ public sealed class VbaLanguageWorkspace
             cancellationToken).Committed;
     }
 
+    internal bool ReloadReconciledSourceDocument(
+        string uri,
+        string text,
+        long capturedWorkspaceRevision,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        DocumentAnalysisReservation reservation;
+        lock (gate)
+        {
+            var accepted = GetAcceptedRevisionState(uri);
+            var existing = GetDocumentState(uri);
+            if (GetSourceRevision(uri) > capturedWorkspaceRevision
+                || accepted?.Authority == WorkspaceDocumentAuthority.OpenBuffer
+                || existing?.Authority == WorkspaceDocumentAuthority.OpenBuffer)
+            {
+                return false;
+            }
+
+            if (RemoveExcludedSourceIdentity(uri))
+            {
+                MarkWorkspaceChanged(uri);
+            }
+
+            reservation = ReserveDocumentAnalysis(
+                uri,
+                WorkspaceDocumentAuthority.DiskWatcher,
+                version: null,
+                accepted?.Authority == WorkspaceDocumentAuthority.DiskWatcher
+                    ? accepted.LifecycleEpoch
+                    : ++nextDocumentLifecycleEpoch,
+                existing?.Analysis);
+        }
+
+        InvalidateDiskDocument(uri);
+        return BuildAndCommitDocumentAnalysis(
+            reservation,
+            text,
+            cancellationToken).Committed;
+    }
+
     /// <summary>
     /// Closes an open client buffer so later snapshots can fall back to disk state.
     /// </summary>
@@ -274,6 +375,7 @@ public sealed class VbaLanguageWorkspace
     {
         cancellationToken.ThrowIfCancellationRequested();
         InvalidateDiskDocument(uri);
+        IReadOnlyList<string>? remainingTrackedUris = null;
         lock (gate)
         {
             var revisionKey = FindAcceptedRevisionKey(uri);
@@ -299,10 +401,16 @@ public sealed class VbaLanguageWorkspace
             {
                 documents.Remove(documentKey!);
                 MarkWorkspaceChanged(uri);
+                remainingTrackedUris = CaptureTrackedDocumentUris();
             }
-
-            return true;
         }
+
+        if (remainingTrackedUris is not null)
+        {
+            RetireInactiveProjectScopes(remainingTrackedUris);
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -315,6 +423,7 @@ public sealed class VbaLanguageWorkspace
     {
         cancellationToken.ThrowIfCancellationRequested();
         InvalidateDiskDocument(uri);
+        IReadOnlyList<string>? remainingTrackedUris = null;
         lock (gate)
         {
             var exclusionAdded = AddExcludedSourceIdentity(uri);
@@ -349,8 +458,71 @@ public sealed class VbaLanguageWorkspace
                 MarkWorkspaceChanged(uri);
             }
 
-            return true;
+            if (documentRemoved)
+            {
+                remainingTrackedUris = CaptureTrackedDocumentUris();
+            }
         }
+
+        if (remainingTrackedUris is not null)
+        {
+            RetireInactiveProjectScopes(remainingTrackedUris);
+        }
+
+        return true;
+    }
+
+    internal bool DeleteReconciledSourceDocument(
+        string uri,
+        long capturedWorkspaceRevision,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        IReadOnlyList<string>? remainingTrackedUris = null;
+        lock (gate)
+        {
+            var revisionKey = FindAcceptedRevisionKey(uri);
+            var documentKey = FindDocumentKey(uri);
+            var hasOpenRevision = revisionKey is not null
+                && acceptedRevisions[revisionKey].Authority
+                    == WorkspaceDocumentAuthority.OpenBuffer;
+            var hasOpenDocument = documentKey is not null
+                && documents[documentKey].Authority
+                    == WorkspaceDocumentAuthority.OpenBuffer;
+            if (GetSourceRevision(uri) > capturedWorkspaceRevision
+                || hasOpenRevision
+                || hasOpenDocument)
+            {
+                return false;
+            }
+
+            var exclusionAdded = AddExcludedSourceIdentity(uri);
+            if (revisionKey is not null)
+            {
+                acceptedRevisions.Remove(revisionKey);
+                Monitor.PulseAll(gate);
+            }
+
+            var documentRemoved = documentKey is not null
+                && documents.Remove(documentKey);
+            if (exclusionAdded || documentRemoved)
+            {
+                MarkWorkspaceChanged(uri);
+            }
+
+            if (documentRemoved)
+            {
+                remainingTrackedUris = CaptureTrackedDocumentUris();
+            }
+        }
+
+        InvalidateDiskDocument(uri);
+        if (remainingTrackedUris is not null)
+        {
+            RetireInactiveProjectScopes(remainingTrackedUris);
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -362,6 +534,8 @@ public sealed class VbaLanguageWorkspace
     public bool RemoveDocument(string uri, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        IReadOnlyList<string>? remainingTrackedUris = null;
+        bool removed;
         lock (gate)
         {
             var revisionKey = FindAcceptedRevisionKey(uri);
@@ -378,10 +552,18 @@ public sealed class VbaLanguageWorkspace
             if (documentRemoved)
             {
                 MarkWorkspaceChanged(uri);
+                remainingTrackedUris = CaptureTrackedDocumentUris();
             }
 
-            return revisionRemoved || documentRemoved;
+            removed = revisionRemoved || documentRemoved;
         }
+
+        if (remainingTrackedUris is not null)
+        {
+            RetireInactiveProjectScopes(remainingTrackedUris);
+        }
+
+        return removed;
     }
 
     /// <summary>
@@ -543,6 +725,21 @@ public sealed class VbaLanguageWorkspace
         }
     }
 
+    internal IReadOnlyList<string> GetOpenDocumentUris(
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (gate)
+        {
+            return documents.Values
+                .Where(
+                    state => state.Authority
+                        == WorkspaceDocumentAuthority.OpenBuffer)
+                .Select(state => state.Document.Uri)
+                .ToArray();
+        }
+    }
+
     /// <summary>
     /// Creates a project snapshot for the scope containing an active document.
     /// </summary>
@@ -554,10 +751,12 @@ public sealed class VbaLanguageWorkspace
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var workspaceState = CopyWorkspaceState();
+        var capture = CaptureProjectSnapshotState(
+            includeActiveUris: false);
+        using var revisionCapture = capture.RevisionCapture;
         return snapshotProvider.CreateProjectSnapshot(
             activeUri,
-            workspaceState,
+            capture.WorkspaceState,
             cancellationToken);
     }
 
@@ -568,29 +767,45 @@ public sealed class VbaLanguageWorkspace
     /// <returns>The distinct project snapshots.</returns>
     public IReadOnlyList<VbaProjectSnapshot> CreateProjectSnapshots(CancellationToken cancellationToken = default)
     {
-        var snapshots = new List<VbaProjectSnapshot>();
-        var seenScopes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var uri in GetDocumentUris(cancellationToken))
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var snapshot = CreateProjectSnapshot(uri, cancellationToken);
-            var scopeKey = string.Join(
-                "|",
-                snapshot.SourceDocuments.Keys.OrderBy(key => key, StringComparer.OrdinalIgnoreCase));
-            if (seenScopes.Add(scopeKey))
-            {
-                snapshots.Add(snapshot);
-            }
-        }
-
-        return snapshots;
+        cancellationToken.ThrowIfCancellationRequested();
+        var capture = CaptureProjectSnapshotState(
+            includeActiveUris: true);
+        using var revisionCapture = capture.RevisionCapture;
+        return snapshotProvider.CreateProjectSnapshots(
+            capture.ActiveUris,
+            capture.WorkspaceState,
+            cancellationToken);
     }
+
+    VbaSemanticInventory IVbaInteractiveWorkspaceCapture.CaptureProjectSemanticInventory(
+        string activeUri,
+        CancellationToken cancellationToken)
+        => CreateProjectSnapshot(activeUri, cancellationToken).SemanticInventory;
+
+    IReadOnlyList<VbaSemanticInventory>
+        IVbaInteractiveWorkspaceCapture.CaptureWorkspaceSemanticInventories(
+            CancellationToken cancellationToken)
+        => CreateProjectSnapshots(cancellationToken)
+            .Select(snapshot => snapshot.SemanticInventory)
+            .ToArray();
+
+    VbaVersionedDocumentSnapshot?
+        IVbaInteractiveWorkspaceCapture.CaptureExactDocumentSnapshot(
+            string uri,
+            int expectedVersion,
+            CancellationToken cancellationToken)
+        => GetDocumentSnapshot(uri, expectedVersion, cancellationToken);
 
     private VbaWorkspaceSnapshotState CopyWorkspaceState()
     {
         lock (gate)
         {
-            return new VbaWorkspaceSnapshotState(
+            if (workspaceSnapshotState is not null)
+            {
+                return workspaceSnapshotState;
+            }
+
+            workspaceSnapshotState = new VbaWorkspaceSnapshotState(
                 documents.Values
                     .Where(state => state.Authority == WorkspaceDocumentAuthority.OpenBuffer)
                     .ToDictionary(
@@ -599,7 +814,219 @@ public sealed class VbaLanguageWorkspace
                         StringComparer.OrdinalIgnoreCase),
                 new HashSet<string>(excludedSourceUris, StringComparer.OrdinalIgnoreCase),
                 workspaceVersion);
+            return workspaceSnapshotState;
         }
+    }
+
+    private WorkspaceProjectSnapshotCapture CaptureProjectSnapshotState(
+        bool includeActiveUris)
+    {
+        lock (gate)
+        {
+            var workspaceState = CopyWorkspaceState();
+            var revisionCapture =
+                snapshotProvider.BeginSourceRevisionCapture(
+                    workspaceState.Version);
+            try
+            {
+                return new WorkspaceProjectSnapshotCapture(
+                    workspaceState,
+                    includeActiveUris
+                        ? documents.Values
+                            .Select(state => state.Document.Uri)
+                            .ToArray()
+                        : [],
+                    revisionCapture);
+            }
+            catch
+            {
+                revisionCapture.Dispose();
+                throw;
+            }
+        }
+    }
+
+    internal VbaProjectDiskReconciliationCapture
+        CaptureDiskReconciliationScopes()
+    {
+        lock (gate)
+        {
+            var capturedWorkspaceRevision = workspaceVersion;
+            var revisionCapture = sourceRevisionHistory.BeginCapture(
+                capturedWorkspaceRevision);
+            try
+            {
+                var openDocumentUris = documents.Values
+                    .Where(
+                        state => state.Authority
+                            == WorkspaceDocumentAuthority.OpenBuffer)
+                    .Select(state => state.Document.Uri)
+                    .ToArray();
+                var scopes = snapshotProvider
+                    .CaptureDiskReconciliationScopes(
+                        capturedWorkspaceRevision)
+                .Select(
+                    scope =>
+                    {
+                        var manifestCandidates =
+                            scope.ManifestCandidates
+                            .Select(candidate =>
+                            {
+                                var manifestCapture = ManifestWorkspace
+                                    .CaptureReconciliationState(candidate.Uri);
+                                return candidate with
+                                {
+                                    CapturedRevision =
+                                        manifestCapture.Revision,
+                                    Baseline = manifestCapture.Baseline,
+                                    HasOpenOverlay =
+                                        manifestCapture.HasOpenOverlay,
+                                    OpenOverlayText =
+                                        manifestCapture.OpenOverlayText,
+                                    EffectiveManifestText =
+                                        manifestCapture
+                                            .EffectiveManifestText
+                                };
+                            })
+                            .ToArray();
+                        var authorityManifestPath =
+                            scope.Resolution.ManifestPath is null
+                                ? null
+                                : Path.GetFullPath(
+                                    scope.Resolution.ManifestPath);
+                        var activePath =
+                            VbaProjectResolver.TryGetLocalPath(
+                                scope.ActiveUri);
+                        var observedManifestBarrierCandidates =
+                            scope.ManifestBarriers.Overrides.Keys
+                                .Concat(
+                                    scope.ManifestBarriers
+                                        .ReconciliationRevisions.Keys)
+                                .Distinct(
+                                    StringComparer.OrdinalIgnoreCase)
+                                .Where(path =>
+                                    IsManifestRelevantToScope(
+                                        path,
+                                        activePath,
+                                        scope.Resolution)
+                                    && (authorityManifestPath is null
+                                        || !Path.GetFullPath(path).Equals(
+                                            authorityManifestPath,
+                                            StringComparison.OrdinalIgnoreCase)))
+                                .Select(path =>
+                                {
+                                    var uri =
+                                        new Uri(Path.GetFullPath(path))
+                                            .AbsoluteUri;
+                                    var manifestCapture = ManifestWorkspace
+                                        .CaptureReconciliationState(uri);
+                                    return new
+                                        VbaProjectDiskManifestCandidate(
+                                            uri,
+                                            manifestCapture.Revision,
+                                            manifestCapture.Baseline)
+                                        {
+                                            HasOpenOverlay =
+                                                manifestCapture.HasOpenOverlay,
+                                            OpenOverlayText =
+                                                manifestCapture
+                                                    .OpenOverlayText,
+                                            EffectiveManifestText =
+                                                manifestCapture
+                                                    .EffectiveManifestText
+                                        };
+                                })
+                                .ToArray();
+                        var ownedSourceUris = scope.KnownSources
+                            .Select(source => source.Uri)
+                            .Append(scope.ActiveUri)
+                            .ToArray();
+                        var openSourceUris = openDocumentUris
+                            .Where(
+                                uri => ownedSourceUris.Any(
+                                    ownedUri =>
+                                        SameDocumentIdentity(
+                                            ownedUri,
+                                            uri)))
+                            .ToArray();
+                        return scope with
+                        {
+                            ManifestCandidates =
+                                manifestCandidates,
+                            ObservedManifestBarrierCandidates =
+                                observedManifestBarrierCandidates,
+                            OpenSourceUris = openSourceUris,
+                            OpenDocumentUris = openDocumentUris
+                        };
+                    })
+                .ToArray();
+                return new VbaProjectDiskReconciliationCapture(
+                    scopes,
+                    revisionCapture);
+            }
+            catch
+            {
+                revisionCapture.Dispose();
+                throw;
+            }
+        }
+    }
+
+    internal void CommitReconciledSourceBaseline(
+        string authorityKey,
+        string uri,
+        string fullPath,
+        string text)
+        => snapshotProvider.CommitReconciledSourceBaseline(
+            authorityKey,
+            new VbaProjectDiskKnownSource(
+                uri,
+                Path.GetFullPath(fullPath),
+                text));
+
+    internal void CommitDeletedReconciledSourceBaseline(
+        string authorityKey,
+        string uri)
+        => snapshotProvider.CommitDeletedReconciledSourceBaseline(
+            authorityKey,
+            uri);
+
+    internal void ReleaseReconciledSourceOwnership(
+        string authorityKey,
+        string uri)
+        => snapshotProvider.ReleaseReconciledSourceOwnership(
+            authorityKey,
+            uri);
+
+    internal bool IsReconciliationScopeCurrent(
+        string authorityKey,
+        long capturedManifestBarrierRevision,
+        long capturedAuthorityGeneration)
+        => snapshotProvider.IsReconciliationScopeCurrent(
+            authorityKey,
+            capturedManifestBarrierRevision,
+            capturedAuthorityGeneration);
+
+    internal void CommitReconciledManifestScope(
+        string authorityKey,
+        string activeUri,
+        VbaProjectResolution resolution,
+        bool retainPreviousAuthority,
+        IReadOnlyList<string> retainedPreviousSourceUris)
+    {
+        IReadOnlyList<string> trackedUris;
+        lock (gate)
+        {
+            trackedUris = CaptureTrackedDocumentUris();
+        }
+
+        snapshotProvider.CommitReconciledManifestScope(
+            authorityKey,
+            activeUri,
+            resolution,
+            retainPreviousAuthority,
+            retainedPreviousSourceUris,
+            trackedUris);
     }
 
     private VbaDocumentAnalysis BuildDocumentAnalysis(
@@ -788,7 +1215,7 @@ public sealed class VbaLanguageWorkspace
             reservation.ReservationToken,
             reservation.Version is null
                 ? null
-                : VbaVersionedDocumentSnapshot.Create(analysis, reservation.Version.Value));
+                : VbaVersionedDocumentSnapshot.Create(analysis));
         MarkWorkspaceChanged(analysis.Uri);
     }
 
@@ -852,6 +1279,26 @@ public sealed class VbaLanguageWorkspace
             && leftPath.Equals(rightPath, StringComparison.OrdinalIgnoreCase);
     }
 
+    private static bool IsManifestRelevantToScope(
+        string manifestPath,
+        string? activePath,
+        VbaProjectResolution resolution)
+    {
+        var fullManifestPath = Path.GetFullPath(manifestPath);
+        var manifestDirectory =
+            Path.GetDirectoryName(fullManifestPath);
+        return manifestDirectory is not null
+            && (!string.IsNullOrWhiteSpace(resolution.RootPath)
+                    && VbaProjectResolver.IsPathUnder(
+                        fullManifestPath,
+                        Path.GetFullPath(resolution.RootPath))
+                || resolution.Kind == VbaProjectResolutionKind.AdHoc
+                    && activePath is not null
+                    && VbaProjectResolver.IsPathUnder(
+                        activePath,
+                        manifestDirectory));
+    }
+
     private void InvalidateDiskDocument(string uri)
     {
         var localPath = VbaProjectResolver.TryGetLocalPath(uri);
@@ -864,8 +1311,48 @@ public sealed class VbaLanguageWorkspace
     private void MarkWorkspaceChanged(string uri)
     {
         workspaceVersion++;
-        snapshotProvider.InvalidateSource(uri);
+        workspaceSnapshotState = null;
+        sourceRevisionHistory.Record(uri, workspaceVersion);
+        snapshotProvider.InvalidateSource(uri, workspaceVersion);
     }
+
+    private IReadOnlyList<string> CaptureTrackedDocumentUris()
+        => documents.Values
+            .Select(state => state.Document.Uri)
+            .ToArray();
+
+    private void RetireInactiveProjectScopes(
+        IReadOnlyList<string> remainingTrackedUris)
+    {
+        snapshotProvider.RetireInactiveScopes(
+            remainingTrackedUris);
+        ManifestWorkspace.RetireInactiveState(
+            remainingTrackedUris,
+            snapshotProvider.CaptureManifestRetentionScopes());
+    }
+
+    internal void RetireInactiveManifestState()
+    {
+        IReadOnlyList<string> trackedUris;
+        lock (gate)
+        {
+            trackedUris = CaptureTrackedDocumentUris();
+        }
+
+        ManifestWorkspace.RetireInactiveState(
+            trackedUris,
+            snapshotProvider.CaptureManifestRetentionScopes());
+    }
+
+    private long GetSourceRevision(string uri)
+    {
+        return sourceRevisionHistory.GetRevision(uri);
+    }
+
+    private sealed record WorkspaceProjectSnapshotCapture(
+        VbaWorkspaceSnapshotState WorkspaceState,
+        IReadOnlyList<string> ActiveUris,
+        IDisposable RevisionCapture);
 
     private enum WorkspaceDocumentAuthority
     {

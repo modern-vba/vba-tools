@@ -20,6 +20,7 @@ internal sealed class VbaProjectSnapshotBuilder
         VbaProjectResolution resolution,
         IReadOnlyDictionary<string, VbaTrackedDocument> workspaceDocuments,
         IReadOnlySet<string> excludedSourceUris,
+        IReadOnlyDictionary<string, bool> manifestBarrierOverrides,
         CancellationToken cancellationToken)
     {
         var inventorySnapshot = VbaProjectSourceInventory.CreateInventorySnapshot(
@@ -27,7 +28,8 @@ internal sealed class VbaProjectSnapshotBuilder
             workspaceDocuments,
             excludedSourceUris,
             diskDocumentCache,
-            cancellationToken);
+            cancellationToken,
+            manifestBarrierOverrides);
         if (!inventorySnapshot.Documents.ContainsKey(activeUri)
             && workspaceDocuments.TryGetValue(activeUri, out var activeDocument))
         {
@@ -52,19 +54,15 @@ internal sealed class VbaProjectSnapshotBuilder
         var manifestContext = LanguageServerManifestResolution.Create(
             resolution,
             referenceCatalogs);
-        var sourceIndex = VbaSourceIndex.BuildFromSourceDocuments(
+        var semanticInventory = VbaSemanticInventory.Create(
             scopedSourceDocuments,
             manifestContext.ReferenceSelection,
             referenceCatalogs);
-        var semanticInventory = VbaSemanticInventory.Create(
-            sourceIndex,
-            scopedSourceDocuments);
 
         return new VbaProjectSnapshot(
             resolution,
             scopedDocuments,
             manifestContext.ReferenceSelection,
-            sourceIndex,
             semanticInventory);
     }
 }

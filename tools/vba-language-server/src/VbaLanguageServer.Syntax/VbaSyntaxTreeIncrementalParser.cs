@@ -308,70 +308,98 @@ internal static class VbaSyntaxTreeIncrementalParser
                 previousTree.Module.Members,
                 parsedMemberTree.Module.Members,
                 member => member.BlockRange,
-                member => Shift(member, lineDelta, offsetDelta),
+                static (member, shiftLineDelta, shiftOffsetDelta) =>
+                    Shift(member, shiftLineDelta, shiftOffsetDelta),
                 oldRange,
                 newRange),
             Declarations = MergeByRange(
                 previousTree.Module.Declarations,
                 parsedMemberTree.Module.Declarations,
                 declaration => declaration.Range,
-                declaration => Shift(declaration, lineDelta, offsetDelta),
+                static (declaration, shiftLineDelta, shiftOffsetDelta) =>
+                    Shift(declaration, shiftLineDelta, shiftOffsetDelta),
                 oldRange,
                 newRange),
             CallableDeclarations = MergeByRange(
                 previousTree.Module.CallableDeclarations,
                 parsedMemberTree.Module.CallableDeclarations,
                 declaration => declaration.BlockRange,
-                declaration => Shift(declaration, lineDelta, offsetDelta),
+                static (declaration, shiftLineDelta, shiftOffsetDelta) =>
+                    Shift(declaration, shiftLineDelta, shiftOffsetDelta),
                 oldRange,
                 newRange),
             Statements = MergeByRange(
                 previousTree.Module.Statements,
                 parsedMemberTree.Module.Statements,
                 statement => statement.Range,
-                statement => statement with { Range = Shift(statement.Range, lineDelta, offsetDelta) },
+                static (statement, shiftLineDelta, shiftOffsetDelta) =>
+                    statement with
+                    {
+                        Range = Shift(
+                            statement.Range,
+                            shiftLineDelta,
+                            shiftOffsetDelta)
+                    },
                 oldRange,
                 newRange),
             Expressions = MergeByRange(
                 previousTree.Module.Expressions,
                 parsedMemberTree.Module.Expressions,
                 expression => expression.Range,
-                expression => expression with { Range = Shift(expression.Range, lineDelta, offsetDelta) },
+                static (expression, shiftLineDelta, shiftOffsetDelta) =>
+                    expression with
+                    {
+                        Range = Shift(
+                            expression.Range,
+                            shiftLineDelta,
+                            shiftOffsetDelta)
+                    },
                 oldRange,
                 newRange),
             ArgumentLists = MergeByRange(
                 previousTree.Module.ArgumentLists,
                 parsedMemberTree.Module.ArgumentLists,
                 argumentList => argumentList.Range,
-                argumentList => Shift(argumentList, lineDelta, offsetDelta),
+                static (argumentList, shiftLineDelta, shiftOffsetDelta) =>
+                    Shift(
+                        argumentList,
+                        shiftLineDelta,
+                        shiftOffsetDelta),
                 oldRange,
                 newRange),
             Blocks = MergeByRange(
                 previousTree.Module.Blocks,
                 parsedMemberTree.Module.Blocks,
                 block => block.Range,
-                block => Shift(block, lineDelta, offsetDelta),
+                static (block, shiftLineDelta, shiftOffsetDelta) =>
+                    Shift(block, shiftLineDelta, shiftOffsetDelta),
                 oldRange,
                 newRange),
             LineLabels = MergeByRange(
                 previousTree.Module.LineLabels,
                 parsedMemberTree.Module.LineLabels,
                 label => label.Range,
-                label => Shift(label, lineDelta, offsetDelta),
+                static (label, shiftLineDelta, shiftOffsetDelta) =>
+                    Shift(label, shiftLineDelta, shiftOffsetDelta),
                 oldRange,
                 newRange),
             PreprocessorDirectives = MergeByRange(
                 previousTree.Module.PreprocessorDirectives,
                 parsedMemberTree.Module.PreprocessorDirectives,
                 directive => directive.Range,
-                directive => Shift(directive, lineDelta, offsetDelta),
+                static (directive, shiftLineDelta, shiftOffsetDelta) =>
+                    Shift(
+                        directive,
+                        shiftLineDelta,
+                        shiftOffsetDelta),
                 oldRange,
                 newRange),
             PreprocessorBlocks = MergeByRange(
                 previousTree.Module.PreprocessorBlocks,
                 parsedMemberTree.Module.PreprocessorBlocks,
                 block => block.Range,
-                block => Shift(block, lineDelta, offsetDelta),
+                static (block, shiftLineDelta, shiftOffsetDelta) =>
+                    Shift(block, shiftLineDelta, shiftOffsetDelta),
                 oldRange,
                 newRange),
             Range = sourceText.FullRange
@@ -394,13 +422,12 @@ internal static class VbaSyntaxTreeIncrementalParser
         IReadOnlyList<T> previousItems,
         IReadOnlyList<T> parsedItems,
         Func<T, VbaSyntaxRange> getRange,
-        Func<T, T> shift,
+        Func<T, int, int, T> shift,
         VbaSyntaxRange oldRange,
         VbaSyntaxRange newRange)
     {
         var lineDelta = newRange.End.Line - oldRange.End.Line;
         var offsetDelta = newRange.End.Offset - oldRange.End.Offset;
-        var requiresShift = lineDelta != 0 || offsetDelta != 0;
         var prefixCount = 0;
         while (prefixCount < previousItems.Count
             && getRange(previousItems[prefixCount]).End.Offset <= oldRange.Start.Offset)
@@ -429,15 +456,16 @@ internal static class VbaSyntaxTreeIncrementalParser
             parsedEnd++;
         }
 
-        var suffixProjector = requiresShift ? shift : null;
         return new VbaSegmentedSyntaxList<T>(
             new VbaSegmentedSyntaxList<T>.Segment(previousItems, 0, prefixCount),
             new VbaSegmentedSyntaxList<T>.Segment(parsedItems, parsedStart, parsedEnd - parsedStart),
-            new VbaSegmentedSyntaxList<T>.Segment(
+            VbaSegmentedSyntaxList<T>.Segment.WithCoordinateShift(
                 previousItems,
                 suffixStart,
                 previousItems.Count - suffixStart,
-                suffixProjector));
+                shift,
+                lineDelta,
+                offsetDelta));
     }
 
     private static VbaTokenStream MergeTokenStreams(
@@ -462,18 +490,23 @@ internal static class VbaSyntaxTreeIncrementalParser
         var parsedEnd = FindFirstTokenStartingAtOrAfter(
             parsed,
             newRange.End.Offset);
-        var requiresShift = lineDelta != 0 || offsetDelta != 0;
-        Func<VbaToken, VbaToken>? suffixProjector = requiresShift
-            ? token => token with { Range = Shift(token.Range, lineDelta, offsetDelta) }
-            : null;
         return new VbaTokenStream(new VbaSegmentedSyntaxList<VbaToken>(
             new VbaSegmentedSyntaxList<VbaToken>.Segment(previous, 0, prefixEnd),
             new VbaSegmentedSyntaxList<VbaToken>.Segment(parsed, parsedStart, parsedEnd - parsedStart),
-            new VbaSegmentedSyntaxList<VbaToken>.Segment(
+            VbaSegmentedSyntaxList<VbaToken>.Segment.WithCoordinateShift(
                 previous,
                 suffixStart,
                 previous.Count - suffixStart,
-                suffixProjector)));
+                static (token, shiftLineDelta, shiftOffsetDelta) =>
+                    token with
+                    {
+                        Range = Shift(
+                            token.Range,
+                            shiftLineDelta,
+                            shiftOffsetDelta)
+                    },
+                lineDelta,
+                offsetDelta)));
     }
 
     private static int FindFirstTokenEndingAfter(

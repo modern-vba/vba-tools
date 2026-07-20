@@ -7,7 +7,10 @@ namespace VbaLanguageServer.Lsp;
 /// Safely decodes LSP document notifications into discriminated pipeline changes.
 /// </summary>
 internal sealed class VbaDocumentLifecycle
+    : IVbaProjectDiskReconciliationManifestEvents
 {
+    private readonly VbaLanguageWorkspace workspace;
+    private readonly IReferenceCatalogLifecycle catalogLifecycle;
     private readonly VbaDiagnosticsPublisher diagnosticsPublisher;
     private readonly VbaDocumentChangePipeline pipeline;
 
@@ -22,6 +25,8 @@ internal sealed class VbaDocumentLifecycle
         VbaLanguageWorkspace workspace,
         IReferenceCatalogLifecycle catalogRefresh)
     {
+        this.workspace = workspace;
+        catalogLifecycle = catalogRefresh;
         diagnosticsPublisher = new VbaDiagnosticsPublisher(transport, workspace);
         pipeline = new VbaDocumentChangePipeline(
             workspace,
@@ -34,6 +39,58 @@ internal sealed class VbaDocumentLifecycle
     /// </summary>
     public void AttachScheduler(VbaInteractiveWorkScheduler scheduler)
         => diagnosticsPublisher.AttachScheduler(scheduler);
+
+    internal VbaProjectDiskReconciliationCoordinator
+        CreateDiskReconciliationCoordinator()
+        => new(
+            workspace,
+            diagnosticsPublisher,
+            this);
+
+    void IVbaProjectDiskReconciliationManifestEvents.ManifestSelectionChanged(
+        string uri,
+        string text,
+        CancellationToken cancellationToken)
+    {
+        _ = diagnosticsPublisher.PublishManifestValidationDiagnosticAsync(
+            uri,
+            error: null,
+            cancellationToken);
+        catalogLifecycle.ApplyManifestSelectionChange(uri, text);
+    }
+
+    void IVbaProjectDiskReconciliationManifestEvents.ManifestDeleted(
+        string uri,
+        CancellationToken cancellationToken)
+    {
+        _ = diagnosticsPublisher.PublishManifestValidationDiagnosticAsync(
+            uri,
+            error: null,
+            cancellationToken);
+        catalogLifecycle.DeactivateManifest(uri);
+    }
+
+    void IVbaProjectDiskReconciliationManifestEvents.ManifestValidationFailed(
+        string uri,
+        VbaProjectManifestException error,
+        CancellationToken cancellationToken)
+        => _ = diagnosticsPublisher.PublishManifestValidationDiagnosticAsync(
+            uri,
+            error,
+            cancellationToken);
+
+    void IVbaProjectDiskReconciliationManifestEvents.ManifestValidationRecovered(
+        string uri,
+        CancellationToken cancellationToken)
+        => _ = diagnosticsPublisher.PublishManifestValidationDiagnosticAsync(
+            uri,
+            error: null,
+            cancellationToken);
+
+    void IVbaProjectDiskReconciliationManifestEvents.ProjectAuthorityTransferred(
+        string sourceUri,
+        CancellationToken cancellationToken)
+        => catalogLifecycle.ActivateProject(sourceUri);
 
     /// <summary>
     /// Records a valid textDocument/didOpen notification.

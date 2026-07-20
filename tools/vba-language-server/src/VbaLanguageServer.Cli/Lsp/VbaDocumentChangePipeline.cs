@@ -104,6 +104,7 @@ internal sealed class VbaDocumentChangePipeline
                 change.Uri,
                 manifestWorkspace.OpenManifest(change.Uri, change.Version, change.Text),
                 cancellationToken);
+            workspace.RetireInactiveManifestState();
             return;
         }
 
@@ -127,6 +128,7 @@ internal sealed class VbaDocumentChangePipeline
                 change.Uri,
                 manifestWorkspace.ChangeManifest(change.Uri, change.Version, change.Text),
                 cancellationToken);
+            workspace.RetireInactiveManifestState();
             return;
         }
 
@@ -147,11 +149,20 @@ internal sealed class VbaDocumentChangePipeline
     {
         if (IsProjectManifestUri(uri))
         {
+            var affectedOpenSources =
+                CaptureOpenSourcesOwnedByManifest(
+                    uri,
+                    cancellationToken);
             if (manifestWorkspace.CloseManifest(uri))
             {
                 await ApplyEffectiveManifestStateAsync(uri, cancellationToken);
+                ReactivateTransferredOpenSourceCatalogs(
+                    uri,
+                    affectedOpenSources,
+                    cancellationToken);
             }
 
+            workspace.RetireInactiveManifestState();
             return;
         }
 
@@ -178,11 +189,20 @@ internal sealed class VbaDocumentChangePipeline
 
         if (isManifest)
         {
+            var affectedOpenSources =
+                CaptureOpenSourcesOwnedByManifest(
+                    uri,
+                    cancellationToken);
             if (manifestWorkspace.ReloadManifest(uri))
             {
                 await ApplyEffectiveManifestStateAsync(uri, cancellationToken);
+                ReactivateTransferredOpenSourceCatalogs(
+                    uri,
+                    affectedOpenSources,
+                    cancellationToken);
             }
 
+            workspace.RetireInactiveManifestState();
             return;
         }
 
@@ -205,11 +225,20 @@ internal sealed class VbaDocumentChangePipeline
 
         if (IsProjectManifestPath(localPath))
         {
+            var affectedOpenSources =
+                CaptureOpenSourcesOwnedByManifest(
+                    uri,
+                    cancellationToken);
             if (manifestWorkspace.DeleteManifest(uri))
             {
                 await ApplyEffectiveManifestStateAsync(uri, cancellationToken);
+                ReactivateTransferredOpenSourceCatalogs(
+                    uri,
+                    affectedOpenSources,
+                    cancellationToken);
             }
 
+            workspace.RetireInactiveManifestState();
             return;
         }
 
@@ -243,7 +272,7 @@ internal sealed class VbaDocumentChangePipeline
         {
             await diagnosticsPublisher.PublishManifestValidationDiagnosticAsync(
                 uri,
-                error: null,
+                error,
                 cancellationToken: cancellationToken);
             await ApplyManifestTextAsync(effectiveUri, text, cancellationToken);
             return;
@@ -289,6 +318,95 @@ internal sealed class VbaDocumentChangePipeline
         catalogLifecycle.ApplyManifestSelectionChange(uri, text);
         return Task.CompletedTask;
     }
+
+    private IReadOnlyList<string> CaptureOpenSourcesOwnedByManifest(
+        string manifestUri,
+        CancellationToken cancellationToken)
+    {
+        var manifestPath =
+            VbaProjectResolver.TryGetLocalPath(manifestUri);
+        if (manifestPath is null)
+        {
+            return [];
+        }
+
+        var manifestDirectory =
+            Path.GetDirectoryName(Path.GetFullPath(manifestPath));
+        return workspace.GetOpenDocumentUris(cancellationToken)
+            .Where(sourceUri =>
+            {
+                var resolution = manifestWorkspace
+                    .CaptureResolution(sourceUri)
+                    .Resolution;
+                if (HasManifestAuthority(
+                    resolution,
+                    manifestPath))
+                {
+                    return true;
+                }
+
+                var sourcePath =
+                    VbaProjectResolver.TryGetLocalPath(sourceUri);
+                return resolution.Kind
+                        == VbaProjectResolutionKind.AdHoc
+                    && manifestDirectory is not null
+                    && sourcePath is not null
+                    && VbaProjectResolver.IsPathUnder(
+                        sourcePath,
+                        manifestDirectory);
+            })
+            .ToArray();
+    }
+
+    private void ReactivateTransferredOpenSourceCatalogs(
+        string previousManifestUri,
+        IReadOnlyList<string> sourceUris,
+        CancellationToken cancellationToken)
+    {
+        var previousManifestPath =
+            VbaProjectResolver.TryGetLocalPath(previousManifestUri);
+        if (previousManifestPath is null)
+        {
+            return;
+        }
+
+        var activatedScopes = new HashSet<string>(
+            StringComparer.OrdinalIgnoreCase);
+        foreach (var sourceUri in sourceUris)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var resolution = manifestWorkspace
+                .CaptureResolution(sourceUri)
+                .Resolution;
+            if (resolution.Kind
+                    != VbaProjectResolutionKind.ManifestDocument
+                || HasManifestAuthority(
+                    resolution,
+                    previousManifestPath))
+            {
+                continue;
+            }
+
+            var scopeKey = string.Join(
+                "|",
+                Path.GetFullPath(resolution.ManifestPath!),
+                resolution.DocumentName ?? "");
+            if (activatedScopes.Add(scopeKey))
+            {
+                catalogLifecycle.ActivateProject(sourceUri);
+            }
+        }
+    }
+
+    private static bool HasManifestAuthority(
+        VbaProjectResolution resolution,
+        string manifestPath)
+        => resolution.Kind
+                == VbaProjectResolutionKind.ManifestDocument
+            && resolution.ManifestPath is not null
+            && Path.GetFullPath(resolution.ManifestPath).Equals(
+                Path.GetFullPath(manifestPath),
+                StringComparison.OrdinalIgnoreCase);
 
     private static bool IsVbaSourceUri(string uri)
     {

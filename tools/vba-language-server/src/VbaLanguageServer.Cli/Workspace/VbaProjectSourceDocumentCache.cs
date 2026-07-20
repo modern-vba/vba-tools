@@ -8,8 +8,37 @@ namespace VbaLanguageServer.Workspace;
 /// </summary>
 internal sealed class VbaProjectSourceDocumentCache
 {
+    private const int MaxStableReadAttempts = 3;
     private readonly object gate = new();
+    private readonly IVbaProjectFileSystem fileSystem;
     private readonly Dictionary<string, CachedDocument> documents = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, int> activeLoads =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, long> invalidationGenerations =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    public VbaProjectSourceDocumentCache()
+        : this(SystemVbaProjectFileSystem.Instance)
+    {
+    }
+
+    internal VbaProjectSourceDocumentCache(IVbaProjectFileSystem fileSystem)
+    {
+        this.fileSystem = fileSystem;
+    }
+
+    internal IVbaProjectFileSystem FileSystem => fileSystem;
+
+    public int Count
+    {
+        get
+        {
+            lock (gate)
+            {
+                return documents.Count;
+            }
+        }
+    }
 
     /// <summary>
     /// Gets a cached disk document or reloads it when the file identity has changed.
@@ -25,42 +54,119 @@ internal sealed class VbaProjectSourceDocumentCache
     {
         cancellationToken.ThrowIfCancellationRequested();
         var fullPath = Path.GetFullPath(localPath);
-        var fileInfo = new FileInfo(fullPath);
-        if (!fileInfo.Exists)
+        if (!fileSystem.TryGetSourceMetadata(fullPath, out var metadata))
         {
             throw new FileNotFoundException("Source file was not found.", fullPath);
         }
 
+        long capturedInvalidationGeneration;
         lock (gate)
         {
             if (documents.TryGetValue(fullPath, out var cached)
-                && cached.Length == fileInfo.Length
-                && cached.LastWriteTimeUtc == fileInfo.LastWriteTimeUtc)
+                && cached.Metadata == metadata)
             {
                 return cached.Document;
             }
+
+            activeLoads.TryGetValue(fullPath, out var activeLoadCount);
+            activeLoads[fullPath] = activeLoadCount + 1;
+            invalidationGenerations.TryGetValue(
+                fullPath,
+                out capturedInvalidationGeneration);
         }
 
-        var text = VbaSourceFileTextReader.ReadAllText(fullPath);
-        cancellationToken.ThrowIfCancellationRequested();
-        var syntaxTree = VbaSyntaxTree.ParseModule(uri, text);
-        var document = new VbaTrackedDocument(
-            uri,
-            text,
-            syntaxTree,
-            VbaSyntaxTreeParseUpdateKind.FullModule,
-            SourceDocument: VbaSourceIndex.CreateDocument(uri, syntaxTree));
-        fileInfo.Refresh();
-
-        lock (gate)
+        try
         {
-            documents[fullPath] = new CachedDocument(
-                fileInfo.Length,
-                fileInfo.LastWriteTimeUtc,
-                document);
-        }
+            for (var attempt = 0;
+                attempt < MaxStableReadAttempts;
+                attempt++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (attempt > 0)
+                {
+                    lock (gate)
+                    {
+                        if (documents.TryGetValue(
+                                fullPath,
+                                out var retriedCached)
+                            && retriedCached.Metadata == metadata)
+                        {
+                            return retriedCached.Document;
+                        }
+                    }
+                }
 
-        return document;
+                var sourceBytes = fileSystem.ReadSourceBytes(fullPath);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!fileSystem.TryGetSourceMetadata(
+                        fullPath,
+                        out var loadedMetadata))
+                {
+                    throw new FileNotFoundException(
+                        "Source file was removed while it was being read.",
+                        fullPath);
+                }
+
+                if (loadedMetadata != metadata)
+                {
+                    metadata = loadedMetadata;
+                    continue;
+                }
+
+                var text = VbaSourceFileTextReader.Decode(sourceBytes);
+                var syntaxTree = VbaSyntaxTree.ParseModule(uri, text);
+                var document = new VbaTrackedDocument(
+                    uri,
+                    text,
+                    syntaxTree,
+                    VbaSyntaxTreeParseUpdateKind.FullModule,
+                    SourceDocument: VbaSourceIndex.CreateDocument(
+                        uri,
+                        syntaxTree));
+                lock (gate)
+                {
+                    if (documents.TryGetValue(
+                            fullPath,
+                            out var concurrentlyCached)
+                        && concurrentlyCached.Metadata == loadedMetadata)
+                    {
+                        return concurrentlyCached.Document;
+                    }
+
+                    invalidationGenerations.TryGetValue(
+                        fullPath,
+                        out var currentInvalidationGeneration);
+                    if (currentInvalidationGeneration
+                        == capturedInvalidationGeneration)
+                    {
+                        documents[fullPath] = new CachedDocument(
+                            loadedMetadata,
+                            document);
+                    }
+                }
+
+                return document;
+            }
+
+            throw new IOException(
+                $"Source file changed repeatedly while it was being read: {fullPath}");
+        }
+        finally
+        {
+            lock (gate)
+            {
+                var remainingLoadCount = activeLoads[fullPath] - 1;
+                if (remainingLoadCount == 0)
+                {
+                    activeLoads.Remove(fullPath);
+                    invalidationGenerations.Remove(fullPath);
+                }
+                else
+                {
+                    activeLoads[fullPath] = remainingLoadCount;
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -73,11 +179,22 @@ internal sealed class VbaProjectSourceDocumentCache
         lock (gate)
         {
             documents.Remove(fullPath);
+            if (activeLoads.ContainsKey(fullPath))
+            {
+                invalidationGenerations.TryGetValue(
+                    fullPath,
+                    out var previousGeneration);
+                invalidationGenerations[fullPath] =
+                    previousGeneration + 1;
+            }
+            else
+            {
+                invalidationGenerations.Remove(fullPath);
+            }
         }
     }
 
     private sealed record CachedDocument(
-        long Length,
-        DateTime LastWriteTimeUtc,
+        VbaProjectSourceFileMetadata Metadata,
         VbaTrackedDocument Document);
 }

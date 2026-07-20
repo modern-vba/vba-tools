@@ -407,7 +407,31 @@ public sealed class VbaVersionedDocumentSnapshotTests
         Assert.NotNull(currentAnalysis);
         Assert.Same(first, second);
         Assert.Same(first.Analysis, currentAnalysis);
+        Assert.Same(first.SourceDocument, currentAnalysis.SourceDocument);
         Assert.Same(first.Diagnostics, currentAnalysis.Diagnostics);
+    }
+
+    [Fact]
+    public void Exact_snapshot_constructor_uses_the_supplied_source_document_without_reprojection()
+    {
+        const string uri = "file:///C:/work/Snapshot.bas";
+        const string text = "Attribute VB_Name = \"Snapshot\"\nPublic Sub Run()\nEnd Sub\n";
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.CreateBundled()));
+        workspace.OpenDocument(uri, version: 9, text);
+        var analysis = Assert.IsType<VbaDocumentAnalysis>(
+            workspace.GetDocumentAnalysis(uri));
+
+        var snapshot = new VbaVersionedDocumentSnapshot(
+            analysis.Uri,
+            9,
+            analysis.Text,
+            analysis.SyntaxTree,
+            analysis.ModuleKind,
+            analysis.Diagnostics,
+            analysis.SourceDocument);
+
+        Assert.Same(analysis.SourceDocument, snapshot.SourceDocument);
     }
 
     [Fact]
@@ -424,6 +448,25 @@ public sealed class VbaVersionedDocumentSnapshotTests
         var mutated = snapshot with
         {
             Uri = "file:///C:/work/Different.bas"
+        };
+
+        Assert.False(mutated.IsOwnedByAnalysis);
+    }
+
+    [Fact]
+    public void Exact_version_snapshot_rejects_analysis_ownership_after_version_mutation()
+    {
+        const string uri = "file:///C:/work/Snapshot.bas";
+        const string text = "Attribute VB_Name = \"Snapshot\"\nPublic Sub Run()\nEnd Sub\n";
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.CreateBundled()));
+        workspace.OpenDocument(uri, version: 9, text);
+        var snapshot = Assert.IsType<VbaVersionedDocumentSnapshot>(
+            workspace.GetDocumentSnapshot(uri, expectedVersion: 9));
+
+        var mutated = snapshot with
+        {
+            Version = snapshot.Version + 1
         };
 
         Assert.False(mutated.IsOwnedByAnalysis);

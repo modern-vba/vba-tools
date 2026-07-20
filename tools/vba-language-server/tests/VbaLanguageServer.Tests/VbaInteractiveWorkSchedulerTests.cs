@@ -1,3 +1,7 @@
+using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Reflection;
+using System.Text.Json.Nodes;
 using VbaLanguageServer.Lsp;
 using Xunit;
 using Xunit.Abstractions;
@@ -11,6 +15,56 @@ public sealed class VbaInteractiveWorkSchedulerTests
     public VbaInteractiveWorkSchedulerTests(ITestOutputHelper output)
     {
         this.output = output;
+    }
+
+    [Fact]
+    public void Interactive_request_surfaces_require_an_explicit_capture_phase()
+    {
+        Assert.DoesNotContain(
+            typeof(VbaInteractiveWorkScheduler).GetMethods(
+                BindingFlags.Instance | BindingFlags.Public),
+            method => method.Name == nameof(VbaInteractiveWorkScheduler.AdmitRequest)
+                && !method.IsGenericMethodDefinition);
+        Assert.DoesNotContain(
+            typeof(VbaLspRequestExecution).GetMethods(
+                BindingFlags.Instance | BindingFlags.Public),
+            method => method.Name == nameof(VbaLspRequestExecution.ExecuteAsync)
+                && method.GetParameters().FirstOrDefault()?.ParameterType
+                    == typeof(JsonObject));
+    }
+
+    [Fact]
+    public void Request_execution_depends_only_on_interactive_workspace_capture()
+    {
+        var workspaceField = typeof(VbaLspRequestExecution).GetField(
+            "workspace",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+
+        Assert.NotNull(workspaceField);
+        Assert.Equal(
+            "IVbaInteractiveWorkspaceCapture",
+            workspaceField.FieldType.Name);
+        Assert.DoesNotContain(
+            typeof(VbaLspRequestExecution).GetFields(
+                BindingFlags.Instance | BindingFlags.NonPublic),
+            field => field.FieldType.Name
+                is "VbaProjectSnapshot" or "VbaSourceIndex");
+        Assert.DoesNotContain(
+            workspaceField.FieldType.GetMethods(),
+            method => method.ReturnType.Name == "VbaProjectSnapshot"
+                || method.ReturnType.Name == "VbaSourceIndex"
+                || method.GetParameters().Any(
+                    parameter => parameter.ParameterType.Name
+                        is "VbaProjectSnapshot" or "VbaSourceIndex"));
+        Assert.DoesNotContain(
+            typeof(VbaLspRequestExecution).Assembly
+                .GetTypes()
+                .SelectMany(type => type.GetMethods(
+                    BindingFlags.Instance
+                    | BindingFlags.Static
+                    | BindingFlags.Public
+                    | BindingFlags.NonPublic)),
+            method => method.Name == "WithSourceIndex");
     }
 
     [Fact]
@@ -28,7 +82,8 @@ public sealed class VbaInteractiveWorkSchedulerTests
         });
         await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        var second = scheduler.AdmitRequest(
+        var second = AdmitCapturedRead(
+            scheduler,
             requestId: null,
             cancellationToken =>
             {
@@ -139,7 +194,8 @@ public sealed class VbaInteractiveWorkSchedulerTests
         var results = new List<string>();
         await using var scheduler = new VbaInteractiveWorkScheduler(
             options: VbaInteractiveWorkSchedulerOptions.Serial);
-        var first = scheduler.AdmitRequest(
+        var first = AdmitCapturedRead(
+            scheduler,
             requestId: null,
             "textDocument/hover",
             async cancellationToken =>
@@ -149,7 +205,8 @@ public sealed class VbaInteractiveWorkSchedulerTests
                 results.Add("first");
             });
         await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var second = scheduler.AdmitRequest(
+        var second = AdmitCapturedRead(
+            scheduler,
             requestId: null,
             "textDocument/completion",
             _ =>
@@ -416,6 +473,63 @@ public sealed class VbaInteractiveWorkSchedulerTests
         var backgroundIndex = executionOrder.IndexOf("background");
         Assert.InRange(backgroundIndex, 1, 6);
         Assert.Contains("interactive-11", executionOrder[(backgroundIndex + 1)..]);
+    }
+
+    [Fact]
+    public async Task Aged_background_class_yields_after_one_fairness_dispatch()
+    {
+        var blockerStarted = CreateSignal();
+        var releaseBlocker = CreateSignal();
+        var executionOrder = new List<string>();
+        await using var scheduler = new VbaInteractiveWorkScheduler(
+            options: new VbaInteractiveWorkSchedulerOptions(
+                CoalesceSupersededMutations: true,
+                EnableConcurrentReads: true,
+                MaxConcurrentReads: 1));
+        var blocker = AdmitCapturedRead(
+            scheduler,
+            "textDocument/definition",
+            async cancellationToken =>
+            {
+                blockerStarted.TrySetResult();
+                await releaseBlocker.Task.WaitAsync(cancellationToken);
+            });
+        await blockerStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var background = Enumerable.Range(0, 3)
+            .Select(index => scheduler.AdmitBackground(
+                VbaInteractiveBackgroundWorkType.Reconciliation,
+                $"project:Book{index}",
+                _ =>
+                {
+                    executionOrder.Add($"background-{index}");
+                    return Task.CompletedTask;
+                }))
+            .ToArray();
+        var interactive = Enumerable.Range(0, 16)
+            .Select(index => AdmitCapturedRead(
+                scheduler,
+                "textDocument/completion",
+                _ =>
+                {
+                    executionOrder.Add($"interactive-{index}");
+                    return Task.CompletedTask;
+                }))
+            .ToArray();
+
+        releaseBlocker.TrySetResult();
+        await Task.WhenAll(
+                background.Select(admission => admission.Completion)
+                    .Concat(interactive.Select(admission => admission.Completion))
+                    .Append(blocker.Completion))
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        var firstBackgroundIndex = executionOrder.FindIndex(
+            item => item.StartsWith("background-", StringComparison.Ordinal));
+        Assert.InRange(firstBackgroundIndex, 1, 6);
+        Assert.StartsWith(
+            "interactive-",
+            executionOrder[firstBackgroundIndex + 1],
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -706,7 +820,8 @@ public sealed class VbaInteractiveWorkSchedulerTests
         var requestId = new VbaLspRequestId(VbaLspRequestIdKind.Number, "7");
         await using var scheduler = new VbaInteractiveWorkScheduler();
 
-        var request = scheduler.AdmitRequest(
+        var request = AdmitCapturedRead(
+            scheduler,
             requestId,
             async cancellationToken =>
             {
@@ -764,7 +879,8 @@ public sealed class VbaInteractiveWorkSchedulerTests
         var requestStarted = CreateSignal();
         var cancellationObserved = CreateSignal();
         await using var scheduler = new VbaInteractiveWorkScheduler();
-        var request = scheduler.AdmitRequest(
+        var request = AdmitCapturedRead(
+            scheduler,
             new VbaLspRequestId(VbaLspRequestIdKind.String, "blocked"),
             async cancellationToken =>
             {
@@ -829,7 +945,8 @@ public sealed class VbaInteractiveWorkSchedulerTests
         var callbackStarted = CreateSignal();
         using var releaseCallback = new ManualResetEventSlim();
         await using var scheduler = new VbaInteractiveWorkScheduler();
-        var request = scheduler.AdmitRequest(
+        var request = AdmitCapturedRead(
+            scheduler,
             requestId: null,
             async cancellationToken =>
             {
@@ -867,7 +984,8 @@ public sealed class VbaInteractiveWorkSchedulerTests
         var timingSink = new RecordingTimingSink();
         var requestId = new VbaLspRequestId(VbaLspRequestIdKind.Number, "9");
         await using var scheduler = new VbaInteractiveWorkScheduler(timingSink);
-        var request = scheduler.AdmitRequest(
+        var request = AdmitCapturedRead(
+            scheduler,
             requestId,
             "textDocument/hover",
             async cancellationToken =>
@@ -975,8 +1093,7 @@ public sealed class VbaInteractiveWorkSchedulerTests
         const int samplesPerClass = 64;
         var blockerStarted = CreateSignal();
         var releaseBlocker = CreateSignal();
-        var timingSink = new RecordingTimingSink();
-        await using var scheduler = new VbaInteractiveWorkScheduler(timingSink);
+        await using var scheduler = new VbaInteractiveWorkScheduler();
         var blocker = scheduler.AdmitBarrier(
             "test/mixed-load-gate",
             async cancellationToken =>
@@ -1021,14 +1138,22 @@ public sealed class VbaInteractiveWorkSchedulerTests
                 TimeSpan.FromMilliseconds(50),
                 TimeSpan.FromMilliseconds(75))
         };
+        var completedAtByMethod = budgetByMethod.Keys.ToDictionary(
+            method => method,
+            _ => new ConcurrentQueue<long>());
         var latencyCritical = budgetByMethod.Keys
             .SelectMany(method => Enumerable.Range(0, samplesPerClass)
                 .Select(_ => AdmitCapturedRead(
                     scheduler,
                     method,
-                    _ => Task.CompletedTask)))
+                    _ =>
+                    {
+                        completedAtByMethod[method].Enqueue(Stopwatch.GetTimestamp());
+                        return Task.CompletedTask;
+                    })))
             .ToArray();
 
+        var latencyWindowStartedAt = Stopwatch.GetTimestamp();
         releaseBlocker.TrySetResult();
         await Task.WhenAll(
                 load.Select(admission => admission.Completion)
@@ -1038,9 +1163,10 @@ public sealed class VbaInteractiveWorkSchedulerTests
 
         foreach (var (method, budget) in budgetByMethod)
         {
-            var elapsed = timingSink.Completed
-                .Where(timing => timing.Method == method)
-                .Select(timing => timing.QueueTime + timing.ExecutionTime)
+            var elapsed = completedAtByMethod[method]
+                .Select(completedAt => Stopwatch.GetElapsedTime(
+                    latencyWindowStartedAt,
+                    completedAt))
                 .ToArray();
             var p95 = Percentile(elapsed, 0.95);
             var p99 = Percentile(elapsed, 0.99);
@@ -1097,7 +1223,8 @@ public sealed class VbaInteractiveWorkSchedulerTests
         var cancellationObserved = CreateSignal();
         var queuedMutationInvoked = false;
         await using var scheduler = new VbaInteractiveWorkScheduler();
-        var first = scheduler.AdmitRequest(
+        var first = AdmitCapturedRead(
+            scheduler,
             requestId: null,
             async cancellationToken =>
             {
@@ -1138,12 +1265,14 @@ public sealed class VbaInteractiveWorkSchedulerTests
         var requestId = new VbaLspRequestId(VbaLspRequestIdKind.String, "reused");
         var secondStarted = CreateSignal();
         await using var scheduler = new VbaInteractiveWorkScheduler();
-        var first = scheduler.AdmitRequest(
+        var first = AdmitCapturedRead(
+            scheduler,
             requestId,
             _ => Task.CompletedTask);
         await first.Completion.WaitAsync(TimeSpan.FromSeconds(5));
 
-        var second = scheduler.AdmitRequest(
+        var second = AdmitCapturedRead(
+            scheduler,
             requestId,
             async cancellationToken =>
             {
@@ -1166,7 +1295,8 @@ public sealed class VbaInteractiveWorkSchedulerTests
         var finishFirstWrite = CreateSignal();
         var secondStarted = CreateSignal();
         await using var scheduler = new VbaInteractiveWorkScheduler();
-        var first = scheduler.AdmitRequest(
+        var first = AdmitCapturedRead(
+            scheduler,
             requestId,
             "textDocument/hover",
             async (cancellationToken, releaseCancellationOwnership) =>
@@ -1177,7 +1307,8 @@ public sealed class VbaInteractiveWorkSchedulerTests
             });
         await terminalOwnershipReleased.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        var second = scheduler.AdmitRequest(
+        var second = AdmitCapturedRead(
+            scheduler,
             requestId,
             "textDocument/hover",
             _ =>
@@ -1200,7 +1331,8 @@ public sealed class VbaInteractiveWorkSchedulerTests
         var finishFirstWrite = CreateSignal();
         var previousGenerationCancelled = false;
         await using var scheduler = new VbaInteractiveWorkScheduler();
-        var first = scheduler.AdmitRequest(
+        var first = AdmitCapturedRead(
+            scheduler,
             requestId,
             "textDocument/hover",
             async (cancellationToken, releaseCancellationOwnership) =>
@@ -1212,7 +1344,8 @@ public sealed class VbaInteractiveWorkSchedulerTests
                 await finishFirstWrite.Task.WaitAsync(cancellationToken);
             });
         await terminalOwnershipReleased.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var second = scheduler.AdmitRequest(
+        var second = AdmitCapturedRead(
+            scheduler,
             requestId,
             "textDocument/hover",
             cancellationToken =>
@@ -1316,7 +1449,8 @@ public sealed class VbaInteractiveWorkSchedulerTests
         var firstStarted = CreateSignal();
         var queuedMutationInvoked = false;
         await using var scheduler = new VbaInteractiveWorkScheduler();
-        var first = scheduler.AdmitRequest(
+        var first = AdmitCapturedRead(
+            scheduler,
             requestId: null,
             async cancellationToken =>
             {
@@ -1391,7 +1525,8 @@ public sealed class VbaInteractiveWorkSchedulerTests
         using var releaseCallback = new ManualResetEventSlim();
         var requestId = new VbaLspRequestId(VbaLspRequestIdKind.String, "slow-callback");
         await using var scheduler = new VbaInteractiveWorkScheduler();
-        var request = scheduler.AdmitRequest(
+        var request = AdmitCapturedRead(
+            scheduler,
             requestId,
             async cancellationToken =>
             {
@@ -1434,7 +1569,8 @@ public sealed class VbaInteractiveWorkSchedulerTests
         var barrier = scheduler.AdmitBarrier(
             "initialized",
             _ => Task.CompletedTask);
-        var read = scheduler.AdmitRequest(
+        var read = AdmitCapturedRead(
+            scheduler,
             requestId: null,
             "textDocument/hover",
             _ => Task.CompletedTask);
@@ -1506,7 +1642,8 @@ public sealed class VbaInteractiveWorkSchedulerTests
                 executed.Add("v2");
                 return Task.CompletedTask;
             });
-        var read = scheduler.AdmitRequest(
+        var read = AdmitCapturedRead(
+            scheduler,
             requestId: null,
             "textDocument/hover",
             _ =>
@@ -1677,11 +1814,46 @@ public sealed class VbaInteractiveWorkSchedulerTests
         VbaInteractiveWorkScheduler scheduler,
         string method,
         Func<CancellationToken, Task> executeAsync)
-        => scheduler.AdmitRequest(
+        => AdmitCapturedRead(
+            scheduler,
             requestId: null,
+            method,
+            executeAsync);
+
+    private static VbaInteractiveWorkAdmission AdmitCapturedRead(
+        VbaInteractiveWorkScheduler scheduler,
+        VbaLspRequestId? requestId,
+        Func<CancellationToken, Task> executeAsync)
+        => AdmitCapturedRead(
+            scheduler,
+            requestId,
+            "<request>",
+            executeAsync);
+
+    private static VbaInteractiveWorkAdmission AdmitCapturedRead(
+        VbaInteractiveWorkScheduler scheduler,
+        VbaLspRequestId? requestId,
+        string method,
+        Func<CancellationToken, Task> executeAsync)
+        => scheduler.AdmitRequest(
+            requestId,
             method,
             capture: static _ => true,
             (_, cancellationToken) => executeAsync(cancellationToken));
+
+    private static VbaInteractiveWorkAdmission AdmitCapturedRead(
+        VbaInteractiveWorkScheduler scheduler,
+        VbaLspRequestId? requestId,
+        string method,
+        Func<CancellationToken, Action, Task> executeAsync)
+        => scheduler.AdmitRequest(
+            requestId,
+            method,
+            capture: static _ => true,
+            (_, cancellationToken, releaseCancellationOwnership) =>
+                executeAsync(
+                    cancellationToken,
+                    releaseCancellationOwnership));
 
     private static TaskCompletionSource CreateSignal()
         => new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1768,7 +1940,8 @@ public sealed class VbaInteractiveWorkSchedulerTests
             }
             else
             {
-                admissions.Add(scheduler.AdmitRequest(
+                admissions.Add(AdmitCapturedRead(
+                    scheduler,
                     requestId: null,
                     "textDocument/hover",
                     _ =>

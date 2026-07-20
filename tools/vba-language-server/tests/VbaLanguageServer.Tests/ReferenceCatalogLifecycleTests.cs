@@ -56,6 +56,314 @@ public sealed class ReferenceCatalogLifecycleTests
     }
 
     [Fact]
+    public async Task Closing_deleted_manifest_overlay_reactivates_the_outer_open_source_catalog()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-close-overlay-outer-catalog-").FullName;
+        try
+        {
+            var nestedRoot = Path.Combine(
+                projectRoot,
+                "src",
+                "Nested");
+            var sourcePath = Path.Combine(
+                nestedRoot,
+                "src",
+                "Book1",
+                "Worker.bas");
+            Directory.CreateDirectory(
+                Path.GetDirectoryName(sourcePath)!);
+            var outerManifestText = JsonSerializer.Serialize(new
+            {
+                schemaVersion = 1,
+                projectName = "OuterCatalogProject",
+                primaryDocument = "Book1",
+                documents = new Dictionary<string, object>
+                {
+                    ["Book1"] = CreateDocument(
+                        "src",
+                        "Outer Custom Library")
+                }
+            });
+            var nestedManifestText = JsonSerializer.Serialize(new
+            {
+                schemaVersion = 1,
+                projectName = "NestedCatalogProject",
+                primaryDocument = "Book1",
+                documents = new Dictionary<string, object>
+                {
+                    ["Book1"] = CreateDocument(
+                        "src/Book1",
+                        "Nested Custom Library")
+                }
+            });
+            File.WriteAllText(
+                Path.Combine(projectRoot, "vba-project.json"),
+                outerManifestText);
+            var nestedManifestPath = Path.Combine(
+                nestedRoot,
+                "vba-project.json");
+            File.WriteAllText(
+                nestedManifestPath,
+                nestedManifestText);
+            var sourceUri = new Uri(sourcePath).AbsoluteUri;
+            var nestedManifestUri =
+                new Uri(nestedManifestPath).AbsoluteUri;
+            var catalogCache = new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled());
+            var workspace = new VbaLanguageWorkspace(catalogCache);
+            await using var output = new MemoryStream();
+            var transport = new LspMessageTransport(
+                Stream.Null,
+                output);
+            var lifecycle =
+                new RecordingReferenceCatalogLifecycle();
+            var pipeline = new VbaDocumentChangePipeline(
+                workspace,
+                lifecycle,
+                new VbaDiagnosticsPublisher(transport, workspace));
+            const string sourceText =
+                "Attribute VB_Name = \"Worker\"\n"
+                + "Public Sub Run()\n"
+                + "End Sub";
+            await pipeline.ApplyAsync(
+                new VbaTextDocumentOpenedChange(
+                    sourceUri,
+                    1,
+                    sourceText),
+                CancellationToken.None);
+            _ = workspace.CreateProjectSnapshot(sourceUri);
+            await pipeline.ApplyAsync(
+                new VbaTextDocumentOpenedChange(
+                    nestedManifestUri,
+                    1,
+                    nestedManifestText),
+                CancellationToken.None);
+            var capturedRevision = workspace.ManifestWorkspace
+                .GetReconciliationRevision(nestedManifestUri);
+            var deletion = workspace.ManifestWorkspace
+                .DeleteReconciledManifest(
+                    nestedManifestUri,
+                    capturedRevision);
+            Assert.Equal(
+                VbaProjectManifestReconciliationStatus.Observed,
+                deletion.Status);
+
+            await pipeline.ApplyAsync(
+                new VbaTextDocumentClosedChange(
+                    nestedManifestUri),
+                CancellationToken.None);
+
+            Assert.Equal(2, lifecycle.ProjectActivationCount);
+            var resolution = workspace.ManifestWorkspace
+                .CaptureResolution(sourceUri)
+                .Resolution;
+            Assert.Equal(
+                "Outer Custom Library",
+                Assert.Single(resolution.ReferenceEntries).Name);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Watched_manifest_deletion_reactivates_the_outer_open_source_catalog()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-delete-manifest-outer-catalog-").FullName;
+        try
+        {
+            File.WriteAllText(
+                Path.Combine(projectRoot, "vba-project.json"),
+                CreateManifestText("Outer Custom Library"));
+            var nestedRoot = Path.Combine(
+                projectRoot,
+                "src",
+                "Book1",
+                "Nested");
+            var sourcePath = Path.Combine(
+                nestedRoot,
+                "src",
+                "Book1",
+                "Worker.bas");
+            Directory.CreateDirectory(
+                Path.GetDirectoryName(sourcePath)!);
+            var nestedManifestPath = Path.Combine(
+                nestedRoot,
+                "vba-project.json");
+            File.WriteAllText(
+                nestedManifestPath,
+                CreateManifestText("Nested Custom Library"));
+            var sourceUri = new Uri(sourcePath).AbsoluteUri;
+            var nestedManifestUri =
+                new Uri(nestedManifestPath).AbsoluteUri;
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()));
+            await using var output = new MemoryStream();
+            var transport = new LspMessageTransport(
+                Stream.Null,
+                output);
+            var lifecycle =
+                new RecordingReferenceCatalogLifecycle();
+            var pipeline = new VbaDocumentChangePipeline(
+                workspace,
+                lifecycle,
+                new VbaDiagnosticsPublisher(transport, workspace));
+            const string sourceText =
+                "Attribute VB_Name = \"Worker\"\n"
+                + "Public Sub Run()\n"
+                + "End Sub";
+            await pipeline.ApplyAsync(
+                new VbaTextDocumentOpenedChange(
+                    sourceUri,
+                    1,
+                    sourceText),
+                CancellationToken.None);
+            _ = workspace.CreateProjectSnapshot(sourceUri);
+            File.Delete(nestedManifestPath);
+
+            await pipeline.ApplyAsync(
+                new VbaWatchedFileDeletedChange(
+                    nestedManifestUri),
+                CancellationToken.None);
+
+            Assert.Equal(2, lifecycle.ProjectActivationCount);
+            var resolution = workspace.ManifestWorkspace
+                .CaptureResolution(sourceUri)
+                .Resolution;
+            Assert.Equal(
+                "Outer Custom Library",
+                Assert.Single(resolution.ReferenceEntries).Name);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Closing_unmapped_manifest_boundary_reactivates_the_outer_open_source_catalog()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-close-unmapped-boundary-catalog-").FullName;
+        try
+        {
+            var nestedRoot = Path.Combine(
+                projectRoot,
+                "src",
+                "Nested");
+            var sourcePath = Path.Combine(
+                nestedRoot,
+                "Actual",
+                "Worker.bas");
+            Directory.CreateDirectory(
+                Path.GetDirectoryName(sourcePath)!);
+            var outerManifestText = JsonSerializer.Serialize(new
+            {
+                schemaVersion = 1,
+                projectName = "OuterCatalogProject",
+                primaryDocument = "Book1",
+                documents = new Dictionary<string, object>
+                {
+                    ["Book1"] = CreateDocument(
+                        "src",
+                        "Outer Custom Library")
+                }
+            });
+            var nestedManifestText = JsonSerializer.Serialize(new
+            {
+                schemaVersion = 1,
+                projectName = "NestedCatalogProject",
+                primaryDocument = "Book1",
+                documents = new Dictionary<string, object>
+                {
+                    ["Book1"] = CreateDocument(
+                        "Elsewhere",
+                        "Nested Custom Library")
+                }
+            });
+            File.WriteAllText(
+                Path.Combine(projectRoot, "vba-project.json"),
+                outerManifestText);
+            var nestedManifestPath = Path.Combine(
+                nestedRoot,
+                "vba-project.json");
+            File.WriteAllText(
+                nestedManifestPath,
+                nestedManifestText);
+            var sourceUri = new Uri(sourcePath).AbsoluteUri;
+            var nestedManifestUri =
+                new Uri(nestedManifestPath).AbsoluteUri;
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()));
+            await using var output = new MemoryStream();
+            var transport = new LspMessageTransport(
+                Stream.Null,
+                output);
+            var lifecycle =
+                new RecordingReferenceCatalogLifecycle();
+            var pipeline = new VbaDocumentChangePipeline(
+                workspace,
+                lifecycle,
+                new VbaDiagnosticsPublisher(transport, workspace));
+            const string sourceText =
+                "Attribute VB_Name = \"Worker\"\n"
+                + "Public Sub Run()\n"
+                + "End Sub";
+            await pipeline.ApplyAsync(
+                new VbaTextDocumentOpenedChange(
+                    sourceUri,
+                    1,
+                    sourceText),
+                CancellationToken.None);
+            Assert.Equal(
+                VbaProjectResolutionKind.AdHoc,
+                workspace.ManifestWorkspace
+                    .CaptureResolution(sourceUri)
+                    .Resolution
+                    .Kind);
+            await pipeline.ApplyAsync(
+                new VbaTextDocumentOpenedChange(
+                    nestedManifestUri,
+                    1,
+                    nestedManifestText),
+                CancellationToken.None);
+            var capturedRevision = workspace.ManifestWorkspace
+                .GetReconciliationRevision(nestedManifestUri);
+            Assert.Equal(
+                VbaProjectManifestReconciliationStatus.Observed,
+                workspace.ManifestWorkspace
+                    .DeleteReconciledManifest(
+                        nestedManifestUri,
+                        capturedRevision)
+                    .Status);
+
+            await pipeline.ApplyAsync(
+                new VbaTextDocumentClosedChange(
+                    nestedManifestUri),
+                CancellationToken.None);
+
+            Assert.Equal(2, lifecycle.ProjectActivationCount);
+            Assert.Equal(
+                "Outer Custom Library",
+                Assert.Single(
+                    workspace.ManifestWorkspace
+                        .CaptureResolution(sourceUri)
+                        .Resolution
+                        .ReferenceEntries)
+                    .Name);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Repeated_activation_for_same_selection_runs_one_automatic_catalog_lifecycle()
     {
         var catalogCache = new VbaProjectReferenceCatalogCache(
@@ -1024,13 +1332,49 @@ public sealed class ReferenceCatalogLifecycleTests
         }
     }
 
+    [Fact]
+    public async Task Position_request_timeout_includes_synchronous_workspace_capture()
+    {
+        var workspace = new BlockingInteractiveWorkspaceCapture();
+        await using var output = new MemoryStream();
+        var requestExecution = new VbaLspRequestExecution(
+            new LspMessageTransport(Stream.Null, output),
+            workspace);
+
+        var request = Task.Run(
+            () => ExecutePositionRequestAsync(
+                requestExecution,
+                requestId: 40_001,
+                "textDocument/completion",
+                "file:///C:/work/BlockedCapture.bas",
+                line: 0,
+                character: 0,
+                timeout: TimeSpan.FromMilliseconds(100)));
+        try
+        {
+            await workspace.CaptureStarted.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            await Task.Delay(TimeSpan.FromMilliseconds(250));
+
+            Assert.True(
+                request.IsCompleted,
+                "The request timeout did not include synchronous workspace capture.");
+            await Assert.ThrowsAsync<TimeoutException>(() => request);
+        }
+        finally
+        {
+            workspace.Release();
+        }
+    }
+
     private static Task ExecutePositionRequestAsync(
         VbaLspRequestExecution requestExecution,
         int requestId,
         string method,
         string uri,
         int line,
-        int character)
+        int character,
+        TimeSpan? timeout = null)
     {
         var request = new System.Text.Json.Nodes.JsonObject
         {
@@ -1043,11 +1387,17 @@ public sealed class ReferenceCatalogLifecycleTests
                 position = new { line, character }
             })
         };
-        return requestExecution.ExecuteAsync(
-                request,
-                CancellationToken.None,
-                CancellationToken.None)
-            .WaitAsync(TimeSpan.FromSeconds(1));
+        return Task.Run(async () =>
+            {
+                var capturedRequest = requestExecution.Capture(
+                    request,
+                    CancellationToken.None);
+                await requestExecution.ExecuteAsync(
+                    capturedRequest,
+                    CancellationToken.None,
+                    CancellationToken.None);
+            })
+            .WaitAsync(timeout ?? TimeSpan.FromSeconds(1));
     }
 
     [Fact]
@@ -1755,11 +2105,50 @@ public sealed class ReferenceCatalogLifecycleTests
 
         public int ResolveCount { get; private set; }
 
+        public long GetRevision(string authorityUri)
+            => Version;
+
         public VbaProjectResolution Resolve(string activeUri)
         {
             ResolveCount++;
             return resolution;
         }
+    }
+
+    private sealed class BlockingInteractiveWorkspaceCapture
+        : IVbaInteractiveWorkspaceCapture
+    {
+        private static readonly VbaSemanticInventory EmptyInventory =
+            VbaSemanticInventory.Create(
+                new Dictionary<string, VbaSourceDocument>(
+                    StringComparer.OrdinalIgnoreCase));
+        private readonly ManualResetEventSlim release = new();
+
+        public TaskCompletionSource CaptureStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public VbaSemanticInventory CaptureProjectSemanticInventory(
+            string activeUri,
+            CancellationToken cancellationToken = default)
+        {
+            CaptureStarted.TrySetResult();
+            release.Wait(cancellationToken);
+            return EmptyInventory;
+        }
+
+        public IReadOnlyList<VbaSemanticInventory>
+            CaptureWorkspaceSemanticInventories(
+                CancellationToken cancellationToken = default)
+            => [EmptyInventory];
+
+        public VbaVersionedDocumentSnapshot? CaptureExactDocumentSnapshot(
+            string uri,
+            int expectedVersion,
+            CancellationToken cancellationToken = default)
+            => null;
+
+        public void Release()
+            => release.Set();
     }
 
     private sealed class RecordingLifecycleObserver

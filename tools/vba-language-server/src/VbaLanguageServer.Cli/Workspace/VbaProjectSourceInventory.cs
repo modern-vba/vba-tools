@@ -48,28 +48,41 @@ internal static class VbaProjectSourceInventory
         IReadOnlyDictionary<string, VbaTrackedDocument> trackedDocuments,
         IReadOnlySet<string> excludedUris,
         VbaProjectSourceDocumentCache? diskDocumentCache = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IReadOnlyDictionary<string, bool>? manifestBarrierOverrides = null)
     {
+        var fileSystem =
+            diskDocumentCache?.FileSystem
+            ?? SystemVbaProjectFileSystem.Instance;
         var documents = new Dictionary<string, VbaTrackedDocument>(StringComparer.OrdinalIgnoreCase);
         var fileStates = new List<VbaProjectSourceFileState>();
         var excludedPaths = CreateLocalPathSet(excludedUris);
         var trackedDocumentsByPath = CreateTrackedDocumentPathMap(trackedDocuments.Values);
-        foreach (var uri in EnumerateSourceUris(resolution, cancellationToken))
+        var ownershipBoundary = new VbaProjectSourceOwnershipBoundary(
+            resolution,
+            fileSystem,
+            manifestBarrierOverrides);
+        foreach (var uri in EnumerateSourceUris(
+            resolution,
+            fileSystem,
+            cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
             var localPath = VbaProjectResolver.TryGetLocalPath(uri);
-            if (localPath is null || excludedUris.Contains(uri) || excludedPaths.Contains(localPath))
+            if (localPath is null
+                || excludedUris.Contains(uri)
+                || excludedPaths.Contains(localPath)
+                || !ownershipBoundary.ContainsSource(localPath))
             {
                 continue;
             }
 
-            var fileInfo = new FileInfo(localPath);
-            if (!fileInfo.Exists)
+            if (!fileSystem.TryGetSourceMetadata(localPath, out var metadata))
             {
                 continue;
             }
 
-            fileStates.Add(VbaProjectSourceFileState.From(fileInfo));
+            fileStates.Add(VbaProjectSourceFileState.From(localPath, metadata));
 
             if (trackedDocuments.TryGetValue(uri, out var trackedDocument))
             {
@@ -84,14 +97,17 @@ internal static class VbaProjectSourceInventory
             }
 
             documents[uri] = diskDocumentCache is null
-                ? LoadDocument(uri, localPath, cancellationToken)
+                ? LoadDocument(uri, localPath, fileSystem, cancellationToken)
                 : diskDocumentCache.GetOrLoadDocument(uri, localPath, cancellationToken);
         }
 
         foreach (var trackedDocument in trackedDocuments.Values)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (resolution.ContainsUri(trackedDocument.Uri))
+            var localPath = VbaProjectResolver.TryGetLocalPath(
+                trackedDocument.Uri);
+            if (localPath is not null
+                && ownershipBoundary.ContainsSource(localPath))
             {
                 documents[trackedDocument.Uri] = trackedDocument;
             }
@@ -104,9 +120,11 @@ internal static class VbaProjectSourceInventory
 
     private static IEnumerable<string> EnumerateSourceUris(
         VbaProjectResolution resolution,
+        IVbaProjectFileSystem fileSystem,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(resolution.RootPath) || !Directory.Exists(resolution.RootPath))
+        if (string.IsNullOrWhiteSpace(resolution.RootPath)
+            || !fileSystem.DirectoryExists(resolution.RootPath))
         {
             yield break;
         }
@@ -117,7 +135,10 @@ internal static class VbaProjectSourceInventory
         foreach (var pattern in SourcePatterns)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            foreach (var path in Directory.EnumerateFiles(resolution.RootPath, pattern, searchOption))
+            foreach (var path in fileSystem.EnumerateSourceFiles(
+                resolution.RootPath,
+                pattern,
+                searchOption))
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 yield return new Uri(Path.GetFullPath(path)).AbsoluteUri;
@@ -128,10 +149,12 @@ internal static class VbaProjectSourceInventory
     private static VbaTrackedDocument LoadDocument(
         string uri,
         string localPath,
+        IVbaProjectFileSystem fileSystem,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var text = VbaSourceFileTextReader.ReadAllText(localPath);
+        var text = VbaSourceFileTextReader.Decode(
+            fileSystem.ReadSourceBytes(localPath));
         var syntaxTree = VbaSyntaxTree.ParseModule(uri, text);
         return new VbaTrackedDocument(
             uri,
@@ -182,19 +205,13 @@ internal sealed record VbaProjectSourceFileState(
     long Length,
     long LastWriteTimeUtcTicks)
 {
-    public static VbaProjectSourceFileState From(FileInfo fileInfo)
+    public static VbaProjectSourceFileState From(
+        string fullPath,
+        VbaProjectSourceFileMetadata metadata)
         => new(
-            Path.GetFullPath(fileInfo.FullName),
-            fileInfo.Length,
-            fileInfo.LastWriteTimeUtc.Ticks);
-
-    public bool IsCurrent()
-    {
-        var fileInfo = new FileInfo(FullPath);
-        return fileInfo.Exists
-            && fileInfo.Length == Length
-            && fileInfo.LastWriteTimeUtc.Ticks == LastWriteTimeUtcTicks;
-    }
+            Path.GetFullPath(fullPath),
+            metadata.Length,
+            metadata.LastWriteTimeUtcTicks);
 }
 
 /// <summary>

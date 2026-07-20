@@ -38,14 +38,23 @@ public sealed class VbaNameResolutionService
         VbaProjectReferenceCatalogSet referenceCatalogs,
         IReadOnlyList<VbaSourceDefinition>? activeReferenceDefinitions,
         VbaResolutionPolicy resolutionPolicy)
+        : this(
+            new VbaNameCandidateInventory(
+                documents,
+                referenceSelection,
+                referenceCatalogs,
+                activeReferenceDefinitions
+                    ?? referenceCatalogs.GetActiveDefinitions(referenceSelection)),
+            resolutionPolicy)
+    {
+    }
+
+    internal VbaNameResolutionService(
+        VbaNameCandidateInventory candidates,
+        VbaResolutionPolicy resolutionPolicy)
     {
         this.resolutionPolicy = resolutionPolicy;
-        candidates = new VbaNameCandidateInventory(
-            documents,
-            referenceSelection,
-            referenceCatalogs,
-            activeReferenceDefinitions
-                ?? referenceCatalogs.GetActiveDefinitions(referenceSelection));
+        this.candidates = candidates;
     }
 
     /// <summary>
@@ -670,11 +679,13 @@ internal sealed class VbaNameCandidateInventory
     private readonly IReadOnlyList<VbaNameCandidate> sourceCandidates;
     private readonly IReadOnlyList<VbaNameCandidate> referenceCandidates;
     private readonly ILookup<string, VbaSourceDocument> documentsByUri;
+    private readonly ILookup<string, VbaNameCandidate> sourceCandidatesByDocument;
     private readonly ILookup<string, VbaNameCandidate> sourceCandidatesByName;
     private readonly ILookup<string, VbaNameCandidate> sourceCandidatesByModule;
     private readonly ILookup<string, VbaNameCandidate> referenceCandidatesByName;
     private readonly ILookup<string, VbaNameCandidate> referenceCandidatesByParentType;
     private readonly ILookup<string, VbaSourceDefinition> qualifiedReferenceDefinitionsByQualifier;
+    private readonly IReadOnlyList<VbaSourceDefinition> workspaceSymbolDefinitions;
 
     public VbaNameCandidateInventory(
         IReadOnlyList<VbaSourceDocument> documents,
@@ -683,13 +694,18 @@ internal sealed class VbaNameCandidateInventory
         IReadOnlyList<VbaSourceDefinition> activeReferenceDefinitions)
     {
         ReferenceSelection = referenceSelection;
-        documentsByUri = documents.ToLookup(document => document.Uri, StringComparer.OrdinalIgnoreCase);
+        documentsByUri = documents.ToLookup(
+            document => document.Uri,
+            StringComparer.OrdinalIgnoreCase);
         sourceCandidates = documents
             .SelectMany(document => document.Definitions.Select(definition => new VbaNameCandidate(definition, document)))
             .ToArray();
         referenceCandidates = activeReferenceDefinitions
             .Select(definition => new VbaNameCandidate(definition, Document: null))
             .ToArray();
+        sourceCandidatesByDocument = sourceCandidates.ToLookup(
+            candidate => candidate.Uri,
+            StringComparer.OrdinalIgnoreCase);
         sourceCandidatesByName = sourceCandidates.ToLookup(candidate => candidate.Name, StringComparer.OrdinalIgnoreCase);
         sourceCandidatesByModule = sourceCandidates.ToLookup(candidate => candidate.ModuleName, StringComparer.OrdinalIgnoreCase);
         referenceCandidatesByName = referenceCandidates.ToLookup(candidate => candidate.Name, StringComparer.OrdinalIgnoreCase);
@@ -708,6 +724,11 @@ internal sealed class VbaNameCandidateInventory
             candidate => candidate.Qualifier,
             candidate => candidate.Definition,
             StringComparer.OrdinalIgnoreCase);
+        workspaceSymbolDefinitions = sourceCandidates
+            .Select(candidate => candidate.Definition)
+            .Where(definition => definition.Visibility != VbaSourceDefinitionVisibility.Local)
+            .Where(definition => !VbaProjectReferenceCatalogSet.IsExternalDefinition(definition))
+            .ToArray();
     }
 
     public VbaProjectReferenceSelection? ReferenceSelection { get; }
@@ -717,8 +738,15 @@ internal sealed class VbaNameCandidateInventory
     public VbaSourceDocument? FindDocument(string uri)
         => documentsByUri[uri].FirstOrDefault();
 
+    public IReadOnlyList<VbaSourceDefinition> GetDocumentDefinitions(string uri)
+        => FindDocument(uri)?.Definitions
+            ?? Array.Empty<VbaSourceDefinition>();
+
+    public IReadOnlyList<VbaSourceDefinition> GetWorkspaceSymbolDefinitions()
+        => workspaceSymbolDefinitions;
+
     public IEnumerable<VbaNameCandidate> GetSourceCandidates(VbaSourceDocument document)
-        => sourceCandidates.Where(candidate => ReferenceEquals(candidate.Document, document));
+        => sourceCandidatesByDocument[document.Uri];
 
     public IEnumerable<VbaNameCandidate> GetSourceCandidates(string? requestedName)
         => requestedName is null ? sourceCandidates : sourceCandidatesByName[requestedName];

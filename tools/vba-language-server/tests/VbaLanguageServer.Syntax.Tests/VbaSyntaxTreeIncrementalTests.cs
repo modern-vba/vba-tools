@@ -15,6 +15,53 @@ public sealed class VbaSyntaxTreeIncrementalTests
     }
 
     [Fact]
+    public void LanguageServerSourceHasNoLegacyIncrementalFullDocumentMaskOrEagerProjectionSelfReport()
+    {
+        var testDirectory = Path.GetDirectoryName(GetCurrentSourceFilePath());
+        Assert.NotNull(testDirectory);
+        var languageServerSourceDirectory = Path.GetFullPath(
+            Path.Combine(
+                testDirectory,
+                "..",
+                "..",
+                "src"));
+        var violations = new List<string>();
+
+        foreach (var path in Directory.EnumerateFiles(
+                     languageServerSourceDirectory,
+                     "*.cs",
+                     SearchOption.AllDirectories)
+                 .Where(path => !IsBuildOutputPath(
+                     languageServerSourceDirectory,
+                     path)))
+        {
+            var source = File.ReadAllText(path);
+            var compactSource = string.Concat(source.Where(character =>
+                !char.IsWhiteSpace(character)));
+            if (source.Contains("MaskUnchangedMembers", StringComparison.Ordinal))
+            {
+                violations.Add($"{path}: legacy MaskUnchangedMembers path");
+            }
+
+            if (compactSource.Contains(
+                    "string.Create(source.Length",
+                    StringComparison.Ordinal))
+            {
+                violations.Add($"{path}: full-length source mask allocation");
+            }
+
+            if (source.Contains(
+                    "EagerProjectedItemCount",
+                    StringComparison.Ordinal))
+            {
+                violations.Add($"{path}: eager projection self-report");
+            }
+        }
+
+        Assert.Empty(violations);
+    }
+
+    [Fact]
     public void ParserReadsSafeCallableBodyFromDirectSourceWindow()
     {
         const string uri = "file:///C:/work/Worker.bas";
@@ -143,41 +190,31 @@ public sealed class VbaSyntaxTreeIncrementalTests
     public void ParserKeepsShiftedSuffixSyntaxInLazySegmentsAfterMemberGrows()
     {
         const string uri = "file:///C:/work/Worker.bas";
-        var original = string.Join('\n', [
-            "Attribute VB_Name = \"Worker\"",
-            "Public Function BuildValue() As String",
-            "    BuildValue = \"old\"",
-            "End Function",
-            "",
-            "Public Sub Run()",
-            "    BuildValue",
-            "End Sub"
-        ]);
-        var updated = string.Join('\n', [
-            "Attribute VB_Name = \"Worker\"",
-            "Public Function BuildValue() As String",
-            "    Dim value As String",
-            "    value = \"new\"",
-            "    BuildValue = value",
-            "End Function",
-            "",
-            "Public Sub Run()",
-            "    BuildValue",
-            "End Sub"
-        ]);
+        var original = CreateLineChangingProjectionFixture(expanded: false);
+        var updated = CreateLineChangingProjectionFixture(expanded: true);
         var previous = VbaSyntaxTree.ParseModule(uri, original);
 
-        var result = VbaSyntaxTree.ParseOrUpdate(uri, updated, previous);
+        var result = VbaSyntaxTree.ParseOrUpdate(
+            uri,
+            updated,
+            previous,
+            out var observation);
+        var full = VbaSyntaxTree.ParseModule(uri, updated);
 
+        Assert.Equal(VbaIncrementalParseFallbackReason.None, observation.FallbackReason);
         Assert.Equal(VbaSyntaxTreeParseUpdateKind.ModuleMember, result.UpdateKind);
-        AssertSegmentedWithLazySuffix(result.SyntaxTree.TokenStream.Tokens);
+        AssertSyntaxEquivalent(full, result.SyntaxTree);
         AssertSegmentedWithLazySuffix(result.SyntaxTree.Module.Members);
         AssertSegmentedWithLazySuffix(result.SyntaxTree.Module.Declarations);
         AssertSegmentedWithLazySuffix(result.SyntaxTree.Module.CallableDeclarations);
         AssertSegmentedWithLazySuffix(result.SyntaxTree.Module.Statements);
-        AssertSegmentedWithoutEagerProjection(result.SyntaxTree.Module.Expressions);
-        AssertSegmentedWithoutEagerProjection(result.SyntaxTree.Module.ArgumentLists);
+        AssertSegmentedWithLazySuffix(result.SyntaxTree.Module.Expressions);
+        AssertSegmentedWithLazySuffix(result.SyntaxTree.Module.ArgumentLists);
         AssertSegmentedWithLazySuffix(result.SyntaxTree.Module.Blocks);
+        AssertSegmentedWithLazySuffix(result.SyntaxTree.Module.LineLabels);
+        AssertSegmentedWithLazySuffix(result.SyntaxTree.Module.PreprocessorDirectives);
+        AssertSegmentedWithLazySuffix(result.SyntaxTree.Module.PreprocessorBlocks);
+        AssertSegmentedWithLazySuffix(result.SyntaxTree.TokenStream.Tokens);
     }
 
     [Theory]
@@ -420,6 +457,108 @@ public sealed class VbaSyntaxTreeIncrementalTests
     }
 
     [Fact]
+    public void RepeatedModuleMemberEditsKeepSegmentNestingBounded()
+    {
+        const string uri = "file:///C:/work/IncrementalDepth.bas";
+        var first = CreateBenchmarkFixture(1);
+        var second = CreateBenchmarkFixture(2);
+        var previous = VbaSyntaxTree.ParseModule(uri, first);
+
+        for (var iteration = 0; iteration < 201; iteration++)
+        {
+            var source = iteration % 2 == 0 ? second : first;
+            var result = VbaSyntaxTree.ParseOrUpdate(uri, source, previous);
+
+            Assert.Equal(VbaSyntaxTreeParseUpdateKind.ModuleMember, result.UpdateKind);
+            previous = result.SyntaxTree;
+        }
+
+        AssertSegmentNestingBounded(previous.Module.Declarations);
+        AssertSegmentNestingBounded(previous.Module.Statements);
+        AssertSegmentNestingBounded(previous.TokenStream.Tokens);
+    }
+
+    [Fact]
+    public void RepeatedLineChangingModuleMemberEditsKeepProjectionCompositionBounded()
+    {
+        const string uri = "file:///C:/work/IncrementalProjectionDepth.bas";
+        var compact = CreateLineChangingProjectionFixture(expanded: false);
+        var expanded = CreateLineChangingProjectionFixture(expanded: true);
+        var previous = VbaSyntaxTree.ParseModule(uri, compact);
+        var finalSource = compact;
+
+        for (var iteration = 0; iteration < 201; iteration++)
+        {
+            finalSource = iteration % 2 == 0 ? expanded : compact;
+            var result = VbaSyntaxTree.ParseOrUpdate(
+                uri,
+                finalSource,
+                previous,
+                out var observation);
+
+            Assert.Equal(
+                VbaIncrementalParseFallbackReason.None,
+                observation.FallbackReason);
+            Assert.Equal(VbaSyntaxTreeParseUpdateKind.ModuleMember, result.UpdateKind);
+            previous = result.SyntaxTree;
+        }
+
+        AssertSyntaxEquivalent(
+            VbaSyntaxTree.ParseModule(uri, finalSource),
+            previous);
+        AssertSegmentedWithLazySuffix(previous.Module.Members);
+        AssertSegmentedWithLazySuffix(previous.Module.Declarations);
+        AssertSegmentedWithLazySuffix(previous.Module.CallableDeclarations);
+        AssertSegmentedWithLazySuffix(previous.Module.Statements);
+        AssertSegmentedWithLazySuffix(previous.Module.Expressions);
+        AssertSegmentedWithLazySuffix(previous.Module.ArgumentLists);
+        AssertSegmentedWithLazySuffix(previous.Module.Blocks);
+        AssertSegmentedWithLazySuffix(previous.Module.LineLabels);
+        AssertSegmentedWithLazySuffix(previous.Module.PreprocessorDirectives);
+        AssertSegmentedWithLazySuffix(previous.Module.PreprocessorBlocks);
+        AssertSegmentedWithLazySuffix(previous.TokenStream.Tokens);
+    }
+
+    [Fact]
+    public void DistinctModuleMemberEditsKeepSegmentLookupDepthLogarithmic()
+    {
+        const string uri = "file:///C:/work/IncrementalLookupDepth.bas";
+        const int memberCount = 128;
+        var source = CreateDistinctMemberEditFixture(memberCount);
+        var previous = VbaSyntaxTree.ParseModule(uri, source);
+
+        for (var memberIndex = 0; memberIndex < memberCount; memberIndex++)
+        {
+            var next = ReplaceLine(
+                source,
+                GetDistinctMemberValueLine(memberIndex),
+                $"    value = {memberIndex + 2}");
+            var incremental = VbaSyntaxTree.ParseOrUpdate(
+                uri,
+                next,
+                previous,
+                out var observation);
+            var full = VbaSyntaxTree.ParseModule(uri, next);
+
+            Assert.Equal(
+                VbaIncrementalParseFallbackReason.None,
+                observation.FallbackReason);
+            Assert.Equal(
+                VbaSyntaxTreeParseUpdateKind.ModuleMember,
+                incremental.UpdateKind);
+            AssertSyntaxEquivalent(full, incremental.SyntaxTree);
+            source = next;
+            previous = incremental.SyntaxTree;
+        }
+
+        var members = Assert.IsAssignableFrom<IVbaSegmentedSyntaxList>(
+            previous.Module.Members);
+        Assert.True(members.SegmentCount >= memberCount);
+        Assert.InRange(members.MaxLookupStepCount, 1, 8);
+        Assert.True(members.MaxLookupStepCount < members.SegmentCount);
+    }
+
+    [Fact]
     [Trait("Category", "Performance")]
     public void ModuleMemberSourceWindowBenchmarkReportsLatencyAllocationAndWindowSize()
     {
@@ -637,16 +776,24 @@ public sealed class VbaSyntaxTreeIncrementalTests
 
     private static void AssertSegmentedWithLazySuffix<T>(IReadOnlyList<T> items)
     {
-        var segmented = AssertSegmentedWithoutEagerProjection(items);
+        var segmented = AssertSegmentedWithBoundedShape(items);
         Assert.True(segmented.LazyProjectedItemCount > 0);
+        Assert.Equal(1, segmented.NestingDepth);
+        Assert.Equal(1, segmented.MaxProjectionStepCount);
     }
 
-    private static IVbaSegmentedSyntaxList AssertSegmentedWithoutEagerProjection<T>(IReadOnlyList<T> items)
+    private static IVbaSegmentedSyntaxList AssertSegmentedWithBoundedShape<T>(
+        IReadOnlyList<T> items)
     {
         var segmented = Assert.IsAssignableFrom<IVbaSegmentedSyntaxList>(items);
-        Assert.True(segmented.SegmentCount >= 0);
-        Assert.Equal(0, segmented.EagerProjectedItemCount);
+        Assert.InRange(segmented.SegmentCount, 1, 3);
         return segmented;
+    }
+
+    private static void AssertSegmentNestingBounded<T>(IReadOnlyList<T> items)
+    {
+        var segmented = Assert.IsAssignableFrom<IVbaSegmentedSyntaxList>(items);
+        Assert.InRange(segmented.NestingDepth, 0, 1);
     }
 
     private static string ReplaceLine(string source, int lineIndex, string replacement)
@@ -675,6 +822,65 @@ public sealed class VbaSyntaxTreeIncrementalTests
 
         return string.Join('\n', lines);
     }
+
+    private static string CreateLineChangingProjectionFixture(bool expanded)
+    {
+        var lines = new List<string>
+        {
+            "Attribute VB_Name = \"IncrementalProjectionDepth\"",
+            "Option Explicit",
+            "",
+            "Public Sub EditTarget()",
+            "    Dim value As Long",
+            expanded
+                ? "    value = 2"
+                : "    value = 1"
+        };
+        if (expanded)
+        {
+            lines.Add("    value = value + 1");
+        }
+
+        lines.AddRange([
+            "End Sub",
+            "",
+            "Public Function Tail(ByVal inputValue As Long) As String",
+            "TailLabel:",
+            "#If VBA7 Then",
+            "    If inputValue > 0 Then",
+            "        Tail = Format$(CStr(inputValue), \"0\")",
+            "    Else",
+            "        Tail = \"zero\"",
+            "    End If",
+            "#Else",
+            "    Tail = CStr(inputValue)",
+            "#End If",
+            "End Function"
+        ]);
+        return string.Join('\n', lines);
+    }
+
+    private static string CreateDistinctMemberEditFixture(int memberCount)
+    {
+        var lines = new List<string>(2 + (memberCount * 5))
+        {
+            "Attribute VB_Name = \"IncrementalLookupDepth\"",
+            "Option Explicit"
+        };
+        for (var memberIndex = 0; memberIndex < memberCount; memberIndex++)
+        {
+            lines.Add($"Public Sub Routine{memberIndex:D3}()");
+            lines.Add("    Dim value As Long");
+            lines.Add("    value = 1");
+            lines.Add("    Debug.Print value");
+            lines.Add("End Sub");
+        }
+
+        return string.Join('\n', lines);
+    }
+
+    private static int GetDistinctMemberValueLine(int memberIndex)
+        => 4 + (memberIndex * 5);
 
     private static TimeSpan Percentile(IEnumerable<TimeSpan> values, double percentile)
     {
@@ -708,4 +914,22 @@ public sealed class VbaSyntaxTreeIncrementalTests
 
         return source.ToString();
     }
+
+    private static bool IsBuildOutputPath(
+        string sourceDirectory,
+        string path)
+    {
+        var segments = Path.GetRelativePath(
+                sourceDirectory,
+                path)
+            .Split(
+                [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
+                StringSplitOptions.RemoveEmptyEntries);
+        return segments.Contains("bin", StringComparer.OrdinalIgnoreCase)
+            || segments.Contains("obj", StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static string GetCurrentSourceFilePath(
+        [System.Runtime.CompilerServices.CallerFilePath] string path = "")
+        => path;
 }

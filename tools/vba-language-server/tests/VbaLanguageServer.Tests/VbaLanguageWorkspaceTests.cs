@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using VbaLanguageServer.ProjectModel;
@@ -10,6 +11,90 @@ namespace VbaLanguageServer.Tests;
 
 public sealed class VbaLanguageWorkspaceTests
 {
+    [Fact]
+    public void Warm_project_capture_reuses_the_immutable_workspace_state()
+    {
+        const string uri = "file:///C:/work/WarmState.bas";
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()));
+        workspace.UpdateDocument(
+            uri,
+            "Attribute VB_Name = \"WarmState\"\nPublic Sub Run()\nEnd Sub\n");
+        var copyWorkspaceState = Assert.IsAssignableFrom<MethodInfo>(
+            typeof(VbaLanguageWorkspace).GetMethod(
+                "CopyWorkspaceState",
+                BindingFlags.Instance | BindingFlags.NonPublic));
+
+        var first = copyWorkspaceState.Invoke(workspace, null);
+        var second = copyWorkspaceState.Invoke(workspace, null);
+
+        Assert.Same(first, second);
+    }
+
+    [Fact]
+    public void Workspace_snapshot_capture_deduplicates_scopes_before_provider_capture()
+    {
+        var observer = new CountingProjectSnapshotBuildObserver();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()),
+            NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+            NullVbaDocumentAnalysisBuildObserver.Instance,
+            observer);
+        for (var index = 0; index < 24; index++)
+        {
+            workspace.UpdateDocument(
+                $"file:///C:/work/SameScope/Module{index:D2}.bas",
+                $"Attribute VB_Name = \"Module{index:D2}\"\n"
+                + $"Public Sub Run{index:D2}()\nEnd Sub\n");
+        }
+
+        var snapshots = workspace.CreateProjectSnapshots();
+
+        Assert.Single(snapshots);
+        Assert.Equal(1, observer.CaptureCount);
+    }
+
+    [Fact]
+    public void Warm_workspace_snapshot_capture_reuses_the_known_project_scope()
+    {
+        var lifecycleObserver = new CountingSnapshotManifestResolveObserver();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()),
+            lifecycleObserver);
+        var uris = Enumerable.Range(0, 24)
+            .Select(index => $"file:///C:/work/KnownScope/Module{index:D2}.bas")
+            .ToArray();
+        for (var index = 0; index < uris.Length; index++)
+        {
+            workspace.UpdateDocument(
+                uris[index],
+                $"Attribute VB_Name = \"Module{index:D2}\"\n"
+                + $"Public Sub Run{index:D2}()\nEnd Sub\n");
+        }
+
+        workspace.CreateProjectSnapshot(uris[0]);
+        var resolveCountAfterWarmup = lifecycleObserver.ManifestResolveCount;
+
+        var snapshots = workspace.CreateProjectSnapshots();
+
+        Assert.Single(snapshots);
+        Assert.Equal(
+            resolveCountAfterWarmup,
+            lifecycleObserver.ManifestResolveCount);
+    }
+
+    [Fact]
+    public void Project_snapshot_exposes_semantic_inventory_without_raw_source_index()
+    {
+        Assert.NotNull(
+            typeof(VbaProjectSnapshot).GetProperty(
+                nameof(VbaProjectSnapshot.SemanticInventory)));
+        Assert.Null(typeof(VbaProjectSnapshot).GetProperty("SourceIndex"));
+    }
+
     [Fact]
     public void ProjectSnapshotReusesCachedSnapshotUntilWorkspaceInputsChange()
     {
@@ -35,6 +120,148 @@ public sealed class VbaLanguageWorkspaceTests
         Assert.Same(firstSnapshot, reusedSnapshot);
         Assert.NotSame(firstSnapshot, refreshedSnapshot);
         Assert.Same(refreshedSnapshot, reusedRefreshedSnapshot);
+    }
+
+    [Fact]
+    public void Source_edit_rebuilds_only_its_project_scope_snapshot()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-scope-revision-").FullName;
+        try
+        {
+            WriteProjectManifest(projectRoot);
+            var projectAUri = ToFileUri(
+                Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
+            var projectBUri = ToFileUri(
+                Path.Combine(projectRoot, "src", "SecondBook", "Worker.bas"));
+            var buildObserver = new CountingProjectSnapshotBuildObserver();
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.CreateBundled()),
+                NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+                NullVbaDocumentAnalysisBuildObserver.Instance,
+                buildObserver);
+            workspace.UpdateDocument(
+                projectAUri,
+                "Attribute VB_Name = \"ProjectA\"\nPublic Sub BeforeEdit()\nEnd Sub\n");
+            workspace.UpdateDocument(
+                projectBUri,
+                "Attribute VB_Name = \"ProjectB\"\nPublic Sub Unchanged()\nEnd Sub\n");
+
+            var beforeA = workspace.CreateProjectSnapshot(projectAUri);
+            var beforeB = workspace.CreateProjectSnapshot(projectBUri);
+            workspace.UpdateDocument(
+                projectAUri,
+                "Attribute VB_Name = \"ProjectA\"\nPublic Sub AfterEdit()\nEnd Sub\n");
+            var afterA = workspace.CreateProjectSnapshot(projectAUri);
+            var afterB = workspace.CreateProjectSnapshot(projectBUri);
+
+            Assert.NotSame(beforeA, afterA);
+            Assert.Same(beforeB, afterB);
+            Assert.Equal(3, buildObserver.BuildCount);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Manifest_change_does_not_rebuild_an_unrelated_project_scope()
+    {
+        var firstRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-manifest-scope-a-").FullName;
+        var secondRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-manifest-scope-b-").FullName;
+        try
+        {
+            WriteProjectManifest(firstRoot);
+            WriteProjectManifest(secondRoot);
+            var firstUri = ToFileUri(
+                Path.Combine(firstRoot, "src", "Book1", "Worker.bas"));
+            var secondUri = ToFileUri(
+                Path.Combine(secondRoot, "src", "Book1", "Worker.bas"));
+            var buildObserver = new CountingProjectSnapshotBuildObserver();
+            var lifecycleObserver = new CountingSnapshotManifestResolveObserver();
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()),
+                lifecycleObserver,
+                NullVbaDocumentAnalysisBuildObserver.Instance,
+                buildObserver);
+            workspace.UpdateDocument(
+                firstUri,
+                "Attribute VB_Name = \"First\"\nPublic Sub RunFirst()\nEnd Sub\n");
+            workspace.UpdateDocument(
+                secondUri,
+                "Attribute VB_Name = \"Second\"\nPublic Sub RunSecond()\nEnd Sub\n");
+            workspace.CreateProjectSnapshot(firstUri);
+            var beforeSecond = workspace.CreateProjectSnapshot(secondUri);
+            var manifestResolveCount = lifecycleObserver.ManifestResolveCount;
+
+            var firstManifestPath = Path.Combine(firstRoot, "vba-project.json");
+            var opened = workspace.ManifestWorkspace.OpenManifest(
+                ToFileUri(firstManifestPath),
+                documentVersion: 1,
+                File.ReadAllText(firstManifestPath));
+            var afterSecond = workspace.CreateProjectSnapshot(secondUri);
+
+            Assert.True(opened.Accepted);
+            Assert.Same(beforeSecond, afterSecond);
+            Assert.Equal(2, buildObserver.BuildCount);
+            Assert.Equal(
+                manifestResolveCount,
+                lifecycleObserver.ManifestResolveCount);
+        }
+        finally
+        {
+            Directory.Delete(firstRoot, recursive: true);
+            Directory.Delete(secondRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Unrelated_source_edit_does_not_discard_an_in_flight_project_snapshot()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-scope-build-").FullName;
+        var buildObserver = new BlockingFirstProjectSnapshotBuildObserver();
+        try
+        {
+            WriteProjectManifest(projectRoot);
+            var projectAUri = ToFileUri(
+                Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
+            var projectBUri = ToFileUri(
+                Path.Combine(projectRoot, "src", "SecondBook", "Worker.bas"));
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.CreateBundled()),
+                NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+                NullVbaDocumentAnalysisBuildObserver.Instance,
+                buildObserver);
+            workspace.UpdateDocument(
+                projectAUri,
+                "Attribute VB_Name = \"ProjectA\"\nPublic Sub BeforeEdit()\nEnd Sub\n");
+            workspace.UpdateDocument(
+                projectBUri,
+                "Attribute VB_Name = \"ProjectB\"\nPublic Sub Unchanged()\nEnd Sub\n");
+
+            var projectBBuild = Task.Run(
+                () => workspace.CreateProjectSnapshot(projectBUri));
+            await buildObserver.FirstBuildWaiting.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            workspace.UpdateDocument(
+                projectAUri,
+                "Attribute VB_Name = \"ProjectA\"\nPublic Sub AfterEdit()\nEnd Sub\n");
+            buildObserver.ReleaseFirstBuild();
+            var projectBSnapshot =
+                await projectBBuild.WaitAsync(TimeSpan.FromSeconds(5));
+            var reusedProjectBSnapshot =
+                workspace.CreateProjectSnapshot(projectBUri);
+
+            Assert.Same(projectBSnapshot, reusedProjectBSnapshot);
+            Assert.Equal(1, buildObserver.BuildCount);
+        }
+        finally
+        {
+            buildObserver.ReleaseFirstBuild();
+            Directory.Delete(projectRoot, recursive: true);
+        }
     }
 
     [Fact]
@@ -66,7 +293,7 @@ public sealed class VbaLanguageWorkspaceTests
         ]));
 
         var snapshot = workspace.CreateProjectSnapshot(uri);
-        var definition = snapshot.SourceIndex.ResolveDefinition(
+        var definition = snapshot.SemanticInventory.ResolveDefinition(
             uri,
             line: 6,
             character: "    ".Length);
@@ -107,7 +334,7 @@ public sealed class VbaLanguageWorkspaceTests
             workspace.UpdateDocument(book1CallerUri, callerText);
 
             var snapshot = workspace.CreateProjectSnapshot(book1CallerUri);
-            var definition = snapshot.SourceIndex.ResolveDefinition(
+            var definition = snapshot.SemanticInventory.ResolveDefinition(
                 book1CallerUri,
                 line: 2,
                 character: "    ".Length);
@@ -155,7 +382,7 @@ public sealed class VbaLanguageWorkspaceTests
 
             var diskDefinition = workspace
                 .CreateProjectSnapshot(callerUri)
-                .SourceIndex
+                .SemanticInventory
                 .ResolveDefinition(callerUri, line: 2, character: "    ".Length);
             workspace.UpdateDocument(helperUri, string.Join('\n', [
                 "Attribute VB_Name = \"Helper\"",
@@ -166,10 +393,10 @@ public sealed class VbaLanguageWorkspaceTests
 
             Assert.Equal(helperUri, diskDefinition?.Uri);
             Assert.DoesNotContain(
-                overlaySnapshot.SourceIndex.GetWorkspaceSymbols("BuildValue"),
+                overlaySnapshot.SemanticInventory.GetWorkspaceSymbols("BuildValue"),
                 symbol => symbol.Uri == helperUri);
             Assert.Contains(
-                overlaySnapshot.SourceIndex.GetWorkspaceSymbols("BuildReplacement"),
+                overlaySnapshot.SemanticInventory.GetWorkspaceSymbols("BuildReplacement"),
                 symbol => symbol.Uri == helperUri);
         }
         finally
@@ -232,7 +459,7 @@ public sealed class VbaLanguageWorkspaceTests
 
             var definition = workspace
                 .CreateProjectSnapshot(helperUri)
-                .SourceIndex
+                .SemanticInventory
                 .GetDocumentDefinitions(helperUri)
                 .Single(definition => definition.Name == "BuildValue");
 
@@ -285,11 +512,14 @@ public sealed class VbaLanguageWorkspaceTests
                 "End Sub"
             ]));
 
-            var sourceIndex = workspace
+            var semanticInventory = workspace
                 .CreateProjectSnapshot(callerUri)
-                .SourceIndex;
-            var definition = sourceIndex.ResolveSourceDefinition(callerUri, line: 2, character: "    ".Length);
-            var classDefinition = sourceIndex
+                .SemanticInventory;
+            var definition = semanticInventory.ResolveSourceDefinition(
+                callerUri,
+                line: 2,
+                character: "    ".Length);
+            var classDefinition = semanticInventory
                 .GetDocumentDefinitions(classUri)
                 .Single(definition => definition.Name == "BuildClassValue");
 
@@ -347,10 +577,10 @@ public sealed class VbaLanguageWorkspaceTests
             Assert.Same(initialSnapshot, staleSnapshot);
             Assert.NotSame(initialSnapshot, refreshedSnapshot);
             Assert.Contains(
-                refreshedSnapshot.SourceIndex.GetWorkspaceSymbols("BuildReplacement"),
+                refreshedSnapshot.SemanticInventory.GetWorkspaceSymbols("BuildReplacement"),
                 symbol => symbol.Uri == helperUri);
             Assert.DoesNotContain(
-                refreshedSnapshot.SourceIndex.GetWorkspaceSymbols("BuildValue"),
+                refreshedSnapshot.SemanticInventory.GetWorkspaceSymbols("BuildValue"),
                 symbol => symbol.Uri == helperUri);
         }
         finally
@@ -394,7 +624,7 @@ public sealed class VbaLanguageWorkspaceTests
             ]));
 
             var snapshot = workspace.CreateProjectSnapshot(callerUri);
-            var definition = snapshot.SourceIndex.ResolveDefinition(
+            var definition = snapshot.SemanticInventory.ResolveDefinition(
                 callerUri,
                 line: 2,
                 character: "    ".Length);
@@ -439,17 +669,17 @@ public sealed class VbaLanguageWorkspaceTests
 
         var initialDefinition = workspace
             .CreateProjectSnapshot(callerUri)
-            .SourceIndex
+            .SemanticInventory
             .ResolveDefinition(callerUri, line: 2, character: "    ".Length);
         workspace.RemoveDocument(helperUri);
         var removedDefinition = workspace
             .CreateProjectSnapshot(callerUri)
-            .SourceIndex
+            .SemanticInventory
             .ResolveDefinition(callerUri, line: 2, character: "    ".Length);
         workspace.UpdateDocument(renamedHelperUri, helperText);
         var renamedDefinition = workspace
             .CreateProjectSnapshot(callerUri)
-            .SourceIndex
+            .SemanticInventory
             .ResolveDefinition(callerUri, line: 2, character: "    ".Length);
 
         Assert.Equal(helperUri, initialDefinition?.Uri);
@@ -528,16 +758,17 @@ public sealed class VbaLanguageWorkspaceTests
             var beforeRefreshSnapshot = workspace.CreateProjectSnapshot(uri);
             var reusedBeforeRefreshSnapshot = workspace.CreateProjectSnapshot(uri);
             var beforeRefresh = beforeRefreshSnapshot
-                .SourceIndex
-                .GetCompletionDefinitions(uri, line: 2, character: "    Dim value As ".Length)
+                .SemanticInventory
+                .GetCompletionResult(uri, line: 2, character: "    Dim value As ".Length)
+                .Definitions
                 .Select(definition => definition.Name)
                 .ToArray();
-            var beforeRoot = beforeRefreshSnapshot.SourceIndex
+            var beforeRoot = beforeRefreshSnapshot.SemanticInventory
                 .GetCompletionResult(uri, line: 3, character: "    result = Gen".Length)
                 .Candidates
                 .Select(candidate => candidate.Label)
                 .ToArray();
-            var beforeQualified = beforeRefreshSnapshot.SourceIndex
+            var beforeQualified = beforeRefreshSnapshot.SemanticInventory
                 .GetCompletionResult(uri, line: 4, character: "    result = Generated.".Length)
                 .Candidates
                 .Select(candidate => candidate.Label)
@@ -568,16 +799,17 @@ public sealed class VbaLanguageWorkspaceTests
                     ])));
             var afterRefreshSnapshot = workspace.CreateProjectSnapshot(uri);
             var afterRefresh = afterRefreshSnapshot
-                .SourceIndex
-                .GetCompletionDefinitions(uri, line: 2, character: "    Dim value As ".Length)
+                .SemanticInventory
+                .GetCompletionResult(uri, line: 2, character: "    Dim value As ".Length)
+                .Definitions
                 .Select(definition => definition.Name)
                 .ToArray();
-            var afterRoot = afterRefreshSnapshot.SourceIndex
+            var afterRoot = afterRefreshSnapshot.SemanticInventory
                 .GetCompletionResult(uri, line: 3, character: "    result = Gen".Length)
                 .Candidates
                 .Select(candidate => candidate.Label)
                 .ToArray();
-            var afterQualified = afterRefreshSnapshot.SourceIndex
+            var afterQualified = afterRefreshSnapshot.SemanticInventory
                 .GetCompletionResult(uri, line: 4, character: "    result = Generated.".Length)
                 .Candidates
                 .Select(candidate => candidate.Label)
@@ -622,7 +854,10 @@ public sealed class VbaLanguageWorkspaceTests
                 ]);
                 workspace.UpdateDocument(uri, text);
                 var snapshot = workspace.CreateProjectSnapshot(uri);
-                return snapshot.SourceIndex.ResolveDefinition(uri, line: 5, character: "    ".Length);
+                return snapshot.SemanticInventory.ResolveDefinition(
+                    uri,
+                    line: 5,
+                    character: "    ".Length);
             }))
             .ToArray();
 
@@ -698,14 +933,14 @@ public sealed class VbaLanguageWorkspaceTests
         Assert.Null(equalUpdate);
         Assert.Same(currentSnapshot, unchangedSnapshot);
         Assert.Contains(
-            unchangedSnapshot.SourceIndex.GetDocumentDefinitions(uri),
+            unchangedSnapshot.SemanticInventory.GetDocumentDefinitions(uri),
             definition => definition.Name == "CurrentVersion");
         Assert.NotNull(newerUpdate);
         Assert.Contains(
-            newerSnapshot.SourceIndex.GetDocumentDefinitions(uri),
+            newerSnapshot.SemanticInventory.GetDocumentDefinitions(uri),
             definition => definition.Name == "NewerVersion");
         Assert.DoesNotContain(
-            newerSnapshot.SourceIndex.GetDocumentDefinitions(uri),
+            newerSnapshot.SemanticInventory.GetDocumentDefinitions(uri),
             definition => definition.Name == "CurrentVersion");
     }
 
@@ -735,14 +970,14 @@ public sealed class VbaLanguageWorkspaceTests
 
             Assert.False(diskBecameAuthoritative);
             Assert.Contains(
-                openSnapshot.SourceIndex.GetDocumentDefinitions(encodedUri),
+                openSnapshot.SemanticInventory.GetDocumentDefinitions(encodedUri),
                 definition => definition.Name == "UnsavedBuffer");
             Assert.DoesNotContain(
-                openSnapshot.SourceIndex.GetWorkspaceSymbols("LatestDisk"),
+                openSnapshot.SemanticInventory.GetWorkspaceSymbols("LatestDisk"),
                 symbol => VbaProjectResolver.TryGetLocalPath(symbol.Uri) == Path.GetFullPath(sourcePath));
             Assert.True(closed);
             Assert.Contains(
-                diskSnapshot.SourceIndex.GetDocumentDefinitions(canonicalUri),
+                diskSnapshot.SemanticInventory.GetDocumentDefinitions(canonicalUri),
                 definition => definition.Name == "LatestDisk");
             Assert.Single(
                 diskSnapshot.SourceDocuments.Keys,
@@ -844,12 +1079,12 @@ public sealed class VbaLanguageWorkspaceTests
 
             Assert.False(shouldClearWhileOpen);
             Assert.Contains(
-                openSnapshot.SourceIndex.GetDocumentDefinitions(encodedUri),
+                openSnapshot.SemanticInventory.GetDocumentDefinitions(encodedUri),
                 definition => definition.Name == "OpenAfterDelete");
             Assert.Empty(deletedSnapshot.SourceDocuments);
             Assert.True(reloaded);
             Assert.Contains(
-                recreatedSnapshot.SourceIndex.GetWorkspaceSymbols("RecreatedDisk"),
+                recreatedSnapshot.SemanticInventory.GetWorkspaceSymbols("RecreatedDisk"),
                 symbol => string.Equals(
                     VbaProjectResolver.TryGetLocalPath(symbol.Uri),
                     Path.GetFullPath(sourcePath),
@@ -939,6 +1174,8 @@ public sealed class VbaLanguageWorkspaceTests
         public TaskCompletionSource FirstBuildWaiting { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        public int BuildCount => Volatile.Read(ref observedBuilds);
+
         public void BeforeStore(long workspaceVersion, CancellationToken cancellationToken)
         {
             if (Interlocked.Increment(ref observedBuilds) != 1)
@@ -952,6 +1189,43 @@ public sealed class VbaLanguageWorkspaceTests
 
         public void ReleaseFirstBuild()
             => release.Set();
+    }
+
+    private sealed class CountingProjectSnapshotBuildObserver
+        : IVbaProjectSnapshotBuildObserver
+    {
+        public int CaptureCount { get; private set; }
+
+        public int BuildCount { get; private set; }
+
+        public void BeforeCapture(
+            string activeUri,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            CaptureCount++;
+        }
+
+        public void BeforeStore(long workspaceVersion, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            BuildCount++;
+        }
+    }
+
+    private sealed class CountingSnapshotManifestResolveObserver
+        : IVbaProjectReferenceCatalogLifecycleObserver
+    {
+        public int ManifestResolveCount { get; private set; }
+
+        public void Record(VbaProjectReferenceCatalogLifecycleEvent lifecycleEvent)
+        {
+            if (lifecycleEvent.Operation
+                == VbaProjectReferenceCatalogLifecycleOperation.ProjectSnapshotManifestResolve)
+            {
+                ManifestResolveCount++;
+            }
+        }
     }
 
     private static byte[] AddPreamble(byte[] preamble, byte[] bytes)

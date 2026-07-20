@@ -127,7 +127,7 @@ public sealed class VbaDocumentAnalysisPerformanceTests
                     version,
                     headerLine,
                     header.Length);
-                measurements[index] = await ReadExecutionTimeAsync(
+                measurements[index] = await ReadRequestTimeAsync(
                     timingRoot,
                     "vba/blockSkeletonInsertion",
                     measuredRequestId,
@@ -228,7 +228,7 @@ public sealed class VbaDocumentAnalysisPerformanceTests
                         measuredRequestId,
                         queryCase,
                         uri);
-                    measurements[index] = await ReadExecutionTimeAsync(
+                    measurements[index] = await ReadRequestTimeAsync(
                         timingRoot,
                         queryCase.Method,
                         measuredRequestId,
@@ -363,7 +363,7 @@ public sealed class VbaDocumentAnalysisPerformanceTests
             response.GetProperty("result").GetProperty("documentVersion").GetInt32());
     }
 
-    private static async Task<TimeSpan> ReadExecutionTimeAsync(
+    private static async Task<TimeSpan> ReadRequestTimeAsync(
         string timingRoot,
         string method,
         int requestId,
@@ -384,18 +384,18 @@ public sealed class VbaDocumentAnalysisPerformanceTests
             {
                 try
                 {
-                    var line = File.ReadLines(path).FirstOrDefault(
-                        candidate => candidate.StartsWith(
+                    var lines = File.ReadAllLines(path);
+                    if (TryReadMilliseconds(
+                            lines,
+                            "queueMilliseconds=",
+                            out var queueMilliseconds)
+                        && TryReadMilliseconds(
+                            lines,
                             "executionMilliseconds=",
-                            StringComparison.Ordinal));
-                    if (line is not null
-                        && double.TryParse(
-                            line["executionMilliseconds=".Length..],
-                            NumberStyles.Float,
-                            CultureInfo.InvariantCulture,
-                            out var milliseconds))
+                            out var executionMilliseconds))
                     {
-                        return TimeSpan.FromMilliseconds(milliseconds);
+                        return TimeSpan.FromMilliseconds(
+                            queueMilliseconds + executionMilliseconds);
                     }
                 }
                 catch (IOException)
@@ -408,6 +408,22 @@ public sealed class VbaDocumentAnalysisPerformanceTests
 
         throw new TimeoutException(
             $"No completion timing was recorded for request {requestId}.");
+    }
+
+    private static bool TryReadMilliseconds(
+        IReadOnlyList<string> lines,
+        string prefix,
+        out double milliseconds)
+    {
+        milliseconds = 0;
+        var line = lines.FirstOrDefault(
+            candidate => candidate.StartsWith(prefix, StringComparison.Ordinal));
+        return line is not null
+            && double.TryParse(
+                line[prefix.Length..],
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out milliseconds);
     }
 
     private static async Task SendPositionRequestAsync(

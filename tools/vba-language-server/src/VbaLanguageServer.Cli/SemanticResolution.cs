@@ -1,5 +1,4 @@
 using VbaLanguageServer.Diagnostics;
-using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.Syntax;
 
 namespace VbaLanguageServer.SourceModel;
@@ -10,7 +9,7 @@ namespace VbaLanguageServer.SourceModel;
 internal sealed class VbaSemanticResolution
 {
     private static readonly VbaCompletionResult EmptyCompletion = new([]);
-    private readonly IReadOnlyList<VbaSourceDocument> documents;
+    private readonly VbaNameCandidateInventory definitionCandidates;
     private readonly VbaNameResolutionService nameResolution;
     private readonly VbaTypeResolution typeResolution;
     private readonly VbaMemberChainResolution memberChainResolution;
@@ -19,23 +18,16 @@ internal sealed class VbaSemanticResolution
     /// <summary>
     /// Creates the semantic resolution service.
     /// </summary>
-    /// <param name="documents">The indexed source documents.</param>
-    /// <param name="referenceSelection">The active reference selection for the project.</param>
-    /// <param name="referenceCatalogs">The available reference catalogs.</param>
+    /// <param name="definitionCandidates">The immutable source and reference candidate inventory.</param>
     public VbaSemanticResolution(
-        IReadOnlyList<VbaSourceDocument> documents,
-        VbaProjectReferenceSelection? referenceSelection,
-        VbaProjectReferenceCatalogSet referenceCatalogs,
+        VbaNameCandidateInventory definitionCandidates,
         VbaResolutionPolicy? resolutionPolicy = null)
     {
-        this.documents = documents;
+        this.definitionCandidates = definitionCandidates;
         resolutionPolicy ??= new VbaResolutionPolicy();
         nameResolution = new VbaNameResolutionService(
-            documents,
-            referenceSelection,
-            referenceCatalogs,
-            activeReferenceDefinitions: null,
-            resolutionPolicy: resolutionPolicy);
+            definitionCandidates,
+            resolutionPolicy);
         typeResolution = new VbaTypeResolution(nameResolution);
         memberChainResolution = new VbaMemberChainResolution(typeResolution);
         callSiteResolution = new VbaCallSiteResolution(nameResolution, memberChainResolution);
@@ -60,7 +52,7 @@ internal sealed class VbaSemanticResolution
     /// <returns>The completion result for the position.</returns>
     public VbaCompletionResult GetCompletionResult(string uri, int line, int character)
     {
-        var currentDocument = documents.FirstOrDefault(document => SameUri(document.Uri, uri));
+        var currentDocument = definitionCandidates.FindDocument(uri);
         if (currentDocument is null)
         {
             return EmptyCompletion;
@@ -261,7 +253,7 @@ internal sealed class VbaSemanticResolution
     /// <returns>The resolved source or reference definition, or null when unresolved or ambiguous.</returns>
     public VbaSourceDefinition? ResolveSourceDefinition(string uri, int line, int character)
     {
-        var currentDocument = documents.FirstOrDefault(document => SameUri(document.Uri, uri));
+        var currentDocument = definitionCandidates.FindDocument(uri);
         if (currentDocument is null)
         {
             return null;
@@ -323,7 +315,7 @@ internal sealed class VbaSemanticResolution
     /// <returns>The signature help result, or null when no callable resolves.</returns>
     public VbaSignatureHelp? GetSignatureHelp(string uri, int line, int character)
     {
-        var currentDocument = documents.FirstOrDefault(document => SameUri(document.Uri, uri));
+        var currentDocument = definitionCandidates.FindDocument(uri);
         if (currentDocument is null)
         {
             return null;

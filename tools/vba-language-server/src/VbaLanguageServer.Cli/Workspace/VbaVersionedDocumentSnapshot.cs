@@ -13,18 +13,17 @@ namespace VbaLanguageServer.Workspace;
 /// <param name="SyntaxTree">The syntax tree parsed from the same text.</param>
 /// <param name="ModuleKind">The module kind from the same syntax tree.</param>
 /// <param name="Diagnostics">The document-local diagnostics derived from the same syntax tree.</param>
+/// <param name="SourceDocument">The source projection owned by the same document analysis.</param>
 public sealed record VbaVersionedDocumentSnapshot(
     string Uri,
     int Version,
     string Text,
     VbaSyntaxTree SyntaxTree,
     VbaModuleKind ModuleKind,
-    VbaDiagnosticPipelineResult Diagnostics)
+    VbaDiagnosticPipelineResult Diagnostics,
+    VbaSourceDocument SourceDocument)
 {
     public VbaSourceText SourceText { get; init; } = SyntaxTree.SourceText;
-
-    public VbaSourceDocument SourceDocument { get; init; } =
-        VbaSourceIndex.CreateDocument(Uri, SyntaxTree);
 
     public VbaSyntaxTreeParseUpdateKind LastParseUpdateKind { get; init; }
 
@@ -34,6 +33,7 @@ public sealed record VbaVersionedDocumentSnapshot(
 
     internal bool IsOwnedByAnalysis
         => Analysis is { } analysis
+            && Version == analysis.ClientVersion
             && Uri.Equals(analysis.Uri, StringComparison.Ordinal)
             && ReferenceEquals(Text, analysis.Text)
             && ReferenceEquals(SourceText, analysis.SourceText)
@@ -44,21 +44,26 @@ public sealed record VbaVersionedDocumentSnapshot(
             && LastParseUpdateKind == analysis.LastParseUpdateKind
             && ReferenceEquals(LastMemberUpdate, analysis.LastMemberUpdate);
 
-    internal static VbaVersionedDocumentSnapshot Create(
-        VbaDocumentAnalysis analysis,
-        int version)
-        => new(
+    internal static VbaVersionedDocumentSnapshot Create(VbaDocumentAnalysis analysis)
+    {
+        var version = analysis.ClientVersion
+            ?? throw new ArgumentException(
+                "An exact document snapshot requires a client-owned analysis version.",
+                nameof(analysis));
+
+        return new(
             analysis.Uri,
             version,
             analysis.Text,
             analysis.SyntaxTree,
             analysis.ModuleKind,
-            analysis.Diagnostics)
+            analysis.Diagnostics,
+            analysis.SourceDocument)
         {
             SourceText = analysis.SourceText,
-            SourceDocument = analysis.SourceDocument,
             LastParseUpdateKind = analysis.LastParseUpdateKind,
             LastMemberUpdate = analysis.LastMemberUpdate,
             Analysis = analysis
         };
+    }
 }

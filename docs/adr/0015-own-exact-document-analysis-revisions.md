@@ -94,7 +94,11 @@ but only the accepted head can commit. The existing full-text LSP
 synchronization contract remains unchanged.
 
 Performance tests use an 8,000-line fixture and record document-analysis and
-block-skeleton percentiles in Release. Replacing the current full-length
-masked-source `ModuleMember` parser is a separate parser decision; exact
-analysis ownership neither weakens its fallback rules nor introduces a second
-parser.
+block-skeleton percentiles in Release. As established by ADR 0003, a safe
+`ModuleMember` body edit parses a direct source window and merges it into
+segmented syntax collections. Unchanged suffix storage is retained and its
+shifted coordinates are projected lazily; the parser neither constructs a
+full-length masked source nor eagerly clones every shifted suffix item. Unsafe
+or ambiguous edits still fail closed to a full-module parse. Exact analysis
+ownership preserves both the incremental stages and that conservative
+fallback without introducing a second parser.

@@ -6,11 +6,12 @@ status: accepted
 
 ## Context
 
-`VbaSourceIndex` remains the broad compatibility implementation for source
-definitions, semantic resolution, occurrences, formatting, and semantic tokens.
-As language-server features grow, editor queries need stable project-scope
-lookup structures that match their access patterns instead of each caller
-coordinating a raw index.
+The original editor-query implementation exposed `VbaSourceIndex` as a broad
+coordination object for source definitions, semantic resolution, occurrences,
+formatting, and semantic tokens. That made it possible for each feature to
+coordinate its own project indexing and cache behavior. Editor queries instead
+need one immutable project-scope authority whose lookup structures match their
+access patterns.
 
 ## Decision
 
@@ -29,25 +30,38 @@ data are cached per document URI on top of those occurrence shards. First use is
 atomic through lazy/cache publication; callers never receive a partially built
 or mixed-revision shard.
 
-During migration, the inventory may delegate complex semantic behavior to the
-compatibility `VbaSourceIndex`, but callers outside the project snapshot no
-longer receive a raw index. Straightforward document and workspace-symbol
-queries are served from inventory-owned maps immediately. More specialized
-indexes can replace delegated paths incrementally while preserving the existing
-NameResolution precedence and ambiguity behavior.
+The inventory implements all editor-query behavior directly through its owned
+maps, `VbaSemanticResolution`, resolved-occurrence shards, formatter, and token
+caches. It neither stores nor delegates to a raw `VbaSourceIndex`.
+`VbaSourceIndex` query instances remain as a compatibility facade for existing
+library and test callers; the facade constructs and delegates to
+`VbaSemanticInventory`, not the reverse. Static protocol metadata and source
+projection helpers do not make that class a project-scope authority. LSP
+request capture and project snapshots expose only the inventory.
+
+Reference selection and catalog definitions are immutable data inputs to the
+inventory. Host behavior is expressed at that boundary through the manifest's
+main reference and catalog metadata such as `MainHostGlobal`; the inventory,
+workspace snapshot cache, and interactive scheduler do not branch on Excel,
+Word, PowerPoint, or another Office application. The shipped catalog coverage
+currently provides the Excel experience. Future Word or PowerPoint support
+must add or select host catalog data at the project/reference boundary rather
+than add host-specific policy to the generic interactive infrastructure.
 
 ## Consequences
 
-`VbaSourceIndex` remains available inside the inventory as a conservative
-fallback until each query path has a dedicated immutable structure. Reference
-catalog projections, source definitions, and semantic caches remain scoped to a
-committed project snapshot. Ordinary source edits can later reuse unaffected
-inventory maps when declaration shape and project boundaries are unchanged.
+There is no compatibility-index fallback inside a committed project snapshot.
+Reference catalog projections, source definitions, resolution state, and
+semantic caches remain scoped to its inventory. If an inventory cannot be
+reused safely, the project snapshot provider rebuilds the affected project
+scope instead of switching an interactive caller to a raw index.
 
-Differential tests must compare inventory results with the compatibility index
-while the migration is incomplete. Public `VbaDefinitionIdentity` equality and
-range behavior remain unchanged; any reuse optimization must use private
-semantic fingerprints or rebuild conservatively.
+Behavioral tests assert explicit source, reference, precedence, ambiguity,
+identity, and range results without using the compatibility facade as an
+oracle. Structural tests keep the inventory free of a `VbaSourceIndex` field
+and require its semantic-resolution services to share one candidate inventory.
+Any reuse optimization must use private semantic fingerprints or rebuild
+conservatively.
 
 Because inventory shards are scoped to one committed project snapshot, any
 declaration-shape, visibility, type, module identity, manifest,

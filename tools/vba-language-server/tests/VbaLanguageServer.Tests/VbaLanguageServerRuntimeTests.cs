@@ -43,13 +43,14 @@ public sealed class VbaLanguageServerRuntimeTests
             transport,
             workspace,
             gate);
+        var shutdownRequest = new JsonObject
+        {
+            ["jsonrpc"] = "2.0",
+            ["id"] = 1,
+            ["method"] = "shutdown"
+        };
         await requestExecution.ExecuteAsync(
-            new JsonObject
-            {
-                ["jsonrpc"] = "2.0",
-                ["id"] = 1,
-                ["method"] = "shutdown"
-            },
+            requestExecution.Capture(shutdownRequest, CancellationToken.None),
             CancellationToken.None,
             CancellationToken.None);
         var runtime = new VbaLanguageServerRuntime(
@@ -126,13 +127,14 @@ public sealed class VbaLanguageServerRuntimeTests
             transport,
             workspace,
             gate);
+        var shutdownRequest = new JsonObject
+        {
+            ["jsonrpc"] = "2.0",
+            ["id"] = 1,
+            ["method"] = "shutdown"
+        };
         await requestExecution.ExecuteAsync(
-            new JsonObject
-            {
-                ["jsonrpc"] = "2.0",
-                ["id"] = 1,
-                ["method"] = "shutdown"
-            },
+            requestExecution.Capture(shutdownRequest, CancellationToken.None),
             CancellationToken.None,
             CancellationToken.None);
         var runtime = new VbaLanguageServerRuntime(
@@ -189,6 +191,63 @@ public sealed class VbaLanguageServerRuntimeTests
         Assert.False(scheduler.IsAccepting);
         await scheduler.StopAsync(VbaInteractiveStopReason.Abort)
             .WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
+    public async Task Fatal_scheduler_failure_does_not_run_blocking_response_cancellation_inline()
+    {
+        await using var input = new FramedThenCancellationGateStream(
+            CreateFramedInput(new
+            {
+                jsonrpc = "2.0",
+                method = "textDocument/didOpen",
+                @params = new
+                {
+                    textDocument = new
+                    {
+                        uri = "file:///C:/work/FatalRuntime.bas",
+                        languageId = "vba",
+                        version = 1,
+                        text = "Public Sub Run()\nEnd Sub\n"
+                    }
+                }
+            }));
+        await using var output = new MemoryStream();
+        var transport = new LspMessageTransport(input, output);
+        var catalogCache = new VbaProjectReferenceCatalogCache(
+            VbaProjectReferenceCatalogSet.CreateBundled());
+        var workspace = new VbaLanguageWorkspace(
+            catalogCache,
+            NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+            new ThrowingDocumentAnalysisObserver(
+                input.CancellationCallbackRegistered));
+        var catalogLifecycle = new TrackingReferenceCatalogRuntimeLifecycle();
+        var runtime = new VbaLanguageServerRuntime(
+            transport,
+            new VbaLspRequestExecution(transport, workspace),
+            new VbaDocumentLifecycle(transport, workspace, catalogLifecycle),
+            catalogLifecycle);
+
+        var run = runtime.RunAsync();
+        try
+        {
+            await input.CancellationCallbackStarted.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            var scheduler = Assert.IsType<VbaInteractiveWorkScheduler>(
+                catalogLifecycle.AttachedScheduler);
+
+            await scheduler.StopAsync(VbaInteractiveStopReason.Abort)
+                .WaitAsync(TimeSpan.FromSeconds(1));
+            Assert.False(
+                run.IsCompleted,
+                "RunAsync must observe response cancellation dispatch before disposing its response lifetime token source.");
+        }
+        finally
+        {
+            input.ReleaseCancellationCallback();
+        }
+
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
     private static byte[] CreateFramedInput(params object[] messages)
@@ -271,5 +330,134 @@ public sealed class VbaLanguageServerRuntimeTests
         public Task StopAsync()
             => Task.FromException(
                 new InvalidOperationException("Expected catalog shutdown failure."));
+    }
+
+    private sealed class TrackingReferenceCatalogRuntimeLifecycle
+        : IReferenceCatalogRuntimeLifecycle
+    {
+        public VbaInteractiveWorkScheduler? AttachedScheduler { get; private set; }
+
+        public void ActivateProject(string uri)
+        {
+        }
+
+        public void ApplyManifestSelectionChange(string uri, string text)
+        {
+        }
+
+        public void DeactivateManifest(string uri)
+        {
+        }
+
+        public void AttachScheduler(VbaInteractiveWorkScheduler scheduler)
+            => AttachedScheduler = scheduler;
+
+        public Task StopAsync()
+            => Task.CompletedTask;
+    }
+
+    private sealed class ThrowingDocumentAnalysisObserver(
+        Task callbackRegistered)
+        : IVbaDocumentAnalysisBuildObserver
+    {
+        public void BeforeBuild(
+            VbaDocumentAnalysisBuildContext context,
+            CancellationToken cancellationToken)
+        {
+            callbackRegistered.Wait(cancellationToken);
+            throw new InvalidOperationException(
+                "Expected fatal document analysis failure.");
+        }
+    }
+
+    private sealed class FramedThenCancellationGateStream(
+        byte[] framedInput)
+        : Stream
+    {
+        private readonly ManualResetEventSlim cancellationCallbackRelease = new();
+        private readonly TaskCompletionSource cancellationCallbackRegistered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private CancellationTokenRegistration cancellationRegistration;
+        private int position;
+        private int registered;
+
+        public Task CancellationCallbackRegistered
+            => cancellationCallbackRegistered.Task;
+
+        public TaskCompletionSource CancellationCallbackStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => framedInput.Length;
+
+        public override long Position
+        {
+            get => position;
+            set => throw new NotSupportedException();
+        }
+
+        public void ReleaseCancellationCallback()
+            => cancellationCallbackRelease.Set();
+
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            if (position < framedInput.Length)
+            {
+                var count = Math.Min(
+                    buffer.Length,
+                    framedInput.Length - position);
+                framedInput.AsMemory(position, count).CopyTo(buffer);
+                position += count;
+                return count;
+            }
+
+            if (Interlocked.CompareExchange(ref registered, 1, 0) == 0)
+            {
+                cancellationRegistration = cancellationToken.Register(() =>
+                {
+                    CancellationCallbackStarted.TrySetResult();
+                    cancellationCallbackRelease.Wait();
+                });
+                cancellationCallbackRegistered.TrySetResult();
+            }
+
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return 0;
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+            => throw new NotSupportedException();
+
+        public override void Flush()
+        {
+        }
+
+        public override long Seek(long offset, SeekOrigin origin)
+            => throw new NotSupportedException();
+
+        public override void SetLength(long value)
+            => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count)
+            => throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                cancellationCallbackRelease.Set();
+                cancellationRegistration.Dispose();
+                cancellationCallbackRelease.Dispose();
+            }
+
+            base.Dispose(disposing);
+        }
     }
 }
