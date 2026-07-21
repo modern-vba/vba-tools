@@ -78,10 +78,23 @@ public interface IVbeDebugSession : IAsyncDisposable
     Task<DebugProcessExit> Completion { get; }
 
     /// <summary>
-    /// Opens the exact generated workbook, activates the target, and invokes the native VBE Run command.
+    /// Opens the exact generated workbook before native debug commands are prepared.
     /// </summary>
-    Task OpenGeneratedWorkbookAndRunAsync(
+    Task OpenGeneratedWorkbookAsync(
         string workbookPath,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Establishes the exact VBE command context and sets one native breakpoint.
+    /// </summary>
+    Task SetNativeBreakpointAsync(
+        VbeBreakpoint breakpoint,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Establishes the target VBE command context and invokes the native Run command.
+    /// </summary>
+    Task RunTargetAsync(
         DebugTargetProcedure target,
         CancellationToken cancellationToken);
 
@@ -94,12 +107,31 @@ public interface IVbeDebugSession : IAsyncDisposable
 /// <summary>
 /// Receives user-visible debug lifecycle output without depending on a transport.
 /// </summary>
-public interface IDebugLifecycleSink
+public interface IDebugLaunchEventSink
 {
     /// <summary>
     /// Writes one lifecycle message.
     /// </summary>
     ValueTask WriteAsync(DebugLifecycleMessage message, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Reports that an exact source mapping has been transferred through the native VBE command.
+    /// </summary>
+    ValueTask BreakpointVerifiedAsync(
+        VbeBreakpoint breakpoint,
+        CancellationToken cancellationToken);
+}
+
+/// <summary>
+/// Preserves the lifecycle-only sink contract for zero-breakpoint callers.
+/// </summary>
+public interface IDebugLifecycleSink : IDebugLaunchEventSink
+{
+    /// <inheritdoc />
+    ValueTask IDebugLaunchEventSink.BreakpointVerifiedAsync(
+        VbeBreakpoint breakpoint,
+        CancellationToken cancellationToken)
+        => ValueTask.CompletedTask;
 }
 
 /// <summary>
@@ -109,6 +141,7 @@ public sealed class DebugLaunchCoordinator
 {
     private readonly IDebugWorkbookBuilder workbookBuilder;
     private readonly IVbeDebugSessionFactory vbeDebugSessionFactory;
+    private readonly IBreakpointSourceMapper breakpointSourceMapper;
     private int activeLaunch;
 
     /// <summary>
@@ -117,9 +150,21 @@ public sealed class DebugLaunchCoordinator
     public DebugLaunchCoordinator(
         IDebugWorkbookBuilder workbookBuilder,
         IVbeDebugSessionFactory vbeDebugSessionFactory)
+        : this(workbookBuilder, vbeDebugSessionFactory, new BreakpointSourceMapper())
+    {
+    }
+
+    /// <summary>
+    /// Creates a debug launch coordinator over workbook build, visible Excel, and source-map ports.
+    /// </summary>
+    public DebugLaunchCoordinator(
+        IDebugWorkbookBuilder workbookBuilder,
+        IVbeDebugSessionFactory vbeDebugSessionFactory,
+        IBreakpointSourceMapper breakpointSourceMapper)
     {
         this.workbookBuilder = workbookBuilder;
         this.vbeDebugSessionFactory = vbeDebugSessionFactory;
+        this.breakpointSourceMapper = breakpointSourceMapper;
     }
 
     /// <summary>
@@ -127,7 +172,7 @@ public sealed class DebugLaunchCoordinator
     /// </summary>
     public async Task<DebugRunningSession> LaunchAsync(
         DebugLaunchRequest request,
-        IDebugLifecycleSink lifecycleSink,
+        IDebugLaunchEventSink eventSink,
         CancellationToken cancellationToken)
     {
         if (Interlocked.CompareExchange(ref activeLaunch, 1, 0) != 0)
@@ -142,7 +187,7 @@ public sealed class DebugLaunchCoordinator
                 .ConfigureAwait(false);
             foreach (var output in buildResult.Output)
             {
-                await lifecycleSink
+                await eventSink
                     .WriteAsync(new DebugLifecycleMessage(output), cancellationToken)
                     .ConfigureAwait(false);
             }
@@ -150,10 +195,27 @@ public sealed class DebugLaunchCoordinator
             var session = await vbeDebugSessionFactory.StartVisibleAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                await session.OpenGeneratedWorkbookAndRunAsync(
+                await session.OpenGeneratedWorkbookAsync(
                     request.Context.BinDocumentPath,
-                    request.Target,
                     cancellationToken).ConfigureAwait(false);
+
+                if (!request.SourceSnapshot.Breakpoints.IsDefaultOrEmpty)
+                {
+                    foreach (var sourceBreakpoint in request.SourceSnapshot.Breakpoints)
+                    {
+                        var vbeBreakpoint = breakpointSourceMapper.Map(
+                            request.SourceSnapshot,
+                            sourceBreakpoint);
+                        await session.SetNativeBreakpointAsync(
+                            vbeBreakpoint,
+                            cancellationToken).ConfigureAwait(false);
+                        await eventSink.BreakpointVerifiedAsync(
+                            vbeBreakpoint,
+                            cancellationToken).ConfigureAwait(false);
+                    }
+                }
+
+                await session.RunTargetAsync(request.Target, cancellationToken).ConfigureAwait(false);
             }
             catch
             {

@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
 import * as path from 'node:path';
 import {
+  Location,
   Position,
   Selection,
+  SourceBreakpoint,
   Uri,
   WorkspaceEdit,
   commands,
+  debug,
   extensions,
   window,
   workspace
@@ -42,9 +45,14 @@ export async function runDebugConfigurationIntegrationTests(): Promise<void> {
   assert.equal(await workspace.applyEdit(sourceEdit), true);
   const activePosition = new Position(4, 4);
   editor.selection = new Selection(activePosition, activePosition);
+  const sourceBreakpoint = new SourceBreakpoint(
+    new Location(sourceDocument.uri, new Position(4, 0)),
+    true
+  );
   const extension = extensions.getExtension('modern-vba.vba-tools');
   assert.ok(extension, 'The VBA Tools development extension must be available.');
   await extension.activate();
+  debug.addBreakpoints([sourceBreakpoint]);
 
   let capture: ((configuration: VbaDebugConfiguration) => void) | undefined;
   const captured = new Promise<VbaDebugConfiguration>((resolve) => {
@@ -69,6 +77,10 @@ export async function runDebugConfigurationIntegrationTests(): Promise<void> {
         readonly line: number;
         readonly character: number;
       };
+      readonly breakpoints: readonly {
+        readonly path: string;
+        readonly line: number;
+      }[];
     };
 
     assert.equal(String(configuration.project).toLowerCase(), fixtureRoot.toLowerCase());
@@ -92,10 +104,14 @@ export async function runDebugConfigurationIntegrationTests(): Promise<void> {
     assert.equal(snapshot.activeSource.path.toLowerCase(), sourcePath.toLowerCase());
     assert.equal(snapshot.activeSource.line, activePosition.line);
     assert.equal(snapshot.activeSource.character, activePosition.character);
+    assert.equal(snapshot.breakpoints.length, 1);
+    assert.equal(snapshot.breakpoints[0].path.toLowerCase(), sourcePath.toLowerCase());
+    assert.equal(snapshot.breakpoints[0].line, 4);
     assert.equal(sourceDocument.isDirty, false);
     assert.equal(outsideDocument.isDirty, true);
     console.log('PASS F5 resolves and saves only the active workbook-backed VBA project');
   } finally {
     observer.dispose();
+    debug.removeBreakpoints([sourceBreakpoint]);
   }
 }

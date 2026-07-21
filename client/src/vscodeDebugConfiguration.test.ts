@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import * as path from 'node:path';
 
 import { VscodeDebugIntegration } from './vscodeDebugIntegration';
+import type { VbaDebugSourceBreakpoint } from './vscodeDebugConfiguration';
 
 test('F5 from one active exported VBA source resolves a zero-configuration source snapshot', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
@@ -33,7 +34,8 @@ test('F5 from one active exported VBA source resolves a zero-configuration sourc
     sourceSnapshot: {
       schemaVersion: 1,
       sources: [{ path: sourcePath, text: sourceText }],
-      activeSource: { path: sourcePath, line: 3, character: 12 }
+      activeSource: { path: sourcePath, line: 3, character: 12 },
+      breakpoints: []
     }
   });
 });
@@ -63,7 +65,8 @@ test('source snapshots use UTF-16 ordinal canonical path order across punctuatio
       { path: underscoreSource, text: 'Public Sub UnderscoreTarget()\r\nEnd Sub\r\n' },
       { path: lowerCaseSource, text: 'Public Sub LowerCaseTarget()\r\nEnd Sub\r\n' }
     ],
-    activeSource: { path: underscoreSource, line: 0, character: 0 }
+    activeSource: { path: underscoreSource, line: 0, character: 0 },
+    breakpoints: []
   });
 });
 
@@ -108,7 +111,8 @@ test('a saved launch narrows project and document and resolves an explicit proce
       sources: [{
         path: selectedSource,
         text: 'Public Sub RunTarget()\r\nEnd Sub\r\n'
-      }]
+      }],
+      breakpoints: []
     }
   });
 });
@@ -143,6 +147,7 @@ test('a saved launch rejects invalid project and document selectors instead of t
         return undefined;
       },
       getOpenTextDocuments: () => [],
+      getSourceBreakpoints: () => [],
       findProjectManifests: async () => [],
       readTextFile: async () => '',
       readSourceText: async () => '',
@@ -208,7 +213,8 @@ test('debug launch saves every dirty exported source in the selected project and
       path: activeSource,
       text: 'Public Sub AfterSave()\r\nEnd Sub\r\n'
     }],
-    activeSource: { path: activeSource, line: 0, character: 11 }
+    activeSource: { path: activeSource, line: 0, character: 11 },
+    breakpoints: []
   });
   assert.equal(sources.get(outsideSource), 'Public Sub OutsideBeforeSave()\r\nEnd Sub\r\n');
 });
@@ -271,8 +277,211 @@ test('debug launch awaits save participants and re-resolves membership and sourc
       path: sourcePath,
       text: 'Public Sub AfterSave()\r\nEnd Sub\r\n'
     }],
-    activeSource: { path: sourcePath, line: 1, character: 7 }
+    activeSource: { path: sourcePath, line: 1, character: 7 },
+    breakpoints: []
   });
+});
+
+test('debug launch freezes one enabled ordinary BAS breakpoint after save participants finish', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const manifestPath = path.join(projectRoot, 'vba-project.json');
+  const sourcePath = path.join(projectRoot, 'src', 'Book1', 'DebugModule.bas');
+  const sources = new Map([[sourcePath, 'Public Sub BeforeSave()\r\nEnd Sub\r\n']]);
+  const events: string[] = [];
+  let sourceBreakpoints = [{
+    uriPath: sourcePath,
+    line: 0,
+    enabled: true
+  }];
+  const integration = createIntegration({
+    activeEditor: { uriPath: sourcePath, line: 0, character: 11 },
+    manifests: new Map([[manifestPath, manifestJson('BookProject', ['Book1'])]]),
+    sources,
+    readTextFile: async (filePath) => {
+      events.push('manifest');
+      return filePath === manifestPath
+        ? manifestJson('BookProject', ['Book1'])
+        : sources.get(filePath) ?? '';
+    },
+    getSourceBreakpoints: () => {
+      events.push(`breakpoints:${sourceBreakpoints[0].line}`);
+      return sourceBreakpoints;
+    },
+    openTextDocuments: () => [{
+      uriPath: sourcePath,
+      isDirty: true,
+      save: async () => {
+        events.push('save-start');
+        await Promise.resolve();
+        sources.set(sourcePath, 'Public Sub AfterSave()\r\n  Debug.Print "hit"\r\nEnd Sub\r\n');
+        sourceBreakpoints = [{
+          uriPath: sourcePath,
+          line: 1,
+          enabled: true
+        }];
+        events.push('save-participants-finished');
+        return true;
+      }
+    }]
+  });
+
+  const configuration = await integration.resolveDebugConfiguration({});
+
+  assert.deepEqual(events, [
+    'manifest',
+    'save-start',
+    'save-participants-finished',
+    'manifest',
+    'breakpoints:1'
+  ]);
+  assert.deepEqual(configuration.sourceSnapshot, {
+    schemaVersion: 1,
+    sources: [{
+      path: sourcePath,
+      text: 'Public Sub AfterSave()\r\n  Debug.Print "hit"\r\nEnd Sub\r\n'
+    }],
+    activeSource: { path: sourcePath, line: 0, character: 11 },
+    breakpoints: [{ path: sourcePath, line: 1 }]
+  });
+});
+
+test('debug launch rejects an enabled in-scope conditional breakpoint instead of downgrading it', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const manifestPath = path.join(projectRoot, 'vba-project.json');
+  const sourcePath = path.join(projectRoot, 'src', 'Book1', 'DebugModule.bas');
+  const integration = createIntegration({
+    activeEditor: { uriPath: sourcePath, line: 0, character: 0 },
+    manifests: new Map([[manifestPath, manifestJson('BookProject', ['Book1'])]]),
+    sources: new Map([[sourcePath, 'Public Sub RunTarget()\r\nEnd Sub\r\n']]),
+    getSourceBreakpoints: () => [{
+      uriPath: sourcePath,
+      line: 0,
+      enabled: true,
+      condition: 'ready'
+    }]
+  });
+
+  await assert.rejects(
+    () => integration.resolveDebugConfiguration({}),
+    /conditional breakpoint.*unsupported/i
+  );
+});
+
+test('debug launch rejects an enabled in-scope hit-count breakpoint instead of downgrading it', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const manifestPath = path.join(projectRoot, 'vba-project.json');
+  const sourcePath = path.join(projectRoot, 'src', 'Book1', 'DebugModule.bas');
+  const integration = createIntegration({
+    activeEditor: { uriPath: sourcePath, line: 0, character: 0 },
+    manifests: new Map([[manifestPath, manifestJson('BookProject', ['Book1'])]]),
+    sources: new Map([[sourcePath, 'Public Sub RunTarget()\r\nEnd Sub\r\n']]),
+    getSourceBreakpoints: () => [{
+      uriPath: sourcePath,
+      line: 0,
+      enabled: true,
+      hitCondition: '3'
+    }]
+  });
+
+  await assert.rejects(
+    () => integration.resolveDebugConfiguration({}),
+    /hit-count breakpoint.*unsupported/i
+  );
+});
+
+test('debug launch rejects an enabled in-scope logpoint instead of downgrading it', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const manifestPath = path.join(projectRoot, 'vba-project.json');
+  const sourcePath = path.join(projectRoot, 'src', 'Book1', 'DebugModule.bas');
+  const integration = createIntegration({
+    activeEditor: { uriPath: sourcePath, line: 0, character: 0 },
+    manifests: new Map([[manifestPath, manifestJson('BookProject', ['Book1'])]]),
+    sources: new Map([[sourcePath, 'Public Sub RunTarget()\r\nEnd Sub\r\n']]),
+    getSourceBreakpoints: () => [{
+      uriPath: sourcePath,
+      line: 0,
+      enabled: true,
+      logMessage: 'hit'
+    }]
+  });
+
+  await assert.rejects(
+    () => integration.resolveDebugConfiguration({}),
+    /logpoint.*unsupported/i
+  );
+});
+
+test('debug launch rejects more than one enabled ordinary in-scope BAS breakpoint', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const manifestPath = path.join(projectRoot, 'vba-project.json');
+  const firstSource = path.join(projectRoot, 'src', 'Book1', 'First.bas');
+  const secondSource = path.join(projectRoot, 'src', 'Book1', 'Second.bas');
+  const integration = createIntegration({
+    activeEditor: { uriPath: firstSource, line: 0, character: 0 },
+    manifests: new Map([[manifestPath, manifestJson('BookProject', ['Book1'])]]),
+    sources: new Map([
+      [firstSource, 'Public Sub FirstTarget()\r\nEnd Sub\r\n'],
+      [secondSource, 'Public Sub SecondTarget()\r\nEnd Sub\r\n']
+    ]),
+    getSourceBreakpoints: () => [{
+      uriPath: firstSource,
+      line: 0,
+      enabled: true
+    }, {
+      uriPath: secondSource,
+      line: 0,
+      enabled: true
+    }]
+  });
+
+  await assert.rejects(
+    () => integration.resolveDebugConfiguration({}),
+    /at most one enabled ordinary.*breakpoint/i
+  );
+});
+
+test('debug launch ignores disabled, out-of-scope, and non-BAS source breakpoints', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const otherRoot = path.join('C:', 'work', 'OtherProject');
+  const manifestPath = path.join(projectRoot, 'vba-project.json');
+  const sourcePath = path.join(projectRoot, 'src', 'Book1', 'DebugModule.bas');
+  const classPath = path.join(projectRoot, 'src', 'Book1', 'Worker.cls');
+  const outsidePath = path.join(otherRoot, 'src', 'Book2', 'Outside.bas');
+  const integration = createIntegration({
+    activeEditor: { uriPath: sourcePath, line: 0, character: 0 },
+    manifests: new Map([[manifestPath, manifestJson('BookProject', ['Book1'])]]),
+    sources: new Map([
+      [sourcePath, 'Public Sub RunTarget()\r\n  Debug.Print "hit"\r\nEnd Sub\r\n'],
+      [classPath, 'Public Sub ClassTarget()\r\nEnd Sub\r\n'],
+      [outsidePath, 'Public Sub OutsideTarget()\r\nEnd Sub\r\n']
+    ]),
+    getSourceBreakpoints: () => [{
+      uriPath: sourcePath,
+      line: 1,
+      enabled: true
+    }, {
+      uriPath: sourcePath,
+      line: 0,
+      enabled: false,
+      condition: 'unsupported but disabled'
+    }, {
+      uriPath: outsidePath,
+      line: 0,
+      enabled: true,
+      logMessage: 'unsupported but outside the selected source set'
+    }, {
+      uriPath: classPath,
+      line: 0,
+      enabled: true
+    }]
+  });
+
+  const configuration = await integration.resolveDebugConfiguration({});
+
+  assert.deepEqual(
+    (configuration.sourceSnapshot as { breakpoints: unknown }).breakpoints,
+    [{ path: sourcePath, line: 1 }]
+  );
 });
 
 test('debug launch aborts before re-resolution and snapshot capture when a selected source cannot be saved', async () => {
@@ -405,7 +614,8 @@ test('an explicit procedure pair uses active source membership to narrow omitted
     sources: [{
       path: selectedSource,
       text: 'Public Sub RunTarget()\r\nEnd Sub\r\n'
-    }]
+    }],
+    breakpoints: []
   });
 });
 
@@ -433,7 +643,8 @@ test('source snapshots preserve decoded CP932 and UTF-16 text through the dedica
       { path: cp932Source, text: 'Public Sub 実行()\r\nEnd Sub\r\n' },
       { path: utf16Source, text: 'Public Sub 検証()\r\nEnd Sub\r\n' }
     ],
-    activeSource: { path: cp932Source, line: 0, character: 11 }
+    activeSource: { path: cp932Source, line: 0, character: 11 },
+    breakpoints: []
   });
 });
 
@@ -452,6 +663,7 @@ test('unsupported launch fields and request modes fail closed before project dis
         hostTouched = true;
         return [];
       },
+      getSourceBreakpoints: () => [],
       findProjectManifests: async () => {
         hostTouched = true;
         return [];
@@ -514,6 +726,7 @@ function createIntegration(options: {
   sources: ReadonlyMap<string, string>;
   readTextFile?: (filePath: string) => Promise<string>;
   readSourceText?: (filePath: string) => Promise<string>;
+  getSourceBreakpoints?: () => readonly VbaDebugSourceBreakpoint[];
   openTextDocuments?: () => readonly {
     uriPath: string;
     isDirty: boolean;
@@ -527,6 +740,7 @@ function createIntegration(options: {
       workspaceRoots: [path.join('C:', 'work')],
       getActiveEditor: options.getActiveEditor ?? (() => options.activeEditor),
       getOpenTextDocuments: options.openTextDocuments ?? (() => []),
+      getSourceBreakpoints: options.getSourceBreakpoints ?? (() => []),
       findProjectManifests: async () => [...options.manifests.keys()],
       readTextFile: options.readTextFile ?? (async (filePath) => {
         const text = options.manifests.get(filePath) ?? options.sources.get(filePath);

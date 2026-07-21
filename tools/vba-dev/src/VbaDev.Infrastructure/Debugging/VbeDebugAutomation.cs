@@ -178,9 +178,8 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
 
         public Task<DebugProcessExit> Completion => processOwner.Completion;
 
-        public async Task OpenGeneratedWorkbookAndRunAsync(
+        public async Task OpenGeneratedWorkbookAsync(
             string workbookPath,
-            DebugTargetProcedure target,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -196,29 +195,37 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                     $"The generated debug workbook does not exist: {expectedWorkbookPath}");
             }
 
-            try
-            {
-                workbookObject = await dispatcher.InvokeAsync(
-                    () => OpenAndRun(expectedWorkbookPath, target),
-                    cancellationToken).ConfigureAwait(false);
-            }
-            catch (DebugSetupException ex)
-            {
-                RecordForegroundPermission(ex);
-                await processOwner.TerminateAsync().ConfigureAwait(false);
-                throw;
-            }
-            catch (Exception ex) when (
-                ex is COMException or RuntimeBinderException or InvalidCastException or
-                    ArgumentException or TargetParameterCountException)
-            {
-                await processOwner.TerminateAsync().ConfigureAwait(false);
-                var setupError = new DebugSetupException(
-                    "Excel or the VBE rejected the generated workbook debug setup.",
-                    ex);
-                RecordForegroundPermission(setupError);
-                throw setupError;
-            }
+            workbookObject = await InvokeSetupAsync(
+                () => OpenWorkbook(expectedWorkbookPath),
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        public async Task SetNativeBreakpointAsync(
+            VbeBreakpoint breakpoint,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            _ = await InvokeSetupAsync(
+                () =>
+                {
+                    SetNativeBreakpoint(breakpoint);
+                    return true;
+                },
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        public async Task RunTargetAsync(
+            DebugTargetProcedure target,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            _ = await InvokeSetupAsync(
+                () =>
+                {
+                    RunTarget(target);
+                    return true;
+                },
+                cancellationToken).ConfigureAwait(false);
         }
 
         public ValueTask TerminateAsync() => processOwner.TerminateAsync();
@@ -249,20 +256,44 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             }
         }
 
-        private object OpenAndRun(string expectedWorkbookPath, DebugTargetProcedure target)
+        private async Task<T> InvokeSetupAsync<T>(
+            Func<T> operation,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                return await dispatcher.InvokeAsync(
+                    () =>
+                    {
+                        foregroundPermissionHResult = null;
+                        return operation();
+                    },
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (DebugSetupException ex)
+            {
+                RecordForegroundPermission(ex);
+                await processOwner.TerminateAsync().ConfigureAwait(false);
+                throw;
+            }
+            catch (Exception ex) when (
+                ex is COMException or RuntimeBinderException or InvalidCastException or
+                    ArgumentException or TargetParameterCountException)
+            {
+                await processOwner.TerminateAsync().ConfigureAwait(false);
+                var setupError = new DebugSetupException(
+                    "Excel or the VBE rejected the generated workbook debug setup.",
+                    ex);
+                RecordForegroundPermission(setupError);
+                throw setupError;
+            }
+        }
+
+        private object OpenWorkbook(string expectedWorkbookPath)
         {
             object? workbooksObject = null;
             object? workbook = null;
             object? projectObject = null;
-            object? componentsObject = null;
-            object? componentObject = null;
-            object? codeModuleObject = null;
-            object? codePaneObject = null;
-            object? vbeObject = null;
-            object? mainWindowObject = null;
-            object? codeWindowObject = null;
-            object? commandBarsObject = null;
-            object? runControlObject = null;
             var succeeded = false;
 
             try
@@ -285,11 +316,92 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
 
                 projectObject = openedWorkbook.VBProject;
                 dynamic project = projectObject;
-                if ((int)project.Mode != 2)
+                EnsureDesignMode(project);
+                succeeded = true;
+                return workbook;
+            }
+            finally
+            {
+                ComObjectReleaser.Release(projectObject);
+                if (!succeeded)
+                {
+                    ComObjectReleaser.Release(workbook);
+                }
+
+                ComObjectReleaser.Release(workbooksObject);
+            }
+        }
+
+        private void SetNativeBreakpoint(VbeBreakpoint breakpoint)
+        {
+            if (breakpoint.VbideLine <= 0)
+            {
+                throw new DebugSetupException(
+                    "The native VBE breakpoint line must be a positive one-based line number.");
+            }
+
+            object? projectObject = null;
+            object? componentsObject = null;
+            object? componentObject = null;
+            object? codeModuleObject = null;
+            try
+            {
+                dynamic workbook = GetOpenedWorkbook();
+                projectObject = workbook.VBProject;
+                dynamic project = projectObject;
+                EnsureDesignMode(project);
+
+                componentsObject = project.VBComponents;
+                dynamic components = componentsObject;
+                componentObject = components.Item(breakpoint.ModuleName);
+                dynamic component = componentObject;
+                if ((int)component.Type != 1)
                 {
                     throw new DebugSetupException(
-                        "The generated workbook VBA project is not in design mode.");
+                        $"The breakpoint module '{breakpoint.ModuleName}' is not a standard module.");
                 }
+
+                codeModuleObject = component.CodeModule;
+                dynamic codeModule = codeModuleObject;
+                var actualCodeLine = (string)codeModule.Lines(breakpoint.VbideLine, 1);
+                if (!string.Equals(
+                        breakpoint.ExpectedCodeLine,
+                        actualCodeLine,
+                        StringComparison.Ordinal))
+                {
+                    throw new DebugSetupException(
+                        $"The generated workbook code at '{breakpoint.ModuleName}:{breakpoint.VbideLine}' does not exactly match the saved breakpoint source line.");
+                }
+
+                ExecuteNativeCommand(
+                    componentObject,
+                    codeModuleObject,
+                    breakpoint.VbideLine,
+                    51,
+                    "Toggle Breakpoint",
+                    "breakpoint");
+            }
+            finally
+            {
+                ComObjectReleaser.Release(codeModuleObject);
+                ComObjectReleaser.Release(componentObject);
+                ComObjectReleaser.Release(componentsObject);
+                ComObjectReleaser.Release(projectObject);
+            }
+        }
+
+        private void RunTarget(DebugTargetProcedure target)
+        {
+            object? projectObject = null;
+            object? componentsObject = null;
+            object? componentObject = null;
+            object? codeModuleObject = null;
+            try
+            {
+                dynamic workbook = GetOpenedWorkbook();
+                projectObject = workbook.VBProject;
+                dynamic project = projectObject;
+                EnsureDesignMode(project);
 
                 componentsObject = project.VBComponents;
                 dynamic components = componentsObject;
@@ -301,9 +413,6 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                         $"The debug target module '{target.ModuleName}' is not a standard module.");
                 }
 
-                foregroundPermissionHResult =
-                    windowActivator.AllowComServerForeground(excelObject);
-                component.Activate();
                 codeModuleObject = component.CodeModule;
                 dynamic codeModule = codeModuleObject;
                 var bodyLine = (int)codeModule.ProcBodyLine(target.ProcedureName, 0);
@@ -312,6 +421,47 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                     throw new DebugSetupException(
                         $"The debug target procedure '{target.ModuleName}.{target.ProcedureName}' could not be resolved.");
                 }
+
+                ExecuteNativeCommand(
+                    componentObject,
+                    codeModuleObject,
+                    bodyLine,
+                    186,
+                    "Run Sub/UserForm",
+                    "target code");
+            }
+            finally
+            {
+                ComObjectReleaser.Release(codeModuleObject);
+                ComObjectReleaser.Release(componentObject);
+                ComObjectReleaser.Release(componentsObject);
+                ComObjectReleaser.Release(projectObject);
+            }
+        }
+
+        private void ExecuteNativeCommand(
+            object componentObject,
+            object codeModuleObject,
+            int selectedLine,
+            int commandId,
+            string commandName,
+            string contextName)
+        {
+            object? codePaneObject = null;
+            object? activeCodePaneObject = null;
+            object? vbeObject = null;
+            object? mainWindowObject = null;
+            object? codeWindowObject = null;
+            object? commandBarsObject = null;
+            object? commandControlObject = null;
+            try
+            {
+                dynamic component = componentObject;
+                dynamic codeModule = codeModuleObject;
+                dynamic excel = excelObject;
+                foregroundPermissionHResult =
+                    windowActivator.AllowComServerForeground(excelObject);
+                component.Activate();
 
                 codePaneObject = codeModule.CodePane;
                 dynamic codePane = codePaneObject;
@@ -322,7 +472,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                 mainWindow.Visible = true;
                 codePane.Show();
                 vbe.ActiveCodePane = codePaneObject;
-                codePane.SetSelection(bodyLine, 1, bodyLine, 1);
+                codePane.SetSelection(selectedLine, 1, selectedLine, 1);
                 mainWindow.SetFocus();
                 codeWindowObject = codePane.Window;
                 dynamic codeWindow = codeWindowObject;
@@ -331,50 +481,85 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                     ToWindowHandle(mainWindow.HWnd),
                     ProcessId);
 
+                activeCodePaneObject = vbe.ActiveCodePane;
+                if (!ReferenceEquals(activeCodePaneObject, codePaneObject))
+                {
+                    throw new DebugSetupException(
+                        $"The intended VBE code pane is not active in the {contextName} context.");
+                }
+
+                var actualStartLine = 0;
+                var actualStartColumn = 0;
+                var actualEndLine = 0;
+                var actualEndColumn = 0;
+                codePane.GetSelection(
+                    ref actualStartLine,
+                    ref actualStartColumn,
+                    ref actualEndLine,
+                    ref actualEndColumn);
+                if (actualStartLine != selectedLine ||
+                    actualStartColumn != 1 ||
+                    actualEndLine != selectedLine ||
+                    actualEndColumn != 1)
+                {
+                    throw new DebugSetupException(
+                        $"The exact VBE line selection was not retained in the {contextName} context.");
+                }
+
                 commandBarsObject = vbe.CommandBars;
                 dynamic commandBars = commandBarsObject;
-                runControlObject = commandBars.FindControl(1, 186, Type.Missing, false);
-                if (runControlObject is null)
+                commandControlObject = commandBars.FindControl(
+                    1,
+                    commandId,
+                    Type.Missing,
+                    false);
+                if (commandControlObject is null)
                 {
                     throw new DebugSetupException(
-                        "The native VBE Run Sub/UserForm command (ID 186) was not found.");
+                        $"The native VBE {commandName} command (ID {commandId}) was not found.");
                 }
 
-                dynamic runControl = runControlObject;
-                if ((int)runControl.Id != 186 || !(bool)runControl.BuiltIn)
+                dynamic commandControl = commandControlObject;
+                if ((int)commandControl.Id != commandId || !(bool)commandControl.BuiltIn)
                 {
                     throw new DebugSetupException(
-                        "The resolved VBE command is not the built-in Run Sub/UserForm command (ID 186).");
+                        $"The resolved VBE command is not the built-in {commandName} command (ID {commandId}).");
                 }
 
-                if (!(bool)runControl.Enabled)
+                if (!(bool)commandControl.Enabled)
                 {
                     throw new DebugSetupException(
-                        "The native VBE Run Sub/UserForm command (ID 186) is disabled in the target code context.");
+                        $"The native VBE {commandName} command (ID {commandId}) is disabled in the {contextName} context.");
                 }
 
-                runControl.Execute();
-                succeeded = true;
-                return workbook;
+                commandControl.Execute();
             }
             finally
             {
-                ComObjectReleaser.Release(runControlObject);
+                ComObjectReleaser.Release(commandControlObject);
                 ComObjectReleaser.Release(commandBarsObject);
                 ComObjectReleaser.Release(codeWindowObject);
                 ComObjectReleaser.Release(mainWindowObject);
                 ComObjectReleaser.Release(vbeObject);
-                ComObjectReleaser.Release(codePaneObject);
-                ComObjectReleaser.Release(codeModuleObject);
-                ComObjectReleaser.Release(componentObject);
-                ComObjectReleaser.Release(componentsObject);
-                ComObjectReleaser.Release(projectObject);
-                if (!succeeded)
+                if (!ReferenceEquals(activeCodePaneObject, codePaneObject))
                 {
-                    ComObjectReleaser.Release(workbook);
+                    ComObjectReleaser.Release(activeCodePaneObject);
                 }
 
-                ComObjectReleaser.Release(workbooksObject);
+                ComObjectReleaser.Release(codePaneObject);
+            }
+        }
+
+        private object GetOpenedWorkbook()
+            => workbookObject ?? throw new DebugSetupException(
+                "The generated debug workbook has not been opened.");
+
+        private static void EnsureDesignMode(dynamic project)
+        {
+            if ((int)project.Mode != 2)
+            {
+                throw new DebugSetupException(
+                    "The generated workbook VBA project is not in design mode.");
             }
         }
 
@@ -538,14 +723,15 @@ internal sealed class WindowsDebugWindowActivator : IDebugWindowActivator
         windowApi.Restore(windowHandle);
         var setForegroundResult = windowApi.SetForeground(windowHandle);
 
+        var foregroundWindow = nint.Zero;
         var foregroundProcessId = 0;
         for (var check = 0; check <= 40; check++)
         {
-            var foregroundWindow = windowApi.GetForegroundWindow();
+            foregroundWindow = windowApi.GetForegroundWindow();
             foregroundProcessId = foregroundWindow == nint.Zero
                 ? 0
                 : windowApi.GetProcessId(foregroundWindow);
-            if (foregroundProcessId == processId)
+            if (foregroundWindow == windowHandle && foregroundProcessId == processId)
             {
                 return;
             }
@@ -557,8 +743,9 @@ internal sealed class WindowsDebugWindowActivator : IDebugWindowActivator
         }
 
         var error = new DebugSetupException(
-            $"The owned VBE window did not become the foreground window; foreground PID {foregroundProcessId} did not match owned Excel PID {processId} after the activation transition wait.");
+            $"The requested VBE window did not become the exact foreground window; foreground HWND {foregroundWindow} with foreground PID {foregroundProcessId} did not match requested HWND {windowHandle} for owned Excel PID {processId} after the activation transition wait.");
         error.Data["SetForegroundWindow.Result"] = setForegroundResult;
+        error.Data["ForegroundWindow.Handle"] = foregroundWindow;
         throw error;
     }
 }

@@ -39,6 +39,8 @@ public sealed class VbaDebugAdapter
         var connection = new DapConnection(input, output);
         DapRequest? pendingLaunchRequest = null;
         DebugLaunchRequest? pendingLaunch = null;
+        PendingDapBreakpoint? pendingBreakpoint = null;
+        var nextBreakpointId = 0;
         var configurationDone = false;
         DebugRunningSession? runningSession = null;
         Task? monitorTask = null;
@@ -61,15 +63,32 @@ public sealed class VbaDebugAdapter
                     continue;
                 }
 
-                if (request.Command.Equals("setBreakpoints", StringComparison.Ordinal) &&
-                    HasEmptyBreakpointSet(request))
+                if (request.Command.Equals("setBreakpoints", StringComparison.Ordinal))
                 {
-                    await connection.WriteResponseAsync(
-                        request,
-                        success: true,
-                        body: new { breakpoints = Array.Empty<object>() },
-                        message: null,
-                        cancellationToken).ConfigureAwait(false);
+                    try
+                    {
+                        var update = ParseSourceBreakpointUpdate(
+                            request,
+                            pendingBreakpoint,
+                            ref nextBreakpointId);
+                        pendingBreakpoint = update.PendingBreakpoint;
+                        await connection.WriteResponseAsync(
+                            request,
+                            success: true,
+                            body: new { breakpoints = update.ResponseBreakpoints },
+                            message: null,
+                            cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (DebugSetupException ex)
+                    {
+                        await connection.WriteResponseAsync(
+                            request,
+                            success: false,
+                            body: null,
+                            message: $"DebugSetupError: {ex.Message}",
+                            cancellationToken).ConfigureAwait(false);
+                    }
+
                     continue;
                 }
 
@@ -104,6 +123,7 @@ public sealed class VbaDebugAdapter
                             connection,
                             pendingLaunchRequest,
                             pendingLaunch,
+                            pendingBreakpoint,
                             cancellationToken).ConfigureAwait(false);
                     }
 
@@ -125,6 +145,7 @@ public sealed class VbaDebugAdapter
                             connection,
                             pendingLaunchRequest,
                             pendingLaunch,
+                            pendingBreakpoint,
                             cancellationToken).ConfigureAwait(false);
                     }
 
@@ -207,11 +228,13 @@ public sealed class VbaDebugAdapter
         DapConnection connection,
         DapRequest launchRequest,
         DebugLaunchRequest launch,
+        PendingDapBreakpoint? pendingBreakpoint,
         CancellationToken cancellationToken)
     {
         try
         {
-            var lifecycleSink = new DapDebugLifecycleSink(connection);
+            ValidateBreakpointCorrelation(launch.SourceSnapshot.Breakpoints, pendingBreakpoint);
+            var lifecycleSink = new DapDebugLaunchEventSink(connection, pendingBreakpoint);
             var session = await launchCoordinator
                 .LaunchAsync(launch, lifecycleSink, cancellationToken)
                 .ConfigureAwait(false);
@@ -327,7 +350,7 @@ public sealed class VbaDebugAdapter
             snapshot,
             "sourceSnapshot",
             requiredProperties: ["schemaVersion", "sources"],
-            optionalProperties: ["activeSource"]);
+            optionalProperties: ["activeSource", "breakpoints"]);
 
         if (!snapshot.TryGetProperty("schemaVersion", out var schemaVersionValue) ||
             schemaVersionValue.ValueKind != JsonValueKind.Number ||
@@ -385,7 +408,64 @@ public sealed class VbaDebugAdapter
                 RequiredInt32(activeSourceValue, "character", "sourceSnapshot.activeSource.character"));
         }
 
-        return new DebugSourceSnapshot(schemaVersion, sources.MoveToImmutable(), activeSource);
+        var breakpoints = ImmutableArray<DebugSourceBreakpoint>.Empty;
+        if (snapshot.TryGetProperty("breakpoints", out var breakpointsValue))
+        {
+            if (breakpointsValue.ValueKind != JsonValueKind.Array)
+            {
+                throw new DebugSetupException(
+                    "The VBA launch request property 'sourceSnapshot.breakpoints' must be an array when supplied.");
+            }
+
+            if (breakpointsValue.GetArrayLength() > 1)
+            {
+                throw new DebugSetupException(
+                    "Initial VBA breakpoint transfer supports at most one enabled ordinary source breakpoint.");
+            }
+
+            var breakpointBuilder = ImmutableArray.CreateBuilder<DebugSourceBreakpoint>(
+                breakpointsValue.GetArrayLength());
+            foreach (var breakpointValue in breakpointsValue.EnumerateArray())
+            {
+                if (breakpointValue.ValueKind != JsonValueKind.Object)
+                {
+                    throw new DebugSetupException(
+                        "Each 'sourceSnapshot.breakpoints' entry must be an object with path and line.");
+                }
+
+                ValidateExactObjectShape(
+                    breakpointValue,
+                    "sourceSnapshot.breakpoints[]",
+                    requiredProperties: ["path", "line"],
+                    optionalProperties: []);
+                var path = RequiredString(breakpointValue, "path");
+                var line = RequiredInt32(
+                    breakpointValue,
+                    "line",
+                    "sourceSnapshot.breakpoints[].line");
+                if (!Path.IsPathFullyQualified(path) ||
+                    !path.Equals(Path.GetFullPath(path), StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new DebugSetupException(
+                        $"Debug breakpoint source path must be absolute and canonical: '{path}'.");
+                }
+
+                if (line < 0)
+                {
+                    throw new DebugSetupException(
+                        "Debug breakpoint editor line must be a non-negative zero-based line number.");
+                }
+
+                breakpointBuilder.Add(new DebugSourceBreakpoint(path, line));
+            }
+
+            breakpoints = breakpointBuilder.MoveToImmutable();
+        }
+
+        return new DebugSourceSnapshot(schemaVersion, sources.MoveToImmutable(), activeSource)
+        {
+            Breakpoints = breakpoints
+        };
     }
 
     private static void ValidateExactObjectShape(
@@ -445,24 +525,146 @@ public sealed class VbaDebugAdapter
         return result;
     }
 
-    private static bool HasEmptyBreakpointSet(DapRequest request)
+    private static SourceBreakpointUpdate ParseSourceBreakpointUpdate(
+        DapRequest request,
+        PendingDapBreakpoint? currentBreakpoint,
+        ref int nextBreakpointId)
     {
-        if (request.Arguments.ValueKind != System.Text.Json.JsonValueKind.Object)
+        if (request.Arguments.ValueKind != JsonValueKind.Object)
         {
-            return false;
+            throw new DebugSetupException(
+                "The VBA setBreakpoints request requires source and breakpoints arguments.");
         }
 
-        if (request.Arguments.TryGetProperty("breakpoints", out var breakpoints) &&
-            (breakpoints.ValueKind != System.Text.Json.JsonValueKind.Array || breakpoints.GetArrayLength() != 0))
+        if (!request.Arguments.TryGetProperty("source", out var source) ||
+            source.ValueKind != JsonValueKind.Object)
         {
-            return false;
+            throw new DebugSetupException(
+                "The VBA setBreakpoints request requires a source object.");
         }
 
-        return !request.Arguments.TryGetProperty("lines", out var lines) ||
-            (lines.ValueKind == System.Text.Json.JsonValueKind.Array && lines.GetArrayLength() == 0);
+        var sourcePath = RequiredString(source, "path");
+        if (!Path.IsPathFullyQualified(sourcePath))
+        {
+            throw new DebugSetupException(
+                $"VBA source breakpoint path must be absolute: '{sourcePath}'.");
+        }
+
+        sourcePath = Path.GetFullPath(sourcePath);
+        if (!Path.GetExtension(sourcePath).Equals(".bas", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new DebugSetupException(
+                "Initial VBA breakpoint transfer supports ordinary .bas source breakpoints only.");
+        }
+
+        if (!request.Arguments.TryGetProperty("breakpoints", out var breakpoints))
+        {
+            breakpoints = default;
+        }
+
+        if (breakpoints.ValueKind is not JsonValueKind.Undefined and not JsonValueKind.Array)
+        {
+            throw new DebugSetupException(
+                "The VBA setBreakpoints request requires an array 'breakpoints' property.");
+        }
+
+        var count = breakpoints.ValueKind == JsonValueKind.Array
+            ? breakpoints.GetArrayLength()
+            : 0;
+        if (count > 1)
+        {
+            throw new DebugSetupException(
+                "Initial VBA breakpoint transfer supports at most one enabled ordinary source breakpoint.");
+        }
+
+        if (count == 0)
+        {
+            var retained = currentBreakpoint is not null &&
+                !currentBreakpoint.Breakpoint.SourcePath.Equals(
+                    sourcePath,
+                    StringComparison.OrdinalIgnoreCase)
+                    ? currentBreakpoint
+                    : null;
+            return new SourceBreakpointUpdate(retained, []);
+        }
+
+        if (currentBreakpoint is not null &&
+            !currentBreakpoint.Breakpoint.SourcePath.Equals(
+                sourcePath,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new DebugSetupException(
+                "Initial VBA breakpoint transfer supports only one source breakpoint per launch.");
+        }
+
+        var breakpoint = breakpoints.EnumerateArray().Single();
+        if (breakpoint.ValueKind != JsonValueKind.Object)
+        {
+            throw new DebugSetupException(
+                "Each VBA source breakpoint must be an object with a one-based line.");
+        }
+
+        foreach (var unsupportedProperty in new[] { "column", "condition", "hitCondition", "logMessage" })
+        {
+            if (breakpoint.TryGetProperty(unsupportedProperty, out _))
+            {
+                throw new DebugSetupException(
+                    $"VBA breakpoint property '{unsupportedProperty}' is unsupported.");
+            }
+        }
+
+        var dapLine = RequiredInt32(breakpoint, "line", "breakpoints[].line");
+        if (dapLine <= 0)
+        {
+            throw new DebugSetupException(
+                "VBA source breakpoint line must be a positive one-based line number.");
+        }
+
+        var captured = new DebugSourceBreakpoint(sourcePath, dapLine - 1);
+        var pending = currentBreakpoint is not null &&
+            SameSourceBreakpoint(currentBreakpoint.Breakpoint, captured)
+            ? currentBreakpoint
+            : new PendingDapBreakpoint(++nextBreakpointId, captured);
+        object[] responseBreakpoints =
+        [
+            new
+            {
+                id = pending.Id,
+                verified = false,
+                source = new { path = pending.Breakpoint.SourcePath },
+                line = pending.Breakpoint.EditorLine + 1
+            }
+        ];
+        return new SourceBreakpointUpdate(pending, responseBreakpoints);
     }
 
-    private sealed class DapDebugLifecycleSink(DapConnection connection) : IDebugLifecycleSink
+    private static void ValidateBreakpointCorrelation(
+        ImmutableArray<DebugSourceBreakpoint> launchBreakpoints,
+        PendingDapBreakpoint? pendingBreakpoint)
+    {
+        if (launchBreakpoints.IsDefaultOrEmpty)
+        {
+            if (pendingBreakpoint is not null)
+            {
+                throw new DebugSetupException(
+                    "The pending DAP breakpoint is not present in the post-save debug source snapshot.");
+            }
+
+            return;
+        }
+
+        var launchBreakpoint = launchBreakpoints.Single();
+        if (pendingBreakpoint is null ||
+            !SameSourceBreakpoint(pendingBreakpoint.Breakpoint, launchBreakpoint))
+        {
+            throw new DebugSetupException(
+                "The pending DAP breakpoint does not match the post-save debug source snapshot.");
+        }
+    }
+
+    private sealed class DapDebugLaunchEventSink(
+        DapConnection connection,
+        PendingDapBreakpoint? pendingBreakpoint) : IDebugLaunchEventSink
     {
         public ValueTask WriteAsync(
             DebugLifecycleMessage message,
@@ -476,5 +678,46 @@ public sealed class VbaDebugAdapter
                 new { category = "console", output },
                 cancellationToken));
         }
+
+        public ValueTask BreakpointVerifiedAsync(
+            VbeBreakpoint breakpoint,
+            CancellationToken cancellationToken)
+        {
+            if (pendingBreakpoint is null ||
+                !SameSourceBreakpoint(pendingBreakpoint.Breakpoint, breakpoint.Source))
+            {
+                throw new DebugSetupException(
+                    "The transferred VBE breakpoint does not match the pending DAP breakpoint.");
+            }
+
+            return new ValueTask(connection.WriteEventAsync(
+                "breakpoint",
+                new
+                {
+                    reason = "changed",
+                    breakpoint = new
+                    {
+                        id = pendingBreakpoint.Id,
+                        verified = true,
+                        source = new { path = pendingBreakpoint.Breakpoint.SourcePath },
+                        line = breakpoint.Source.EditorLine + 1
+                    }
+                },
+                cancellationToken));
+        }
     }
+
+    private sealed record PendingDapBreakpoint(int Id, DebugSourceBreakpoint Breakpoint);
+
+    private static bool SameSourceBreakpoint(
+        DebugSourceBreakpoint left,
+        DebugSourceBreakpoint right)
+        => left.EditorLine == right.EditorLine &&
+            Path.GetFullPath(left.SourcePath).Equals(
+                Path.GetFullPath(right.SourcePath),
+                StringComparison.OrdinalIgnoreCase);
+
+    private sealed record SourceBreakpointUpdate(
+        PendingDapBreakpoint? PendingBreakpoint,
+        object[] ResponseBreakpoints);
 }

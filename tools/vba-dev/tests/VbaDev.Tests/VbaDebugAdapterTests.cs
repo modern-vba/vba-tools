@@ -59,6 +59,114 @@ public sealed class VbaDebugAdapterTests
     }
 
     [Fact]
+    public async Task OneSavedSourceBreakpointRemainsPendingUntilNativeTransferSucceeds()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("DebugProject");
+        var manifest = ProjectManifest.CreateDefault("DebugProject", "Book1", root, null);
+        var manifestStore = new JsonProjectManifestStore();
+        manifestStore.Save(root, manifest);
+        var sourceSetPath = Path.GetFullPath(Path.Combine(root, manifest.Documents["Book1"].SourcePath));
+        Directory.CreateDirectory(sourceSetPath);
+        var sourcePath = Path.Combine(sourceSetPath, "DebugModule.bas");
+        var source = string.Join(
+            '\n',
+            [
+                "Attribute VB_Name = \"DebugModule\"",
+                "Option Explicit",
+                "",
+                "Public Sub RunTarget()",
+                "    Debug.Print \"hit\"",
+                "End Sub"
+            ]);
+        File.WriteAllText(sourcePath, source);
+        var dapSourcePath = sourcePath.ToUpperInvariant();
+        var events = new List<string>();
+        var adapter = new VbaDebugAdapter(
+            new ProjectContextResolver(manifestStore),
+            new DebugLaunchCoordinator(
+                new RecordingDebugWorkbookBuilder(events, []),
+                new RecordingVbeDebugSessionFactory(
+                    events,
+                    new CompletingVbeDebugSession(events, 2723, 0))),
+            () => root);
+        var setBreakpoints = JsonSerializer.Serialize(new
+        {
+            seq = 2,
+            type = "request",
+            command = "setBreakpoints",
+            arguments = new
+            {
+                source = new { path = dapSourcePath },
+                breakpoints = new[] { new { line = 5 } }
+            }
+        });
+        var launch = JsonSerializer.Serialize(new
+        {
+            seq = 3,
+            type = "request",
+            command = "launch",
+            arguments = new
+            {
+                project = root,
+                document = "Book1",
+                module = "DebugModule",
+                procedure = "RunTarget",
+                sourceSnapshot = new
+                {
+                    schemaVersion = 1,
+                    sources = new[] { new { path = sourcePath, text = source } },
+                    breakpoints = new[] { new { path = sourcePath, line = 4 } }
+                }
+            }
+        });
+        await using var input = CreateInput(
+            """
+            {"seq":1,"type":"request","command":"initialize","arguments":{"adapterID":"vba"}}
+            """,
+            setBreakpoints,
+            launch,
+            """
+            {"seq":4,"type":"request","command":"configurationDone","arguments":{}}
+            """);
+        await using var output = new MemoryStream();
+
+        await adapter.RunAsync(input, output, CancellationToken.None);
+
+        var messages = ReadMessages(output).Select(message => message.RootElement).ToArray();
+        var pending = Response(messages, "setBreakpoints");
+        Assert.True(pending.GetProperty("success").GetBoolean());
+        var pendingBreakpoint = Assert.Single(
+            pending.GetProperty("body").GetProperty("breakpoints").EnumerateArray());
+        Assert.False(pendingBreakpoint.GetProperty("verified").GetBoolean());
+        Assert.Equal(5, pendingBreakpoint.GetProperty("line").GetInt32());
+        Assert.Equal(dapSourcePath, pendingBreakpoint.GetProperty("source").GetProperty("path").GetString());
+
+        var verifiedIndex = Array.FindIndex(messages, message =>
+            message.GetProperty("type").GetString() == "event" &&
+            message.GetProperty("event").GetString() == "breakpoint");
+        var launchIndex = Array.FindIndex(messages, message =>
+            message.GetProperty("type").GetString() == "response" &&
+            message.GetProperty("command").GetString() == "launch");
+        Assert.True(verifiedIndex >= 0 && verifiedIndex < launchIndex);
+        var verified = messages[verifiedIndex].GetProperty("body").GetProperty("breakpoint");
+        Assert.Equal("changed", messages[verifiedIndex].GetProperty("body").GetProperty("reason").GetString());
+        Assert.True(verified.GetProperty("verified").GetBoolean());
+        Assert.Equal(pendingBreakpoint.GetProperty("id").GetInt32(), verified.GetProperty("id").GetInt32());
+        Assert.Equal(5, verified.GetProperty("line").GetInt32());
+        Assert.Equal(dapSourcePath, verified.GetProperty("source").GetProperty("path").GetString());
+        Assert.Equal(
+            [
+                "build:Book1",
+                "start-visible",
+                $"open:{Path.Combine(root, "bin", "Book1.xlsm")}",
+                "set:DebugModule:4:    Debug.Print \"hit\"",
+                "run:DebugModule.RunTarget"
+            ],
+            events);
+    }
+
+    [Fact]
     public async Task ThreadsReportsTheSingleVbeExecutionOwner()
     {
         var adapter = CreateAdapter();
@@ -156,7 +264,8 @@ public sealed class VbaDebugAdapterTests
             [
                 "build:Book1",
                 "start-visible",
-                $"open-and-run:{Path.Combine(root, "custom-bin", "GeneratedBook.xlsm")}:DebugModule.RunTarget"
+                $"open:{Path.Combine(root, "custom-bin", "GeneratedBook.xlsm")}",
+                "run:DebugModule.RunTarget"
             ],
             events);
         var exited = messages.Single(message =>
@@ -586,12 +695,28 @@ public sealed class VbaDebugAdapterTests
         public Task<DebugProcessExit> Completion { get; } =
             Task.FromResult(new DebugProcessExit(exitCode));
 
-        public Task OpenGeneratedWorkbookAndRunAsync(
+        public Task OpenGeneratedWorkbookAsync(
             string workbookPath,
+            CancellationToken cancellationToken)
+        {
+            events.Add($"open:{workbookPath}");
+            return Task.CompletedTask;
+        }
+
+        public Task SetNativeBreakpointAsync(
+            VbeBreakpoint breakpoint,
+            CancellationToken cancellationToken)
+        {
+            events.Add(
+                $"set:{breakpoint.ModuleName}:{breakpoint.VbideLine}:{breakpoint.ExpectedCodeLine}");
+            return Task.CompletedTask;
+        }
+
+        public Task RunTargetAsync(
             DebugTargetProcedure target,
             CancellationToken cancellationToken)
         {
-            events.Add($"open-and-run:{workbookPath}:{target.ModuleName}.{target.ProcedureName}");
+            events.Add($"run:{target.ModuleName}.{target.ProcedureName}");
             return Task.CompletedTask;
         }
 

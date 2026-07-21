@@ -10,6 +10,7 @@ import {
   OutputChannel,
   ProgressLocation,
   RelativePattern,
+  SourceBreakpoint,
   Uri,
   commands,
   debug,
@@ -127,6 +128,19 @@ export async function activate(context: ExtensionContext): Promise<void> {
           uriPath: document.uri.fsPath,
           isDirty: document.isDirty,
           save: () => document.save()
+        })),
+      getSourceBreakpoints: () => debug.breakpoints
+        .filter((breakpoint): breakpoint is SourceBreakpoint => (
+          breakpoint instanceof SourceBreakpoint
+          && breakpoint.location.uri.scheme === 'file'
+        ))
+        .map((breakpoint) => ({
+          uriPath: breakpoint.location.uri.fsPath,
+          line: breakpoint.location.range.start.line,
+          enabled: breakpoint.enabled,
+          condition: breakpoint.condition,
+          hitCondition: breakpoint.hitCondition,
+          logMessage: breakpoint.logMessage
         })),
       findProjectManifests: async () => findProjectManifests(),
       readTextFile,

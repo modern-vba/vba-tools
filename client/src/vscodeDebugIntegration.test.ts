@@ -20,6 +20,7 @@ test('VBA debug provider normalizes an empty F5 configuration before variable su
         return undefined;
       },
       getOpenTextDocuments: () => [],
+      getSourceBreakpoints: () => [],
       findProjectManifests: async () => [],
       readTextFile: async () => '',
       readSourceText: async () => '',

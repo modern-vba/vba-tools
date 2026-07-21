@@ -14,10 +14,20 @@ export interface VbaDebugSavableTextDocument {
   save(): PromiseLike<boolean>;
 }
 
+export interface VbaDebugSourceBreakpoint {
+  readonly uriPath: string;
+  readonly line: number;
+  readonly enabled: boolean;
+  readonly condition?: string | undefined;
+  readonly hitCondition?: string | undefined;
+  readonly logMessage?: string | undefined;
+}
+
 export interface VbaDebugConfigurationHost {
   readonly workspaceRoots: readonly string[];
   getActiveEditor(): VbaDebugActiveEditor | undefined;
   getOpenTextDocuments(): readonly VbaDebugSavableTextDocument[];
+  getSourceBreakpoints(): readonly VbaDebugSourceBreakpoint[];
   findProjectManifests(workspaceRoots: readonly string[]): Promise<readonly string[]>;
   readTextFile(filePath: string): Promise<string>;
   readSourceText(filePath: string): Promise<string>;
@@ -108,6 +118,7 @@ export async function resolveVbaDebugConfiguration(
   const sourcePaths = uniqueCanonicalPaths(
     await host.findExportedSourceFiles(postSaveSelection.sourceSetPath)
   );
+  const breakpoints = captureEnabledOrdinaryBasBreakpoints(host, sourcePaths);
   const sources = [];
   for (const sourcePath of sourcePaths) {
     sources.push({
@@ -131,9 +142,56 @@ export async function resolveVbaDebugConfiguration(
               line: postSaveActiveEditor!.line,
               character: postSaveActiveEditor!.character
             }
-          })
+          }),
+      breakpoints
     }
   };
+}
+
+function captureEnabledOrdinaryBasBreakpoints(
+  host: VbaDebugConfigurationHost,
+  sourcePaths: readonly string[]
+): readonly { readonly path: string; readonly line: number }[] {
+  const basSourcePaths = new Map(
+    sourcePaths
+      .filter((sourcePath) => path.extname(sourcePath).toLowerCase() === '.bas')
+      .map((sourcePath) => [canonicalPath(sourcePath), sourcePath])
+  );
+  const breakpoints = host.getSourceBreakpoints()
+    .filter((breakpoint) => breakpoint.enabled)
+    .flatMap((breakpoint) => {
+      const sourcePath = basSourcePaths.get(canonicalPath(breakpoint.uriPath));
+      if (sourcePath === undefined) {
+        return [];
+      }
+
+      if (breakpoint.condition !== undefined) {
+        throw new VbaDebugSelectionError(
+          `Conditional breakpoint at ${sourcePath}:${breakpoint.line + 1} is unsupported for VBA debug launch.`
+        );
+      }
+
+      if (breakpoint.hitCondition !== undefined) {
+        throw new VbaDebugSelectionError(
+          `Hit-count breakpoint at ${sourcePath}:${breakpoint.line + 1} is unsupported for VBA debug launch.`
+        );
+      }
+
+      if (breakpoint.logMessage !== undefined) {
+        throw new VbaDebugSelectionError(
+          `Logpoint at ${sourcePath}:${breakpoint.line + 1} is unsupported for VBA debug launch.`
+        );
+      }
+
+      return [{ path: sourcePath, line: breakpoint.line }];
+    });
+  if (breakpoints.length > 1) {
+    throw new VbaDebugSelectionError(
+      `VBA debug launch currently supports at most one enabled ordinary BAS breakpoint; found ${breakpoints.length}.`
+    );
+  }
+
+  return breakpoints;
 }
 
 function validateOptionalSelector(

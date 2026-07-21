@@ -8,6 +8,84 @@ namespace VbaDev.Tests;
 public sealed class DebugLaunchCoordinatorTests
 {
     [Fact]
+    public async Task OneBreakpointIsSetAndVerifiedBeforeTheTargetRuns()
+    {
+        var context = CreateContext();
+        var sourcePath = Path.Combine(context.DocumentSourceSetPath, "DebugModule.bas");
+        var requested = new DebugSourceBreakpoint(sourcePath, EditorLine: 4);
+        var mapped = new VbeBreakpoint(requested, "DebugModule", VbideLine: 4, "    value = 1");
+        var snapshot = CreateSourceSnapshot() with
+        {
+            Breakpoints = [requested]
+        };
+        var events = new List<string>();
+        var vbeSession = new FakeVbeDebugSession(events);
+        var coordinator = new DebugLaunchCoordinator(
+            new FakeDebugWorkbookBuilder(events),
+            new FakeVbeDebugSessionFactory(events, vbeSession),
+            new FakeBreakpointSourceMapper(events, mapped));
+
+        var running = await coordinator.LaunchAsync(
+            new DebugLaunchRequest(
+                context,
+                new DebugTargetProcedure("DebugModule", "RunTarget"),
+                snapshot),
+            new RecordingDebugLaunchEventSink(events),
+            CancellationToken.None);
+
+        Assert.Equal(
+            [
+                "build:Book1",
+                "start-visible",
+                $"open:{context.BinDocumentPath}",
+                $"map:{sourcePath}:4",
+                "set:DebugModule:4:    value = 1",
+                $"verified:{sourcePath}:4",
+                "run:DebugModule.RunTarget"
+            ],
+            events);
+
+        vbeSession.Exit(0);
+        await running.Completion;
+    }
+
+    [Fact]
+    public async Task AFailedNativeBreakpointIsNeitherVerifiedNorFollowedByTargetExecution()
+    {
+        var context = CreateContext();
+        var sourcePath = Path.Combine(context.DocumentSourceSetPath, "DebugModule.bas");
+        var requested = new DebugSourceBreakpoint(sourcePath, EditorLine: 4);
+        var mapped = new VbeBreakpoint(requested, "DebugModule", VbideLine: 4, "    value = 1");
+        var events = new List<string>();
+        var vbeSession = new FakeVbeDebugSession(events)
+        {
+            SetError = new DebugSetupException("The native Toggle Breakpoint command is disabled.")
+        };
+        var coordinator = new DebugLaunchCoordinator(
+            new FakeDebugWorkbookBuilder(events),
+            new FakeVbeDebugSessionFactory(events, vbeSession),
+            new FakeBreakpointSourceMapper(events, mapped));
+        var snapshot = CreateSourceSnapshot() with
+        {
+            Breakpoints = [requested]
+        };
+
+        var error = await Assert.ThrowsAsync<DebugSetupException>(() => coordinator.LaunchAsync(
+            new DebugLaunchRequest(
+                context,
+                new DebugTargetProcedure("DebugModule", "RunTarget"),
+                snapshot),
+            new RecordingDebugLaunchEventSink(events),
+            CancellationToken.None));
+
+        Assert.Equal("The native Toggle Breakpoint command is disabled.", error.Message);
+        Assert.DoesNotContain(events, item => item.StartsWith("verified:", StringComparison.Ordinal));
+        Assert.DoesNotContain(events, item => item.StartsWith("run:", StringComparison.Ordinal));
+        Assert.True(vbeSession.Terminated);
+        Assert.True(vbeSession.Disposed);
+    }
+
+    [Fact]
     public async Task AnExplicitZeroBreakpointLaunchBuildsThenRunsTheManifestBinWorkbook()
     {
         var context = CreateContext();
@@ -31,7 +109,8 @@ public sealed class DebugLaunchCoordinatorTests
             [
                 "build:Book1",
                 "start-visible",
-                $"open-and-run:{context.BinDocumentPath}:DebugModule.RunTarget"
+                $"open:{context.BinDocumentPath}",
+                "run:DebugModule.RunTarget"
             ],
             events);
 
@@ -209,6 +288,17 @@ public sealed class DebugLaunchCoordinatorTests
         }
     }
 
+    private sealed class FakeBreakpointSourceMapper(
+        List<string> events,
+        VbeBreakpoint mapped) : IBreakpointSourceMapper
+    {
+        public VbeBreakpoint Map(DebugSourceSnapshot snapshot, DebugSourceBreakpoint breakpoint)
+        {
+            events.Add($"map:{breakpoint.SourcePath}:{breakpoint.EditorLine}");
+            return mapped;
+        }
+    }
+
     private sealed class FakeVbeDebugSession(List<string> events) : IVbeDebugSession
     {
         private readonly TaskCompletionSource<DebugProcessExit> completion =
@@ -220,19 +310,39 @@ public sealed class DebugLaunchCoordinatorTests
 
         public Exception? OpenError { get; init; }
 
+        public Exception? SetError { get; init; }
+
         public bool Terminated { get; private set; }
 
         public bool Disposed { get; private set; }
 
-        public Task OpenGeneratedWorkbookAndRunAsync(
+        public Task OpenGeneratedWorkbookAsync(
             string workbookPath,
-            DebugTargetProcedure target,
             CancellationToken cancellationToken)
         {
-            events.Add($"open-and-run:{workbookPath}:{target.ModuleName}.{target.ProcedureName}");
+            events.Add($"open:{workbookPath}");
             return OpenError is null
                 ? Task.CompletedTask
                 : Task.FromException(OpenError);
+        }
+
+        public Task SetNativeBreakpointAsync(
+            VbeBreakpoint breakpoint,
+            CancellationToken cancellationToken)
+        {
+            events.Add(
+                $"set:{breakpoint.ModuleName}:{breakpoint.VbideLine}:{breakpoint.ExpectedCodeLine}");
+            return SetError is null
+                ? Task.CompletedTask
+                : Task.FromException(SetError);
+        }
+
+        public Task RunTargetAsync(
+            DebugTargetProcedure target,
+            CancellationToken cancellationToken)
+        {
+            events.Add($"run:{target.ModuleName}.{target.ProcedureName}");
+            return Task.CompletedTask;
         }
 
         public ValueTask TerminateAsync()
@@ -258,6 +368,20 @@ public sealed class DebugLaunchCoordinatorTests
         public ValueTask WriteAsync(DebugLifecycleMessage message, CancellationToken cancellationToken)
         {
             Output.Add(message.Output);
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class RecordingDebugLaunchEventSink(List<string> events) : IDebugLaunchEventSink
+    {
+        public ValueTask WriteAsync(DebugLifecycleMessage message, CancellationToken cancellationToken)
+            => ValueTask.CompletedTask;
+
+        public ValueTask BreakpointVerifiedAsync(
+            VbeBreakpoint breakpoint,
+            CancellationToken cancellationToken)
+        {
+            events.Add($"verified:{breakpoint.Source.SourcePath}:{breakpoint.Source.EditorLine}");
             return ValueTask.CompletedTask;
         }
     }

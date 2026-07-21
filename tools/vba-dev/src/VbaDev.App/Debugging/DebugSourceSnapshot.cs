@@ -35,6 +35,11 @@ public sealed record DebugSourceSnapshot(
     /// Gets the only snapshot wire-contract version supported by this adapter.
     /// </summary>
     public const int CurrentSchemaVersion = 1;
+
+    /// <summary>
+    /// Gets the enabled ordinary line breakpoints captured with this saved source state.
+    /// </summary>
+    public ImmutableArray<DebugSourceBreakpoint> Breakpoints { get; init; } = [];
 }
 
 /// <summary>
