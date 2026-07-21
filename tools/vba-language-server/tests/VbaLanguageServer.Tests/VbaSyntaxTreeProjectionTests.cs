@@ -270,6 +270,32 @@ public sealed class VbaSyntaxTreeProjectionTests
     }
 
     [Fact]
+    public void ParserPreservesCallableVisibilityKeyword()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            string.Join('\n',
+            [
+                "Attribute VB_Name = \"Worker\"",
+                "Sub ImplicitTarget()",
+                "End Sub",
+                "pUbLiC Sub PublicTarget()",
+                "End Sub",
+                "Friend Sub FriendTarget()",
+                "End Sub",
+                "Global Sub GlobalTarget()",
+                "End Sub"
+            ]));
+
+        Assert.Collection(
+            tree.Module.CallableDeclarations,
+            declaration => Assert.Equal(string.Empty, declaration.VisibilityKeyword),
+            declaration => Assert.Equal("pUbLiC", declaration.VisibilityKeyword),
+            declaration => Assert.Equal("Friend", declaration.VisibilityKeyword),
+            declaration => Assert.Equal("Global", declaration.VisibilityKeyword));
+    }
+
+    [Fact]
     public void SourceProjectionMapsArrayCallableParametersAsParameterDefinitions()
     {
         const string uri = "file:///C:/work/Worker.bas";

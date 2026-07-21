@@ -935,7 +935,8 @@ internal static class VbaSyntaxTreeParser
             IsExternal: isExternal,
             IsStatic: isStatic,
             DeclarationKeyword: GetDeclarationKeyword(match),
-            PropertyAccessorKind: GetPropertyAccessorKind(match));
+            PropertyAccessorKind: GetPropertyAccessorKind(match),
+            VisibilityKeyword: match.Groups["visibility"].Value);
     }
 
     private static VbaCallableDeclarationSyntax CreateCallableDeclaration(
@@ -978,7 +979,8 @@ internal static class VbaSyntaxTreeParser
             statement.Text,
             IsStatic: isStatic,
             DeclarationKeyword: GetDeclarationKeyword(match),
-            PropertyAccessorKind: GetPropertyAccessorKind(match));
+            PropertyAccessorKind: GetPropertyAccessorKind(match),
+            VisibilityKeyword: match.Groups["visibility"].Value);
     }
 
     private static VbaDeclarationSyntax CreateCallableSourceDeclaration(VbaCallableDeclarationSyntax declaration)

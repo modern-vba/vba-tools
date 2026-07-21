@@ -21,7 +21,8 @@ public sealed class DebugLaunchCoordinatorTests
         var running = await coordinator.LaunchAsync(
             new DebugLaunchRequest(
                 context,
-                new DebugTargetProcedure("DebugModule", "RunTarget")),
+                new DebugTargetProcedure("DebugModule", "RunTarget"),
+                CreateSourceSnapshot()),
             new RecordingDebugLifecycleSink(),
             CancellationToken.None);
 
@@ -51,7 +52,8 @@ public sealed class DebugLaunchCoordinatorTests
         var running = await coordinator.LaunchAsync(
             new DebugLaunchRequest(
                 CreateContext(),
-                new DebugTargetProcedure("DebugModule", "RunTarget")),
+                new DebugTargetProcedure("DebugModule", "RunTarget"),
+                CreateSourceSnapshot()),
             lifecycle,
             CancellationToken.None);
 
@@ -74,7 +76,8 @@ public sealed class DebugLaunchCoordinatorTests
         var error = await Assert.ThrowsAsync<DebugSetupException>(() => coordinator.LaunchAsync(
             new DebugLaunchRequest(
                 CreateContext(),
-                new DebugTargetProcedure("DebugModule", "RunTarget")),
+                new DebugTargetProcedure("DebugModule", "RunTarget"),
+                CreateSourceSnapshot()),
             new RecordingDebugLifecycleSink(),
             CancellationToken.None));
 
@@ -97,7 +100,8 @@ public sealed class DebugLaunchCoordinatorTests
         var error = await Assert.ThrowsAsync<DebugSetupException>(() => coordinator.LaunchAsync(
             new DebugLaunchRequest(
                 CreateContext(),
-                new DebugTargetProcedure("DebugModule", "RunTarget")),
+                new DebugTargetProcedure("DebugModule", "RunTarget"),
+                CreateSourceSnapshot()),
             new RecordingDebugLifecycleSink(),
             CancellationToken.None));
 
@@ -116,7 +120,8 @@ public sealed class DebugLaunchCoordinatorTests
             new FakeVbeDebugSessionFactory(events, vbeSession));
         var request = new DebugLaunchRequest(
             CreateContext(),
-            new DebugTargetProcedure("DebugModule", "RunTarget"));
+            new DebugTargetProcedure("DebugModule", "RunTarget"),
+            CreateSourceSnapshot());
 
         var running = await coordinator.LaunchAsync(
             request,
@@ -163,6 +168,9 @@ public sealed class DebugLaunchCoordinatorTests
             Path.Combine(root, "publish", "Book1.xlsm"),
             null);
     }
+
+    private static DebugSourceSnapshot CreateSourceSnapshot()
+        => new(DebugSourceSnapshot.CurrentSchemaVersion, [], null);
 
     private sealed class FakeDebugWorkbookBuilder(
         List<string> events,

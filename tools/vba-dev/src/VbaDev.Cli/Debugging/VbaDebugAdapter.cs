@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using VbaDev.App.Debugging;
 using VbaDev.App.Projects;
 using System.Text.Json;
@@ -12,6 +13,7 @@ public sealed class VbaDebugAdapter
     private readonly ProjectContextResolver projectContextResolver;
     private readonly DebugLaunchCoordinator launchCoordinator;
     private readonly Func<string> getWorkingDirectory;
+    private readonly DebugLaunchRequestResolver launchRequestResolver = new();
 
     /// <summary>
     /// Creates a VBA debug adapter over project resolution and launch application services.
@@ -155,9 +157,11 @@ public sealed class VbaDebugAdapter
     {
         if (request.Arguments.ValueKind != JsonValueKind.Object)
         {
-            throw new DebugSetupException("The VBA launch request requires project, document, module, and procedure.");
+            throw new DebugSetupException(
+                "The VBA launch request requires project, document, and sourceSnapshot.");
         }
 
+        RejectUnsupportedLaunchFields(request.Arguments);
         if (request.Arguments.TryGetProperty("noDebug", out var noDebug) && noDebug.ValueKind == JsonValueKind.True)
         {
             throw new DebugSetupException("VBA launch does not support noDebug.");
@@ -165,15 +169,38 @@ public sealed class VbaDebugAdapter
 
         var project = RequiredString(request.Arguments, "project");
         var document = RequiredString(request.Arguments, "document");
-        var module = RequiredString(request.Arguments, "module");
-        var procedure = RequiredString(request.Arguments, "procedure");
+        var module = OptionalString(request.Arguments, "module");
+        var procedure = OptionalString(request.Arguments, "procedure");
+        var sourceSnapshot = ParseSourceSnapshot(request.Arguments);
         var context = projectContextResolver.Resolve(new ProjectResolutionRequest(
             ProjectRoot: project,
             DocumentName: document,
             StartDirectory: getWorkingDirectory()));
-        return new DebugLaunchRequest(
+        return launchRequestResolver.Resolve(
             context,
-            new DebugTargetProcedure(module, procedure));
+            sourceSnapshot,
+            module,
+            procedure);
+    }
+
+    private static void RejectUnsupportedLaunchFields(JsonElement arguments)
+    {
+        string[] unsupportedFields =
+        [
+            "args",
+            "arguments",
+            "noBuild",
+            "stopOnEntry",
+            "compilerConstants"
+        ];
+        foreach (var field in unsupportedFields)
+        {
+            if (arguments.TryGetProperty(field, out _))
+            {
+                throw new DebugSetupException(
+                    $"VBA launch does not support '{field}'.");
+            }
+        }
     }
 
     private async Task<(DebugRunningSession? Session, Task? Monitor)> StartLaunchAsync(
@@ -270,6 +297,152 @@ public sealed class VbaDebugAdapter
         }
 
         return value.GetString()!;
+    }
+
+    private static string? OptionalString(JsonElement arguments, string propertyName)
+    {
+        if (!arguments.TryGetProperty(propertyName, out var value))
+        {
+            return null;
+        }
+
+        if (value.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(value.GetString()))
+        {
+            throw new DebugSetupException(
+                $"The VBA launch request property '{propertyName}' must be a non-empty string when supplied.");
+        }
+
+        return value.GetString();
+    }
+
+    private static DebugSourceSnapshot ParseSourceSnapshot(JsonElement arguments)
+    {
+        if (!arguments.TryGetProperty("sourceSnapshot", out var snapshot) ||
+            snapshot.ValueKind != JsonValueKind.Object)
+        {
+            throw new DebugSetupException("The VBA launch request requires 'sourceSnapshot'.");
+        }
+
+        ValidateExactObjectShape(
+            snapshot,
+            "sourceSnapshot",
+            requiredProperties: ["schemaVersion", "sources"],
+            optionalProperties: ["activeSource"]);
+
+        if (!snapshot.TryGetProperty("schemaVersion", out var schemaVersionValue) ||
+            schemaVersionValue.ValueKind != JsonValueKind.Number ||
+            !schemaVersionValue.TryGetInt32(out var schemaVersion))
+        {
+            throw new DebugSetupException(
+                "The VBA launch request requires integer 'sourceSnapshot.schemaVersion'.");
+        }
+
+        if (!snapshot.TryGetProperty("sources", out var sourcesValue) ||
+            sourcesValue.ValueKind != JsonValueKind.Array)
+        {
+            throw new DebugSetupException(
+                "The VBA launch request requires array 'sourceSnapshot.sources'.");
+        }
+
+        var sources = ImmutableArray.CreateBuilder<DebugSourceFileSnapshot>(sourcesValue.GetArrayLength());
+        foreach (var sourceValue in sourcesValue.EnumerateArray())
+        {
+            if (sourceValue.ValueKind != JsonValueKind.Object)
+            {
+                throw new DebugSetupException(
+                    "Each 'sourceSnapshot.sources' entry must be an object with path and text.");
+            }
+
+            ValidateExactObjectShape(
+                sourceValue,
+                "sourceSnapshot.sources[]",
+                requiredProperties: ["path", "text"],
+                optionalProperties: []);
+
+            sources.Add(new DebugSourceFileSnapshot(
+                RequiredString(sourceValue, "path"),
+                RequiredSourceText(sourceValue)));
+        }
+
+        DebugSourcePosition? activeSource = null;
+        if (snapshot.TryGetProperty("activeSource", out var activeSourceValue))
+        {
+            if (activeSourceValue.ValueKind != JsonValueKind.Object)
+            {
+                throw new DebugSetupException(
+                    "The VBA launch request property 'sourceSnapshot.activeSource' must be an object when supplied.");
+            }
+
+            ValidateExactObjectShape(
+                activeSourceValue,
+                "sourceSnapshot.activeSource",
+                requiredProperties: ["path", "line", "character"],
+                optionalProperties: []);
+
+            activeSource = new DebugSourcePosition(
+                RequiredString(activeSourceValue, "path"),
+                RequiredInt32(activeSourceValue, "line", "sourceSnapshot.activeSource.line"),
+                RequiredInt32(activeSourceValue, "character", "sourceSnapshot.activeSource.character"));
+        }
+
+        return new DebugSourceSnapshot(schemaVersion, sources.MoveToImmutable(), activeSource);
+    }
+
+    private static void ValidateExactObjectShape(
+        JsonElement value,
+        string displayName,
+        IReadOnlyList<string> requiredProperties,
+        IReadOnlyList<string> optionalProperties)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var property in value.EnumerateObject())
+        {
+            if (!requiredProperties.Contains(property.Name, StringComparer.Ordinal) &&
+                !optionalProperties.Contains(property.Name, StringComparer.Ordinal))
+            {
+                throw new DebugSetupException(
+                    $"The VBA launch request does not support property '{displayName}.{property.Name}'.");
+            }
+
+            if (!seen.Add(property.Name))
+            {
+                throw new DebugSetupException(
+                    $"The VBA launch request contains duplicate property '{displayName}.{property.Name}'.");
+            }
+        }
+
+        foreach (var requiredProperty in requiredProperties)
+        {
+            if (!seen.Contains(requiredProperty))
+            {
+                throw new DebugSetupException(
+                    $"The VBA launch request requires '{displayName}.{requiredProperty}'.");
+            }
+        }
+    }
+
+    private static string RequiredSourceText(JsonElement source)
+    {
+        if (!source.TryGetProperty("text", out var value) || value.ValueKind != JsonValueKind.String)
+        {
+            throw new DebugSetupException(
+                "Each 'sourceSnapshot.sources' entry requires string 'text'.");
+        }
+
+        return value.GetString()!;
+    }
+
+    private static int RequiredInt32(JsonElement value, string propertyName, string displayName)
+    {
+        if (!value.TryGetProperty(propertyName, out var property) ||
+            property.ValueKind != JsonValueKind.Number ||
+            !property.TryGetInt32(out var result))
+        {
+            throw new DebugSetupException(
+                $"The VBA launch request requires integer '{displayName}'.");
+        }
+
+        return result;
     }
 
     private static bool HasEmptyBreakpointSet(DapRequest request)

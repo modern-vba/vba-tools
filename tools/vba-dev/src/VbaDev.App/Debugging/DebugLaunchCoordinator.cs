@@ -13,10 +13,12 @@ public sealed record DebugTargetProcedure(string ModuleName, string ProcedureNam
 /// Contains the resolved workbook document and target for one debug launch.
 /// </summary>
 /// <param name="Context">The resolved workbook-backed document context.</param>
-/// <param name="Target">The explicit procedure target.</param>
+/// <param name="Target">The resolved procedure target.</param>
+/// <param name="SourceSnapshot">The immutable saved source state used to resolve the target.</param>
 public sealed record DebugLaunchRequest(
     ResolvedProjectContext Context,
-    DebugTargetProcedure Target);
+    DebugTargetProcedure Target,
+    DebugSourceSnapshot SourceSnapshot);
 
 /// <summary>
 /// Contains the non-fatal output produced by a completed debug build.

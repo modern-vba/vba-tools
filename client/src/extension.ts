@@ -4,9 +4,13 @@ import { promises as fs } from 'node:fs';
 import {
   CancellationTokenSource,
   DebugAdapterExecutable,
+  DebugConfiguration,
+  DebugConfigurationProviderTriggerKind,
   ExtensionContext,
   OutputChannel,
   ProgressLocation,
+  RelativePattern,
+  Uri,
   commands,
   debug,
   languages,
@@ -84,7 +88,12 @@ import {
   useBlockSkeletonInsertionPlanProvider
 } from './blockSkeletonInsertion';
 import { NativeLineBreakRecorder } from './nativeLineBreak';
-import { VscodeDebugIntegration } from './vscodeDebugIntegration';
+import {
+  VscodeDebugIntegration,
+  createVbaDebugConfigurationProvider
+} from './vscodeDebugIntegration';
+import type { VbaDebugConfiguration } from './vscodeDebugConfiguration';
+import { decodeVbaSourceFileText } from './vbaSourceFileText';
 
 let client: LanguageClient | undefined;
 let outputChannel: OutputChannel | undefined;
@@ -95,9 +104,64 @@ export async function activate(context: ExtensionContext): Promise<void> {
   context.subscriptions.push(outputChannel);
   const vscodeDebugIntegration = new VscodeDebugIntegration({
     extensionRoot: context.extensionPath,
-    getConfiguredDevToolPath
+    getConfiguredDevToolPath,
+    debugConfigurationHost: {
+      get workspaceRoots() {
+        return workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [];
+      },
+      getActiveEditor: () => {
+        const editor = window.activeTextEditor;
+        if (editor?.document.uri.scheme !== 'file') {
+          return undefined;
+        }
+
+        return {
+          uriPath: editor.document.uri.fsPath,
+          line: editor.selection.active.line,
+          character: editor.selection.active.character
+        };
+      },
+      getOpenTextDocuments: () => workspace.textDocuments
+        .filter((document) => document.uri.scheme === 'file')
+        .map((document) => ({
+          uriPath: document.uri.fsPath,
+          isDirty: document.isDirty,
+          save: () => document.save()
+        })),
+      findProjectManifests: async () => findProjectManifests(),
+      readTextFile,
+      readSourceText: async (filePath) => decodeVbaSourceFileText(
+        await workspace.fs.readFile(Uri.file(filePath))
+      ),
+      findExportedSourceFiles: async (sourceSetPath) => (
+        await workspace.findFiles(
+          new RelativePattern(sourceSetPath, '**/*.{bas,cls,frm}'),
+          null
+        )
+      ).map((uri) => uri.fsPath)
+    }
   });
+  const debugConfigurationProvider = createVbaDebugConfigurationProvider(
+    vscodeDebugIntegration,
+    (message) => window.showErrorMessage(message)
+  );
   context.subscriptions.push(
+    debug.registerDebugConfigurationProvider('vba', {
+      provideDebugConfigurations: () => (
+        [...debugConfigurationProvider.provideDebugConfigurations()] as DebugConfiguration[]
+      ),
+      resolveDebugConfiguration: (_folder, configuration) => (
+        debugConfigurationProvider.resolveDebugConfiguration(
+          configuration as VbaDebugConfiguration
+        ) as DebugConfiguration | undefined
+      ),
+      resolveDebugConfigurationWithSubstitutedVariables: (folder, configuration) => (
+        debugConfigurationProvider.resolveDebugConfigurationWithSubstitutedVariables(
+          configuration as VbaDebugConfiguration,
+          folder?.uri.fsPath
+        ) as Promise<DebugConfiguration | undefined>
+      )
+    }, DebugConfigurationProviderTriggerKind.Dynamic),
     debug.registerDebugAdapterDescriptorFactory('vba', {
       createDebugAdapterDescriptor: async (session) => {
         try {

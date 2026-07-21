@@ -183,6 +183,7 @@ public sealed record VbaDeclarationSyntax(
 /// <param name="IsStatic">Whether the callable includes Static.</param>
 /// <param name="DeclarationKeyword">The callable keyword used by editor-facing declaration labels.</param>
 /// <param name="PropertyAccessorKind">The declared Property accessor kind.</param>
+/// <param name="VisibilityKeyword">The exact callable visibility keyword, or an empty string when implicit.</param>
 public sealed record VbaCallableDeclarationSyntax(
     string Name,
     VbaDeclarationKind Kind,
@@ -198,7 +199,8 @@ public sealed record VbaCallableDeclarationSyntax(
     bool IsExternal = false,
     bool IsStatic = false,
     string? DeclarationKeyword = null,
-    VbaPropertyAccessorKind? PropertyAccessorKind = null);
+    VbaPropertyAccessorKind? PropertyAccessorKind = null,
+    string? VisibilityKeyword = null);
 
 /// <summary>
 /// Represents one parsed parameter in a callable declaration.

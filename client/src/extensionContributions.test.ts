@@ -92,7 +92,7 @@ test('extension activates for workspaces containing a VBA project manifest', () 
   assert.equal(packageJson.activationEvents?.includes('onLanguage:json'), false);
 });
 
-test('extension contributes a fully explicit VBA debug launch', () => {
+test('extension contributes optional VBA debug selectors with an atomic procedure pair', () => {
   const packageJson = readPackageJson<{
     activationEvents?: string[];
     contributes?: {
@@ -103,6 +103,7 @@ test('extension contributes a fully explicit VBA debug launch', () => {
         configurationAttributes?: Record<string, {
           required?: string[];
           properties?: Record<string, { type?: string }>;
+          dependencies?: Record<string, string[]>;
         }>;
       }>;
     };
@@ -114,12 +115,44 @@ test('extension contributes a fully explicit VBA debug launch', () => {
 
   assert.equal(debuggerContribution?.label, 'VBA');
   assert.deepEqual(debuggerContribution?.languages, ['vba']);
-  assert.deepEqual(launch?.required, ['project', 'document', 'module', 'procedure']);
+  assert.deepEqual(launch?.required ?? [], []);
   for (const propertyName of ['project', 'document', 'module', 'procedure']) {
     assert.equal(launch?.properties?.[propertyName]?.type, 'string');
   }
+  assert.deepEqual(launch?.dependencies, {
+    module: ['procedure'],
+    procedure: ['module']
+  });
   assert.equal(debuggerContribution?.configurationAttributes?.attach, undefined);
   assert.ok(packageJson.activationEvents?.includes('onDebugResolve:vba'));
+});
+
+test('VBA debug activation delegates saving exclusively to the scoped dynamic configuration provider', () => {
+  const packageJson = readPackageJson<{
+    activationEvents?: string[];
+    contributes?: {
+      configurationDefaults?: Record<string, Record<string, unknown>>;
+    };
+  }>();
+
+  assert.ok(packageJson.activationEvents?.includes('onDebugDynamicConfigurations'));
+  assert.ok(packageJson.activationEvents?.includes('onDebugResolve:vba'));
+  assert.equal(
+    packageJson.contributes?.configurationDefaults?.['[vba]']?.['debug.saveBeforeStart'],
+    'none'
+  );
+});
+
+test('VBA debug source discovery bypasses user file excludes', () => {
+  const extensionSource = fs.readFileSync(
+    path.join(process.cwd(), 'client', 'src', 'extension.ts'),
+    'utf8'
+  );
+
+  assert.match(
+    extensionSource,
+    /workspace\.findFiles\(\s*new RelativePattern\(sourceSetPath, '\*\*\/\*\.\{bas,cls,frm\}'\),\s*null\s*\)/
+  );
 });
 
 test('extension contributes VbaDev path override configuration', () => {

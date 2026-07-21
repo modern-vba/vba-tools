@@ -28,12 +28,16 @@ test('Extension Host tests use only an explicit executable override', () => {
 
 test('Extension Host tests isolate each run in an explicit user data directory', () => {
   assert.deepEqual(
-    createExtensionHostLaunchArgs('C:\\Temp\\vba-tools-extension-host'),
+    createExtensionHostLaunchArgs(
+      'C:\\Temp\\vba-tools-extension-host',
+      'C:\\Temp\\vba-tools-debug-fixture'
+    ),
     [
       '--disable-extensions',
       '--skip-welcome',
       '--skip-release-notes',
-      '--user-data-dir=C:\\Temp\\vba-tools-extension-host'
+      '--user-data-dir=C:\\Temp\\vba-tools-extension-host',
+      'C:\\Temp\\vba-tools-debug-fixture'
     ]
   );
 });

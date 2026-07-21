@@ -2,7 +2,151 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as path from 'node:path';
 
-import { VscodeDebugIntegration } from './vscodeDebugIntegration';
+import {
+  VscodeDebugIntegration,
+  createVbaDebugConfigurationProvider,
+  useVbaDebugConfigurationObserverForTest
+} from './vscodeDebugIntegration';
+
+test('VBA debug provider normalizes an empty F5 configuration before variable substitution', () => {
+  let hostWasTouched = false;
+  const integration = new VscodeDebugIntegration({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    getConfiguredDevToolPath: () => undefined,
+    debugConfigurationHost: {
+      workspaceRoots: [],
+      getActiveEditor: () => {
+        hostWasTouched = true;
+        return undefined;
+      },
+      getOpenTextDocuments: () => [],
+      findProjectManifests: async () => [],
+      readTextFile: async () => '',
+      readSourceText: async () => '',
+      findExportedSourceFiles: async () => []
+    }
+  });
+  const provider = createVbaDebugConfigurationProvider(integration, () => undefined);
+
+  assert.deepEqual(provider.resolveDebugConfiguration({}), {
+    type: 'vba',
+    request: 'launch',
+    name: 'VBA: Active Procedure'
+  });
+  assert.equal(hostWasTouched, false);
+});
+
+test('VBA debug provider exposes the post-substitution result to tests and aborts before adapter startup', async () => {
+  const resolvedConfiguration = {
+    type: 'vba',
+    request: 'launch',
+    name: 'VBA: Active Procedure',
+    project: path.join('C:', 'resolved', 'BookProject'),
+    document: 'Book1',
+    sourceSnapshot: {
+      schemaVersion: 1,
+      sources: []
+    }
+  };
+  const provider = createVbaDebugConfigurationProvider({
+    provideDynamicDebugConfigurations: () => [],
+    resolveDebugConfiguration: async () => resolvedConfiguration
+  }, () => undefined);
+  let observed: unknown;
+  const observer = useVbaDebugConfigurationObserverForTest((configuration) => {
+    observed = configuration;
+  });
+
+  try {
+    const result = await provider.resolveDebugConfigurationWithSubstitutedVariables({
+      type: 'vba',
+      request: 'launch',
+      name: 'VBA: Active Procedure',
+      project: path.join('C:', 'substituted', 'BookProject')
+    });
+
+    assert.equal(result, undefined);
+    assert.equal(observed, resolvedConfiguration);
+  } finally {
+    observer.dispose();
+  }
+});
+
+test('VBA debug provider reports invalid saved launch selectors and aborts resolution', () => {
+  const messages: string[] = [];
+  const provider = createVbaDebugConfigurationProvider({
+    provideDynamicDebugConfigurations: () => [],
+    resolveDebugConfiguration: async (configuration) => configuration
+  }, (message) => messages.push(message));
+
+  const result = provider.resolveDebugConfiguration({
+    type: 'vba',
+    request: 'launch',
+    name: 'Invalid pair',
+    module: 'Module1'
+  });
+
+  assert.equal(result, undefined);
+  assert.deepEqual(messages, [
+    'VBA debug launch selectors module and procedure must be supplied together as non-empty strings.'
+  ]);
+});
+
+test('VBA debug provider resolves a relative saved project selector from its workspace folder', async () => {
+  const workspaceFolder = path.join('C:', 'work', 'Workspace');
+  let receivedConfiguration: unknown;
+  const provider = createVbaDebugConfigurationProvider({
+    provideDynamicDebugConfigurations: () => [],
+    resolveDebugConfiguration: async (configuration) => {
+      receivedConfiguration = configuration;
+      return configuration;
+    }
+  }, () => undefined);
+
+  await provider.resolveDebugConfigurationWithSubstitutedVariables({
+    type: 'vba',
+    request: 'launch',
+    name: 'Relative project',
+    project: path.join('projects', 'BookProject'),
+    document: 'Book1',
+    module: 'DebugModule',
+    procedure: 'RunTarget'
+  }, workspaceFolder);
+
+  assert.deepEqual(receivedConfiguration, {
+    type: 'vba',
+    request: 'launch',
+    name: 'Relative project',
+    project: path.join(workspaceFolder, 'projects', 'BookProject'),
+    document: 'Book1',
+    module: 'DebugModule',
+    procedure: 'RunTarget'
+  });
+});
+
+test('VBA debug provider rejects a relative project selector without workspace-folder context', async () => {
+  const messages: string[] = [];
+  const provider = createVbaDebugConfigurationProvider({
+    provideDynamicDebugConfigurations: () => [],
+    resolveDebugConfiguration: async (configuration) => configuration
+  }, (message) => messages.push(message));
+
+  const result = await provider.resolveDebugConfigurationWithSubstitutedVariables({
+    type: 'vba',
+    request: 'launch',
+    name: 'Relative project',
+    project: path.join('projects', 'BookProject'),
+    document: 'Book1',
+    module: 'DebugModule',
+    procedure: 'RunTarget'
+  });
+
+  assert.equal(result, undefined);
+  assert.deepEqual(messages, [
+    'A relative VBA debug project selector requires a workspace folder; '
+    + 'use an absolute path or ${workspaceFolder}.'
+  ]);
+});
 
 test('VBA debug startup resolves the bundled compatible adapter over stdio', async () => {
   const extensionRoot = path.resolve(__dirname, '..', '..');

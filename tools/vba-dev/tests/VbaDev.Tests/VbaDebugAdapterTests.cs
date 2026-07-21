@@ -96,6 +96,17 @@ public sealed class VbaDebugAdapterTests
         };
         var manifestStore = new JsonProjectManifestStore();
         manifestStore.Save(root, manifest);
+        var sourceSetPath = Path.GetFullPath(Path.Combine(root, manifest.Documents["Book1"].SourcePath));
+        Directory.CreateDirectory(sourceSetPath);
+        var sourcePath = Path.Combine(sourceSetPath, "DebugModule.bas");
+        var source =
+            """
+            Attribute VB_Name = "DebugModule"
+
+            Public Sub RunTarget()
+            End Sub
+            """;
+        File.WriteAllText(sourcePath, source);
         var events = new List<string>();
         var vbeSession = new CompletingVbeDebugSession(events, 2718, 0);
         var adapter = new VbaDebugAdapter(
@@ -114,7 +125,12 @@ public sealed class VbaDebugAdapterTests
                 project = root,
                 document = "Book1",
                 module = "DebugModule",
-                procedure = "RunTarget"
+                procedure = "RunTarget",
+                sourceSnapshot = new
+                {
+                    schemaVersion = 1,
+                    sources = new[] { new { path = sourcePath, text = source } }
+                }
             }
         });
         await using var input = CreateInput(
@@ -154,6 +170,300 @@ public sealed class VbaDebugAdapterTests
                 "Owned Excel process 2718 exited with code 0.",
                 StringComparison.Ordinal));
         Assert.Equal("terminated", messages[^1].GetProperty("event").GetString());
+    }
+
+    [Fact]
+    public async Task AnActivePostSaveSnapshotPositionLaunchesWithoutExplicitModuleOrProcedure()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("DebugProject");
+        var manifest = ProjectManifest.CreateDefault("DebugProject", "Book1", root, null);
+        var manifestStore = new JsonProjectManifestStore();
+        manifestStore.Save(root, manifest);
+        var sourceSetPath = Path.GetFullPath(Path.Combine(root, manifest.Documents["Book1"].SourcePath));
+        Directory.CreateDirectory(sourceSetPath);
+        var sourcePath = Path.Combine(sourceSetPath, "DebugModule.bas");
+        var source =
+            """
+            Attribute VB_Name = "DebugModule"
+
+            Public Sub RunTarget()
+                Debug.Print "ready"
+            End Sub
+            """;
+        File.WriteAllText(sourcePath, source);
+        var events = new List<string>();
+        var adapter = new VbaDebugAdapter(
+            new ProjectContextResolver(manifestStore),
+            new DebugLaunchCoordinator(
+                new RecordingDebugWorkbookBuilder(events, []),
+                new RecordingVbeDebugSessionFactory(
+                    events,
+                    new CompletingVbeDebugSession(events, 2719, 0))),
+            () => root);
+        var launch = JsonSerializer.Serialize(new
+        {
+            seq = 2,
+            type = "request",
+            command = "launch",
+            arguments = new
+            {
+                project = root,
+                document = "Book1",
+                sourceSnapshot = new
+                {
+                    schemaVersion = 1,
+                    sources = new[] { new { path = sourcePath, text = source } },
+                    activeSource = new { path = sourcePath, line = 3, character = 4 }
+                }
+            }
+        });
+        await using var input = CreateInput(
+            """
+            {"seq":1,"type":"request","command":"initialize","arguments":{"adapterID":"vba"}}
+            """,
+            launch,
+            """
+            {"seq":3,"type":"request","command":"configurationDone","arguments":{}}
+            """);
+        await using var output = new MemoryStream();
+
+        await adapter.RunAsync(input, output, CancellationToken.None);
+
+        var messages = ReadMessages(output).Select(message => message.RootElement).ToArray();
+        Assert.True(Response(messages, "launch").GetProperty("success").GetBoolean());
+        Assert.Contains(
+            events,
+            item => item.EndsWith(":DebugModule.RunTarget", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("args")]
+    [InlineData("arguments")]
+    [InlineData("noBuild")]
+    [InlineData("stopOnEntry")]
+    [InlineData("compilerConstants")]
+    public async Task KnownUnsupportedLaunchFieldFailsBeforeBuild(string unsupportedField)
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("DebugProject");
+        var manifest = ProjectManifest.CreateDefault("DebugProject", "Book1", root, null);
+        var manifestStore = new JsonProjectManifestStore();
+        manifestStore.Save(root, manifest);
+        var sourceSetPath = Path.GetFullPath(Path.Combine(root, manifest.Documents["Book1"].SourcePath));
+        Directory.CreateDirectory(sourceSetPath);
+        var sourcePath = Path.Combine(sourceSetPath, "DebugModule.bas");
+        var source =
+            """
+            Attribute VB_Name = "DebugModule"
+
+            Public Sub RunTarget()
+            End Sub
+            """;
+        File.WriteAllText(sourcePath, source);
+        var events = new List<string>();
+        var adapter = new VbaDebugAdapter(
+            new ProjectContextResolver(manifestStore),
+            new DebugLaunchCoordinator(
+                new RecordingDebugWorkbookBuilder(events, []),
+                new RecordingVbeDebugSessionFactory(
+                    events,
+                    new CompletingVbeDebugSession(events, 2720, 0))),
+            () => root);
+        var launchArguments = new Dictionary<string, object?>
+        {
+            ["project"] = root,
+            ["document"] = "Book1",
+            ["module"] = "DebugModule",
+            ["procedure"] = "RunTarget",
+            ["sourceSnapshot"] = new
+            {
+                schemaVersion = 1,
+                sources = new[] { new { path = sourcePath, text = source } }
+            }
+        };
+        launchArguments[unsupportedField] = unsupportedField switch
+        {
+            "args" or "arguments" => Array.Empty<string>(),
+            "compilerConstants" => new { VBA7 = true },
+            _ => true
+        };
+        var launch = JsonSerializer.Serialize(new
+        {
+            seq = 2,
+            type = "request",
+            command = "launch",
+            arguments = launchArguments
+        });
+        await using var input = CreateInput(
+            """
+            {"seq":1,"type":"request","command":"initialize","arguments":{"adapterID":"vba"}}
+            """,
+            launch,
+            """
+            {"seq":3,"type":"request","command":"configurationDone","arguments":{}}
+            """);
+        await using var output = new MemoryStream();
+
+        await adapter.RunAsync(input, output, CancellationToken.None);
+
+        var messages = ReadMessages(output).Select(message => message.RootElement).ToArray();
+        var response = Response(messages, "launch");
+        Assert.False(response.GetProperty("success").GetBoolean());
+        Assert.Contains(unsupportedField, response.GetProperty("message").GetString(), StringComparison.Ordinal);
+        Assert.Empty(events);
+    }
+
+    [Fact]
+    public async Task UnknownSourceSnapshotPropertyIsRejectedBeforeBuild()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("DebugProject");
+        var manifest = ProjectManifest.CreateDefault("DebugProject", "Book1", root, null);
+        var manifestStore = new JsonProjectManifestStore();
+        manifestStore.Save(root, manifest);
+        var sourceSetPath = Path.GetFullPath(Path.Combine(root, manifest.Documents["Book1"].SourcePath));
+        Directory.CreateDirectory(sourceSetPath);
+        var sourcePath = Path.Combine(sourceSetPath, "DebugModule.bas");
+        var source =
+            """
+            Attribute VB_Name = "DebugModule"
+
+            Public Sub RunTarget()
+            End Sub
+            """;
+        File.WriteAllText(sourcePath, source);
+        var events = new List<string>();
+        var adapter = new VbaDebugAdapter(
+            new ProjectContextResolver(manifestStore),
+            new DebugLaunchCoordinator(
+                new RecordingDebugWorkbookBuilder(events, []),
+                new RecordingVbeDebugSessionFactory(
+                    events,
+                    new CompletingVbeDebugSession(events, 2721, 0))),
+            () => root);
+        var launch = JsonSerializer.Serialize(new
+        {
+            seq = 2,
+            type = "request",
+            command = "launch",
+            arguments = new
+            {
+                project = root,
+                document = "Book1",
+                module = "DebugModule",
+                procedure = "RunTarget",
+                sourceSnapshot = new
+                {
+                    schemaVersion = 1,
+                    sources = new[] { new { path = sourcePath, text = source } },
+                    unexpected = true
+                }
+            }
+        });
+        await using var input = CreateInput(
+            """
+            {"seq":1,"type":"request","command":"initialize","arguments":{"adapterID":"vba"}}
+            """,
+            launch,
+            """
+            {"seq":3,"type":"request","command":"configurationDone","arguments":{}}
+            """);
+        await using var output = new MemoryStream();
+
+        await adapter.RunAsync(input, output, CancellationToken.None);
+
+        var messages = ReadMessages(output).Select(message => message.RootElement).ToArray();
+        var response = Response(messages, "launch");
+        Assert.False(response.GetProperty("success").GetBoolean());
+        Assert.Contains("unexpected", response.GetProperty("message").GetString(), StringComparison.Ordinal);
+        Assert.Empty(events);
+    }
+
+    [Fact]
+    public async Task AttachRequestIsExplicitlyRejected()
+    {
+        var adapter = CreateAdapter();
+        await using var input = CreateInput(
+            """
+            {"seq":1,"type":"request","command":"initialize","arguments":{"adapterID":"vba"}}
+            """,
+            """
+            {"seq":2,"type":"request","command":"attach","arguments":{}}
+            """);
+        await using var output = new MemoryStream();
+
+        await adapter.RunAsync(input, output, CancellationToken.None);
+
+        var messages = ReadMessages(output).Select(message => message.RootElement).ToArray();
+        var response = Response(messages, "attach");
+        Assert.False(response.GetProperty("success").GetBoolean());
+        Assert.Contains("attach", response.GetProperty("message").GetString(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task IneligibleTargetFailsBeforeWorkbookBuild()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("DebugProject");
+        var manifest = ProjectManifest.CreateDefault("DebugProject", "Book1", root, null);
+        var manifestStore = new JsonProjectManifestStore();
+        manifestStore.Save(root, manifest);
+        var sourceSetPath = Path.GetFullPath(Path.Combine(root, manifest.Documents["Book1"].SourcePath));
+        Directory.CreateDirectory(sourceSetPath);
+        var sourcePath = Path.Combine(sourceSetPath, "DebugModule.bas");
+        var source =
+            """
+            Attribute VB_Name = "DebugModule"
+
+            Private Sub RunTarget()
+            End Sub
+            """;
+        File.WriteAllText(sourcePath, source);
+        var events = new List<string>();
+        var adapter = new VbaDebugAdapter(
+            new ProjectContextResolver(manifestStore),
+            new DebugLaunchCoordinator(
+                new RecordingDebugWorkbookBuilder(events, []),
+                new RecordingVbeDebugSessionFactory(
+                    events,
+                    new CompletingVbeDebugSession(events, 2722, 0))),
+            () => root);
+        var launch = JsonSerializer.Serialize(new
+        {
+            seq = 2,
+            type = "request",
+            command = "launch",
+            arguments = new
+            {
+                project = root,
+                document = "Book1",
+                module = "DebugModule",
+                procedure = "RunTarget",
+                sourceSnapshot = new
+                {
+                    schemaVersion = 1,
+                    sources = new[] { new { path = sourcePath, text = source } }
+                }
+            }
+        });
+        await using var input = CreateInput(
+            """
+            {"seq":1,"type":"request","command":"initialize","arguments":{"adapterID":"vba"}}
+            """,
+            launch,
+            """
+            {"seq":3,"type":"request","command":"configurationDone","arguments":{}}
+            """);
+        await using var output = new MemoryStream();
+
+        await adapter.RunAsync(input, output, CancellationToken.None);
+
+        var messages = ReadMessages(output).Select(message => message.RootElement).ToArray();
+        var response = Response(messages, "launch");
+        Assert.False(response.GetProperty("success").GetBoolean());
+        Assert.Contains("public", response.GetProperty("message").GetString(), StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(events);
     }
 
     private static JsonElement Response(IReadOnlyList<JsonElement> messages, string command)

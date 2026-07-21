@@ -44,7 +44,8 @@ public sealed class VbeDebugAutomationWindowsExcelIntegrationTests
                 running = await composition.LaunchCoordinator.LaunchAsync(
                     new DebugLaunchRequest(
                         context,
-                        new DebugTargetProcedure("DebugModule", "RunTarget")),
+                        new DebugTargetProcedure("DebugModule", "RunTarget"),
+                        new DebugSourceSnapshot(DebugSourceSnapshot.CurrentSchemaVersion, [], null)),
                     new IntegrationDebugLifecycleSink(),
                     CancellationToken.None);
             }
