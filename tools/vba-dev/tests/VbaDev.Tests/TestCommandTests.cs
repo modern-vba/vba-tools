@@ -213,6 +213,70 @@ public sealed class TestCommandTests
     }
 
     [Fact]
+    public void PartiallyUnreadableSourceInventoryDoesNotClaimAUniqueLocation()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        const string source = "Attribute VB_Name = \"Test_Module\"\nPublic Sub Test_Passes()\nEnd Sub\n";
+        CreateWorkbookSource(
+            root,
+            "Book1",
+            ("Readable.bas", source),
+            ("Locked.bas", source));
+        var lockedSourcePath = Path.Combine(root, "src", "Book1", "Locked.bas");
+        var binPath = Path.Combine(root, "bin", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
+        File.WriteAllText(binPath, "bin", Encoding.UTF8);
+        var runner = new FakeWorkbookTestRunner(
+            new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
+        using var sourceLock = new FileStream(lockedSourcePath, FileMode.Open, FileAccess.Read, FileShare.None);
+
+        var result = application.Run(["test", "--no-build", "--format", "ndjson"]);
+
+        Assert.Equal(0, result.ExitCode);
+        var finishedLine = result.StandardOutput
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Single(line => line.Contains("\"type\":\"testFinished\"", StringComparison.Ordinal));
+        using var finished = JsonDocument.Parse(finishedLine);
+        Assert.Equal("passed", finished.RootElement.GetProperty("outcome").GetString());
+        Assert.False(finished.RootElement.TryGetProperty("location", out _));
+    }
+
+    [Fact]
+    public void InvalidBomMarkedUtf8OmitsLocationsWithoutChangingTheCompletedOutcome()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        CreateWorkbookSource(
+            root,
+            "Book1",
+            ("Test_Module.bas", "Attribute VB_Name = \"Test_Module\"\nPublic Sub Test_Passes()\nEnd Sub\n"),
+            ("InvalidUtf8.bas", string.Empty));
+        File.WriteAllBytes(
+            Path.Combine(root, "src", "Book1", "InvalidUtf8.bas"),
+            [0xEF, 0xBB, 0xBF, 0xC3, 0x28]);
+        var binPath = Path.Combine(root, "bin", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
+        File.WriteAllText(binPath, "bin", Encoding.UTF8);
+        var runner = new FakeWorkbookTestRunner(
+            new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
+        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
+
+        var result = application.Run(["test", "--no-build", "--format", "ndjson"]);
+
+        Assert.Equal(0, result.ExitCode);
+        var finishedLine = result.StandardOutput
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Single(line => line.Contains("\"type\":\"testFinished\"", StringComparison.Ordinal));
+        using var finished = JsonDocument.Parse(finishedLine);
+        Assert.Equal("passed", finished.RootElement.GetProperty("outcome").GetString());
+        Assert.False(finished.RootElement.TryGetProperty("location", out _));
+    }
+
+    [Fact]
     public void MissingModuleLocationIsOmittedWithoutChangingTheCompletedTestOutcome()
     {
         AssertUnavailableSourceLocation(

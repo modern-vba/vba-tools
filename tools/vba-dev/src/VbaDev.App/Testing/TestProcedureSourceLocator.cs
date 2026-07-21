@@ -1,3 +1,4 @@
+using System.Text;
 using VbaDev.App.Workbooks;
 using VbaLanguageServer.Syntax;
 
@@ -42,10 +43,17 @@ public sealed class TestProcedureSourceLocator
             catch (IOException)
             {
                 // Source navigation is optional metadata and must not replace a completed outcome.
+                return results;
             }
             catch (UnauthorizedAccessException)
             {
                 // Source navigation is optional metadata and must not replace a completed outcome.
+                return results;
+            }
+            catch (DecoderFallbackException)
+            {
+                // Source navigation is optional metadata and must not replace a completed outcome.
+                return results;
             }
         }
 
