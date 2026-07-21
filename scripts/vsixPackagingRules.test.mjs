@@ -215,19 +215,51 @@ test('bundled CLI capabilities must satisfy the packaged extension contract surf
     Object.entries(contract.commandSchemaVersions)
       .map(([commandName, schemaVersion]) => [commandName, { outputSchemaVersion: schemaVersion }])
   );
+  const debugAdapter = {
+    protocolVersion: '1.0',
+    transport: 'stdio',
+    command: 'debug-adapter'
+  };
 
   assert.doesNotThrow(() => assertBundledCliCapabilities(JSON.stringify({
     toolVersion: '0.1.0',
     contractVersion: contract.contractVersion,
-    commands
+    commands,
+    debugAdapter
   })));
+
+  assert.throws(
+    () => assertBundledCliCapabilities(JSON.stringify({
+      toolVersion: '0.1.0',
+      contractVersion: contract.contractVersion,
+      commands
+    })),
+    /debug adapter/
+  );
+
+  for (const incompatibleDebugAdapter of [
+    { ...debugAdapter, protocolVersion: '0.9' },
+    { ...debugAdapter, transport: 'socket' },
+    { ...debugAdapter, command: 'other-adapter' }
+  ]) {
+    assert.throws(
+      () => assertBundledCliCapabilities(JSON.stringify({
+        toolVersion: '0.1.0',
+        contractVersion: contract.contractVersion,
+        commands,
+        debugAdapter: incompatibleDebugAdapter
+      })),
+      /debug adapter/
+    );
+  }
 
   delete commands.doctor;
   assert.throws(
     () => assertBundledCliCapabilities(JSON.stringify({
       toolVersion: '0.1.0',
       contractVersion: contract.contractVersion,
-      commands
+      commands,
+      debugAdapter
     })),
     /doctor/
   );
@@ -309,11 +341,20 @@ test('packaging verification checks file contents publish settings and bundled C
         };
       }
 
+      if (args[0] === 'debug-adapter') {
+        return { stdout: '', stderr: '' };
+      }
+
       return {
         stdout: JSON.stringify({
           toolVersion: '0.1.0',
           contractVersion: contract.contractVersion,
-          commands
+          commands,
+          debugAdapter: {
+            protocolVersion: contract.debugAdapterProtocolVersion,
+            transport: 'stdio',
+            command: 'debug-adapter'
+          }
         }),
         stderr: ''
       };
@@ -323,6 +364,7 @@ test('packaging verification checks file contents publish settings and bundled C
   assert.deepEqual(calls.map((call) => call.args.includes('ls') ? call.args.slice(-2) : call.args), [
     ['ls', '--no-dependencies'],
     ['capabilities', '--format', 'json'],
+    ['debug-adapter', '--stdio'],
     ['--version']
   ]);
 });

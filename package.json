@@ -18,6 +18,7 @@
   "activationEvents": [
     "onLanguage:vba",
     "workspaceContains:**/vba-project.json",
+    "onDebugResolve:vba",
     "onCommand:vbaTools.doctor",
     "onCommand:vbaTools.openVbaDevTerminal",
     "onCommand:vbaTools.build",
@@ -47,6 +48,43 @@
           ".frm"
         ],
         "configuration": "./language-configuration.json"
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "vba",
+        "label": "VBA",
+        "languages": [
+          "vba"
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "required": [
+              "project",
+              "document",
+              "module",
+              "procedure"
+            ],
+            "properties": {
+              "project": {
+                "type": "string",
+                "description": "Path to the workbook-backed project directory containing vba-project.json."
+              },
+              "document": {
+                "type": "string",
+                "description": "Document name from vba-project.json."
+              },
+              "module": {
+                "type": "string",
+                "description": "Standard module containing the target procedure."
+              },
+              "procedure": {
+                "type": "string",
+                "description": "Public parameterless Sub to run in the VBE."
+              }
+            }
+          }
+        }
       }
     ],
     "grammars": [

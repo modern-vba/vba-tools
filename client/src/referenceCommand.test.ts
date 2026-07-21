@@ -190,6 +190,11 @@ function createOptions(
             'reference add': { outputSchemaVersion: '1.0' },
             'reference list': { outputSchemaVersion: '1.0' },
             'reference remove': { outputSchemaVersion: '1.0' }
+          },
+          debugAdapter: {
+            protocolVersion: '1.0',
+            transport: 'stdio',
+            command: 'debug-adapter'
           }
         }),
         stderr: ''
@@ -223,6 +228,7 @@ function createOptions(
     },
     requiredContract: {
       contractVersion: '1.0',
+      debugAdapterProtocolVersion: '1.0',
       commandSchemaVersions: {
         'reference add': '1.0',
         'reference list': '1.0',

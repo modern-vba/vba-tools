@@ -187,6 +187,11 @@ function createOptions(
             'common-module add': { outputSchemaVersion: '1.0' },
             'common-module list': { outputSchemaVersion: '1.0' },
             'common-module update': { outputSchemaVersion: '1.0' }
+          },
+          debugAdapter: {
+            protocolVersion: '1.0',
+            transport: 'stdio',
+            command: 'debug-adapter'
           }
         }),
         stderr: ''
@@ -217,6 +222,7 @@ function createOptions(
     showErrorMessage: async () => undefined,
     requiredContract: {
       contractVersion: '1.0',
+      debugAdapterProtocolVersion: '1.0',
       commandSchemaVersions: {
         'common-module add': '1.0',
         'common-module list': '1.0',

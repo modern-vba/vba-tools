@@ -29,6 +29,11 @@ for (const commandName of ['build', 'test', 'publish', 'export'] as const) {
             contractVersion: '1.0',
             commands: {
               [commandName]: { outputSchemaVersion: '1.0' }
+            },
+            debugAdapter: {
+              protocolVersion: '1.0',
+              transport: 'stdio',
+              command: 'debug-adapter'
             }
           }),
           stderr: ''
@@ -57,6 +62,7 @@ for (const commandName of ['build', 'test', 'publish', 'export'] as const) {
       showErrorMessage: async () => undefined,
       requiredContract: {
         contractVersion: '1.0',
+        debugAdapterProtocolVersion: '1.0',
         commandSchemaVersions: {
           [commandName]: '1.0'
         }
@@ -100,6 +106,11 @@ test('WorkbookBackedProject command failure is surfaced to the user', async () =
         contractVersion: '1.0',
         commands: {
           build: { outputSchemaVersion: '1.0' }
+        },
+        debugAdapter: {
+          protocolVersion: '1.0',
+          transport: 'stdio',
+          command: 'debug-adapter'
         }
       }),
       stderr: ''
@@ -121,6 +132,7 @@ test('WorkbookBackedProject command failure is surfaced to the user', async () =
     },
     requiredContract: {
       contractVersion: '1.0',
+      debugAdapterProtocolVersion: '1.0',
       commandSchemaVersions: {
         build: '1.0'
       }

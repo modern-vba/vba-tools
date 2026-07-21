@@ -3,10 +3,12 @@ import { promises as fs } from 'node:fs';
 
 import {
   CancellationTokenSource,
+  DebugAdapterExecutable,
   ExtensionContext,
   OutputChannel,
   ProgressLocation,
   commands,
+  debug,
   languages,
   tests,
   window,
@@ -82,6 +84,7 @@ import {
   useBlockSkeletonInsertionPlanProvider
 } from './blockSkeletonInsertion';
 import { NativeLineBreakRecorder } from './nativeLineBreak';
+import { VscodeDebugIntegration } from './vscodeDebugIntegration';
 
 let client: LanguageClient | undefined;
 let outputChannel: OutputChannel | undefined;
@@ -90,6 +93,33 @@ let toolDiagnosticReporter: VbaDevDiagnosticReporter | undefined;
 export async function activate(context: ExtensionContext): Promise<void> {
   outputChannel = window.createOutputChannel('VBA Tools');
   context.subscriptions.push(outputChannel);
+  const vscodeDebugIntegration = new VscodeDebugIntegration({
+    extensionRoot: context.extensionPath,
+    getConfiguredDevToolPath
+  });
+  context.subscriptions.push(
+    debug.registerDebugAdapterDescriptorFactory('vba', {
+      createDebugAdapterDescriptor: async (session) => {
+        try {
+          const executable = await vscodeDebugIntegration.createDebugAdapterExecutable({
+            id: session.id,
+            workspaceRoot: session.workspaceFolder?.uri.fsPath
+          });
+          return new DebugAdapterExecutable(
+            executable.command,
+            [...executable.args],
+            executable.options
+          );
+        } catch (error) {
+          vscodeDebugIntegration.releaseSession(session.id);
+          throw error;
+        }
+      }
+    }),
+    debug.onDidTerminateDebugSession((session) => {
+      vscodeDebugIntegration.releaseSession(session.id);
+    })
+  );
   const nativeLineBreakRecorder = new NativeLineBreakRecorder();
   context.subscriptions.push(nativeLineBreakRecorder);
   const sourceFileWatcher = workspace.createFileSystemWatcher('**/*.{bas,cls,frm}');

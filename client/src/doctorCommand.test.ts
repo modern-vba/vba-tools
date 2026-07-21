@@ -31,6 +31,11 @@ test('Doctor command validates the CLI and invokes doctor with an explicit proje
           contractVersion: '1.0',
           commands: {
             doctor: { outputSchemaVersion: '1.0' }
+          },
+          debugAdapter: {
+            protocolVersion: '1.0',
+            transport: 'stdio',
+            command: 'debug-adapter'
           }
         }),
         stderr: ''
@@ -62,6 +67,7 @@ test('Doctor command validates the CLI and invokes doctor with an explicit proje
     },
     requiredContract: {
       contractVersion: '1.0',
+      debugAdapterProtocolVersion: '1.0',
       commandSchemaVersions: {
         doctor: '1.0'
       }

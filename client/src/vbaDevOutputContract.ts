@@ -5,14 +5,22 @@ export interface VbaDevCommandCapability {
   outputSchemaVersion: string;
 }
 
+export interface VbaDevDebugAdapterCapability {
+  protocolVersion: string;
+  transport: string;
+  command: string;
+}
+
 export interface VbaDevCapabilities {
   toolVersion: string;
   contractVersion: string;
   commands: Record<string, VbaDevCommandCapability>;
+  debugAdapter?: VbaDevDebugAdapterCapability | undefined;
 }
 
 export interface RequiredVbaDevContract {
   contractVersion: string;
+  debugAdapterProtocolVersion: string;
   commandSchemaVersions: Record<string, string>;
 }
 
@@ -92,7 +100,7 @@ export function loadRequiredVbaDevContractFile(contractPath: string): RequiredVb
 
   if (!isRequiredVbaDevContract(parsed)) {
     throw new VbaDevOutputContractError(
-      `VbaDev required contract at '${contractPath}' must include contractVersion and commandSchemaVersions.`
+      `VbaDev required contract at '${contractPath}' must include contractVersion, debugAdapterProtocolVersion, and commandSchemaVersions.`
     );
   }
 
@@ -126,6 +134,25 @@ export function validateVbaDevCapabilities(
   if (capabilities.contractVersion !== requiredContract.contractVersion) {
     throw new VbaDevOutputContractError(
       `VbaDev at '${executablePath}' reports contractVersion ${capabilities.contractVersion}, but this extension requires ${requiredContract.contractVersion}.`
+    );
+  }
+
+  const debugAdapter = capabilities.debugAdapter;
+  if (!debugAdapter) {
+    throw new VbaDevOutputContractError(
+      `VbaDev at '${executablePath}' does not report the required debug adapter capability.`
+    );
+  }
+
+  if (debugAdapter.protocolVersion !== requiredContract.debugAdapterProtocolVersion) {
+    throw new VbaDevOutputContractError(
+      `VbaDev at '${executablePath}' reports debug adapter protocolVersion ${debugAdapter.protocolVersion}, but this extension requires ${requiredContract.debugAdapterProtocolVersion}.`
+    );
+  }
+
+  if (debugAdapter.transport !== 'stdio') {
+    throw new VbaDevOutputContractError(
+      `VbaDev at '${executablePath}' reports debug adapter transport ${debugAdapter.transport}, but this extension requires stdio.`
     );
   }
 
@@ -381,8 +408,19 @@ function isCapabilities(value: unknown): value is VbaDevCapabilities {
   return (
     typeof value.toolVersion === 'string' &&
     typeof value.contractVersion === 'string' &&
-    isCommandCapabilities(value.commands)
+    isCommandCapabilities(value.commands) &&
+    (value.debugAdapter === undefined || isDebugAdapterCapability(value.debugAdapter))
   );
+}
+
+function isDebugAdapterCapability(value: unknown): value is VbaDevDebugAdapterCapability {
+  return isRecord(value) &&
+    typeof value.protocolVersion === 'string' &&
+    value.protocolVersion.length > 0 &&
+    typeof value.transport === 'string' &&
+    value.transport.length > 0 &&
+    typeof value.command === 'string' &&
+    value.command.length > 0;
 }
 
 function isCommandCapabilities(value: unknown): value is Record<string, VbaDevCommandCapability> {
@@ -397,7 +435,12 @@ function isCommandCapabilities(value: unknown): value is Record<string, VbaDevCo
 }
 
 function isRequiredVbaDevContract(value: unknown): value is RequiredVbaDevContract {
-  if (!isRecord(value) || typeof value.contractVersion !== 'string' || !isRecord(value.commandSchemaVersions)) {
+  if (
+    !isRecord(value) ||
+    typeof value.contractVersion !== 'string' ||
+    typeof value.debugAdapterProtocolVersion !== 'string' ||
+    !isRecord(value.commandSchemaVersions)
+  ) {
     return false;
   }
 

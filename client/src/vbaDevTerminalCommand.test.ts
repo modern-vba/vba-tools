@@ -31,13 +31,19 @@ test('Open vba-dev Terminal prepends the resolved CLI directory to PATH and uses
         stdout: JSON.stringify({
           toolVersion: '0.1.0',
           contractVersion: '1.0',
-          commands: {}
+          commands: {},
+          debugAdapter: {
+            protocolVersion: '1.0',
+            transport: 'stdio',
+            command: 'debug-adapter'
+          }
         }),
         stderr: ''
       };
     },
     requiredContract: {
       contractVersion: '1.0',
+      debugAdapterProtocolVersion: '1.0',
       commandSchemaVersions: {}
     },
     chooseWorkspaceRoot: async () => {
@@ -136,6 +142,7 @@ test('Open vba-dev Terminal reports incompatible CLI resolution without creating
     }),
     requiredContract: {
       contractVersion: '1.0',
+      debugAdapterProtocolVersion: '1.0',
       commandSchemaVersions: {}
     },
     chooseWorkspaceRoot: async () => undefined,

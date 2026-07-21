@@ -18,6 +18,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\VbaDev.App\VbaDev.App.csproj" />
+    <ProjectReference Include="..\..\src\VbaDev.Cli\VbaDev.Cli.csproj" />
     <ProjectReference Include="..\..\src\VbaDev.Domain\VbaDev.Domain.csproj" />
     <ProjectReference Include="..\..\src\VbaDev.Composition\VbaDev.Composition.csproj" />
     <ProjectReference Include="..\..\src\VbaDev.Infrastructure\VbaDev.Infrastructure.csproj" />

@@ -51,6 +51,12 @@ export class VbaDevCompatibilityError extends VbaDevOutputContractError {
 
 export function resolveVbaDevPath(options: VbaDevPathResolutionOptions): string {
   if (options.configuredPath && options.configuredPath.trim().length > 0) {
+    if (!path.isAbsolute(options.configuredPath)) {
+      throw new VbaDevCompatibilityError(
+        `The configured VbaDev path '${options.configuredPath}' must be an absolute path.`
+      );
+    }
+
     return options.configuredPath;
   }
 

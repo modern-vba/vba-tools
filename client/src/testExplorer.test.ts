@@ -1582,6 +1582,11 @@ function createExplorer(
           contractVersion: '1.0',
           commands: {
             test: { outputSchemaVersion: '1.2' }
+          },
+          debugAdapter: {
+            protocolVersion: '1.0',
+            transport: 'stdio',
+            command: 'debug-adapter'
           }
         }),
         stderr: ''
@@ -1589,6 +1594,7 @@ function createExplorer(
     },
     requiredContract: {
       contractVersion: '1.0',
+      debugAdapterProtocolVersion: '1.0',
       commandSchemaVersions: {
         test: '1.2'
       }

@@ -6,6 +6,7 @@ import './extensionContributions.test';
 import './projectDiscovery.test';
 import './devtoolCommand.test';
 import './vbaDevTerminalCommand.test';
+import './vscodeDebugIntegration.test';
 import './testExplorerRefresh.test';
 import './testExplorerInvalidation.test';
 import './projectManifestLanguageServerSync.test';

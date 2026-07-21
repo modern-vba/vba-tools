@@ -133,6 +133,10 @@ public sealed class CliSurfaceTests
         Assert.Contains("\"commands\"", result.StandardOutput, StringComparison.Ordinal);
         Assert.Contains("\"build\"", result.StandardOutput, StringComparison.Ordinal);
         Assert.Contains("\"test\":{\"outputSchemaVersion\":\"1.2\"}", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains(
+            "\"debugAdapter\":{\"protocolVersion\":\"1.0\",\"transport\":\"stdio\",\"command\":\"debug-adapter\"}",
+            result.StandardOutput,
+            StringComparison.Ordinal);
         Assert.Empty(result.StandardError);
     }
 

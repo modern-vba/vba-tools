@@ -40,7 +40,13 @@ export async function verifyVsixPackaging(options = {}) {
     bundledCliPath,
     manifest.runtimes.vbaDev.smokeCommand,
     root);
-  assertBundledCliCapabilities(capabilitiesResult.stdout, requiredContract);
+  const cliCapabilities = assertBundledCliCapabilities(
+    capabilitiesResult.stdout,
+    requiredContract);
+  await runCommand(
+    bundledCliPath,
+    [cliCapabilities.debugAdapter.command, '--stdio'],
+    root);
   const languageServerVersionResult = await runCommand(
     bundledLanguageServerPath,
     manifest.runtimes.vbaLanguageServer.smokeCommand,
@@ -76,7 +82,7 @@ export function readRequiredVbaDevContract(root = process.cwd(), distributionMan
   }
 
   if (!isRequiredVbaDevContract(parsed)) {
-    throw new Error(`Required vba-dev contract must include contractVersion and commandSchemaVersions in ${distributionManifest.runtimes.vbaDev.contractPath}.`);
+    throw new Error(`Required vba-dev contract must include contractVersion, debugAdapterProtocolVersion, and commandSchemaVersions in ${distributionManifest.runtimes.vbaDev.contractPath}.`);
   }
 
   return parsed;
@@ -146,12 +152,24 @@ export function assertBundledCliCapabilities(stdout, requiredContract = undefine
     throw new Error(`Bundled vba-dev capabilities must report contractVersion ${contract.contractVersion} and commands.`);
   }
 
+  const debugAdapter = parsed.debugAdapter;
+  if (
+    !isRecord(debugAdapter) ||
+    debugAdapter.protocolVersion !== contract.debugAdapterProtocolVersion ||
+    debugAdapter.transport !== 'stdio' ||
+    debugAdapter.command !== 'debug-adapter'
+  ) {
+    throw new Error(`Bundled vba-dev capabilities must report debug adapter protocolVersion ${contract.debugAdapterProtocolVersion}, stdio transport, and debug-adapter command.`);
+  }
+
   for (const [commandName, schemaVersion] of Object.entries(contract.commandSchemaVersions)) {
     const command = parsed.commands[commandName];
     if (!isRecord(command) || command.outputSchemaVersion !== schemaVersion) {
       throw new Error(`Bundled vba-dev capabilities must report ${commandName} outputSchemaVersion ${schemaVersion}.`);
     }
   }
+
+  return parsed;
 }
 
 export function assertBundledLanguageServerVersion(
@@ -183,6 +201,7 @@ function assertProjectProperty(csprojText, propertyName, expectedValue, projectF
 function runCommandWithSpawn(file, args, cwd) {
   return new Promise((resolve, reject) => {
     const child = spawn(file, args, { cwd, windowsHide: true });
+    child.stdin?.end();
     let stdout = '';
     let stderr = '';
 
@@ -247,6 +266,7 @@ function isRecord(value) {
 function isRequiredVbaDevContract(value) {
   return isRecord(value) &&
     typeof value.contractVersion === 'string' &&
+    typeof value.debugAdapterProtocolVersion === 'string' &&
     isRecord(value.commandSchemaVersions) &&
     Object.values(value.commandSchemaVersions).every((schemaVersion) => typeof schemaVersion === 'string');
 }

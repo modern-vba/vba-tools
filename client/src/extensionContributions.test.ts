@@ -92,6 +92,36 @@ test('extension activates for workspaces containing a VBA project manifest', () 
   assert.equal(packageJson.activationEvents?.includes('onLanguage:json'), false);
 });
 
+test('extension contributes a fully explicit VBA debug launch', () => {
+  const packageJson = readPackageJson<{
+    activationEvents?: string[];
+    contributes?: {
+      debuggers?: Array<{
+        type?: string;
+        label?: string;
+        languages?: string[];
+        configurationAttributes?: Record<string, {
+          required?: string[];
+          properties?: Record<string, { type?: string }>;
+        }>;
+      }>;
+    };
+  }>();
+  const debuggerContribution = packageJson.contributes?.debuggers?.find(
+    (candidate) => candidate.type === 'vba'
+  );
+  const launch = debuggerContribution?.configurationAttributes?.launch;
+
+  assert.equal(debuggerContribution?.label, 'VBA');
+  assert.deepEqual(debuggerContribution?.languages, ['vba']);
+  assert.deepEqual(launch?.required, ['project', 'document', 'module', 'procedure']);
+  for (const propertyName of ['project', 'document', 'module', 'procedure']) {
+    assert.equal(launch?.properties?.[propertyName]?.type, 'string');
+  }
+  assert.equal(debuggerContribution?.configurationAttributes?.attach, undefined);
+  assert.ok(packageJson.activationEvents?.includes('onDebugResolve:vba'));
+});
+
 test('extension contributes VbaDev path override configuration', () => {
   const packageJson = readPackageJson<{
     contributes?: {

@@ -291,7 +291,11 @@ public sealed class CommandLineApplication
                 .ToDictionary(
                     command => command.Name,
                     command => new CommandCapability(OutputSchemaVersion: command.OutputSchemaVersion),
-                    StringComparer.OrdinalIgnoreCase));
+                    StringComparer.OrdinalIgnoreCase),
+            DebugAdapter: new DebugAdapterCapability(
+                ProtocolVersion: "1.0",
+                Transport: "stdio",
+                Command: "debug-adapter"));
 
         return CommandResult.Success(JsonSerializer.Serialize(capabilities, CapabilitiesJsonOptions) + Environment.NewLine);
     }
@@ -375,9 +379,15 @@ public sealed class CommandLineApplication
     private sealed record ToolCapabilities(
         string ToolVersion,
         string ContractVersion,
-        IReadOnlyDictionary<string, CommandCapability> Commands);
+        IReadOnlyDictionary<string, CommandCapability> Commands,
+        DebugAdapterCapability DebugAdapter);
 
     private sealed record CommandCapability(string OutputSchemaVersion);
+
+    private sealed record DebugAdapterCapability(
+        string ProtocolVersion,
+        string Transport,
+        string Command);
 
     private static readonly JsonSerializerOptions CapabilitiesJsonOptions = new()
     {
