@@ -39,7 +39,26 @@ public sealed class WorkbookGenerationPipeline
         string targetWorkbookPath,
         IReadOnlyList<VbaProjectReference> desiredReferences,
         IReadOnlyList<VbaSourceFile> sourceFiles)
+        => Generate(
+            documentName,
+            templateWorkbookPath,
+            targetWorkbookPath,
+            desiredReferences,
+            sourceFiles,
+            CancellationToken.None);
+
+    /// <summary>
+    /// Generates a target workbook while retaining the previous completed output until atomic replacement.
+    /// </summary>
+    public WorkbookGenerationResult Generate(
+        string documentName,
+        string templateWorkbookPath,
+        string targetWorkbookPath,
+        IReadOnlyList<VbaProjectReference> desiredReferences,
+        IReadOnlyList<VbaSourceFile> sourceFiles,
+        CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var targetDirectory = Path.GetDirectoryName(targetWorkbookPath)
             ?? throw new BuildCommandException($"Target workbook path is invalid: {targetWorkbookPath}");
         Directory.CreateDirectory(targetDirectory);
@@ -51,23 +70,32 @@ public sealed class WorkbookGenerationPipeline
         try
         {
             File.Copy(templateWorkbookPath, tempWorkbookPath, overwrite: false);
+            cancellationToken.ThrowIfCancellationRequested();
             IReadOnlyList<string> warnings;
-            using (var session = workbookBuildAutomation.OpenWorkbook(tempWorkbookPath))
+            using (var session = workbookBuildAutomation.OpenWorkbook(
+                tempWorkbookPath,
+                cancellationToken))
             {
                 warnings = referenceNormalizer.Normalize(session, documentName, desiredReferences);
+                cancellationToken.ThrowIfCancellationRequested();
                 foreach (var component in session.GetModules().Where(component => component.Kind.IsImportable()))
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     session.RemoveModule(component.Name);
                 }
 
                 foreach (var sourceFile in sourceFiles)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     session.ImportModule(sourceFile);
                 }
 
+                cancellationToken.ThrowIfCancellationRequested();
                 session.Save();
+                cancellationToken.ThrowIfCancellationRequested();
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             ReplaceTarget(tempWorkbookPath, targetWorkbookPath);
             return new WorkbookGenerationResult(warnings);
         }

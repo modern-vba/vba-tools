@@ -1,5 +1,7 @@
 using System.Text;
 using System.Runtime.InteropServices;
+using VbaDev.App.Build;
+using VbaDev.App.References;
 using VbaDev.App.Workbooks;
 using VbaDev.Composition;
 using VbaDev.Domain;
@@ -66,6 +68,45 @@ public sealed class BuildCommandTests
         Assert.Contains("import failed", result.StandardError, StringComparison.Ordinal);
         Assert.Equal("old-bin", File.ReadAllText(binPath, Encoding.UTF8));
         Assert.DoesNotContain(binPath, automation.OpenedWorkbooks);
+    }
+
+    [Fact]
+    public void CancelledGenerationDeletesItsTemporaryWorkbookAndPreservesThePreviousBin()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var sourcePath = Path.Combine(root, "DebugModule.bas");
+        var templatePath = Path.Combine(root, "Template.xlsm");
+        var binDirectory = Path.Combine(root, "bin");
+        var binPath = Path.Combine(binDirectory, "Book1.xlsm");
+        File.WriteAllText(sourcePath, "Attribute VB_Name = \"DebugModule\"", Encoding.UTF8);
+        File.WriteAllText(templatePath, "new-template", Encoding.UTF8);
+        Directory.CreateDirectory(binDirectory);
+        File.WriteAllText(binPath, "last-known-good", Encoding.UTF8);
+        using var cancellation = new CancellationTokenSource();
+        var automation = new FakeWorkbookBuildAutomation
+        {
+            OnImport = cancellation.Cancel
+        };
+        var pipeline = new WorkbookGenerationPipeline(
+            automation,
+            new WorkbookReferenceNormalizer(
+                new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())));
+
+        Assert.ThrowsAny<OperationCanceledException>(() => pipeline.Generate(
+            "Book1",
+            templatePath,
+            binPath,
+            [],
+            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
+            cancellation.Token));
+
+        Assert.Equal("last-known-good", File.ReadAllText(binPath, Encoding.UTF8));
+        Assert.Empty(Directory.EnumerateFiles(
+            binDirectory,
+            ".Book1.*.tmp.xlsm",
+            SearchOption.TopDirectoryOnly));
+        Assert.DoesNotContain("save", automation.Events);
     }
 
     [Fact]
@@ -359,6 +400,8 @@ internal sealed class FakeWorkbookBuildAutomation : IWorkbookBuildAutomation
 
     public bool ThrowOnRemove { get; init; }
 
+    public Action? OnImport { get; init; }
+
     public COMException? ReferenceError { get; init; }
 
     public List<string> OpenedWorkbooks { get; } = [];
@@ -436,6 +479,7 @@ internal sealed class FakeWorkbookBuildAutomation : IWorkbookBuildAutomation
 
             owner.ImportedSources.Add(sourceFile);
             owner.Events.Add($"import:{Path.GetFileName(sourceFile.SourcePath)}");
+            owner.OnImport?.Invoke();
         }
 
         public void Save()

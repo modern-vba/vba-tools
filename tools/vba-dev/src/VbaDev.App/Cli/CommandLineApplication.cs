@@ -293,7 +293,7 @@ public sealed class CommandLineApplication
                     command => new CommandCapability(OutputSchemaVersion: command.OutputSchemaVersion),
                     StringComparer.OrdinalIgnoreCase),
             DebugAdapter: new DebugAdapterCapability(
-                ProtocolVersion: "1.0",
+                ProtocolVersion: "1.1",
                 Transport: "stdio",
                 Command: "debug-adapter"));
 

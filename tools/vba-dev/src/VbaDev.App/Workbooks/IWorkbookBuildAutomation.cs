@@ -11,4 +11,18 @@ public interface IWorkbookBuildAutomation
     /// <param name="workbookPath">The workbook path to open.</param>
     /// <returns>An automation session that must be disposed after use.</returns>
     IWorkbookBuildSession OpenWorkbook(string workbookPath);
+
+    /// <summary>
+    /// Opens a workbook for a cancellable debug build.
+    /// </summary>
+    /// <param name="workbookPath">The workbook path to open.</param>
+    /// <param name="cancellationToken">Cancels the owned build automation session.</param>
+    /// <returns>An automation session that must be disposed after use.</returns>
+    IWorkbookBuildSession OpenWorkbook(
+        string workbookPath,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return OpenWorkbook(workbookPath);
+    }
 }

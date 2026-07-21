@@ -186,6 +186,41 @@ public sealed class BuildCommandDebugWorkbookBuilderTests
     }
 
     [Fact]
+    public async Task CancellationDuringBuildRemovesTheStagedSnapshotAndReturnsWithoutAResult()
+    {
+        using var temp = TempDirectory.Create();
+        var context = CreateContext(temp);
+        var sourcePath = CreateSource(
+            context,
+            "Module1.bas",
+            "Attribute VB_Name = \"Module1\"\r\nPublic Sub RunTarget()\r\nEnd Sub\r\n");
+        var buildStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        string? stagingPath = null;
+        var builder = new BuildCommandDebugWorkbookBuilder(
+            resolveBuildSources: _ => [Source(sourcePath)],
+            runBuild: async (_, stagedSources, cancellationToken) =>
+            {
+                stagingPath = Path.GetDirectoryName(Assert.Single(stagedSources).SourcePath);
+                buildStarted.TrySetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                return CommandResult.Success("Build should not complete.");
+            });
+        using var cancellation = new CancellationTokenSource();
+
+        var build = builder.BuildAsync(
+            context,
+            Snapshot((sourcePath, File.ReadAllText(sourcePath, Encoding.UTF8))),
+            cancellation.Token);
+        await buildStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => build);
+        Assert.NotNull(stagingPath);
+        Assert.False(Directory.Exists(stagingPath));
+    }
+
+    [Fact]
     public async Task SuccessfulBuildOutputIsPreservedForDebugLifecycleReporting()
     {
         var builder = new BuildCommandDebugWorkbookBuilder(_ => CommandResult.Success(

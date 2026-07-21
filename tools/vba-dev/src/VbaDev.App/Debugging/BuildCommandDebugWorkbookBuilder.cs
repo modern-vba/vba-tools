@@ -11,16 +11,16 @@ namespace VbaDev.App.Debugging;
 /// </summary>
 public sealed class BuildCommandDebugWorkbookBuilder : IDebugWorkbookBuilder
 {
-    private readonly Func<ResolvedProjectContext, CommandResult> runBuild;
+    private readonly Func<ResolvedProjectContext, CancellationToken, Task<CommandResult>> runBuild;
     private readonly Func<ResolvedProjectContext, IReadOnlyList<VbaSourceFile>>? resolveBuildSources;
-    private readonly Func<ResolvedProjectContext, IReadOnlyList<VbaSourceFile>, CommandResult>?
+    private readonly Func<ResolvedProjectContext, IReadOnlyList<VbaSourceFile>, CancellationToken, Task<CommandResult>>?
         runBuildWithSources;
 
     /// <summary>
     /// Creates a debug workbook builder over the normal build command.
     /// </summary>
     public BuildCommandDebugWorkbookBuilder(BuildCommand buildCommand)
-        : this(buildCommand.Run)
+        : this(buildCommand.RunAsync)
     {
     }
 
@@ -30,12 +30,18 @@ public sealed class BuildCommandDebugWorkbookBuilder : IDebugWorkbookBuilder
     public BuildCommandDebugWorkbookBuilder(
         WorkbookSourcePlanner sourcePlanner,
         BuildCommand buildCommand)
-        : this(sourcePlanner.ResolveBuildSourceFiles, buildCommand.Run)
+        : this(sourcePlanner.ResolveBuildSourceFiles, buildCommand.RunAsync)
     {
     }
 
     internal BuildCommandDebugWorkbookBuilder(
         Func<ResolvedProjectContext, CommandResult> runBuild)
+        : this((context, _) => Task.Run(() => runBuild(context), CancellationToken.None))
+    {
+    }
+
+    internal BuildCommandDebugWorkbookBuilder(
+        Func<ResolvedProjectContext, CancellationToken, Task<CommandResult>> runBuild)
     {
         this.runBuild = runBuild;
     }
@@ -43,25 +49,38 @@ public sealed class BuildCommandDebugWorkbookBuilder : IDebugWorkbookBuilder
     internal BuildCommandDebugWorkbookBuilder(
         Func<ResolvedProjectContext, IReadOnlyList<VbaSourceFile>> resolveBuildSources,
         Func<ResolvedProjectContext, IReadOnlyList<VbaSourceFile>, CommandResult> runBuild)
+        : this(
+            resolveBuildSources,
+            (context, sources, _) => Task.Run(
+                () => runBuild(context, sources),
+                CancellationToken.None))
+    {
+    }
+
+    internal BuildCommandDebugWorkbookBuilder(
+        Func<ResolvedProjectContext, IReadOnlyList<VbaSourceFile>> resolveBuildSources,
+        Func<ResolvedProjectContext, IReadOnlyList<VbaSourceFile>, CancellationToken, Task<CommandResult>> runBuild)
     {
         this.resolveBuildSources = resolveBuildSources;
         runBuildWithSources = runBuild;
-        this.runBuild = context => runBuild(context, resolveBuildSources(context));
+        this.runBuild = (context, cancellationToken) =>
+            runBuild(context, resolveBuildSources(context), cancellationToken);
     }
 
     /// <inheritdoc />
-    public Task<DebugWorkbookBuildResult> BuildAsync(
+    public async Task<DebugWorkbookBuildResult> BuildAsync(
         ResolvedProjectContext context,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        return Task.FromResult(ToDebugBuildResult(runBuild(context)));
+        var result = await runBuild(context, cancellationToken).ConfigureAwait(false);
+        return ToDebugBuildResult(result);
     }
 
     /// <summary>
     /// Builds from an immutable source snapshot after staging the exact validated source bytes.
     /// </summary>
-    public Task<DebugWorkbookBuildResult> BuildAsync(
+    public async Task<DebugWorkbookBuildResult> BuildAsync(
         ResolvedProjectContext context,
         DebugSourceSnapshot sourceSnapshot,
         CancellationToken cancellationToken)
@@ -78,8 +97,11 @@ public sealed class BuildCommandDebugWorkbookBuilder : IDebugWorkbookBuilder
             sourceSnapshot,
             plannedSources,
             cancellationToken);
-        var result = runBuildWithSources(context, stagedSources.Sources);
-        return Task.FromResult(ToDebugBuildResult(result));
+        var result = await runBuildWithSources(
+            context,
+            stagedSources.Sources,
+            cancellationToken).ConfigureAwait(false);
+        return ToDebugBuildResult(result);
     }
 
     private static DebugWorkbookBuildResult ToDebugBuildResult(CommandResult result)

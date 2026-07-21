@@ -515,6 +515,45 @@ public sealed class VbeDebugAutomationTests
     }
 
     [Fact]
+    public async Task CancellationWhileMakingExcelVisibleTerminatesTheOwnedProcessOutsideTheStaDispatcher()
+    {
+        using var visibleSetStarted = new ManualResetEventSlim();
+        using var releaseVisibleSet = new ManualResetEventSlim();
+        var process = new FakeDebugOwnedProcess(
+            31416,
+            new DateTime(2026, 7, 21, 10, 1, 0, DateTimeKind.Local),
+            killAction: releaseVisibleSet.Set);
+        var excel = new FakeExcelApplication
+        {
+            Hwnd = 2469,
+            VisibleSetStarted = visibleSetStarted,
+            VisibleSetRelease = releaseVisibleSet
+        };
+        var automation = new VbeDebugAutomation(
+            new FakeExcelDebugApplicationFactory(excel),
+            new FakeDebugExcelProcessApi(process.Id, process),
+            new FakeDebugWindowActivator(),
+            new StaComDispatcherFactory());
+        using var cancellation = new CancellationTokenSource();
+
+        var start = automation.StartVisibleAsync(cancellation.Token);
+        Assert.True(visibleSetStarted.Wait(TimeSpan.FromSeconds(5)));
+
+        try
+        {
+            cancellation.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                start.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.Equal(1, process.KillCalls);
+            Assert.True(process.Disposed);
+        }
+        finally
+        {
+            releaseVisibleSet.Set();
+        }
+    }
+
+    [Fact]
     public async Task OpenThenSetNativeBreakpointEstablishesExactContextAndExecutesToggleBreakpoint51()
     {
         using var temp = TempDirectory.Create();
@@ -721,6 +760,48 @@ public sealed class VbeDebugAutomationTests
 
         process.Exit(0);
         await session.Completion;
+    }
+
+    [Fact]
+    public async Task DisposalClosesTheJobBeforeWaitingForTargetPromptObservation()
+    {
+        using var temp = TempDirectory.Create();
+        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
+        File.WriteAllText(workbookPath, "test workbook placeholder");
+        var events = new List<string>();
+        var model = FakeVbeModel.Create(workbookPath, events);
+        var killError = new InvalidOperationException("Synthetic exact process kill failure.");
+        var process = new FakeDebugOwnedProcess(
+            27189,
+            new DateTime(2026, 7, 21, 10, 34, 0, DateTimeKind.Local),
+            killAction: () => throw killError,
+            events: events);
+        var job = new FakeDebugProcessJob(
+            process,
+            events,
+            terminateError: new InvalidOperationException("Synthetic Job termination failure."),
+            disposeAction: () => process.Exit(-2));
+        var automation = new VbeDebugAutomation(
+            new FakeExcelDebugApplicationFactory(model.Excel),
+            new FakeDebugExcelProcessApi(process.Id, process, job),
+            new FakeDebugWindowActivator(events),
+            new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()),
+            promptMonitor: new ProcessExitDebugModalPromptMonitor(events));
+        var sink = new RecordingDebugInputWaitSink();
+        var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await session.OpenGeneratedWorkbookAsync(workbookPath, sink, CancellationToken.None);
+        await session.RunTargetAsync(
+            new DebugTargetProcedure("DebugModule", "RunTarget"),
+            sink,
+            CancellationToken.None);
+
+        var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
+            session.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2)));
+
+        Assert.Same(killError, error.InnerException);
+        Assert.True(job.Disposed);
+        Assert.True(process.HasExited);
+        Assert.True(events.IndexOf("job-dispose") < events.IndexOf("prompt-watch-complete"));
     }
 
     [Fact]
@@ -1378,6 +1459,7 @@ public sealed class FakeExcelApplication
 {
     private bool enableEvents = true;
     private int automationSecurity = 1;
+    private bool visible;
 
     public int Hwnd { get; init; }
 
@@ -1385,7 +1467,20 @@ public sealed class FakeExcelApplication
 
     public string OperatingSystem { get; init; } = "Windows (64-bit) NT 10.00";
 
-    public bool Visible { get; set; }
+    public bool Visible
+    {
+        get => visible;
+        set
+        {
+            VisibleSetStarted?.Set();
+            VisibleSetRelease?.Wait();
+            visible = value;
+        }
+    }
+
+    public ManualResetEventSlim? VisibleSetStarted { get; init; }
+
+    public ManualResetEventSlim? VisibleSetRelease { get; init; }
 
     public List<string>? Events { get; init; }
 
@@ -1515,6 +1610,31 @@ internal sealed class RecordingDebugInputWaitSink : IDebugInputWaitSink
     {
         InputWaits.Add(inputWait);
         return ValueTask.CompletedTask;
+    }
+}
+
+internal sealed class ProcessExitDebugModalPromptMonitor(List<string> events)
+    : IDebugModalPromptMonitor
+{
+    public DebugModalPromptObservation Capture(DebugInputWait inputWait)
+        => new(inputWait, new HashSet<nint>());
+
+    public async Task<T> ObserveAsync<T>(
+        DebugModalPromptObservation observation,
+        Task<T> operation,
+        Task<DebugProcessExit> processCompletion,
+        IDebugInputWaitSink inputWaitSink,
+        CancellationToken cancellationToken)
+        => await operation;
+
+    public async Task ObserveUntilProcessExitAsync(
+        DebugModalPromptObservation observation,
+        Task<DebugProcessExit> processCompletion,
+        IDebugInputWaitSink inputWaitSink,
+        CancellationToken cancellationToken)
+    {
+        await processCompletion.WaitAsync(cancellationToken);
+        events.Add("prompt-watch-complete");
     }
 }
 

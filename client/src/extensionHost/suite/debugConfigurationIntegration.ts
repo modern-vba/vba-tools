@@ -109,6 +109,12 @@ export async function runDebugConfigurationIntegrationTests(): Promise<void> {
     assert.equal(snapshot.breakpoints[0].line, 4);
     assert.equal(sourceDocument.isDirty, false);
     assert.equal(outsideDocument.isDirty, true);
+    const restartPreparation = configuration.__vbaRestartPreparation as {
+      readonly protocolVersion: number;
+      readonly id: string;
+    };
+    assert.equal(restartPreparation.protocolVersion, 1);
+    assert.ok(restartPreparation.id.length > 0);
     console.log('PASS F5 resolves and saves only the active workbook-backed VBA project');
   } finally {
     observer.dispose();

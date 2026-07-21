@@ -133,9 +133,12 @@ internal sealed class DapConnection
             var message = createMessage(++outgoingSequence);
             var content = JsonSerializer.SerializeToUtf8Bytes(message, JsonOptions);
             var header = Encoding.ASCII.GetBytes($"Content-Length: {content.Length}\r\n\r\n");
-            await output.WriteAsync(header, cancellationToken).ConfigureAwait(false);
-            await output.WriteAsync(content, cancellationToken).ConfigureAwait(false);
-            await output.FlushAsync(cancellationToken).ConfigureAwait(false);
+            var frame = new byte[header.Length + content.Length];
+            header.CopyTo(frame, 0);
+            content.CopyTo(frame, header.Length);
+            // Cancellation is safe only before a frame starts; a partial frame corrupts the stream.
+            await output.WriteAsync(frame, CancellationToken.None).ConfigureAwait(false);
+            await output.FlushAsync(CancellationToken.None).ConfigureAwait(false);
         }
         finally
         {

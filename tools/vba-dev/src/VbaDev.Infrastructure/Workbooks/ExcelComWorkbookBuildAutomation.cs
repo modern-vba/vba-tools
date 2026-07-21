@@ -20,6 +20,16 @@ public sealed class ExcelComWorkbookBuildAutomation : IWorkbookBuildAutomation
     public IWorkbookBuildSession OpenWorkbook(string workbookPath)
         => new ExcelComWorkbookBuildSession(ExcelComWorkbookSession.Open(workbookPath));
 
+    /// <summary>
+    /// Opens an Excel workbook in a strongly owned, cancellable debug-build process.
+    /// </summary>
+    public IWorkbookBuildSession OpenWorkbook(
+        string workbookPath,
+        CancellationToken cancellationToken)
+        => new ExcelComWorkbookBuildSession(ExcelComWorkbookSession.OpenOwnedForDebugBuild(
+            workbookPath,
+            cancellationToken));
+
     private sealed class ExcelComWorkbookBuildSession : IWorkbookBuildSession
     {
         private readonly ExcelComWorkbookSession session;

@@ -94,6 +94,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
         var dispatcher = dispatcherFactory.Create();
         object? excelObject = null;
         DebugExcelProcessOwner? processOwner = null;
+        CancellationTokenRegistration ownershipCancellation = default;
         try
         {
             await dispatcher.InvokeAsync(
@@ -106,10 +107,16 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                         windowHandle,
                         existingExcelProcesses,
                         processApi);
+                    ownershipCancellation = cancellationToken.UnsafeRegister(
+                        static state =>
+                            _ = ((DebugExcelProcessOwner)state!).TerminateAsync().AsTask(),
+                        processOwner);
+                    cancellationToken.ThrowIfCancellationRequested();
                     excel.Visible = true;
                     return true;
                 },
                 cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
 
             return new VbeDebugSession(
                 excelObject!,
@@ -145,6 +152,10 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
 
             await dispatcher.DisposeAsync().ConfigureAwait(false);
             throw;
+        }
+        finally
+        {
+            ownershipCancellation.Dispose();
         }
     }
 
@@ -302,15 +313,32 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                 return;
             }
 
-            await processOwner.TerminateAsync().ConfigureAwait(false);
-            Exception? promptObservationError = null;
+            Exception? cleanupError = null;
+            try
+            {
+                await processOwner.TerminateAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                cleanupError = ex;
+            }
+
+            try
+            {
+                await processOwner.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                cleanupError ??= ex;
+            }
+
             try
             {
                 await targetPromptObservation.ConfigureAwait(false);
             }
             catch (Exception ex)
             {
-                promptObservationError = ex;
+                cleanupError ??= ex;
             }
 
             try
@@ -324,17 +352,27 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                     },
                     CancellationToken.None).ConfigureAwait(false);
             }
+            catch (Exception ex)
+            {
+                cleanupError ??= ex;
+            }
             finally
             {
-                await processOwner.DisposeAsync().ConfigureAwait(false);
-                await dispatcher.DisposeAsync().ConfigureAwait(false);
+                try
+                {
+                    await dispatcher.DisposeAsync().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    cleanupError ??= ex;
+                }
             }
 
-            if (promptObservationError is not null)
+            if (cleanupError is not null)
             {
                 throw new DebugSetupException(
-                    "Native Excel/VBE prompt observation failed before session cleanup completed.",
-                    promptObservationError);
+                    "Native Excel/VBE session cleanup did not complete normally after process termination.",
+                    cleanupError);
             }
         }
 
@@ -1040,6 +1078,20 @@ internal sealed class WindowsDebugExcelProcessApi : IDebugExcelProcessApi
             process?.Dispose();
         }
     }
+
+    public IDebugProcessJob CreateKillOnCloseJob()
+    {
+        try
+        {
+            return WindowsDebugProcessJob.Create();
+        }
+        catch (Exception ex) when (ex is Win32Exception or PlatformNotSupportedException)
+        {
+            throw new DebugSetupException(
+                "A kill-on-close Windows Job Object could not be created for owned Excel.",
+                ex);
+        }
+    }
 }
 
 internal sealed class SystemDebugOwnedProcess : IDebugOwnedProcess
@@ -1055,6 +1107,8 @@ internal sealed class SystemDebugOwnedProcess : IDebugOwnedProcess
     }
 
     public int Id { get; }
+
+    internal nint Handle => process.Handle;
 
     public DebugExcelProcessArchitecture Architecture { get; }
 

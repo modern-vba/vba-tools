@@ -216,7 +216,7 @@ test('bundled CLI capabilities must satisfy the packaged extension contract surf
       .map(([commandName, schemaVersion]) => [commandName, { outputSchemaVersion: schemaVersion }])
   );
   const debugAdapter = {
-    protocolVersion: '1.0',
+    protocolVersion: contract.debugAdapterProtocolVersion,
     transport: 'stdio',
     command: 'debug-adapter'
   };

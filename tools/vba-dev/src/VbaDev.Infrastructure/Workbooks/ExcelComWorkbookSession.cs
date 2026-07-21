@@ -1,4 +1,6 @@
 using System.Runtime.InteropServices;
+using System.Runtime.ExceptionServices;
+using VbaDev.Infrastructure.Debugging;
 
 namespace VbaDev.Infrastructure.Workbooks;
 
@@ -10,16 +12,22 @@ internal sealed class ExcelComWorkbookSession : IDisposable
     private const int MsoAutomationSecurityLow = 1;
 
     private readonly ExcelComApplicationProcess? excelProcess;
+    private readonly DebugExcelProcessOwner? strongExcelProcess;
+    private readonly CancellationTokenRegistration cancellationRegistration;
     private bool disposed;
 
     private ExcelComWorkbookSession(
         object excelObject,
         object workbookObject,
-        ExcelComApplicationProcess? excelProcess)
+        ExcelComApplicationProcess? excelProcess,
+        DebugExcelProcessOwner? strongExcelProcess,
+        CancellationTokenRegistration cancellationRegistration)
     {
         ExcelObject = excelObject;
         WorkbookObject = workbookObject;
         this.excelProcess = excelProcess;
+        this.strongExcelProcess = strongExcelProcess;
+        this.cancellationRegistration = cancellationRegistration;
     }
 
     /// <summary>
@@ -39,20 +47,66 @@ internal sealed class ExcelComWorkbookSession : IDisposable
     /// <param name="enableAutomationSecurityLow">Whether macros should be allowed to run in the session.</param>
     /// <returns>The Excel workbook session.</returns>
     public static ExcelComWorkbookSession Open(string workbookPath, bool enableAutomationSecurityLow = false)
+        => OpenCore(
+            workbookPath,
+            enableAutomationSecurityLow,
+            requireStrongOwnership: false,
+            CancellationToken.None);
+
+    /// <summary>
+    /// Opens a workbook in a strictly identified, kill-on-close Excel process for a debug build.
+    /// </summary>
+    internal static ExcelComWorkbookSession OpenOwnedForDebugBuild(
+        string workbookPath,
+        CancellationToken cancellationToken)
+        => OpenCore(
+            workbookPath,
+            enableAutomationSecurityLow: false,
+            requireStrongOwnership: true,
+            cancellationToken);
+
+    private static ExcelComWorkbookSession OpenCore(
+        string workbookPath,
+        bool enableAutomationSecurityLow,
+        bool requireStrongOwnership,
+        CancellationToken cancellationToken)
     {
-        var host = StartHiddenExcel(enableAutomationSecurityLow);
+        cancellationToken.ThrowIfCancellationRequested();
+        var host = StartHiddenExcel(
+            enableAutomationSecurityLow,
+            requireStrongOwnership,
+            cancellationToken);
         object? workbookObject = null;
         try
         {
             dynamic workbooks = host.WorkbooksObject;
             workbookObject = workbooks.Open(workbookPath, 0, false);
-            return new ExcelComWorkbookSession(host.ExcelObject, workbookObject, host.ExcelProcess);
+            cancellationToken.ThrowIfCancellationRequested();
+            return new ExcelComWorkbookSession(
+                host.ExcelObject,
+                workbookObject,
+                host.ExcelProcess,
+                host.StrongExcelProcess,
+                host.CancellationRegistration);
         }
         catch
         {
+            host.CancellationRegistration.Dispose();
             ComObjectReleaser.Release(workbookObject);
-            QuitExcel(host.ExcelObject);
-            ComObjectReleaser.CollectReleasedComObjects();
+            try
+            {
+                QuitExcel(host.ExcelObject);
+            }
+            catch (COMException)
+            {
+                ComObjectReleaser.Release(host.ExcelObject);
+            }
+            finally
+            {
+                DisposeStrongOwner(host.StrongExcelProcess);
+                ComObjectReleaser.CollectReleasedComObjects();
+            }
+
             throw;
         }
         finally
@@ -67,18 +121,28 @@ internal sealed class ExcelComWorkbookSession : IDisposable
     /// <returns>The Excel workbook session.</returns>
     public static ExcelComWorkbookSession Create()
     {
-        var host = StartHiddenExcel(enableAutomationSecurityLow: false);
+        var host = StartHiddenExcel(
+            enableAutomationSecurityLow: false,
+            requireStrongOwnership: false,
+            CancellationToken.None);
         object? workbookObject = null;
         try
         {
             dynamic workbooks = host.WorkbooksObject;
             workbookObject = workbooks.Add();
-            return new ExcelComWorkbookSession(host.ExcelObject, workbookObject, host.ExcelProcess);
+            return new ExcelComWorkbookSession(
+                host.ExcelObject,
+                workbookObject,
+                host.ExcelProcess,
+                host.StrongExcelProcess,
+                host.CancellationRegistration);
         }
         catch
         {
+            host.CancellationRegistration.Dispose();
             ComObjectReleaser.Release(workbookObject);
             QuitExcel(host.ExcelObject);
+            DisposeStrongOwner(host.StrongExcelProcess);
             ComObjectReleaser.CollectReleasedComObjects();
             throw;
         }
@@ -98,29 +162,65 @@ internal sealed class ExcelComWorkbookSession : IDisposable
 
         disposed = true;
         var safeToTerminateOrphanedExcel = false;
+        Exception? cleanupError = null;
         try
         {
             CloseWorkbook(WorkbookObject);
+        }
+        catch (Exception ex)
+        {
+            cleanupError = ex;
         }
         finally
         {
             try
             {
-                safeToTerminateOrphanedExcel = HasNoOpenWorkbooks(ExcelObject);
+                if (strongExcelProcess is null)
+                {
+                    safeToTerminateOrphanedExcel = HasNoOpenWorkbooks(ExcelObject);
+                }
+
                 QuitExcel(ExcelObject);
+            }
+            catch (Exception ex)
+            {
+                cleanupError ??= ex;
             }
             finally
             {
-                ComObjectReleaser.CollectReleasedComObjects();
-                if (safeToTerminateOrphanedExcel)
+                cancellationRegistration.Dispose();
+                try
                 {
-                    excelProcess?.TerminateIfStillRunning();
+                    if (strongExcelProcess is not null)
+                    {
+                        DisposeStrongOwner(strongExcelProcess);
+                    }
+                    else if (safeToTerminateOrphanedExcel)
+                    {
+                        excelProcess?.TerminateIfStillRunning();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    cleanupError ??= ex;
+                }
+                finally
+                {
+                    ComObjectReleaser.CollectReleasedComObjects();
                 }
             }
         }
+
+        if (cleanupError is not null)
+        {
+            ExceptionDispatchInfo.Capture(cleanupError).Throw();
+        }
     }
 
-    private static ExcelComHostObjects StartHiddenExcel(bool enableAutomationSecurityLow)
+    private static ExcelComHostObjects StartHiddenExcel(
+        bool enableAutomationSecurityLow,
+        bool requireStrongOwnership,
+        CancellationToken cancellationToken)
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -132,11 +232,34 @@ internal sealed class ExcelComWorkbookSession : IDisposable
             ?? throw new InvalidOperationException("Excel COM automation is not available.");
         object? excelObject = null;
         object? workbooksObject = null;
+        DebugExcelProcessOwner? strongExcelProcess = null;
+        CancellationTokenRegistration cancellationRegistration = default;
         try
         {
             excelObject = Activator.CreateInstance(excelType)
                 ?? throw new InvalidOperationException("Excel COM automation could not be started.");
             dynamic excel = excelObject;
+            ExcelComApplicationProcess? excelProcess = null;
+            if (requireStrongOwnership)
+            {
+                var windowHandle = new nint(Convert.ToInt64(excel.Hwnd));
+                strongExcelProcess = DebugExcelProcessOwner.Capture(
+                    windowHandle,
+                    existingExcelProcesses,
+                    new WindowsDebugExcelProcessApi());
+                cancellationRegistration = cancellationToken.UnsafeRegister(
+                    static state =>
+                        _ = ((DebugExcelProcessOwner)state!).TerminateAsync().AsTask(),
+                    strongExcelProcess);
+            }
+            else
+            {
+                excelProcess = ExcelComApplicationProcess.TryCaptureOwned(
+                    excelObject,
+                    existingExcelProcesses);
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
             excel.Visible = false;
             excel.DisplayAlerts = false;
             if (enableAutomationSecurityLow)
@@ -144,18 +267,38 @@ internal sealed class ExcelComWorkbookSession : IDisposable
                 excel.AutomationSecurity = MsoAutomationSecurityLow;
             }
 
-            var excelProcess = ExcelComApplicationProcess.TryCaptureOwned(excelObject, existingExcelProcesses);
             workbooksObject = excel.Workbooks;
-            return new ExcelComHostObjects(excelObject, workbooksObject, excelProcess);
+            return new ExcelComHostObjects(
+                excelObject,
+                workbooksObject,
+                excelProcess,
+                strongExcelProcess,
+                cancellationRegistration);
         }
         catch
         {
+            cancellationRegistration.Dispose();
             ComObjectReleaser.Release(workbooksObject);
-            QuitExcel(excelObject);
-            ComObjectReleaser.CollectReleasedComObjects();
+            try
+            {
+                QuitExcel(excelObject);
+            }
+            catch (COMException)
+            {
+                ComObjectReleaser.Release(excelObject);
+            }
+            finally
+            {
+                DisposeStrongOwner(strongExcelProcess);
+                ComObjectReleaser.CollectReleasedComObjects();
+            }
+
             throw;
         }
     }
+
+    private static void DisposeStrongOwner(DebugExcelProcessOwner? owner)
+        => owner?.DisposeAsync().AsTask().GetAwaiter().GetResult();
 
     private static bool HasNoOpenWorkbooks(object excelObject)
     {
@@ -216,5 +359,7 @@ internal sealed class ExcelComWorkbookSession : IDisposable
     private sealed record ExcelComHostObjects(
         object ExcelObject,
         object WorkbooksObject,
-        ExcelComApplicationProcess? ExcelProcess);
+        ExcelComApplicationProcess? ExcelProcess,
+        DebugExcelProcessOwner? StrongExcelProcess,
+        CancellationTokenRegistration CancellationRegistration);
 }

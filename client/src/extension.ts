@@ -91,7 +91,10 @@ import {
 import { NativeLineBreakRecorder } from './nativeLineBreak';
 import {
   VscodeDebugIntegration,
-  createVbaDebugConfigurationProvider
+  createVbaDebugConfigurationProvider,
+  handleVbaDebugLifecycleRequest,
+  handleVbaDebugSessionTermination,
+  stopVbaDebugSessionAfterLifecycleFailure
 } from './vscodeDebugIntegration';
 import type { VbaDebugConfiguration } from './vscodeDebugConfiguration';
 import { decodeVbaSourceFileText } from './vbaSourceFileText';
@@ -169,10 +172,11 @@ export async function activate(context: ExtensionContext): Promise<void> {
           configuration as VbaDebugConfiguration
         ) as DebugConfiguration | undefined
       ),
-      resolveDebugConfigurationWithSubstitutedVariables: (folder, configuration) => (
+      resolveDebugConfigurationWithSubstitutedVariables: (folder, configuration, token) => (
         debugConfigurationProvider.resolveDebugConfigurationWithSubstitutedVariables(
           configuration as VbaDebugConfiguration,
-          folder?.uri.fsPath
+          folder?.uri.fsPath,
+          token
         ) as Promise<DebugConfiguration | undefined>
       )
     }, DebugConfigurationProviderTriggerKind.Dynamic),
@@ -181,7 +185,8 @@ export async function activate(context: ExtensionContext): Promise<void> {
         try {
           const executable = await vscodeDebugIntegration.createDebugAdapterExecutable({
             id: session.id,
-            workspaceRoot: session.workspaceFolder?.uri.fsPath
+            workspaceRoot: session.workspaceFolder?.uri.fsPath,
+            configuration: session.configuration as VbaDebugConfiguration
           });
           return new DebugAdapterExecutable(
             executable.command,
@@ -194,8 +199,29 @@ export async function activate(context: ExtensionContext): Promise<void> {
         }
       }
     }),
+    debug.registerDebugAdapterTrackerFactory('vba', {
+      createDebugAdapterTracker: (session) => ({
+        onWillReceiveMessage: (message) => {
+          void handleVbaDebugLifecycleRequest(
+            vscodeDebugIntegration,
+            session.configuration as VbaDebugConfiguration,
+            message,
+            (command, argumentsValue) => session.customRequest(command, argumentsValue)
+          )?.catch((error: unknown) => stopVbaDebugSessionAfterLifecycleFailure(
+            error,
+            (message) => { void window.showErrorMessage(message); },
+            () => debug.stopDebugging(session),
+            () => session.customRequest('disconnect', { terminateDebuggee: true })
+          ));
+        }
+      })
+    }),
     debug.onDidTerminateDebugSession((session) => {
-      vscodeDebugIntegration.releaseSession(session.id);
+      handleVbaDebugSessionTermination(vscodeDebugIntegration, {
+        id: session.id,
+        type: session.type,
+        configuration: session.configuration as VbaDebugConfiguration
+      });
     })
   );
   const nativeLineBreakRecorder = new NativeLineBreakRecorder();

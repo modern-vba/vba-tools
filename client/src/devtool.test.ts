@@ -60,7 +60,7 @@ test('Packaged VbaDev contract requires the debug adapter protocol', () => {
 
   assert.equal(
     loadRequiredVbaDevContract(extensionRoot).debugAdapterProtocolVersion,
-    '1.0'
+    '1.1'
   );
 });
 

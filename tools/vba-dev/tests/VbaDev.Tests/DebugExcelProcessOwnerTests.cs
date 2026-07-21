@@ -46,6 +46,61 @@ public sealed class DebugExcelProcessOwnerTests
     }
 
     [Fact]
+    public async Task CaptureAssignsTheExactProcessToAKillOnCloseJobBeforeReturning()
+    {
+        var process = new FakeDebugOwnedProcess(
+            105,
+            new DateTime(2026, 7, 21, 8, 45, 0, DateTimeKind.Local));
+        var job = new FakeDebugProcessJob(process);
+        var processApi = new FakeDebugExcelProcessApi(
+            windowProcessId: process.Id,
+            process,
+            job);
+
+        await using var owner = DebugExcelProcessOwner.Capture(
+            (nint)6789,
+            new Dictionary<int, DateTime>(),
+            processApi);
+
+        Assert.Equal(1, processApi.CreateJobCalls);
+        Assert.Same(process, job.AssignedProcess);
+        Assert.False(job.Disposed);
+    }
+
+    [Fact]
+    public void AssignmentFailureDisposesTheJobBeforeKillingAndDisposingTheExactProcess()
+    {
+        var events = new List<string>();
+        var process = new FakeDebugOwnedProcess(
+            106,
+            new DateTime(2026, 7, 21, 8, 50, 0, DateTimeKind.Local),
+            events: events);
+        var assignmentError = new DebugSetupException("Synthetic Job Object assignment failure.");
+        var job = new FakeDebugProcessJob(
+            process,
+            events,
+            assignmentError: assignmentError);
+        var processApi = new FakeDebugExcelProcessApi(
+            windowProcessId: process.Id,
+            process,
+            job);
+
+        var error = Assert.Throws<DebugSetupException>(() =>
+            DebugExcelProcessOwner.Capture(
+                (nint)6790,
+                new Dictionary<int, DateTime>(),
+                processApi));
+
+        Assert.Same(assignmentError, error);
+        Assert.Equal(
+            ["job-assign", "job-dispose", "process-kill", "process-exit", "process-dispose"],
+            events);
+        Assert.True(job.Disposed);
+        Assert.Equal(1, process.KillCalls);
+        Assert.True(process.Disposed);
+    }
+
+    [Fact]
     public async Task TerminateKillsOnlyTheCapturedProcessAndIsIdempotent()
     {
         var process = new FakeDebugOwnedProcess(
@@ -62,6 +117,45 @@ public sealed class DebugExcelProcessOwnerTests
 
         Assert.Equal(1, process.KillCalls);
         Assert.Equal(-1, (await owner.Completion).ExitCode);
+    }
+
+    [Fact]
+    public async Task TerminateJobFailureFallsBackToTheExactProcessBeforeDisposingOwnershipHandles()
+    {
+        var events = new List<string>();
+        var process = new FakeDebugOwnedProcess(
+            127,
+            new DateTime(2026, 7, 21, 9, 5, 0, DateTimeKind.Local),
+            events: events);
+        var unrelatedProcess = new FakeDebugOwnedProcess(
+            128,
+            new DateTime(2026, 7, 21, 9, 5, 1, DateTimeKind.Local));
+        var job = new FakeDebugProcessJob(
+            process,
+            events,
+            terminateError: new InvalidOperationException("Synthetic TerminateJobObject failure."));
+        var owner = DebugExcelProcessOwner.Capture(
+            (nint)9013,
+            new Dictionary<int, DateTime>(),
+            new FakeDebugExcelProcessApi(process.Id, process, job));
+
+        await owner.DisposeAsync();
+
+        Assert.Equal(
+            [
+                "job-assign",
+                "job-terminate",
+                "process-kill",
+                "process-exit",
+                "process-dispose",
+                "job-dispose"
+            ],
+            events);
+        Assert.Equal(1, job.TerminateCalls);
+        Assert.Equal(1, process.KillCalls);
+        Assert.Equal(0, unrelatedProcess.KillCalls);
+        Assert.True(process.Disposed);
+        Assert.True(job.Disposed);
     }
 
     [Fact]
@@ -82,14 +176,28 @@ public sealed class DebugExcelProcessOwnerTests
     }
 }
 
-internal sealed class FakeDebugExcelProcessApi(
-    int windowProcessId,
-    IDebugOwnedProcess process) : IDebugExcelProcessApi
+internal sealed class FakeDebugExcelProcessApi : IDebugExcelProcessApi
 {
+    private readonly int windowProcessId;
+    private readonly IDebugOwnedProcess process;
+    private readonly IDebugProcessJob job;
+
+    public FakeDebugExcelProcessApi(
+        int windowProcessId,
+        IDebugOwnedProcess process,
+        IDebugProcessJob? job = null)
+    {
+        this.windowProcessId = windowProcessId;
+        this.process = process;
+        this.job = job ?? new FakeDebugProcessJob(process);
+    }
+
     public IReadOnlyDictionary<int, DateTime> RunningExcelProcesses { get; init; } =
         new Dictionary<int, DateTime>();
 
     public int OpenProcessCalls { get; private set; }
+
+    public int CreateJobCalls { get; private set; }
 
     public IReadOnlyDictionary<int, DateTime> CaptureRunningExcelProcesses()
         => RunningExcelProcesses;
@@ -102,13 +210,80 @@ internal sealed class FakeDebugExcelProcessApi(
         Assert.Equal(process.Id, processId);
         return process;
     }
+
+    public IDebugProcessJob CreateKillOnCloseJob()
+    {
+        CreateJobCalls++;
+        return job;
+    }
+}
+
+internal sealed class FakeDebugProcessJob : IDebugProcessJob
+{
+    private readonly IDebugOwnedProcess process;
+    private readonly List<string>? events;
+    private readonly Exception? assignmentError;
+    private readonly Exception? terminateError;
+    private readonly Action? disposeAction;
+
+    public FakeDebugProcessJob(
+        IDebugOwnedProcess process,
+        List<string>? events = null,
+        Exception? assignmentError = null,
+        Exception? terminateError = null,
+        Action? disposeAction = null)
+    {
+        this.process = process;
+        this.events = events;
+        this.assignmentError = assignmentError;
+        this.terminateError = terminateError;
+        this.disposeAction = disposeAction;
+    }
+
+    public IDebugOwnedProcess? AssignedProcess { get; private set; }
+
+    public int TerminateCalls { get; private set; }
+
+    public bool Disposed { get; private set; }
+
+    public void Assign(IDebugOwnedProcess ownedProcess)
+    {
+        events?.Add("job-assign");
+        Assert.Same(process, ownedProcess);
+        if (assignmentError is not null)
+        {
+            throw assignmentError;
+        }
+
+        AssignedProcess = process;
+    }
+
+    public void Terminate()
+    {
+        events?.Add("job-terminate");
+        TerminateCalls++;
+        if (terminateError is not null)
+        {
+            throw terminateError;
+        }
+
+        process.Kill();
+    }
+
+    public void Dispose()
+    {
+        events?.Add("job-dispose");
+        Disposed = true;
+        disposeAction?.Invoke();
+    }
 }
 
 internal sealed class FakeDebugOwnedProcess(
     int id,
     DateTime startTime,
     DebugExcelProcessArchitecture architecture = DebugExcelProcessArchitecture.X64,
-    Action? killAction = null)
+    Action? killAction = null,
+    List<string>? events = null)
     : IDebugOwnedProcess
 {
     private readonly TaskCompletionSource completion =
@@ -126,11 +301,14 @@ internal sealed class FakeDebugOwnedProcess(
 
     public int KillCalls { get; private set; }
 
+    public bool Disposed { get; private set; }
+
     public Task WaitForExitAsync(CancellationToken cancellationToken)
         => completion.Task.WaitAsync(cancellationToken);
 
     public void Kill()
     {
+        events?.Add("process-kill");
         KillCalls++;
         killAction?.Invoke();
         Exit(-1);
@@ -138,6 +316,7 @@ internal sealed class FakeDebugOwnedProcess(
 
     public void Exit(int exitCode)
     {
+        events?.Add("process-exit");
         ExitCode = exitCode;
         HasExited = true;
         completion.TrySetResult();
@@ -145,5 +324,7 @@ internal sealed class FakeDebugOwnedProcess(
 
     public void Dispose()
     {
+        events?.Add("process-dispose");
+        Disposed = true;
     }
 }

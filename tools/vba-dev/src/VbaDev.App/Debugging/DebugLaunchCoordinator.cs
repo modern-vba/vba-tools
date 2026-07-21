@@ -1,4 +1,5 @@
 using VbaDev.App.Projects;
+using System.Runtime.ExceptionServices;
 
 namespace VbaDev.App.Debugging;
 
@@ -386,8 +387,22 @@ public sealed class DebugLaunchCoordinator
             }
             catch
             {
-                await session.TerminateAsync().ConfigureAwait(false);
-                await session.DisposeAsync().ConfigureAwait(false);
+                try
+                {
+                    await session.TerminateAsync().ConfigureAwait(false);
+                }
+                catch
+                {
+                }
+
+                try
+                {
+                    await session.DisposeAsync().ConfigureAwait(false);
+                }
+                catch
+                {
+                }
+
                 throw;
             }
 
@@ -460,6 +475,7 @@ public sealed class DebugRunningSession : IAsyncDisposable
     internal DebugRunningSession(IVbeDebugSession session, Action releaseLaunch)
     {
         this.session = session;
+        ProcessCompletion = session.Completion;
         Completion = CompleteAndDisposeAsync(session, releaseLaunch);
     }
 
@@ -467,6 +483,11 @@ public sealed class DebugRunningSession : IAsyncDisposable
     /// Gets the owned Excel process identifier.
     /// </summary>
     public int ProcessId => session.ProcessId;
+
+    /// <summary>
+    /// Gets the exact owned-process exit before asynchronous session cleanup completes.
+    /// </summary>
+    public Task<DebugProcessExit> ProcessCompletion { get; }
 
     /// <summary>
     /// Gets a task that completes after Excel exits and session resources are released.
@@ -481,8 +502,44 @@ public sealed class DebugRunningSession : IAsyncDisposable
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
-        await session.TerminateAsync().ConfigureAwait(false);
-        await Completion.ConfigureAwait(false);
+        Exception? terminationError = null;
+        try
+        {
+            await session.TerminateAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            terminationError = ex;
+            try
+            {
+                await session.DisposeAsync().ConfigureAwait(false);
+            }
+            catch
+            {
+                // The original termination failure remains authoritative. Strong
+                // containment disposal is still attempted to close the Job handle.
+            }
+        }
+
+        Exception? completionError = null;
+        try
+        {
+            await Completion.ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            completionError = ex;
+        }
+
+        if (terminationError is not null)
+        {
+            ExceptionDispatchInfo.Capture(terminationError).Throw();
+        }
+
+        if (completionError is not null)
+        {
+            ExceptionDispatchInfo.Capture(completionError).Throw();
+        }
     }
 
     private static async Task<DebugProcessExit> CompleteAndDisposeAsync(
@@ -498,6 +555,11 @@ public sealed class DebugRunningSession : IAsyncDisposable
             try
             {
                 await session.DisposeAsync().ConfigureAwait(false);
+            }
+            catch
+            {
+                // Process exit is the session completion contract. Resource cleanup
+                // remains best-effort after that exact process has already exited.
             }
             finally
             {

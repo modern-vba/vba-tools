@@ -23,6 +23,11 @@ export interface VbaDebugSourceBreakpoint {
   readonly logMessage?: string | undefined;
 }
 
+export interface VbaDebugCancellationToken {
+  readonly isCancellationRequested: boolean;
+  onCancellationRequested(listener: () => void): { dispose(): void };
+}
+
 export interface VbaDebugConfigurationHost {
   readonly workspaceRoots: readonly string[];
   getActiveEditor(): VbaDebugActiveEditor | undefined;
@@ -40,6 +45,13 @@ export class VbaDebugSelectionError extends Error {
   public constructor(message: string) {
     super(message);
     this.name = 'VbaDebugSelectionError';
+  }
+}
+
+export class VbaDebugCancellationError extends Error {
+  public constructor() {
+    super('VBA debug launch was cancelled.');
+    this.name = 'VbaDebugCancellationError';
   }
 }
 
@@ -75,8 +87,10 @@ export function normalizeVbaDebugConfiguration(
 
 export async function resolveVbaDebugConfiguration(
   host: VbaDebugConfigurationHost,
-  configuration: VbaDebugConfiguration
+  configuration: VbaDebugConfiguration,
+  cancellationToken?: VbaDebugCancellationToken
 ): Promise<VbaDebugConfiguration> {
+  throwIfDebugCancellationRequested(cancellationToken);
   const normalizedConfiguration = normalizeVbaDebugConfiguration(configuration);
   const activeEditor = host.getActiveEditor();
   const explicitModule = optionalNonEmptyString(normalizedConfiguration.module);
@@ -90,6 +104,7 @@ export async function resolveVbaDebugConfiguration(
   }
 
   const projects = await loadProjects(host);
+  throwIfDebugCancellationRequested(cancellationToken);
   const explicitProject = optionalNonEmptyString(normalizedConfiguration.project);
   const explicitDocument = optionalNonEmptyString(normalizedConfiguration.document);
   const selection = resolveDocumentSelection(
@@ -98,7 +113,8 @@ export async function resolveVbaDebugConfiguration(
     explicitDocument,
     activeEditor,
     hasExplicitTarget);
-  await saveDirtyProjectSources(host, selection.project);
+  await saveDirtyProjectSources(host, selection.project, cancellationToken);
+  throwIfDebugCancellationRequested(cancellationToken);
   const postSaveActiveEditor = hasExplicitTarget ? undefined : host.getActiveEditor();
   if (
     !hasExplicitTarget
@@ -359,7 +375,8 @@ async function saveDirtyProjectSources(
     readonly manifest: {
       readonly documents: readonly { readonly sourcePath: string }[];
     };
-  }
+  },
+  cancellationToken?: VbaDebugCancellationToken
 ): Promise<void> {
   const sourceSetPaths = project.manifest.documents.map((document) => (
     path.resolve(project.projectRoot, document.sourcePath)
@@ -372,10 +389,12 @@ async function saveDirtyProjectSources(
     ))
     .sort((left, right) => canonicalPath(left.uriPath).localeCompare(canonicalPath(right.uriPath)));
   for (const document of documents) {
+    throwIfDebugCancellationRequested(cancellationToken);
     let saved: boolean;
     try {
-      saved = await document.save();
+      saved = await waitForDebugCancellation(document.save(), cancellationToken);
     } catch {
+      throwIfDebugCancellationRequested(cancellationToken);
       throw new VbaDebugSelectionError(
         `Could not save exported VBA source before the debug launch: ${document.uriPath}`
       );
@@ -387,6 +406,71 @@ async function saveDirtyProjectSources(
       );
     }
   }
+}
+
+export async function saveDirtyVbaDebugProjectSources(
+  host: VbaDebugConfigurationHost,
+  projectRoot: string,
+  cancellationToken?: VbaDebugCancellationToken
+): Promise<void> {
+  throwIfDebugCancellationRequested(cancellationToken);
+  const projects = await loadProjects(host);
+  throwIfDebugCancellationRequested(cancellationToken);
+  const matchingProjects = projects.filter((project) => (
+    samePath(project.projectRoot, projectRoot)
+  ));
+  if (matchingProjects.length !== 1) {
+    throw new VbaDebugSelectionError(
+      `The VBA debug restart project is unavailable: ${projectRoot}`
+    );
+  }
+
+  await saveDirtyProjectSources(host, matchingProjects[0], cancellationToken);
+}
+
+function throwIfDebugCancellationRequested(
+  cancellationToken: VbaDebugCancellationToken | undefined
+): void {
+  if (cancellationToken?.isCancellationRequested) {
+    throw new VbaDebugCancellationError();
+  }
+}
+
+function waitForDebugCancellation<T>(
+  operation: PromiseLike<T>,
+  cancellationToken: VbaDebugCancellationToken | undefined
+): Promise<T> {
+  if (cancellationToken === undefined) {
+    return Promise.resolve(operation);
+  }
+
+  throwIfDebugCancellationRequested(cancellationToken);
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    let cancellationSubscription: { dispose(): void } | undefined;
+    const settle = (complete: () => void) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      cancellationSubscription?.dispose();
+      complete();
+    };
+    cancellationSubscription = cancellationToken.onCancellationRequested(() => {
+      settle(() => reject(new VbaDebugCancellationError()));
+    });
+    if (settled) {
+      cancellationSubscription.dispose();
+    } else if (cancellationToken.isCancellationRequested) {
+      settle(() => reject(new VbaDebugCancellationError()));
+    }
+
+    Promise.resolve(operation).then(
+      (value) => settle(() => resolve(value)),
+      (error: unknown) => settle(() => reject(error))
+    );
+  });
 }
 
 function optionalNonEmptyString(value: unknown): string | undefined {

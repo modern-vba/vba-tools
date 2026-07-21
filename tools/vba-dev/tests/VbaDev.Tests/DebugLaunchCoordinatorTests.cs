@@ -497,6 +497,33 @@ public sealed class DebugLaunchCoordinatorTests
     }
 
     [Fact]
+    public async Task SetupFailureStillDisposesOwnershipWhenExplicitTerminationFails()
+    {
+        var events = new List<string>();
+        var setupError = new DebugSetupException("Workbook setup failed.");
+        var vbeSession = new FakeVbeDebugSession(events)
+        {
+            OpenError = setupError,
+            TerminateError = new InvalidOperationException("Synthetic termination failure.")
+        };
+        var coordinator = new DebugLaunchCoordinator(
+            new FakeDebugWorkbookBuilder(events),
+            new FakeVbeDebugSessionFactory(events, vbeSession));
+
+        var error = await Assert.ThrowsAsync<DebugSetupException>(() => coordinator.LaunchAsync(
+            new DebugLaunchRequest(
+                CreateContext(),
+                new DebugTargetProcedure("DebugModule", "RunTarget"),
+                CreateSourceSnapshot()),
+            new RecordingDebugLifecycleSink(),
+            CancellationToken.None));
+
+        Assert.Same(setupError, error);
+        Assert.True(vbeSession.Terminated);
+        Assert.True(vbeSession.Disposed);
+    }
+
+    [Fact]
     public async Task ASecondProcessLocalLaunchIsRejectedWhileExcelIsStillRunning()
     {
         var events = new List<string>();
@@ -524,6 +551,211 @@ public sealed class DebugLaunchCoordinatorTests
 
         vbeSession.Exit(0);
         await running.Completion;
+    }
+
+    [Fact]
+    public async Task ProcessExitRemainsSuccessfulWhenSessionResourceCleanupFails()
+    {
+        var events = new List<string>();
+        var vbeSession = new FakeVbeDebugSession(events)
+        {
+            DisposeError = new InvalidOperationException("Synthetic cleanup failure.")
+        };
+        var coordinator = new DebugLaunchCoordinator(
+            new FakeDebugWorkbookBuilder(events),
+            new FakeVbeDebugSessionFactory(events, vbeSession));
+        var request = new DebugLaunchRequest(
+            CreateContext(),
+            new DebugTargetProcedure("DebugModule", "RunTarget"),
+            CreateSourceSnapshot());
+
+        var running = await coordinator.LaunchAsync(
+            request,
+            new RecordingDebugLifecycleSink(),
+            CancellationToken.None);
+        vbeSession.Exit(23);
+
+        Assert.Equal(23, (await running.Completion).ExitCode);
+        Assert.True(vbeSession.Disposed);
+
+        var next = await coordinator.LaunchAsync(
+            request,
+            new RecordingDebugLifecycleSink(),
+            CancellationToken.None);
+        Assert.Equal(23, (await next.Completion).ExitCode);
+    }
+
+    [Fact]
+    public async Task CancellationDuringBuildReleasesTheGuardBeforeTheNextLaunch()
+    {
+        var events = new List<string>();
+        var builder = new FirstBuildBlockingDebugWorkbookBuilder(events);
+        var nextSession = new FakeVbeDebugSession(events);
+        var coordinator = new DebugLaunchCoordinator(
+            builder,
+            new FakeVbeDebugSessionFactory(events, nextSession));
+        var request = new DebugLaunchRequest(
+            CreateContext(),
+            new DebugTargetProcedure("DebugModule", "RunTarget"),
+            CreateSourceSnapshot());
+        using var cancellation = new CancellationTokenSource();
+
+        var blockedLaunch = coordinator.LaunchAsync(
+            request,
+            new RecordingDebugLifecycleSink(),
+            cancellation.Token);
+        await builder.FirstBuildStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => blockedLaunch);
+        Assert.Equal(["build:1", "cancel-build:1"], events);
+
+        var next = await coordinator.LaunchAsync(
+            request,
+            new RecordingDebugLifecycleSink(),
+            CancellationToken.None);
+        nextSession.Exit(0);
+        Assert.Equal(0, (await next.Completion).ExitCode);
+        Assert.True(nextSession.Disposed);
+    }
+
+    [Theory]
+    [InlineData(BlockingSetupPhase.WorkbookOpen)]
+    [InlineData(BlockingSetupPhase.BreakpointTransfer)]
+    [InlineData(BlockingSetupPhase.TargetSetup)]
+    public async Task CancellationDuringOwnedSetupTerminatesThenDisposesBeforeTheNextLaunch(
+        BlockingSetupPhase phase)
+    {
+        var events = new List<string>();
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstSession = new FakeVbeDebugSession(events)
+        {
+            OpenGate = phase == BlockingSetupPhase.WorkbookOpen ? gate : null,
+            SetGate = phase == BlockingSetupPhase.BreakpointTransfer ? gate : null,
+            RunGate = phase == BlockingSetupPhase.TargetSetup ? gate : null,
+            RecordCleanupEvents = true
+        };
+        var secondSession = new FakeVbeDebugSession(events);
+        var sourcePath = Path.Combine(CreateContext().DocumentSourceSetPath, "DebugModule.bas");
+        var requested = new DebugSourceBreakpoint(sourcePath, EditorLine: 4);
+        var snapshot = Snapshot(sourcePath, "Attribute VB_Name = \"DebugModule\"", [requested]);
+        var request = new DebugLaunchRequest(
+            CreateContext(),
+            new DebugTargetProcedure("DebugModule", "RunTarget"),
+            snapshot)
+        {
+            BreakpointPlan = phase == BlockingSetupPhase.BreakpointTransfer
+                ? new DebugBreakpointPlan([requested], [])
+                : new DebugBreakpointPlan([], [])
+        };
+        var coordinator = new DebugLaunchCoordinator(
+            new FakeDebugWorkbookBuilder(events),
+            new SequenceVbeDebugSessionFactory(events, firstSession, secondSession),
+            new FakeBreakpointSourceMapper(
+                events,
+                Mapped(requested, "DebugModule", 1, "Attribute VB_Name = \"DebugModule\"")));
+        using var cancellation = new CancellationTokenSource();
+
+        var blockedLaunch = coordinator.LaunchAsync(
+            request,
+            new RecordingDebugLifecycleSink(),
+            cancellation.Token);
+        var started = phase switch
+        {
+            BlockingSetupPhase.WorkbookOpen => firstSession.OpenStarted.Task,
+            BlockingSetupPhase.BreakpointTransfer => firstSession.SetStarted.Task,
+            _ => firstSession.RunStarted.Task
+        };
+        await started.WaitAsync(TimeSpan.FromSeconds(5));
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => blockedLaunch);
+        var terminateIndex = events.IndexOf("terminate");
+        var disposeIndex = events.IndexOf("dispose");
+        Assert.True(terminateIndex >= 0, string.Join(Environment.NewLine, events));
+        Assert.True(disposeIndex > terminateIndex, string.Join(Environment.NewLine, events));
+
+        var next = await coordinator.LaunchAsync(
+            request with { BreakpointPlan = new DebugBreakpointPlan([], []) },
+            new RecordingDebugLifecycleSink(),
+            CancellationToken.None);
+        secondSession.Exit(0);
+        Assert.Equal(0, (await next.Completion).ExitCode);
+        Assert.True(secondSession.Disposed);
+        Assert.True(events.LastIndexOf("start-visible") > disposeIndex);
+    }
+
+    [Fact]
+    public async Task StopDuringSteadyMonitoringTerminatesAndDisposesBeforeTheNextLaunch()
+    {
+        var events = new List<string>();
+        var firstSession = new FakeVbeDebugSession(events)
+        {
+            RecordCleanupEvents = true
+        };
+        var secondSession = new FakeVbeDebugSession(events);
+        var coordinator = new DebugLaunchCoordinator(
+            new FakeDebugWorkbookBuilder(events),
+            new SequenceVbeDebugSessionFactory(events, firstSession, secondSession));
+        var request = new DebugLaunchRequest(
+            CreateContext(),
+            new DebugTargetProcedure("DebugModule", "RunTarget"),
+            CreateSourceSnapshot());
+
+        var running = await coordinator.LaunchAsync(
+            request,
+            new RecordingDebugLifecycleSink(),
+            CancellationToken.None);
+        await running.TerminateAsync();
+        Assert.Equal(-1, (await running.Completion).ExitCode);
+
+        var terminateIndex = events.IndexOf("terminate");
+        var disposeIndex = events.IndexOf("dispose");
+        Assert.True(disposeIndex > terminateIndex, string.Join(Environment.NewLine, events));
+        var next = await coordinator.LaunchAsync(
+            request,
+            new RecordingDebugLifecycleSink(),
+            CancellationToken.None);
+        secondSession.Exit(0);
+        Assert.Equal(0, (await next.Completion).ExitCode);
+        Assert.True(events.LastIndexOf("start-visible") > disposeIndex);
+    }
+
+    [Fact]
+    public async Task SteadyTerminationFailureStillDisposesContainmentAndReleasesTheGuard()
+    {
+        var events = new List<string>();
+        var terminationError = new InvalidOperationException("Synthetic steady termination failure.");
+        var firstSession = new FakeVbeDebugSession(events)
+        {
+            TerminateError = terminationError,
+            ExitOnDispose = true
+        };
+        var secondSession = new FakeVbeDebugSession(events);
+        var coordinator = new DebugLaunchCoordinator(
+            new FakeDebugWorkbookBuilder(events),
+            new SequenceVbeDebugSessionFactory(events, firstSession, secondSession));
+        var request = new DebugLaunchRequest(
+            CreateContext(),
+            new DebugTargetProcedure("DebugModule", "RunTarget"),
+            CreateSourceSnapshot());
+        var running = await coordinator.LaunchAsync(
+            request,
+            new RecordingDebugLifecycleSink(),
+            CancellationToken.None);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            running.DisposeAsync().AsTask());
+
+        Assert.Same(terminationError, error);
+        Assert.True(firstSession.Disposed);
+        Assert.True(running.Completion.IsCompletedSuccessfully);
+        var next = await coordinator.LaunchAsync(
+            request,
+            new RecordingDebugLifecycleSink(),
+            CancellationToken.None);
+        secondSession.Exit(0);
+        Assert.Equal(0, (await next.Completion).ExitCode);
     }
 
     [Fact]
@@ -942,6 +1174,13 @@ public sealed class DebugLaunchCoordinatorTests
     private static DebugSourceSnapshot CreateSourceSnapshot()
         => new(DebugSourceSnapshot.CurrentSchemaVersion, [], null);
 
+    public enum BlockingSetupPhase
+    {
+        WorkbookOpen,
+        BreakpointTransfer,
+        TargetSetup
+    }
+
     private sealed class FakeDebugWorkbookBuilder(
         List<string> events,
         IReadOnlyList<string>? output = null) : IDebugWorkbookBuilder
@@ -953,6 +1192,39 @@ public sealed class DebugLaunchCoordinatorTests
         {
             events.Add($"build:{context.DocumentName}");
             return Task.FromResult(new DebugWorkbookBuildResult(output ?? []));
+        }
+    }
+
+    private sealed class FirstBuildBlockingDebugWorkbookBuilder(List<string> events)
+        : IDebugWorkbookBuilder
+    {
+        private int buildCalls;
+
+        public TaskCompletionSource FirstBuildStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<DebugWorkbookBuildResult> BuildAsync(
+            ResolvedProjectContext context,
+            DebugSourceSnapshot sourceSnapshot,
+            CancellationToken cancellationToken)
+        {
+            var call = Interlocked.Increment(ref buildCalls);
+            events.Add($"build:{call}");
+            if (call == 1)
+            {
+                FirstBuildStarted.TrySetResult();
+                try
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    events.Add("cancel-build:1");
+                    throw;
+                }
+            }
+
+            return new DebugWorkbookBuildResult([]);
         }
     }
 
@@ -978,6 +1250,19 @@ public sealed class DebugLaunchCoordinatorTests
         {
             events.Add("start-visible");
             return Task.FromResult(session);
+        }
+    }
+
+    private sealed class SequenceVbeDebugSessionFactory(
+        List<string> events,
+        params IVbeDebugSession[] sessions) : IVbeDebugSessionFactory
+    {
+        private int nextSession;
+
+        public Task<IVbeDebugSession> StartVisibleAsync(CancellationToken cancellationToken)
+        {
+            events.Add("start-visible");
+            return Task.FromResult(sessions[nextSession++]);
         }
     }
 
@@ -1031,9 +1316,17 @@ public sealed class DebugLaunchCoordinatorTests
 
         public Exception? RunError { get; init; }
 
+        public Exception? TerminateError { get; init; }
+
+        public Exception? DisposeError { get; init; }
+
+        public bool ExitOnDispose { get; init; }
+
         public TaskCompletionSource? OpenGate { get; init; }
 
         public TaskCompletionSource? RunGate { get; init; }
+
+        public TaskCompletionSource? SetGate { get; init; }
 
         public DebugInputWait? OpenInputWait { get; init; }
 
@@ -1043,6 +1336,9 @@ public sealed class DebugLaunchCoordinatorTests
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public TaskCompletionSource RunStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource SetStarted { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public Exception? SetError { get; init; }
@@ -1076,10 +1372,11 @@ public sealed class DebugLaunchCoordinatorTests
             }
         }
 
-        public Task SetNativeBreakpointsAsync(
+        public async Task SetNativeBreakpointsAsync(
             IReadOnlyList<VbeBreakpoint> breakpoints,
             CancellationToken cancellationToken)
         {
+            SetStarted.TrySetResult();
             foreach (var breakpoint in breakpoints)
             {
                 SetCalls++;
@@ -1088,11 +1385,14 @@ public sealed class DebugLaunchCoordinatorTests
                 if (SetError is not null
                     && (SetErrorAtCall is not int errorCall || errorCall == SetCalls))
                 {
-                    return Task.FromException(SetError);
+                    throw SetError;
                 }
             }
 
-            return Task.CompletedTask;
+            if (SetGate is not null)
+            {
+                await SetGate.Task.WaitAsync(cancellationToken);
+            }
         }
 
         private int SetCalls { get; set; }
@@ -1123,6 +1423,16 @@ public sealed class DebugLaunchCoordinatorTests
         public ValueTask TerminateAsync()
         {
             Terminated = true;
+            if (RecordCleanupEvents)
+            {
+                events.Add("terminate");
+            }
+
+            if (TerminateError is not null)
+            {
+                return ValueTask.FromException(TerminateError);
+            }
+
             completion.TrySetResult(new DebugProcessExit(-1));
             return ValueTask.CompletedTask;
         }
@@ -1130,10 +1440,27 @@ public sealed class DebugLaunchCoordinatorTests
         public ValueTask DisposeAsync()
         {
             Disposed = true;
+            if (RecordCleanupEvents)
+            {
+                events.Add("dispose");
+            }
+
+            if (DisposeError is not null)
+            {
+                return ValueTask.FromException(DisposeError);
+            }
+
+            if (ExitOnDispose)
+            {
+                completion.TrySetResult(new DebugProcessExit(-2));
+            }
+
             return ValueTask.CompletedTask;
         }
 
         public void Exit(int exitCode) => completion.TrySetResult(new DebugProcessExit(exitCode));
+
+        public bool RecordCleanupEvents { get; init; }
     }
 
     private sealed class FakeDebugCompilationSettingsReader(

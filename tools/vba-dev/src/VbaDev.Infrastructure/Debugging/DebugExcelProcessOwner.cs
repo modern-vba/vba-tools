@@ -9,6 +9,17 @@ internal interface IDebugExcelProcessApi
     int GetProcessId(nint windowHandle);
 
     IDebugOwnedProcess OpenProcess(int processId);
+
+    IDebugProcessJob CreateKillOnCloseJob()
+        => throw new DebugSetupException(
+            "Strong Excel process ownership is not available from this process adapter.");
+}
+
+internal interface IDebugProcessJob : IDisposable
+{
+    void Assign(IDebugOwnedProcess process);
+
+    void Terminate();
 }
 
 internal interface IDebugOwnedProcess : IDisposable
@@ -34,13 +45,15 @@ internal interface IDebugOwnedProcess : IDisposable
 internal sealed class DebugExcelProcessOwner : IAsyncDisposable
 {
     private readonly IDebugOwnedProcess process;
+    private readonly IDebugProcessJob job;
     private readonly SemaphoreSlim terminationLock = new(1, 1);
     private int terminationCompleted;
     private int disposed;
 
-    private DebugExcelProcessOwner(IDebugOwnedProcess process)
+    private DebugExcelProcessOwner(IDebugOwnedProcess process, IDebugProcessJob job)
     {
         this.process = process;
+        this.job = job;
         ProcessId = process.Id;
         ProcessStartTime = process.StartTime;
         Completion = MonitorExitAsync(process);
@@ -73,14 +86,26 @@ internal sealed class DebugExcelProcessOwner : IAsyncDisposable
         }
 
         var process = processApi.OpenProcess(processId);
-        if (process.Id != processId || process.HasExited)
+        IDebugProcessJob? job = null;
+        try
         {
-            process.Dispose();
-            throw new DebugSetupException(
-                "The visible Excel process exited or changed identity before debug ownership was established.");
-        }
+            if (process.Id != processId || process.HasExited)
+            {
+                throw new DebugSetupException(
+                    "The visible Excel process exited or changed identity before debug ownership was established.");
+            }
 
-        return new DebugExcelProcessOwner(process);
+            job = processApi.CreateKillOnCloseJob();
+            job.Assign(process);
+            return new DebugExcelProcessOwner(process, job);
+        }
+        catch
+        {
+            job?.Dispose();
+            TryTerminateExactProcess(process);
+            process.Dispose();
+            throw;
+        }
     }
 
     public async ValueTask TerminateAsync()
@@ -102,10 +127,14 @@ internal sealed class DebugExcelProcessOwner : IAsyncDisposable
             {
                 try
                 {
-                    process.Kill();
+                    job.Terminate();
                 }
-                catch (InvalidOperationException) when (process.HasExited)
+                catch (Exception) when (process.HasExited)
                 {
+                }
+                catch
+                {
+                    process.Kill();
                 }
             }
 
@@ -131,7 +160,33 @@ internal sealed class DebugExcelProcessOwner : IAsyncDisposable
         }
         finally
         {
-            process.Dispose();
+            try
+            {
+                process.Dispose();
+            }
+            finally
+            {
+                job.Dispose();
+            }
+        }
+    }
+
+    private static void TryTerminateExactProcess(IDebugOwnedProcess process)
+    {
+        if (process.HasExited)
+        {
+            return;
+        }
+
+        try
+        {
+            process.Kill();
+        }
+        catch (Exception) when (process.HasExited)
+        {
+        }
+        catch (InvalidOperationException)
+        {
         }
     }
 

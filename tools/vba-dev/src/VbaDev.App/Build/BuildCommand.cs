@@ -28,6 +28,14 @@ public sealed class BuildCommand
     public CommandResult Run(ResolvedProjectContext context)
         => outputCommand.Run(context, WorkbookOutputProfile.Build);
 
+    internal Task<CommandResult> RunAsync(
+        ResolvedProjectContext context,
+        CancellationToken cancellationToken)
+        => outputCommand.RunAsync(
+            context,
+            WorkbookOutputProfile.Build,
+            cancellationToken);
+
     /// <summary>
     /// Generates the document's bin workbook from an already planned immutable source list.
     /// </summary>
@@ -35,4 +43,14 @@ public sealed class BuildCommand
         ResolvedProjectContext context,
         IReadOnlyList<VbaSourceFile> sourceFiles)
         => outputCommand.Run(context, WorkbookOutputProfile.Build, sourceFiles);
+
+    internal Task<CommandResult> RunAsync(
+        ResolvedProjectContext context,
+        IReadOnlyList<VbaSourceFile> sourceFiles,
+        CancellationToken cancellationToken)
+        => outputCommand.RunAsync(
+            context,
+            WorkbookOutputProfile.Build,
+            sourceFiles,
+            cancellationToken);
 }

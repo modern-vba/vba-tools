@@ -39,7 +39,18 @@ public sealed class WorkbookOutputCommand
         => RunCore(
             context,
             profile,
-            () => profile.ResolveSourceFiles(sourcePlanner, context));
+            () => profile.ResolveSourceFiles(sourcePlanner, context),
+            CancellationToken.None);
+
+    internal Task<CommandResult> RunAsync(
+        ResolvedProjectContext context,
+        WorkbookOutputProfile profile,
+        CancellationToken cancellationToken)
+        => RunAsyncCore(
+            context,
+            profile,
+            () => profile.ResolveSourceFiles(sourcePlanner, context),
+            cancellationToken);
 
     /// <summary>
     /// Generates one workbook output from an already planned source list.
@@ -48,30 +59,69 @@ public sealed class WorkbookOutputCommand
         ResolvedProjectContext context,
         WorkbookOutputProfile profile,
         IReadOnlyList<VbaSourceFile> sourceFiles)
-        => RunCore(context, profile, () => sourceFiles);
+        => RunCore(
+            context,
+            profile,
+            () => sourceFiles,
+            CancellationToken.None);
+
+    internal Task<CommandResult> RunAsync(
+        ResolvedProjectContext context,
+        WorkbookOutputProfile profile,
+        IReadOnlyList<VbaSourceFile> sourceFiles,
+        CancellationToken cancellationToken)
+        => RunAsyncCore(
+            context,
+            profile,
+            () => sourceFiles,
+            cancellationToken);
+
+    private Task<CommandResult> RunAsyncCore(
+        ResolvedProjectContext context,
+        WorkbookOutputProfile profile,
+        Func<IReadOnlyList<VbaSourceFile>> resolveSourceFiles,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.Run(
+            () => RunCore(context, profile, resolveSourceFiles, cancellationToken),
+            CancellationToken.None);
+    }
 
     private CommandResult RunCore(
         ResolvedProjectContext context,
         WorkbookOutputProfile profile,
-        Func<IReadOnlyList<VbaSourceFile>> resolveSourceFiles)
+        Func<IReadOnlyList<VbaSourceFile>> resolveSourceFiles,
+        CancellationToken cancellationToken)
     {
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (!context.Document.Kind.Equals(ProjectDocument.ExcelKind, StringComparison.OrdinalIgnoreCase))
             {
                 return CommandResult.UsageError($"{profile.DisplayName} supports only Excel documents: {context.DocumentName}");
             }
 
             var sourceFiles = resolveSourceFiles();
+            cancellationToken.ThrowIfCancellationRequested();
             var targetDocumentPath = profile.ResolveTargetDocumentPath(context);
             var generationResult = generationPipeline.Generate(
                 context.DocumentName,
                 context.TemplateDocumentPath,
                 targetDocumentPath,
                 context.Document.References,
-                sourceFiles);
+                sourceFiles,
+                cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
 
             return CommandResult.Success(RenderOutput(profile, targetDocumentPath, sourceFiles, generationResult.Warnings));
+        }
+        catch (Exception ex) when (cancellationToken.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(
+                "Workbook generation was cancelled.",
+                ex,
+                cancellationToken);
         }
         catch (BuildCommandException ex)
         {
