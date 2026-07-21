@@ -56,6 +56,56 @@ public sealed record DebugProcessExit(int ExitCode);
 public sealed record DebugLifecycleMessage(string Output);
 
 /// <summary>
+/// Identifies the native UI that currently requires user input.
+/// </summary>
+public enum DebugInputWaitKind
+{
+    Excel,
+    Vbe,
+    ExcelOrVbe
+}
+
+/// <summary>
+/// Identifies the launch operation blocked by native user input.
+/// </summary>
+public enum DebugInputWaitPhase
+{
+    WorkbookOpen,
+    TargetStart
+}
+
+/// <summary>
+/// Reports a detected modal prompt owned by the exact debug Excel process.
+/// </summary>
+/// <param name="Kind">The native UI that owns the prompt.</param>
+/// <param name="Phase">The launch phase waiting for the prompt.</param>
+/// <param name="ProcessId">The exact owned Excel process identifier.</param>
+public sealed record DebugInputWait(
+    DebugInputWaitKind Kind,
+    DebugInputWaitPhase Phase,
+    int ProcessId)
+{
+    /// <summary>
+    /// Creates the user-facing lifecycle message for this wait state.
+    /// </summary>
+    public DebugLifecycleMessage ToLifecycleMessage()
+    {
+        var owner = Kind switch
+        {
+            DebugInputWaitKind.Excel => "Excel",
+            DebugInputWaitKind.Vbe => "the VBE",
+            _ => "Excel/VBE"
+        };
+        var operation = Phase == DebugInputWaitPhase.WorkbookOpen
+            ? "opening the generated workbook"
+            : "starting the debug target";
+        return new DebugLifecycleMessage(
+            $"Owned Excel process {ProcessId} is waiting for {owner} input while {operation}. " +
+            "Respond to the visible prompt or stop debugging.");
+    }
+}
+
+/// <summary>
 /// Builds the manifest-selected document before visible Excel starts.
 /// </summary>
 public interface IDebugWorkbookBuilder
@@ -103,10 +153,11 @@ public interface IVbeDebugSession : IAsyncDisposable
         CancellationToken cancellationToken);
 
     /// <summary>
-    /// Opens the exact generated workbook before native debug commands are prepared.
+    /// Opens the exact generated workbook before native debug commands are prepared and reports native input waits.
     /// </summary>
     Task OpenGeneratedWorkbookAsync(
         string workbookPath,
+        IDebugInputWaitSink? inputWaitSink,
         CancellationToken cancellationToken);
 
     /// <summary>
@@ -117,10 +168,11 @@ public interface IVbeDebugSession : IAsyncDisposable
         CancellationToken cancellationToken);
 
     /// <summary>
-    /// Establishes the target VBE command context and invokes the native Run command.
+    /// Establishes the target VBE command context, invokes the native Run command, and reports native input waits.
     /// </summary>
     Task RunTargetAsync(
         DebugTargetProcedure target,
+        IDebugInputWaitSink? inputWaitSink,
         CancellationToken cancellationToken);
 
     /// <summary>
@@ -130,14 +182,33 @@ public interface IVbeDebugSession : IAsyncDisposable
 }
 
 /// <summary>
+/// Receives notification that native Excel/VBE input is required.
+/// </summary>
+public interface IDebugInputWaitSink
+{
+    /// <summary>
+    /// Reports that the exact owned Excel process has displayed a modal prompt.
+    /// </summary>
+    ValueTask InputRequiredAsync(
+        DebugInputWait inputWait,
+        CancellationToken cancellationToken);
+}
+
+/// <summary>
 /// Receives user-visible debug lifecycle output without depending on a transport.
 /// </summary>
-public interface IDebugLaunchEventSink
+public interface IDebugLaunchEventSink : IDebugInputWaitSink
 {
     /// <summary>
     /// Writes one lifecycle message.
     /// </summary>
     ValueTask WriteAsync(DebugLifecycleMessage message, CancellationToken cancellationToken);
+
+    /// <inheritdoc />
+    ValueTask IDebugInputWaitSink.InputRequiredAsync(
+        DebugInputWait inputWait,
+        CancellationToken cancellationToken)
+        => WriteAsync(inputWait.ToLifecycleMessage(), cancellationToken);
 
     /// <summary>
     /// Reports that an exact source mapping has been transferred through the native VBE command.
@@ -266,6 +337,7 @@ public sealed class DebugLaunchCoordinator
             {
                 await session.OpenGeneratedWorkbookAsync(
                     request.Context.BinDocumentPath,
+                    eventSink,
                     cancellationToken).ConfigureAwait(false);
 
                 if (requiresConditionalCompilationPreflight)
@@ -307,7 +379,10 @@ public sealed class DebugLaunchCoordinator
                     }
                 }
 
-                await session.RunTargetAsync(request.Target, cancellationToken).ConfigureAwait(false);
+                await session.RunTargetAsync(
+                    request.Target,
+                    eventSink,
+                    cancellationToken).ConfigureAwait(false);
             }
             catch
             {

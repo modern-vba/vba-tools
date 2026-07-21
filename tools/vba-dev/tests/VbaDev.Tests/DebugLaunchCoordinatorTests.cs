@@ -365,6 +365,92 @@ public sealed class DebugLaunchCoordinatorTests
     }
 
     [Fact]
+    public async Task WorkbookOpenPromptIsReportedAndLaunchKeepsWaitingWhileTheOwnedProcessLives()
+    {
+        var events = new List<string>();
+        var openGate = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var session = new FakeVbeDebugSession(events)
+        {
+            OpenGate = openGate,
+            OpenInputWait = new DebugInputWait(
+                DebugInputWaitKind.Excel,
+                DebugInputWaitPhase.WorkbookOpen,
+                31415)
+        };
+        var lifecycle = new RecordingDebugLifecycleSink();
+        var coordinator = new DebugLaunchCoordinator(
+            new FakeDebugWorkbookBuilder(events),
+            new FakeVbeDebugSessionFactory(events, session));
+
+        var launch = coordinator.LaunchAsync(
+            new DebugLaunchRequest(
+                CreateContext(),
+                new DebugTargetProcedure("DebugModule", "RunTarget"),
+                CreateSourceSnapshot()),
+            lifecycle,
+            CancellationToken.None);
+
+        await session.OpenStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await Task.Delay(TimeSpan.FromMilliseconds(100));
+        Assert.False(launch.IsCompleted);
+        Assert.False(session.Terminated);
+
+        openGate.TrySetResult();
+        var running = await launch;
+        var wait = Assert.Single(lifecycle.InputWaits);
+        Assert.Equal(DebugInputWaitKind.Excel, wait.Kind);
+        Assert.Equal(DebugInputWaitPhase.WorkbookOpen, wait.Phase);
+        Assert.Equal(session.ProcessId, wait.ProcessId);
+
+        session.Exit(0);
+        await running.Completion;
+    }
+
+    [Fact]
+    public async Task DismissedCompilePromptIsReportedAsVbeInputBeforeItsSetupError()
+    {
+        var events = new List<string>();
+        var runGate = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var session = new FakeVbeDebugSession(events)
+        {
+            RunGate = runGate,
+            RunInputWait = new DebugInputWait(
+                DebugInputWaitKind.Vbe,
+                DebugInputWaitPhase.TargetStart,
+                31415),
+            RunError = new DebugSetupException(
+                "The enabled native VBE Run command did not complete after the compile dialog was dismissed.")
+        };
+        var lifecycle = new RecordingDebugLifecycleSink();
+        var coordinator = new DebugLaunchCoordinator(
+            new FakeDebugWorkbookBuilder(events),
+            new FakeVbeDebugSessionFactory(events, session));
+
+        var launch = coordinator.LaunchAsync(
+            new DebugLaunchRequest(
+                CreateContext(),
+                new DebugTargetProcedure("DebugModule", "RunTarget"),
+                CreateSourceSnapshot()),
+            lifecycle,
+            CancellationToken.None);
+
+        await session.RunStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        runGate.TrySetResult();
+        var error = await Assert.ThrowsAsync<DebugSetupException>(() => launch);
+
+        Assert.Contains("compile dialog", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("not found", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("disabled", error.Message, StringComparison.OrdinalIgnoreCase);
+        var wait = Assert.Single(lifecycle.InputWaits);
+        Assert.Equal(DebugInputWaitKind.Vbe, wait.Kind);
+        Assert.Equal(DebugInputWaitPhase.TargetStart, wait.Phase);
+        Assert.True(session.Terminated);
+        Assert.True(session.Disposed);
+    }
+
+    [Fact]
     public async Task ABuildErrorPreventsVisibleExcelFromStarting()
     {
         var events = new List<string>();
@@ -943,6 +1029,22 @@ public sealed class DebugLaunchCoordinatorTests
 
         public Exception? OpenError { get; init; }
 
+        public Exception? RunError { get; init; }
+
+        public TaskCompletionSource? OpenGate { get; init; }
+
+        public TaskCompletionSource? RunGate { get; init; }
+
+        public DebugInputWait? OpenInputWait { get; init; }
+
+        public DebugInputWait? RunInputWait { get; init; }
+
+        public TaskCompletionSource OpenStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource RunStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public Exception? SetError { get; init; }
 
         public int? SetErrorAtCall { get; init; }
@@ -951,14 +1053,27 @@ public sealed class DebugLaunchCoordinatorTests
 
         public bool Disposed { get; private set; }
 
-        public Task OpenGeneratedWorkbookAsync(
+        public async Task OpenGeneratedWorkbookAsync(
             string workbookPath,
+            IDebugInputWaitSink? inputWaitSink,
             CancellationToken cancellationToken)
         {
             events.Add($"open:{workbookPath}");
-            return OpenError is null
-                ? Task.CompletedTask
-                : Task.FromException(OpenError);
+            OpenStarted.TrySetResult();
+            if (inputWaitSink is not null && OpenInputWait is not null)
+            {
+                await inputWaitSink.InputRequiredAsync(OpenInputWait, cancellationToken);
+            }
+
+            if (OpenGate is not null)
+            {
+                await OpenGate.Task.WaitAsync(cancellationToken);
+            }
+
+            if (OpenError is not null)
+            {
+                throw OpenError;
+            }
         }
 
         public Task SetNativeBreakpointsAsync(
@@ -982,12 +1097,27 @@ public sealed class DebugLaunchCoordinatorTests
 
         private int SetCalls { get; set; }
 
-        public Task RunTargetAsync(
+        public async Task RunTargetAsync(
             DebugTargetProcedure target,
+            IDebugInputWaitSink? inputWaitSink,
             CancellationToken cancellationToken)
         {
             events.Add($"run:{target.ModuleName}.{target.ProcedureName}");
-            return Task.CompletedTask;
+            RunStarted.TrySetResult();
+            if (inputWaitSink is not null && RunInputWait is not null)
+            {
+                await inputWaitSink.InputRequiredAsync(RunInputWait, cancellationToken);
+            }
+
+            if (RunGate is not null)
+            {
+                await RunGate.Task.WaitAsync(cancellationToken);
+            }
+
+            if (RunError is not null)
+            {
+                throw RunError;
+            }
         }
 
         public ValueTask TerminateAsync()
@@ -1024,9 +1154,19 @@ public sealed class DebugLaunchCoordinatorTests
     {
         public List<string> Output { get; } = [];
 
+        public List<DebugInputWait> InputWaits { get; } = [];
+
         public ValueTask WriteAsync(DebugLifecycleMessage message, CancellationToken cancellationToken)
         {
             Output.Add(message.Output);
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask InputRequiredAsync(
+            DebugInputWait inputWait,
+            CancellationToken cancellationToken)
+        {
+            InputWaits.Add(inputWait);
             return ValueTask.CompletedTask;
         }
     }

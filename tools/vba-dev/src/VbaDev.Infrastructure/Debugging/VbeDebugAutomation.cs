@@ -55,6 +55,8 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
     private readonly IDebugExcelProcessApi processApi;
     private readonly IDebugWindowActivator windowActivator;
     private readonly IStaComDispatcherFactory dispatcherFactory;
+    private readonly IExcelDebugWorkbookOpener workbookOpener;
+    private readonly IDebugModalPromptMonitor promptMonitor;
 
     /// <summary>
     /// Creates the production Excel/VBIDE automation adapter.
@@ -72,12 +74,16 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
         IExcelDebugApplicationFactory applicationFactory,
         IDebugExcelProcessApi processApi,
         IDebugWindowActivator windowActivator,
-        IStaComDispatcherFactory dispatcherFactory)
+        IStaComDispatcherFactory dispatcherFactory,
+        IExcelDebugWorkbookOpener? workbookOpener = null,
+        IDebugModalPromptMonitor? promptMonitor = null)
     {
         this.applicationFactory = applicationFactory;
         this.processApi = processApi;
         this.windowActivator = windowActivator;
         this.dispatcherFactory = dispatcherFactory;
+        this.workbookOpener = workbookOpener ?? new ExcelComDebugWorkbookOpener();
+        this.promptMonitor = promptMonitor ?? new DebugModalPromptMonitor();
     }
 
     /// <inheritdoc />
@@ -109,7 +115,9 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                 excelObject!,
                 processOwner!,
                 dispatcher,
-                windowActivator);
+                windowActivator,
+                workbookOpener,
+                promptMonitor);
         }
         catch
         {
@@ -158,7 +166,10 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
         private readonly DebugExcelProcessOwner processOwner;
         private readonly IStaComDispatcher dispatcher;
         private readonly IDebugWindowActivator windowActivator;
+        private readonly IExcelDebugWorkbookOpener workbookOpener;
+        private readonly IDebugModalPromptMonitor promptMonitor;
         private object? workbookObject;
+        private Task targetPromptObservation = Task.CompletedTask;
         private int? foregroundPermissionHResult;
         private int workbookOpened;
         private int disposed;
@@ -167,12 +178,16 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             object excelObject,
             DebugExcelProcessOwner processOwner,
             IStaComDispatcher dispatcher,
-            IDebugWindowActivator windowActivator)
+            IDebugWindowActivator windowActivator,
+            IExcelDebugWorkbookOpener workbookOpener,
+            IDebugModalPromptMonitor promptMonitor)
         {
             this.excelObject = excelObject;
             this.processOwner = processOwner;
             this.dispatcher = dispatcher;
             this.windowActivator = windowActivator;
+            this.workbookOpener = workbookOpener;
+            this.promptMonitor = promptMonitor;
         }
 
         public int ProcessId => processOwner.ProcessId;
@@ -190,6 +205,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
 
         public async Task OpenGeneratedWorkbookAsync(
             string workbookPath,
+            IDebugInputWaitSink? inputWaitSink,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -205,9 +221,24 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                     $"The generated debug workbook does not exist: {expectedWorkbookPath}");
             }
 
-            workbookObject = await InvokeSetupAsync(
-                () => OpenWorkbook(expectedWorkbookPath),
-                cancellationToken).ConfigureAwait(false);
+            var inputWait = new DebugInputWait(
+                DebugInputWaitKind.ExcelOrVbe,
+                DebugInputWaitPhase.WorkbookOpen,
+                ProcessId);
+            var observation = inputWaitSink is null
+                ? null
+                : promptMonitor.Capture(inputWait);
+            var operation = InvokeSetupAsync(
+                () => workbookOpener.OpenVerified(excelObject, expectedWorkbookPath),
+                cancellationToken);
+            workbookObject = inputWaitSink is null
+                ? await operation.ConfigureAwait(false)
+                : await promptMonitor.ObserveAsync(
+                    observation!,
+                    operation,
+                    processOwner.Completion,
+                    inputWaitSink,
+                    cancellationToken).ConfigureAwait(false);
         }
 
         public async Task SetNativeBreakpointsAsync(
@@ -226,16 +257,40 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
 
         public async Task RunTargetAsync(
             DebugTargetProcedure target,
+            IDebugInputWaitSink? inputWaitSink,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            _ = await InvokeSetupAsync(
+            var inputWait = new DebugInputWait(
+                DebugInputWaitKind.ExcelOrVbe,
+                DebugInputWaitPhase.TargetStart,
+                ProcessId);
+            var observation = inputWaitSink is null
+                ? null
+                : promptMonitor.Capture(inputWait);
+            var operation = InvokeSetupAsync(
                 () =>
                 {
                     RunTarget(target);
                     return true;
                 },
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken);
+            _ = inputWaitSink is null
+                ? await operation.ConfigureAwait(false)
+                : await promptMonitor.ObserveAsync(
+                    observation!,
+                    operation,
+                    processOwner.Completion,
+                    inputWaitSink,
+                    cancellationToken).ConfigureAwait(false);
+            if (inputWaitSink is not null)
+            {
+                targetPromptObservation = promptMonitor.ObserveUntilProcessExitAsync(
+                    observation!,
+                    processOwner.Completion,
+                    inputWaitSink,
+                    CancellationToken.None);
+            }
         }
 
         public ValueTask TerminateAsync() => processOwner.TerminateAsync();
@@ -248,6 +303,16 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             }
 
             await processOwner.TerminateAsync().ConfigureAwait(false);
+            Exception? promptObservationError = null;
+            try
+            {
+                await targetPromptObservation.ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                promptObservationError = ex;
+            }
+
             try
             {
                 await dispatcher.InvokeAsync(
@@ -264,21 +329,41 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                 await processOwner.DisposeAsync().ConfigureAwait(false);
                 await dispatcher.DisposeAsync().ConfigureAwait(false);
             }
+
+            if (promptObservationError is not null)
+            {
+                throw new DebugSetupException(
+                    "Native Excel/VBE prompt observation failed before session cleanup completed.",
+                    promptObservationError);
+            }
         }
 
         private async Task<T> InvokeSetupAsync<T>(
             Func<T> operation,
             CancellationToken cancellationToken)
         {
+            using var cancellationRegistration = cancellationToken.UnsafeRegister(
+                static state => ((VbeDebugSession)state!).RequestCancellationTermination(),
+                this);
             try
             {
-                return await dispatcher.InvokeAsync(
+                var result = await dispatcher.InvokeAsync(
                     () =>
                     {
                         foregroundPermissionHResult = null;
                         return operation();
                     },
                     cancellationToken).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
+                return result;
+            }
+            catch (Exception ex) when (cancellationToken.IsCancellationRequested)
+            {
+                await processOwner.TerminateAsync().ConfigureAwait(false);
+                throw new OperationCanceledException(
+                    "VBE debug setup was cancelled and its owned Excel process was terminated.",
+                    ex,
+                    cancellationToken);
             }
             catch (DebugSetupException ex)
             {
@@ -299,47 +384,19 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             }
         }
 
-        private object OpenWorkbook(string expectedWorkbookPath)
-        {
-            object? workbooksObject = null;
-            object? workbook = null;
-            object? projectObject = null;
-            var succeeded = false;
+        private void RequestCancellationTermination()
+            => _ = TerminateAfterCancellationAsync();
 
+        private async Task TerminateAfterCancellationAsync()
+        {
             try
             {
-                dynamic excel = excelObject;
-                excel.EnableEvents = false;
-                workbooksObject = excel.Workbooks;
-                dynamic workbooks = workbooksObject;
-                workbook = workbooks.Open(expectedWorkbookPath);
-                dynamic openedWorkbook = workbook;
-
-                var actualWorkbookPath = Path.GetFullPath((string)openedWorkbook.FullName);
-                if (!string.Equals(
-                        expectedWorkbookPath,
-                        actualWorkbookPath,
-                        StringComparison.OrdinalIgnoreCase))
-                {
-                    throw new DebugSetupException(
-                        "Excel opened a workbook other than the exact generated debug workbook.");
-                }
-
-                projectObject = openedWorkbook.VBProject;
-                dynamic project = projectObject;
-                EnsureDesignMode(project);
-                succeeded = true;
-                return workbook;
+                await processOwner.TerminateAsync().ConfigureAwait(false);
             }
-            finally
+            catch
             {
-                ComObjectReleaser.Release(projectObject);
-                if (!succeeded)
-                {
-                    ComObjectReleaser.Release(workbook);
-                }
-
-                ComObjectReleaser.Release(workbooksObject);
+                // The awaiting setup path retains responsibility for surfacing a
+                // termination failure after cancellation has unblocked COM.
             }
         }
 
@@ -845,7 +902,20 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                 }
 
                 beforeExecute?.Invoke();
-                commandControl.Execute();
+                try
+                {
+                    commandControl.Execute();
+                }
+                catch (Exception ex) when (
+                    ex is COMException or RuntimeBinderException or InvalidCastException or
+                        ArgumentException or TargetParameterCountException)
+                {
+                    throw new DebugSetupException(
+                        $"The native VBE {commandName} command (ID {commandId}) was found and " +
+                        "enabled, but its invocation did not complete. Resolve any visible VBE " +
+                        "dialog and retry.",
+                        ex);
+                }
             }
             finally
             {

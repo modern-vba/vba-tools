@@ -276,6 +276,16 @@ public sealed class VbeDebugAutomationWindowsExcelIntegrationTests
         Assert.Equal(16, mapped.VbideLine);
 
         var composition = ToolingCompositionRoot.CreateDebugAdapterComposition(projectRoot);
+        var applicationFactory = new CapturingExcelDebugApplicationFactory();
+        var dispatcherFactory = new CapturingStaComDispatcherFactory();
+        var automation = new VbeDebugAutomation(
+            applicationFactory,
+            new WindowsDebugExcelProcessApi(),
+            new WindowsDebugWindowActivator(),
+            dispatcherFactory);
+        composition = ToolingCompositionRoot.CreateDebugAdapterComposition(
+            projectRoot,
+            vbeDebugSessionFactory: automation);
         var context = composition.ProjectContextResolver.Resolve(
             new ProjectResolutionRequest(projectRoot, "DebugProject", projectRoot));
 
@@ -347,7 +357,8 @@ public sealed class VbeDebugAutomationWindowsExcelIntegrationTests
             "    fileNumber = FreeFile");
         Assert.True(breakpointLine >= 0);
 
-        var applicationFactory = new CapturingExcelDebugApplicationFactory();
+        var applicationFactory = new CapturingExcelDebugApplicationFactory(
+            initialAutomationSecurity: 3);
         var dispatcherFactory = new CapturingStaComDispatcherFactory();
         var automation = new VbeDebugAutomation(
             applicationFactory,
@@ -419,6 +430,12 @@ public sealed class VbeDebugAutomationWindowsExcelIntegrationTests
             Assert.Equal(Path.GetFullPath(context.BinDocumentPath), markerLines[0]);
             Assert.Equal("True", markerLines[1]);
             Assert.Equal("True", markerLines[2]);
+            Assert.Equal(
+                3,
+                await ReadAutomationSecurityAsync(
+                    applicationFactory,
+                    dispatcherFactory,
+                    CancellationToken.None));
             Assert.False(running.Completion.IsCompleted);
         }
         finally
@@ -431,6 +448,97 @@ public sealed class VbeDebugAutomationWindowsExcelIntegrationTests
                 Assert.DoesNotContain(processId, CaptureExcelProcessIds());
             }
         }
+    }
+
+    [WindowsExcelIntegrationFact]
+    [Trait("Category", "WindowsExcelIntegration")]
+    public async Task ExplicitStartupWrapperPromptCanBeStoppedWithoutOpenTimeStartupOrOrphanedExcel()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = Path.Combine(temp.Path, "DebugProject");
+        var unexpectedOpenMarkerPath = Path.Combine(temp.Path, "unexpected-workbook-open.txt");
+        var startupEnteredMarkerPath = Path.Combine(temp.Path, "startup-routine-entered.txt");
+        var startupReturnedMarkerPath = Path.Combine(temp.Path, "startup-routine-returned.txt");
+        var baselineProcessIds = CaptureExcelProcessIds();
+        var commandLine = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path);
+
+        CreateProject(commandLine, projectRoot);
+        var sourcePath = Path.Combine(
+            projectRoot,
+            "src",
+            "DebugProject",
+            "DebugModule.bas");
+        var sourceText = CreateStartupWrapperModule();
+        File.WriteAllText(sourcePath, sourceText, new UTF8Encoding(false));
+        var contextResolver = ToolingCompositionRoot
+            .CreateDebugAdapterComposition(projectRoot)
+            .ProjectContextResolver;
+        var context = contextResolver.Resolve(
+            new ProjectResolutionRequest(projectRoot, "DebugProject", projectRoot));
+        InstallStartupWrapperOpenHandler(
+            context.TemplateDocumentPath,
+            unexpectedOpenMarkerPath,
+            startupEnteredMarkerPath,
+            startupReturnedMarkerPath);
+        var buildResult = commandLine.Run(
+            ["build", "--project", projectRoot, "--document", "DebugProject"]);
+        Assert.True(
+            buildResult.ExitCode == 0,
+            $"Project build failed.{Environment.NewLine}{buildResult.StandardError}");
+        await WaitForNoNewExcelProcessesAsync(baselineProcessIds, TimeSpan.FromSeconds(15));
+
+        var automation = new VbeDebugAutomation();
+        IVbeDebugSession? session = null;
+        using var launchCancellation = new CancellationTokenSource();
+        try
+        {
+            session = await automation.StartVisibleAsync(CancellationToken.None);
+            var sink = new IntegrationDebugLifecycleSink();
+            await session.OpenGeneratedWorkbookAsync(
+                context.BinDocumentPath,
+                sink,
+                launchCancellation.Token);
+            Assert.False(File.Exists(unexpectedOpenMarkerPath));
+
+            var run = session.RunTargetAsync(
+                new DebugTargetProcedure("DebugModule", "DebugStartup"),
+                sink,
+                launchCancellation.Token);
+            var inputWait = await sink.InputRequired.Task.WaitAsync(TimeSpan.FromSeconds(15));
+            Assert.Equal(DebugInputWaitKind.ExcelOrVbe, inputWait.Kind);
+            Assert.Equal(DebugInputWaitPhase.TargetStart, inputWait.Phase);
+            Assert.Equal(session.ProcessId, inputWait.ProcessId);
+            await WaitForFileAsync(startupEnteredMarkerPath, TimeSpan.FromSeconds(15));
+            Assert.False(File.Exists(startupReturnedMarkerPath));
+
+            launchCancellation.Cancel();
+            await session.TerminateAsync();
+            try
+            {
+                await run.WaitAsync(TimeSpan.FromSeconds(15));
+            }
+            catch (Exception ex) when (ex is OperationCanceledException or DebugSetupException)
+            {
+            }
+
+            await session.Completion.WaitAsync(TimeSpan.FromSeconds(15));
+            Assert.DoesNotContain(session.ProcessId, CaptureExcelProcessIds());
+            Assert.False(File.Exists(unexpectedOpenMarkerPath));
+            Assert.False(File.Exists(startupReturnedMarkerPath));
+        }
+        finally
+        {
+            launchCancellation.Cancel();
+            if (session is not null)
+            {
+                var processId = session.ProcessId;
+                await session.DisposeAsync();
+                await session.Completion.WaitAsync(TimeSpan.FromSeconds(15));
+                Assert.DoesNotContain(processId, CaptureExcelProcessIds());
+            }
+        }
+
+        await WaitForNoNewExcelProcessesAsync(baselineProcessIds, TimeSpan.FromSeconds(15));
     }
 
     [WindowsExcelIntegrationFact]
@@ -542,6 +650,18 @@ public sealed class VbeDebugAutomationWindowsExcelIntegrationTests
             string.Empty);
     }
 
+    private static string CreateStartupWrapperModule()
+        => string.Join(
+            "\r\n",
+            "Attribute VB_Name = \"DebugModule\"",
+            "Option Explicit",
+            "Option Private Module",
+            string.Empty,
+            "Public Sub DebugStartup()",
+            "    ThisWorkbook.StartupRoutine",
+            "End Sub",
+            string.Empty);
+
     private static void InstallVisibleWorkbookOpenMarker(
         string workbookPath,
         string markerPath)
@@ -582,6 +702,75 @@ public sealed class VbeDebugAutomationWindowsExcelIntegrationTests
                 "    fileNumber = FreeFile",
                 $"    Open \"{vbaMarkerPath}\" For Output As #fileNumber",
                 "    Print #fileNumber, \"window deactivated before native run\"",
+                "    Close #fileNumber",
+                "End Sub",
+                string.Empty));
+            workbook.Save();
+        }
+        finally
+        {
+            ComObjectReleaser.Release(codeModuleObject);
+            ComObjectReleaser.Release(componentObject);
+            ComObjectReleaser.Release(componentsObject);
+            ComObjectReleaser.Release(projectObject);
+        }
+    }
+
+    private static void InstallStartupWrapperOpenHandler(
+        string workbookPath,
+        string markerPath,
+        string startupEnteredMarkerPath,
+        string startupReturnedMarkerPath)
+    {
+        object? projectObject = null;
+        object? componentsObject = null;
+        object? componentObject = null;
+        object? codeModuleObject = null;
+        using var session = ExcelComWorkbookSession.Open(workbookPath);
+        try
+        {
+            dynamic workbook = session.WorkbookObject;
+            projectObject = workbook.VBProject;
+            dynamic project = projectObject;
+            componentsObject = project.VBComponents;
+            dynamic components = componentsObject;
+            componentObject = components.Item((string)workbook.CodeName);
+            dynamic component = componentObject;
+            codeModuleObject = component.CodeModule;
+            dynamic codeModule = codeModuleObject;
+            var vbaMarkerPath = markerPath.Replace("\"", "\"\"", StringComparison.Ordinal);
+            var vbaStartupMarkerPath = startupEnteredMarkerPath.Replace(
+                "\"",
+                "\"\"",
+                StringComparison.Ordinal);
+            var vbaStartupReturnedMarkerPath = startupReturnedMarkerPath.Replace(
+                "\"",
+                "\"\"",
+                StringComparison.Ordinal);
+            codeModule.AddFromString(string.Join(
+                "\r\n",
+                "Option Explicit",
+                string.Empty,
+                "Private Sub Workbook_Open()",
+                "    If Not Application.Visible Then Exit Sub",
+                "    Dim fileNumber As Integer",
+                "    fileNumber = FreeFile",
+                $"    Open \"{vbaMarkerPath}\" For Output As #fileNumber",
+                "    Print #fileNumber, \"unexpected open-time startup\"",
+                "    Close #fileNumber",
+                "    StartupRoutine",
+                "End Sub",
+                string.Empty,
+                "Public Sub StartupRoutine()",
+                "    Dim fileNumber As Integer",
+                "    fileNumber = FreeFile",
+                $"    Open \"{vbaStartupMarkerPath}\" For Output As #fileNumber",
+                "    Print #fileNumber, \"entered\"",
+                "    Close #fileNumber",
+                "    MsgBox \"VBA Tools controlled startup prompt\", vbOKOnly, \"VBA Tools integration\"",
+                "    fileNumber = FreeFile",
+                $"    Open \"{vbaStartupReturnedMarkerPath}\" For Output As #fileNumber",
+                "    Print #fileNumber, \"returned\"",
                 "    Close #fileNumber",
                 "End Sub",
                 string.Empty));
@@ -923,6 +1112,24 @@ public sealed class VbeDebugAutomationWindowsExcelIntegrationTests
             cancellationToken);
     }
 
+    private static Task<int> ReadAutomationSecurityAsync(
+        CapturingExcelDebugApplicationFactory applicationFactory,
+        CapturingStaComDispatcherFactory dispatcherFactory,
+        CancellationToken cancellationToken)
+    {
+        var application = applicationFactory.Application
+            ?? throw new InvalidOperationException("The debug Excel application was not captured.");
+        var dispatcher = dispatcherFactory.Dispatcher
+            ?? throw new InvalidOperationException("The VBE STA dispatcher was not captured.");
+        return dispatcher.InvokeForTestAsync(
+            () =>
+            {
+                dynamic excel = application;
+                return (int)excel.AutomationSecurity;
+            },
+            cancellationToken);
+    }
+
     private static Task ContinueNativeExecutionAsync(
         CapturingExcelDebugApplicationFactory applicationFactory,
         CapturingStaComDispatcherFactory dispatcherFactory,
@@ -956,13 +1163,20 @@ public sealed class VbeDebugAutomationWindowsExcelIntegrationTests
             cancellationToken);
     }
 
-    private sealed class CapturingExcelDebugApplicationFactory : IExcelDebugApplicationFactory
+    private sealed class CapturingExcelDebugApplicationFactory(
+        int? initialAutomationSecurity = null) : IExcelDebugApplicationFactory
     {
         public object? Application { get; private set; }
 
         public object Create()
         {
             Application = new ExcelDebugApplicationFactory().Create();
+            if (initialAutomationSecurity is int automationSecurity)
+            {
+                dynamic excel = Application;
+                excel.AutomationSecurity = automationSecurity;
+            }
+
             return Application;
         }
     }
@@ -995,10 +1209,21 @@ public sealed class VbeDebugAutomationWindowsExcelIntegrationTests
 
     private sealed class IntegrationDebugLifecycleSink : IDebugLifecycleSink
     {
+        public TaskCompletionSource<DebugInputWait> InputRequired { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public ValueTask WriteAsync(
             DebugLifecycleMessage message,
             CancellationToken cancellationToken)
             => ValueTask.CompletedTask;
+
+        public ValueTask InputRequiredAsync(
+            DebugInputWait inputWait,
+            CancellationToken cancellationToken)
+        {
+            InputRequired.TrySetResult(inputWait);
+            return ValueTask.CompletedTask;
+        }
     }
 
     private sealed record ExportedBreakpointFixture(

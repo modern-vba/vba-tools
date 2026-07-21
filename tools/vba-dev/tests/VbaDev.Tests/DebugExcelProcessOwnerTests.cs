@@ -107,7 +107,8 @@ internal sealed class FakeDebugExcelProcessApi(
 internal sealed class FakeDebugOwnedProcess(
     int id,
     DateTime startTime,
-    DebugExcelProcessArchitecture architecture = DebugExcelProcessArchitecture.X64)
+    DebugExcelProcessArchitecture architecture = DebugExcelProcessArchitecture.X64,
+    Action? killAction = null)
     : IDebugOwnedProcess
 {
     private readonly TaskCompletionSource completion =
@@ -131,6 +132,7 @@ internal sealed class FakeDebugOwnedProcess(
     public void Kill()
     {
         KillCalls++;
+        killAction?.Invoke();
         Exit(-1);
     }
 

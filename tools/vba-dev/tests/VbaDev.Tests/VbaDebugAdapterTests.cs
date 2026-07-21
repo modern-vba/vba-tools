@@ -37,6 +37,7 @@ public sealed class VbaDebugAdapterTests
         Assert.False(capabilities.GetProperty("supportsLogPoints").GetBoolean());
         Assert.False(capabilities.GetProperty("supportsFunctionBreakpoints").GetBoolean());
         Assert.False(capabilities.GetProperty("supportsDataBreakpoints").GetBoolean());
+        Assert.True(capabilities.GetProperty("supportsTerminateRequest").GetBoolean());
         Assert.Empty(capabilities.GetProperty("exceptionBreakpointFilters").EnumerateArray());
         Assert.Equal("initialized", messages[1].RootElement.GetProperty("event").GetString());
     }
@@ -947,6 +948,252 @@ public sealed class VbaDebugAdapterTests
     }
 
     [Fact]
+    public async Task DisconnectStopsTheOwnedProcessWhileWorkbookOpenIsWaitingForModalInput()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("DebugProject");
+        var manifest = ProjectManifest.CreateDefault("DebugProject", "Book1", root, null);
+        var manifestStore = new JsonProjectManifestStore();
+        manifestStore.Save(root, manifest);
+        var sourceSetPath = Path.GetFullPath(Path.Combine(root, manifest.Documents["Book1"].SourcePath));
+        Directory.CreateDirectory(sourceSetPath);
+        var sourcePath = Path.Combine(sourceSetPath, "DebugModule.bas");
+        var source =
+            """
+            Attribute VB_Name = "DebugModule"
+
+            Public Sub RunTarget()
+                Debug.Print "ready"
+            End Sub
+            """;
+        File.WriteAllText(sourcePath, source);
+        var events = new List<string>();
+        var vbeSession = new ModalWaitingVbeDebugSession(events);
+        var adapter = new VbaDebugAdapter(
+            new ProjectContextResolver(manifestStore),
+            new DebugLaunchCoordinator(
+                new RecordingDebugWorkbookBuilder(events, []),
+                new RecordingVbeDebugSessionFactory(events, vbeSession)),
+            () => root);
+        var launch = JsonSerializer.Serialize(new
+        {
+            seq = 2,
+            type = "request",
+            command = "launch",
+            arguments = new
+            {
+                project = root,
+                document = "Book1",
+                module = "DebugModule",
+                procedure = "RunTarget",
+                sourceSnapshot = new
+                {
+                    schemaVersion = 1,
+                    sources = new[] { new { path = sourcePath, text = source } }
+                }
+            }
+        });
+        await using var input = CreateInput(
+            """
+            {"seq":1,"type":"request","command":"initialize","arguments":{"adapterID":"vba"}}
+            """,
+            launch,
+            """
+            {"seq":3,"type":"request","command":"configurationDone","arguments":{}}
+            """,
+            """
+            {"seq":4,"type":"request","command":"disconnect","arguments":{"terminateDebuggee":true}}
+            """);
+        await using var output = new MemoryStream();
+        using var testTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        await adapter.RunAsync(input, output, testTimeout.Token);
+
+        Assert.True(vbeSession.Terminated);
+        Assert.True(vbeSession.Disposed);
+        Assert.DoesNotContain(events, entry => entry.StartsWith("run:", StringComparison.Ordinal));
+        var messages = ReadMessages(output).Select(message => message.RootElement).ToArray();
+        Assert.True(Response(messages, "disconnect").GetProperty("success").GetBoolean());
+        Assert.Contains(messages, message =>
+            message.GetProperty("type").GetString() == "event" &&
+            message.GetProperty("event").GetString() == "output" &&
+            message.GetProperty("body").GetProperty("output").GetString()!.Contains(
+                "waiting for Excel input",
+                StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(messages, message =>
+            message.GetProperty("type").GetString() == "event" &&
+            message.GetProperty("event").GetString() == "output" &&
+            message.GetProperty("body").GetProperty("output").GetString()!.Contains(
+                "DebugSetupError",
+                StringComparison.Ordinal));
+        Assert.Equal(
+            1,
+            messages.Count(message =>
+                message.GetProperty("type").GetString() == "event" &&
+                message.GetProperty("event").GetString() == "terminated"));
+    }
+
+    [Fact]
+    public async Task RepeatedConfigurationDoneDoesNotLoseTheActiveLaunchBeforeDisconnect()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("DebugProject");
+        var manifest = ProjectManifest.CreateDefault("DebugProject", "Book1", root, null);
+        var manifestStore = new JsonProjectManifestStore();
+        manifestStore.Save(root, manifest);
+        var sourceSetPath = Path.GetFullPath(Path.Combine(root, manifest.Documents["Book1"].SourcePath));
+        Directory.CreateDirectory(sourceSetPath);
+        var sourcePath = Path.Combine(sourceSetPath, "DebugModule.bas");
+        var source =
+            """
+            Attribute VB_Name = "DebugModule"
+
+            Public Sub RunTarget()
+                Debug.Print "ready"
+            End Sub
+            """;
+        File.WriteAllText(sourcePath, source);
+        var events = new List<string>();
+        var vbeSession = new ModalWaitingVbeDebugSession(events);
+        var adapter = new VbaDebugAdapter(
+            new ProjectContextResolver(manifestStore),
+            new DebugLaunchCoordinator(
+                new RecordingDebugWorkbookBuilder(events, []),
+                new RecordingVbeDebugSessionFactory(events, vbeSession)),
+            () => root);
+        var launch = JsonSerializer.Serialize(new
+        {
+            seq = 2,
+            type = "request",
+            command = "launch",
+            arguments = new
+            {
+                project = root,
+                document = "Book1",
+                module = "DebugModule",
+                procedure = "RunTarget",
+                sourceSnapshot = new
+                {
+                    schemaVersion = 1,
+                    sources = new[] { new { path = sourcePath, text = source } }
+                }
+            }
+        });
+        var duplicateLaunch = launch.Replace("\"seq\":2", "\"seq\":3", StringComparison.Ordinal);
+        await using var input = CreateInput(
+            """
+            {"seq":1,"type":"request","command":"initialize","arguments":{"adapterID":"vba"}}
+            """,
+            launch,
+            duplicateLaunch,
+            """
+            {"seq":4,"type":"request","command":"configurationDone","arguments":{}}
+            """,
+            """
+            {"seq":5,"type":"request","command":"configurationDone","arguments":{}}
+            """,
+            """
+            {"seq":6,"type":"request","command":"disconnect","arguments":{"terminateDebuggee":true}}
+            """);
+        await using var output = new MemoryStream();
+        using var testTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        try
+        {
+            await adapter.RunAsync(input, output, testTimeout.Token);
+
+            Assert.True(vbeSession.Terminated);
+            Assert.True(vbeSession.Disposed);
+            Assert.Equal(1, events.Count(entry => entry == "start-visible"));
+            var messages = ReadMessages(output).Select(message => message.RootElement).ToArray();
+            var duplicateResponse = messages.Single(message =>
+                message.GetProperty("type").GetString() == "response" &&
+                message.GetProperty("request_seq").GetInt32() == 3);
+            Assert.False(duplicateResponse.GetProperty("success").GetBoolean());
+            Assert.Equal(
+                1,
+                messages.Count(message =>
+                    message.GetProperty("type").GetString() == "event" &&
+                    message.GetProperty("event").GetString() == "terminated"));
+        }
+        finally
+        {
+            if (!vbeSession.Terminated)
+            {
+                await vbeSession.TerminateAsync();
+            }
+        }
+    }
+
+    [Fact]
+    public async Task DisconnectAfterSetupFailureDoesNotRepeatTheTerminatedEvent()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("DebugProject");
+        var manifest = ProjectManifest.CreateDefault("DebugProject", "Book1", root, null);
+        var manifestStore = new JsonProjectManifestStore();
+        manifestStore.Save(root, manifest);
+        var sourceSetPath = Path.GetFullPath(Path.Combine(root, manifest.Documents["Book1"].SourcePath));
+        Directory.CreateDirectory(sourceSetPath);
+        var sourcePath = Path.Combine(sourceSetPath, "DebugModule.bas");
+        var source =
+            """
+            Attribute VB_Name = "DebugModule"
+
+            Public Sub RunTarget()
+            End Sub
+            """;
+        File.WriteAllText(sourcePath, source);
+        var adapter = new VbaDebugAdapter(
+            new ProjectContextResolver(manifestStore),
+            new DebugLaunchCoordinator(
+                new FailingDebugWorkbookBuilder(),
+                new UnusedVbeDebugSessionFactory()),
+            () => root);
+        var launch = JsonSerializer.Serialize(new
+        {
+            seq = 2,
+            type = "request",
+            command = "launch",
+            arguments = new
+            {
+                project = root,
+                document = "Book1",
+                module = "DebugModule",
+                procedure = "RunTarget",
+                sourceSnapshot = new
+                {
+                    schemaVersion = 1,
+                    sources = new[] { new { path = sourcePath, text = source } }
+                }
+            }
+        });
+        await using var input = CreateInput(
+            """
+            {"seq":1,"type":"request","command":"initialize","arguments":{"adapterID":"vba"}}
+            """,
+            launch,
+            """
+            {"seq":3,"type":"request","command":"configurationDone","arguments":{}}
+            """,
+            """
+            {"seq":4,"type":"request","command":"disconnect","arguments":{"terminateDebuggee":true}}
+            """);
+        await using var output = new MemoryStream();
+
+        await adapter.RunAsync(input, output, CancellationToken.None);
+
+        var messages = ReadMessages(output).Select(message => message.RootElement).ToArray();
+        Assert.False(Response(messages, "launch").GetProperty("success").GetBoolean());
+        Assert.True(Response(messages, "disconnect").GetProperty("success").GetBoolean());
+        Assert.Equal(
+            1,
+            messages.Count(message =>
+                message.GetProperty("type").GetString() == "event" &&
+                message.GetProperty("event").GetString() == "terminated"));
+    }
+
+    [Fact]
     public async Task AnActivePostSaveSnapshotPositionLaunchesWithoutExplicitModuleOrProcedure()
     {
         using var temp = TempDirectory.Create();
@@ -1321,6 +1568,16 @@ public sealed class VbaDebugAdapterTests
             => throw new InvalidOperationException("A build was not expected.");
     }
 
+    private sealed class FailingDebugWorkbookBuilder : IDebugWorkbookBuilder
+    {
+        public Task<DebugWorkbookBuildResult> BuildAsync(
+            ResolvedProjectContext context,
+            DebugSourceSnapshot sourceSnapshot,
+            CancellationToken cancellationToken)
+            => Task.FromException<DebugWorkbookBuildResult>(
+                new DebugSetupException("Synthetic setup failure."));
+    }
+
     private sealed class UnusedVbeDebugSessionFactory : IVbeDebugSessionFactory
     {
         public Task<IVbeDebugSession> StartVisibleAsync(CancellationToken cancellationToken)
@@ -1369,6 +1626,7 @@ public sealed class VbaDebugAdapterTests
 
         public Task OpenGeneratedWorkbookAsync(
             string workbookPath,
+            IDebugInputWaitSink? inputWaitSink,
             CancellationToken cancellationToken)
         {
             events.Add($"open:{workbookPath}");
@@ -1390,6 +1648,7 @@ public sealed class VbaDebugAdapterTests
 
         public Task RunTargetAsync(
             DebugTargetProcedure target,
+            IDebugInputWaitSink? inputWaitSink,
             CancellationToken cancellationToken)
         {
             events.Add($"run:{target.ModuleName}.{target.ProcedureName}");
@@ -1399,5 +1658,76 @@ public sealed class VbaDebugAdapterTests
         public ValueTask TerminateAsync() => ValueTask.CompletedTask;
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class ModalWaitingVbeDebugSession(List<string> events) : IVbeDebugSession
+    {
+        private readonly TaskCompletionSource<DebugProcessExit> completion =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int ProcessId => 31415;
+
+        public Task<DebugProcessExit> Completion => completion.Task;
+
+        public bool Terminated { get; private set; }
+
+        public bool Disposed { get; private set; }
+
+        public Task<DebugCompilationHostFacts> GetCompilationHostFactsAsync(
+            CancellationToken cancellationToken)
+            => throw new InvalidOperationException(
+                "Compilation host facts were not expected.");
+
+        public Task OpenGeneratedWorkbookAsync(
+            string workbookPath,
+            IDebugInputWaitSink? inputWaitSink,
+            CancellationToken cancellationToken)
+            => WaitForTerminationAsync(workbookPath, inputWaitSink, cancellationToken);
+
+        private async Task WaitForTerminationAsync(
+            string workbookPath,
+            IDebugInputWaitSink? inputWaitSink,
+            CancellationToken cancellationToken)
+        {
+            events.Add($"open:{workbookPath}");
+            if (inputWaitSink is not null)
+            {
+                await inputWaitSink.InputRequiredAsync(
+                    new DebugInputWait(
+                        DebugInputWaitKind.Excel,
+                        DebugInputWaitPhase.WorkbookOpen,
+                        ProcessId),
+                    cancellationToken);
+            }
+
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        }
+
+        public Task SetNativeBreakpointsAsync(
+            IReadOnlyList<VbeBreakpoint> breakpoints,
+            CancellationToken cancellationToken)
+            => throw new InvalidOperationException("Breakpoint setup was not expected.");
+
+        public Task RunTargetAsync(
+            DebugTargetProcedure target,
+            IDebugInputWaitSink? inputWaitSink,
+            CancellationToken cancellationToken)
+        {
+            events.Add($"run:{target.ModuleName}.{target.ProcedureName}");
+            return Task.CompletedTask;
+        }
+
+        public ValueTask TerminateAsync()
+        {
+            Terminated = true;
+            completion.TrySetResult(new DebugProcessExit(-1));
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            Disposed = true;
+            return ValueTask.CompletedTask;
+        }
     }
 }

@@ -43,6 +43,10 @@ public sealed class VbaDebugAdapter
         var configurationDone = false;
         DebugRunningSession? runningSession = null;
         Task? monitorTask = null;
+        CancellationTokenSource? launchCancellation = null;
+        Task<(DebugRunningSession? Session, Task? Monitor, bool TerminatedEventSent)>? launchTask = null;
+        var launchTerminationEventSent = false;
+        var stopHandled = false;
         try
         {
             while (await connection.ReadRequestAsync(cancellationToken).ConfigureAwait(false) is { } request)
@@ -60,6 +64,7 @@ public sealed class VbaDebugAdapter
                             supportsLogPoints = false,
                             supportsFunctionBreakpoints = false,
                             supportsDataBreakpoints = false,
+                            supportsTerminateRequest = true,
                             exceptionBreakpointFilters = Array.Empty<object>()
                         },
                         message: null,
@@ -153,6 +158,17 @@ public sealed class VbaDebugAdapter
 
                 if (request.Command.Equals("launch", StringComparison.Ordinal))
                 {
+                    if (pendingLaunchRequest is not null || launchTask is not null)
+                    {
+                        await connection.WriteResponseAsync(
+                            request,
+                            success: false,
+                            body: null,
+                            message: "DebugLaunchBusy: A VBA debug launch is already pending or active.",
+                            cancellationToken).ConfigureAwait(false);
+                        continue;
+                    }
+
                     try
                     {
                         pendingLaunch = ResolveLaunchRequest(request);
@@ -167,13 +183,16 @@ public sealed class VbaDebugAdapter
 
                     if (configurationDone)
                     {
-                        (runningSession, monitorTask) = await StartLaunchAsync(
+                        launchCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                            cancellationToken);
+                        launchTask = StartLaunchAsync(
                             connection,
                             pendingLaunchRequest,
                             pendingLaunch,
                             breakpointRegistry.Breakpoints,
                             breakpointRegistry.UnsupportedBreakpoints,
-                            cancellationToken).ConfigureAwait(false);
+                            cancellationToken,
+                            launchCancellation.Token);
                     }
 
                     continue;
@@ -189,18 +208,61 @@ public sealed class VbaDebugAdapter
                         body: null,
                         message: null,
                         cancellationToken).ConfigureAwait(false);
-                    if (pendingLaunchRequest is not null && pendingLaunch is not null)
+                    if (launchTask is null &&
+                        pendingLaunchRequest is not null &&
+                        pendingLaunch is not null)
                     {
-                        (runningSession, monitorTask) = await StartLaunchAsync(
+                        launchCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                            cancellationToken);
+                        launchTask = StartLaunchAsync(
                             connection,
                             pendingLaunchRequest,
                             pendingLaunch,
                             breakpointRegistry.Breakpoints,
                             breakpointRegistry.UnsupportedBreakpoints,
-                            cancellationToken).ConfigureAwait(false);
+                            cancellationToken,
+                            launchCancellation.Token);
                     }
 
                     continue;
+                }
+
+                if (request.Command.Equals("disconnect", StringComparison.Ordinal) ||
+                    request.Command.Equals("terminate", StringComparison.Ordinal))
+                {
+                    launchCancellation?.Cancel();
+                    await connection.WriteResponseAsync(
+                        request,
+                        success: true,
+                        body: null,
+                        message: null,
+                        cancellationToken).ConfigureAwait(false);
+
+                    if (launchTask is not null)
+                    {
+                        (runningSession, monitorTask, launchTerminationEventSent) =
+                            await launchTask.ConfigureAwait(false);
+                    }
+
+                    if (runningSession is not null && !runningSession.Completion.IsCompleted)
+                    {
+                        await runningSession.TerminateAsync().ConfigureAwait(false);
+                    }
+
+                    if (monitorTask is not null)
+                    {
+                        await monitorTask.ConfigureAwait(false);
+                    }
+                    else if (!launchTerminationEventSent)
+                    {
+                        await connection.WriteEventAsync(
+                            "terminated",
+                            body: null,
+                            cancellationToken).ConfigureAwait(false);
+                    }
+
+                    stopHandled = true;
+                    break;
                 }
 
                 await connection.WriteResponseAsync(
@@ -213,15 +275,31 @@ public sealed class VbaDebugAdapter
         }
         finally
         {
-            if (runningSession is not null && !runningSession.Completion.IsCompleted)
+            if (!stopHandled && launchTask is not null)
             {
-                await runningSession.TerminateAsync().ConfigureAwait(false);
+                if (!launchTask.IsCompleted)
+                {
+                    launchCancellation?.Cancel();
+                }
+
+                (runningSession, monitorTask, launchTerminationEventSent) =
+                    await launchTask.ConfigureAwait(false);
             }
 
-            if (monitorTask is not null)
+            if (!stopHandled)
             {
-                await monitorTask.ConfigureAwait(false);
+                if (runningSession is not null && !runningSession.Completion.IsCompleted)
+                {
+                    await runningSession.TerminateAsync().ConfigureAwait(false);
+                }
+
+                if (monitorTask is not null)
+                {
+                    await monitorTask.ConfigureAwait(false);
+                }
             }
+
+            launchCancellation?.Dispose();
         }
     }
 
@@ -275,40 +353,66 @@ public sealed class VbaDebugAdapter
         }
     }
 
-    private async Task<(DebugRunningSession? Session, Task? Monitor)> StartLaunchAsync(
+    private async Task<(
+        DebugRunningSession? Session,
+        Task? Monitor,
+        bool TerminatedEventSent)> StartLaunchAsync(
         DapConnection connection,
         DapRequest launchRequest,
         DebugLaunchRequest launch,
         IReadOnlyList<PendingDapBreakpoint> pendingBreakpoints,
         IReadOnlyList<UnsupportedDebugBreakpoint> unsupportedBreakpoints,
-        CancellationToken cancellationToken)
+        CancellationToken transportCancellationToken,
+        CancellationToken launchCancellationToken)
     {
         try
         {
             launch = ReconcileBreakpointPlan(launch, pendingBreakpoints, unsupportedBreakpoints);
             var lifecycleSink = new DapDebugLaunchEventSink(connection, pendingBreakpoints);
             var session = await launchCoordinator
-                .LaunchAsync(launch, lifecycleSink, cancellationToken)
+                .LaunchAsync(launch, lifecycleSink, launchCancellationToken)
                 .ConfigureAwait(false);
             await connection.WriteResponseAsync(
                 launchRequest,
                 success: true,
                 body: null,
                 message: null,
-                cancellationToken).ConfigureAwait(false);
-            var monitor = MonitorSessionAsync(connection, session, cancellationToken);
+                transportCancellationToken).ConfigureAwait(false);
+            var monitor = MonitorSessionAsync(connection, session, transportCancellationToken);
             if (session.Completion.IsCompleted)
             {
                 await monitor.ConfigureAwait(false);
             }
 
-            return (session, monitor);
+            return (session, monitor, false);
+        }
+        catch (OperationCanceledException) when (launchCancellationToken.IsCancellationRequested)
+        {
+            await connection.WriteEventAsync(
+                "output",
+                new
+                {
+                    category = "console",
+                    output = $"VBA debug launch was cancelled.{Environment.NewLine}"
+                },
+                transportCancellationToken).ConfigureAwait(false);
+            await connection.WriteResponseAsync(
+                launchRequest,
+                success: false,
+                body: null,
+                message: "VBA debug launch was cancelled.",
+                transportCancellationToken).ConfigureAwait(false);
+            return (null, null, false);
         }
         catch (Exception ex) when (ex is DebugSetupException or DebugLaunchBusyException or ProjectManifestException)
         {
-            await WriteLaunchFailureAsync(connection, launchRequest, ex.Message, cancellationToken)
+            await WriteLaunchFailureAsync(
+                    connection,
+                    launchRequest,
+                    ex.Message,
+                    transportCancellationToken)
                 .ConfigureAwait(false);
-            return (null, null);
+            return (null, null, true);
         }
     }
 

@@ -629,6 +629,277 @@ public sealed class VbeDebugAutomationTests
     }
 
     [Fact]
+    public async Task WorkbookOpenScopesMacroEnablementToTheExactOpenAndRestoresThePreviousSetting()
+    {
+        using var temp = TempDirectory.Create();
+        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
+        File.WriteAllText(workbookPath, "test workbook placeholder");
+        var events = new List<string>();
+        var model = FakeVbeModel.Create(
+            workbookPath,
+            events,
+            automationSecurity: 3,
+            recordAutomationSecurityEvents: true,
+            recordVbProjectAccess: true);
+        var process = new FakeDebugOwnedProcess(
+            27185,
+            new DateTime(2026, 7, 21, 10, 32, 30, DateTimeKind.Local));
+        var automation = new VbeDebugAutomation(
+            new FakeExcelDebugApplicationFactory(model.Excel),
+            new FakeDebugExcelProcessApi(process.Id, process),
+            new FakeDebugWindowActivator(events),
+            new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
+
+        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None);
+
+        Assert.Equal(3, model.Excel.CurrentAutomationSecurity);
+        Assert.Equal(
+            [
+                "enable-events:False",
+                "automation-security-read:3",
+                "automation-security:1",
+                $"open:{Path.GetFullPath(workbookPath)}",
+                "automation-security:3",
+                "vb-project"
+            ],
+            events);
+
+        process.Exit(0);
+        await session.Completion;
+    }
+
+    [Fact]
+    public async Task OpenAndTargetStartReportOnlyModalPromptsObservedForTheOwnedProcess()
+    {
+        using var temp = TempDirectory.Create();
+        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
+        File.WriteAllText(workbookPath, "test workbook placeholder");
+        var events = new List<string>();
+        var model = FakeVbeModel.Create(workbookPath, events);
+        var process = new FakeDebugOwnedProcess(
+            27188,
+            new DateTime(2026, 7, 21, 10, 33, 0, DateTimeKind.Local));
+        var promptMonitor = new RecordingDebugModalPromptMonitor(events);
+        var automation = new VbeDebugAutomation(
+            new FakeExcelDebugApplicationFactory(model.Excel),
+            new FakeDebugExcelProcessApi(process.Id, process),
+            new FakeDebugWindowActivator(events),
+            new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()),
+            promptMonitor: promptMonitor);
+        var sink = new RecordingDebugInputWaitSink();
+
+        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await session.OpenGeneratedWorkbookAsync(
+            workbookPath,
+            sink,
+            CancellationToken.None);
+        await session.RunTargetAsync(
+            new DebugTargetProcedure("DebugModule", "RunTarget"),
+            sink,
+            CancellationToken.None);
+
+        Assert.Equal(
+            [
+                new DebugInputWait(
+                    DebugInputWaitKind.ExcelOrVbe,
+                    DebugInputWaitPhase.WorkbookOpen,
+                    process.Id),
+                new DebugInputWait(
+                    DebugInputWaitKind.ExcelOrVbe,
+                    DebugInputWaitPhase.TargetStart,
+                    process.Id)
+            ],
+            sink.InputWaits);
+        Assert.True(
+            events.IndexOf("prompt-capture:WorkbookOpen") <
+            events.FindIndex(entry => entry.StartsWith("open:", StringComparison.Ordinal)));
+        Assert.True(
+            events.IndexOf("prompt-capture:TargetStart") <
+            events.IndexOf("find-control:1:186:False"));
+        Assert.Contains("prompt-watch:TargetStart", events);
+
+        process.Exit(0);
+        await session.Completion;
+    }
+
+    [Fact]
+    public async Task WorkbookOpenFailureRestoresMacroSecurityBeforeTheOwnedProcessIsTerminated()
+    {
+        using var temp = TempDirectory.Create();
+        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
+        File.WriteAllText(workbookPath, "test workbook placeholder");
+        var events = new List<string>();
+        var model = FakeVbeModel.Create(
+            workbookPath,
+            events,
+            workbookOpenException: new COMException("open failed"),
+            automationSecurity: 3,
+            recordAutomationSecurityEvents: true);
+        var process = new FakeDebugOwnedProcess(
+            27186,
+            new DateTime(2026, 7, 21, 10, 32, 45, DateTimeKind.Local));
+        var automation = new VbeDebugAutomation(
+            new FakeExcelDebugApplicationFactory(model.Excel),
+            new FakeDebugExcelProcessApi(process.Id, process),
+            new FakeDebugWindowActivator(events),
+            new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
+
+        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await Assert.ThrowsAsync<DebugSetupException>(() =>
+            session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None));
+
+        Assert.Equal(3, model.Excel.CurrentAutomationSecurity);
+        Assert.Equal(1, process.KillCalls);
+        Assert.Equal(
+            [
+                "enable-events:False",
+                "automation-security-read:3",
+                "automation-security:1",
+                $"open:{Path.GetFullPath(workbookPath)}",
+                "automation-security:3"
+            ],
+            events);
+    }
+
+    [Fact]
+    public async Task WorkbookOpenRejectsAnUnexpectedWorkbookIdentity()
+    {
+        using var temp = TempDirectory.Create();
+        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
+        var unexpectedWorkbookPath = Path.Combine(temp.Path, "UnexpectedBook.xlsm");
+        File.WriteAllText(workbookPath, "test workbook placeholder");
+        var events = new List<string>();
+        var model = FakeVbeModel.Create(
+            workbookPath,
+            events,
+            openedWorkbookPath: unexpectedWorkbookPath);
+        var process = new FakeDebugOwnedProcess(
+            27189,
+            new DateTime(2026, 7, 21, 10, 32, 40, DateTimeKind.Local));
+        var automation = new VbeDebugAutomation(
+            new FakeExcelDebugApplicationFactory(model.Excel),
+            new FakeDebugExcelProcessApi(process.Id, process),
+            new FakeDebugWindowActivator(),
+            new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
+
+        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+        var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
+            session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None));
+
+        Assert.Contains("exact generated debug workbook", error.Message, StringComparison.Ordinal);
+        Assert.Equal(1, process.KillCalls);
+    }
+
+    [Fact]
+    public async Task VbProjectTrustFailureIsActionableAndPreventsNativeAutomation()
+    {
+        using var temp = TempDirectory.Create();
+        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
+        File.WriteAllText(workbookPath, "test workbook placeholder");
+        var events = new List<string>();
+        var trustError = new COMException(
+            "Programmatic access to the Visual Basic Project is not trusted.",
+            unchecked((int)0x800A03EC));
+        var model = FakeVbeModel.Create(
+            workbookPath,
+            events,
+            vbProjectAccessException: trustError,
+            automationSecurity: 3,
+            recordAutomationSecurityEvents: true,
+            recordVbProjectAccess: true);
+        var process = new FakeDebugOwnedProcess(
+            27187,
+            new DateTime(2026, 7, 21, 10, 32, 55, DateTimeKind.Local));
+        var automation = new VbeDebugAutomation(
+            new FakeExcelDebugApplicationFactory(model.Excel),
+            new FakeDebugExcelProcessApi(process.Id, process),
+            new FakeDebugWindowActivator(events),
+            new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
+
+        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+        var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
+            session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None));
+
+        Assert.Contains(
+            "Trust access to the VBA project object model",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Trust Center", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Same(trustError, error.InnerException);
+        Assert.Equal(3, model.Excel.CurrentAutomationSecurity);
+        Assert.False(model.Excel.EnableEvents);
+        Assert.Equal(1, process.KillCalls);
+        Assert.DoesNotContain(events, entry =>
+            entry.StartsWith("find-control:", StringComparison.Ordinal)
+            || entry.StartsWith("execute:", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task LockedVbProjectIsRejectedDuringWorkbookOpenWithActionableGuidance()
+    {
+        using var temp = TempDirectory.Create();
+        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
+        File.WriteAllText(workbookPath, "test workbook placeholder");
+        var events = new List<string>();
+        var model = FakeVbeModel.Create(
+            workbookPath,
+            events,
+            projectProtection: 1);
+        var process = new FakeDebugOwnedProcess(
+            27188,
+            new DateTime(2026, 7, 21, 10, 33, 5, DateTimeKind.Local));
+        var automation = new VbeDebugAutomation(
+            new FakeExcelDebugApplicationFactory(model.Excel),
+            new FakeDebugExcelProcessApi(process.Id, process),
+            new FakeDebugWindowActivator(),
+            new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
+
+        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+        var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
+            session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None));
+
+        Assert.Contains("locked for viewing", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, process.KillCalls);
+    }
+
+    [Fact]
+    public async Task DebugOpenAndRunPreserveTheUserOwnedVbeEnvironment()
+    {
+        using var temp = TempDirectory.Create();
+        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
+        File.WriteAllText(workbookPath, "test workbook placeholder");
+        var events = new List<string>();
+        var model = FakeVbeModel.Create(workbookPath, events);
+        var vbe = Assert.IsType<FakeVbe>(model.Excel.VBE);
+        var expectedErrorTrapping = vbe.ErrorTrapping;
+        var expectedCompileOnDemand = vbe.CompileOnDemand;
+        var expectedWatches = vbe.Watches.ToArray();
+        var process = new FakeDebugOwnedProcess(
+            27190,
+            new DateTime(2026, 7, 21, 10, 34, 0, DateTimeKind.Local));
+        var automation = new VbeDebugAutomation(
+            new FakeExcelDebugApplicationFactory(model.Excel),
+            new FakeDebugExcelProcessApi(process.Id, process),
+            new FakeDebugWindowActivator(events),
+            new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
+
+        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None);
+        await session.RunTargetAsync(
+            new DebugTargetProcedure("DebugModule", "RunTarget"),
+            CancellationToken.None);
+
+        Assert.Equal(expectedErrorTrapping, vbe.ErrorTrapping);
+        Assert.Equal(expectedCompileOnDemand, vbe.CompileOnDemand);
+        Assert.Equal(expectedWatches, vbe.Watches);
+        Assert.Equal(0, vbe.UserSettingWriteCount);
+
+        process.Exit(0);
+        await session.Completion;
+    }
+
+    [Fact]
     public async Task WorkbookOpenFailureTerminatesTheOwnedProcessWithEventsStillDisabled()
     {
         using var temp = TempDirectory.Create();
@@ -659,6 +930,46 @@ public sealed class VbeDebugAutomationTests
         Assert.Equal(
             ["enable-events:False", $"open:{Path.GetFullPath(workbookPath)}"],
             events);
+    }
+
+    [Fact]
+    public async Task CancellationDuringBlockingWorkbookOpenTerminatesTheOwnedProcessOutsideTheStaDispatcher()
+    {
+        using var temp = TempDirectory.Create();
+        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
+        File.WriteAllText(workbookPath, "test workbook placeholder");
+        using var openStarted = new ManualResetEventSlim();
+        using var releaseOpen = new ManualResetEventSlim();
+        var events = new List<string>();
+        var model = FakeVbeModel.Create(workbookPath, events);
+        model.Excel.Workbooks!.OpenStarted = openStarted;
+        model.Excel.Workbooks.OpenRelease = releaseOpen;
+        var process = new FakeDebugOwnedProcess(
+            27189,
+            new DateTime(2026, 7, 21, 10, 33, 30, DateTimeKind.Local),
+            killAction: releaseOpen.Set);
+        var automation = new VbeDebugAutomation(
+            new FakeExcelDebugApplicationFactory(model.Excel),
+            new FakeDebugExcelProcessApi(process.Id, process),
+            new FakeDebugWindowActivator(events),
+            new StaComDispatcherFactory());
+
+        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+        using var cancellation = new CancellationTokenSource();
+        var open = session.OpenGeneratedWorkbookAsync(workbookPath, cancellation.Token);
+        Assert.True(openStarted.Wait(TimeSpan.FromSeconds(5)));
+
+        try
+        {
+            cancellation.Cancel();
+            await Task.Delay(TimeSpan.FromMilliseconds(100));
+            Assert.Equal(1, process.KillCalls);
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => open);
+        }
+        finally
+        {
+            releaseOpen.Set();
+        }
     }
 
     [Fact]
@@ -1023,6 +1334,10 @@ public sealed class VbeDebugAutomationTests
                 CancellationToken.None));
 
         Assert.Same(executeError, error.InnerException);
+        Assert.Contains("found and enabled", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("invocation", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("not found", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("disabled", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(1, process.KillCalls);
         Assert.Equal(1, events.Count(entry => entry == "execute:186"));
     }
@@ -1062,6 +1377,7 @@ public sealed class VbeDebugAutomationTests
 public sealed class FakeExcelApplication
 {
     private bool enableEvents = true;
+    private int automationSecurity = 1;
 
     public int Hwnd { get; init; }
 
@@ -1073,6 +1389,15 @@ public sealed class FakeExcelApplication
 
     public List<string>? Events { get; init; }
 
+    public bool RecordAutomationSecurityEvents { get; init; }
+
+    public int CurrentAutomationSecurity => automationSecurity;
+
+    public int InitialAutomationSecurity
+    {
+        init => automationSecurity = value;
+    }
+
     public bool EnableEvents
     {
         get => enableEvents;
@@ -1080,6 +1405,27 @@ public sealed class FakeExcelApplication
         {
             enableEvents = value;
             Events?.Add($"enable-events:{value}");
+        }
+    }
+
+    public int AutomationSecurity
+    {
+        get
+        {
+            if (RecordAutomationSecurityEvents)
+            {
+                Events?.Add($"automation-security-read:{automationSecurity}");
+            }
+
+            return automationSecurity;
+        }
+        set
+        {
+            automationSecurity = value;
+            if (RecordAutomationSecurityEvents)
+            {
+                Events?.Add($"automation-security:{value}");
+            }
         }
     }
 
@@ -1128,6 +1474,50 @@ internal sealed class RecordingStaComDispatcher : IStaComDispatcher
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
 
+internal sealed class RecordingDebugModalPromptMonitor(List<string> events)
+    : IDebugModalPromptMonitor
+{
+    public DebugModalPromptObservation Capture(DebugInputWait inputWait)
+    {
+        events.Add($"prompt-capture:{inputWait.Phase}");
+        return new DebugModalPromptObservation(inputWait, new HashSet<nint>());
+    }
+
+    public async Task<T> ObserveAsync<T>(
+        DebugModalPromptObservation observation,
+        Task<T> operation,
+        Task<DebugProcessExit> processCompletion,
+        IDebugInputWaitSink inputWaitSink,
+        CancellationToken cancellationToken)
+    {
+        await inputWaitSink.InputRequiredAsync(observation.InputWait, cancellationToken);
+        return await operation;
+    }
+
+    public Task ObserveUntilProcessExitAsync(
+        DebugModalPromptObservation observation,
+        Task<DebugProcessExit> processCompletion,
+        IDebugInputWaitSink inputWaitSink,
+        CancellationToken cancellationToken)
+    {
+        events.Add($"prompt-watch:{observation.InputWait.Phase}");
+        return Task.CompletedTask;
+    }
+}
+
+internal sealed class RecordingDebugInputWaitSink : IDebugInputWaitSink
+{
+    public List<DebugInputWait> InputWaits { get; } = [];
+
+    public ValueTask InputRequiredAsync(
+        DebugInputWait inputWait,
+        CancellationToken cancellationToken)
+    {
+        InputWaits.Add(inputWait);
+        return ValueTask.CompletedTask;
+    }
+}
+
 internal sealed record FakeVbeModel(FakeExcelApplication Excel)
 {
     public static FakeVbeModel Create(
@@ -1151,7 +1541,13 @@ internal sealed record FakeVbeModel(FakeExcelApplication Excel)
         string excelVersion = "16.0",
         string vbeVersion = "7.01",
         string operatingSystem = "Windows (64-bit) NT 10.00",
-        Exception? workbookOpenException = null)
+        Exception? workbookOpenException = null,
+        string? openedWorkbookPath = null,
+        Exception? vbProjectAccessException = null,
+        int projectProtection = 0,
+        int automationSecurity = 1,
+        bool recordAutomationSecurityEvents = false,
+        bool recordVbProjectAccess = false)
     {
         var codeWindow = new FakeVbeWindow(8642, events, "code-focus");
         var codePane = new FakeCodePane(codeWindow, events, selectionMatches);
@@ -1190,8 +1586,16 @@ internal sealed record FakeVbeModel(FakeExcelApplication Excel)
         }
 
         var components = new FakeVbComponents(componentsByName, events);
-        var project = new FakeVbProject(components);
-        var workbook = new FakeWorkbook(Path.GetFullPath(workbookPath), project);
+        var project = new FakeVbProject(components)
+        {
+            Protection = projectProtection
+        };
+        var workbook = new FakeWorkbook(
+            Path.GetFullPath(openedWorkbookPath ?? workbookPath),
+            project,
+            vbProjectAccessException,
+            events,
+            recordVbProjectAccess);
         var workbooks = new FakeWorkbooks(workbook, events)
         {
             OpenException = workbookOpenException
@@ -1224,6 +1628,8 @@ internal sealed record FakeVbeModel(FakeExcelApplication Excel)
             Version = excelVersion,
             OperatingSystem = operatingSystem,
             Events = events,
+            InitialAutomationSecurity = automationSecurity,
+            RecordAutomationSecurityEvents = recordAutomationSecurityEvents,
             Workbooks = workbooks,
             VBE = vbe
         };
@@ -1235,9 +1641,15 @@ public sealed class FakeWorkbooks(FakeWorkbook workbook, List<string> events)
 {
     public Exception? OpenException { get; init; }
 
+    public ManualResetEventSlim? OpenStarted { get; set; }
+
+    public ManualResetEventSlim? OpenRelease { get; set; }
+
     public object Open(string workbookPath)
     {
         events.Add($"open:{Path.GetFullPath(workbookPath)}");
+        OpenStarted?.Set();
+        OpenRelease?.Wait();
         if (OpenException is not null)
         {
             throw OpenException;
@@ -1247,16 +1659,39 @@ public sealed class FakeWorkbooks(FakeWorkbook workbook, List<string> events)
     }
 }
 
-public sealed class FakeWorkbook(string fullName, FakeVbProject project)
+public sealed class FakeWorkbook(
+    string fullName,
+    FakeVbProject project,
+    Exception? vbProjectAccessException = null,
+    List<string>? events = null,
+    bool recordVbProjectAccess = false)
 {
     public string FullName { get; } = fullName;
 
-    public FakeVbProject VBProject { get; } = project;
+    public FakeVbProject VBProject
+    {
+        get
+        {
+            if (recordVbProjectAccess)
+            {
+                events?.Add("vb-project");
+            }
+
+            if (vbProjectAccessException is not null)
+            {
+                throw vbProjectAccessException;
+            }
+
+            return project;
+        }
+    }
 }
 
 public sealed class FakeVbProject(FakeVbComponents components)
 {
     public int Mode { get; init; } = 2;
+
+    public int Protection { get; init; }
 
     public FakeVbComponents VBComponents { get; } = components;
 }
@@ -1265,6 +1700,8 @@ public sealed class FakeVbComponents(
     IReadOnlyDictionary<string, FakeVbComponent> componentsByName,
     List<string> events)
 {
+    public int Count => componentsByName.Count;
+
     public object Item(string moduleName)
     {
         events.Add($"component:{moduleName}");
@@ -1381,12 +1818,38 @@ public sealed class FakeVbe(
     string version)
 {
     private object? activeCodePane;
+    private int errorTrapping = 2;
+    private bool compileOnDemand = false;
 
     public FakeVbeWindow MainWindow { get; } = mainWindow;
 
     public FakeCommandBars CommandBars { get; } = commandBars;
 
     public string Version { get; } = version;
+
+    public int UserSettingWriteCount { get; private set; }
+
+    public List<string> Watches { get; } = ["ExistingWatch"];
+
+    public int ErrorTrapping
+    {
+        get => errorTrapping;
+        set
+        {
+            errorTrapping = value;
+            UserSettingWriteCount++;
+        }
+    }
+
+    public bool CompileOnDemand
+    {
+        get => compileOnDemand;
+        set
+        {
+            compileOnDemand = value;
+            UserSettingWriteCount++;
+        }
+    }
 
     public object? ActiveCodePane
     {
@@ -1442,4 +1905,19 @@ public sealed class FakeCommandBarControl(int id, List<string> events)
             throw ExecuteException;
         }
     }
+}
+
+internal static class VbeDebugSessionTestExtensions
+{
+    public static Task OpenGeneratedWorkbookAsync(
+        this IVbeDebugSession session,
+        string workbookPath,
+        CancellationToken cancellationToken)
+        => session.OpenGeneratedWorkbookAsync(workbookPath, null, cancellationToken);
+
+    public static Task RunTargetAsync(
+        this IVbeDebugSession session,
+        DebugTargetProcedure target,
+        CancellationToken cancellationToken)
+        => session.RunTargetAsync(target, null, cancellationToken);
 }
