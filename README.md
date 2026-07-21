@@ -22,6 +22,8 @@ build, test, publish, export, and validate Excel macro workbooks from a
 - Use semantic highlighting for declarations and resolved references.
 - Format VBA source with the built-in document formatter.
 - Run workbook-backed VBA tests from VS Code Test Explorer.
+- Debug eligible VBA procedures in the native VBE from VS Code, with ordinary
+  source breakpoints.
 - Run project commands from the Command Palette: Doctor, Build, Test, Publish,
   Export, CommonModules, and VBA project reference operations.
 - Open an integrated terminal with `vba-dev` on `PATH` for direct CLI workflows
@@ -126,11 +128,10 @@ CommonModules state, reference declarations, and machine prerequisites. Results
 are written to the VBA Tools output channel and surfaced as VS Code diagnostics
 where applicable.
 
-Doctor also performs an active debug-readiness probe in a temporary dedicated
-Excel/VBE session. It verifies native breakpoint control, runs a harmless
-temporary procedure through the native VBE command, and verifies debug-process
-ownership. It then removes all temporary state without changing project files.
-Excel or the VBE may appear briefly while this probe runs.
+Doctor also opens a temporary Excel/VBE session to verify that native VBA
+debugging is ready. It does not change project files and removes its temporary
+state when finished, but Excel or the VBE may appear briefly while the check
+runs.
 
 ---
 
@@ -255,9 +256,9 @@ can replace the generated output.
 With the cursor in a parameterless public `Sub` in a standard module, press F5
 and select `VBA: Active Procedure`. VBA Tools saves the selected project's
 exported sources, rebuilds the selected document, opens its generated workbook
-in a dedicated visible Excel/VBE session, transfers enabled ordinary line
-breakpoints, and runs the procedure. `Option Private Module` is supported.
-Desktop Excel and trusted access to the VBA project object model are required.
+in a dedicated visible Excel/VBE session, transfers breakpoints, and runs the
+procedure. `Option Private Module` is supported. Desktop Excel and trusted
+access to the VBA project object model are required.
 
 To pin a target independently of the active editor, save a configuration in
 `.vscode/launch.json`:
@@ -283,39 +284,42 @@ To pin a target independently of the active editor, save a configuration in
 and `procedure` must be supplied together; omit both to use the active eligible
 procedure.
 
-Interactive debugging, including stepping, watches, the Immediate Window, and
-runtime errors, stays in the VBE. VS Code starts, restarts, or stops the session
-and shows lifecycle progress. Enabled ordinary line breakpoints in the selected
-`.bas`, `.cls`, and `.frm` source set are supported. An invalid or unsupported
-in-scope breakpoint aborts debugging; VBA Tools does not move it or insert a
-`Stop` statement.
+The target must be a public, parameterless `Sub` in a standard module. Private
+procedures, procedures with parameters, `Function` and `Property` procedures,
+and procedures in class, form, or document modules cannot be launched directly;
+use an eligible wrapper `Sub` when needed.
 
-Missing, disabled, or failing required native VBE commands also abort debugging.
-There is no `Stop`-statement, instrumentation, `Application.Run`, generated
-wrapper, caption, or `SendKeys` fallback.
+Interactive debugging stays in the VBE. Use the VBE for stepping, watches,
+runtime errors, the Immediate Window, and `Debug.Print` output. VS Code reports
+the session as running even while the VBE is in break mode. Existing VBE error
+handling settings, watches, and `Stop` statements can also pause execution.
+
+VBA Tools transfers enabled ordinary line breakpoints from the selected `.bas`,
+`.cls`, and `.frm` source set. Conditional breakpoints, hit-count breakpoints,
+logpoints, and breakpoints on non-executable or inactive conditional-compilation
+lines are not supported and stop the launch instead of being moved. Breakpoint
+changes made after launch take effect on the next restart or new session. A
+debug session can also run without breakpoints.
 
 The opened workbook is generated output. Saving it does not update exported VBA
 source or the source template, and the next F5 rebuild overwrites it. Make
 persistent VBA changes in exported source and persistent workbook-content
 changes in the source template.
 
-Open-time events such as `Workbook_Open` will not run automatically. Use an
+Open-time events such as `Workbook_Open` do not run automatically. Use an
 eligible wrapper `Sub` to debug startup logic. Excel and VBE prompts remain
-interactive without a timeout, and trusted access to the VBA project object
-model is required.
+interactive without a timeout.
 
-Stop cancels whichever save, build, open, prompt, breakpoint-transfer, setup, or
-monitoring phase is active. Restart first terminates the old debug session, then
-performs a fresh save, build, workbook open, breakpoint transfer, and procedure
-run; it never reuses the previous debug workbook or Excel process.
+Only one VBA debug session can run in a VS Code window, and attaching to an
+existing Excel process is not supported. Normal procedure completion leaves the
+session active for further VBE interaction. Close the debug Excel process to end
+the session.
 
-Stop and Restart can force-terminate the dedicated Excel process without a save
-prompt, including while a modal prompt is visible. Every workbook opened in that
-owned process belongs to the debug session, and all unsaved changes in those
-workbooks can be lost. Do not open unrelated workbooks there. Normal procedure
-completion leaves the session active for further VBE interaction. When the owned
-Excel process exits, VS Code shows the final termination message and ends the
-debug session.
+Stop and Restart can force-close the dedicated Excel process without a save
+prompt, including while a prompt is visible. All unsaved changes in every
+workbook opened in that process can be lost, so do not open unrelated workbooks
+there. Restart then saves current sources, rebuilds, and starts a new Excel/VBE
+session.
 
 ### Test
 
@@ -388,40 +392,20 @@ declarations, edit sibling files, or rewrite comments and strings.
 
 ## Block Skeleton Insertion
 
-Block skeleton insertion is enabled by default. When Enter follows the physical
-line end of a complete eligible header, VBA Tools first lets VS Code insert its
-native line break. The language server then replaces that blank line only when
-the exact document version and local syntax prove a safe insertion. A successful
-plan adds one indented body line and the matching terminator, places the cursor
-on the body line, preserves the document line ending, uses the editor
-`indentSize` (with `tabSize` as the protocol fallback), and remains one Undo
-operation.
+Block skeleton insertion is enabled by default. Press Enter at the end of a
+complete supported block header to insert an indented body line and the matching
+terminator as one Undo operation.
 
 Supported declaration forms are `Sub`, `Function`, `Property Get`,
 `Property Let`, `Property Set`, `Enum`, and `Type`, subject to normal VBA module
 legality. Supported control forms inside a callable body are block `If`,
 `For`, `For Each`, `Select Case`, and `With`.
 
-While locating a safe boundary, blank lines and comment-only apostrophe, `Rem`,
-or Doxygen-style `'*` lines are transparent and remain verbatim after the
-inserted terminator. A line containing VBA code followed by an inline comment
-is still evaluated from its code; the comment suffix does not turn body code,
-a declaration, a branch, or a terminator into boundary trivia.
-
-Inside conditional compilation, a skeleton is inserted only when the header,
-body, matching terminator, ancestors, safe boundary, and relevant diagnostics
-are proven within one well-formed `#If` / `#ElseIf` / `#Else` branch. The
-terminator is inserted before a proven branch boundary. Conditional-compilation
-directives themselves always keep native Enter. Malformed, nested-ambiguous, or
-cross-branch ownership also keeps native Enter without moving or repairing
-source.
-
 `Event`, external `Declare`, single-line `If`, `Do...Loop`, `While...Wend`, and
-runtime branch headers (`Else`, `ElseIf`, `Case`, and `Case Else`) are excluded.
-Existing candidate-owned body content, branches, or terminators are not
-rewritten. Disabling the setting, an unavailable or cancelled language server
-request, a timeout, stale document state, or any unproven syntax leaves the one
-native Enter unchanged.
+Existing body content, branches, and terminators are not rewritten. When the
+source is incomplete or ambiguous, including an unsafe conditional-compilation
+boundary, VBA Tools keeps the normal Enter behavior and does not repair the
+source.
 
 ---
 
@@ -430,7 +414,7 @@ native Enter unchanged.
 | Setting | Default | Description |
 | --- | --- | --- |
 | `vbaLanguageServer.trace.server` | `off` | Controls LSP trace output for the VBA language server. |
-| `vbaTools.devtool.path` | empty | Overrides the bundled `vba-dev` executable path for development or diagnostics. |
+| `vbaTools.devtool.path` | empty | Overrides the bundled `vba-dev` executable with a compatible executable. |
 | `vbaLanguageServer.blockSkeletonInsertion.enabled` | `true` | Inserts a proven body line and matching terminator after an eligible complete VBA block header; otherwise preserves native Enter. |
 
 ---
@@ -439,7 +423,7 @@ native Enter unchanged.
 
 | Problem | Check |
 | --- | --- |
-| Language features do not start | The first release supports Windows only. Open the VBA Tools output channel and check whether the bundled language server launched. |
+| Language features do not start | VBA Tools currently supports Windows only. Open the VBA Tools output channel and check whether the bundled language server launched. |
 | Workbook commands fail before opening Excel | Run `VBA Tools: Doctor` and confirm that the workspace contains `vba-project.json`. |
 | Excel blocks workbook automation | Enable trusted access to the VBA project object model in Excel Trust Center settings. |
 | Tests do not appear in Test Explorer | Confirm that `vba-project.json` is in the opened workspace and reload the VS Code window after changing project layout. |
@@ -450,7 +434,7 @@ native Enter unchanged.
 
 ## System Requirements
 
-- Windows 10 or Windows 11.
+- Windows 10 or Windows 11 on x64 hardware.
 - VS Code 1.125.0 or later.
 - Desktop Microsoft Excel for workbook-backed commands.
 - Trusted access to the VBA project object model for workbook automation.
