@@ -3,7 +3,7 @@ namespace VbaDev.App.Debugging;
 /// <summary>
 /// Represents a launch failure that occurs before execution belongs to the VBE.
 /// </summary>
-public sealed class DebugSetupException : Exception
+public class DebugSetupException : Exception
 {
     /// <summary>
     /// Creates a debug setup failure with a user-facing message.

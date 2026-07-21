@@ -45,11 +45,35 @@ Before starting, decide:
 
 ## Local Verification
 
-Run the full test suite:
+Run the normal client, C# devtool, language-server, syntax-core, and packaging
+suite during development:
 
 ```powershell
 npm test
 ```
+
+Before preparing an artifact, run the non-Excel release verification surface:
+
+```powershell
+npm run verify:release
+```
+
+This runs the client, Extension Host, C# unit, language-server, explicit syntax
+core, packaging, and compatibility suites, then republishes both bundled
+executables and verifies the planned VSIX. It intentionally does not opt in to
+real Excel automation.
+
+On a configured Windows host with desktop Excel and trusted VBIDE access, run
+the complete release verification including the serialized real Excel suite:
+
+```powershell
+npm run verify:release:windows-excel
+```
+
+The explicit `test:windows-excel-integration` step sets the required opt-in
+environment variable and filters to `Category=WindowsExcelIntegration`. Do not
+add it to ordinary `npm test`; the suite owns visible Excel/VBE processes and may
+wait for interactive modal prompts.
 
 Run package verification:
 
@@ -68,8 +92,15 @@ runs bundled executable probes:
   absent from the VSIX file list.
 - bundled runtime sidecars such as `.dll`, `.deps.json`, `.runtimeconfig.json`,
   and `.pdb` files must be absent from `bin/**`.
+- `package.json`, `client/out/extension.js`, and `vba-dev-contract.json` must be
+  present.
+- packaged metadata must point `main` at the compiled extension, activate
+  dynamic VBA debug resolution, contribute the supported launch schema and user
+  commands, and keep `module` and `procedure` atomic.
 - the bundled `vba-dev.exe` must answer `capabilities --format json` with the
   command contract required by the extension.
+- the advertised `debug-adapter --stdio` entry point must start successfully and
+  match the required adapter protocol version.
 - the bundled C# language server must run directly and answer `--version`.
 - `VbaDev.Cli.csproj` must publish a Windows x64 self-contained single-file
   executable.
@@ -94,9 +125,10 @@ bin/vba-language-server/win-x64/vba-language-server.exe --version
 
 ## Clean Windows Smoke
 
-This smoke is optional until a clean Windows release environment is available.
-When the environment is not available, skip this section and record `Clean
-Windows smoke: not run` in the GitHub Release notes.
+This smoke is required for a release that introduces or changes the native VBE
+debug workflow. For a release that does not affect debugging, an unavailable
+clean Windows environment may be recorded as `Clean Windows smoke: not run` in
+the GitHub Release notes.
 
 When the environment is available, run this smoke on Windows 11 with desktop
 Excel installed and without a separately installed .NET runtime.
@@ -114,14 +146,30 @@ Excel installed and without a separately installed .NET runtime.
 10. Run `VBA Tools: Test`.
 11. Confirm Test Explorer shows workbook-backed test nodes.
 12. Run the Test Explorer default `Run Tests` profile.
-13. Run the bundled language-server executable directly:
+13. Create or open a debug sample whose standard module contains `Option Private
+    Module` and a public parameterless `Sub` that records a harmless completion
+    marker.
+14. Set an enabled ordinary line breakpoint on an executable statement in that
+    procedure.
+15. Press F5 without a saved launch configuration. Confirm the packaged dynamic
+    configuration builds the sample, opens a dedicated visible Excel/VBE
+    process, transfers the breakpoint, and stops in native VBE Break mode.
+16. Continue from the VBE. Confirm the completion marker is recorded and VS Code
+    keeps the debug session active after procedure completion.
+17. Exit the owned Excel process. Confirm VS Code displays the final process-exit
+    termination message and no owned Excel process remains.
+18. Repeat with a saved `launch.json` target. Confirm Restart performs a fresh
+    save/build/open/transfer/run and Stop can terminate the session while an
+    interactive prompt is visible without leaving an orphan.
+19. Run the bundled language-server executable directly:
 
     ```powershell
     .\bin\vba-language-server\win-x64\vba-language-server.exe --version
     ```
 
-Do not block a release solely because this smoke environment is unavailable.
-Once the environment exists, treat failures in this smoke as release blockers.
+Treat failures in the required native VBE smoke as release blockers. If an
+unrelated release legitimately skips the smoke, record the reason and the last
+successful `verify:release:windows-excel` result in the release notes.
 
 ## Commit, Tag, and Push
 

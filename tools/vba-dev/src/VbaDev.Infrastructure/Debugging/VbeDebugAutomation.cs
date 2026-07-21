@@ -46,6 +46,46 @@ internal interface IStaComDispatcherFactory
     IStaComDispatcher Create();
 }
 
+internal interface IVbeDebugSessionStartFailure
+{
+    Exception StartException { get; }
+
+    Exception? CleanupException { get; }
+
+    bool CleanupVerified { get; }
+}
+
+internal sealed class VbeDebugSessionStartException(
+    Exception startException,
+    Exception? cleanupException,
+    bool cleanupVerified) :
+    DebugSetupException(startException.Message, startException),
+    IVbeDebugSessionStartFailure
+{
+    public Exception StartException { get; } = startException;
+
+    public Exception? CleanupException { get; } = cleanupException;
+
+    public bool CleanupVerified { get; } = cleanupVerified && cleanupException is null;
+}
+
+internal sealed class VbeDebugSessionStartCanceledException(
+    OperationCanceledException startException,
+    Exception? cleanupException,
+    bool cleanupVerified) :
+    OperationCanceledException(
+        startException.Message,
+        startException,
+        startException.CancellationToken),
+    IVbeDebugSessionStartFailure
+{
+    public Exception StartException { get; } = startException;
+
+    public Exception? CleanupException { get; } = cleanupException;
+
+    public bool CleanupVerified { get; } = cleanupVerified && cleanupException is null;
+}
+
 /// <summary>
 /// Starts a dedicated visible Excel instance and performs VBE-native target execution.
 /// </summary>
@@ -89,14 +129,15 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
     /// <inheritdoc />
     public async Task<IVbeDebugSession> StartVisibleAsync(CancellationToken cancellationToken)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        var existingExcelProcesses = processApi.CaptureRunningExcelProcesses();
-        var dispatcher = dispatcherFactory.Create();
+        IStaComDispatcher? dispatcher = null;
         object? excelObject = null;
         DebugExcelProcessOwner? processOwner = null;
         CancellationTokenRegistration ownershipCancellation = default;
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            var existingExcelProcesses = processApi.CaptureRunningExcelProcesses();
+            dispatcher = dispatcherFactory.Create();
             await dispatcher.InvokeAsync(
                 () =>
                 {
@@ -118,6 +159,9 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                 cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
 
+            ownershipCancellation.Dispose();
+            cancellationToken.ThrowIfCancellationRequested();
+
             return new VbeDebugSession(
                 excelObject!,
                 processOwner!,
@@ -126,14 +170,34 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                 workbookOpener,
                 promptMonitor);
         }
-        catch
+        catch (Exception startException)
         {
-            if (processOwner is not null)
+            var ownershipEstablished = processOwner is not null;
+            var noTemporaryProcessWasCreated = excelObject is null ||
+                startException is ExistingExcelProcessOwnershipRejectedException;
+            Exception? cleanupException = null;
+            try
             {
-                await processOwner.DisposeAsync().ConfigureAwait(false);
+                ownershipCancellation.Dispose();
+            }
+            catch (Exception ex)
+            {
+                cleanupException = ex;
             }
 
-            if (excelObject is not null)
+            if (processOwner is not null)
+            {
+                try
+                {
+                    await processOwner.DisposeAsync().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    cleanupException ??= ex;
+                }
+            }
+
+            if (excelObject is not null && dispatcher is not null)
             {
                 try
                 {
@@ -145,17 +209,35 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                         },
                         CancellationToken.None).ConfigureAwait(false);
                 }
-                catch
+                catch (Exception ex)
                 {
+                    cleanupException ??= ex;
                 }
             }
 
-            await dispatcher.DisposeAsync().ConfigureAwait(false);
-            throw;
-        }
-        finally
-        {
-            ownershipCancellation.Dispose();
+            try
+            {
+                if (dispatcher is not null)
+                {
+                    await dispatcher.DisposeAsync().ConfigureAwait(false);
+                }
+            }
+            catch (Exception ex)
+            {
+                cleanupException ??= ex;
+            }
+
+            var cleanupVerified = cleanupException is null &&
+                (ownershipEstablished || noTemporaryProcessWasCreated);
+            throw startException is OperationCanceledException cancellation
+                ? new VbeDebugSessionStartCanceledException(
+                    cancellation,
+                    cleanupException,
+                    cleanupVerified)
+                : new VbeDebugSessionStartException(
+                    startException,
+                    cleanupException,
+                    cleanupVerified);
         }
     }
 
@@ -171,8 +253,11 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
         }
     }
 
-    private sealed class VbeDebugSession : IVbeDebugSession
+    private sealed class VbeDebugSession : IVbeDebugSession, IVbeDebugProbeControl
     {
+        private const int VbeBreakMode = 1;
+        private const int VbeDesignMode = 2;
+
         private readonly object excelObject;
         private readonly DebugExcelProcessOwner processOwner;
         private readonly IStaComDispatcher dispatcher;
@@ -202,6 +287,9 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
         }
 
         public int ProcessId => processOwner.ProcessId;
+
+        public bool StrongProcessOwnershipEstablished =>
+            processOwner.KillOnCloseJobAssigned;
 
         public Task<DebugProcessExit> Completion => processOwner.Completion;
 
@@ -303,6 +391,48 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                     CancellationToken.None);
             }
         }
+
+        public Task WaitForBreakModeAsync(
+            TimeSpan timeout,
+            CancellationToken cancellationToken)
+            => WaitForProbeStateAsync(
+                state => state.ProjectMode == VbeBreakMode,
+                "The VBA project did not enter native break mode",
+                timeout,
+                cancellationToken);
+
+        public async Task ContinueTargetAsync(
+            DebugTargetProcedure target,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            _ = await InvokeSetupAsync(
+                () =>
+                {
+                    ExecuteTargetCommand(
+                        target,
+                        VbeBreakMode,
+                        "break mode",
+                        beforeExecute: null);
+                    return true;
+                },
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        public Task WaitForCompletionAsync(
+            string expectedMarker,
+            TimeSpan timeout,
+            CancellationToken cancellationToken)
+            => WaitForProbeStateAsync(
+                state =>
+                    state.ProjectMode == VbeDesignMode &&
+                    string.Equals(
+                        expectedMarker,
+                        state.CompletionMarker,
+                        StringComparison.Ordinal),
+                "The VBA project did not return to design mode with the expected completion marker",
+                timeout,
+                cancellationToken);
 
         public ValueTask TerminateAsync() => processOwner.TerminateAsync();
 
@@ -645,7 +775,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                         verifiedModule.Component,
                         verifiedModule.CodeModule,
                         breakpoint.VbideLine,
-                        51,
+                        VbaDebugCapabilityContract.ToggleBreakpointCommandId,
                         "Toggle Breakpoint",
                         "breakpoint",
                         CreateDisabledBreakpointMessage(breakpoint));
@@ -790,6 +920,21 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                 "line is inactive or non-executable. The breakpoint was not relocated.";
 
         private void RunTarget(DebugTargetProcedure target)
+            => ExecuteTargetCommand(
+                target,
+                VbeDesignMode,
+                "target code",
+                beforeExecute: () =>
+                {
+                    dynamic excel = excelObject;
+                    excel.EnableEvents = true;
+                });
+
+        private void ExecuteTargetCommand(
+            DebugTargetProcedure target,
+            int expectedProjectMode,
+            string contextName,
+            Action? beforeExecute)
         {
             object? projectObject = null;
             object? componentsObject = null;
@@ -800,7 +945,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                 dynamic workbook = GetOpenedWorkbook();
                 projectObject = workbook.VBProject;
                 dynamic project = projectObject;
-                EnsureDesignMode(project);
+                EnsureProjectMode(project, expectedProjectMode);
 
                 componentsObject = project.VBComponents;
                 dynamic components = componentsObject;
@@ -825,20 +970,82 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                     componentObject,
                     codeModuleObject,
                     bodyLine,
-                    186,
+                    VbaDebugCapabilityContract.RunOrContinueCommandId,
                     "Run Sub/UserForm",
-                    "target code",
-                    beforeExecute: () =>
-                    {
-                        dynamic excel = excelObject;
-                        excel.EnableEvents = true;
-                    });
+                    contextName,
+                    beforeExecute: beforeExecute);
             }
             finally
             {
                 ComObjectReleaser.Release(codeModuleObject);
                 ComObjectReleaser.Release(componentObject);
                 ComObjectReleaser.Release(componentsObject);
+                ComObjectReleaser.Release(projectObject);
+            }
+        }
+
+        private async Task WaitForProbeStateAsync(
+            Func<DebugProbeState, bool> predicate,
+            string timeoutMessage,
+            TimeSpan timeout,
+            CancellationToken cancellationToken)
+        {
+            using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken);
+            timeoutSource.CancelAfter(timeout);
+            try
+            {
+                while (true)
+                {
+                    var state = await InvokeSetupAsync(
+                        ReadDebugProbeState,
+                        timeoutSource.Token).ConfigureAwait(false);
+                    if (predicate(state))
+                    {
+                        return;
+                    }
+
+                    await Task.Delay(
+                        TimeSpan.FromMilliseconds(100),
+                        timeoutSource.Token).ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException ex) when (
+                !cancellationToken.IsCancellationRequested &&
+                timeoutSource.IsCancellationRequested)
+            {
+                throw new DebugSetupException(
+                    $"{timeoutMessage} within {timeout.TotalSeconds:0.###} seconds.",
+                    ex);
+            }
+        }
+
+        private DebugProbeState ReadDebugProbeState()
+        {
+            object? projectObject = null;
+            object? worksheetsObject = null;
+            object? worksheetObject = null;
+            object? rangeObject = null;
+            try
+            {
+                dynamic workbook = GetOpenedWorkbook();
+                projectObject = workbook.VBProject;
+                dynamic project = projectObject;
+                worksheetsObject = workbook.Worksheets;
+                dynamic worksheets = worksheetsObject;
+                worksheetObject = worksheets.Item(1);
+                dynamic worksheet = worksheetObject;
+                rangeObject = worksheet.Range("A1");
+                dynamic range = rangeObject;
+                return new DebugProbeState(
+                    (int)project.Mode,
+                    Convert.ToString(range.Value2));
+            }
+            finally
+            {
+                ComObjectReleaser.Release(rangeObject);
+                ComObjectReleaser.Release(worksheetObject);
+                ComObjectReleaser.Release(worksheetsObject);
                 ComObjectReleaser.Release(projectObject);
             }
         }
@@ -976,15 +1183,23 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                 "The generated debug workbook has not been opened.");
 
         private static void EnsureDesignMode(dynamic project)
+            => EnsureProjectMode(project, VbeDesignMode);
+
+        private static void EnsureProjectMode(dynamic project, int expectedMode)
         {
-            if ((int)project.Mode != 2)
+            if ((int)project.Mode == expectedMode)
             {
-                throw new DebugSetupException(
-                    "The generated workbook VBA project is not in design mode.");
+                return;
             }
+
+            throw new DebugSetupException(expectedMode == VbeDesignMode
+                ? "The generated workbook VBA project is not in design mode."
+                : "The generated workbook VBA project is not in break mode.");
         }
 
         private sealed record VerifiedCodeModule(object Component, object CodeModule);
+
+        private sealed record DebugProbeState(int ProjectMode, string? CompletionMarker);
 
         private void RecordForegroundPermission(DebugSetupException error)
         {

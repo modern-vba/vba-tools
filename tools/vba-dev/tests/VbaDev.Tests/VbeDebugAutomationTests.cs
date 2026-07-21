@@ -515,6 +515,37 @@ public sealed class VbeDebugAutomationTests
     }
 
     [Fact]
+    public async Task StartVisibleRejectsAnExistingExcelProcessWithoutTerminatingIt()
+    {
+        var started = new DateTime(2026, 7, 21, 10, 0, 30, DateTimeKind.Local);
+        var process = new FakeDebugOwnedProcess(31418, started);
+        var processApi = new FakeDebugExcelProcessApi(process.Id, process)
+        {
+            RunningExcelProcesses = new Dictionary<int, DateTime>
+            {
+                [process.Id] = started
+            }
+        };
+        var dispatcher = new RecordingStaComDispatcher();
+        var automation = new VbeDebugAutomation(
+            new FakeExcelDebugApplicationFactory(new FakeExcelApplication { Hwnd = 2471 }),
+            processApi,
+            new FakeDebugWindowActivator(),
+            new FakeStaComDispatcherFactory(dispatcher));
+
+        var error = await Assert.ThrowsAsync<VbeDebugSessionStartException>(() =>
+            automation.StartVisibleAsync(CancellationToken.None));
+
+        Assert.IsType<ExistingExcelProcessOwnershipRejectedException>(error.StartException);
+        Assert.IsAssignableFrom<DebugSetupException>(error);
+        Assert.True(error.CleanupVerified);
+        Assert.Equal(0, processApi.OpenProcessCalls);
+        Assert.Equal(0, process.KillCalls);
+        Assert.False(process.Disposed);
+        Assert.Equal(2, dispatcher.InvokeCalls);
+    }
+
+    [Fact]
     public async Task CancellationWhileMakingExcelVisibleTerminatesTheOwnedProcessOutsideTheStaDispatcher()
     {
         using var visibleSetStarted = new ManualResetEventSlim();
@@ -551,6 +582,41 @@ public sealed class VbeDebugAutomationTests
         {
             releaseVisibleSet.Set();
         }
+    }
+
+    [Fact]
+    public async Task StartVisiblePreservesOwnedProcessCleanupFailureAndStillDisposesTheDispatcher()
+    {
+        var events = new List<string>();
+        var startError = new DebugSetupException("Synthetic visible Excel startup failure.");
+        var processCleanupError = new IOException("Synthetic owned process cleanup failure.");
+        var process = new FakeDebugOwnedProcess(
+            31417,
+            new DateTime(2026, 7, 21, 10, 2, 0, DateTimeKind.Local),
+            killAction: () => throw processCleanupError,
+            events: events);
+        var job = new FakeDebugProcessJob(
+            process,
+            events,
+            terminateError: new IOException("Synthetic Job termination failure."));
+        var dispatcher = new FailingFirstInvocationStaComDispatcher(events, startError);
+        var automation = new VbeDebugAutomation(
+            new FakeExcelDebugApplicationFactory(new FakeExcelApplication { Hwnd = 2470 }),
+            new FakeDebugExcelProcessApi(process.Id, process, job),
+            new FakeDebugWindowActivator(),
+            new FakeStaComDispatcherFactory(dispatcher));
+
+        var error = await Assert.ThrowsAsync<VbeDebugSessionStartException>(() =>
+            automation.StartVisibleAsync(CancellationToken.None));
+
+        Assert.Same(startError, error.StartException);
+        Assert.IsAssignableFrom<DebugSetupException>(error);
+        Assert.Same(processCleanupError, error.CleanupException);
+        Assert.False(error.CleanupVerified);
+        Assert.True(process.Disposed);
+        Assert.True(job.Disposed);
+        Assert.Contains("dispatcher-dispose", events);
+        Assert.Equal(2, dispatcher.InvokeCalls);
     }
 
     [Fact]
@@ -1423,6 +1489,113 @@ public sealed class VbeDebugAutomationTests
         Assert.Equal(1, events.Count(entry => entry == "execute:186"));
     }
 
+    [Fact]
+    public async Task ContinueFailsClosedWhenNativeRunCommand186IsMissing()
+    {
+        var result = await CaptureContinueFailureAsync(runCommandMissing: true);
+
+        Assert.Contains("ID 186", result.Error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, result.Process.KillCalls);
+        Assert.DoesNotContain(result.Events, entry => entry.StartsWith("execute:", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ContinueFailsClosedWhenNativeRunCommand186IsDisabled()
+    {
+        var result = await CaptureContinueFailureAsync(runCommandEnabled: false);
+
+        Assert.Contains("disabled", result.Error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, result.Process.KillCalls);
+        Assert.DoesNotContain(result.Events, entry => entry.StartsWith("execute:", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ContinueFailsClosedWhenNativeRunCommand186Throws()
+    {
+        var executeError = new COMException("continue failed");
+        var result = await CaptureContinueFailureAsync(runCommandException: executeError);
+
+        Assert.Same(executeError, result.Error.InnerException);
+        Assert.Contains("invocation", result.Error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, result.Process.KillCalls);
+        Assert.DoesNotContain(result.Events, entry =>
+            entry.Contains("Application.Run", StringComparison.OrdinalIgnoreCase) ||
+            entry.Contains("SendKeys", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task ProbeControlObservesBreakModeAndCompletionMarkerFromTheOpenedWorkbook()
+    {
+        using var temp = TempDirectory.Create();
+        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
+        File.WriteAllText(workbookPath, "test workbook placeholder");
+        var events = new List<string>();
+        var model = FakeVbeModel.Create(workbookPath, events);
+        var process = new FakeDebugOwnedProcess(
+            18602,
+            new DateTime(2026, 7, 22, 1, 5, 0, DateTimeKind.Local));
+        var automation = new VbeDebugAutomation(
+            new FakeExcelDebugApplicationFactory(model.Excel),
+            new FakeDebugExcelProcessApi(18602, process),
+            new FakeDebugWindowActivator(events),
+            new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
+
+        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None);
+        var control = Assert.IsAssignableFrom<IVbeDebugProbeControl>(session);
+
+        model.Project.Mode = 1;
+        await control.WaitForBreakModeAsync(TimeSpan.FromSeconds(1), CancellationToken.None);
+        model.Project.Mode = 2;
+        model.Workbook.CompletionMarker = "vba-tools-doctor-complete";
+        await control.WaitForCompletionAsync(
+            "vba-tools-doctor-complete",
+            TimeSpan.FromSeconds(1),
+            CancellationToken.None);
+
+        Assert.Equal(0, process.KillCalls);
+    }
+
+    private static async Task<ContinueFailureResult> CaptureContinueFailureAsync(
+        bool runCommandMissing = false,
+        bool runCommandEnabled = true,
+        Exception? runCommandException = null)
+    {
+        using var temp = TempDirectory.Create();
+        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
+        File.WriteAllText(workbookPath, "test workbook placeholder");
+        var events = new List<string>();
+        var model = FakeVbeModel.Create(
+            workbookPath,
+            events,
+            runCommandMissing: runCommandMissing,
+            runCommandEnabled: runCommandEnabled,
+            runCommandException: runCommandException);
+        var process = new FakeDebugOwnedProcess(
+            18601,
+            new DateTime(2026, 7, 22, 1, 0, 0, DateTimeKind.Local));
+        var automation = new VbeDebugAutomation(
+            new FakeExcelDebugApplicationFactory(model.Excel),
+            new FakeDebugExcelProcessApi(18601, process),
+            new FakeDebugWindowActivator(events),
+            new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
+
+        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None);
+        model.Project.Mode = 1;
+        var control = Assert.IsAssignableFrom<IVbeDebugProbeControl>(session);
+        var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
+            control.ContinueTargetAsync(
+                new DebugTargetProcedure("DebugModule", "RunTarget"),
+                CancellationToken.None));
+        return new ContinueFailureResult(error, process, events);
+    }
+
+    private sealed record ContinueFailureResult(
+        DebugSetupException Error,
+        FakeDebugOwnedProcess Process,
+        IReadOnlyList<string> Events);
+
     private static VbeBreakpoint CreateBreakpoint(string directory)
         => new(
             new DebugSourceBreakpoint(Path.Combine(directory, "DebugModule.bas"), 10),
@@ -1569,6 +1742,29 @@ internal sealed class RecordingStaComDispatcher : IStaComDispatcher
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
 
+internal sealed class FailingFirstInvocationStaComDispatcher(
+    List<string> events,
+    Exception firstInvocationError) : IStaComDispatcher
+{
+    public int InvokeCalls { get; private set; }
+
+    public Task<T> InvokeAsync<T>(Func<T> operation, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        InvokeCalls += 1;
+        var result = operation();
+        return InvokeCalls == 1
+            ? Task.FromException<T>(firstInvocationError)
+            : Task.FromResult(result);
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        events.Add("dispatcher-dispose");
+        return ValueTask.CompletedTask;
+    }
+}
+
 internal sealed class RecordingDebugModalPromptMonitor(List<string> events)
     : IDebugModalPromptMonitor
 {
@@ -1638,7 +1834,10 @@ internal sealed class ProcessExitDebugModalPromptMonitor(List<string> events)
     }
 }
 
-internal sealed record FakeVbeModel(FakeExcelApplication Excel)
+internal sealed record FakeVbeModel(
+    FakeExcelApplication Excel,
+    FakeVbProject Project,
+    FakeWorkbook Workbook)
 {
     public static FakeVbeModel Create(
         string workbookPath,
@@ -1753,7 +1952,7 @@ internal sealed record FakeVbeModel(FakeExcelApplication Excel)
             Workbooks = workbooks,
             VBE = vbe
         };
-        return new FakeVbeModel(excel);
+        return new FakeVbeModel(excel, project, workbook);
     }
 }
 
@@ -1786,6 +1985,14 @@ public sealed class FakeWorkbook(
     List<string>? events = null,
     bool recordVbProjectAccess = false)
 {
+    public FakeWorksheets Worksheets { get; } = new();
+
+    public string? CompletionMarker
+    {
+        get => Worksheets.CompletionMarker;
+        set => Worksheets.CompletionMarker = value;
+    }
+
     public string FullName { get; } = fullName;
 
     public FakeVbProject VBProject
@@ -1807,9 +2014,26 @@ public sealed class FakeWorkbook(
     }
 }
 
+public sealed class FakeWorksheets
+{
+    public string? CompletionMarker { get; set; }
+
+    public FakeWorksheet Item(int index) => new(this);
+}
+
+public sealed class FakeWorksheet(FakeWorksheets worksheets)
+{
+    public FakeRange Range(string address) => new(worksheets);
+}
+
+public sealed class FakeRange(FakeWorksheets worksheets)
+{
+    public string? Value2 => worksheets.CompletionMarker;
+}
+
 public sealed class FakeVbProject(FakeVbComponents components)
 {
-    public int Mode { get; init; } = 2;
+    public int Mode { get; set; } = 2;
 
     public int Protection { get; init; }
 

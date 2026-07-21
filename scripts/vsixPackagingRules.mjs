@@ -7,6 +7,21 @@ export const distributionManifestPath = 'distribution-manifest.json';
 
 const defaultDistributionManifest = readDistributionManifest();
 
+const requiredExtensionCommandIds = [
+  'vbaTools.doctor',
+  'vbaTools.openVbaDevTerminal',
+  'vbaTools.build',
+  'vbaTools.test',
+  'vbaTools.publish',
+  'vbaTools.export',
+  'vbaTools.commonModules.add',
+  'vbaTools.commonModules.list',
+  'vbaTools.commonModules.update',
+  'vbaTools.references.list',
+  'vbaTools.references.add',
+  'vbaTools.references.remove'
+];
+
 export const requiredBundledCliPath = defaultDistributionManifest.runtimes.vbaDev.executablePath;
 export const requiredBundledLanguageServerPath = defaultDistributionManifest.runtimes.vbaLanguageServer.executablePath;
 export const requiredVbaDevContractPath = defaultDistributionManifest.runtimes.vbaDev.contractPath;
@@ -19,6 +34,10 @@ export async function verifyVsixPackaging(options = {}) {
   const bundledCliPath = path.join(root, manifest.runtimes.vbaDev.executablePath);
   const bundledLanguageServerPath = path.join(root, manifest.runtimes.vbaLanguageServer.executablePath);
   const requiredContract = readRequiredVbaDevContract(root, manifest);
+  const extensionPackageJson = JSON.parse(
+    await fs.readFile(path.join(root, 'package.json'), 'utf8')
+  );
+  assertExtensionDebugPackage(extensionPackageJson);
 
   await fs.access(bundledCliPath);
   await fs.access(bundledLanguageServerPath);
@@ -93,6 +112,66 @@ export function parseVsceFileList(stdout) {
     .split(/\r?\n/)
     .map((line) => line.trim().replaceAll('\\', '/').replace(/^\.\//, ''))
     .filter((line) => line.length > 0);
+}
+
+export function assertExtensionDebugPackage(packageJson) {
+  if (
+    !isRecord(packageJson) ||
+    packageJson.main !== './client/out/extension.js' ||
+    !isStringArray(packageJson.activationEvents) ||
+    !packageJson.activationEvents.includes('onDebugDynamicConfigurations') ||
+    !packageJson.activationEvents.includes('onDebugResolve:vba')
+  ) {
+    throw new Error(
+      'Extension package metadata must activate the packaged VBA debug entry point through dynamic configuration resolution.'
+    );
+  }
+
+  const debuggers = packageJson.contributes?.debuggers;
+  const vbaDebugger = Array.isArray(debuggers)
+    ? debuggers.find((candidate) => isRecord(candidate) && candidate.type === 'vba')
+    : undefined;
+  const launchProperties = vbaDebugger?.configurationAttributes?.launch?.properties;
+  if (
+    !isRecord(launchProperties) ||
+    !['project', 'document', 'module', 'procedure'].every(
+      (selector) => isRecord(launchProperties[selector]) && launchProperties[selector].type === 'string'
+    )
+  ) {
+    throw new Error(
+      'Extension package metadata must expose the project, document, module, and procedure VBA launch selector schema.'
+    );
+  }
+
+  const launchDependencies = vbaDebugger.configurationAttributes.launch.dependencies;
+  if (
+    !isRecord(launchDependencies) ||
+    !isStringArray(launchDependencies.module) ||
+    launchDependencies.module.length !== 1 ||
+    launchDependencies.module[0] !== 'procedure' ||
+    !isStringArray(launchDependencies.procedure) ||
+    launchDependencies.procedure.length !== 1 ||
+    launchDependencies.procedure[0] !== 'module'
+  ) {
+    throw new Error(
+      'Extension package metadata must require the VBA launch selectors module and procedure together.'
+    );
+  }
+  if (Object.hasOwn(vbaDebugger.configurationAttributes, 'attach')) {
+    throw new Error('Extension package metadata does not support attach for VBA debugging.');
+  }
+
+  const contributedCommands = packageJson.contributes?.commands;
+  for (const commandId of requiredExtensionCommandIds) {
+    if (
+      !Array.isArray(contributedCommands) ||
+      !contributedCommands.some(
+        (command) => isRecord(command) && command.command === commandId
+      )
+    ) {
+      throw new Error(`Extension package metadata must include required extension command ${commandId}.`);
+    }
+  }
 }
 
 export function assertVsixContents(files, distributionManifest = defaultDistributionManifest) {

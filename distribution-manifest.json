@@ -33,7 +33,9 @@
   "vsix": {
     "requiredFiles": [
       "distribution-manifest.json",
-      "assets/icon.png"
+      "assets/icon.png",
+      "package.json",
+      "client/out/extension.js"
     ],
     "excludedSourcePrefixes": [
       "tools/vba-dev/",

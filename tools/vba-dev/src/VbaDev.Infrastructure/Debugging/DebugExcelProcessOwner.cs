@@ -39,6 +39,16 @@ internal interface IDebugOwnedProcess : IDisposable
     void Kill();
 }
 
+internal sealed class ExistingExcelProcessOwnershipRejectedException : DebugSetupException
+{
+    public ExistingExcelProcessOwnershipRejectedException()
+        : base(
+            "The visible Excel window belongs to an existing Excel process; " +
+            "debug ownership was rejected.")
+    {
+    }
+}
+
 /// <summary>
 /// Owns one exactly identified visible Excel process for a debug session.
 /// </summary>
@@ -65,6 +75,8 @@ internal sealed class DebugExcelProcessOwner : IAsyncDisposable
 
     internal DateTime ProcessStartTime { get; }
 
+    internal bool KillOnCloseJobAssigned => true;
+
     public Task<DebugProcessExit> Completion { get; }
 
     public static DebugExcelProcessOwner Capture(
@@ -81,8 +93,7 @@ internal sealed class DebugExcelProcessOwner : IAsyncDisposable
 
         if (existingExcelProcesses.ContainsKey(processId))
         {
-            throw new DebugSetupException(
-                "The visible Excel window belongs to an existing Excel process; debug ownership was rejected.");
+            throw new ExistingExcelProcessOwnershipRejectedException();
         }
 
         var process = processApi.OpenProcess(processId);

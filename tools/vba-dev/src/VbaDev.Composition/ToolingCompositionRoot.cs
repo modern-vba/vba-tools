@@ -85,6 +85,7 @@ public static class ToolingCompositionRoot
     /// <param name="workbookModuleExporter">The optional workbook module exporter adapter.</param>
     /// <param name="vbaProjectReferenceResolver">The optional VBA project reference resolver adapter.</param>
     /// <param name="projectManifestStore">The optional project manifest persistence adapter.</param>
+    /// <param name="debugEnvironmentProbeFactory">The optional native VBE Doctor probe factory.</param>
     /// <returns>The composed command-line application.</returns>
     public static CommandLineApplication CreateCommandLineApplication(
         string workingDirectory,
@@ -94,7 +95,8 @@ public static class ToolingCompositionRoot
         IWorkbookTestRunner? workbookTestRunner = null,
         IWorkbookModuleExporter? workbookModuleExporter = null,
         IVbaProjectReferenceResolver? vbaProjectReferenceResolver = null,
-        IProjectManifestStore? projectManifestStore = null)
+        IProjectManifestStore? projectManifestStore = null,
+        IDebugEnvironmentProbeFactory? debugEnvironmentProbeFactory = null)
     {
         var manifestStore = projectManifestStore ?? new JsonProjectManifestStore();
         var manifestEditor = new ProjectManifestEditor(manifestStore);
@@ -114,7 +116,10 @@ public static class ToolingCompositionRoot
                 new VbaProjectReferenceDiagnosticProvider(referencePlanner, buildAutomation),
                 new CommandDefaultsDiagnosticProvider()
             ],
-            environmentDiagnosticPort ?? new SkippedEnvironmentDiagnosticPort());
+            environmentDiagnosticPort ?? new DebugEnvironmentDiagnostic(
+                debugEnvironmentProbeFactory ?? new VbeDebugEnvironmentProbeFactory(),
+                OperatingSystem.IsWindows,
+                TimeSpan.FromSeconds(60)));
         var doctorCommand = new DoctorCommand(
             doctorPipeline,
             new DoctorReportRenderer());

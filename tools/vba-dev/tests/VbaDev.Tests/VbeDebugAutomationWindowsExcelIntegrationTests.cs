@@ -22,6 +22,52 @@ public sealed class VbeDebugAutomationWindowsExcelIntegrationTests
 
     [WindowsExcelIntegrationFact]
     [Trait("Category", "WindowsExcelIntegration")]
+    public async Task DefaultDoctorRunsTheCompleteNativeVbeProbeAndLeavesNoState()
+    {
+        using var temp = TempDirectory.Create();
+        var baselineProcessIds = CaptureExcelProcessIds();
+        var baselineProbeDirectories = Directory
+            .GetDirectories(Path.GetTempPath(), "vba-tools-doctor-*")
+            .Select(Path.GetFullPath)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            var application = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path);
+
+            var result = application.Run(["doctor"]);
+
+            Assert.Equal(0, result.ExitCode);
+            Assert.Contains("[PASS] VBA debug capability contract", result.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains("Protocol 1.1", result.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains("[PASS] Excel COM availability", result.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains("[PASS] Owned Excel process", result.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains("[PASS] Windows Job ownership", result.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains("[PASS] VBIDE project access", result.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains("[PASS] Native Toggle Breakpoint command (ID 51)", result.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains("[PASS] Native Run command (ID 186)", result.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains("[PASS] VBE break mode", result.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains("[PASS] Native Continue command (ID 186)", result.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains("[PASS] Debug procedure completion", result.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains("[PASS] Native breakpoint cleanup (ID 51)", result.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains("[PASS] Temporary debug probe cleanup", result.StandardOutput, StringComparison.Ordinal);
+            Assert.DoesNotContain("[FAIL]", result.StandardOutput, StringComparison.Ordinal);
+        }
+        finally
+        {
+            await WaitForNoNewExcelProcessesAsync(
+                baselineProcessIds,
+                TimeSpan.FromSeconds(20));
+            var remainingProbeDirectories = Directory
+                .GetDirectories(Path.GetTempPath(), "vba-tools-doctor-*")
+                .Select(Path.GetFullPath)
+                .Where(path => !baselineProbeDirectories.Contains(path))
+                .ToArray();
+            Assert.Empty(remainingProbeDirectories);
+        }
+    }
+
+    [WindowsExcelIntegrationFact]
+    [Trait("Category", "WindowsExcelIntegration")]
     public async Task ActualOwnedExcelAndVbeHostFactsProveCompilerBuiltIns()
     {
         var baselineProcessIds = CaptureExcelProcessIds();

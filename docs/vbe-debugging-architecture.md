@@ -2,10 +2,10 @@
 
 ## Status and audience
 
-This is the developer-facing design for the planned VS Code-to-VBE debug
-workflow. The feature is not implemented yet. README documents only the
-user-visible workflow, requirements, limitations, and data-loss behavior.
-Decision rationale remains in ADRs 0019 through 0022 and 0024.
+This is the developer-facing implementation and maintenance contract for the
+VS Code-to-VBE debug workflow. README documents only the user-visible workflow,
+requirements, limitations, and data-loss behavior. Decision rationale remains
+in ADRs 0019 through 0022 and 0024.
 
 ## Ownership boundary
 
@@ -23,6 +23,41 @@ An explicit `vbaTools.devtool.path` override must advertise a compatible debug
 adapter contract through `vba-dev capabilities --format json`, following ADR
 0007. Capability inspection remains side-effect free; Excel readiness belongs
 to Doctor.
+
+## Capability and packaged-extension contract
+
+`vba-dev-contract.json` is the extension-owned compatibility requirement. Its
+`contractVersion` versions the CLI command contract independently from the
+extension and CLI release versions. `commandSchemaVersions` pins each command
+output consumed by the extension. `debugAdapterProtocolVersion` pins the
+extension-to-adapter additions beyond the base DAP contract; the current value
+is `1.1`.
+
+`vba-dev capabilities --format json` must report the matching contract version,
+all required command schema versions, and this debug adapter capability:
+
+```json
+{
+  "debugAdapter": {
+    "protocolVersion": "1.1",
+    "transport": "stdio",
+    "command": "debug-adapter"
+  }
+}
+```
+
+The extension validates this response before using either the bundled CLI or an
+explicit path override. There is no PATH discovery or compatibility fallback.
+Capability inspection does not start Excel or probe VBE readiness.
+
+The VSIX must contain `package.json`, `client/out/extension.js`,
+`vba-dev-contract.json`, and the self-contained
+`bin/vba-dev/win-x64/vba-dev.exe`. `package.json` must point `main` at the
+compiled extension entry point, activate dynamic `vba` configuration
+resolution, contribute the launch selector schema and user commands, and omit
+an attach schema. Packaging verification inspects those contributions, checks
+the VSIX file list, executes the bundled capabilities command, and starts the
+advertised adapter entry point with `--stdio`.
 
 ## Launch resolution
 
@@ -192,6 +227,133 @@ breakpoints, function breakpoints, or attach.
 verification, target start and completion, cancellation, setup failure, and
 Excel-process exit. It never scrapes VBE runtime state or VBA output.
 
+### Transport and request ordering
+
+The CLI entry point is `vba-dev debug-adapter --stdio`. DAP messages use the
+standard `Content-Length` framing. A frame write may be cancelled while waiting
+for the connection write gate. After the gate is acquired, its header and body
+are written as one serialized buffer and flushed without cancellation so a
+restart or disconnect cannot leave a partial frame on stdout.
+
+The extension resolves and saves the selected project before the adapter starts.
+The launch request carries one immutable `sourceSnapshot` with schema version 1;
+the adapter does not reread editor buffers. DAP breakpoint responses remain
+unverified until the build, exact source mapping, and native command complete.
+Setup and monitor work run in supervised background tasks. A response, event, or
+monitor transport failure terminates the adapter and releases process ownership
+without waiting for stdin to close.
+
+### Restart preparation protocol
+
+Protocol 1.1 makes native VS Code Restart a two-party transaction:
+
+1. The resolved launch configuration contains
+   `__vbaRestartPreparation: { protocolVersion: 1, id }`. The identifier is bound
+   to the canonical selected project root.
+2. On a DAP `restart` request containing that marker, the adapter keeps serving
+   requests but parks the restart and retains the old session.
+3. The extension saves only dirty exported sources in the newly selected
+   project, retaining every save that completed before cancellation or failure.
+4. The extension sends `vba/restartPrepared` with the original
+   `restartRequestSequence`, matching `preparationId`, `success`, and an optional
+   failure message.
+5. Only a matching successful result can commit the restart. The old session is
+   then terminated and a complete fresh snapshot, build, open, breakpoint
+   transfer, and run begins.
+
+A stale request sequence cannot consume the pending preparation. A malformed or
+wrong preparation identity fails that restart. Disconnect, terminate, session
+release, or notification-transport failure cancels pending preparation and ends
+the owned session. If the old Excel process exits before restart commit, process
+exit is authoritative and no replacement process starts. Adapter clients that
+do not supply the private preparation marker retain immediate-restart behavior.
+
+Normal target completion is output, not a terminal DAP event. The owned Excel
+process exit, explicit termination, or an unrecoverable adapter failure claims
+the single terminal transition.
+
+## Failure categories
+
+Failures are classified by the boundary that can act on them:
+
+- `VbaDevCompatibilityError`: the configured or bundled CLI cannot satisfy the
+  extension-owned command or debug-adapter contract. No adapter or Excel process
+  starts.
+- `VbaDebugSelectionError`: the extension cannot select one project, document,
+  eligible procedure, or valid participating breakpoint from saved source.
+- `DebugLaunchBusyException`: the VS Code window or selected project already
+  owns an incompatible launch. The active session is retained.
+- `DebugSetupException`: build, workbook open, source verification, command
+  context, native command, compiler, or VBE setup could not establish the
+  requested session. Any owned process and incomplete temporary output are
+  cleaned.
+- cancellation: F5 cancellation, Stop, Restart, disconnect, or shutdown is
+  reported as cancellation rather than setup failure. Completed source saves
+  and atomically replaced bin output are not rolled back.
+- input wait: an interactive Excel or VBE modal is a lifecycle state, not a
+  failure or timeout. User dismissal may subsequently produce setup failure;
+  Stop may force-terminate the process immediately.
+- transport or lifecycle failure: malformed protocol, failed DAP output,
+  adapter death, Extension Host death, or unexpected parent exit closes strong
+  ownership and terminates the session-owned Excel process.
+- owned-process exit: normal Excel exit is the final session outcome. Procedure
+  completion alone is not process exit.
+
+None of these categories permits breakpoint relocation, `Stop` insertion,
+instrumentation, `Application.Run`, generated wrappers, caption matching,
+`SendKeys`, or attachment to an existing Excel process.
+
+## Test seams
+
+The TypeScript client isolates editor and workspace state behind
+`VbaDebugConfigurationHost`, process capability inspection behind
+`ProcessRunner`, and VS Code lifecycle integration behind small session and
+notification interfaces. Client tests pin selection, scoped save, restart
+identity, lifecycle cancellation, configuration contributions, and CLI
+compatibility. Extension Host tests prove production F5 resolution and that only
+the selected project is saved.
+
+The application layer isolates build and VBE work behind
+`IDebugWorkbookBuilder`, `IVbeDebugSessionFactory`, `IVbeDebugSession`, and the
+debug lifecycle sinks. Deterministic fakes control every save/build/open/modal,
+breakpoint, run, process-exit, restart, and cleanup boundary. Infrastructure
+tests substitute the Excel process API, Job Object, modal-window API, foreground
+window activation, and COM dispatcher without weakening production ownership.
+DAP tests use in-memory byte streams and held-open input to verify framing,
+ordering, cancellation, and background-task failure.
+
+Opt-in `WindowsExcelIntegration` tests use real Excel, VBIDE, native command IDs,
+Job Objects, modal prompts, DAP Stop/Restart, adapter death, and Excel-initiated
+exit. They are serialized and require
+`VBA_TOOLS_RUN_EXCEL_INTEGRATION_TESTS=1`. Packaging tests separately inspect the
+VSIX surface and execute the bundled compatibility and adapter entry points.
+
+## Maintenance guidance
+
+- When a consumed CLI command or adapter extension changes, update
+  `vba-dev-contract.json`, the CLI capabilities response, client validation,
+  packaging fixtures, compatibility tests, and this document together. Bump
+  `debugAdapterProtocolVersion` for an incompatible adapter contract change.
+- Keep restart preparation project-bound and sequence-bound. New restart fields
+  require deterministic tests for stale, malformed, cancelled, process-exit,
+  and transport-failure ordering before Windows coverage.
+- Resolve VBE commands by stable built-in ID only after establishing
+  `VbeCommandContext`. A command-ID or context change requires Doctor,
+  deterministic automation, and real Excel integration updates; never add a
+  localized-caption or `SendKeys` fallback.
+- Keep source mapping in the reusable syntax core and verify generated
+  `CodeModule` content. Do not introduce fixed offsets, neighboring-line repair,
+  or a debug-only parser.
+- Establish PID and kill-on-close Job ownership before workbook open, prompts,
+  breakpoint transfer, or target execution. Every new terminal path needs a
+  test proving Job disposal and launch-guard release.
+- Keep README limited to user actions, prerequisites, supported behavior,
+  interactive waits, and data-loss warnings. Put protocol, command identity,
+  seam, and maintainer details here or in an ADR.
+- Run `npm run verify:release` for the non-Excel release surface. On a configured
+  Windows/Excel host, run `npm run verify:release:windows-excel` and the packaged
+  VSIX smoke in `docs/release.md`.
+
 ## Doctor
 
 Normal `VBA Tools: Doctor` includes an active `DebugEnvironmentDiagnostic`.
@@ -209,6 +371,19 @@ Using a temporary dedicated Excel/VBE session and temporary standard module, it:
 The probe does not modify persistent project files. Excel or the VBE may appear
 briefly. A missing, disabled, or failing required command fails the diagnostic;
 there is no fallback.
+
+Probe startup failures carry explicit cleanup evidence. A categorized failure
+may report cleanup as passing only when `CleanupVerified` is true and no
+`CleanupException` was recorded. A missing session is not cleanup evidence:
+uncategorized startup failures therefore fail the cleanup diagnostic. Hidden
+workbook creation removes its temporary directory on cancellation, and a
+cleanup failure during cancellation is preserved separately from the timeout.
+Startup adapters preserve `DebugSetupException` and `OperationCanceledException`
+classification while attaching this evidence. If COM activation resolves to an
+Excel PID that existed before startup, ownership is rejected and only the COM
+reference is released; Doctor and debug launch never call `Excel.Quit` or kill
+that user-owned process. When no exact process owner was established, cleanup
+is unverified unless the failure proves that no temporary process was created.
 
 ## Feasibility evidence
 

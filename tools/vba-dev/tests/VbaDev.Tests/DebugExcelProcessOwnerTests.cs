@@ -14,7 +14,7 @@ public sealed class DebugExcelProcessOwnerTests
             windowProcessId: 42,
             new FakeDebugOwnedProcess(42, started));
 
-        var error = Assert.Throws<DebugSetupException>(() =>
+        var error = Assert.Throws<ExistingExcelProcessOwnershipRejectedException>(() =>
             DebugExcelProcessOwner.Capture(
                 (nint)1234,
                 new Dictionary<int, DateTime> { [42] = started },

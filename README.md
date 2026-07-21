@@ -250,20 +250,49 @@ Use build when you want a generated workbook for manual inspection or when a
 project has no unit tests. Close the target workbook before building so Excel
 can replace the generated output.
 
-### Debug in the VBE (planned)
+### Debug in the VBE
 
-> This workflow is planned and is not available in the current release.
+With the cursor in a parameterless public `Sub` in a standard module, press F5
+and select `VBA: Active Procedure`. VBA Tools saves the selected project's
+exported sources, rebuilds the selected document, opens its generated workbook
+in a dedicated visible Excel/VBE session, transfers enabled ordinary line
+breakpoints, and runs the procedure. `Option Private Module` is supported.
+Desktop Excel and trusted access to the VBA project object model are required.
 
-Pressing F5 in a parameterless public `Sub` in a standard module will save and
-rebuild the selected project, open its generated workbook in a dedicated visible
-Excel/VBE session, transfer enabled ordinary line breakpoints, and run that
-procedure. `Option Private Module` is supported. `launch.json` will be optional
-and used only to pin a target.
+To pin a target independently of the active editor, save a configuration in
+`.vscode/launch.json`:
+
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "vba",
+      "request": "launch",
+      "name": "Debug VBA target",
+      "project": "${workspaceFolder}/example_name",
+      "document": "example_book",
+      "module": "DebugModule",
+      "procedure": "RunTarget"
+    }
+  ]
+}
+```
+
+`project` and `document` narrow the selected workbook-backed project. `module`
+and `procedure` must be supplied together; omit both to use the active eligible
+procedure.
 
 Interactive debugging, including stepping, watches, the Immediate Window, and
-runtime errors, stays in the VBE. VS Code will start, restart, or stop the
-session and show progress. Unsupported or invalid breakpoints fail the launch;
-VBA Tools will not move them or insert `Stop` statements.
+runtime errors, stays in the VBE. VS Code starts, restarts, or stops the session
+and shows lifecycle progress. Enabled ordinary line breakpoints in the selected
+`.bas`, `.cls`, and `.frm` source set are supported. An invalid or unsupported
+in-scope breakpoint aborts debugging; VBA Tools does not move it or insert a
+`Stop` statement.
+
+Missing, disabled, or failing required native VBE commands also abort debugging.
+There is no `Stop`-statement, instrumentation, `Application.Run`, generated
+wrapper, caption, or `SendKeys` fallback.
 
 The opened workbook is generated output. Saving it does not update exported VBA
 source or the source template, and the next F5 rebuild overwrites it. Make
@@ -275,10 +304,18 @@ eligible wrapper `Sub` to debug startup logic. Excel and VBE prompts remain
 interactive without a timeout, and trusted access to the VBA project object
 model is required.
 
-Stopping or restarting debugging force-closes the dedicated Excel process
-without a save prompt. Unsaved changes in every workbook opened in that process
-are lost, so do not open unrelated workbooks there. When the Excel process
-exits, VS Code reports that the debug session has ended.
+Stop cancels whichever save, build, open, prompt, breakpoint-transfer, setup, or
+monitoring phase is active. Restart first terminates the old debug session, then
+performs a fresh save, build, workbook open, breakpoint transfer, and procedure
+run; it never reuses the previous debug workbook or Excel process.
+
+Stop and Restart can force-terminate the dedicated Excel process without a save
+prompt, including while a modal prompt is visible. Every workbook opened in that
+owned process belongs to the debug session, and all unsaved changes in those
+workbooks can be lost. Do not open unrelated workbooks there. Normal procedure
+completion leaves the session active for further VBE interaction. When the owned
+Excel process exits, VS Code shows the final termination message and ends the
+debug session.
 
 ### Test
 

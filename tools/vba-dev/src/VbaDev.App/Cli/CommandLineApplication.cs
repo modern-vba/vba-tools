@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using VbaDev.App.Debugging;
 using VbaDev.App.Projects;
 
 namespace VbaDev.App.Cli;
@@ -293,9 +294,9 @@ public sealed class CommandLineApplication
                     command => new CommandCapability(OutputSchemaVersion: command.OutputSchemaVersion),
                     StringComparer.OrdinalIgnoreCase),
             DebugAdapter: new DebugAdapterCapability(
-                ProtocolVersion: "1.1",
-                Transport: "stdio",
-                Command: "debug-adapter"));
+                ProtocolVersion: VbaDebugCapabilityContract.ProtocolVersion,
+                Transport: VbaDebugCapabilityContract.Transport,
+                Command: VbaDebugCapabilityContract.AdapterCommand));
 
         return CommandResult.Success(JsonSerializer.Serialize(capabilities, CapabilitiesJsonOptions) + Environment.NewLine);
     }
