@@ -48,6 +48,9 @@ import {
   registerWorkbookBackedTestExplorerRefresh
 } from './testExplorerRefresh';
 import {
+  registerWorkbookBackedTestExplorerSourceInvalidation
+} from './testExplorerInvalidation';
+import {
   VbaDevDiagnosticReporter
 } from './toolDiagnostics';
 import {
@@ -209,8 +212,34 @@ export async function activate(context: ExtensionContext): Promise<void> {
     outputChannel,
     showErrorMessage: (message: string) => window.showErrorMessage(message)
   });
+  registerWorkbookBackedTestExplorerSourceInvalidation({
+    sourceWatcher: {
+      onDidCreate: (listener) => sourceFileWatcher.onDidCreate(
+        (uri) => listener(uri.fsPath)),
+      onDidChange: (listener) => sourceFileWatcher.onDidChange(
+        (uri) => listener(uri.fsPath)),
+      onDidDelete: (listener) => sourceFileWatcher.onDidDelete(
+        (uri) => listener(uri.fsPath))
+    },
+    onDidChangeTextDocument: (listener) => workspace.onDidChangeTextDocument((event) => {
+      if (event.document.uri.scheme === 'file') {
+        listener({
+          uriPath: event.document.uri.fsPath
+        });
+      }
+    }),
+    subscriptions: context.subscriptions,
+    explorer: workbookBackedTestExplorer
+  });
   registerWorkbookBackedTestExplorerRefresh({
-    watcher: projectManifestWatcher,
+    watcher: {
+      onDidCreate: (listener) => projectManifestWatcher.onDidCreate(
+        (uri) => listener(uri.fsPath)),
+      onDidChange: (listener) => projectManifestWatcher.onDidChange(
+        (uri) => listener(uri.fsPath)),
+      onDidDelete: (listener) => projectManifestWatcher.onDidDelete(
+        (uri) => listener(uri.fsPath))
+    },
     subscriptions: context.subscriptions,
     explorer: workbookBackedTestExplorer,
     showErrorMessage: (message) => window.showErrorMessage(message)

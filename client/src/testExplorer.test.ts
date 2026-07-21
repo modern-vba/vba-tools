@@ -8,6 +8,7 @@ import {
   TestControllerAdapter,
   TestExplorerItem,
   TestRunRequestLike,
+  WorkbookBackedTestExplorer,
   createWorkbookBackedTestExplorer
 } from './testExplorer';
 
@@ -310,6 +311,52 @@ test('document module and procedure selections save only the owning document sou
   assert.deepEqual(saved, [book1Source]);
 });
 
+test('a dirty procedure run keeps its selector when saving invalidates the old leaf', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const sourcePath = path.join(projectRoot, 'src', 'Book1', 'Test_Module.bas');
+  const calls: Array<{ file: string; args: readonly string[] }> = [];
+  const controller = new FakeTestController();
+  let explorer!: WorkbookBackedTestExplorer;
+  explorer = createExplorer(controller, {
+    calls,
+    manifests: new Map([
+      [path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]
+    ]),
+    openTextDocuments: () => [{
+      uriPath: sourcePath,
+      isDirty: true,
+      save: async () => {
+        explorer.invalidateSourcePath(sourcePath);
+        return true;
+      }
+    }],
+    stdout: ndjson(testFinishedWithLocation(
+      projectRoot,
+      'Book1',
+      'Test_Module',
+      'Test_Passes'))
+  });
+  await explorer.refresh();
+  const documentItem = controller.items[0].children.items[0];
+  await explorer.run({ include: [documentItem] }, uncancelledToken());
+  const procedureItem = documentItem.children.items[0].children.items[0];
+  calls.splice(0, calls.length);
+
+  await explorer.run({ include: [procedureItem] }, uncancelledToken());
+
+  assert.deepEqual(calls.map((call) => call.args), [
+    ['capabilities', '--format', 'json'],
+    [
+      'test',
+      '--project', projectRoot,
+      '--document', 'Book1',
+      '--module', 'Test_Module',
+      '--procedure', 'Test_Passes',
+      '--format', 'ndjson'
+    ]
+  ]);
+});
+
 test('Test Explorer creates default and no-build run profiles', () => {
   const controller = new FakeTestController();
   createExplorer(controller, { manifests: new Map() });
@@ -552,6 +599,547 @@ test('canonical locations from every supported source encoding project onto proc
     assert.deepEqual(procedureItem.range, expected.range);
     assert.ok(controller.runs[0].events.includes(`passed:${procedureItem.id}`));
   });
+});
+
+test('a saved VBA source change invalidates only its document discovery snapshot', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const book1Source = path.join(projectRoot, 'src', 'Book1', 'Test_One.bas');
+  const book2Source = path.join(projectRoot, 'src', 'Book2', 'Test_Two.bas');
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([
+      [path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1', 'Book2'])]
+    ]),
+    stdout: ndjson(
+      {
+        type: 'testFinished',
+        document: 'Book1',
+        module: 'Test_One',
+        procedure: 'Test_First',
+        outcome: 'passed',
+        message: '',
+        location: {
+          uri: pathToFileURL(book1Source).href,
+          range: { start: { line: 2, character: 11 }, end: { line: 2, character: 21 } }
+        }
+      },
+      {
+        type: 'testFinished',
+        document: 'Book2',
+        module: 'Test_Two',
+        procedure: 'Test_Second',
+        outcome: 'passed',
+        message: '',
+        location: {
+          uri: pathToFileURL(book2Source).href,
+          range: { start: { line: 4, character: 11 }, end: { line: 4, character: 22 } }
+        }
+      }
+    )
+  });
+  await explorer.refresh();
+  const projectItem = controller.items[0];
+  const book1Item = projectItem.children.items[0];
+  const book2Item = projectItem.children.items[1];
+  await explorer.run({ include: [projectItem] }, uncancelledToken());
+  const retainedBook1Module = book1Item.children.items[0];
+  const retainedBook2Module = book2Item.children.items[0];
+
+  explorer.invalidateSourcePath(path.join(projectRoot, 'src', 'Book1', 'notes.txt'));
+  assert.equal(book1Item.children.items[0], retainedBook1Module);
+
+  explorer.invalidateFileSystemSourceChange(book1Source);
+
+  assert.equal(controller.items[0], projectItem);
+  assert.equal(projectItem.children.items[0], book1Item);
+  assert.equal(projectItem.children.items[1], book2Item);
+  assert.deepEqual(book1Item.children.items, []);
+  assert.equal(book2Item.children.items[0], retainedBook2Module);
+});
+
+test('a project definition change invalidates every affected document and preserves unrelated snapshots', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const otherRoot = path.join('C:', 'work', 'OtherProject');
+  const manifestPath = path.join(projectRoot, 'vba-project.json');
+  const otherManifestPath = path.join(otherRoot, 'vba-project.json');
+  const manifests = new Map([
+    [manifestPath, manifestJson('BookProject', ['Book1', 'Book2'])],
+    [otherManifestPath, manifestJson('OtherProject', ['OtherBook'])]
+  ]);
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests,
+    stdout: ndjson(
+      testFinishedWithLocation(projectRoot, 'Book1', 'Test_One', 'Test_First'),
+      testFinishedWithLocation(projectRoot, 'Book2', 'Test_Two', 'Test_Second'),
+      testFinishedWithLocation(otherRoot, 'OtherBook', 'Test_Other', 'Test_Third')
+    )
+  });
+  await explorer.refresh();
+  const projectItem = controller.items[0];
+  const book1Item = projectItem.children.items[0];
+  const book2Item = projectItem.children.items[1];
+  const otherProjectItem = controller.items[1];
+  const otherDocumentItem = otherProjectItem.children.items[0];
+  await explorer.run({ include: [projectItem, otherProjectItem] }, uncancelledToken());
+  const retainedOtherModule = otherDocumentItem.children.items[0];
+
+  await explorer.refreshProjectDefinition(manifestPath);
+
+  assert.equal(controller.items[0], projectItem);
+  assert.equal(projectItem.children.items[0], book1Item);
+  assert.equal(projectItem.children.items[1], book2Item);
+  assert.deepEqual(book1Item.children.items, []);
+  assert.deepEqual(book2Item.children.items, []);
+  assert.equal(controller.items[1], otherProjectItem);
+  assert.equal(otherDocumentItem.children.items[0], retainedOtherModule);
+});
+
+test('the latest overlapping project refresh wins when an older manifest read finishes last', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const manifestPath = path.join(projectRoot, 'vba-project.json');
+  let manifest = manifestJson('Initial Project', ['Book1']);
+  let readCount = 0;
+  let finishStaleRead: ((value: string) => void) | undefined;
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([[manifestPath, manifest]]),
+    readTextFile: async () => {
+      readCount += 1;
+      if (readCount === 2) {
+        return await new Promise<string>((resolve) => {
+          finishStaleRead = resolve;
+        });
+      }
+
+      return manifest;
+    }
+  });
+  await explorer.refresh();
+
+  const staleRefresh = explorer.refresh();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  manifest = manifestJson('Current Project', ['Book1']);
+  await explorer.refresh();
+  finishStaleRead?.(manifestJson('Stale Project', ['Book1']));
+  await staleRefresh;
+
+  assert.equal(controller.items[0].label, 'Current Project');
+});
+
+test('an obsolete overlapping project refresh suppresses its late read error', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const manifestPath = path.join(projectRoot, 'vba-project.json');
+  let manifest = manifestJson('Initial Project', ['Book1']);
+  let readCount = 0;
+  let rejectStaleRead: ((reason?: unknown) => void) | undefined;
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([[manifestPath, manifest]]),
+    readTextFile: async () => {
+      readCount += 1;
+      if (readCount === 2) {
+        return await new Promise<string>((_resolve, reject) => {
+          rejectStaleRead = reject;
+        });
+      }
+
+      return manifest;
+    }
+  });
+  await explorer.refresh();
+
+  const staleRefresh = explorer.refresh();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  manifest = manifestJson('Current Project', ['Book1']);
+  await explorer.refresh();
+  rejectStaleRead?.(new Error('obsolete manifest read failed'));
+
+  await assert.doesNotReject(staleRefresh);
+  assert.equal(controller.items[0].label, 'Current Project');
+});
+
+test('an invalidated snapshot stays absent until a completed run repopulates its current location', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const sourcePath = path.join(projectRoot, 'src', 'Book1', 'Test_Module.bas');
+  let range = {
+    start: { line: 2, character: 11 },
+    end: { line: 2, character: 21 }
+  };
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([
+      [path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]
+    ]),
+    startProcess: () => {
+      const stdout = ndjson({
+        type: 'testFinished',
+        document: 'Book1',
+        module: 'Test_Module',
+        procedure: 'Test_Passes',
+        outcome: 'passed',
+        message: '',
+        location: { uri: pathToFileURL(sourcePath).href, range }
+      });
+      return {
+        onStdout: (listener) => listener(stdout),
+        onStderr: (listener) => listener(''),
+        onExit: (listener) => listener(0, null),
+        kill: () => undefined
+      };
+    }
+  });
+  await explorer.refresh();
+  const documentItem = controller.items[0].children.items[0];
+  await explorer.run({ include: [documentItem] }, uncancelledToken());
+  const oldProcedureItem = documentItem.children.items[0].children.items[0];
+
+  explorer.invalidateSourcePath(sourcePath);
+  range = {
+    start: { line: 8, character: 11 },
+    end: { line: 8, character: 21 }
+  };
+
+  assert.equal(documentItem.children.items.length, 0);
+  assert.deepEqual(oldProcedureItem.range, {
+    start: { line: 2, character: 11 },
+    end: { line: 2, character: 21 }
+  });
+
+  await explorer.run({ include: [documentItem] }, uncancelledToken());
+
+  const newProcedureItem = documentItem.children.items[0].children.items[0];
+  assert.notEqual(newProcedureItem, oldProcedureItem);
+  assert.deepEqual(newProcedureItem.range, range);
+});
+
+test('a delayed watcher change from the scoped save does not suppress completed discovery', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const sourcePath = path.join(projectRoot, 'src', 'Book1', 'Test_Module.bas');
+  let dirty = false;
+  let processCount = 0;
+  let stdoutListener: ((value: string) => void) | undefined;
+  let exitListener: ((exitCode: number | null, signal: NodeJS.Signals | null) => void) | undefined;
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([
+      [path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]
+    ]),
+    openTextDocuments: () => [{
+      uriPath: sourcePath,
+      get isDirty() {
+        return dirty;
+      },
+      save: async () => {
+        dirty = false;
+        return true;
+      }
+    }],
+    startProcess: () => {
+      processCount += 1;
+      if (processCount === 1) {
+        const stdout = ndjson(testFinishedWithLocation(
+          projectRoot,
+          'Book1',
+          'Test_Module',
+          'Test_Initial'));
+        return {
+          onStdout: (listener) => listener(stdout),
+          onStderr: (listener) => listener(''),
+          onExit: (listener) => listener(0, null),
+          kill: () => undefined
+        };
+      }
+
+      return {
+        onStdout: (listener) => {
+          stdoutListener = listener;
+        },
+        onStderr: (listener) => listener(''),
+        onExit: (listener) => {
+          exitListener = listener;
+        },
+        kill: () => undefined
+      };
+    }
+  });
+  await explorer.refresh();
+  const documentItem = controller.items[0].children.items[0];
+  await explorer.run({ include: [documentItem] }, uncancelledToken());
+  dirty = true;
+  explorer.invalidateSourcePath(sourcePath);
+
+  const runPromise = explorer.run({ include: [documentItem] }, uncancelledToken());
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  explorer.invalidateFileSystemSourceChange(sourcePath);
+  stdoutListener?.(ndjson(testFinishedWithLocation(
+    projectRoot,
+    'Book1',
+    'Test_Module',
+    'Test_Current')));
+  exitListener?.(0, null);
+  await runPromise;
+
+  assert.equal(documentItem.children.items.length, 1);
+  assert.equal(documentItem.children.items[0].children.items[0].label, 'Test_Current');
+});
+
+test('a run started before source invalidation cannot restore its stale document snapshot', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const sourcePath = path.join(projectRoot, 'src', 'Book1', 'Test_Module.bas');
+  let stdoutListener: ((value: string) => void) | undefined;
+  let stderrListener: ((value: string) => void) | undefined;
+  let exitListener: ((exitCode: number | null, signal: NodeJS.Signals | null) => void) | undefined;
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([
+      [path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]
+    ]),
+    startProcess: () => ({
+      onStdout: (listener) => {
+        stdoutListener = listener;
+      },
+      onStderr: (listener) => {
+        stderrListener = listener;
+      },
+      onExit: (listener) => {
+        exitListener = listener;
+      },
+      kill: () => undefined
+    })
+  });
+  await explorer.refresh();
+  const documentItem = controller.items[0].children.items[0];
+  const runPromise = explorer.run({ include: [documentItem] }, uncancelledToken());
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  explorer.invalidateSourcePath(sourcePath);
+  stdoutListener?.(ndjson(
+    testFinishedWithLocation(
+      projectRoot,
+      'Book1',
+      'Test_Module',
+      'Test_Passes'),
+    runFinished('Book1')));
+  stderrListener?.('');
+  exitListener?.(0, null);
+  await runPromise;
+
+  assert.equal(documentItem.children.items.length, 0);
+  assert.ok(controller.runs[0].events.includes(`passed:${documentItem.id}`));
+});
+
+test('in-flight invalidation suppresses only the affected document projection', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const sourcePath = path.join(projectRoot, 'src', 'Book1', 'Test_Module.bas');
+  let stdoutListener: ((value: string) => void) | undefined;
+  let exitListener: ((exitCode: number | null, signal: NodeJS.Signals | null) => void) | undefined;
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([
+      [path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1', 'Book2'])]
+    ]),
+    startProcess: () => ({
+      onStdout: (listener) => {
+        stdoutListener = listener;
+      },
+      onStderr: (listener) => listener(''),
+      onExit: (listener) => {
+        exitListener = listener;
+      },
+      kill: () => undefined
+    })
+  });
+  await explorer.refresh();
+  const projectItem = controller.items[0];
+  const [firstDocumentItem, secondDocumentItem] = projectItem.children.items;
+  const runPromise = explorer.run({ include: [projectItem] }, uncancelledToken());
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  explorer.invalidateSourcePath(sourcePath);
+  stdoutListener?.(ndjson(
+    testFinishedWithLocation(projectRoot, 'Book1', 'Test_Module', 'Test_Stale'),
+    testFinishedWithLocation(projectRoot, 'Book2', 'Test_Module', 'Test_Current')));
+  exitListener?.(0, null);
+  await runPromise;
+
+  assert.equal(firstDocumentItem.children.items.length, 0);
+  assert.equal(secondDocumentItem.children.items.length, 1);
+  assert.equal(secondDocumentItem.children.items[0].children.items[0].label, 'Test_Current');
+});
+
+test('editing a later selected document during an earlier run cannot restore stale output', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const secondSourcePath = path.join(projectRoot, 'src', 'Book2', 'Test_Module.bas');
+  const processes: Array<{
+    stdout?: (value: string) => void;
+    stderr?: (value: string) => void;
+    exit?: (exitCode: number | null, signal: NodeJS.Signals | null) => void;
+  }> = [];
+  let signalSecondProcessStarted: (() => void) | undefined;
+  const secondProcessStarted = new Promise<void>((resolve) => {
+    signalSecondProcessStarted = resolve;
+  });
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([
+      [path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1', 'Book2'])]
+    ]),
+    startProcess: () => {
+      const process: typeof processes[number] = {};
+      processes.push(process);
+      if (processes.length === 2) {
+        signalSecondProcessStarted?.();
+      }
+      return {
+        onStdout: (listener) => {
+          process.stdout = listener;
+        },
+        onStderr: (listener) => {
+          process.stderr = listener;
+        },
+        onExit: (listener) => {
+          process.exit = listener;
+        },
+        kill: () => undefined
+      };
+    }
+  });
+  await explorer.refresh();
+  const [firstDocumentItem, secondDocumentItem] = controller.items[0].children.items;
+  const runPromise = explorer.run(
+    { include: [firstDocumentItem, secondDocumentItem] },
+    uncancelledToken());
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  explorer.invalidateSourcePath(secondSourcePath);
+  processes[0].stdout?.(ndjson(runFinished('Book1')));
+  processes[0].stderr?.('');
+  processes[0].exit?.(0, null);
+  await secondProcessStarted;
+  processes[1].stdout?.(ndjson(
+    testFinishedWithLocation(projectRoot, 'Book2', 'Test_Module', 'Test_Stale')));
+  processes[1].stderr?.('');
+  processes[1].exit?.(0, null);
+  await runPromise;
+
+  assert.equal(secondDocumentItem.children.items.length, 0);
+});
+
+test('an incomplete run cannot repopulate an invalidated document snapshot', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const sourcePath = path.join(projectRoot, 'src', 'Book1', 'Test_Module.bas');
+  let processCount = 0;
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([
+      [path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]
+    ]),
+    startProcess: () => {
+      processCount += 1;
+      const stdout = processCount === 1
+        ? ndjson(testFinishedWithLocation(projectRoot, 'Book1', 'Test_Module', 'Test_Passes'))
+        : partialNdjson(testFinishedWithLocation(projectRoot, 'Book1', 'Test_Module', 'Test_Stale'));
+      return {
+        onStdout: (listener) => listener(stdout),
+        onStderr: (listener) => listener(processCount === 1 ? '' : 'Interrupted before runFinished\n'),
+        onExit: (listener) => listener(processCount === 1 ? 0 : 1, null),
+        kill: () => undefined
+      };
+    }
+  });
+  await explorer.refresh();
+  const documentItem = controller.items[0].children.items[0];
+  await explorer.run({ include: [documentItem] }, uncancelledToken());
+  explorer.invalidateSourcePath(sourcePath);
+
+  await explorer.run({ include: [documentItem] }, uncancelledToken());
+
+  assert.equal(documentItem.children.items.length, 0);
+  assert.ok(controller.runs[1].events.includes(
+    `errored:${documentItem.id}:Interrupted before runFinished`));
+});
+
+test('a failed event without runFinished remains a command error', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([
+      [path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]
+    ]),
+    stdout: partialNdjson({
+      ...testFinishedWithLocation(projectRoot, 'Book1', 'Test_Module', 'Test_PartialFailure'),
+      outcome: 'failed',
+      message: 'partial assertion output'
+    }),
+    stderr: 'Workbook execution was interrupted\n',
+    exitCode: 1
+  });
+  await explorer.refresh();
+  const documentItem = controller.items[0].children.items[0];
+
+  await explorer.run({ include: [documentItem] }, uncancelledToken());
+
+  assert.equal(documentItem.children.items.length, 0);
+  assert.ok(controller.runs[0].events.includes(
+    `errored:${documentItem.id}:Workbook execution was interrupted`));
+});
+
+test('a cancelled run cannot commit completed output to an invalidated document snapshot', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const sourcePath = path.join(projectRoot, 'src', 'Book1', 'Test_Module.bas');
+  let processCount = 0;
+  let killed = false;
+  let cancelListener: (() => void) | undefined;
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([
+      [path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]
+    ]),
+    startProcess: () => {
+      processCount += 1;
+      const stdout = ndjson(testFinishedWithLocation(
+        projectRoot,
+        'Book1',
+        'Test_Module',
+        processCount === 1 ? 'Test_Initial' : 'Test_Cancelled'));
+      return {
+        onStdout: (listener) => listener(stdout),
+        onStderr: (listener) => listener(''),
+        onExit: (listener) => {
+          if (processCount === 1) {
+            listener(0, null);
+          } else {
+            setTimeout(() => listener(null, 'SIGTERM'), 10);
+          }
+        },
+        kill: () => {
+          killed = true;
+        }
+      };
+    }
+  });
+  await explorer.refresh();
+  const documentItem = controller.items[0].children.items[0];
+  await explorer.run({ include: [documentItem] }, uncancelledToken());
+  explorer.invalidateSourcePath(sourcePath);
+
+  const runPromise = explorer.run(
+    { include: [documentItem] },
+    {
+      isCancellationRequested: false,
+      onCancellationRequested: (listener) => {
+        cancelListener = listener;
+        return { dispose: () => undefined };
+      }
+    });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  cancelListener?.();
+  await runPromise;
+
+  assert.equal(killed, true);
+  assert.equal(documentItem.children.items.length, 0);
+  assert.ok(controller.runs[1].events.includes(`cancelled:${documentItem.id}`));
 });
 
 test('legacy result records are ignored by Test Explorer event projection', async () => {
@@ -961,6 +1549,7 @@ function createExplorer(
     stderr?: string;
     exitCode?: number;
     startProcess?: TestControllerStartProcess;
+    readTextFile?: (filePath: string) => Promise<string>;
     openTextDocuments?: () => readonly {
       uriPath: string;
       isDirty: boolean;
@@ -977,14 +1566,14 @@ function createExplorer(
     configuredDevToolPath: path.join('D:', 'tools', 'vba-dev.exe'),
     workspaceRoots: [path.join('C:', 'work')],
     findProjectManifests: async () => [...options.manifests.keys()],
-    readTextFile: async (filePath) => {
+    readTextFile: options.readTextFile ?? (async (filePath) => {
       const manifest = options.manifests.get(filePath);
       if (manifest === undefined) {
         throw new Error(`Missing fixture manifest: ${filePath}`);
       }
 
       return manifest;
-    },
+    }),
     capabilitiesProcess: async (file, args) => {
       calls.push({ file, args });
       return {
@@ -1044,7 +1633,61 @@ function uncancelledToken(): CommandCancellationToken {
 }
 
 function ndjson(...records: readonly Record<string, unknown>[]): string {
+  const documents = new Set(
+    records.flatMap((record) => typeof record.document === 'string' ? [record.document] : []));
+  if (documents.size === 0) {
+    documents.add('Book1');
+  }
+  const completedDocuments = new Set(
+    records.flatMap((record) => (
+      record.type === 'runFinished' && typeof record.document === 'string'
+        ? [record.document]
+        : []
+    )));
+  const completedRecords = [
+    ...records,
+    ...[...documents]
+      .filter((document) => !completedDocuments.has(document))
+      .map((document) => runFinished(document))
+  ];
+  return completedRecords.map((record) => JSON.stringify(record)).join('\n') + '\n';
+}
+
+function partialNdjson(...records: readonly Record<string, unknown>[]): string {
   return records.map((record) => JSON.stringify(record)).join('\n') + '\n';
+}
+
+function testFinishedWithLocation(
+  projectRoot: string,
+  document: string,
+  module: string,
+  procedure: string
+): Record<string, unknown> {
+  return {
+    type: 'testFinished',
+    document,
+    module,
+    procedure,
+    outcome: 'passed',
+    message: '',
+    location: {
+      uri: pathToFileURL(path.join(projectRoot, 'src', document, `${module}.bas`)).href,
+      range: { start: { line: 2, character: 11 }, end: { line: 2, character: 20 } }
+    }
+  };
+}
+
+function runFinished(document: string): Record<string, unknown> {
+  return {
+    type: 'runFinished',
+    project: 'BookProject',
+    document,
+    outcome: 'passed',
+    total: 1,
+    passed: 1,
+    failed: 0,
+    errors: 0
+  };
 }
 
 function manifestJson(projectName: string, documentNames: readonly string[]): string {
@@ -1114,7 +1757,7 @@ class FakeTestItem implements TestExplorerItem {
 
   public constructor(
     public readonly id: string,
-    public readonly label: string,
+    public label: string,
     public readonly uriPath?: string | undefined,
     public readonly range?: {
       start: { line: number; character: number };
@@ -1129,6 +1772,10 @@ class FakeTestItemCollection {
 
   public add(item: TestExplorerItem): void {
     this.items.push(item as FakeTestItem);
+  }
+
+  public replace(items: readonly TestExplorerItem[]): void {
+    this.items.splice(0, this.items.length, ...items as readonly FakeTestItem[]);
   }
 }
 

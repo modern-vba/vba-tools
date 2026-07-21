@@ -6,17 +6,17 @@ import {
   FileSystemWatcherLike
 } from './testExplorerRefresh';
 
-test('Test Explorer refreshes when a project manifest is created changed or deleted', async () => {
+test('Test Explorer refreshes only the affected project definition for each manifest event', async () => {
   const watcher = new FakeFileSystemWatcher();
   const subscriptions: FakeDisposable[] = [];
-  let refreshCount = 0;
+  const refreshed: string[] = [];
 
   registerWorkbookBackedTestExplorerRefresh({
     watcher,
     subscriptions,
     explorer: {
-      refresh: async () => {
-        refreshCount += 1;
+      refreshProjectDefinition: async (manifestPath) => {
+        refreshed.push(manifestPath);
       }
     },
     showErrorMessage: async () => undefined
@@ -24,11 +24,15 @@ test('Test Explorer refreshes when a project manifest is created changed or dele
 
   assert.equal(subscriptions.length, 3);
 
-  await watcher.fireCreate();
-  await watcher.fireChange();
-  await watcher.fireDelete();
+  await watcher.fireCreate('C:\\work\\Created\\vba-project.json');
+  await watcher.fireChange('C:\\work\\Changed\\vba-project.json');
+  await watcher.fireDelete('C:\\work\\Deleted\\vba-project.json');
 
-  assert.equal(refreshCount, 3);
+  assert.deepEqual(refreshed, [
+    'C:\\work\\Created\\vba-project.json',
+    'C:\\work\\Changed\\vba-project.json',
+    'C:\\work\\Deleted\\vba-project.json'
+  ]);
 });
 
 test('Test Explorer refresh errors are surfaced without rejecting the file watcher event', async () => {
@@ -39,7 +43,7 @@ test('Test Explorer refresh errors are surfaced without rejecting the file watch
     watcher,
     subscriptions: [],
     explorer: {
-      refresh: async () => {
+      refreshProjectDefinition: async () => {
         throw new Error('manifest could not be read');
       }
     },
@@ -48,41 +52,41 @@ test('Test Explorer refresh errors are surfaced without rejecting the file watch
     }
   });
 
-  await watcher.fireCreate();
+  await watcher.fireCreate('C:\\work\\Project\\vba-project.json');
 
   assert.deepEqual(errors, ['VBA Tools could not refresh Test Explorer: manifest could not be read']);
 });
 
 class FakeFileSystemWatcher implements FileSystemWatcherLike {
-  private createListeners: Array<() => Promise<void> | void> = [];
-  private changeListeners: Array<() => Promise<void> | void> = [];
-  private deleteListeners: Array<() => Promise<void> | void> = [];
+  private createListeners: Array<(manifestPath: string) => Promise<void> | void> = [];
+  private changeListeners: Array<(manifestPath: string) => Promise<void> | void> = [];
+  private deleteListeners: Array<(manifestPath: string) => Promise<void> | void> = [];
 
-  public onDidCreate(listener: () => Promise<void> | void): FakeDisposable {
+  public onDidCreate(listener: (manifestPath: string) => Promise<void> | void): FakeDisposable {
     this.createListeners.push(listener);
     return new FakeDisposable();
   }
 
-  public onDidChange(listener: () => Promise<void> | void): FakeDisposable {
+  public onDidChange(listener: (manifestPath: string) => Promise<void> | void): FakeDisposable {
     this.changeListeners.push(listener);
     return new FakeDisposable();
   }
 
-  public onDidDelete(listener: () => Promise<void> | void): FakeDisposable {
+  public onDidDelete(listener: (manifestPath: string) => Promise<void> | void): FakeDisposable {
     this.deleteListeners.push(listener);
     return new FakeDisposable();
   }
 
-  public async fireCreate(): Promise<void> {
-    await Promise.all(this.createListeners.map((listener) => listener()));
+  public async fireCreate(manifestPath: string): Promise<void> {
+    await Promise.all(this.createListeners.map((listener) => listener(manifestPath)));
   }
 
-  public async fireChange(): Promise<void> {
-    await Promise.all(this.changeListeners.map((listener) => listener()));
+  public async fireChange(manifestPath: string): Promise<void> {
+    await Promise.all(this.changeListeners.map((listener) => listener(manifestPath)));
   }
 
-  public async fireDelete(): Promise<void> {
-    await Promise.all(this.deleteListeners.map((listener) => listener()));
+  public async fireDelete(manifestPath: string): Promise<void> {
+    await Promise.all(this.deleteListeners.map((listener) => listener(manifestPath)));
   }
 }
 

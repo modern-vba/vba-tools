@@ -14,6 +14,8 @@ import {
 } from './devtoolRuntime';
 import { parseProjectManifest } from './projectManifest';
 import {
+  TestDiscoveryGenerationSnapshot,
+  TestItemMetadata,
   TestExplorerNodeIndex,
   WorkbookBackedTestProject,
   createTestSelectorArgs
@@ -21,10 +23,11 @@ import {
 
 export interface TestExplorerItem {
   readonly id: string;
-  readonly label: string;
+  label: string;
   readonly range?: TestSourceRange | undefined;
   readonly children: {
     add(item: TestExplorerItem): void;
+    replace(items: readonly TestExplorerItem[]): void;
   };
 }
 
@@ -97,6 +100,9 @@ export interface SavableTextDocument {
 
 export interface WorkbookBackedTestExplorer {
   refresh(): Promise<void>;
+  invalidateSourcePath(sourcePath: string): void;
+  invalidateFileSystemSourceChange(sourcePath: string): void;
+  refreshProjectDefinition(manifestPath: string): Promise<void>;
   run(request: TestRunRequestLike, token: CommandCancellationToken): Promise<void>;
 }
 
@@ -108,17 +114,44 @@ export function createWorkbookBackedTestExplorer(
   options: WorkbookBackedTestExplorerOptions
 ): WorkbookBackedTestExplorer {
   const nodeIndex = new TestExplorerNodeIndex();
+  let latestRefreshRequest = 0;
 
   const explorer: WorkbookBackedTestExplorer = {
     refresh: async () => {
-      nodeIndex.clear();
+      const refreshRequest = ++latestRefreshRequest;
+      let projects: WorkbookBackedTestProject[];
+      try {
+        projects = await loadWorkbookBackedProjects(options);
+      } catch (error) {
+        if (refreshRequest === latestRefreshRequest) {
+          throw error;
+        }
 
-      const projects = await loadWorkbookBackedProjects(options);
-      for (const project of projects) {
-        nodeIndex.addProject(options.controller, project);
+        return;
       }
 
+      if (refreshRequest !== latestRefreshRequest) {
+        return;
+      }
+
+      nodeIndex.reconcileProjects(options.controller, projects);
       options.controller.replaceItems(nodeIndex.roots);
+    },
+    invalidateSourcePath: (sourcePath) => {
+      if (isExportedVbaSource(sourcePath)) {
+        nodeIndex.invalidateSourcePath(sourcePath);
+      }
+    },
+    invalidateFileSystemSourceChange: (sourcePath) => {
+      if (options.openTextDocuments().some((document) => samePath(document.uriPath, sourcePath))) {
+        return;
+      }
+
+      explorer.invalidateSourcePath(sourcePath);
+    },
+    refreshProjectDefinition: async (manifestPath) => {
+      nodeIndex.invalidateProjectDefinition(manifestPath);
+      await explorer.refresh();
     },
     run: async (request, token) => {
       await runTests(options, nodeIndex, request, token, { noBuild: false });
@@ -168,6 +201,10 @@ async function runTests(
   const run = options.controller.createTestRun(request);
   try {
     const items = nodeIndex.selectedRunnableItems(request);
+    const selections = items.flatMap((item) => {
+      const metadata = nodeIndex.getMetadata(item);
+      return metadata ? [{ item, metadata }] : [];
+    });
     const saveError = await saveDirtySourcesInScope(options, nodeIndex, items, token);
     if (saveError !== undefined) {
       const errorItem = items[0];
@@ -177,8 +214,20 @@ async function runTests(
       return;
     }
 
-    for (const item of items) {
-      await runTestItem(options, nodeIndex, run, item, token, runOptions);
+    const preparedSelections = selections.map((selection) => ({
+      ...selection,
+      discoveryGenerations: nodeIndex.captureDiscoveryGenerations(selection.metadata)
+    }));
+    for (const selection of preparedSelections) {
+      await runTestItem(
+        options,
+        nodeIndex,
+        run,
+        selection.item,
+        selection.metadata,
+        selection.discoveryGenerations,
+        token,
+        runOptions);
     }
   } finally {
     run.end();
@@ -239,19 +288,20 @@ function isPathWithin(filePath: string, directoryPath: string): boolean {
     && !path.isAbsolute(relativePath);
 }
 
+function samePath(left: string, right: string): boolean {
+  return path.normalize(left).toLowerCase() === path.normalize(right).toLowerCase();
+}
+
 async function runTestItem(
   options: WorkbookBackedTestExplorerOptions,
   nodeIndex: TestExplorerNodeIndex,
   testRun: TestRunLike,
   item: TestExplorerItem,
+  metadata: TestItemMetadata,
+  discoveryGenerations: TestDiscoveryGenerationSnapshot,
   token: CommandCancellationToken,
   runOptions: TestRunOptions
 ): Promise<void> {
-  const metadata = nodeIndex.getMetadata(item);
-  if (!metadata) {
-    return;
-  }
-
   testRun.started(item);
   const result = await runVbaDevProjectCommandInvocation({
     ...options,
@@ -268,7 +318,9 @@ async function runTestItem(
     options.controller,
     testRun,
     metadata,
-    result.stdout);
+    result.stdout,
+    discoveryGenerations,
+    !result.cancelled && result.exitCode !== null);
 
   if (result.cancelled) {
     testRun.cancelled(item);

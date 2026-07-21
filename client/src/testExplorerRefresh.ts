@@ -3,16 +3,16 @@ export interface DisposableLike {
 }
 
 export interface FileSystemWatcherLike {
-  onDidCreate(listener: () => Promise<void> | void): DisposableLike;
-  onDidChange(listener: () => Promise<void> | void): DisposableLike;
-  onDidDelete(listener: () => Promise<void> | void): DisposableLike;
+  onDidCreate(listener: (manifestPath: string) => Promise<void> | void): DisposableLike;
+  onDidChange(listener: (manifestPath: string) => Promise<void> | void): DisposableLike;
+  onDidDelete(listener: (manifestPath: string) => Promise<void> | void): DisposableLike;
 }
 
 export interface WorkbookBackedTestExplorerRefreshOptions {
   watcher: FileSystemWatcherLike;
   subscriptions: DisposableLike[];
   explorer: {
-    refresh(): Promise<void>;
+    refreshProjectDefinition(manifestPath: string): Promise<void>;
   };
   showErrorMessage: (message: string) => Thenable<unknown> | Promise<unknown>;
 }
@@ -20,9 +20,9 @@ export interface WorkbookBackedTestExplorerRefreshOptions {
 export function registerWorkbookBackedTestExplorerRefresh(
   options: WorkbookBackedTestExplorerRefreshOptions
 ): void {
-  const refresh = async () => {
+  const refresh = async (manifestPath: string) => {
     try {
-      await options.explorer.refresh();
+      await options.explorer.refreshProjectDefinition(manifestPath);
     } catch (error) {
       await options.showErrorMessage(`VBA Tools could not refresh Test Explorer: ${error instanceof Error ? error.message : String(error)}`);
     }
