@@ -411,48 +411,88 @@ test('debug launch rejects an enabled in-scope logpoint instead of downgrading i
   );
 });
 
-test('debug launch rejects more than one enabled ordinary in-scope BAS breakpoint', async () => {
+test('debug launch serializes enabled ordinary exported-source breakpoints in canonical order', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const manifestPath = path.join(projectRoot, 'vba-project.json');
-  const firstSource = path.join(projectRoot, 'src', 'Book1', 'First.bas');
-  const secondSource = path.join(projectRoot, 'src', 'Book1', 'Second.bas');
+  const moduleSource = path.join(projectRoot, 'src', 'Book1', 'A_Module.bas');
+  const classSource = path.join(projectRoot, 'src', 'Book1', 'B_Class.cls');
+  const formSource = path.join(projectRoot, 'src', 'Book1', 'C_Form.frm');
   const integration = createIntegration({
-    activeEditor: { uriPath: firstSource, line: 0, character: 0 },
+    activeEditor: { uriPath: moduleSource, line: 0, character: 0 },
     manifests: new Map([[manifestPath, manifestJson('BookProject', ['Book1'])]]),
     sources: new Map([
-      [firstSource, 'Public Sub FirstTarget()\r\nEnd Sub\r\n'],
-      [secondSource, 'Public Sub SecondTarget()\r\nEnd Sub\r\n']
+      [formSource, 'Begin VB.UserForm C_Form\r\nEnd\r\nPublic Sub FormTarget()\r\nEnd Sub\r\n'],
+      [classSource, 'Public Sub ClassTarget()\r\nEnd Sub\r\n'],
+      [moduleSource, 'Public Sub ModuleTarget()\r\n  Debug.Print "one"\r\nEnd Sub\r\n']
     ]),
     getSourceBreakpoints: () => [{
-      uriPath: firstSource,
-      line: 0,
+      uriPath: formSource,
+      line: 2,
       enabled: true
     }, {
-      uriPath: secondSource,
+      uriPath: moduleSource,
+      line: 1,
+      enabled: true
+    }, {
+      uriPath: classSource,
       line: 0,
+      enabled: true
+    }]
+  });
+
+  const configuration = await integration.resolveDebugConfiguration({});
+
+  assert.deepEqual(
+    (configuration.sourceSnapshot as { breakpoints: unknown }).breakpoints,
+    [
+      { path: moduleSource, line: 1 },
+      { path: classSource, line: 0 },
+      { path: formSource, line: 2 }
+    ]
+  );
+});
+
+test('debug launch rejects duplicate enabled breakpoints at one canonical source line', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const manifestPath = path.join(projectRoot, 'vba-project.json');
+  const sourcePath = path.join(projectRoot, 'src', 'Book1', 'DebugModule.bas');
+  const integration = createIntegration({
+    activeEditor: { uriPath: sourcePath, line: 0, character: 0 },
+    manifests: new Map([[manifestPath, manifestJson('BookProject', ['Book1'])]]),
+    sources: new Map([[
+      sourcePath,
+      'Public Sub RunTarget()\r\n  Debug.Print "hit"\r\nEnd Sub\r\n'
+    ]]),
+    getSourceBreakpoints: () => [{
+      uriPath: sourcePath,
+      line: 1,
+      enabled: true
+    }, {
+      uriPath: sourcePath.toUpperCase(),
+      line: 1,
       enabled: true
     }]
   });
 
   await assert.rejects(
     () => integration.resolveDebugConfiguration({}),
-    /at most one enabled ordinary.*breakpoint/i
+    /duplicate enabled VBA breakpoint.*DebugModule\.bas:2/i
   );
 });
 
-test('debug launch ignores disabled, out-of-scope, and non-BAS source breakpoints', async () => {
+test('debug launch ignores disabled, out-of-scope, and non-source breakpoints before unsupported-feature checks', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const otherRoot = path.join('C:', 'work', 'OtherProject');
   const manifestPath = path.join(projectRoot, 'vba-project.json');
   const sourcePath = path.join(projectRoot, 'src', 'Book1', 'DebugModule.bas');
-  const classPath = path.join(projectRoot, 'src', 'Book1', 'Worker.cls');
+  const formSidecarPath = path.join(projectRoot, 'src', 'Book1', 'Dialog.frx');
   const outsidePath = path.join(otherRoot, 'src', 'Book2', 'Outside.bas');
   const integration = createIntegration({
     activeEditor: { uriPath: sourcePath, line: 0, character: 0 },
     manifests: new Map([[manifestPath, manifestJson('BookProject', ['Book1'])]]),
     sources: new Map([
       [sourcePath, 'Public Sub RunTarget()\r\n  Debug.Print "hit"\r\nEnd Sub\r\n'],
-      [classPath, 'Public Sub ClassTarget()\r\nEnd Sub\r\n'],
+      [formSidecarPath, 'binary form sidecar placeholder'],
       [outsidePath, 'Public Sub OutsideTarget()\r\nEnd Sub\r\n']
     ]),
     getSourceBreakpoints: () => [{
@@ -470,9 +510,10 @@ test('debug launch ignores disabled, out-of-scope, and non-BAS source breakpoint
       enabled: true,
       logMessage: 'unsupported but outside the selected source set'
     }, {
-      uriPath: classPath,
+      uriPath: formSidecarPath,
       line: 0,
-      enabled: true
+      enabled: true,
+      condition: 'unsupported but not an exported source'
     }]
   });
 

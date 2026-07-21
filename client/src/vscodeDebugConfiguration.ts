@@ -118,7 +118,7 @@ export async function resolveVbaDebugConfiguration(
   const sourcePaths = uniqueCanonicalPaths(
     await host.findExportedSourceFiles(postSaveSelection.sourceSetPath)
   );
-  const breakpoints = captureEnabledOrdinaryBasBreakpoints(host, sourcePaths);
+  const breakpoints = captureEnabledOrdinarySourceBreakpoints(host, sourcePaths);
   const sources = [];
   for (const sourcePath of sourcePaths) {
     sources.push({
@@ -148,19 +148,18 @@ export async function resolveVbaDebugConfiguration(
   };
 }
 
-function captureEnabledOrdinaryBasBreakpoints(
+function captureEnabledOrdinarySourceBreakpoints(
   host: VbaDebugConfigurationHost,
   sourcePaths: readonly string[]
 ): readonly { readonly path: string; readonly line: number }[] {
-  const basSourcePaths = new Map(
+  const exportedSourcePaths = new Map(
     sourcePaths
-      .filter((sourcePath) => path.extname(sourcePath).toLowerCase() === '.bas')
       .map((sourcePath) => [canonicalPath(sourcePath), sourcePath])
   );
   const breakpoints = host.getSourceBreakpoints()
     .filter((breakpoint) => breakpoint.enabled)
     .flatMap((breakpoint) => {
-      const sourcePath = basSourcePaths.get(canonicalPath(breakpoint.uriPath));
+      const sourcePath = exportedSourcePaths.get(canonicalPath(breakpoint.uriPath));
       if (sourcePath === undefined) {
         return [];
       }
@@ -185,10 +184,21 @@ function captureEnabledOrdinaryBasBreakpoints(
 
       return [{ path: sourcePath, line: breakpoint.line }];
     });
-  if (breakpoints.length > 1) {
-    throw new VbaDebugSelectionError(
-      `VBA debug launch currently supports at most one enabled ordinary BAS breakpoint; found ${breakpoints.length}.`
-    );
+  breakpoints.sort((left, right) => (
+    compareOrdinal(canonicalPath(left.path), canonicalPath(right.path))
+    || left.line - right.line
+  ));
+  for (let index = 1; index < breakpoints.length; index += 1) {
+    const previous = breakpoints[index - 1];
+    const current = breakpoints[index];
+    if (
+      canonicalPath(previous.path) === canonicalPath(current.path)
+      && previous.line === current.line
+    ) {
+      throw new VbaDebugSelectionError(
+        `Duplicate enabled VBA breakpoint at ${current.path}:${current.line + 1}.`
+      );
+    }
   }
 
   return breakpoints;

@@ -7,6 +7,184 @@ namespace VbaDev.Tests;
 
 public sealed class DebugLaunchCoordinatorTests
 {
+    [Theory]
+    [InlineData(UnsupportedDebugBreakpointKind.Conditional)]
+    [InlineData(UnsupportedDebugBreakpointKind.HitCondition)]
+    [InlineData(UnsupportedDebugBreakpointKind.Logpoint)]
+    [InlineData(UnsupportedDebugBreakpointKind.Column)]
+    [InlineData(UnsupportedDebugBreakpointKind.Mode)]
+    [InlineData(UnsupportedDebugBreakpointKind.Function)]
+    [InlineData(UnsupportedDebugBreakpointKind.Exception)]
+    [InlineData(UnsupportedDebugBreakpointKind.Data)]
+    public async Task UnsupportedBreakpointDiscoveryFailsBeforeAnyLaunchSideEffect(
+        UnsupportedDebugBreakpointKind kind)
+    {
+        var context = CreateContext();
+        var breakpoint = new DebugSourceBreakpoint(
+            Path.Combine(context.DocumentSourceSetPath, "DebugModule.bas"),
+            EditorLine: 4);
+        var events = new List<string>();
+        var coordinator = new DebugLaunchCoordinator(
+            new FakeDebugWorkbookBuilder(events),
+            new FakeVbeDebugSessionFactory(events, new FakeVbeDebugSession(events)),
+            new FakeBreakpointSourceMapper(
+                events,
+                new VbeBreakpoint(breakpoint, "DebugModule", 4, "    value = 1")));
+        var request = new DebugLaunchRequest(
+            context,
+            new DebugTargetProcedure("DebugModule", "RunTarget"),
+            CreateSourceSnapshot())
+        {
+            BreakpointPlan = new DebugBreakpointPlan(
+                [breakpoint],
+                [new UnsupportedDebugBreakpoint(kind, $"unsupported {kind}")])
+        };
+
+        var error = await Assert.ThrowsAsync<DebugSetupException>(() => coordinator.LaunchAsync(
+            request,
+            new RecordingDebugLifecycleSink(),
+            CancellationToken.None));
+
+        Assert.Contains(kind.ToString(), error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(events);
+    }
+
+    [Fact]
+    public async Task DuplicateParticipatingSourcePositionsFailBeforeAnyLaunchSideEffect()
+    {
+        var context = CreateContext();
+        var sourcePath = Path.Combine(context.DocumentSourceSetPath, "DebugModule.bas");
+        var events = new List<string>();
+        var coordinator = new DebugLaunchCoordinator(
+            new FakeDebugWorkbookBuilder(events),
+            new FakeVbeDebugSessionFactory(events, new FakeVbeDebugSession(events)),
+            new FakeBreakpointSourceMapper(
+                events,
+                new VbeBreakpoint(
+                    new DebugSourceBreakpoint(sourcePath, EditorLine: 4),
+                    "DebugModule",
+                    4,
+                    "    value = 1")));
+        var request = new DebugLaunchRequest(
+            context,
+            new DebugTargetProcedure("DebugModule", "RunTarget"),
+            CreateSourceSnapshot())
+        {
+            BreakpointPlan = new DebugBreakpointPlan(
+                [
+                    new DebugSourceBreakpoint(sourcePath, EditorLine: 4),
+                    new DebugSourceBreakpoint(sourcePath.ToUpperInvariant(), EditorLine: 4)
+                ],
+                [])
+        };
+
+        var error = await Assert.ThrowsAsync<DebugSetupException>(() => coordinator.LaunchAsync(
+            request,
+            new RecordingDebugLifecycleSink(),
+            CancellationToken.None));
+
+        Assert.Contains("duplicate", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(events);
+    }
+
+    [Fact]
+    public async Task MultipleParticipatingBreakpointsAreAllVerifiedBeforeTheTargetRuns()
+    {
+        var context = CreateContext();
+        var firstSourcePath = Path.Combine(context.DocumentSourceSetPath, "First.bas");
+        var secondSourcePath = Path.Combine(context.DocumentSourceSetPath, "Second.bas");
+        var first = new DebugSourceBreakpoint(firstSourcePath, EditorLine: 4);
+        var second = new DebugSourceBreakpoint(secondSourcePath, EditorLine: 8);
+        var firstMapped = new VbeBreakpoint(first, "First", VbideLine: 3, "    firstValue = 1");
+        var secondMapped = new VbeBreakpoint(second, "Second", VbideLine: 7, "    secondValue = 2");
+        var events = new List<string>();
+        var vbeSession = new FakeVbeDebugSession(events);
+        var coordinator = new DebugLaunchCoordinator(
+            new FakeDebugWorkbookBuilder(events),
+            new FakeVbeDebugSessionFactory(events, vbeSession),
+            new FakeBreakpointSourceMapper(
+                events,
+                breakpoint => breakpoint == first ? firstMapped : secondMapped));
+        var request = new DebugLaunchRequest(
+            context,
+            new DebugTargetProcedure("DebugModule", "RunTarget"),
+            CreateSourceSnapshot())
+        {
+            BreakpointPlan = new DebugBreakpointPlan([first, second], [])
+        };
+
+        var running = await coordinator.LaunchAsync(
+            request,
+            new RecordingDebugLaunchEventSink(events),
+            CancellationToken.None);
+
+        Assert.Equal(
+            [
+                "build:Book1",
+                "start-visible",
+                $"open:{context.BinDocumentPath}",
+                $"map:{firstSourcePath}:4",
+                "set:First:3:    firstValue = 1",
+                $"verified:{firstSourcePath}:4",
+                $"map:{secondSourcePath}:8",
+                "set:Second:7:    secondValue = 2",
+                $"verified:{secondSourcePath}:8",
+                "run:DebugModule.RunTarget"
+            ],
+            events);
+
+        vbeSession.Exit(0);
+        await running.Completion;
+    }
+
+    [Fact]
+    public async Task ASecondNativeBreakpointFailurePreventsTargetExecution()
+    {
+        var context = CreateContext();
+        var first = new DebugSourceBreakpoint(
+            Path.Combine(context.DocumentSourceSetPath, "First.bas"),
+            EditorLine: 4);
+        var second = new DebugSourceBreakpoint(
+            Path.Combine(context.DocumentSourceSetPath, "Second.bas"),
+            EditorLine: 8);
+        var events = new List<string>();
+        var vbeSession = new FakeVbeDebugSession(events)
+        {
+            SetError = new DebugSetupException("The second native breakpoint failed."),
+            SetErrorAtCall = 2
+        };
+        var coordinator = new DebugLaunchCoordinator(
+            new FakeDebugWorkbookBuilder(events),
+            new FakeVbeDebugSessionFactory(events, vbeSession),
+            new FakeBreakpointSourceMapper(
+                events,
+                breakpoint => new VbeBreakpoint(
+                    breakpoint,
+                    Path.GetFileNameWithoutExtension(breakpoint.SourcePath),
+                    breakpoint.EditorLine,
+                    $"line {breakpoint.EditorLine}")));
+        var request = new DebugLaunchRequest(
+            context,
+            new DebugTargetProcedure("DebugModule", "RunTarget"),
+            CreateSourceSnapshot())
+        {
+            BreakpointPlan = new DebugBreakpointPlan([first, second], [])
+        };
+
+        var error = await Assert.ThrowsAsync<DebugSetupException>(() => coordinator.LaunchAsync(
+            request,
+            new RecordingDebugLaunchEventSink(events),
+            CancellationToken.None));
+
+        Assert.Equal("The second native breakpoint failed.", error.Message);
+        Assert.Contains($"verified:{first.SourcePath}:4", events);
+        Assert.DoesNotContain($"verified:{second.SourcePath}:8", events);
+        Assert.Equal(2, events.Count(item => item.StartsWith("set:", StringComparison.Ordinal)));
+        Assert.DoesNotContain(events, item => item.StartsWith("run:", StringComparison.Ordinal));
+        Assert.True(vbeSession.Terminated);
+        Assert.True(vbeSession.Disposed);
+    }
+
     [Fact]
     public async Task OneBreakpointIsSetAndVerifiedBeforeTheTargetRuns()
     {
@@ -288,14 +466,28 @@ public sealed class DebugLaunchCoordinatorTests
         }
     }
 
-    private sealed class FakeBreakpointSourceMapper(
-        List<string> events,
-        VbeBreakpoint mapped) : IBreakpointSourceMapper
+    private sealed class FakeBreakpointSourceMapper : IBreakpointSourceMapper
     {
+        private readonly List<string> events;
+        private readonly Func<DebugSourceBreakpoint, VbeBreakpoint> map;
+
+        public FakeBreakpointSourceMapper(List<string> events, VbeBreakpoint mapped)
+            : this(events, _ => mapped)
+        {
+        }
+
+        public FakeBreakpointSourceMapper(
+            List<string> events,
+            Func<DebugSourceBreakpoint, VbeBreakpoint> map)
+        {
+            this.events = events;
+            this.map = map;
+        }
+
         public VbeBreakpoint Map(DebugSourceSnapshot snapshot, DebugSourceBreakpoint breakpoint)
         {
             events.Add($"map:{breakpoint.SourcePath}:{breakpoint.EditorLine}");
-            return mapped;
+            return map(breakpoint);
         }
     }
 
@@ -311,6 +503,8 @@ public sealed class DebugLaunchCoordinatorTests
         public Exception? OpenError { get; init; }
 
         public Exception? SetError { get; init; }
+
+        public int? SetErrorAtCall { get; init; }
 
         public bool Terminated { get; private set; }
 
@@ -330,12 +524,15 @@ public sealed class DebugLaunchCoordinatorTests
             VbeBreakpoint breakpoint,
             CancellationToken cancellationToken)
         {
+            SetCalls++;
             events.Add(
                 $"set:{breakpoint.ModuleName}:{breakpoint.VbideLine}:{breakpoint.ExpectedCodeLine}");
-            return SetError is null
+            return SetError is null || (SetErrorAtCall is int errorCall && errorCall != SetCalls)
                 ? Task.CompletedTask
                 : Task.FromException(SetError);
         }
+
+        private int SetCalls { get; set; }
 
         public Task RunTargetAsync(
             DebugTargetProcedure target,

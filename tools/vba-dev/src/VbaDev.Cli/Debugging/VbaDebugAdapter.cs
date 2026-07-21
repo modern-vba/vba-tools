@@ -39,8 +39,7 @@ public sealed class VbaDebugAdapter
         var connection = new DapConnection(input, output);
         DapRequest? pendingLaunchRequest = null;
         DebugLaunchRequest? pendingLaunch = null;
-        PendingDapBreakpoint? pendingBreakpoint = null;
-        var nextBreakpointId = 0;
+        var breakpointRegistry = new DapBreakpointRegistry();
         var configurationDone = false;
         DebugRunningSession? runningSession = null;
         Task? monitorTask = null;
@@ -53,7 +52,16 @@ public sealed class VbaDebugAdapter
                     await connection.WriteResponseAsync(
                         request,
                         success: true,
-                        body: new { supportsConfigurationDoneRequest = true },
+                        body: new
+                        {
+                            supportsConfigurationDoneRequest = true,
+                            supportsConditionalBreakpoints = false,
+                            supportsHitConditionalBreakpoints = false,
+                            supportsLogPoints = false,
+                            supportsFunctionBreakpoints = false,
+                            supportsDataBreakpoints = false,
+                            exceptionBreakpointFilters = Array.Empty<object>()
+                        },
                         message: null,
                         cancellationToken).ConfigureAwait(false);
                     await connection.WriteEventAsync(
@@ -67,11 +75,7 @@ public sealed class VbaDebugAdapter
                 {
                     try
                     {
-                        var update = ParseSourceBreakpointUpdate(
-                            request,
-                            pendingBreakpoint,
-                            ref nextBreakpointId);
-                        pendingBreakpoint = update.PendingBreakpoint;
+                        var update = ParseSourceBreakpointUpdate(request, breakpointRegistry);
                         await connection.WriteResponseAsync(
                             request,
                             success: true,
@@ -89,6 +93,50 @@ public sealed class VbaDebugAdapter
                             cancellationToken).ConfigureAwait(false);
                     }
 
+                    continue;
+                }
+
+                if (request.Command.Equals("setFunctionBreakpoints", StringComparison.Ordinal) ||
+                    request.Command.Equals("setExceptionBreakpoints", StringComparison.Ordinal) ||
+                    request.Command.Equals("setDataBreakpoints", StringComparison.Ordinal))
+                {
+                    try
+                    {
+                        var update = ParseUnsupportedBreakpointUpdate(request, breakpointRegistry);
+                        await connection.WriteResponseAsync(
+                            request,
+                            success: !update.IsUnsupported,
+                            body: new { breakpoints = Array.Empty<object>() },
+                            message: update.IsUnsupported
+                                ? $"DebugSetupError: {update.Description}"
+                                : null,
+                            cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (DebugSetupException ex)
+                    {
+                        var policy = GetUnsupportedBreakpointPolicy(request.Command);
+                        breakpointRegistry.TryLatchMalformed(
+                            policy.Kind,
+                            $"{policy.Description} Malformed request: {ex.Message}");
+                        await connection.WriteResponseAsync(
+                            request,
+                            success: false,
+                            body: null,
+                            message: $"DebugSetupError: {ex.Message}",
+                            cancellationToken).ConfigureAwait(false);
+                    }
+
+                    continue;
+                }
+
+                if (request.Command.Equals("dataBreakpointInfo", StringComparison.Ordinal))
+                {
+                    await connection.WriteResponseAsync(
+                        request,
+                        success: false,
+                        body: null,
+                        message: "DebugSetupError: VBA data breakpoints are unsupported.",
+                        cancellationToken).ConfigureAwait(false);
                     continue;
                 }
 
@@ -123,7 +171,8 @@ public sealed class VbaDebugAdapter
                             connection,
                             pendingLaunchRequest,
                             pendingLaunch,
-                            pendingBreakpoint,
+                            breakpointRegistry.Breakpoints,
+                            breakpointRegistry.UnsupportedBreakpoints,
                             cancellationToken).ConfigureAwait(false);
                     }
 
@@ -133,6 +182,7 @@ public sealed class VbaDebugAdapter
                 if (request.Command.Equals("configurationDone", StringComparison.Ordinal))
                 {
                     configurationDone = true;
+                    breakpointRegistry.Freeze();
                     await connection.WriteResponseAsync(
                         request,
                         success: true,
@@ -145,7 +195,8 @@ public sealed class VbaDebugAdapter
                             connection,
                             pendingLaunchRequest,
                             pendingLaunch,
-                            pendingBreakpoint,
+                            breakpointRegistry.Breakpoints,
+                            breakpointRegistry.UnsupportedBreakpoints,
                             cancellationToken).ConfigureAwait(false);
                     }
 
@@ -228,13 +279,14 @@ public sealed class VbaDebugAdapter
         DapConnection connection,
         DapRequest launchRequest,
         DebugLaunchRequest launch,
-        PendingDapBreakpoint? pendingBreakpoint,
+        IReadOnlyList<PendingDapBreakpoint> pendingBreakpoints,
+        IReadOnlyList<UnsupportedDebugBreakpoint> unsupportedBreakpoints,
         CancellationToken cancellationToken)
     {
         try
         {
-            ValidateBreakpointCorrelation(launch.SourceSnapshot.Breakpoints, pendingBreakpoint);
-            var lifecycleSink = new DapDebugLaunchEventSink(connection, pendingBreakpoint);
+            launch = ReconcileBreakpointPlan(launch, pendingBreakpoints, unsupportedBreakpoints);
+            var lifecycleSink = new DapDebugLaunchEventSink(connection, pendingBreakpoints);
             var session = await launchCoordinator
                 .LaunchAsync(launch, lifecycleSink, cancellationToken)
                 .ConfigureAwait(false);
@@ -417,12 +469,6 @@ public sealed class VbaDebugAdapter
                     "The VBA launch request property 'sourceSnapshot.breakpoints' must be an array when supplied.");
             }
 
-            if (breakpointsValue.GetArrayLength() > 1)
-            {
-                throw new DebugSetupException(
-                    "Initial VBA breakpoint transfer supports at most one enabled ordinary source breakpoint.");
-            }
-
             var breakpointBuilder = ImmutableArray.CreateBuilder<DebugSourceBreakpoint>(
                 breakpointsValue.GetArrayLength());
             foreach (var breakpointValue in breakpointsValue.EnumerateArray())
@@ -527,8 +573,7 @@ public sealed class VbaDebugAdapter
 
     private static SourceBreakpointUpdate ParseSourceBreakpointUpdate(
         DapRequest request,
-        PendingDapBreakpoint? currentBreakpoint,
-        ref int nextBreakpointId)
+        DapBreakpointRegistry registry)
     {
         if (request.Arguments.ValueKind != JsonValueKind.Object)
         {
@@ -551,12 +596,6 @@ public sealed class VbaDebugAdapter
         }
 
         sourcePath = Path.GetFullPath(sourcePath);
-        if (!Path.GetExtension(sourcePath).Equals(".bas", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new DebugSetupException(
-                "Initial VBA breakpoint transfer supports ordinary .bas source breakpoints only.");
-        }
-
         if (!request.Arguments.TryGetProperty("breakpoints", out var breakpoints))
         {
             breakpoints = default;
@@ -568,103 +607,243 @@ public sealed class VbaDebugAdapter
                 "The VBA setBreakpoints request requires an array 'breakpoints' property.");
         }
 
-        var count = breakpoints.ValueKind == JsonValueKind.Array
-            ? breakpoints.GetArrayLength()
-            : 0;
-        if (count > 1)
+        var captured = new List<DapSourceBreakpointIntent>();
+        if (breakpoints.ValueKind == JsonValueKind.Array)
         {
-            throw new DebugSetupException(
-                "Initial VBA breakpoint transfer supports at most one enabled ordinary source breakpoint.");
-        }
-
-        if (count == 0)
-        {
-            var retained = currentBreakpoint is not null &&
-                !currentBreakpoint.Breakpoint.SourcePath.Equals(
-                    sourcePath,
-                    StringComparison.OrdinalIgnoreCase)
-                    ? currentBreakpoint
-                    : null;
-            return new SourceBreakpointUpdate(retained, []);
-        }
-
-        if (currentBreakpoint is not null &&
-            !currentBreakpoint.Breakpoint.SourcePath.Equals(
-                sourcePath,
-                StringComparison.OrdinalIgnoreCase))
-        {
-            throw new DebugSetupException(
-                "Initial VBA breakpoint transfer supports only one source breakpoint per launch.");
-        }
-
-        var breakpoint = breakpoints.EnumerateArray().Single();
-        if (breakpoint.ValueKind != JsonValueKind.Object)
-        {
-            throw new DebugSetupException(
-                "Each VBA source breakpoint must be an object with a one-based line.");
-        }
-
-        foreach (var unsupportedProperty in new[] { "column", "condition", "hitCondition", "logMessage" })
-        {
-            if (breakpoint.TryGetProperty(unsupportedProperty, out _))
+            foreach (var breakpoint in breakpoints.EnumerateArray())
             {
-                throw new DebugSetupException(
-                    $"VBA breakpoint property '{unsupportedProperty}' is unsupported.");
+                if (breakpoint.ValueKind != JsonValueKind.Object)
+                {
+                    throw new DebugSetupException(
+                        "Each VBA source breakpoint must be an object with a one-based line.");
+                }
+
+                var dapLine = RequiredInt32(breakpoint, "line", "breakpoints[].line");
+                if (dapLine <= 0)
+                {
+                    throw new DebugSetupException(
+                        "VBA source breakpoint line must be a positive one-based line number.");
+                }
+
+                captured.Add(new DapSourceBreakpointIntent(
+                    new DebugSourceBreakpoint(sourcePath, dapLine - 1),
+                    OptionalRawValue(breakpoint, "condition"),
+                    OptionalRawValue(breakpoint, "hitCondition"),
+                    OptionalRawValue(breakpoint, "logMessage"),
+                    OptionalRawValue(breakpoint, "column"),
+                    OptionalRawValue(breakpoint, "mode")));
             }
         }
 
-        var dapLine = RequiredInt32(breakpoint, "line", "breakpoints[].line");
-        if (dapLine <= 0)
-        {
-            throw new DebugSetupException(
-                "VBA source breakpoint line must be a positive one-based line number.");
-        }
-
-        var captured = new DebugSourceBreakpoint(sourcePath, dapLine - 1);
-        var pending = currentBreakpoint is not null &&
-            SameSourceBreakpoint(currentBreakpoint.Breakpoint, captured)
-            ? currentBreakpoint
-            : new PendingDapBreakpoint(++nextBreakpointId, captured);
-        object[] responseBreakpoints =
-        [
-            new
+        var pending = registry.Replace(sourcePath, captured);
+        var responseBreakpoints = pending
+            .Select(item => (object)new
             {
-                id = pending.Id,
+                id = item.Id,
                 verified = false,
-                source = new { path = pending.Breakpoint.SourcePath },
-                line = pending.Breakpoint.EditorLine + 1
-            }
-        ];
-        return new SourceBreakpointUpdate(pending, responseBreakpoints);
+                source = new { path = item.Intent.Breakpoint.SourcePath },
+                line = item.Intent.Breakpoint.EditorLine + 1
+            })
+            .ToArray();
+        return new SourceBreakpointUpdate(responseBreakpoints);
     }
 
-    private static void ValidateBreakpointCorrelation(
-        ImmutableArray<DebugSourceBreakpoint> launchBreakpoints,
-        PendingDapBreakpoint? pendingBreakpoint)
+    private static UnsupportedBreakpointUpdate ParseUnsupportedBreakpointUpdate(
+        DapRequest request,
+        DapBreakpointRegistry registry)
     {
-        if (launchBreakpoints.IsDefaultOrEmpty)
+        var policy = GetUnsupportedBreakpointPolicy(request.Command);
+        if (request.Arguments.ValueKind != JsonValueKind.Object)
         {
-            if (pendingBreakpoint is not null)
-            {
-                throw new DebugSetupException(
-                    "The pending DAP breakpoint is not present in the post-save debug source snapshot.");
-            }
+            throw new DebugSetupException(
+                $"The VBA {request.Command} request requires an arguments object.");
+        }
 
+        var isUnsupported = request.Command switch
+        {
+            "setFunctionBreakpoints" =>
+                RequiredArrayLength(request.Arguments, "breakpoints", request.Command) != 0,
+            "setExceptionBreakpoints" =>
+                RequiredArrayLength(request.Arguments, "filters", request.Command) != 0 ||
+                    OptionalArrayLength(request.Arguments, "filterOptions", request.Command) != 0 ||
+                    OptionalArrayLength(request.Arguments, "exceptionOptions", request.Command) != 0,
+            "setDataBreakpoints" =>
+                RequiredArrayLength(request.Arguments, "breakpoints", request.Command) != 0,
+            _ => throw new DebugSetupException(
+                $"Unsupported breakpoint configuration request '{request.Command}'.")
+        };
+        registry.ReplaceUnsupported(policy.Kind, isUnsupported, policy.Description);
+        return new UnsupportedBreakpointUpdate(isUnsupported, policy.Description);
+    }
+
+    private static UnsupportedBreakpointPolicy GetUnsupportedBreakpointPolicy(string command)
+        => command switch
+        {
+            "setFunctionBreakpoints" => new UnsupportedBreakpointPolicy(
+                UnsupportedDebugBreakpointKind.Function,
+                "Function breakpoints are unsupported for VBA debug launch."),
+            "setExceptionBreakpoints" => new UnsupportedBreakpointPolicy(
+                UnsupportedDebugBreakpointKind.Exception,
+                "Exception breakpoints are unsupported for VBA debug launch."),
+            "setDataBreakpoints" => new UnsupportedBreakpointPolicy(
+                UnsupportedDebugBreakpointKind.Data,
+                "Data breakpoints are unsupported for VBA debug launch."),
+            _ => throw new DebugSetupException(
+                $"Unsupported breakpoint configuration request '{command}'.")
+        };
+
+    private static int RequiredArrayLength(
+        JsonElement arguments,
+        string propertyName,
+        string command)
+    {
+        if (!arguments.TryGetProperty(propertyName, out var value) ||
+            value.ValueKind != JsonValueKind.Array)
+        {
+            throw new DebugSetupException(
+                $"The VBA {command} request requires array '{propertyName}'.");
+        }
+
+        return value.GetArrayLength();
+    }
+
+    private static int OptionalArrayLength(
+        JsonElement arguments,
+        string propertyName,
+        string command)
+    {
+        if (!arguments.TryGetProperty(propertyName, out var value))
+        {
+            return 0;
+        }
+
+        if (value.ValueKind != JsonValueKind.Array)
+        {
+            throw new DebugSetupException(
+                $"The VBA {command} request property '{propertyName}' must be an array.");
+        }
+
+        return value.GetArrayLength();
+    }
+
+    private static DebugLaunchRequest ReconcileBreakpointPlan(
+        DebugLaunchRequest launch,
+        IReadOnlyList<PendingDapBreakpoint> pendingBreakpoints,
+        IReadOnlyList<UnsupportedDebugBreakpoint> unsupportedBreakpoints)
+    {
+        var sourcePaths = launch.SourceSnapshot.Sources
+            .Select(source => Path.GetFullPath(source.Path))
+            .Where(IsVbaBreakpointSource)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var participating = launch.SourceSnapshot.Breakpoints
+            .Where(breakpoint =>
+                IsVbaBreakpointSource(breakpoint.SourcePath) &&
+                sourcePaths.Contains(Path.GetFullPath(breakpoint.SourcePath)))
+            .ToImmutableArray();
+        var duplicate = participating
+            .GroupBy(
+                breakpoint => $"{Path.GetFullPath(breakpoint.SourcePath)}\0{breakpoint.EditorLine}",
+                StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(group => group.Count() > 1);
+        if (duplicate is not null)
+        {
+            throw new DebugSetupException(
+                "The post-save debug source snapshot contains a duplicate breakpoint position.");
+        }
+
+        var duplicatePending = pendingBreakpoints
+            .Where(item => sourcePaths.Contains(Path.GetFullPath(item.Intent.Breakpoint.SourcePath)))
+            .GroupBy(
+                item => $"{Path.GetFullPath(item.Intent.Breakpoint.SourcePath)}\0{item.Intent.Breakpoint.EditorLine}",
+                StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(group => group.Count() > 1);
+        if (duplicatePending is not null)
+        {
+            throw new DebugSetupException(
+                "The DAP breakpoint configuration contains a duplicate in-scope source position.");
+        }
+
+        var unsupported = ImmutableArray.CreateBuilder<UnsupportedDebugBreakpoint>();
+        unsupported.AddRange(unsupportedBreakpoints);
+        foreach (var pending in pendingBreakpoints.Where(item =>
+            sourcePaths.Contains(Path.GetFullPath(item.Intent.Breakpoint.SourcePath))))
+        {
+            AddUnsupported(
+                unsupported,
+                pending,
+                pending.Intent.Condition,
+                UnsupportedDebugBreakpointKind.Conditional,
+                "conditional breakpoint");
+            AddUnsupported(
+                unsupported,
+                pending,
+                pending.Intent.HitCondition,
+                UnsupportedDebugBreakpointKind.HitCondition,
+                "hit condition");
+            AddUnsupported(
+                unsupported,
+                pending,
+                pending.Intent.LogMessage,
+                UnsupportedDebugBreakpointKind.Logpoint,
+                "logpoint");
+            AddUnsupported(
+                unsupported,
+                pending,
+                pending.Intent.Column,
+                UnsupportedDebugBreakpointKind.Column,
+                "column breakpoint");
+            AddUnsupported(
+                unsupported,
+                pending,
+                pending.Intent.Mode,
+                UnsupportedDebugBreakpointKind.Mode,
+                "breakpoint mode");
+        }
+
+        return launch with
+        {
+            BreakpointPlan = new DebugBreakpointPlan(
+                participating,
+                unsupported.ToImmutable())
+        };
+    }
+
+    private static bool IsVbaBreakpointSource(string sourcePath)
+    {
+        var extension = Path.GetExtension(sourcePath);
+        return extension.Equals(".bas", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".cls", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".frm", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void AddUnsupported(
+        ImmutableArray<UnsupportedDebugBreakpoint>.Builder unsupported,
+        PendingDapBreakpoint pending,
+        DapRawBreakpointValue value,
+        UnsupportedDebugBreakpointKind kind,
+        string featureName)
+    {
+        if (!value.IsPresent)
+        {
             return;
         }
 
-        var launchBreakpoint = launchBreakpoints.Single();
-        if (pendingBreakpoint is null ||
-            !SameSourceBreakpoint(pendingBreakpoint.Breakpoint, launchBreakpoint))
-        {
-            throw new DebugSetupException(
-                "The pending DAP breakpoint does not match the post-save debug source snapshot.");
-        }
+        unsupported.Add(new UnsupportedDebugBreakpoint(
+            kind,
+            $"Unsupported VBA {featureName} at " +
+            $"'{pending.Intent.Breakpoint.SourcePath}:{pending.Intent.Breakpoint.EditorLine + 1}'."));
     }
+
+    private static DapRawBreakpointValue OptionalRawValue(
+        JsonElement breakpoint,
+        string propertyName)
+        => breakpoint.TryGetProperty(propertyName, out var value)
+            ? new DapRawBreakpointValue(true, value.Clone())
+            : default;
 
     private sealed class DapDebugLaunchEventSink(
         DapConnection connection,
-        PendingDapBreakpoint? pendingBreakpoint) : IDebugLaunchEventSink
+        IReadOnlyList<PendingDapBreakpoint> pendingBreakpoints) : IDebugLaunchEventSink
     {
         public ValueTask WriteAsync(
             DebugLifecycleMessage message,
@@ -683,11 +862,11 @@ public sealed class VbaDebugAdapter
             VbeBreakpoint breakpoint,
             CancellationToken cancellationToken)
         {
-            if (pendingBreakpoint is null ||
-                !SameSourceBreakpoint(pendingBreakpoint.Breakpoint, breakpoint.Source))
+            var pendingBreakpoint = pendingBreakpoints.SingleOrDefault(item =>
+                SameSourceBreakpoint(item.Intent.Breakpoint, breakpoint.Source));
+            if (pendingBreakpoint is null)
             {
-                throw new DebugSetupException(
-                    "The transferred VBE breakpoint does not match the pending DAP breakpoint.");
+                return ValueTask.CompletedTask;
             }
 
             return new ValueTask(connection.WriteEventAsync(
@@ -699,7 +878,7 @@ public sealed class VbaDebugAdapter
                     {
                         id = pendingBreakpoint.Id,
                         verified = true,
-                        source = new { path = pendingBreakpoint.Breakpoint.SourcePath },
+                        source = new { path = pendingBreakpoint.Intent.Breakpoint.SourcePath },
                         line = breakpoint.Source.EditorLine + 1
                     }
                 },
@@ -707,7 +886,103 @@ public sealed class VbaDebugAdapter
         }
     }
 
-    private sealed record PendingDapBreakpoint(int Id, DebugSourceBreakpoint Breakpoint);
+    private readonly record struct DapRawBreakpointValue(bool IsPresent, JsonElement Value);
+
+    private sealed record DapSourceBreakpointIntent(
+        DebugSourceBreakpoint Breakpoint,
+        DapRawBreakpointValue Condition,
+        DapRawBreakpointValue HitCondition,
+        DapRawBreakpointValue LogMessage,
+        DapRawBreakpointValue Column,
+        DapRawBreakpointValue Mode);
+
+    private sealed record PendingDapBreakpoint(int Id, DapSourceBreakpointIntent Intent);
+
+    private sealed class DapBreakpointRegistry
+    {
+        private readonly Dictionary<string, List<PendingDapBreakpoint>> bySource =
+            new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<UnsupportedDebugBreakpointKind, UnsupportedDebugBreakpoint>
+            unsupportedByKind = [];
+        private int nextBreakpointId;
+        private bool isFrozen;
+
+        public IReadOnlyList<PendingDapBreakpoint> Breakpoints => bySource.Values
+            .SelectMany(items => items)
+            .ToArray();
+
+        public IReadOnlyList<UnsupportedDebugBreakpoint> UnsupportedBreakpoints =>
+            unsupportedByKind
+                .OrderBy(item => item.Key)
+                .Select(item => item.Value)
+                .ToArray();
+
+        public IReadOnlyList<PendingDapBreakpoint> Replace(
+            string sourcePath,
+            IReadOnlyList<DapSourceBreakpointIntent> breakpoints)
+        {
+            EnsureMutable();
+
+            bySource.TryGetValue(sourcePath, out var previous);
+            var replacement = breakpoints
+                .Select(breakpoint =>
+                {
+                    var existing = previous?.FirstOrDefault(item =>
+                        SameSourceBreakpoint(item.Intent.Breakpoint, breakpoint.Breakpoint));
+                    return new PendingDapBreakpoint(
+                        existing?.Id ?? ++nextBreakpointId,
+                        breakpoint);
+                })
+                .ToList();
+            if (replacement.Count == 0)
+            {
+                bySource.Remove(sourcePath);
+            }
+            else
+            {
+                bySource[sourcePath] = replacement;
+            }
+
+            return replacement;
+        }
+
+        public void ReplaceUnsupported(
+            UnsupportedDebugBreakpointKind kind,
+            bool isUnsupported,
+            string description)
+        {
+            EnsureMutable();
+            if (isUnsupported)
+            {
+                unsupportedByKind[kind] = new UnsupportedDebugBreakpoint(kind, description);
+            }
+            else
+            {
+                unsupportedByKind.Remove(kind);
+            }
+        }
+
+        public void TryLatchMalformed(
+            UnsupportedDebugBreakpointKind kind,
+            string description)
+        {
+            if (!isFrozen)
+            {
+                unsupportedByKind[kind] = new UnsupportedDebugBreakpoint(kind, description);
+            }
+        }
+
+        public void Freeze() => isFrozen = true;
+
+        private void EnsureMutable()
+        {
+            if (isFrozen)
+            {
+                throw new DebugSetupException(
+                    "The VBA breakpoint configuration is frozen after configurationDone.");
+            }
+        }
+    }
 
     private static bool SameSourceBreakpoint(
         DebugSourceBreakpoint left,
@@ -718,6 +993,13 @@ public sealed class VbaDebugAdapter
                 StringComparison.OrdinalIgnoreCase);
 
     private sealed record SourceBreakpointUpdate(
-        PendingDapBreakpoint? PendingBreakpoint,
         object[] ResponseBreakpoints);
+
+    private sealed record UnsupportedBreakpointUpdate(
+        bool IsUnsupported,
+        string Description);
+
+    private sealed record UnsupportedBreakpointPolicy(
+        UnsupportedDebugBreakpointKind Kind,
+        string Description);
 }

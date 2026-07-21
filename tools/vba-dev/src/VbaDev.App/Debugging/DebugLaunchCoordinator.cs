@@ -18,7 +18,14 @@ public sealed record DebugTargetProcedure(string ModuleName, string ProcedureNam
 public sealed record DebugLaunchRequest(
     ResolvedProjectContext Context,
     DebugTargetProcedure Target,
-    DebugSourceSnapshot SourceSnapshot);
+    DebugSourceSnapshot SourceSnapshot)
+{
+    /// <summary>
+    /// Gets the breakpoint participation decision frozen for this launch.
+    /// </summary>
+    public DebugBreakpointPlan BreakpointPlan { get; init; } =
+        new(SourceSnapshot.Breakpoints, []);
+}
 
 /// <summary>
 /// Contains the non-fatal output produced by a completed debug build.
@@ -182,6 +189,8 @@ public sealed class DebugLaunchCoordinator
 
         try
         {
+            ValidateBreakpointPlan(request.BreakpointPlan);
+
             var buildResult = await workbookBuilder
                 .BuildAsync(request.Context, cancellationToken)
                 .ConfigureAwait(false);
@@ -199,9 +208,9 @@ public sealed class DebugLaunchCoordinator
                     request.Context.BinDocumentPath,
                     cancellationToken).ConfigureAwait(false);
 
-                if (!request.SourceSnapshot.Breakpoints.IsDefaultOrEmpty)
+                if (!request.BreakpointPlan.Participating.IsDefaultOrEmpty)
                 {
-                    foreach (var sourceBreakpoint in request.SourceSnapshot.Breakpoints)
+                    foreach (var sourceBreakpoint in request.BreakpointPlan.Participating)
                     {
                         var vbeBreakpoint = breakpointSourceMapper.Map(
                             request.SourceSnapshot,
@@ -230,6 +239,41 @@ public sealed class DebugLaunchCoordinator
         {
             ReleaseLaunch();
             throw;
+        }
+    }
+
+    private static void ValidateBreakpointPlan(DebugBreakpointPlan breakpointPlan)
+    {
+        if (!breakpointPlan.Unsupported.IsDefaultOrEmpty)
+        {
+            var unsupported = breakpointPlan.Unsupported.Select(item =>
+                $"{item.Kind}: {item.Description}");
+            throw new DebugSetupException(
+                "VBA debug launch contains unsupported breakpoint participation: " +
+                string.Join("; ", unsupported));
+        }
+
+        if (breakpointPlan.Participating.IsDefaultOrEmpty)
+        {
+            return;
+        }
+
+        var linesBySource = new Dictionary<string, HashSet<int>>(
+            StringComparer.OrdinalIgnoreCase);
+        foreach (var breakpoint in breakpointPlan.Participating)
+        {
+            if (!linesBySource.TryGetValue(breakpoint.SourcePath, out var lines))
+            {
+                lines = [];
+                linesBySource.Add(breakpoint.SourcePath, lines);
+            }
+
+            if (!lines.Add(breakpoint.EditorLine))
+            {
+                throw new DebugSetupException(
+                    $"VBA debug launch contains a duplicate participating breakpoint at " +
+                    $"'{breakpoint.SourcePath}:{breakpoint.EditorLine + 1}'.");
+            }
         }
     }
 
