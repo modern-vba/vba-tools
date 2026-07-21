@@ -41,6 +41,40 @@ public sealed class DebugLaunchRequestResolverTests
     }
 
     [Fact]
+    public void ConditionalTargetCarriesItsExactStructuralBranchPath()
+    {
+        using var temp = TempDirectory.Create();
+        var context = CreateContext(temp.CreateDirectory("DebugProject"));
+        Directory.CreateDirectory(context.DocumentSourceSetPath);
+        var sourcePath = Path.Combine(context.DocumentSourceSetPath, "DebugModule.bas");
+        var source =
+            """
+            Attribute VB_Name = "DebugModule"
+            #If VBA7 Then
+            Public Sub ModernTarget()
+            End Sub
+            #Else
+            Public Sub RunTarget()
+            End Sub
+            #End If
+            """;
+        File.WriteAllText(sourcePath, source);
+        var snapshot = new DebugSourceSnapshot(
+            SchemaVersion: 1,
+            Sources: [new DebugSourceFileSnapshot(sourcePath, source)],
+            ActiveSource: null);
+
+        var request = new DebugLaunchRequestResolver().Resolve(
+            context,
+            snapshot,
+            moduleName: "DebugModule",
+            procedureName: "RunTarget");
+
+        Assert.NotNull(request.Target.ConditionalCompilationPath);
+        Assert.Single(request.Target.ConditionalCompilationPath.Branches);
+    }
+
+    [Fact]
     public void FunctionIsRejectedBeforeBuild()
     {
         using var temp = TempDirectory.Create();

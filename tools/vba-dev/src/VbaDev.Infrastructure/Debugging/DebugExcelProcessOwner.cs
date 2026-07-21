@@ -15,6 +15,8 @@ internal interface IDebugOwnedProcess : IDisposable
 {
     int Id { get; }
 
+    DebugExcelProcessArchitecture Architecture { get; }
+
     DateTime StartTime { get; }
 
     bool HasExited { get; }
@@ -45,6 +47,8 @@ internal sealed class DebugExcelProcessOwner : IAsyncDisposable
     }
 
     public int ProcessId { get; }
+
+    internal DebugExcelProcessArchitecture ProcessArchitecture => process.Architecture;
 
     internal DateTime ProcessStartTime { get; }
 

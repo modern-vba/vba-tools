@@ -7,7 +7,17 @@ namespace VbaDev.App.Debugging;
 /// </summary>
 /// <param name="ModuleName">The VBA module identity.</param>
 /// <param name="ProcedureName">The VBA procedure name.</param>
-public sealed record DebugTargetProcedure(string ModuleName, string ProcedureName);
+public sealed record DebugTargetProcedure(string ModuleName, string ProcedureName)
+{
+    /// <summary>
+    /// Gets the exact structural conditional-compilation path containing the procedure declaration.
+    /// </summary>
+    public VbaLanguageServer.Syntax.VbaConditionalCompilationBranchPath ConditionalCompilationPath
+    {
+        get;
+        init;
+    } = VbaLanguageServer.Syntax.VbaConditionalCompilationBranchPath.Root;
+}
 
 /// <summary>
 /// Contains the resolved workbook document and target for one debug launch.
@@ -51,10 +61,11 @@ public sealed record DebugLifecycleMessage(string Output);
 public interface IDebugWorkbookBuilder
 {
     /// <summary>
-    /// Builds the selected document and returns non-fatal build output.
+    /// Builds the selected document from the immutable saved source snapshot.
     /// </summary>
     Task<DebugWorkbookBuildResult> BuildAsync(
         ResolvedProjectContext context,
+        DebugSourceSnapshot sourceSnapshot,
         CancellationToken cancellationToken);
 }
 
@@ -85,6 +96,13 @@ public interface IVbeDebugSession : IAsyncDisposable
     Task<DebugProcessExit> Completion { get; }
 
     /// <summary>
+    /// Reads the actual Excel, VBE, operating-system, and process-architecture facts
+    /// that determine the host compiler constants.
+    /// </summary>
+    Task<DebugCompilationHostFacts> GetCompilationHostFactsAsync(
+        CancellationToken cancellationToken);
+
+    /// <summary>
     /// Opens the exact generated workbook before native debug commands are prepared.
     /// </summary>
     Task OpenGeneratedWorkbookAsync(
@@ -92,10 +110,10 @@ public interface IVbeDebugSession : IAsyncDisposable
         CancellationToken cancellationToken);
 
     /// <summary>
-    /// Establishes the exact VBE command context and sets one native breakpoint.
+    /// Verifies all generated source maps before setting the participating native breakpoints.
     /// </summary>
-    Task SetNativeBreakpointAsync(
-        VbeBreakpoint breakpoint,
+    Task SetNativeBreakpointsAsync(
+        IReadOnlyList<VbeBreakpoint> breakpoints,
         CancellationToken cancellationToken);
 
     /// <summary>
@@ -149,6 +167,9 @@ public sealed class DebugLaunchCoordinator
     private readonly IDebugWorkbookBuilder workbookBuilder;
     private readonly IVbeDebugSessionFactory vbeDebugSessionFactory;
     private readonly IBreakpointSourceMapper breakpointSourceMapper;
+    private readonly IDebugCompilationSettingsReader? compilationSettingsReader;
+    private readonly DebugCompilationEnvironmentFactory? compilationEnvironmentFactory;
+    private readonly DebugConditionalCompilationPreflight? conditionalCompilationPreflight;
     private int activeLaunch;
 
     /// <summary>
@@ -175,6 +196,26 @@ public sealed class DebugLaunchCoordinator
     }
 
     /// <summary>
+    /// Creates a debug launch coordinator that can prove actual conditional-compilation branches.
+    /// </summary>
+    public DebugLaunchCoordinator(
+        IDebugWorkbookBuilder workbookBuilder,
+        IVbeDebugSessionFactory vbeDebugSessionFactory,
+        IBreakpointSourceMapper breakpointSourceMapper,
+        IDebugCompilationSettingsReader compilationSettingsReader,
+        DebugCompilationEnvironmentFactory compilationEnvironmentFactory,
+        DebugConditionalCompilationPreflight conditionalCompilationPreflight)
+        : this(workbookBuilder, vbeDebugSessionFactory, breakpointSourceMapper)
+    {
+        this.compilationSettingsReader = compilationSettingsReader
+            ?? throw new ArgumentNullException(nameof(compilationSettingsReader));
+        this.compilationEnvironmentFactory = compilationEnvironmentFactory
+            ?? throw new ArgumentNullException(nameof(compilationEnvironmentFactory));
+        this.conditionalCompilationPreflight = conditionalCompilationPreflight
+            ?? throw new ArgumentNullException(nameof(conditionalCompilationPreflight));
+    }
+
+    /// <summary>
     /// Builds and starts one explicit VBE debug target.
     /// </summary>
     public async Task<DebugRunningSession> LaunchAsync(
@@ -190,15 +231,34 @@ public sealed class DebugLaunchCoordinator
         try
         {
             ValidateBreakpointPlan(request.BreakpointPlan);
+            var mappedBreakpoints = request.BreakpointPlan.Participating.IsDefaultOrEmpty
+                ? []
+                : request.BreakpointPlan.Participating
+                    .Select(sourceBreakpoint => breakpointSourceMapper.Map(
+                        request.SourceSnapshot,
+                        sourceBreakpoint))
+                    .ToArray();
+            var requiresConditionalCompilationPreflight =
+                request.Target.ConditionalCompilationPath.Branches.Count != 0
+                || mappedBreakpoints.Any(breakpoint =>
+                    breakpoint.ConditionalCompilationPath.Branches.Count != 0);
 
             var buildResult = await workbookBuilder
-                .BuildAsync(request.Context, cancellationToken)
+                .BuildAsync(request.Context, request.SourceSnapshot, cancellationToken)
                 .ConfigureAwait(false);
             foreach (var output in buildResult.Output)
             {
                 await eventSink
                     .WriteAsync(new DebugLifecycleMessage(output), cancellationToken)
                     .ConfigureAwait(false);
+            }
+
+            DebugCompilationSettings? builtCompilationSettings = null;
+            if (requiresConditionalCompilationPreflight)
+            {
+                EnsureConditionalCompilationServices();
+                builtCompilationSettings = compilationSettingsReader!.Read(
+                    request.Context.BinDocumentPath);
             }
 
             var session = await vbeDebugSessionFactory.StartVisibleAsync(cancellationToken).ConfigureAwait(false);
@@ -208,16 +268,39 @@ public sealed class DebugLaunchCoordinator
                     request.Context.BinDocumentPath,
                     cancellationToken).ConfigureAwait(false);
 
-                if (!request.BreakpointPlan.Participating.IsDefaultOrEmpty)
+                if (requiresConditionalCompilationPreflight)
                 {
-                    foreach (var sourceBreakpoint in request.BreakpointPlan.Participating)
+                    var openedCompilationSettings = compilationSettingsReader!.Read(
+                        request.Context.BinDocumentPath);
+                    if (!openedCompilationSettings.VbaProjectPartSha256.Equals(
+                        builtCompilationSettings!.VbaProjectPartSha256,
+                        StringComparison.OrdinalIgnoreCase))
                     {
-                        var vbeBreakpoint = breakpointSourceMapper.Map(
-                            request.SourceSnapshot,
-                            sourceBreakpoint);
-                        await session.SetNativeBreakpointAsync(
-                            vbeBreakpoint,
-                            cancellationToken).ConfigureAwait(false);
+                        throw new DebugSetupException(
+                            "The generated workbook VBA project changed between the completed debug build " +
+                            "and the exact workbook opened in Excel. Conditional-compilation source " +
+                            "identities cannot be proved.");
+                    }
+
+                    var hostFacts = await session
+                        .GetCompilationHostFactsAsync(cancellationToken)
+                        .ConfigureAwait(false);
+                    var environment = compilationEnvironmentFactory!.Create(
+                        builtCompilationSettings,
+                        hostFacts);
+                    conditionalCompilationPreflight!.Validate(
+                        request,
+                        mappedBreakpoints,
+                        environment);
+                }
+
+                if (mappedBreakpoints.Length != 0)
+                {
+                    await session.SetNativeBreakpointsAsync(
+                        mappedBreakpoints,
+                        cancellationToken).ConfigureAwait(false);
+                    foreach (var vbeBreakpoint in mappedBreakpoints)
+                    {
                         await eventSink.BreakpointVerifiedAsync(
                             vbeBreakpoint,
                             cancellationToken).ConfigureAwait(false);
@@ -274,6 +357,18 @@ public sealed class DebugLaunchCoordinator
                     $"VBA debug launch contains a duplicate participating breakpoint at " +
                     $"'{breakpoint.SourcePath}:{breakpoint.EditorLine + 1}'.");
             }
+        }
+    }
+
+    private void EnsureConditionalCompilationServices()
+    {
+        if (compilationSettingsReader is null
+            || compilationEnvironmentFactory is null
+            || conditionalCompilationPreflight is null)
+        {
+            throw new DebugSetupException(
+                "Conditional-compilation debug participants require actual generated-workbook and " +
+                "Excel/VBE compiler context, but those services are not configured.");
         }
     }
 

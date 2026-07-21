@@ -5,6 +5,8 @@ node_modules/
 out/
 dist/
 build/
+!tools/vba-dev/src/VbaDev.App/Build/
+!tools/vba-dev/src/VbaDev.App/Build/*.cs
 lib/
 **/bin/
 **/obj/

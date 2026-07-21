@@ -1,5 +1,6 @@
 using VbaDev.App.Debugging;
 using VbaDev.Infrastructure.Workbooks;
+using VbaLanguageServer.Syntax;
 using Microsoft.CSharp.RuntimeBinder;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -178,6 +179,15 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
 
         public Task<DebugProcessExit> Completion => processOwner.Completion;
 
+        public async Task<DebugCompilationHostFacts> GetCompilationHostFactsAsync(
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return await InvokeSetupAsync(
+                ReadCompilationHostFacts,
+                cancellationToken).ConfigureAwait(false);
+        }
+
         public async Task OpenGeneratedWorkbookAsync(
             string workbookPath,
             CancellationToken cancellationToken)
@@ -200,15 +210,15 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                 cancellationToken).ConfigureAwait(false);
         }
 
-        public async Task SetNativeBreakpointAsync(
-            VbeBreakpoint breakpoint,
+        public async Task SetNativeBreakpointsAsync(
+            IReadOnlyList<VbeBreakpoint> breakpoints,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
             _ = await InvokeSetupAsync(
                 () =>
                 {
-                    SetNativeBreakpoint(breakpoint);
+                    SetNativeBreakpoints(breakpoints);
                     return true;
                 },
                 cancellationToken).ConfigureAwait(false);
@@ -299,6 +309,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             try
             {
                 dynamic excel = excelObject;
+                excel.EnableEvents = false;
                 workbooksObject = excel.Workbooks;
                 dynamic workbooks = workbooksObject;
                 workbook = workbooks.Open(expectedWorkbookPath);
@@ -332,20 +343,192 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             }
         }
 
-        private void SetNativeBreakpoint(VbeBreakpoint breakpoint)
+        private DebugCompilationHostFacts ReadCompilationHostFacts()
         {
-            if (breakpoint.VbideLine <= 0)
+            object? vbeObject = null;
+            try
             {
-                throw new DebugSetupException(
-                    "The native VBE breakpoint line must be a positive one-based line number.");
+                dynamic excel = excelObject;
+                var excelVersion = (string)excel.Version;
+                var operatingSystem = (string)excel.OperatingSystem;
+                vbeObject = excel.VBE;
+                dynamic vbe = vbeObject;
+                var vbeVersion = (string)vbe.Version;
+                return ResolveCompilationHostFacts(
+                    excelVersion,
+                    vbeVersion,
+                    operatingSystem,
+                    processOwner.ProcessArchitecture);
+            }
+            finally
+            {
+                ComObjectReleaser.Release(vbeObject);
+            }
+        }
+
+        private static DebugCompilationHostFacts ResolveCompilationHostFacts(
+            string excelVersion,
+            string vbeVersion,
+            string operatingSystem,
+            DebugExcelProcessArchitecture processArchitecture)
+        {
+            var excelGeneration = ResolveExcelGeneration(excelVersion);
+            var vbeGeneration = ResolveVbeGeneration(vbeVersion);
+            var operatingSystemBitness = ResolveOperatingSystemBitness(operatingSystem);
+            var processBitness = ResolveProcessBitness(processArchitecture);
+
+            if (operatingSystemBitness != HostBitness.Unknown
+                && processBitness != HostBitness.Unknown
+                && operatingSystemBitness != processBitness)
+            {
+                return UnprovedHostFacts(
+                    DebugCompilationHostFactsStatus.Mismatch,
+                    "Excel Application.OperatingSystem bitness contradicts the exact owned Excel process architecture.");
+            }
+
+            if (excelGeneration != VbaGeneration.Unknown
+                && vbeGeneration != VbaGeneration.Unknown
+                && excelGeneration != vbeGeneration)
+            {
+                return UnprovedHostFacts(
+                    DebugCompilationHostFactsStatus.Mismatch,
+                    "Excel Application.Version and VBE.Version identify contradictory VBA generations.");
+            }
+
+            if (processBitness == HostBitness.Unknown)
+            {
+                return UnprovedHostFacts(
+                    DebugCompilationHostFactsStatus.Unknown,
+                    "The exact owned Excel process architecture is unknown.");
+            }
+
+            if (operatingSystemBitness == HostBitness.Unknown)
+            {
+                return UnprovedHostFacts(
+                    DebugCompilationHostFactsStatus.Unknown,
+                    "Excel Application.OperatingSystem does not identify a supported Windows bitness.");
+            }
+
+            if (excelGeneration == VbaGeneration.Unknown
+                || vbeGeneration == VbaGeneration.Unknown)
+            {
+                return UnprovedHostFacts(
+                    DebugCompilationHostFactsStatus.Unknown,
+                    "Excel Application.Version or VBE.Version does not identify a supported VBA generation.");
+            }
+
+            return new DebugCompilationHostFacts(
+                excelVersion,
+                vbeVersion,
+                operatingSystem,
+                processArchitecture,
+                DebugCompilationHostFactsStatus.Verified,
+                new DebugCompilerBuiltInConstants(
+                    Vba6: true,
+                    Vba7: vbeGeneration == VbaGeneration.Vba7,
+                    Win16: false,
+                    Win32: true,
+                    Win64: processBitness == HostBitness.Bit64,
+                    Mac: false),
+                UnavailableReason: null);
+
+            DebugCompilationHostFacts UnprovedHostFacts(
+                DebugCompilationHostFactsStatus status,
+                string reason)
+                => new(
+                    excelVersion,
+                    vbeVersion,
+                    operatingSystem,
+                    processArchitecture,
+                    status,
+                    BuiltInConstants: null,
+                    reason);
+        }
+
+        private static VbaGeneration ResolveExcelGeneration(string version)
+        {
+            if (!Version.TryParse(version, out var parsedVersion))
+            {
+                return VbaGeneration.Unknown;
+            }
+
+            return parsedVersion.Major switch
+            {
+                >= 9 and <= 12 => VbaGeneration.Vba6,
+                >= 14 => VbaGeneration.Vba7,
+                _ => VbaGeneration.Unknown
+            };
+        }
+
+        private static VbaGeneration ResolveVbeGeneration(string version)
+        {
+            if (!Version.TryParse(version, out var parsedVersion))
+            {
+                return VbaGeneration.Unknown;
+            }
+
+            return parsedVersion.Major switch
+            {
+                6 => VbaGeneration.Vba6,
+                7 => VbaGeneration.Vba7,
+                _ => VbaGeneration.Unknown
+            };
+        }
+
+        private static HostBitness ResolveOperatingSystemBitness(string operatingSystem)
+        {
+            if (operatingSystem.StartsWith(
+                    "Windows (32-bit)",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return HostBitness.Bit32;
+            }
+
+            return operatingSystem.StartsWith(
+                "Windows (64-bit)",
+                StringComparison.OrdinalIgnoreCase)
+                ? HostBitness.Bit64
+                : HostBitness.Unknown;
+        }
+
+        private static HostBitness ResolveProcessBitness(
+            DebugExcelProcessArchitecture architecture)
+            => architecture switch
+            {
+                DebugExcelProcessArchitecture.X86 => HostBitness.Bit32,
+                DebugExcelProcessArchitecture.X64 or
+                    DebugExcelProcessArchitecture.Arm64 => HostBitness.Bit64,
+                _ => HostBitness.Unknown
+            };
+
+        private enum VbaGeneration
+        {
+            Unknown,
+            Vba6,
+            Vba7
+        }
+
+        private enum HostBitness
+        {
+            Unknown,
+            Bit32,
+            Bit64
+        }
+
+        private void SetNativeBreakpoints(IReadOnlyList<VbeBreakpoint> breakpoints)
+        {
+            if (breakpoints.Count == 0)
+            {
+                return;
             }
 
             object? projectObject = null;
             object? componentsObject = null;
-            object? componentObject = null;
-            object? codeModuleObject = null;
+            var verifiedModules = new Dictionary<string, VerifiedCodeModule>(
+                StringComparer.OrdinalIgnoreCase);
             try
             {
+                var sourceMaps = CollectDistinctSourceMaps(breakpoints);
                 dynamic workbook = GetOpenedWorkbook();
                 projectObject = workbook.VBProject;
                 dynamic project = projectObject;
@@ -353,42 +536,163 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
 
                 componentsObject = project.VBComponents;
                 dynamic components = componentsObject;
-                componentObject = components.Item(breakpoint.ModuleName);
-                dynamic component = componentObject;
-                if ((int)component.Type != 1)
+                foreach (var sourceMap in sourceMaps.Values)
                 {
-                    throw new DebugSetupException(
-                        $"The breakpoint module '{breakpoint.ModuleName}' is not a standard module.");
+                    verifiedModules.Add(
+                        sourceMap.ModuleName,
+                        VerifyCodeModule(components, sourceMap));
                 }
 
-                codeModuleObject = component.CodeModule;
-                dynamic codeModule = codeModuleObject;
-                var actualCodeLine = (string)codeModule.Lines(breakpoint.VbideLine, 1);
-                if (!string.Equals(
-                        breakpoint.ExpectedCodeLine,
-                        actualCodeLine,
-                        StringComparison.Ordinal))
+                foreach (var breakpoint in breakpoints)
                 {
-                    throw new DebugSetupException(
-                        $"The generated workbook code at '{breakpoint.ModuleName}:{breakpoint.VbideLine}' does not exactly match the saved breakpoint source line.");
+                    var verifiedModule = verifiedModules[breakpoint.ModuleName];
+                    ExecuteNativeCommand(
+                        verifiedModule.Component,
+                        verifiedModule.CodeModule,
+                        breakpoint.VbideLine,
+                        51,
+                        "Toggle Breakpoint",
+                        "breakpoint",
+                        CreateDisabledBreakpointMessage(breakpoint));
                 }
-
-                ExecuteNativeCommand(
-                    componentObject,
-                    codeModuleObject,
-                    breakpoint.VbideLine,
-                    51,
-                    "Toggle Breakpoint",
-                    "breakpoint");
             }
             finally
             {
-                ComObjectReleaser.Release(codeModuleObject);
-                ComObjectReleaser.Release(componentObject);
+                foreach (var verifiedModule in verifiedModules.Values)
+                {
+                    ComObjectReleaser.Release(verifiedModule.CodeModule);
+                    ComObjectReleaser.Release(verifiedModule.Component);
+                }
+
                 ComObjectReleaser.Release(componentsObject);
                 ComObjectReleaser.Release(projectObject);
             }
         }
+
+        private static Dictionary<string, VbeCodeModuleSourceMap> CollectDistinctSourceMaps(
+            IReadOnlyList<VbeBreakpoint> breakpoints)
+        {
+            var sourceMaps = new Dictionary<string, VbeCodeModuleSourceMap>(
+                StringComparer.OrdinalIgnoreCase);
+            foreach (var breakpoint in breakpoints)
+            {
+                var sourceMap = breakpoint.SourceMap;
+                if (string.IsNullOrWhiteSpace(sourceMap.ModuleName))
+                {
+                    throw new DebugSetupException(
+                        "A native VBE breakpoint source map has no module identity.");
+                }
+
+                if (sourceMap.CodeLines.IsDefault)
+                {
+                    throw new DebugSetupException(
+                        $"The breakpoint source map for '{sourceMap.ModuleName}' has no code-module contents.");
+                }
+
+                if (breakpoint.VbideLine <= 0 || breakpoint.VbideLine > sourceMap.CodeLines.Length)
+                {
+                    throw new DebugSetupException(
+                        $"The native VBE breakpoint line for '{sourceMap.ModuleName}' is outside the exact code-module source map.");
+                }
+
+                if (sourceMaps.TryGetValue(sourceMap.ModuleName, out var existingSourceMap))
+                {
+                    if (existingSourceMap.ModuleKind != sourceMap.ModuleKind
+                        || !existingSourceMap.CodeLines.SequenceEqual(
+                            sourceMap.CodeLines,
+                            StringComparer.Ordinal))
+                    {
+                        throw new DebugSetupException(
+                            $"Conflicting whole code module source maps were supplied for '{sourceMap.ModuleName}'.");
+                    }
+
+                    continue;
+                }
+
+                sourceMaps.Add(sourceMap.ModuleName, sourceMap);
+            }
+
+            return sourceMaps;
+        }
+
+        private static VerifiedCodeModule VerifyCodeModule(
+            dynamic components,
+            VbeCodeModuleSourceMap sourceMap)
+        {
+            object? componentObject = null;
+            object? codeModuleObject = null;
+            var succeeded = false;
+            try
+            {
+                componentObject = components.Item(sourceMap.ModuleName);
+                dynamic component = componentObject;
+                var actualModuleName = (string)component.Name;
+                if (!string.Equals(
+                        sourceMap.ModuleName,
+                        actualModuleName,
+                        StringComparison.Ordinal))
+                {
+                    throw new DebugSetupException(
+                        $"The generated workbook component identity '{actualModuleName}' does not exactly match breakpoint module '{sourceMap.ModuleName}'.");
+                }
+
+                var expectedComponentType = GetComponentType(sourceMap.ModuleKind);
+                if ((int)component.Type != expectedComponentType)
+                {
+                    throw new DebugSetupException(
+                        $"The generated workbook component kind for breakpoint module '{sourceMap.ModuleName}' does not match the saved source map.");
+                }
+
+                codeModuleObject = component.CodeModule;
+                dynamic codeModule = codeModuleObject;
+                var actualLineCount = (int)codeModule.CountOfLines;
+                if (actualLineCount != sourceMap.CodeLines.Length)
+                {
+                    throw new DebugSetupException(
+                        $"The generated workbook whole code module '{sourceMap.ModuleName}' does not exactly match the saved breakpoint source map (line count {actualLineCount}, expected {sourceMap.CodeLines.Length}).");
+                }
+
+                for (var line = 1; line <= actualLineCount; line++)
+                {
+                    var actualCodeLine = (string)codeModule.Lines(line, 1);
+                    if (!string.Equals(
+                            sourceMap.CodeLines[line - 1],
+                            actualCodeLine,
+                            StringComparison.Ordinal))
+                    {
+                        throw new DebugSetupException(
+                            $"The generated workbook whole code module '{sourceMap.ModuleName}' does not exactly match the saved breakpoint source map at line {line}.");
+                    }
+                }
+
+                succeeded = true;
+                return new VerifiedCodeModule(componentObject, codeModuleObject);
+            }
+            finally
+            {
+                if (!succeeded)
+                {
+                    ComObjectReleaser.Release(codeModuleObject);
+                    ComObjectReleaser.Release(componentObject);
+                }
+            }
+        }
+
+        private static int GetComponentType(VbaModuleKind moduleKind)
+            => moduleKind switch
+            {
+                VbaModuleKind.StandardModule => 1,
+                VbaModuleKind.ClassModule => 2,
+                VbaModuleKind.FormModule => 3,
+                _ => throw new DebugSetupException(
+                    $"The breakpoint source map has unsupported module kind '{moduleKind}'.")
+            };
+
+        private static string CreateDisabledBreakpointMessage(VbeBreakpoint breakpoint)
+            => $"Invalid breakpoint at '{breakpoint.Source.SourcePath}:{breakpoint.Source.EditorLine + 1}' " +
+                $"mapped to '{breakpoint.ModuleName}:{breakpoint.VbideLine}': the native VBE Toggle Breakpoint " +
+                "command is disabled in the actual generated workbook compilation context, so the mapped " +
+                "line is inactive or non-executable. The breakpoint was not relocated.";
 
         private void RunTarget(DebugTargetProcedure target)
         {
@@ -428,7 +732,12 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                     bodyLine,
                     186,
                     "Run Sub/UserForm",
-                    "target code");
+                    "target code",
+                    beforeExecute: () =>
+                    {
+                        dynamic excel = excelObject;
+                        excel.EnableEvents = true;
+                    });
             }
             finally
             {
@@ -445,7 +754,9 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             int selectedLine,
             int commandId,
             string commandName,
-            string contextName)
+            string contextName,
+            string? disabledMessage = null,
+            Action? beforeExecute = null)
         {
             object? codePaneObject = null;
             object? activeCodePaneObject = null;
@@ -529,9 +840,11 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                 if (!(bool)commandControl.Enabled)
                 {
                     throw new DebugSetupException(
-                        $"The native VBE {commandName} command (ID {commandId}) is disabled in the {contextName} context.");
+                        disabledMessage
+                            ?? $"The native VBE {commandName} command (ID {commandId}) is disabled in the {contextName} context.");
                 }
 
+                beforeExecute?.Invoke();
                 commandControl.Execute();
             }
             finally
@@ -562,6 +875,8 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                     "The generated workbook VBA project is not in design mode.");
             }
         }
+
+        private sealed record VerifiedCodeModule(object Component, object CodeModule);
 
         private void RecordForegroundPermission(DebugSetupException error)
         {
@@ -666,9 +981,12 @@ internal sealed class SystemDebugOwnedProcess : IDebugOwnedProcess
         this.process = process;
         Id = process.Id;
         StartTime = process.StartTime;
+        Architecture = WindowsExcelProcessArchitecture.Read(process.Handle);
     }
 
     public int Id { get; }
+
+    public DebugExcelProcessArchitecture Architecture { get; }
 
     public DateTime StartTime { get; }
 
@@ -691,6 +1009,54 @@ internal sealed class SystemDebugOwnedProcess : IDebugOwnedProcess
     }
 
     public void Dispose() => process.Dispose();
+}
+
+internal static class WindowsExcelProcessArchitecture
+{
+    public static DebugExcelProcessArchitecture Read(nint processHandle)
+    {
+        if (!OperatingSystem.IsWindows() || processHandle == nint.Zero)
+        {
+            return DebugExcelProcessArchitecture.Unknown;
+        }
+
+        try
+        {
+            if (!IsWow64Process2(processHandle, out var processMachine, out var nativeMachine))
+            {
+                return DebugExcelProcessArchitecture.Unknown;
+            }
+
+            return ToArchitecture(processMachine == ImageFileMachineUnknown
+                ? nativeMachine
+                : processMachine);
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return DebugExcelProcessArchitecture.Unknown;
+        }
+    }
+
+    private static DebugExcelProcessArchitecture ToArchitecture(ushort machine)
+        => machine switch
+        {
+            ImageFileMachineI386 => DebugExcelProcessArchitecture.X86,
+            ImageFileMachineAmd64 => DebugExcelProcessArchitecture.X64,
+            ImageFileMachineArm64 => DebugExcelProcessArchitecture.Arm64,
+            _ => DebugExcelProcessArchitecture.Unknown
+        };
+
+    private const ushort ImageFileMachineUnknown = 0x0000;
+    private const ushort ImageFileMachineI386 = 0x014c;
+    private const ushort ImageFileMachineAmd64 = 0x8664;
+    private const ushort ImageFileMachineArm64 = 0xaa64;
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWow64Process2(
+        nint processHandle,
+        out ushort processMachine,
+        out ushort nativeMachine);
 }
 
 internal sealed class WindowsDebugWindowActivator : IDebugWindowActivator

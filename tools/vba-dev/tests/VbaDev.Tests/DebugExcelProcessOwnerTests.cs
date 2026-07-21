@@ -104,12 +104,18 @@ internal sealed class FakeDebugExcelProcessApi(
     }
 }
 
-internal sealed class FakeDebugOwnedProcess(int id, DateTime startTime) : IDebugOwnedProcess
+internal sealed class FakeDebugOwnedProcess(
+    int id,
+    DateTime startTime,
+    DebugExcelProcessArchitecture architecture = DebugExcelProcessArchitecture.X64)
+    : IDebugOwnedProcess
 {
     private readonly TaskCompletionSource completion =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     public int Id { get; } = id;
+
+    public DebugExcelProcessArchitecture Architecture { get; } = architecture;
 
     public DateTime StartTime { get; } = startTime;
 

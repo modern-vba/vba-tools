@@ -7,6 +7,12 @@ namespace VbaLanguageServer.Syntax;
 /// </summary>
 internal static class VbaPreprocessorParser
 {
+    internal static string GetNormalizedDirectiveBody(string directiveText)
+    {
+        var trimmed = directiveText.TrimStart();
+        return NormalizeDirectiveBody(GetDirectiveBody(trimmed));
+    }
+
     /// <summary>
     /// Parses preprocessor directives beginning at the module code section.
     /// </summary>

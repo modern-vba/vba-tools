@@ -6,6 +6,7 @@ namespace VbaLanguageServer.Syntax;
 public sealed class VbaConditionalCompilationBranchPath
     : IEquatable<VbaConditionalCompilationBranchPath>
 {
+    private static readonly VbaConditionalCompilationBranchPath EmptyPath = new([]);
     private readonly IReadOnlyList<VbaConditionalCompilationBranchIdentity> branches;
 
     internal VbaConditionalCompilationBranchPath(
@@ -18,6 +19,11 @@ public sealed class VbaConditionalCompilationBranchPath
     /// Gets the outermost-to-innermost branch identities.
     /// </summary>
     public IReadOnlyList<VbaConditionalCompilationBranchIdentity> Branches => branches;
+
+    /// <summary>
+    /// Gets the root path used by source outside conditional-compilation branches.
+    /// </summary>
+    public static VbaConditionalCompilationBranchPath Root => EmptyPath;
 
     /// <summary>
     /// Gets whether the position is outside conditional compilation.

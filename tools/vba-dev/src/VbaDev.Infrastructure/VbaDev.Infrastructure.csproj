@@ -5,6 +5,10 @@
     <ProjectReference Include="..\VbaDev.App\VbaDev.App.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="OpenMcdf" Version="3.1.4" />
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>

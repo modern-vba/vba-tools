@@ -58,8 +58,12 @@ public static class ToolingCompositionRoot
         return new DebugAdapterComposition(
             new ProjectContextResolver(manifestStore),
             new DebugLaunchCoordinator(
-                new BuildCommandDebugWorkbookBuilder(buildCommand),
-                vbeDebugSessionFactory ?? new VbeDebugAutomation()),
+                new BuildCommandDebugWorkbookBuilder(sourcePlanner, buildCommand),
+                vbeDebugSessionFactory ?? new VbeDebugAutomation(),
+                new BreakpointSourceMapper(),
+                new OpenXmlDebugCompilationSettingsReader(),
+                new DebugCompilationEnvironmentFactory(),
+                new DebugConditionalCompilationPreflight()),
             Path.GetFullPath(workingDirectory));
     }
 

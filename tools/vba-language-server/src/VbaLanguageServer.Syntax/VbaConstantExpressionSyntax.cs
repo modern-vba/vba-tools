@@ -5,6 +5,24 @@ namespace VbaLanguageServer.Syntax;
 /// </summary>
 internal static class VbaConstantExpressionSyntax
 {
+    private abstract record ExpressionNode;
+
+    private sealed record LiteralExpressionNode(IReadOnlyList<VbaToken> Tokens)
+        : ExpressionNode;
+
+    private sealed record NameExpressionNode(string Name) : ExpressionNode;
+
+    private sealed record UnaryExpressionNode(string Operator, ExpressionNode Operand)
+        : ExpressionNode;
+
+    private sealed record BinaryExpressionNode(
+        string Operator,
+        ExpressionNode Left,
+        ExpressionNode Right)
+        : ExpressionNode;
+
+    private sealed record UnsupportedExpressionNode : ExpressionNode;
+
     /// <summary>
     /// Determines whether exactly one complete constant expression occupies the token slice.
     /// </summary>
@@ -26,6 +44,342 @@ internal static class VbaConstantExpressionSyntax
         int start,
         int end)
         => IsCompleteCore(tokens, start, end, allowQualifiedNames: false);
+
+    internal static VbaConditionalCompilationExpressionEvaluation
+        EvaluateConditionalCompilationExpression(
+            IReadOnlyList<VbaToken> tokens,
+            int start,
+            int end,
+            Func<string, VbaConditionalCompilationExpressionEvaluation> resolveConstant,
+            bool supportsLongLong = false)
+    {
+        if (start < 0 || end > tokens.Count || start >= end)
+        {
+            return VbaConditionalCompilationExpressionEvaluation.Failure(
+                VbaConditionalCompilationFailureKind.Malformed,
+                "The conditional-compilation expression is malformed.");
+        }
+
+        var parser = new Parser(tokens, start, end, allowQualifiedNames: false);
+        if (!parser.TryParse(out var expression))
+        {
+            return VbaConditionalCompilationExpressionEvaluation.Failure(
+                VbaConditionalCompilationFailureKind.Malformed,
+                "The conditional-compilation expression is malformed.");
+        }
+
+        return Evaluate(expression, resolveConstant, supportsLongLong);
+    }
+
+    private static VbaConditionalCompilationExpressionEvaluation Evaluate(
+        ExpressionNode expression,
+        Func<string, VbaConditionalCompilationExpressionEvaluation> resolveConstant,
+        bool supportsLongLong)
+        => expression switch
+        {
+            LiteralExpressionNode literal => EvaluateLiteral(literal, supportsLongLong),
+            NameExpressionNode name => resolveConstant(name.Name),
+            UnaryExpressionNode unary => EvaluateUnary(unary, resolveConstant, supportsLongLong),
+            BinaryExpressionNode binary => EvaluateBinary(binary, resolveConstant, supportsLongLong),
+            _ => Unsupported()
+        };
+
+    private static VbaConditionalCompilationExpressionEvaluation EvaluateLiteral(
+        LiteralExpressionNode literal,
+        bool supportsLongLong)
+    {
+        if (literal.Tokens.Count == 1)
+        {
+            var token = literal.Tokens[0];
+            if (token.Text.Equals("True", StringComparison.OrdinalIgnoreCase))
+            {
+                return VbaConditionalCompilationExpressionEvaluation.Success(
+                    VbaConditionalCompilationValue.FromBoolean(true));
+            }
+
+            if (token.Text.Equals("False", StringComparison.OrdinalIgnoreCase))
+            {
+                return VbaConditionalCompilationExpressionEvaluation.Success(
+                    VbaConditionalCompilationValue.FromBoolean(false));
+            }
+
+            if (token.Text.Equals("Empty", StringComparison.OrdinalIgnoreCase))
+            {
+                return VbaConditionalCompilationExpressionEvaluation.Success(
+                    VbaConditionalCompilationValue.FromInteger(0));
+            }
+        }
+
+        var text = string.Concat(literal.Tokens.Select(token => token.Text));
+        if (!supportsLongLong && text.EndsWith('^'))
+        {
+            return Unsupported();
+        }
+
+        if (text.StartsWith("&", StringComparison.Ordinal))
+        {
+            return EvaluateBasedIntegerLiteral(text);
+        }
+
+        var suffix = text[^1] is '%' or '&' or '^' ? text[^1] : '\0';
+        var digits = text;
+        if (suffix != '\0')
+        {
+            digits = digits[..^1];
+        }
+
+        if (!digits.All(char.IsAsciiDigit))
+        {
+            return Unsupported();
+        }
+
+        if (!long.TryParse(
+            digits,
+            System.Globalization.NumberStyles.None,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out var value))
+        {
+            return Overflow();
+        }
+
+        // Unsuffixed integral text above Long is represented through floating coercion in VBA.
+        if (suffix == '\0' && value > int.MaxValue)
+        {
+            return Unsupported();
+        }
+
+        var integralWidth = suffix switch
+        {
+            '%' => VbaConditionalCompilationIntegralWidth.Int16,
+            '&' => VbaConditionalCompilationIntegralWidth.Int32,
+            '^' => VbaConditionalCompilationIntegralWidth.Int64,
+            _ => value <= short.MaxValue
+                ? VbaConditionalCompilationIntegralWidth.Int16
+                : VbaConditionalCompilationIntegralWidth.Int32
+        };
+        return VbaConditionalCompilationExpressionEvaluation.Success(
+            VbaConditionalCompilationValue.FromInteger(value, integralWidth));
+    }
+
+    private static VbaConditionalCompilationExpressionEvaluation EvaluateBasedIntegerLiteral(
+        string text)
+    {
+        var suffix = text[^1] is '%' or '&' or '^' ? text[^1] : '\0';
+        if (suffix != '\0')
+        {
+            text = text[..^1];
+        }
+
+        var radix = 8;
+        var digits = text[1..];
+        if (digits.StartsWith("H", StringComparison.OrdinalIgnoreCase))
+        {
+            radix = 16;
+            digits = digits[1..];
+        }
+        else if (digits.StartsWith("O", StringComparison.OrdinalIgnoreCase))
+        {
+            digits = digits[1..];
+        }
+
+        System.Numerics.BigInteger magnitude = 0;
+        foreach (var character in digits)
+        {
+            var digit = character is >= '0' and <= '9'
+                ? character - '0'
+                : char.ToUpperInvariant(character) - 'A' + 10;
+            if (digit < 0 || digit >= radix)
+            {
+                return Unsupported();
+            }
+
+            magnitude = (magnitude * radix) + digit;
+        }
+
+        var integralWidth = suffix switch
+        {
+            '%' => VbaConditionalCompilationIntegralWidth.Int16,
+            '&' => VbaConditionalCompilationIntegralWidth.Int32,
+            '^' => VbaConditionalCompilationIntegralWidth.Int64,
+            _ when magnitude <= ushort.MaxValue =>
+                VbaConditionalCompilationIntegralWidth.Int16,
+            _ => VbaConditionalCompilationIntegralWidth.Int32
+        };
+        var width = (int)integralWidth;
+        var modulus = System.Numerics.BigInteger.One << width;
+        if (magnitude >= modulus)
+        {
+            return Overflow();
+        }
+
+        if (magnitude >= (modulus >> 1))
+        {
+            magnitude -= modulus;
+        }
+
+        return magnitude < long.MinValue || magnitude > long.MaxValue
+            ? Overflow()
+            : VbaConditionalCompilationExpressionEvaluation.Success(
+                VbaConditionalCompilationValue.FromInteger(
+                    (long)magnitude,
+                    integralWidth));
+    }
+
+    private static VbaConditionalCompilationExpressionEvaluation EvaluateUnary(
+        UnaryExpressionNode unary,
+        Func<string, VbaConditionalCompilationExpressionEvaluation> resolveConstant,
+        bool supportsLongLong)
+    {
+        var operand = Evaluate(unary.Operand, resolveConstant, supportsLongLong);
+        if (!operand.Succeeded)
+        {
+            return operand;
+        }
+
+        if (unary.Operator.Equals("Not", StringComparison.OrdinalIgnoreCase))
+        {
+            return VbaConditionalCompilationExpressionEvaluation.Success(
+                operand.Value.Kind == VbaConditionalCompilationValueKind.Boolean
+                    ? VbaConditionalCompilationValue.FromBoolean(!operand.Value.IsTruthy)
+                    : VbaConditionalCompilationValue.FromInteger(
+                        ~operand.Value.IntegralValue,
+                        operand.Value.IntegralWidth));
+        }
+
+        if (unary.Operator == "-")
+        {
+            if (operand.Value.Kind == VbaConditionalCompilationValueKind.Boolean)
+            {
+                return Unsupported();
+            }
+
+            if (operand.Value.IntegralValue == long.MinValue)
+            {
+                return Overflow();
+            }
+
+            var value = -operand.Value.IntegralValue;
+            return !FitsIntegralWidth(value, operand.Value.IntegralWidth)
+                ? Overflow()
+                : VbaConditionalCompilationExpressionEvaluation.Success(
+                    VbaConditionalCompilationValue.FromInteger(
+                        value,
+                        operand.Value.IntegralWidth));
+        }
+
+        return Unsupported();
+    }
+
+    private static VbaConditionalCompilationExpressionEvaluation EvaluateBinary(
+        BinaryExpressionNode binary,
+        Func<string, VbaConditionalCompilationExpressionEvaluation> resolveConstant,
+        bool supportsLongLong)
+    {
+        var left = Evaluate(binary.Left, resolveConstant, supportsLongLong);
+        if (!left.Succeeded)
+        {
+            return left;
+        }
+
+        var right = Evaluate(binary.Right, resolveConstant, supportsLongLong);
+        if (!right.Succeeded)
+        {
+            return right;
+        }
+
+        var leftValue = left.Value.IntegralValue;
+        var rightValue = right.Value.IntegralValue;
+        var operation = binary.Operator.ToUpperInvariant();
+        var resultWidth = WidestIntegralWidth(
+            left.Value.IntegralWidth,
+            right.Value.IntegralWidth);
+        if (operation is "+" or "-" or "*" or "\\" or "MOD"
+            && (left.Value.Kind == VbaConditionalCompilationValueKind.Boolean
+                || right.Value.Kind == VbaConditionalCompilationValueKind.Boolean))
+        {
+            return Unsupported();
+        }
+
+        try
+        {
+            return operation switch
+            {
+                "=" => Boolean(leftValue == rightValue),
+                "<>" or "><" => Boolean(leftValue != rightValue),
+                "<" => Boolean(leftValue < rightValue),
+                ">" => Boolean(leftValue > rightValue),
+                "<=" or "=<" => Boolean(leftValue <= rightValue),
+                ">=" or "=>" => Boolean(leftValue >= rightValue),
+                "+" => Integer(checked(leftValue + rightValue), resultWidth),
+                "-" => Integer(checked(leftValue - rightValue), resultWidth),
+                "*" => Integer(checked(leftValue * rightValue), resultWidth),
+                "\\" when rightValue != 0 =>
+                    Integer(checked(leftValue / rightValue), resultWidth),
+                "MOD" when rightValue != 0 =>
+                    Integer(checked(leftValue % rightValue), resultWidth),
+                "AND" => Logical(left.Value, right.Value, leftValue & rightValue),
+                "OR" => Logical(left.Value, right.Value, leftValue | rightValue),
+                "XOR" => Logical(left.Value, right.Value, leftValue ^ rightValue),
+                "EQV" => Logical(left.Value, right.Value, ~(leftValue ^ rightValue)),
+                "IMP" => Logical(left.Value, right.Value, (~leftValue) | rightValue),
+                _ => Unsupported()
+            };
+        }
+        catch (OverflowException)
+        {
+            return Overflow();
+        }
+    }
+
+    private static VbaConditionalCompilationExpressionEvaluation Logical(
+        VbaConditionalCompilationValue left,
+        VbaConditionalCompilationValue right,
+        long value)
+        => left.Kind == VbaConditionalCompilationValueKind.Boolean
+            && right.Kind == VbaConditionalCompilationValueKind.Boolean
+            ? Boolean(value != 0)
+            : Integer(
+                value,
+                WidestIntegralWidth(left.IntegralWidth, right.IntegralWidth));
+
+    private static VbaConditionalCompilationExpressionEvaluation Boolean(bool value)
+        => VbaConditionalCompilationExpressionEvaluation.Success(
+            VbaConditionalCompilationValue.FromBoolean(value));
+
+    private static VbaConditionalCompilationExpressionEvaluation Integer(
+        long value,
+        VbaConditionalCompilationIntegralWidth width)
+        => FitsIntegralWidth(value, width)
+            ? VbaConditionalCompilationExpressionEvaluation.Success(
+                VbaConditionalCompilationValue.FromInteger(value, width))
+            : Overflow();
+
+    private static VbaConditionalCompilationIntegralWidth WidestIntegralWidth(
+        VbaConditionalCompilationIntegralWidth left,
+        VbaConditionalCompilationIntegralWidth right)
+        => left >= right ? left : right;
+
+    private static bool FitsIntegralWidth(
+        long value,
+        VbaConditionalCompilationIntegralWidth width)
+        => width switch
+        {
+            VbaConditionalCompilationIntegralWidth.Int16 =>
+                value is >= short.MinValue and <= short.MaxValue,
+            VbaConditionalCompilationIntegralWidth.Int32 =>
+                value is >= int.MinValue and <= int.MaxValue,
+            _ => true
+        };
+
+    private static VbaConditionalCompilationExpressionEvaluation Unsupported()
+        => VbaConditionalCompilationExpressionEvaluation.Failure(
+            VbaConditionalCompilationFailureKind.Unsupported,
+            "The conditional-compilation expression uses unsupported value semantics.");
+
+    private static VbaConditionalCompilationExpressionEvaluation Overflow()
+        => VbaConditionalCompilationExpressionEvaluation.Failure(
+            VbaConditionalCompilationFailureKind.Overflow,
+            "The conditional-compilation integer expression overflowed the supported range.");
 
     private static bool IsCompleteCore(
         IReadOnlyList<VbaToken> tokens,
@@ -74,20 +428,31 @@ internal static class VbaConstantExpressionSyntax
         private int index = start;
         private int expressionDepth;
 
-        public bool Parse()
-            => ParseExpression(ImpPrecedence) && index == end;
+        public bool Parse() => TryParse(out _);
 
-        private bool ParseExpression(int minimumPrecedence)
+        public bool TryParse(out ExpressionNode expression)
+        {
+            if (ParseExpression(ImpPrecedence, out expression) && index == end)
+            {
+                return true;
+            }
+
+            expression = default!;
+            return false;
+        }
+
+        private bool ParseExpression(int minimumPrecedence, out ExpressionNode expression)
         {
             if (expressionDepth >= MaximumExpressionDepth)
             {
+                expression = default!;
                 return false;
             }
 
             expressionDepth++;
             try
             {
-                if (!ParsePrefix())
+                if (!ParsePrefix(out expression))
                 {
                     return false;
                 }
@@ -99,11 +464,19 @@ internal static class VbaConstantExpressionSyntax
                     && precedence >= minimumPrecedence)
                 {
                     var isRightAssociative = Matches(tokens[index], "^");
+                    var operatorText = string.Concat(
+                        tokens.Skip(index)
+                            .Take(operatorTokenCount)
+                            .Select(token => token.Text));
                     index += operatorTokenCount;
-                    if (!ParseExpression(precedence + (isRightAssociative ? 0 : 1)))
+                    if (!ParseExpression(
+                        precedence + (isRightAssociative ? 0 : 1),
+                        out var right))
                     {
                         return false;
                     }
+
+                    expression = new BinaryExpressionNode(operatorText, expression, right);
                 }
 
                 return true;
@@ -114,32 +487,50 @@ internal static class VbaConstantExpressionSyntax
             }
         }
 
-        private bool ParsePrefix()
+        private bool ParsePrefix(out ExpressionNode expression)
         {
             if (index >= end)
             {
+                expression = default!;
                 return false;
             }
 
             if (Matches(tokens[index], "-"))
             {
+                var operatorText = tokens[index].Text;
                 index++;
-                return ParseExpression(UnarySignPrecedence);
+                if (!ParseExpression(UnarySignPrecedence, out var operand))
+                {
+                    expression = default!;
+                    return false;
+                }
+
+                expression = new UnaryExpressionNode(operatorText, operand);
+                return true;
             }
 
             if (Matches(tokens[index], "Not"))
             {
+                var operatorText = tokens[index].Text;
                 index++;
-                return ParseExpression(NotPrecedence);
+                if (!ParseExpression(NotPrecedence, out var operand))
+                {
+                    expression = default!;
+                    return false;
+                }
+
+                expression = new UnaryExpressionNode(operatorText, operand);
+                return true;
             }
 
-            return ParsePrimary();
+            return ParsePrimary(out expression);
         }
 
-        private bool ParsePrimary()
+        private bool ParsePrimary(out ExpressionNode expression)
         {
             if (index >= end)
             {
+                expression = default!;
                 return false;
             }
 
@@ -147,6 +538,7 @@ internal static class VbaConstantExpressionSyntax
             if (token.Kind == VbaTokenKind.StringLiteral)
             {
                 index++;
+                expression = new LiteralExpressionNode([token]);
                 return token.Text.Length >= 2 && token.Text[^1] == '"';
             }
 
@@ -154,23 +546,39 @@ internal static class VbaConstantExpressionSyntax
                 || Matches(token, ".")
                 || Matches(token, "&"))
             {
-                return ParseNumericLiteral();
+                var literalStart = index;
+                var succeeded = ParseNumericLiteral();
+                expression = succeeded
+                    ? new LiteralExpressionNode(
+                        tokens.Skip(literalStart).Take(index - literalStart).ToArray())
+                    : default!;
+                return succeeded;
             }
 
             if (token.Kind == VbaTokenKind.DateLiteral)
             {
                 index++;
+                expression = new LiteralExpressionNode([token]);
                 return VbaDateLiteralSyntax.IsComplete(token);
             }
 
             if (IsIntrinsicConstantFunction(token))
             {
-                return index + 1 < end && Matches(tokens[index + 1], "(")
-                    && ParseIntrinsicFunctionCall();
+                if (index + 1 >= end
+                    || !Matches(tokens[index + 1], "(")
+                    || !ParseIntrinsicFunctionCall())
+                {
+                    expression = default!;
+                    return false;
+                }
+
+                expression = new UnsupportedExpressionNode();
+                return true;
             }
 
             if (VbaIdentifierSyntaxFacts.IsValidDeclaredName(token))
             {
+                var isQualified = false;
                 index++;
                 while (allowQualifiedNames
                     && index + 1 < end
@@ -179,35 +587,44 @@ internal static class VbaConstantExpressionSyntax
                         || tokens[index - 1].Range.End.Line < tokens[index].Range.Start.Line)
                     && VbaIdentifierSyntaxFacts.IsValidDeclaredName(tokens[index + 1]))
                 {
+                    isQualified = true;
                     index += 2;
                 }
 
+                var hasTypeSuffix = false;
                 if (index < end
                     && IsTypeSuffix(tokens[index])
                     && AreAdjacent(tokens[index - 1], tokens[index]))
                 {
+                    hasTypeSuffix = true;
                     index++;
                 }
 
+                expression = isQualified || hasTypeSuffix
+                    ? new UnsupportedExpressionNode()
+                    : new NameExpressionNode(token.Text);
                 return true;
             }
 
             if (IsLiteralKeyword(token))
             {
                 index++;
+                expression = new LiteralExpressionNode([token]);
                 return true;
             }
 
             if (!Matches(token, "("))
             {
+                expression = default!;
                 return false;
             }
 
             index++;
-            if (!ParseExpression(ImpPrecedence)
+            if (!ParseExpression(ImpPrecedence, out expression)
                 || index >= end
                 || !Matches(tokens[index], ")"))
             {
+                expression = default!;
                 return false;
             }
 
@@ -218,7 +635,7 @@ internal static class VbaConstantExpressionSyntax
         private bool ParseIntrinsicFunctionCall()
         {
             index += 2;
-            if (!ParseExpression(ImpPrecedence)
+            if (!ParseExpression(ImpPrecedence, out _)
                 || index >= end
                 || !Matches(tokens[index], ")"))
             {

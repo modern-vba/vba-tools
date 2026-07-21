@@ -139,9 +139,23 @@ public sealed class DebugLaunchRequestResolver
                 "the target must be a public parameterless Sub in a standard module.");
         }
 
+        if (!VbaConditionalCompilationBranchFacts.TryGetPath(
+                target.Source.SyntaxTree,
+                callable.Range,
+                requireCompleteStructure: true,
+                out var conditionalCompilationPath))
+        {
+            throw new DebugSetupException(
+                $"VBA debug target '{resolvedModuleName}.{resolvedProcedureName}' has no complete " +
+                "conditional-compilation branch identity.");
+        }
+
         return new DebugLaunchRequest(
             context,
-            new DebugTargetProcedure(resolvedModuleName, resolvedProcedureName),
+            new DebugTargetProcedure(resolvedModuleName, resolvedProcedureName)
+            {
+                ConditionalCompilationPath = conditionalCompilationPath
+            },
             sourceSnapshot);
     }
 

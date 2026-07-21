@@ -1316,6 +1316,7 @@ public sealed class VbaDebugAdapterTests
     {
         public Task<DebugWorkbookBuildResult> BuildAsync(
             ResolvedProjectContext context,
+            DebugSourceSnapshot sourceSnapshot,
             CancellationToken cancellationToken)
             => throw new InvalidOperationException("A build was not expected.");
     }
@@ -1332,6 +1333,7 @@ public sealed class VbaDebugAdapterTests
     {
         public Task<DebugWorkbookBuildResult> BuildAsync(
             ResolvedProjectContext context,
+            DebugSourceSnapshot sourceSnapshot,
             CancellationToken cancellationToken)
         {
             events.Add($"build:{context.DocumentName}");
@@ -1360,6 +1362,11 @@ public sealed class VbaDebugAdapterTests
         public Task<DebugProcessExit> Completion { get; } =
             Task.FromResult(new DebugProcessExit(exitCode));
 
+        public Task<DebugCompilationHostFacts> GetCompilationHostFactsAsync(
+            CancellationToken cancellationToken)
+            => throw new InvalidOperationException(
+                "Compilation host facts were not expected.");
+
         public Task OpenGeneratedWorkbookAsync(
             string workbookPath,
             CancellationToken cancellationToken)
@@ -1368,12 +1375,16 @@ public sealed class VbaDebugAdapterTests
             return Task.CompletedTask;
         }
 
-        public Task SetNativeBreakpointAsync(
-            VbeBreakpoint breakpoint,
+        public Task SetNativeBreakpointsAsync(
+            IReadOnlyList<VbeBreakpoint> breakpoints,
             CancellationToken cancellationToken)
         {
-            events.Add(
-                $"set:{breakpoint.ModuleName}:{breakpoint.VbideLine}:{breakpoint.ExpectedCodeLine}");
+            foreach (var breakpoint in breakpoints)
+            {
+                events.Add(
+                    $"set:{breakpoint.ModuleName}:{breakpoint.VbideLine}:{breakpoint.ExpectedCodeLine}");
+            }
+
             return Task.CompletedTask;
         }
 
