@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { promises as fs } from 'node:fs';
+import { createWriteStream, promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import yazl from 'yazl';
 
 import {
   assertBundledLanguageServerVersion,
@@ -10,8 +11,12 @@ import {
   assertCliPublishSettings,
   assertExtensionDebugPackage,
   assertLanguageServerPublishSettings,
+  assertMarketplacePackageMetadata,
+  assertPackagedMarkdownLinks,
+  assertPackagedVsixMetadata,
   assertVsixContents,
   distributionManifestPath,
+  inspectVsixPackage,
   readDistributionManifest,
   readRequiredVbaDevContract,
   requiredBundledCliPath,
@@ -21,6 +26,126 @@ import {
 } from './vsixPackagingRules.mjs';
 
 const marketplaceIconPath = 'assets/icon.png';
+const marketplaceDocumentPaths = [
+  'readme.md',
+  'changelog.md',
+  'LICENSE.txt',
+  'SUPPORT.md'
+];
+
+test('extension package declares the complete free Marketplace listing metadata', async () => {
+  const packageJson = JSON.parse(
+    await fs.readFile(new URL('../package.json', import.meta.url), 'utf8')
+  );
+
+  assert.doesNotThrow(() => assertMarketplacePackageMetadata(packageJson));
+  for (const invalidPackage of [
+    { ...packageJson, publisher: 'other' },
+    { ...packageJson, icon: 'other.png' },
+    { ...packageJson, license: 'ISC' },
+    { ...packageJson, homepage: 'https://example.com' },
+    { ...packageJson, bugs: { url: 'https://example.com/issues' } },
+    { ...packageJson, pricing: 'Trial' },
+    { ...packageJson, keywords: packageJson.keywords.filter((keyword) => keyword !== 'debugging') },
+    { ...packageJson, galleryBanner: { color: '#ffffff', theme: 'light' } }
+  ]) {
+    assert.throws(() => assertMarketplacePackageMetadata(invalidPackage), /Marketplace/i);
+  }
+});
+
+test('support policy routes public support and private security reports with actionable diagnostics', async () => {
+  const support = await fs.readFile(new URL('../SUPPORT.md', import.meta.url), 'utf8');
+
+  assert.match(support, /github\.com\/modern-vba\/vba-tools\/issues/i);
+  assert.match(support, /github\.com\/modern-vba\/vba-tools\/security\/advisories\/new/i);
+  assert.match(support, /do not.*public issue/i);
+  for (const diagnostic of ['VBA Tools', 'vba-dev', 'VS Code', 'Windows', 'Excel', 'logs']) {
+    assert.match(support, new RegExp(diagnostic, 'i'));
+  }
+  assert.match(support, /Windows x64/i);
+  assert.match(support, /win32-x64/i);
+  assert.match(support, /editor-only.*do not require Excel/is);
+  assert.match(support, /workbook.*desktop Excel.*trusted.*VBA project object model/is);
+  assert.match(support, /no.*response-time.*service-level/is);
+});
+
+test('packaged Markdown links resolve only against files present in the VSIX', () => {
+  const packagedFiles = new Map([
+    ['README.md', '[Support](SUPPORT.md)\n![Icon](assets/icon.png)\n[Section](#usage)\n[Issues](https://github.com/modern-vba/vba-tools/issues)\n'],
+    ['SUPPORT.md', '[README](README.md)\n'],
+    ['assets/icon.png', null]
+  ]);
+
+  assert.doesNotThrow(() => assertPackagedMarkdownLinks(packagedFiles));
+  packagedFiles.delete('SUPPORT.md');
+  assert.throws(
+    () => assertPackagedMarkdownLinks(packagedFiles),
+    /README\.md.*SUPPORT\.md.*not packaged/i
+  );
+});
+
+test('extension changelog provides the curated initial 0.1.0 release summary', async () => {
+  const changelog = await fs.readFile(new URL('../CHANGELOG.md', import.meta.url), 'utf8');
+
+  assert.match(changelog, /^# Changelog/m);
+  assert.match(changelog, /^## \[0\.1\.0\] - Unreleased/m);
+  assert.match(changelog, /^### Added/m);
+  assert.match(changelog, /language server/i);
+  assert.match(changelog, /workbook/i);
+  assert.match(changelog, /debug/i);
+  assert.match(changelog, /Windows x64/i);
+});
+
+test('distribution manifest requires every Marketplace-facing document and icon', () => {
+  const manifest = readDistributionManifest();
+
+  for (const requiredPath of [
+    'readme.md',
+    'changelog.md',
+    'LICENSE.txt',
+    'SUPPORT.md',
+    marketplaceIconPath
+  ]) {
+    assert.ok(manifest.vsix.requiredFiles.includes(requiredPath), requiredPath);
+  }
+});
+
+test('VSIX inspection reads the generated archive metadata documents and file list', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-vsix-inspection-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const vsixPath = path.join(root, 'vba-tools-win32-x64-0.1.0.vsix');
+  await writeZip(vsixPath, new Map([
+    ['extension/package.json', JSON.stringify({
+      name: 'vba-tools',
+      version: '0.1.0',
+      publisher: 'modern-vba'
+    })],
+    ['extension/readme.md', '[Support](SUPPORT.md)\n'],
+    ['extension/SUPPORT.md', '# Support\n'],
+    ['extension/assets/icon.png', 'png'],
+    ['extension.vsixmanifest', '<Identity Publisher="modern-vba" Version="0.1.0" TargetPlatform="win32-x64" />']
+  ]));
+
+  const inspected = await inspectVsixPackage(vsixPath);
+
+  assert.deepEqual([...inspected.files.keys()].sort(), [
+    'SUPPORT.md',
+    'assets/icon.png',
+    'package.json',
+    'readme.md'
+  ]);
+  assert.equal(inspected.packageJson.name, 'vba-tools');
+  assert.doesNotThrow(() => assertPackagedVsixMetadata(
+    inspected.vsixManifest,
+    inspected.packageJson,
+    'win32-x64'
+  ));
+  assert.throws(
+    () => assertPackagedVsixMetadata(inspected.vsixManifest, inspected.packageJson, 'linux-x64'),
+    /linux-x64/i
+  );
+  assert.doesNotThrow(() => assertPackagedMarkdownLinks(inspected.files));
+});
 
 test('extension package metadata activates the packaged VBA debug entry point dynamically', async () => {
   const packageJson = JSON.parse(
@@ -112,7 +237,7 @@ test('extension package metadata includes the complete user command surface', as
 
 test('VSIX content rules require the bundled CLI artifact and exclude source tree files', () => {
   assert.doesNotThrow(() => assertVsixContents([
-    'README.md',
+    ...marketplaceDocumentPaths,
     'package.json',
     distributionManifestPath,
     marketplaceIconPath,
@@ -123,12 +248,13 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
   ]));
 
   for (const requiredExtensionFile of [
+    ...marketplaceDocumentPaths,
     'package.json',
     'client/out/extension.js'
   ]) {
     assert.throws(
       () => assertVsixContents([
-        'README.md',
+        ...marketplaceDocumentPaths,
         'package.json',
         distributionManifestPath,
         marketplaceIconPath,
@@ -143,7 +269,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
 
   assert.throws(
     () => assertVsixContents([
-      'README.md',
+      ...marketplaceDocumentPaths,
       'package.json',
       'client/out/extension.js',
       distributionManifestPath,
@@ -158,7 +284,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
 
   assert.throws(
     () => assertVsixContents([
-      'README.md',
+      ...marketplaceDocumentPaths,
       'package.json',
       'client/out/extension.js',
       distributionManifestPath,
@@ -173,7 +299,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
 
   assert.throws(
     () => assertVsixContents([
-      'README.md',
+      ...marketplaceDocumentPaths,
       'package.json',
       distributionManifestPath,
       marketplaceIconPath,
@@ -185,7 +311,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
 
   assert.throws(
     () => assertVsixContents([
-      'README.md',
+      ...marketplaceDocumentPaths,
       'package.json',
       'client/out/extension.js',
       distributionManifestPath,
@@ -200,7 +326,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
 
   assert.throws(
     () => assertVsixContents([
-      'README.md',
+      ...marketplaceDocumentPaths,
       'package.json',
       'client/out/extension.js',
       distributionManifestPath,
@@ -215,7 +341,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
 
   assert.throws(
     () => assertVsixContents([
-      'README.md',
+      ...marketplaceDocumentPaths,
       'package.json',
       'client/out/extension.js',
       distributionManifestPath,
@@ -230,7 +356,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
 
   assert.throws(
     () => assertVsixContents([
-      'README.md',
+      ...marketplaceDocumentPaths,
       'package.json',
       'client/out/extension.js',
       distributionManifestPath,
@@ -245,7 +371,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
 
   assert.throws(
     () => assertVsixContents([
-      'README.md',
+      ...marketplaceDocumentPaths,
       'package.json',
       'client/out/extension.js',
       distributionManifestPath,
@@ -267,7 +393,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
   ]) {
     assert.throws(
       () => assertVsixContents([
-        'README.md',
+        ...marketplaceDocumentPaths,
         'package.json',
         'client/out/extension.js',
         distributionManifestPath,
@@ -458,11 +584,8 @@ test('packaging verification checks file contents publish settings and bundled C
   const calls = [];
   const runCommand = async (file, args) => {
     calls.push({ file: path.basename(file), args });
-    if (args.includes('ls')) {
-      return {
-        stdout: `${distributionManifestPath}\n${marketplaceIconPath}\n${requiredBundledCliPath}\n${requiredBundledLanguageServerPath}\n${requiredVbaDevContractPath}\nREADME.md\npackage.json\nclient/out/extension.js\n`,
-        stderr: ''
-      };
+    if (args.includes('package')) {
+      return { stdout: '', stderr: '' };
     }
 
     if (args.includes('--version')) {
@@ -490,11 +613,29 @@ test('packaging verification checks file contents publish settings and bundled C
       stderr: ''
     };
   };
+  const packagedFiles = new Map([
+    ...marketplaceDocumentPaths.map((file) => [
+      file,
+      file === 'readme.md' ? '[Support](SUPPORT.md)\n' : '# Document\n'
+    ]),
+    [distributionManifestPath, null],
+    [marketplaceIconPath, null],
+    [requiredBundledCliPath, null],
+    [requiredBundledLanguageServerPath, null],
+    [requiredVbaDevContractPath, null],
+    ['package.json', JSON.stringify(extensionPackageJson)],
+    ['client/out/extension.js', null]
+  ]);
+  const inspectPackage = async () => ({
+    files: packagedFiles,
+    packageJson: extensionPackageJson,
+    vsixManifest: `<Identity Publisher="modern-vba" Version="${extensionPackageJson.version}" TargetPlatform="win32-x64" />`
+  });
 
-  await verifyVsixPackaging({ root, runCommand });
+  await verifyVsixPackaging({ root, runCommand, inspectPackage });
 
-  assert.deepEqual(calls.map((call) => call.args.includes('ls') ? call.args.slice(-2) : call.args), [
-    ['ls', '--no-dependencies'],
+  assert.deepEqual(calls.map((call) => call.args.includes('package') ? call.args.slice(1, 5) : call.args), [
+    ['package', '--no-dependencies', '--target', 'win32-x64'],
     ['capabilities', '--format', 'json'],
     ['debug-adapter', '--stdio'],
     ['--version']
@@ -505,7 +646,7 @@ test('packaging verification checks file contents publish settings and bundled C
     JSON.stringify({ ...extensionPackageJson, main: './client/out/other.js' }, null, 2)
   );
   await assert.rejects(
-    () => verifyVsixPackaging({ root, runCommand }),
+    () => verifyVsixPackaging({ root, runCommand, inspectPackage }),
     /packaged VBA debug entry point/i
   );
 });
@@ -577,3 +718,17 @@ test('language server test script includes CLI and syntax test projects', async 
 
   assert.match(packageJson.scripts['test:language-server'], /VbaLanguageServer\.slnx/);
 });
+
+function writeZip(filePath, entries) {
+  return new Promise((resolve, reject) => {
+    const zipFile = new yazl.ZipFile();
+    for (const [entryPath, contents] of entries) {
+      zipFile.addBuffer(Buffer.from(contents), entryPath);
+    }
+    zipFile.outputStream
+      .pipe(createWriteStream(filePath))
+      .on('close', resolve)
+      .on('error', reject);
+    zipFile.end();
+  });
+}

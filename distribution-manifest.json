@@ -32,6 +32,10 @@
   },
   "vsix": {
     "requiredFiles": [
+      "readme.md",
+      "changelog.md",
+      "LICENSE.txt",
+      "SUPPORT.md",
       "distribution-manifest.json",
       "assets/icon.png",
       "package.json",

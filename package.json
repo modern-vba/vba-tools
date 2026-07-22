@@ -9,6 +9,23 @@
     "type": "git",
     "url": "https://github.com/modern-vba/vba-tools.git"
   },
+  "license": "MIT",
+  "homepage": "https://github.com/modern-vba/vba-tools",
+  "bugs": {
+    "url": "https://github.com/modern-vba/vba-tools/issues"
+  },
+  "pricing": "Free",
+  "keywords": [
+    "VBA",
+    "Excel",
+    "language tooling",
+    "testing",
+    "debugging"
+  ],
+  "galleryBanner": {
+    "color": "#242424",
+    "theme": "dark"
+  },
   "engines": {
     "vscode": "^1.125.0"
   },
@@ -273,6 +290,8 @@
     "@types/vscode": "^1.125.0",
     "@vscode/test-electron": "^2.5.2",
     "@vscode/vsce": "^3.6.0",
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.0",
+    "yauzl": "^3.4.0",
+    "yazl": "^2.5.1"
   }
 }

@@ -435,6 +435,7 @@ source.
 ## System Requirements
 
 - Windows 10 or Windows 11 on x64 hardware.
+- The initial Marketplace package uses the VS Code `win32-x64` target.
 - VS Code 1.125.0 or later.
 - Desktop Microsoft Excel for workbook-backed commands.
 - Trusted access to the VBA project object model for workbook automation.
@@ -459,5 +460,7 @@ Marketplace README:
 
 ## Version History
 
-See [GitHub Releases](https://github.com/modern-vba/vba-tools/releases) for
-published extension changes.
+See the packaged [changelog](CHANGELOG.md) for the current extension history and
+[GitHub Releases](https://github.com/modern-vba/vba-tools/releases) for
+published artifacts. Use the [support policy](SUPPORT.md) for issue and private
+security-reporting paths.

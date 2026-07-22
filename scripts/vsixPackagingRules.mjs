@@ -1,7 +1,9 @@
 import { spawn } from 'node:child_process';
 import { promises as fs, readFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import yauzl from 'yauzl';
 
 export const distributionManifestPath = 'distribution-manifest.json';
 
@@ -30,6 +32,7 @@ export const bundledLanguageServerVersionPrefix = defaultDistributionManifest.ru
 export async function verifyVsixPackaging(options = {}) {
   const root = options.root ?? process.cwd();
   const runCommand = options.runCommand ?? runCommandWithSpawn;
+  const inspectPackage = options.inspectPackage ?? inspectVsixPackage;
   const manifest = readDistributionManifest(root);
   const bundledCliPath = path.join(root, manifest.runtimes.vbaDev.executablePath);
   const bundledLanguageServerPath = path.join(root, manifest.runtimes.vbaLanguageServer.executablePath);
@@ -37,6 +40,7 @@ export async function verifyVsixPackaging(options = {}) {
   const extensionPackageJson = JSON.parse(
     await fs.readFile(path.join(root, 'package.json'), 'utf8')
   );
+  assertMarketplacePackageMetadata(extensionPackageJson);
   assertExtensionDebugPackage(extensionPackageJson);
 
   await fs.access(bundledCliPath);
@@ -48,12 +52,31 @@ export async function verifyVsixPackaging(options = {}) {
     await fs.readFile(path.join(root, manifest.runtimes.vbaLanguageServer.projectPath), 'utf8'),
     manifest.runtimes.vbaLanguageServer);
 
-  const fileListResult = await runCommand(process.execPath, [
-    path.join(root, 'node_modules', '@vscode', 'vsce', 'vsce'),
-    'ls',
-    '--no-dependencies'
-  ], root);
-  assertVsixContents(parseVsceFileList(fileListResult.stdout), manifest);
+  const targetPlatform = 'win32-x64';
+  const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-vsix-verify-'));
+  try {
+    const vsixPath = path.join(
+      temporaryDirectory,
+      `vba-tools-${targetPlatform}-${extensionPackageJson.version}.vsix`
+    );
+    await runCommand(process.execPath, [
+      path.join(root, 'node_modules', '@vscode', 'vsce', 'vsce'),
+      'package',
+      '--no-dependencies',
+      '--target',
+      targetPlatform,
+      '--out',
+      vsixPath
+    ], root);
+    const packaged = await inspectPackage(vsixPath);
+    assertVsixContents([...packaged.files.keys()], manifest);
+    assertMarketplacePackageMetadata(packaged.packageJson);
+    assertExtensionDebugPackage(packaged.packageJson);
+    assertPackagedVsixMetadata(packaged.vsixManifest, packaged.packageJson, targetPlatform);
+    assertPackagedMarkdownLinks(packaged.files);
+  } finally {
+    await fs.rm(temporaryDirectory, { recursive: true, force: true });
+  }
 
   const capabilitiesResult = await runCommand(
     bundledCliPath,
@@ -107,11 +130,53 @@ export function readRequiredVbaDevContract(root = process.cwd(), distributionMan
   return parsed;
 }
 
-export function parseVsceFileList(stdout) {
-  return stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim().replaceAll('\\', '/').replace(/^\.\//, ''))
-    .filter((line) => line.length > 0);
+export async function inspectVsixPackage(vsixPath) {
+  const entries = await readZipEntries(vsixPath);
+  const manifestEntry = entries.get('extension.vsixmanifest');
+  const packageEntry = entries.get('extension/package.json');
+  if (!manifestEntry || !packageEntry) {
+    throw new Error('Generated VSIX must contain extension.vsixmanifest and extension/package.json.');
+  }
+
+  const files = new Map();
+  for (const [entryPath, contents] of entries) {
+    if (!entryPath.startsWith('extension/') || entryPath.endsWith('/')) {
+      continue;
+    }
+    const packagePath = entryPath.slice('extension/'.length);
+    files.set(
+      packagePath,
+      packagePath.toLowerCase().endsWith('.md') || packagePath === 'package.json'
+        ? contents.toString('utf8')
+        : null
+    );
+  }
+
+  return {
+    files,
+    packageJson: JSON.parse(packageEntry.toString('utf8')),
+    vsixManifest: manifestEntry.toString('utf8')
+  };
+}
+
+export function assertPackagedVsixMetadata(vsixManifest, packageJson, targetPlatform) {
+  const identity = /<Identity\b[^>]*>/i.exec(vsixManifest)?.[0] ?? '';
+  const requiredAttributes = {
+    Publisher: packageJson?.publisher,
+    Version: packageJson?.version,
+    TargetPlatform: targetPlatform
+  };
+  if (
+    packageJson?.name !== 'vba-tools' ||
+    !Object.entries(requiredAttributes).every(([name, value]) => (
+      typeof value === 'string' &&
+      new RegExp(`\\b${name}="${escapeRegExp(value)}"`, 'i').test(identity)
+    ))
+  ) {
+    throw new Error(
+      `Generated VSIX metadata must identify modern-vba.vba-tools version ${packageJson?.version ?? '<missing>'} for ${targetPlatform}.`
+    );
+  }
 }
 
 export function assertExtensionDebugPackage(packageJson) {
@@ -170,6 +235,77 @@ export function assertExtensionDebugPackage(packageJson) {
       )
     ) {
       throw new Error(`Extension package metadata must include required extension command ${commandId}.`);
+    }
+  }
+}
+
+export function assertMarketplacePackageMetadata(packageJson) {
+  const expectedHomepage = 'https://github.com/modern-vba/vba-tools';
+  const expectedIssues = `${expectedHomepage}/issues`;
+  const keywords = packageJson?.keywords;
+  const normalizedKeywords = Array.isArray(keywords)
+    ? keywords.map((keyword) => typeof keyword === 'string' ? keyword.toLowerCase() : '')
+    : [];
+  const requiredKeywords = ['vba', 'excel', 'language tooling', 'testing', 'debugging'];
+  if (
+    packageJson?.publisher !== 'modern-vba' ||
+    packageJson?.repository?.url !== 'https://github.com/modern-vba/vba-tools.git' ||
+    packageJson?.icon !== 'assets/icon.png' ||
+    packageJson?.license !== 'MIT' ||
+    packageJson?.homepage !== expectedHomepage ||
+    packageJson?.bugs?.url !== expectedIssues ||
+    packageJson?.pricing !== 'Free' ||
+    packageJson?.galleryBanner?.color?.toLowerCase() !== '#242424' ||
+    packageJson?.galleryBanner?.theme !== 'dark' ||
+    normalizedKeywords.length > 10 ||
+    !requiredKeywords.every((keyword) => normalizedKeywords.includes(keyword))
+  ) {
+    throw new Error(
+      'Marketplace package metadata must retain the modern-vba publisher, repository, and icon; declare the MIT license, repository homepage, GitHub Issues URL, Free pricing, concise VBA/Excel/language tooling/testing/debugging keywords, and dark #242424 gallery banner.'
+    );
+  }
+}
+
+export function assertPackagedMarkdownLinks(packagedFiles) {
+  const normalizedFiles = new Map(
+    [...packagedFiles.entries()].map(([fileName, contents]) => [
+      fileName.replaceAll('\\', '/').replace(/^\.\//, ''),
+      contents
+    ])
+  );
+  const packagedPathsByCaseFoldedName = new Map(
+    [...normalizedFiles.keys()].map((fileName) => [fileName.toLowerCase(), fileName])
+  );
+  const markdownLinkPattern = /!?\[[^\]]*\]\(([^)\s]+)(?:\s+["'][^)]*["'])?\)/g;
+  for (const [markdownPath, contents] of normalizedFiles) {
+    if (!markdownPath.toLowerCase().endsWith('.md') || typeof contents !== 'string') {
+      continue;
+    }
+
+    for (const match of contents.matchAll(markdownLinkPattern)) {
+      const rawTarget = match[1].replace(/^<|>$/g, '');
+      if (
+        rawTarget.startsWith('#') ||
+        rawTarget.startsWith('//') ||
+        /^[a-z][a-z0-9+.-]*:/i.test(rawTarget)
+      ) {
+        continue;
+      }
+
+      const pathOnlyTarget = decodeURIComponent(rawTarget.split(/[?#]/, 1)[0]);
+      const resolvedTarget = path.posix.normalize(
+        path.posix.join(path.posix.dirname(markdownPath), pathOnlyTarget)
+      );
+      if (
+        resolvedTarget.startsWith('../') ||
+        path.posix.isAbsolute(resolvedTarget) ||
+        !normalizedFiles.has(resolvedTarget) &&
+        !packagedPathsByCaseFoldedName.has(resolvedTarget.toLowerCase())
+      ) {
+        throw new Error(
+          `Packaged Markdown link from ${markdownPath} to ${rawTarget} is not packaged in the VSIX.`
+        );
+      }
     }
   }
 }
@@ -298,6 +434,43 @@ function runCommandWithSpawn(file, args, cwd) {
       }
 
       resolve({ stdout, stderr });
+    });
+  });
+}
+
+function readZipEntries(vsixPath) {
+  return new Promise((resolve, reject) => {
+    yauzl.open(vsixPath, { lazyEntries: true }, (openError, zipFile) => {
+      if (openError) {
+        reject(openError);
+        return;
+      }
+
+      const entries = new Map();
+      zipFile.on('error', reject);
+      zipFile.on('end', () => resolve(entries));
+      zipFile.on('entry', (entry) => {
+        if (entry.fileName.endsWith('/')) {
+          zipFile.readEntry();
+          return;
+        }
+
+        zipFile.openReadStream(entry, (streamError, stream) => {
+          if (streamError) {
+            reject(streamError);
+            return;
+          }
+
+          const chunks = [];
+          stream.on('data', (chunk) => chunks.push(chunk));
+          stream.on('error', reject);
+          stream.on('end', () => {
+            entries.set(entry.fileName.replaceAll('\\', '/'), Buffer.concat(chunks));
+            zipFile.readEntry();
+          });
+        });
+      });
+      zipFile.readEntry();
     });
   });
 }
