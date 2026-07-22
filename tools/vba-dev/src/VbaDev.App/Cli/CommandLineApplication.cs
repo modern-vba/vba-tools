@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -42,6 +43,11 @@ public sealed class CommandLineApplication
     /// <returns>The command result containing exit code and output streams.</returns>
     public CommandResult Run(IReadOnlyList<string> args)
     {
+        if (args.Count == 1 && IsVersion(args[0]))
+        {
+            return CommandResult.Success($"vba-dev {ReleaseVersion}{Environment.NewLine}");
+        }
+
         if (args.Count == 0 || IsHelp(args[0]))
         {
             return CommandResult.Success(RenderRootHelp());
@@ -284,7 +290,7 @@ public sealed class CommandLineApplication
         }
 
         var capabilities = new ToolCapabilities(
-            ToolVersion: typeof(CommandLineApplication).Assembly.GetName().Version?.ToString() ?? "0.0.0",
+            ToolVersion: ReleaseVersion,
             ContractVersion: "1.0",
             Commands: commands.Values
                 .Where(command => !IsCapabilitiesCommand(command))
@@ -325,6 +331,17 @@ public sealed class CommandLineApplication
     }
 
     private static bool IsHelp(string arg) => arg is "--help" or "-h" or "/?";
+
+    private static bool IsVersion(string arg) => arg is "--version";
+
+    /// <summary>
+    /// Gets the canonical standalone CLI release version from .NET informational metadata.
+    /// </summary>
+    public static string ReleaseVersion
+        => typeof(CommandLineApplication).Assembly
+               .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+               .InformationalVersion
+           ?? throw new InvalidOperationException("vba-dev informational version metadata is missing.");
 
     private static bool IsCapabilitiesCommand(ToolingCommandContract command)
         => command.Name.Equals("capabilities", StringComparison.OrdinalIgnoreCase);

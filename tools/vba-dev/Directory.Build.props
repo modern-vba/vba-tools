@@ -1,0 +1,10 @@
+<Project>
+  <PropertyGroup>
+    <VbaDevReleaseVersion>0.1.0</VbaDevReleaseVersion>
+    <Version>$(VbaDevReleaseVersion)</Version>
+    <VersionPrefix>$(VbaDevReleaseVersion)</VersionPrefix>
+    <PackageVersion>$(VbaDevReleaseVersion)</PackageVersion>
+    <InformationalVersion>$(VbaDevReleaseVersion)</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+  </PropertyGroup>
+</Project>

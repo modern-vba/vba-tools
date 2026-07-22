@@ -6,6 +6,16 @@
 vba-dev <command> [options]
 ```
 
+Print the independent standalone CLI release version without inspecting Excel,
+VBIDE, a workbook, or a project:
+
+```text
+vba-dev --version
+```
+
+`vba-dev capabilities --format json` reports the same three-part SemVer as
+`toolVersion`, independently from the VS Code extension version.
+
 ## Commands
 
 | Command | Scope | Description |

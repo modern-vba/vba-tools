@@ -202,8 +202,10 @@ The generator must:
 2. Enforce odd extension minor versions for `pre-release`, even extension minor
    versions for `stable`, and the `vba-tools-vX.Y.Z` tag namespace.
 3. Update `package.json` and `package-lock.json` to the same extension version.
-4. Update independent `vba-dev` version metadata when requested without
-   coupling it to the extension version.
+4. Update `VbaDevReleaseVersion` in `tools/vba-dev/Directory.Build.props` when
+   requested without coupling it to the extension version. Confirm that
+   `vba-dev --version`, capabilities `toolVersion`, and .NET informational
+   metadata all report the same canonical three-part SemVer.
 5. Generate a root `CHANGELOG.md` section from Conventional Commits since the
    previous `vba-tools-v*` tag without overwriting maintainer-authored release
    context.
@@ -306,6 +308,7 @@ Probe bundled executables directly:
 
 ```powershell
 bin/vba-dev/win-x64/vba-dev.exe --help
+bin/vba-dev/win-x64/vba-dev.exe --version
 bin/vba-dev/win-x64/vba-dev.exe capabilities --format json
 bin/vba-language-server/win-x64/vba-language-server.exe --version
 ```
@@ -460,12 +463,14 @@ and diagnosed.
 Standalone `vba-dev` artifact:
 
 ```powershell
-npm run publish:devtool
+npm run package:devtool
 ```
 
-Upload the files from `bin/vba-dev/win-x64/` directly or as
-`vba-dev-win-x64.zip`. Keep PDB files with GitHub Release artifacts for stack
-traces and crash analysis, even though VSIX packaging excludes runtime sidecars.
+The command emits `.tmp/release/vba-dev-win-x64-A.B.C.zip`, extracts it into a
+clean temporary directory, and verifies its canonical version, capabilities,
+command contract, exact executable identity, PDB set, CLI README, root MIT
+license, and command contract document. Keep the ZIP unchanged when adding it
+beside the VSIX to the release artifact set and `SHA256SUMS`.
 
 Release notes should use this structure:
 

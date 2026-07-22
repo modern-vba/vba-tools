@@ -255,6 +255,7 @@
     "test:packaging": "node --test --test-isolation=none scripts/*.test.mjs",
     "build:devtool": "dotnet build tools/vba-dev/src/VbaDev.Cli/VbaDev.Cli.csproj -m:1 -p:UseSharedCompilation=false",
     "publish:devtool": "dotnet publish tools/vba-dev/src/VbaDev.Cli/VbaDev.Cli.csproj -c Release -o bin/vba-dev/win-x64 -m:1 -p:UseSharedCompilation=false",
+    "package:devtool": "npm run publish:devtool && node scripts/vbaDevReleasePackage.mjs",
     "publish:language-server": "dotnet publish tools/vba-language-server/src/VbaLanguageServer.Cli/VbaLanguageServer.Cli.csproj -c Release -o bin/vba-language-server/win-x64 -m:1 -p:UseSharedCompilation=false",
     "verify:vsix": "node scripts/vsixPackagingRules.mjs",
     "package:verify": "npm run publish:devtool && npm run publish:language-server && npm run compile && npm run verify:vsix",

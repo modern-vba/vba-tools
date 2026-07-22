@@ -4,6 +4,12 @@ using VbaDev.Cli.Debugging;
 
 try
 {
+    if (args is ["--version"])
+    {
+        Console.Out.Write($"vba-dev {CommandLineApplication.ReleaseVersion}{Environment.NewLine}");
+        return 0;
+    }
+
     if (DebugAdapterCommandLine.IsRequested(args))
     {
         var usageError = DebugAdapterCommandLine.Validate(args);

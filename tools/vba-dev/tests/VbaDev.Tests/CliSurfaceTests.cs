@@ -1,3 +1,5 @@
+using System.Reflection;
+using System.Text.Json;
 using VbaDev.App.Cli;
 using VbaDev.App.Projects;
 using VbaDev.Composition;
@@ -138,6 +140,33 @@ public sealed class CliSurfaceTests
             result.StandardOutput,
             StringComparison.Ordinal);
         Assert.Empty(result.StandardError);
+    }
+
+    [Fact]
+    public void VersionOptionReturnsCanonicalCliVersion()
+    {
+        var result = application.Run(["--version"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal($"vba-dev 0.1.0{Environment.NewLine}", result.StandardOutput);
+        Assert.Empty(result.StandardError);
+    }
+
+    [Fact]
+    public void CliSurfacesAndAssemblyMetadataShareOneReleaseVersion()
+    {
+        var versionResult = application.Run(["--version"]);
+        var capabilitiesResult = application.Run(["capabilities", "--format", "json"]);
+        using var capabilities = JsonDocument.Parse(capabilitiesResult.StandardOutput);
+        var informationalVersion = typeof(CommandLineApplication).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+            .InformationalVersion;
+
+        Assert.Equal("0.1.0", informationalVersion);
+        Assert.Equal($"vba-dev {informationalVersion}{Environment.NewLine}", versionResult.StandardOutput);
+        Assert.Equal(
+            informationalVersion,
+            capabilities.RootElement.GetProperty("toolVersion").GetString());
     }
 
     [Fact]
