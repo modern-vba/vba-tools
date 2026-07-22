@@ -43,6 +43,9 @@ test('standalone vba-dev archive is versioned complete and probed after clean ex
     if (args[0] === '--version') {
       return { stdout: 'vba-dev 0.1.0\n', stderr: '' };
     }
+    if (args[0] === '--help') {
+      return { stdout: 'Usage: vba-dev [command]\n', stderr: '' };
+    }
 
     return {
       stdout: JSON.stringify({ toolVersion: '0.1.0', contractVersion: '1.0' }),
@@ -70,6 +73,7 @@ test('standalone vba-dev archive is versioned complete and probed after clean ex
   ]);
   assert.deepEqual(probes.map(({ args }) => args), [
     ['--version'],
+    ['--help'],
     ['capabilities', '--format', 'json']
   ]);
   assert.ok(probes.every(({ file }) => file.startsWith(result.extractionDirectory)));

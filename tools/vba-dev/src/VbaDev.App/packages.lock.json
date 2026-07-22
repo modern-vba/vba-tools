@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net10.0": {
+      "vbadev.domain": {
+        "type": "Project"
+      },
+      "vbalanguageserver.syntax": {
+        "type": "Project"
+      }
+    }
+  }
+}

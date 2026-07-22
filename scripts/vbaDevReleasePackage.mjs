@@ -77,6 +77,11 @@ export async function createStandaloneVbaDevArchive({
     throw new Error(`Standalone vba-dev --version must print exactly ${JSON.stringify(expectedVersionOutput)} to stdout.`);
   }
 
+  const helpProbe = await runCommand(extractedExecutablePath, ['--help'], extractionDirectory);
+  if (!/\bvba-dev\b/.test(helpProbe.stdout) || !/\bUsage:\s*/.test(helpProbe.stdout) || helpProbe.stderr !== '') {
+    throw new Error('Standalone vba-dev --help must expose the command usage without stderr.');
+  }
+
   const capabilitiesProbe = await runCommand(
     extractedExecutablePath,
     ['capabilities', '--format', 'json'],

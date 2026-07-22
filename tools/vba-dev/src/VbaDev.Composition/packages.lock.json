@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net10.0": {
+      "OpenMcdf": {
+        "type": "Transitive",
+        "resolved": "3.1.4",
+        "contentHash": "ncchtCh9YKqutHTlUCrr1llXA65ijGOCjXBM0mL1+WaGouApWDEACWbBHGzuYcAvB+rgW6IgO4AKgmZ2v1moNA=="
+      },
+      "vbadev.app": {
+        "type": "Project",
+        "dependencies": {
+          "VbaDev.Domain": "[0.1.0, )",
+          "VbaLanguageServer.Syntax": "[1.0.0, )"
+        }
+      },
+      "vbadev.domain": {
+        "type": "Project"
+      },
+      "vbadev.infrastructure": {
+        "type": "Project",
+        "dependencies": {
+          "OpenMcdf": "[3.1.4, )",
+          "VbaDev.App": "[0.1.0, )",
+          "VbaDev.Domain": "[0.1.0, )"
+        }
+      },
+      "vbalanguageserver.syntax": {
+        "type": "Project"
+      }
+    }
+  }
+}

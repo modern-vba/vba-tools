@@ -3,6 +3,7 @@
   "displayName": "VBA Tools",
   "description": "Visual Studio Code tooling for VBA projects.",
   "version": "0.0.1",
+  "packageManager": "npm@11.18.0",
   "publisher": "modern-vba",
   "icon": "assets/icon.png",
   "repository": {
@@ -27,7 +28,9 @@
     "theme": "dark"
   },
   "engines": {
-    "vscode": "^1.125.0"
+    "vscode": "^1.125.0",
+    "node": ">=24 <25",
+    "npm": ">=11 <12"
   },
   "categories": [
     "Programming Languages"
@@ -278,6 +281,9 @@
     "package:verify": "npm run publish:devtool && npm run publish:language-server && npm run compile && npm run verify:vsix",
     "verify:release": "npm run test:extension && npm run test:extension-host && npm run test:devtool && npm run test:language-server && npm run test:syntax-core && npm run test:packaging && npm run test:compatibility && npm run package:verify",
     "verify:release:windows-excel": "npm run verify:release && npm run test:windows-excel-integration",
+    "release:prepare": "node scripts/releaseManagement.mjs prepare",
+    "release:tag": "node scripts/releaseManagement.mjs tag",
+    "release:artifacts": "node scripts/releaseManagement.mjs artifacts",
     "watch": "tsc -b -w",
     "vscode:prepublish": "npm run compile",
     "package": "npm run package:verify && vsce package"

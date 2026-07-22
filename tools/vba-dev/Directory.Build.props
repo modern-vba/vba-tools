@@ -6,5 +6,7 @@
     <PackageVersion>$(VbaDevReleaseVersion)</PackageVersion>
     <InformationalVersion>$(VbaDevReleaseVersion)</InformationalVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <RestoreLockedMode>true</RestoreLockedMode>
   </PropertyGroup>
 </Project>

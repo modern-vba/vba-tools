@@ -155,9 +155,12 @@ listing metadata changes:
 The initial release automation uses:
 
 - the `windows-2025` standard GitHub-hosted runner;
-- Node.js 24 with npm 11, declared in `package.json`;
+- Node.js `24.17.0` from `.node-version` with npm `11.18.0` pinned by
+  `packageManager` in `package.json`;
 - `npm ci` with the committed `package-lock.json`;
 - .NET SDK `10.0.300`, selected by `global.json` with patch-only roll-forward;
+- locked NuGet restore with a committed `packages.lock.json` beside every .NET
+  project;
 - full commit SHAs for every referenced GitHub Action.
 
 Configure Dependabot for the `npm` and `github-actions` ecosystems. Toolchain
@@ -194,6 +197,18 @@ Run the repository-owned release preparation generator with an explicit
 extension version, Marketplace channel, and bundled `vba-dev` version. The
 command-line syntax is part of the release-automation implementation and must
 remain usable both locally and on a standard GitHub-hosted runner.
+
+```powershell
+npm run release:prepare -- `
+  --extension-version X.Y.Z `
+  --channel pre-release `
+  --vba-dev-version A.B.C
+```
+
+Use `stable` only with an even extension minor version. The command must start
+from a clean worktree. It leaves the version and changelog changes unstaged for
+normal review and does not commit, tag, push, open a pull request, or contact a
+release service.
 
 The generator must:
 
@@ -368,7 +383,13 @@ After verification passes:
 ```powershell
 git status --short --branch
 git fetch origin main
-npm run release:tag -- --version X.Y.Z --channel pre-release
+npm run release:tag -- `
+  --version X.Y.Z `
+  --channel pre-release `
+  --vba-dev-version A.B.C `
+  --verified-commit <full-sha> `
+  --windows-excel-result pass `
+  --clean-windows-smoke pass
 git push origin vba-tools-vX.Y.Z
 ```
 
@@ -397,6 +418,26 @@ from the tag target.
 Do not force-push, delete, or recreate a release tag after pushing it. A tag is
 an immutable link between one commit, its verification evidence, and its
 artifacts.
+
+## Local Artifact Assembly
+
+Build and validate the complete release set without cloud credentials:
+
+```powershell
+npm run release:artifacts -- `
+  --extension-version X.Y.Z `
+  --channel pre-release `
+  --vba-dev-version A.B.C `
+  --output .tmp/release-set
+```
+
+The output directory must be absent or empty. The command runs the non-Excel
+`verify:release` surface, packages one target-specific `win32-x64` VSIX with the
+explicit Marketplace channel option, creates the standalone CLI archive from
+the exact bundled binary, and writes `SHA256SUMS`. It then rejects extra files,
+cross-version metadata, channel or target mismatches, archive-contract drift,
+and checksum mismatches. It never creates a release, authenticates to a cloud
+service, publishes to the Marketplace, or performs another publishing step.
 
 ## GitHub Release
 
