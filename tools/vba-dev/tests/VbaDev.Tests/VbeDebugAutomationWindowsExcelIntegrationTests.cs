@@ -2,9 +2,9 @@ using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
-using VbaDev.App.Cli;
 using VbaDev.App.Debugging;
 using VbaDev.App.Projects;
+using VbaDev.Cli;
 using VbaDev.Composition;
 using VbaDev.Infrastructure.Debugging;
 using VbaDev.Infrastructure.Workbooks;
@@ -32,7 +32,7 @@ public sealed class VbeDebugAutomationWindowsExcelIntegrationTests
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         try
         {
-            var application = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path);
+            var application = CommandLineTestFactory.Create(temp.Path);
 
             var result = application.Run(["doctor"]);
 
@@ -119,7 +119,7 @@ public sealed class VbeDebugAutomationWindowsExcelIntegrationTests
         var projectRoot = Path.Combine(temp.Path, "DebugProject");
         var markerPath = Path.Combine(temp.Path, "vbe-mapped-modules-marker.txt");
         var baselineProcessIds = CaptureExcelProcessIds();
-        var commandLine = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path);
+        var commandLine = CommandLineTestFactory.Create(temp.Path);
 
         CreateProject(commandLine, projectRoot);
         var sourceSetPath = Path.Combine(projectRoot, "src", "DebugProject");
@@ -209,7 +209,7 @@ public sealed class VbeDebugAutomationWindowsExcelIntegrationTests
         var projectRoot = Path.Combine(temp.Path, "DebugProject");
         var markerPath = Path.Combine(temp.Path, "vbe-active-branch-marker.txt");
         var baselineProcessIds = CaptureExcelProcessIds();
-        var commandLine = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path);
+        var commandLine = CommandLineTestFactory.Create(temp.Path);
 
         CreateProject(commandLine, projectRoot);
         var sourcePath = Path.Combine(
@@ -306,7 +306,7 @@ public sealed class VbeDebugAutomationWindowsExcelIntegrationTests
         var projectRoot = Path.Combine(temp.Path, "DebugProject");
         var markerPath = Path.Combine(temp.Path, "vbe-inactive-branch-marker.txt");
         var baselineProcessIds = CaptureExcelProcessIds();
-        var commandLine = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path);
+        var commandLine = CommandLineTestFactory.Create(temp.Path);
 
         CreateProject(commandLine, projectRoot);
         var sourcePath = Path.Combine(
@@ -384,7 +384,7 @@ public sealed class VbeDebugAutomationWindowsExcelIntegrationTests
         var projectRoot = Path.Combine(temp.Path, "DebugProject");
         var markerPath = Path.Combine(temp.Path, "vbe-breakpoint-marker.txt");
         var baselineProcessIds = CaptureExcelProcessIds();
-        var commandLine = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path);
+        var commandLine = CommandLineTestFactory.Create(temp.Path);
 
         var createResult = commandLine.Run(
             ["new", "excel", "--name", "DebugProject", "--output", projectRoot]);
@@ -507,7 +507,7 @@ public sealed class VbeDebugAutomationWindowsExcelIntegrationTests
         var startupEnteredMarkerPath = Path.Combine(temp.Path, "startup-routine-entered.txt");
         var startupReturnedMarkerPath = Path.Combine(temp.Path, "startup-routine-returned.txt");
         var baselineProcessIds = CaptureExcelProcessIds();
-        var commandLine = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path);
+        var commandLine = CommandLineTestFactory.Create(temp.Path);
 
         CreateProject(commandLine, projectRoot);
         var sourcePath = Path.Combine(
@@ -598,7 +598,7 @@ public sealed class VbeDebugAutomationWindowsExcelIntegrationTests
         var startupEnteredMarkerPath = Path.Combine(temp.Path, "startup-routine-entered.txt");
         var startupReturnedMarkerPath = Path.Combine(temp.Path, "startup-routine-returned.txt");
         var baselineProcessIds = CaptureExcelProcessIds();
-        var commandLine = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path);
+        var commandLine = CommandLineTestFactory.Create(temp.Path);
 
         CreateProject(commandLine, projectRoot);
         var sourcePath = Path.Combine(
@@ -664,7 +664,7 @@ public sealed class VbeDebugAutomationWindowsExcelIntegrationTests
         var markerPath = Path.Combine(temp.Path, "vbe-run-marker.txt");
         var workbookOpenMarkerPath = Path.Combine(temp.Path, "vbe-workbook-open-marker.txt");
         var baselineProcessIds = CaptureExcelProcessIds();
-        var commandLine = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path);
+        var commandLine = CommandLineTestFactory.Create(temp.Path);
 
         var createResult = commandLine.Run(
             ["new", "excel", "--name", "DebugProject", "--output", projectRoot]);
@@ -752,7 +752,7 @@ public sealed class VbeDebugAutomationWindowsExcelIntegrationTests
         var markerPath = Path.Combine(temp.Path, "additional-workbook-marker.txt");
         var additionalWorkbookPath = Path.Combine(temp.Path, "session-owned-extra.xlsx");
         var baselineProcessIds = CaptureExcelProcessIds();
-        var commandLine = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path);
+        var commandLine = CommandLineTestFactory.Create(temp.Path);
 
         CreateProject(commandLine, projectRoot);
         var sourcePath = Path.Combine(
@@ -816,7 +816,7 @@ public sealed class VbeDebugAutomationWindowsExcelIntegrationTests
         var targetCompletedMarkerPath = Path.Combine(temp.Path, "target-completed-marker.txt");
         var exitRequestedMarkerPath = Path.Combine(temp.Path, "excel-exit-requested-marker.txt");
         var baselineProcessIds = CaptureExcelProcessIds();
-        var commandLine = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path);
+        var commandLine = CommandLineTestFactory.Create(temp.Path);
 
         CreateProject(commandLine, projectRoot);
         var sourcePath = Path.Combine(
@@ -870,7 +870,7 @@ public sealed class VbeDebugAutomationWindowsExcelIntegrationTests
         var firstMarkerPath = Path.Combine(temp.Path, "restart-first-marker.txt");
         var secondMarkerPath = Path.Combine(temp.Path, "restart-second-marker.txt");
         var baselineProcessIds = CaptureExcelProcessIds();
-        var commandLine = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path);
+        var commandLine = CommandLineTestFactory.Create(temp.Path);
 
         CreateProject(commandLine, projectRoot);
         var sourcePath = Path.Combine(
@@ -977,7 +977,7 @@ public sealed class VbeDebugAutomationWindowsExcelIntegrationTests
         var projectRoot = Path.Combine(temp.Path, "DebugProject");
         var markerPath = Path.Combine(temp.Path, "adapter-termination-marker.txt");
         var baselineProcessIds = CaptureExcelProcessIds();
-        var commandLine = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path);
+        var commandLine = CommandLineTestFactory.Create(temp.Path);
 
         CreateProject(commandLine, projectRoot);
         var sourcePath = Path.Combine(
@@ -1641,7 +1641,7 @@ public sealed class VbeDebugAutomationWindowsExcelIntegrationTests
             string.Empty);
     }
 
-    private static void CreateProject(CommandLineApplication commandLine, string projectRoot)
+    private static void CreateProject(VbaDevCommandLine commandLine, string projectRoot)
     {
         var createResult = commandLine.Run(
             ["new", "excel", "--name", "DebugProject", "--output", projectRoot]);

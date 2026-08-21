@@ -1,5 +1,6 @@
 using System.Text;
 using VbaDev.App.Workbooks;
+using VbaDev.Cli;
 using VbaDev.Composition;
 using VbaDev.Domain;
 using VbaDev.Infrastructure.Projects;
@@ -10,20 +11,27 @@ namespace VbaDev.Tests;
 public sealed class NewProjectCommandTests
 {
     [Fact]
-    public void NewCreatesProjectLayoutWorkbookAndUtf16Manifest()
+    public async Task NewCreatesProjectLayoutWorkbookAndUtf16Manifest()
     {
         using var temp = TempDirectory.Create();
         var workbookCreator = new FakeInitialWorkbookCreator(
             "Visual Basic For Applications",
             "Microsoft Excel 16.0 Object Library");
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(
-            temp.Path,
-            initialWorkbookCreator: workbookCreator);
+        var application = VbaDevCommandLine.Create(
+            ToolingCompositionRoot.CreateApplicationComposition(
+                temp.Path,
+                initialWorkbookCreator: workbookCreator));
+        using var standardOutput = new StringWriter();
+        using var standardError = new StringWriter();
 
-        var result = application.Run(["new", "excel", "--name", "SampleProject"]);
+        var exitCode = await application.InvokeAsync(
+            ["new", "excel", "--name", "SampleProject"],
+            standardOutput,
+            standardError,
+            CancellationToken.None);
 
-        Assert.Equal(0, result.ExitCode);
-        Assert.Contains("CommonModulesRepository was not found", result.StandardError, StringComparison.Ordinal);
+        Assert.Equal(0, exitCode);
+        Assert.Contains("CommonModulesRepository was not found", standardError.ToString(), StringComparison.Ordinal);
         var projectRoot = Path.Combine(temp.Path, "SampleProject");
         Assert.True(Directory.Exists(Path.Combine(projectRoot, "src", "SampleProject")));
         Assert.True(Directory.Exists(Path.Combine(projectRoot, "bin")));
@@ -62,7 +70,7 @@ public sealed class NewProjectCommandTests
             "Visual Basic For Applications",
             "Microsoft Scripting Runtime",
             "Microsoft VBScript Regular Expressions 5.5");
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+        var application = CommandLineTestFactory.Create(
             temp.Path,
             initialWorkbookCreator: workbookCreator);
 
@@ -85,7 +93,7 @@ public sealed class NewProjectCommandTests
     {
         using var temp = TempDirectory.Create();
         var output = Path.Combine(temp.Path, "OutputProject");
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+        var application = CommandLineTestFactory.Create(
             temp.Path,
             initialWorkbookCreator: new FakeInitialWorkbookCreator());
 
@@ -103,7 +111,7 @@ public sealed class NewProjectCommandTests
     {
         using var temp = TempDirectory.Create();
         var output = Path.Combine(temp.Path, "GeneratedProject");
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+        var application = CommandLineTestFactory.Create(
             temp.Path,
             initialWorkbookCreator: new FakeInitialWorkbookCreator());
 
@@ -126,7 +134,7 @@ public sealed class NewProjectCommandTests
         Directory.CreateDirectory(nonEmptyProject);
         var existingFile = Path.Combine(nonEmptyProject, "keep.txt");
         File.WriteAllText(existingFile, "keep", new UTF8Encoding(false));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+        var application = CommandLineTestFactory.Create(
             temp.Path,
             initialWorkbookCreator: new FakeInitialWorkbookCreator());
 
@@ -147,7 +155,7 @@ public sealed class NewProjectCommandTests
         Directory.CreateDirectory(projectRoot);
         var manifestPath = Path.Combine(projectRoot, ProjectManifest.ManifestFileName);
         File.WriteAllText(manifestPath, "{}", new UTF8Encoding(false));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+        var application = CommandLineTestFactory.Create(
             temp.Path,
             initialWorkbookCreator: new FakeInitialWorkbookCreator());
 
@@ -169,7 +177,7 @@ public sealed class NewProjectCommandTests
         File.WriteAllText(Path.Combine(commonModulesRepository, "Runtime.bas"), "runtime", new UTF8Encoding(false));
         File.WriteAllText(Path.Combine(commonModulesRepository, "UnitTest.bas"), "test", new UTF8Encoding(false));
         File.WriteAllText(Path.Combine(commonModulesRepository, "Optional.bas"), "optional", new UTF8Encoding(false));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+        var application = CommandLineTestFactory.Create(
             temp.Path,
             initialWorkbookCreator: new FakeInitialWorkbookCreator());
 

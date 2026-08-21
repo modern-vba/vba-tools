@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <PackageReference Include="System.CommandLine" Version="2.0.5" />
     <ProjectReference Include="..\VbaDev.Composition\VbaDev.Composition.csproj" />
     <ProjectReference Include="..\VbaDev.App\VbaDev.App.csproj" />
   </ItemGroup>

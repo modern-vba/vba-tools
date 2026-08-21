@@ -1,5 +1,6 @@
 using VbaDev.App.Diagnostics;
 using VbaDev.App.Workbooks;
+using VbaDev.Cli;
 using VbaDev.Composition;
 using VbaDev.Domain;
 using VbaDev.Infrastructure.Projects;
@@ -11,15 +12,16 @@ namespace VbaDev.Tests;
 public sealed class DoctorCommandTests
 {
     [Fact]
-    public void DoctorWithoutProjectReportsSkippedProjectChecks()
+    public async Task DoctorWithoutProjectReportsSkippedProjectChecks()
     {
         using var temp = TempDirectory.Create();
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(
-            temp.Path,
-            new FakeEnvironmentDiagnosticPort(
-                DiagnosticResult.Pass("Excel COM startup", "Excel automation probe succeeded.")));
+        var application = VbaDevCommandLine.Create(
+            ToolingCompositionRoot.CreateApplicationComposition(
+                temp.Path,
+                new FakeEnvironmentDiagnosticPort(
+                    DiagnosticResult.Pass("Excel COM startup", "Excel automation probe succeeded."))));
 
-        var result = application.Run(["doctor"]);
+        var result = await application.RunAsync(["doctor"]);
 
         Assert.Equal(0, result.ExitCode);
         Assert.Contains("[SKIP] Project manifest", result.StandardOutput, StringComparison.Ordinal);
@@ -33,7 +35,7 @@ public sealed class DoctorCommandTests
         var root = temp.CreateDirectory("Project");
         var store = new JsonProjectManifestStore();
         store.Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, Path.Combine(root, "..", "missing_common_modules_repo")));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+        var application = CommandLineTestFactory.Create(
             root,
             new FakeEnvironmentDiagnosticPort());
 
@@ -54,7 +56,7 @@ public sealed class DoctorCommandTests
         File.WriteAllText(Path.Combine(root, "src", "Book1", "Book1.xlsm"), string.Empty);
         var store = new JsonProjectManifestStore();
         store.Save(root, ProjectManifestTestData.TwoDocumentManifest(root));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+        var application = CommandLineTestFactory.Create(
             root,
             new FakeEnvironmentDiagnosticPort());
 
@@ -70,7 +72,7 @@ public sealed class DoctorCommandTests
     public void DoctorMapsFakeEnvironmentDiagnosticStatuses()
     {
         using var temp = TempDirectory.Create();
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+        var application = CommandLineTestFactory.Create(
             temp.Path,
             new FakeEnvironmentDiagnosticPort(
                 DiagnosticResult.Pass("Excel COM startup", "Excel is available."),
@@ -89,7 +91,7 @@ public sealed class DoctorCommandTests
     public void DefaultDoctorRunsTheActiveDebugEnvironmentProbe()
     {
         using var temp = TempDirectory.Create();
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+        var application = CommandLineTestFactory.Create(
             temp.Path,
             debugEnvironmentProbeFactory: new PassingDebugEnvironmentProbeFactory());
 
@@ -119,7 +121,7 @@ public sealed class DoctorCommandTests
         var (root, commonRepo) = CreateDoctorProject(temp);
         WriteManifest(commonRepo, ("Feature.bas", "optional", ""));
         AddInstalledCommonModules(root, new InstalledCommonModule("Missing", Requested: true));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, new FakeEnvironmentDiagnosticPort());
+        var application = CommandLineTestFactory.Create(root, new FakeEnvironmentDiagnosticPort());
 
         var result = application.Run(["doctor"]);
 
@@ -140,7 +142,7 @@ public sealed class DoctorCommandTests
         WriteModule(commonRepo, "Feature.bas", "feature");
         WriteModule(Path.Combine(root, "src", "Book1"), "Feature.bas", "feature");
         AddInstalledCommonModules(root, new InstalledCommonModule("Feature", Requested: true));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, new FakeEnvironmentDiagnosticPort());
+        var application = CommandLineTestFactory.Create(root, new FakeEnvironmentDiagnosticPort());
 
         var result = application.Run(["doctor"]);
 
@@ -158,7 +160,7 @@ public sealed class DoctorCommandTests
         WriteModule(commonRepo, "Base.bas", "base");
         WriteModule(Path.Combine(root, "src", "Book1"), "Base.bas", "base");
         AddInstalledCommonModules(root, new InstalledCommonModule("Base", Requested: false));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, new FakeEnvironmentDiagnosticPort());
+        var application = CommandLineTestFactory.Create(root, new FakeEnvironmentDiagnosticPort());
 
         var result = application.Run(["doctor"]);
 
@@ -176,7 +178,7 @@ public sealed class DoctorCommandTests
         WriteModule(commonRepo, "Feature.bas", "canonical");
         WriteModule(Path.Combine(root, "src", "Book1"), "Feature.bas", "local edit");
         AddInstalledCommonModules(root, new InstalledCommonModule("Feature", Requested: true));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, new FakeEnvironmentDiagnosticPort());
+        var application = CommandLineTestFactory.Create(root, new FakeEnvironmentDiagnosticPort());
 
         var result = application.Run(["doctor"]);
 
@@ -196,7 +198,7 @@ public sealed class DoctorCommandTests
         WriteModule(sourceSet, Path.Combine("forms", "Dialog.frm"), "form");
         WriteBytes(Path.Combine(sourceSet, "legacy", "Dialog.frx"), [1, 2, 3]);
         WriteBytes(Path.Combine(sourceSet, "Orphan.frx"), [9, 9, 9]);
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, new FakeEnvironmentDiagnosticPort());
+        var application = CommandLineTestFactory.Create(root, new FakeEnvironmentDiagnosticPort());
 
         var result = application.Run(["doctor"]);
 
@@ -218,7 +220,7 @@ public sealed class DoctorCommandTests
         WriteModule(commonRepo, "Feature.bas", "canonical");
         WriteModule(Path.Combine(root, "src", "Book1"), Path.Combine("nested", "Feature.bas"), "local edit");
         AddInstalledCommonModules(root, new InstalledCommonModule("Feature", Requested: true));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, new FakeEnvironmentDiagnosticPort());
+        var application = CommandLineTestFactory.Create(root, new FakeEnvironmentDiagnosticPort());
 
         var drift = application.Run(["doctor"]);
 
@@ -250,7 +252,7 @@ public sealed class DoctorCommandTests
         new JsonProjectManifestStore().Save(root, manifest);
         var resolver = new FakeVbaProjectReferenceResolver(
             new ResolvedVbaProjectReference("Microsoft Scripting Runtime", "{420B2830-E718-11CF-893D-00A0C9054228}", 1, 0));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+        var application = CommandLineTestFactory.Create(
             root,
             new FakeEnvironmentDiagnosticPort(),
             workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
@@ -278,7 +280,7 @@ public sealed class DoctorCommandTests
         var resolver = new FakeVbaProjectReferenceResolver(
             new ResolvedVbaProjectReference("OLE Automation", "{00020430-0000-0000-C000-000000000046}", 1, 0),
             new ResolvedVbaProjectReference("OLE Automation", "{00020430-0000-0000-C000-000000000046}", 2, 0));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+        var application = CommandLineTestFactory.Create(
             root,
             new FakeEnvironmentDiagnosticPort(),
             workbookBuildAutomation: automation,
@@ -300,7 +302,7 @@ public sealed class DoctorCommandTests
         Directory.CreateDirectory(Path.Combine(root, "src", "Book1"));
         File.WriteAllText(Path.Combine(root, "src", "Book1", "Book1.xlsm"), string.Empty);
         new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+        var application = CommandLineTestFactory.Create(
             root,
             new FakeEnvironmentDiagnosticPort());
 
@@ -324,7 +326,7 @@ public sealed class DoctorCommandTests
         new JsonProjectManifestStore().Save(root, manifest);
         var resolver = new FakeVbaProjectReferenceResolver(
             new ResolvedVbaProjectReference("Microsoft Excel 16.0 Object Library", "{00020813-0000-0000-C000-000000000046}", 1, 9));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+        var application = CommandLineTestFactory.Create(
             root,
             new FakeEnvironmentDiagnosticPort(),
             workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
@@ -351,7 +353,7 @@ public sealed class DoctorCommandTests
         var resolver = new FakeVbaProjectReferenceResolver(
             new ResolvedVbaProjectReference("Microsoft Excel 16.0 Object Library", "{00020813-0000-0000-C000-000000000046}", 1, 9),
             new ResolvedVbaProjectReference("Uncataloged Reference Library", "{AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA}", 1, 0));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+        var application = CommandLineTestFactory.Create(
             root,
             new FakeEnvironmentDiagnosticPort(),
             workbookBuildAutomation: new FakeWorkbookBuildAutomation(),

@@ -44,7 +44,24 @@ test('standalone vba-dev archive is versioned complete and probed after clean ex
       return { stdout: 'vba-dev 0.1.0\n', stderr: '' };
     }
     if (args[0] === '--help') {
-      return { stdout: 'Usage: vba-dev [command]\n', stderr: '' };
+      return {
+        stdout: [
+          'Description:',
+          '  VBA development tooling.',
+          '',
+          '使用法:',
+          '  vba-dev [command] [options]',
+          '',
+          'オプション:',
+          '  -?, -h, --help  Show help and usage information',
+          '',
+          'コマンド:',
+          '  build         Build the selected document into bin output.',
+          '  capabilities  Print the command contract supported by this executable.',
+          ''
+        ].join('\n'),
+        stderr: ''
+      };
     }
 
     return {

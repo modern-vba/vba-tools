@@ -1,5 +1,6 @@
 using System.Text;
 using VbaDev.App.Workbooks;
+using VbaDev.Cli;
 using VbaDev.Composition;
 using Xunit;
 
@@ -8,7 +9,7 @@ namespace VbaDev.Tests;
 public sealed class ImportCommandTests
 {
     [Fact]
-    public void ImportCommandDoesNotRequireProjectContextAndSavesAfterSuccessfulImport()
+    public async Task ImportCommandDoesNotRequireProjectContextAndSavesAfterSuccessfulImport()
     {
         using var temp = TempDirectory.Create();
         var sourceDirectory = temp.CreateDirectory("src");
@@ -22,14 +23,24 @@ public sealed class ImportCommandTests
             new WorkbookModule("ThisWorkbook", WorkbookModuleKind.Document),
             new WorkbookModule("Sheet1", WorkbookModuleKind.Document),
             new WorkbookModule("Other", WorkbookModuleKind.Other));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path, workbookBuildAutomation: automation);
+        var application = VbaDevCommandLine.Create(
+            ToolingCompositionRoot.CreateApplicationComposition(
+                temp.Path,
+                workbookBuildAutomation: automation));
+        using var standardOutput = new StringWriter();
+        using var standardError = new StringWriter();
 
-        var result = application.Run(["import", "--from", sourceDirectory, "--to", targetWorkbook]);
+        var exitCode = await application.InvokeAsync(
+            ["import", "--from", sourceDirectory, "--to", targetWorkbook],
+            standardOutput,
+            standardError,
+            CancellationToken.None);
 
-        Assert.Equal(0, result.ExitCode);
-        Assert.Contains("Imported 1 source file", result.StandardOutput, StringComparison.Ordinal);
-        Assert.Contains(sourceDirectory, result.StandardOutput, StringComparison.Ordinal);
-        Assert.Contains(targetWorkbook, result.StandardOutput, StringComparison.Ordinal);
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Imported 1 source file", standardOutput.ToString(), StringComparison.Ordinal);
+        Assert.Contains(sourceDirectory, standardOutput.ToString(), StringComparison.Ordinal);
+        Assert.Contains(targetWorkbook, standardOutput.ToString(), StringComparison.Ordinal);
+        Assert.Empty(standardError.ToString());
         Assert.Equal([targetWorkbook], automation.OpenedWorkbooks);
         Assert.Equal(
             [
@@ -53,7 +64,7 @@ public sealed class ImportCommandTests
         File.WriteAllText(Path.Combine(sourceDirectory, "Module1.bas"), "Attribute VB_Name = \"Module1\"", Encoding.UTF8);
         File.WriteAllText(targetWorkbook, "workbook", Encoding.UTF8);
         var automation = new FakeWorkbookBuildAutomation();
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(workingDirectory, workbookBuildAutomation: automation);
+        var application = CommandLineTestFactory.Create(workingDirectory, workbookBuildAutomation: automation);
 
         var result = application.Run(["import", "--from", "src", "--to", "target.xlsm"]);
 
@@ -77,7 +88,7 @@ public sealed class ImportCommandTests
         WriteText(Path.Combine(sourceDirectory, "nested", "Nested.bas"), "Attribute VB_Name = \"Nested\"");
         File.WriteAllText(targetWorkbook, "workbook", Encoding.UTF8);
         var automation = new FakeWorkbookBuildAutomation();
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path, workbookBuildAutomation: automation);
+        var application = CommandLineTestFactory.Create(temp.Path, workbookBuildAutomation: automation);
 
         var result = application.Run(["import", "--from", sourceDirectory, "--to", targetWorkbook]);
 
@@ -97,7 +108,7 @@ public sealed class ImportCommandTests
         WriteText(Path.Combine(sourceDirectory, "second", "shared.bas"), "Attribute VB_Name = \"shared\"");
         File.WriteAllText(targetWorkbook, "workbook", Encoding.UTF8);
         var automation = new FakeWorkbookBuildAutomation();
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path, workbookBuildAutomation: automation);
+        var application = CommandLineTestFactory.Create(temp.Path, workbookBuildAutomation: automation);
 
         var result = application.Run(["import", "--from", sourceDirectory, "--to", targetWorkbook]);
 
@@ -121,7 +132,7 @@ public sealed class ImportCommandTests
         File.WriteAllText(targetWorkbook, "workbook", Encoding.UTF8);
         var automation = new FakeWorkbookBuildAutomation();
         automation.References.Add(new WorkbookReference("Unlisted Library", IsRemovable: true));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path, workbookBuildAutomation: automation);
+        var application = CommandLineTestFactory.Create(temp.Path, workbookBuildAutomation: automation);
 
         var result = application.Run(["import", "--from", sourceDirectory, "--to", targetWorkbook]);
 
@@ -133,16 +144,16 @@ public sealed class ImportCommandTests
     [Theory]
     [InlineData(new[] { "import", "--to", "target.xlsm" }, "--from is required.")]
     [InlineData(new[] { "import", "--from", "src" }, "--to is required.")]
-    [InlineData(new[] { "import", "--from=", "--to", "target.xlsm" }, "--from requires a source directory path.")]
-    [InlineData(new[] { "import", "--from", "src", "--to=" }, "--to requires a target workbook path.")]
-    [InlineData(new[] { "import", "-f", "src", "--to", "target.xlsm" }, "Unknown option '-f'")]
-    [InlineData(new[] { "import", "--from", "src", "-t", "target.xlsm" }, "Unknown option '-t'")]
-    [InlineData(new[] { "import", "--from", "src", "--to", "target.xlsm", "--project", "." }, "Unknown option '--project'")]
-    [InlineData(new[] { "import", "--from", "src", "--to", "target.xlsm", "--document", "Book1" }, "Unknown option '--document'")]
+    [InlineData(new[] { "import", "--from=", "--to", "target.xlsm" }, "target.xlsm")]
+    [InlineData(new[] { "import", "--from", "src", "--to=" }, "--to")]
+    [InlineData(new[] { "import", "-f", "src", "--to", "target.xlsm" }, "-f")]
+    [InlineData(new[] { "import", "--from", "src", "-t", "target.xlsm" }, "-t")]
+    [InlineData(new[] { "import", "--from", "src", "--to", "target.xlsm", "--project", "." }, "--project")]
+    [InlineData(new[] { "import", "--from", "src", "--to", "target.xlsm", "--document", "Book1" }, "--document")]
     public void ImportCommandRejectsInvalidArgumentContract(string[] args, string expectedError)
     {
         using var temp = TempDirectory.Create();
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path);
+        var application = CommandLineTestFactory.Create(temp.Path);
 
         var result = application.Run(args);
 
@@ -162,7 +173,7 @@ public sealed class ImportCommandTests
         File.WriteAllText(targetWorkbook, "workbook", Encoding.UTF8);
         File.WriteAllText(sourceFile, "Attribute VB_Name = \"Source\"", Encoding.UTF8);
         var automation = new FakeWorkbookBuildAutomation();
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path, workbookBuildAutomation: automation);
+        var application = CommandLineTestFactory.Create(temp.Path, workbookBuildAutomation: automation);
 
         var missingSource = application.Run(["import", "--from", Path.Combine(temp.Path, "missing-src"), "--to", targetWorkbook]);
         var fileSource = application.Run(["import", "--from", sourceFile, "--to", targetWorkbook]);
@@ -190,7 +201,7 @@ public sealed class ImportCommandTests
         File.WriteAllBytes(Path.Combine(sourceDirectory, "Orphan.frx"), [1, 2, 3]);
         File.WriteAllText(targetWorkbook, "workbook", Encoding.UTF8);
         var automation = new FakeWorkbookBuildAutomation();
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path, workbookBuildAutomation: automation);
+        var application = CommandLineTestFactory.Create(temp.Path, workbookBuildAutomation: automation);
 
         var result = application.Run(["import", "--from", sourceDirectory, "--to", targetWorkbook]);
 
@@ -211,7 +222,7 @@ public sealed class ImportCommandTests
         {
             ThrowOnRemove = true
         };
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path, workbookBuildAutomation: automation);
+        var application = CommandLineTestFactory.Create(temp.Path, workbookBuildAutomation: automation);
 
         var result = application.Run(["import", "--from", sourceDirectory, "--to", targetWorkbook]);
 
@@ -233,7 +244,7 @@ public sealed class ImportCommandTests
         {
             ThrowOnImport = true
         };
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path, workbookBuildAutomation: automation);
+        var application = CommandLineTestFactory.Create(temp.Path, workbookBuildAutomation: automation);
 
         var result = application.Run(["import", "--from", sourceDirectory, "--to", targetWorkbook]);
 

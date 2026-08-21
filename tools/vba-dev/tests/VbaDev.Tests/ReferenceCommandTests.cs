@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using VbaDev.App.Workbooks;
+using VbaDev.Cli;
 using VbaDev.Composition;
 using VbaDev.Domain;
 using VbaDev.Infrastructure.Projects;
@@ -11,21 +12,33 @@ namespace VbaDev.Tests;
 public sealed class ReferenceCommandTests
 {
     [Fact]
-    public void AddStoresMultipleTrimmedReferencesWithoutDuplicates()
+    public async Task AddStoresMultipleTrimmedReferencesWithoutDuplicates()
     {
         using var temp = TempDirectory.Create();
         var root = CreateProject(temp);
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(
-            root,
-            vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
-                new ResolvedVbaProjectReference("Microsoft Scripting Runtime", "{420B2830-E718-11CF-893D-00A0C9054228}", 1, 0),
-                new ResolvedVbaProjectReference("Microsoft VBScript Regular Expressions 5.5", "{3F4DACA7-160D-11D2-A8E9-00104B365C9F}", 5, 5)));
+        var application = VbaDevCommandLine.Create(
+            ToolingCompositionRoot.CreateApplicationComposition(
+                root,
+                vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
+                    new ResolvedVbaProjectReference("Microsoft Scripting Runtime", "{420B2830-E718-11CF-893D-00A0C9054228}", 1, 0),
+                    new ResolvedVbaProjectReference("Microsoft VBScript Regular Expressions 5.5", "{3F4DACA7-160D-11D2-A8E9-00104B365C9F}", 5, 5))));
+        using var standardOutput = new StringWriter();
+        using var standardError = new StringWriter();
 
-        var first = application.Run(["reference", "add", " Microsoft Scripting Runtime ", "Microsoft VBScript Regular Expressions 5.5"]);
-        var second = application.Run(["reference", "add", "microsoft scripting runtime"]);
+        var firstExitCode = await application.InvokeAsync(
+            ["reference", "add", " Microsoft Scripting Runtime ", "Microsoft VBScript Regular Expressions 5.5"],
+            standardOutput,
+            standardError,
+            CancellationToken.None);
+        var secondExitCode = await application.InvokeAsync(
+            ["reference", "add", "microsoft scripting runtime"],
+            standardOutput,
+            standardError,
+            CancellationToken.None);
 
-        Assert.Equal(0, first.ExitCode);
-        Assert.Equal(0, second.ExitCode);
+        Assert.Equal(0, firstExitCode);
+        Assert.Equal(0, secondExitCode);
+        Assert.Empty(standardError.ToString());
         var manifest = new JsonProjectManifestStore().Load(Path.Combine(root, ProjectManifest.ManifestFileName));
         Assert.Equal(
             ["Microsoft Scripting Runtime", "Microsoft VBScript Regular Expressions 5.5"],
@@ -33,16 +46,18 @@ public sealed class ReferenceCommandTests
     }
 
     [Fact]
-    public void RemoveDeletesCaseInsensitiveMatchesAndSucceedsForAbsentReferences()
+    public async Task RemoveDeletesCaseInsensitiveMatchesAndSucceedsForAbsentReferences()
     {
         using var temp = TempDirectory.Create();
         var root = CreateProject(
             temp,
             new VbaProjectReference("Microsoft Scripting Runtime"),
             new VbaProjectReference("Microsoft VBScript Regular Expressions 5.5"));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root);
+        var application = VbaDevCommandLine.Create(
+            ToolingCompositionRoot.CreateApplicationComposition(root));
 
-        var result = application.Run(["reference", "remove", "microsoft scripting runtime", "Already Absent"]);
+        var result = await application.RunAsync(
+            ["reference", "remove", "microsoft scripting runtime", "Already Absent"]);
 
         Assert.Equal(0, result.ExitCode);
         var manifest = new JsonProjectManifestStore().Load(Path.Combine(root, ProjectManifest.ManifestFileName));
@@ -57,7 +72,7 @@ public sealed class ReferenceCommandTests
         Directory.CreateDirectory(Path.Combine(root, "src", "Book1"));
         Directory.CreateDirectory(Path.Combine(root, "src", "SecondBook"));
         new JsonProjectManifestStore().Save(root, ProjectManifestTestData.TwoDocumentManifest(root));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+        var application = CommandLineTestFactory.Create(
             root,
             vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
                 new ResolvedVbaProjectReference("Microsoft Scripting Runtime", "{420B2830-E718-11CF-893D-00A0C9054228}", 1, 0),
@@ -72,20 +87,21 @@ public sealed class ReferenceCommandTests
     }
 
     [Fact]
-    public void ListOutputsSelectedDocumentAsTextAndJson()
+    public async Task ListOutputsSelectedDocumentAsTextAndJson()
     {
         using var temp = TempDirectory.Create();
         var root = CreateProject(
             temp,
             new VbaProjectReference("Microsoft Scripting Runtime"),
             new VbaProjectReference("Microsoft Forms 2.0 Object Library"));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(
-            root,
-            vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
-                new ResolvedVbaProjectReference("Microsoft Scripting Runtime", "{420B2830-E718-11CF-893D-00A0C9054228}", 1, 0)));
+        var application = VbaDevCommandLine.Create(
+            ToolingCompositionRoot.CreateApplicationComposition(
+                root,
+                vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
+                    new ResolvedVbaProjectReference("Microsoft Scripting Runtime", "{420B2830-E718-11CF-893D-00A0C9054228}", 1, 0))));
 
-        var text = application.Run(["reference", "list"]);
-        var json = application.Run(["reference", "list", "--format", "json"]);
+        var text = await application.RunAsync(["reference", "list"]);
+        var json = await application.RunAsync(["reference", "list", "--format", "json"]);
 
         Assert.Equal(0, text.ExitCode);
         Assert.Contains("Document: Book1", text.StandardOutput, StringComparison.Ordinal);
@@ -110,7 +126,7 @@ public sealed class ReferenceCommandTests
         Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
         File.WriteAllText(templatePath, "template workbook", new UTF8Encoding(false));
         File.WriteAllText(binPath, "bin workbook", new UTF8Encoding(false));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root);
+        var application = CommandLineTestFactory.Create(root);
 
         Assert.Equal(0, application.Run(["reference", "add", "Microsoft Scripting Runtime"]).ExitCode);
         Assert.Equal(0, application.Run(["reference", "remove", "Microsoft Scripting Runtime"]).ExitCode);
@@ -125,7 +141,7 @@ public sealed class ReferenceCommandTests
     {
         using var temp = TempDirectory.Create();
         var root = CreateProject(temp);
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+        var application = CommandLineTestFactory.Create(
             root,
             vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver());
 
@@ -142,7 +158,7 @@ public sealed class ReferenceCommandTests
     {
         using var temp = TempDirectory.Create();
         var root = CreateProject(temp);
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+        var application = CommandLineTestFactory.Create(
             root,
             vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
                 new ResolvedVbaProjectReference("Ambiguous Library", "{AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA}", 1, 0),

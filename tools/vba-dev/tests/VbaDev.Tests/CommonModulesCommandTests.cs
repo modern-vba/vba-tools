@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using VbaDev.App.CommonModules;
 using VbaDev.App.Projects;
+using VbaDev.Cli;
 using VbaDev.Composition;
 using VbaDev.Domain;
 using VbaDev.Infrastructure.Projects;
@@ -42,7 +43,7 @@ public sealed class CommonModulesCommandTests
     }
 
     [Fact]
-    public void AddCopiesRequestedModuleAndTransitiveDependenciesInOrder()
+    public async Task AddCopiesRequestedModuleAndTransitiveDependenciesInOrder()
     {
         using var temp = TempDirectory.Create();
         var projectRoot = CreateProjectWithCommonModules(temp, "Project");
@@ -53,11 +54,19 @@ public sealed class CommonModulesCommandTests
             ("Feature.bas", "optional", "Base.bas"));
         WriteModule(commonRepo, "Base.bas", "base");
         WriteModule(commonRepo, "Feature.bas", "feature");
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+        var application = VbaDevCommandLine.Create(
+            ToolingCompositionRoot.CreateApplicationComposition(projectRoot));
+        using var standardOutput = new StringWriter();
+        using var standardError = new StringWriter();
 
-        var result = application.Run(["common-module", "add", "Feature"]);
+        var exitCode = await application.InvokeAsync(
+            ["common-module", "add", "Feature"],
+            standardOutput,
+            standardError,
+            CancellationToken.None);
 
-        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(0, exitCode);
+        Assert.Empty(standardError.ToString());
         var sourceSet = Path.Combine(projectRoot, "src", "Book1");
         Assert.Equal("base", File.ReadAllText(Path.Combine(sourceSet, "common-modules", "Base.bas")));
         Assert.Equal("feature", File.ReadAllText(Path.Combine(sourceSet, "common-modules", "Feature.bas")));
@@ -70,7 +79,7 @@ public sealed class CommonModulesCommandTests
                 new InstalledCommonModule("Feature", Requested: true)
             ],
             manifest.Documents["Book1"].CommonModules);
-        Assert.True(result.StandardOutput.IndexOf("Copied common-modules/Base.bas", StringComparison.Ordinal) < result.StandardOutput.IndexOf("Copied common-modules/Feature.bas", StringComparison.Ordinal));
+        Assert.True(standardOutput.ToString().IndexOf("Copied common-modules/Base.bas", StringComparison.Ordinal) < standardOutput.ToString().IndexOf("Copied common-modules/Feature.bas", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -81,7 +90,7 @@ public sealed class CommonModulesCommandTests
         var commonRepo = Path.Combine(temp.Path, "common_modules_repo");
         WriteManifest(commonRepo, ("runtime/Feature.bas", "optional", ""));
         WriteModule(commonRepo, Path.Combine("runtime", "Feature.bas"), "feature");
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+        var application = CommandLineTestFactory.Create(projectRoot);
 
         var result = application.Run(["common-module", "add", "Feature"]);
 
@@ -102,7 +111,7 @@ public sealed class CommonModulesCommandTests
         WriteManifest(commonRepo, ("Dialog.frm", "optional", ""));
         WriteModule(commonRepo, "Dialog.frm", "repo form");
         WriteBytes(Path.Combine(commonRepo, "Dialog.frx"), [1, 2, 3]);
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+        var application = CommandLineTestFactory.Create(projectRoot);
 
         var result = application.Run(["common-module", "add", "Dialog"]);
 
@@ -129,7 +138,7 @@ public sealed class CommonModulesCommandTests
         WriteModule(commonRepo, "Root.bas", "root");
         WriteModule(commonRepo, "ObjectList.cls", "list");
         WriteModule(commonRepo, "ObjectSet.cls", "set");
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+        var application = CommandLineTestFactory.Create(projectRoot);
 
         var result = application.Run(["common-module", "add", "Root"]);
 
@@ -167,7 +176,7 @@ public sealed class CommonModulesCommandTests
         var manifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
         manifest.Documents["Book1"].CommonModules.Add(new InstalledCommonModule("Base", Requested: false));
         store.Save(projectRoot, manifest);
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+        var application = CommandLineTestFactory.Create(projectRoot);
 
         var result = application.Run(["common-module", "add", "Base"]);
 
@@ -185,7 +194,7 @@ public sealed class CommonModulesCommandTests
         var commonRepo = Path.Combine(temp.Path, "common_modules_repo");
         WriteManifest(commonRepo, ("Feature.bas", "optional", ""));
         WriteModule(commonRepo, "Feature.bas", "feature v1");
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+        var application = CommandLineTestFactory.Create(projectRoot);
 
         Assert.Equal(0, application.Run(["common-module", "add", "Feature"]).ExitCode);
         WriteModule(commonRepo, "Feature.bas", "feature v2");
@@ -208,7 +217,7 @@ public sealed class CommonModulesCommandTests
         WriteModule(commonRepo, "Feature.bas", "repo feature");
         var sourceSet = Path.Combine(projectRoot, "src", "Book1");
         WriteModule(sourceSet, "Feature.bas", "local feature");
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+        var application = CommandLineTestFactory.Create(projectRoot);
 
         var conflict = application.Run(["common-module", "add", "Feature"]);
 
@@ -236,7 +245,7 @@ public sealed class CommonModulesCommandTests
         WriteModule(commonRepo, "Feature.bas", "repo feature");
         var sourceSet = Path.Combine(projectRoot, "src", "Book1");
         WriteModule(sourceSet, Path.Combine("nested", "Feature.bas"), "local feature");
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+        var application = CommandLineTestFactory.Create(projectRoot);
 
         var conflict = application.Run(["common-module", "add", "Feature"]);
 
@@ -270,7 +279,7 @@ public sealed class CommonModulesCommandTests
         WriteModule(sourceSet, "Base.bas", "local base");
         WriteModule(sourceSet, Path.Combine("first", "Feature.bas"), "local feature 1");
         WriteModule(sourceSet, Path.Combine("second", "Feature.bas"), "local feature 2");
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+        var application = CommandLineTestFactory.Create(projectRoot);
 
         var result = application.Run(["common-module", "add", "Feature", "--force"]);
 
@@ -297,7 +306,7 @@ public sealed class CommonModulesCommandTests
         });
         WriteManifest(commonRepo, ("Feature.bas", "optional", ""));
         WriteModule(commonRepo, "Feature.bas", "feature");
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+        var application = CommandLineTestFactory.Create(projectRoot);
 
         Assert.Equal(0, application.Run(["common-module", "add", "Feature"]).ExitCode);
         Assert.Equal(0, application.Run(["common-module", "add", "Feature", "--document", "SecondBook"]).ExitCode);
@@ -308,7 +317,7 @@ public sealed class CommonModulesCommandTests
     }
 
     [Fact]
-    public void ListOutputsSelectedDocumentAsTextAndJson()
+    public async Task ListOutputsSelectedDocumentAsTextAndJson()
     {
         using var temp = TempDirectory.Create();
         var projectRoot = CreateProjectWithCommonModules(temp, "Project");
@@ -320,10 +329,11 @@ public sealed class CommonModulesCommandTests
                 new InstalledCommonModule("Feature", Requested: true)
             ]);
         store.Save(projectRoot, manifest);
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+        var application = VbaDevCommandLine.Create(
+            ToolingCompositionRoot.CreateApplicationComposition(projectRoot));
 
-        var text = application.Run(["common-module", "list"]);
-        var json = application.Run(["common-module", "list", "--format", "json"]);
+        var text = await application.RunAsync(["common-module", "list"]);
+        var json = await application.RunAsync(["common-module", "list", "--format", "json"]);
 
         Assert.Equal(0, text.ExitCode);
         Assert.Contains("Document: Book1", text.StandardOutput, StringComparison.Ordinal);
@@ -354,7 +364,7 @@ public sealed class CommonModulesCommandTests
             ("Foo.cls", "optional", ""));
         WriteModule(commonRepo, "Foo.bas", "bas");
         WriteModule(commonRepo, "Foo.cls", "cls");
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+        var application = CommandLineTestFactory.Create(projectRoot);
 
         var result = application.Run(["common-module", "add", "Foo"]);
 
@@ -370,7 +380,7 @@ public sealed class CommonModulesCommandTests
         Directory.CreateDirectory(Path.Combine(projectRoot, "src", "Book1"));
         var missingRepo = Path.Combine(temp.Path, "missing_common_modules_repo");
         new JsonProjectManifestStore().Save(projectRoot, ProjectManifest.CreateDefault("Project", "Book1", projectRoot, missingRepo));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+        var application = CommandLineTestFactory.Create(projectRoot);
 
         var result = application.Run(["common-module", "add", "Runtime.bas"]);
 
@@ -379,7 +389,7 @@ public sealed class CommonModulesCommandTests
     }
 
     [Fact]
-    public void UpdateOverwritesInstalledModulesAddsDependenciesAndKeepsObsoleteFiles()
+    public async Task UpdateOverwritesInstalledModulesAddsDependenciesAndKeepsObsoleteFiles()
     {
         using var temp = TempDirectory.Create();
         var projectRoot = CreateProjectWithCommonModules(temp, "Project");
@@ -404,9 +414,10 @@ public sealed class CommonModulesCommandTests
         WriteModule(sourceSet, "Feature.bas", "feature v1");
         WriteModule(sourceSet, "Unlisted.bas", "unlisted v1");
         WriteModule(sourceSet, "Obsolete.bas", "obsolete");
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+        var application = VbaDevCommandLine.Create(
+            ToolingCompositionRoot.CreateApplicationComposition(projectRoot));
 
-        var result = application.Run(["common-module", "update"]);
+        var result = await application.RunAsync(["common-module", "update"]);
 
         Assert.Equal(0, result.ExitCode);
         Assert.Equal("base v2", File.ReadAllText(Path.Combine(sourceSet, "common-modules", "Base.bas")));
@@ -443,7 +454,7 @@ public sealed class CommonModulesCommandTests
         WriteModule(commonRepo, "Feature.bas", "feature v2");
         var sourceSet = Path.Combine(projectRoot, "src", "Book1");
         WriteModule(sourceSet, Path.Combine("nested", "Feature.bas"), "feature v1");
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+        var application = CommandLineTestFactory.Create(projectRoot);
 
         var result = application.Run(["common-module", "update"]);
 
@@ -480,7 +491,7 @@ public sealed class CommonModulesCommandTests
         WriteModule(sourceSet, "Base.bas", "base v1");
         WriteModule(sourceSet, Path.Combine("first", "Feature.bas"), "feature v1 first");
         WriteModule(sourceSet, Path.Combine("second", "Feature.bas"), "feature v1 second");
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+        var application = CommandLineTestFactory.Create(projectRoot);
 
         var result = application.Run(["common-module", "update"]);
 
@@ -515,7 +526,7 @@ public sealed class CommonModulesCommandTests
         WriteModule(commonRepo, "Feature.bas", "feature v2");
         var sourceSet = Path.Combine(projectRoot, "src", "Book1");
         WriteModule(sourceSet, "Feature.bas", "feature v1");
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+        var application = CommandLineTestFactory.Create(projectRoot);
 
         var result = application.Run(["common-module", "update"]);
 
@@ -558,7 +569,7 @@ public sealed class CommonModulesCommandTests
         var secondSourceSet = Path.Combine(projectRoot, "src", "SecondBook");
         WriteModule(firstSourceSet, "Feature.bas", "first feature v1");
         WriteModule(secondSourceSet, "Feature.bas", "second feature v1");
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+        var application = CommandLineTestFactory.Create(projectRoot);
 
         var result = application.Run(["common-module", "update"]);
 
@@ -600,7 +611,7 @@ public sealed class CommonModulesCommandTests
         WriteModule(commonRepo, "Feature.bas", "feature v2");
         var sourceSet = Path.Combine(projectRoot, "src", "Book1");
         WriteModule(sourceSet, "Feature.bas", "feature v1");
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+        var application = CommandLineTestFactory.Create(projectRoot);
 
         Assert.Equal(0, application.Run(["common-module", "update"]).ExitCode);
         var result = application.Run(["common-module", "update"]);
@@ -635,7 +646,7 @@ public sealed class CommonModulesCommandTests
         WriteModule(commonRepo, "Base.bas", "base v2");
         WriteModule(commonRepo, "Feature.bas", "feature v2");
         WriteModule(sourceSet, "Feature.bas", "feature v1");
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot, new FakeEnvironmentDiagnosticPort());
+        var application = CommandLineTestFactory.Create(projectRoot, new FakeEnvironmentDiagnosticPort());
 
         var beforeUpdate = application.Run(["doctor"]);
         Assert.Equal(1, beforeUpdate.ExitCode);
@@ -682,7 +693,7 @@ public sealed class CommonModulesCommandTests
         var secondSourceSet = Path.Combine(projectRoot, "src", "SecondBook");
         WriteModule(firstSourceSet, "Feature.bas", "first feature v1");
         WriteModule(secondSourceSet, "Feature.bas", "second feature v1");
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+        var application = CommandLineTestFactory.Create(projectRoot);
 
         var result = application.Run(["common-module", "update"]);
 
@@ -713,7 +724,7 @@ public sealed class CommonModulesCommandTests
         WriteBytes(Path.Combine(sourceSet, "Dialog.frx"), [9]);
         WriteBytes(Path.Combine(sourceSet, "forms", "Dialog.frx"), [8]);
         WriteBytes(Path.Combine(sourceSet, "legacy", "Dialog.frx"), [7]);
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+        var application = CommandLineTestFactory.Create(projectRoot);
 
         var add = application.Run(["common-module", "add", "Dialog", "--force"]);
 
@@ -740,7 +751,7 @@ public sealed class CommonModulesCommandTests
         WriteManifest(commonRepo, ("Feature.bas", "optional", ""));
         WriteModule(commonRepo, "Feature.bas", "repo feature");
         Directory.CreateDirectory(Path.Combine(projectRoot, "src", "Book1", "common-modules", "Feature.bas"));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+        var application = CommandLineTestFactory.Create(projectRoot);
 
         var result = application.Run(["common-module", "add", "Feature", "--force"]);
 
@@ -760,7 +771,7 @@ public sealed class CommonModulesCommandTests
         WriteManifest(commonRepo, ("Feature.bas", "optional", ""));
         WriteModule(commonRepo, "Feature.bas", "repo feature");
         var manifestStore = new RecordingProjectManifestStore { ThrowOnSave = true };
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot, projectManifestStore: manifestStore);
+        var application = CommandLineTestFactory.Create(projectRoot, projectManifestStore: manifestStore);
 
         var result = application.Run(["common-module", "add", "Feature"]);
 
@@ -816,12 +827,12 @@ public sealed class CommonModulesCommandTests
     {
         using var temp = TempDirectory.Create();
         var projectRoot = CreateProjectWithCommonModules(temp, "Project");
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(projectRoot);
+        var application = CommandLineTestFactory.Create(projectRoot);
 
         var result = application.Run(["common-module", "update", "--document", "Book1"]);
 
         Assert.Equal(1, result.ExitCode);
-        Assert.Contains("Unknown option '--document'", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("--document", result.StandardError, StringComparison.Ordinal);
     }
 
     private static string CreateProjectWithCommonModules(TempDirectory temp, string projectName)

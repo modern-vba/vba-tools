@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using VbaDev.App.Build;
 using VbaDev.App.References;
 using VbaDev.App.Workbooks;
+using VbaDev.Cli;
 using VbaDev.Composition;
 using VbaDev.Domain;
 using VbaDev.Infrastructure.Projects;
@@ -13,7 +14,7 @@ namespace VbaDev.Tests;
 public sealed class BuildCommandTests
 {
     [Fact]
-    public void BuildUsesSelectedDocumentPathsAndFlushesImportableComponentsOnly()
+    public async Task BuildUsesSelectedDocumentPathsAndFlushesImportableComponentsOnly()
     {
         using var temp = TempDirectory.Create();
         var root = temp.CreateDirectory("Project");
@@ -24,11 +25,21 @@ public sealed class BuildCommandTests
             new WorkbookModule("Class1", WorkbookModuleKind.ClassModule),
             new WorkbookModule("Form1", WorkbookModuleKind.Form),
             new WorkbookModule("ThisWorkbook", WorkbookModuleKind.Document));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookBuildAutomation: automation);
+        var application = VbaDevCommandLine.Create(
+            ToolingCompositionRoot.CreateApplicationComposition(
+                root,
+                workbookBuildAutomation: automation));
+        using var standardOutput = new StringWriter();
+        using var standardError = new StringWriter();
 
-        var result = application.Run(["build", "--project", root, "--document", "SecondBook"]);
+        var exitCode = await application.InvokeAsync(
+            ["build", "--project", root, "--document", "SecondBook"],
+            standardOutput,
+            standardError,
+            CancellationToken.None);
 
-        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(0, exitCode);
+        Assert.Empty(standardError.ToString());
         var expectedBin = Path.Combine(root, "bin", "SecondBook.xlsm");
         Assert.True(File.Exists(expectedBin));
         Assert.Equal("template:SecondBook", File.ReadAllText(expectedBin, Encoding.UTF8));
@@ -60,7 +71,7 @@ public sealed class BuildCommandTests
         {
             ThrowOnImport = true
         };
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookBuildAutomation: automation);
+        var application = CommandLineTestFactory.Create(root, workbookBuildAutomation: automation);
 
         var result = application.Run(["build"]);
 
@@ -131,7 +142,7 @@ public sealed class BuildCommandTests
             (Path.Combine("forms", "Dialog.frm"), "VERSION 5.00"));
         File.WriteAllBytes(Path.Combine(root, "src", "Book1", "forms", "Orphan.frx"), [1, 2, 3]);
         var automation = new FakeWorkbookBuildAutomation();
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookBuildAutomation: automation);
+        var application = CommandLineTestFactory.Create(root, workbookBuildAutomation: automation);
 
         var result = application.Run(["build"]);
 
@@ -160,7 +171,7 @@ public sealed class BuildCommandTests
             (Path.Combine("feature", "Shared.bas"), "Attribute VB_Name = \"Shared\""),
             (Path.Combine("legacy", "shared.bas"), "Attribute VB_Name = \"shared\""));
         var automation = new FakeWorkbookBuildAutomation();
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookBuildAutomation: automation);
+        var application = CommandLineTestFactory.Create(root, workbookBuildAutomation: automation);
 
         var result = application.Run(["build"]);
 
@@ -181,7 +192,7 @@ public sealed class BuildCommandTests
         var frxPath = Path.Combine(root, "src", "Book1", "Dialog.frx");
         File.WriteAllBytes(frxPath, [1, 2, 3]);
         var automation = new FakeWorkbookBuildAutomation();
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookBuildAutomation: automation);
+        var application = CommandLineTestFactory.Create(root, workbookBuildAutomation: automation);
 
         var result = application.Run(["build"]);
 
@@ -205,7 +216,7 @@ public sealed class BuildCommandTests
         automation.References.Add(new WorkbookReference("Unlisted Library", IsRemovable: true));
         var resolver = new FakeVbaProjectReferenceResolver(
             new ResolvedVbaProjectReference("Microsoft Scripting Runtime", "{420B2830-E718-11CF-893D-00A0C9054228}", 1, 0));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+        var application = CommandLineTestFactory.Create(
             root,
             workbookBuildAutomation: automation,
             vbaProjectReferenceResolver: resolver);
@@ -241,7 +252,7 @@ public sealed class BuildCommandTests
             new ResolvedVbaProjectReference("OLE Automation", "{00020430-0000-0000-C000-000000000046}", 1, 0),
             new ResolvedVbaProjectReference("OLE Automation", "{00020430-0000-0000-C000-000000000046}", 2, 0),
             new ResolvedVbaProjectReference("Microsoft Scripting Runtime", "{420B2830-E718-11CF-893D-00A0C9054228}", 1, 0));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+        var application = CommandLineTestFactory.Create(
             root,
             workbookBuildAutomation: automation,
             vbaProjectReferenceResolver: resolver);
@@ -272,7 +283,7 @@ public sealed class BuildCommandTests
         new JsonProjectManifestStore().Save(root, manifest);
         CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
         var automation = new FakeWorkbookBuildAutomation();
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+        var application = CommandLineTestFactory.Create(
             root,
             workbookBuildAutomation: automation,
             vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver());
@@ -296,7 +307,7 @@ public sealed class BuildCommandTests
         {
             ReferenceError = new COMException("0x800A801C", unchecked((int)0x800A801C))
         };
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookBuildAutomation: automation);
+        var application = CommandLineTestFactory.Create(root, workbookBuildAutomation: automation);
 
         var result = application.Run(["build"]);
 
@@ -320,7 +331,7 @@ public sealed class BuildCommandTests
         var resolver = new FakeVbaProjectReferenceResolver(
             new ResolvedVbaProjectReference("Ambiguous Library", "{11111111-1111-1111-1111-111111111111}", 1, 0),
             new ResolvedVbaProjectReference("Ambiguous Library", "{22222222-2222-2222-2222-222222222222}", 1, 0));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+        var application = CommandLineTestFactory.Create(
             root,
             workbookBuildAutomation: automation,
             vbaProjectReferenceResolver: resolver);
@@ -342,7 +353,7 @@ public sealed class BuildCommandTests
         CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
         var automation = new FakeWorkbookBuildAutomation();
         automation.References.Add(new WorkbookReference("Protected Library", IsRemovable: false));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookBuildAutomation: automation);
+        var application = CommandLineTestFactory.Create(root, workbookBuildAutomation: automation);
 
         var result = application.Run(["build"]);
 
@@ -363,7 +374,7 @@ public sealed class BuildCommandTests
         File.WriteAllText(binPath, "locked-bin", Encoding.UTF8);
         using var lockStream = new FileStream(binPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
         var automation = new FakeWorkbookBuildAutomation();
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookBuildAutomation: automation);
+        var application = CommandLineTestFactory.Create(root, workbookBuildAutomation: automation);
 
         var result = application.Run(["build"]);
 

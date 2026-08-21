@@ -1,8 +1,6 @@
 using System.Text;
 using System.Text.Json;
-using VbaDev.App.Cli;
 using VbaDev.App.Projects;
-using VbaDev.Composition;
 using VbaDev.Domain;
 using VbaDev.Infrastructure.Projects;
 using Xunit;
@@ -183,7 +181,7 @@ public sealed class ProjectManifestTests
         using var temp = TempDirectory.Create();
         var root = temp.CreateDirectory("BadSchema");
         File.WriteAllText(Path.Combine(root, ProjectManifest.ManifestFileName), ProjectManifestTestData.ValidJson("BadSchema").Replace("\"schemaVersion\": 1", "\"schemaVersion\": 2", StringComparison.Ordinal), new UTF8Encoding(false));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root);
+        var application = CommandLineTestFactory.Create(root);
 
         var result = application.Run(["build"]);
 

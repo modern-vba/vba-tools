@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Runtime.InteropServices;
 using VbaDev.App.Testing;
 using VbaDev.App.Workbooks;
+using VbaDev.Cli;
 using VbaDev.Composition;
 using VbaDev.Domain;
 using VbaDev.Infrastructure.Projects;
@@ -13,7 +14,7 @@ namespace VbaDev.Tests;
 public sealed class TestCommandTests
 {
     [Fact]
-    public void NdjsonFormatEmitsEventRecordsForWorkbookTestRun()
+    public async Task NdjsonFormatEmitsEventRecordsForWorkbookTestRun()
     {
         using var temp = TempDirectory.Create();
         var root = temp.CreateDirectory("Project");
@@ -25,9 +26,12 @@ public sealed class TestCommandTests
             new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", "", TimeSpan.FromMilliseconds(12.5)),
             new WorkbookTestResultRow("Test_Module", "Test_Fails", "NG", "Expected 1 but was 2"),
             new WorkbookTestResultRow("Test_Module", "Test_Errors", "ERR", "Runtime error"));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
+        var application = VbaDevCommandLine.Create(
+            ToolingCompositionRoot.CreateApplicationComposition(
+                root,
+                workbookTestRunner: runner));
 
-        var result = application.Run(["test", "--no-build", "--format", "ndjson"]);
+        var result = await application.RunAsync(["test", "--no-build", "--format", "ndjson"]);
 
         Assert.Equal(1, result.ExitCode);
         Assert.Equal(
@@ -58,7 +62,7 @@ public sealed class TestCommandTests
         File.WriteAllText(binPath, "bin", Encoding.UTF8);
         var runner = new FakeWorkbookTestRunner(
             new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
+        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
 
         var result = application.Run(["test", "--no-build", "--format", "ndjson"]);
 
@@ -95,7 +99,7 @@ public sealed class TestCommandTests
         File.WriteAllText(binPath, "bin", Encoding.UTF8);
         var runner = new FakeWorkbookTestRunner(
             new WorkbookTestResultRow(moduleName, procedureName, "OK", ""));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
+        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
 
         var result = application.Run(["test", "--no-build", "--format", "ndjson"]);
 
@@ -130,7 +134,7 @@ public sealed class TestCommandTests
         File.WriteAllText(binPath, "bin", Encoding.UTF8);
         var runner = new FakeWorkbookTestRunner(
             new WorkbookTestResultRow("test_module", "scenario_multi", "OK", ""));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
+        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
 
         var result = application.Run(["test", "--no-build", "--format", "ndjson"]);
 
@@ -165,7 +169,7 @@ public sealed class TestCommandTests
         File.WriteAllText(binPath, "bin", Encoding.UTF8);
         var runner = new FakeWorkbookTestRunner(
             new WorkbookTestResultRow("preferred_module", "TEST_UTF16", "OK", ""));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
+        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
 
         var result = application.Run(["test", "--no-build", "--format", "ndjson"]);
 
@@ -198,7 +202,7 @@ public sealed class TestCommandTests
         File.WriteAllText(binPath, "bin", Encoding.UTF8);
         var runner = new FakeWorkbookTestRunner(
             new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
+        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
         using var sourceLock = new FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.None);
 
         var result = application.Run(["test", "--no-build", "--format", "ndjson"]);
@@ -230,7 +234,7 @@ public sealed class TestCommandTests
         File.WriteAllText(binPath, "bin", Encoding.UTF8);
         var runner = new FakeWorkbookTestRunner(
             new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
+        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
         using var sourceLock = new FileStream(lockedSourcePath, FileMode.Open, FileAccess.Read, FileShare.None);
 
         var result = application.Run(["test", "--no-build", "--format", "ndjson"]);
@@ -263,7 +267,7 @@ public sealed class TestCommandTests
         File.WriteAllText(binPath, "bin", Encoding.UTF8);
         var runner = new FakeWorkbookTestRunner(
             new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
+        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
 
         var result = application.Run(["test", "--no-build", "--format", "ndjson"]);
 
@@ -386,7 +390,7 @@ public sealed class TestCommandTests
         File.WriteAllText(binPath, "bin", Encoding.UTF8);
         var runner = new FakeWorkbookTestRunner(new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
         var buildAutomation = new FakeWorkbookBuildAutomation();
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+        var application = CommandLineTestFactory.Create(
             root,
             workbookBuildAutomation: buildAutomation,
             workbookTestRunner: runner);
@@ -409,7 +413,7 @@ public sealed class TestCommandTests
         Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
         File.WriteAllText(binPath, "bin", Encoding.UTF8);
         var runner = new FakeWorkbookTestRunner(new WorkbookTestResultRow("Test_Foo", "Test_Bar", "OK", ""));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
+        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
 
         var result = application.Run(["test", "--no-build", "--module", "Test_Foo", "--procedure", "Test_Bar", "--format", "ndjson"]);
 
@@ -430,7 +434,7 @@ public sealed class TestCommandTests
         CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
         var runner = new FakeWorkbookTestRunner(new WorkbookTestResultRow("Test_Foo", "Test_Bar", "OK", ""));
         var buildAutomation = new FakeWorkbookBuildAutomation();
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+        var application = CommandLineTestFactory.Create(
             root,
             workbookBuildAutomation: buildAutomation,
             workbookTestRunner: runner);
@@ -449,8 +453,8 @@ public sealed class TestCommandTests
         var root = temp.CreateDirectory("Project");
         new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
 
-        var result = ToolingCompositionRoot
-            .CreateCommandLineApplication(root, workbookTestRunner: new FakeWorkbookTestRunner())
+        var result = CommandLineTestFactory
+            .Create(root, workbookTestRunner: new FakeWorkbookTestRunner())
             .Run(["test", "--procedure", "Test_Bar"]);
 
         Assert.Equal(1, result.ExitCode);
@@ -470,7 +474,7 @@ public sealed class TestCommandTests
         {
             Error = new InvalidOperationException("Test module was not found: MissingModule")
         };
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
+        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
 
         var result = application.Run(["test", "--no-build", "--module", "MissingModule"]);
 
@@ -491,7 +495,7 @@ public sealed class TestCommandTests
         {
             Error = new COMException("0x800A801C", unchecked((int)0x800A801C))
         };
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
+        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
 
         var result = application.Run(["test", "--no-build"]);
 
@@ -510,7 +514,7 @@ public sealed class TestCommandTests
         CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
         var runner = new FakeWorkbookTestRunner(new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
         var buildAutomation = new FakeWorkbookBuildAutomation();
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(
+        var application = CommandLineTestFactory.Create(
             root,
             workbookBuildAutomation: buildAutomation,
             workbookTestRunner: runner);
@@ -536,7 +540,7 @@ public sealed class TestCommandTests
             new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""),
             new WorkbookTestResultRow("Test_Module", "Test_Fails", "NG", "failed"),
             new WorkbookTestResultRow("Test_Module", "Test_Errors", "ERR", "errored"));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
+        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
 
         var result = application.Run(["test", "--no-build", "--format", "ndjson"]);
 
@@ -561,7 +565,7 @@ public sealed class TestCommandTests
         Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
         File.WriteAllText(binPath, "bin", Encoding.UTF8);
         var runner = new FakeWorkbookTestRunner(new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
+        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
 
         var result = application.Run(["test", "--no-build"]);
 
@@ -583,7 +587,7 @@ public sealed class TestCommandTests
         Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
         File.WriteAllText(binPath, "bin", Encoding.UTF8);
         var runner = new FakeWorkbookTestRunner(new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
+        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
 
         var result = application.Run(["test", "--no-build"]);
 
@@ -624,7 +628,7 @@ public sealed class TestCommandTests
         Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
         File.WriteAllText(binPath, "bin", Encoding.UTF8);
         var runner = new FakeWorkbookTestRunner(resultRow);
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookTestRunner: runner);
+        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
 
         var result = application.Run(["test", "--no-build", "--format", "ndjson"]);
 

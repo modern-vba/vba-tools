@@ -58,6 +58,11 @@
         "resolved": "3.1.4",
         "contentHash": "ncchtCh9YKqutHTlUCrr1llXA65ijGOCjXBM0mL1+WaGouApWDEACWbBHGzuYcAvB+rgW6IgO4AKgmZ2v1moNA=="
       },
+      "System.CommandLine": {
+        "type": "Transitive",
+        "resolved": "2.0.5",
+        "contentHash": "2XtWAPk1G6arpe3OCFNrYYuf6iIboznxs2elJSGgd8e0euou7LfGYFon6hBEfDWNtOLr0M3+oUVgy1a5EGa41A=="
+      },
       "xunit.abstractions": {
         "type": "Transitive",
         "resolved": "2.0.3",
@@ -101,6 +106,7 @@
       "vba-dev": {
         "type": "Project",
         "dependencies": {
+          "System.CommandLine": "[2.0.5, )",
           "VbaDev.App": "[0.1.0, )",
           "VbaDev.Composition": "[0.1.0, )"
         }

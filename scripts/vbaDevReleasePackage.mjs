@@ -78,7 +78,14 @@ export async function createStandaloneVbaDevArchive({
   }
 
   const helpProbe = await runCommand(extractedExecutablePath, ['--help'], extractionDirectory);
-  if (!/\bvba-dev\b/.test(helpProbe.stdout) || !/\bUsage:\s*/.test(helpProbe.stdout) || helpProbe.stderr !== '') {
+  const normalizedHelp = normalizeNewlines(helpProbe.stdout);
+  const hasRootInvocation = normalizedHelp
+    .split('\n')
+    .some((line) => line.trim() === 'vba-dev [command] [options]');
+  const hasPublicGraph = /^[ \t]*build[ \t]+/m.test(normalizedHelp)
+    && /^[ \t]*capabilities[ \t]+/m.test(normalizedHelp)
+    && normalizedHelp.includes('--help');
+  if (!hasRootInvocation || !hasPublicGraph || helpProbe.stderr !== '') {
     throw new Error('Standalone vba-dev --help must expose the command usage without stderr.');
   }
 

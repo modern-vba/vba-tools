@@ -1,50 +1,11 @@
-using VbaDev.Composition;
 using VbaDev.App.Cli;
-using VbaDev.Cli.Debugging;
+using VbaDev.Cli;
 
 try
 {
-    if (args is ["--version"])
-    {
-        Console.Out.Write($"vba-dev {CommandLineApplication.ReleaseVersion}{Environment.NewLine}");
-        return 0;
-    }
-
-    if (DebugAdapterCommandLine.IsRequested(args))
-    {
-        var usageError = DebugAdapterCommandLine.Validate(args);
-        if (usageError is not null)
-        {
-            Console.Error.WriteLine(usageError);
-            return 1;
-        }
-
-        var composition = ToolingCompositionRoot.CreateDebugAdapterComposition();
-        var adapter = new VbaDebugAdapter(
-            composition.ProjectContextResolver,
-            composition.LaunchCoordinator,
-            () => composition.WorkingDirectory);
-        await adapter.RunAsync(
-            Console.OpenStandardInput(),
-            Console.OpenStandardOutput(),
-            CancellationToken.None);
-        return 0;
-    }
-
-    var application = ToolingCompositionRoot.CreateCommandLineApplication();
-    var result = application.Run(args);
-
-    if (!string.IsNullOrEmpty(result.StandardOutput))
-    {
-        Console.Out.Write(result.StandardOutput);
-    }
-
-    if (!string.IsNullOrEmpty(result.StandardError))
-    {
-        Console.Error.Write(result.StandardError);
-    }
-
-    return result.ExitCode;
+    return await VbaDevCommandLine
+        .CreateDefault()
+        .InvokeAsync(args, Console.Out, Console.Error, CancellationToken.None);
 }
 catch (Exception ex)
 {

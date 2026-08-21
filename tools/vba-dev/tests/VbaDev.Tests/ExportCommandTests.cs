@@ -1,5 +1,6 @@
 using System.Text;
 using VbaDev.App.Export;
+using VbaDev.Cli;
 using VbaDev.Composition;
 using VbaDev.Domain;
 using VbaDev.Infrastructure.Projects;
@@ -30,7 +31,7 @@ public sealed class ExportCommandTests
             ("Dialog.frm", "VERSION 5.00"),
             ("Dialog.frx", "frx"),
             ("NewModule.cls", "VERSION 1.0 CLASS"));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookModuleExporter: exporter);
+        var application = CommandLineTestFactory.Create(root, workbookModuleExporter: exporter);
 
         var result = application.Run(["export"]);
 
@@ -67,7 +68,7 @@ public sealed class ExportCommandTests
             ("Module1.bas", "new"),
             ("Dialog.frm", "VERSION 5.00"),
             ("Dialog.frx", "frx"));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path, workbookModuleExporter: exporter);
+        var application = CommandLineTestFactory.Create(temp.Path, workbookModuleExporter: exporter);
 
         var result = application.Run(["export", "--from", explicitWorkbook]);
 
@@ -80,16 +81,20 @@ public sealed class ExportCommandTests
     }
 
     [Fact]
-    public void ExplicitWorkbookExportDoesNotRequireProjectContext()
+    public async Task ExplicitWorkbookExportDoesNotRequireProjectContext()
     {
         using var temp = TempDirectory.Create();
         var explicitWorkbook = Path.Combine(temp.Path, "explicit.xlsm");
         File.WriteAllText(explicitWorkbook, "workbook", Encoding.UTF8);
         var explicitDestination = temp.CreateDirectory("explicit-export");
         var exporter = new FakeWorkbookModuleExporter(("Module1.bas", "new"));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path, workbookModuleExporter: exporter);
+        var application = VbaDevCommandLine.Create(
+            ToolingCompositionRoot.CreateApplicationComposition(
+                temp.Path,
+                workbookModuleExporter: exporter));
 
-        var result = application.Run(["export", "--from", explicitWorkbook, "--to", explicitDestination]);
+        var result = await application.RunAsync(
+            ["export", "--from", explicitWorkbook, "--to", explicitDestination]);
 
         Assert.Equal(0, result.ExitCode);
         var call = Assert.Single(exporter.Calls);
@@ -107,7 +112,7 @@ public sealed class ExportCommandTests
         var explicitWorkbook = Path.Combine(temp.Path, "explicit.xlsm");
         File.WriteAllText(explicitWorkbook, "workbook", Encoding.UTF8);
         var exporter = new FakeWorkbookModuleExporter(("Module1.bas", "new"));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path, workbookModuleExporter: exporter);
+        var application = CommandLineTestFactory.Create(temp.Path, workbookModuleExporter: exporter);
 
         var optionValue = optionName.Equals("--project", StringComparison.Ordinal)
             ? temp.Path
@@ -133,7 +138,7 @@ public sealed class ExportCommandTests
         WriteBytes(Path.Combine(explicitDestination, "nested", "Old.frx"), [1, 2, 3]);
         File.WriteAllText(Path.Combine(explicitDestination, "notes.txt"), "keep", Encoding.UTF8);
         var exporter = new FakeWorkbookModuleExporter(("Module1.bas", "new"));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookModuleExporter: exporter);
+        var application = CommandLineTestFactory.Create(root, workbookModuleExporter: exporter);
 
         var result = application.Run(["export", "--to", explicitDestination]);
 
@@ -163,7 +168,7 @@ public sealed class ExportCommandTests
         {
             ThrowOnExport = true
         };
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(root, workbookModuleExporter: exporter);
+        var application = CommandLineTestFactory.Create(root, workbookModuleExporter: exporter);
 
         var result = application.Run(["export"]);
 
@@ -183,7 +188,7 @@ public sealed class ExportCommandTests
         using var temp = TempDirectory.Create();
         var explicitDestination = temp.CreateDirectory("explicit-export");
         var exporter = new FakeWorkbookModuleExporter(("Module1.bas", "new"));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path, workbookModuleExporter: exporter);
+        var application = CommandLineTestFactory.Create(temp.Path, workbookModuleExporter: exporter);
 
         var result = application.Run(["export", "--to", explicitDestination]);
 
@@ -201,7 +206,7 @@ public sealed class ExportCommandTests
         File.WriteAllText(explicitWorkbook, "workbook", Encoding.UTF8);
         File.WriteAllText(destinationFile, "old", Encoding.UTF8);
         var exporter = new FakeWorkbookModuleExporter(("Module1.bas", "new"));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path, workbookModuleExporter: exporter);
+        var application = CommandLineTestFactory.Create(temp.Path, workbookModuleExporter: exporter);
 
         var result = application.Run(["export", "--from", explicitWorkbook, "--to", destinationFile]);
 
@@ -215,12 +220,12 @@ public sealed class ExportCommandTests
     {
         using var temp = TempDirectory.Create();
         var exporter = new FakeWorkbookModuleExporter(("Module1.bas", "new"));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(temp.Path, workbookModuleExporter: exporter);
+        var application = CommandLineTestFactory.Create(temp.Path, workbookModuleExporter: exporter);
 
         var result = application.Run(["export", "--from="]);
 
         Assert.Equal(1, result.ExitCode);
-        Assert.Contains("--from requires a workbook path.", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("--from", result.StandardError, StringComparison.Ordinal);
         Assert.Empty(exporter.Calls);
     }
 
@@ -232,7 +237,7 @@ public sealed class ExportCommandTests
         var relativeWorkbook = Path.Combine(workingDirectory, "relative.xlsm");
         File.WriteAllText(relativeWorkbook, "workbook", Encoding.UTF8);
         var exporter = new FakeWorkbookModuleExporter(("Module1.bas", "new"));
-        var application = ToolingCompositionRoot.CreateCommandLineApplication(workingDirectory, workbookModuleExporter: exporter);
+        var application = CommandLineTestFactory.Create(workingDirectory, workbookModuleExporter: exporter);
 
         var result = application.Run(["export", "--from", "relative.xlsm", "--to", "out"]);
 

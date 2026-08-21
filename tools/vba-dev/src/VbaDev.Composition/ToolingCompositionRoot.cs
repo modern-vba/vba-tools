@@ -1,4 +1,3 @@
-using VbaDev.App.Cli;
 using VbaDev.App.Build;
 using VbaDev.App.CommonModules;
 using VbaDev.App.Diagnostics;
@@ -68,16 +67,16 @@ public static class ToolingCompositionRoot
     }
 
     /// <summary>
-    /// Creates the default command-line application for the current working directory.
+    /// Creates the shell-neutral application services for the current working directory.
     /// </summary>
-    /// <returns>The composed command-line application.</returns>
-    public static CommandLineApplication CreateCommandLineApplication()
-        => CreateCommandLineApplication(Directory.GetCurrentDirectory());
+    /// <returns>The composed services consumed by a command-line host.</returns>
+    public static ToolingApplicationComposition CreateApplicationComposition()
+        => CreateApplicationComposition(Directory.GetCurrentDirectory());
 
     /// <summary>
-    /// Creates a command-line application with optional test or host-specific adapter overrides.
+    /// Creates shell-neutral application services with optional test or host-specific adapter overrides.
     /// </summary>
-    /// <param name="workingDirectory">The working directory used by command parsing and path resolution.</param>
+    /// <param name="workingDirectory">The working directory used by path and project resolution.</param>
     /// <param name="environmentDiagnosticPort">The optional environment diagnostics adapter.</param>
     /// <param name="initialWorkbookCreator">The optional initial workbook creator adapter.</param>
     /// <param name="workbookBuildAutomation">The optional workbook build automation adapter.</param>
@@ -86,8 +85,8 @@ public static class ToolingCompositionRoot
     /// <param name="vbaProjectReferenceResolver">The optional VBA project reference resolver adapter.</param>
     /// <param name="projectManifestStore">The optional project manifest persistence adapter.</param>
     /// <param name="debugEnvironmentProbeFactory">The optional native VBE Doctor probe factory.</param>
-    /// <returns>The composed command-line application.</returns>
-    public static CommandLineApplication CreateCommandLineApplication(
+    /// <returns>The composed services consumed by a command-line host.</returns>
+    public static ToolingApplicationComposition CreateApplicationComposition(
         string workingDirectory,
         IEnvironmentDiagnosticPort? environmentDiagnosticPort = null,
         IInitialWorkbookCreator? initialWorkbookCreator = null,
@@ -143,8 +142,7 @@ public static class ToolingCompositionRoot
         var exportCommand = new ExportCommand(
             workbookModuleExporter ?? new ExcelComWorkbookModuleExporter());
         var importCommand = new ImportCommand(buildAutomation);
-        var commandContracts = ToolingCommandCatalog.CreateDefaultContracts();
-        var commandHandlers = ToolingCommandCatalog.CreateDefaultHandlers(
+        return new ToolingApplicationComposition(
             doctorCommand,
             newProjectCommand,
             commonModulesService,
@@ -153,14 +151,38 @@ public static class ToolingCompositionRoot
             publishCommand,
             testCommand,
             exportCommand,
-            importCommand);
-        return new CommandLineApplication(
-            commandContracts,
-            commandHandlers,
+            importCommand,
             projectContextResolver,
-            () => workingDirectory);
+            workingDirectory);
     }
 }
+
+/// <summary>
+/// Contains shell-neutral application services used by an executable command-line host.
+/// </summary>
+/// <param name="DoctorCommand">The diagnostics command.</param>
+/// <param name="NewProjectCommand">The project creation command.</param>
+/// <param name="CommonModulesService">The CommonModules service.</param>
+/// <param name="ReferenceService">The VBA reference service.</param>
+/// <param name="BuildCommand">The workbook build command.</param>
+/// <param name="PublishCommand">The workbook publish command.</param>
+/// <param name="TestCommand">The workbook test command.</param>
+/// <param name="ExportCommand">The workbook export command.</param>
+/// <param name="ImportCommand">The workbook import command.</param>
+/// <param name="ProjectContextResolver">The project and document context resolver.</param>
+/// <param name="WorkingDirectory">The invocation working directory.</param>
+public sealed record ToolingApplicationComposition(
+    DoctorCommand DoctorCommand,
+    NewProjectCommand NewProjectCommand,
+    CommonModulesService CommonModulesService,
+    VbaProjectReferenceService ReferenceService,
+    BuildCommand BuildCommand,
+    PublishCommand PublishCommand,
+    TestCommand TestCommand,
+    ExportCommand ExportCommand,
+    ImportCommand ImportCommand,
+    ProjectContextResolver ProjectContextResolver,
+    string WorkingDirectory);
 
 /// <summary>
 /// Contains the application services needed by the CLI-hosted debug adapter transport.
