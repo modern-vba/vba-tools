@@ -88,6 +88,23 @@ by `LspMessageTransport`, and owned by shutdown. Document lifecycle stops the
 mailbox before the scheduler drains or aborts, so pending revisions become
 terminal exactly once without late admission.
 
+Project-aware diagnostic fan-out retains the same URI-owned mailboxes, but each
+partition also carries the `ProjectDiagnosticRevision` of the immutable project
+validation input. Publication requires both that project revision and the
+target document's authority, version, lifecycle, and reservation fence to
+remain current. Superseding any project-wide semantic input invalidates every
+partition from the older validation run; a target URI's unchanged local version
+does not make its old project result publishable.
+
+Project-aware validation itself uses a resolved-project-authority-keyed
+latest-only mailbox before per-URI publication fan-out. Repeated edits replace
+the pending project validation input rather than enqueueing every intermediate
+snapshot. A directly changed URI may independently send its latest
+document-local diagnostics without an obsolete project partition. Unchanged
+members keep their last accepted displayed sets until the fresh project result
+fans out only changed sets; project invalidation does not enqueue mass empty
+publications. Delete and project departure remain immediate clearing events.
+
 Reference-catalog discovery remains on its dedicated low-impact worker because
 TypeLib COM calls may not cooperate with cancellation. The scheduler fairly
 admits the short, latest-only refresh-start ticket. Persisted or discovered

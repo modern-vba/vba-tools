@@ -18,3 +18,15 @@ automatically search `PATH` so an unrelated installed CLI version is not picked
 up accidentally. The VSIX should contain the published executable under
 `bin/vba-dev/win-x64/vba-dev.exe`; the `tools/vba-dev` source tree
 stays excluded from the VSIX package.
+
+ADR 0027 extends the same deterministic distribution rule to the separate
+`vba-debug-adapter.exe`. The extension bundles it under
+`bin/vba-debug-adapter/win-x64`, permits only an explicit
+`vbaTools.debugAdapter.path` override, and injects the already resolved absolute
+`vba-dev` path through `--vba-dev`. The VSIX includes the independent
+`vba-debug-adapter-contract.json`; the adapter requires only the advertised
+`build.sourceSnapshot` feature version from the CLI contract. Neither component
+performs PATH or sibling discovery. An invalid `vba-dev` override falls back to
+the compatible bundled CLI only after an actionable warning and pins that
+effective path for the extension session. An invalid debug-adapter override
+remains a failed explicit selection. No fallback is silent.

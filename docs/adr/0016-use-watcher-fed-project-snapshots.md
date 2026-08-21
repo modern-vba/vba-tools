@@ -8,11 +8,28 @@ Warm snapshot reuse does not stat known source files or reread disk. Raw disk wr
 
 Cold snapshot materialization, watched source reloads, and background reconciliation use one shared `VbaProjectDiskInventory` instance. Its cold capture may reuse decoded text when stable file metadata and the source invalidation generation are unchanged. Its reconciliation observation always performs a stable byte read, even when length and last-write time match the previous observation, so a missed watcher event with unchanged metadata can still converge.
 
+Closed disk source uses one `DiskSourceDecoding` contract. A recognized UTF-8
+or UTF-16 BOM selects its strict decoder; BOM-less input tries strict UTF-8
+first and then, on Windows only, the active ANSI code page captured once at
+language-server process start. ACP 65001 is canonical UTF-8. A non-Windows
+process does not assume CP932 or another legacy code page, and invalid input is
+reported rather than decoded with replacement characters. Open LSP documents
+are already Unicode and remain authoritative. The resulting Unicode text is
+eligible for every `VbaIdentifierForm`; its disk encoding never selects or
+limits identifier syntax.
+
 `VbaProjectReconciler` depends on the inventory through a one-method reconciliation observation Seam. That Seam receives an immutable disk-only request containing the resolved project disk scope, ordered manifest probes, barrier overrides, and observed barrier URIs. Authority keys, authority generations, workspace, source, and manifest revisions, known-source baselines, and open-document state remain in the reconciler and workspace reconciliation scope; the inventory neither receives them nor decides whether an observation may commit. Reconciliation tests replace only this narrow observation Adapter, while production retains the shared filesystem inventory instance and cache.
 
 A watched source reload uses the inventory's single-source capture rather than a cold project capture. That operation validates nested-manifest ownership, invalidates the prior decoded fact, and performs one stable source read without enumerating the project.
 
 `VbaProjectDiskInventory` returns syntax-free source facts with an opaque `DiskContentIdentity`. Equal decoded text retains equal identity and changed decoded text changes identity. Parsing and source projection remain in `VbaProjectSourceDocumentCache`, which consumes those facts and performs no filesystem reads or decoding. Open buffers remain authoritative after disk capture. A warm committed project-snapshot hit does not call the disk inventory.
+
+Closing an open source ends its buffer authority. If the URI remains in the
+resolved project scope and its disk source still exists, the workspace captures
+that disk source and makes it authoritative before rebuilding project-aware
+diagnostics. Close alone does not remove diagnostics. Delete, project
+membership departure, or loss of a tracked disk source clears the URI, and a
+later reopen establishes a new open-buffer lifecycle.
 
 `VbaProjectReconciler` is the deep Module that owns reconciliation cadence, parallel scans, authority-plan construction, ordered commit, follow-up policy, and effect dispatch. Its runtime Interface is `ReconcileAsync`; compatibility aliases for the former coordinator and trigger names are not retained.
 

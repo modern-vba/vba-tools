@@ -49,8 +49,8 @@ extension, so both extensions can otherwise remain installed side by side.
 
 ### 2 - Prepare Excel
 
-Workbook-backed commands require desktop Excel and trusted access to the VBA
-project object model:
+Workbook-backed commands require x64 Windows 10 or Windows 11, desktop Excel,
+and trusted access to the VBA project object model:
 
 1. Open Microsoft Excel.
 2. Go to **File** > **Options**.
@@ -58,6 +58,11 @@ project object model:
 4. Click **Trust Center Settings...**.
 5. Select **Macro Settings**.
 6. Check **Trust access to the VBA project object model**.
+
+VBA Tools does not change this setting, the registry, or Trust Center for you.
+If Doctor reports that its dedicated Excel process could not be owned or cleaned
+up, close Excel windows you no longer need and retry. If the problem persists,
+open the VBA Tools output channel and review the reported check details.
 
 ### 3 - Create a workbook-backed project
 
