@@ -26,9 +26,52 @@ public sealed class VbaProjectReferencePlanner
     /// <param name="referenceNames">The requested human-visible reference names.</param>
     /// <returns>The unique resolved reference identities.</returns>
     public IReadOnlyList<ResolvedVbaProjectReference> ResolveManifestInputReferences(IReadOnlyList<string> referenceNames)
-        => referenceNames
-            .Select(ResolveManifestInputReference)
+    {
+        var batch = ResolveReferences(referenceNames);
+        return SelectManifestInputReferences(batch, referenceNames);
+    }
+
+    /// <summary>
+    /// Resolves reference names from one catalog snapshot without applying command policy.
+    /// </summary>
+    /// <param name="referenceNames">The ordered human-visible reference names.</param>
+    /// <returns>The complete batch result.</returns>
+    public VbaProjectReferenceResolutionBatch ResolveReferences(IReadOnlyList<string> referenceNames)
+        => referenceResolver.Resolve(referenceNames);
+
+    /// <summary>
+    /// Selects unique identities for names from an existing complete batch.
+    /// </summary>
+    /// <param name="batch">The batch produced for the requested names.</param>
+    /// <param name="referenceNames">The ordered names supplied to the resolver.</param>
+    /// <returns>The unique identities in request order.</returns>
+    public IReadOnlyList<ResolvedVbaProjectReference> SelectManifestInputReferences(
+        VbaProjectReferenceResolutionBatch batch,
+        IReadOnlyList<string> referenceNames)
+    {
+        EnsureComplete(batch);
+        if (batch.References.Count != referenceNames.Count)
+        {
+            throw new InvalidOperationException(
+                "Reference resolver did not return a complete ordered result batch.");
+        }
+
+        return referenceNames
+            .Select((referenceName, index) =>
+            {
+                var resolution = batch.References[index];
+                if (!resolution.RequestedName.Equals(
+                        referenceName.Trim(),
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException(
+                        "Reference resolver did not return a complete ordered result batch.");
+                }
+
+                return ResolveManifestInputReference(resolution);
+            })
             .ToArray();
+    }
 
     /// <summary>
     /// Resolves a document manifest reference before adding it to a workbook.
@@ -134,25 +177,55 @@ public sealed class VbaProjectReferencePlanner
     public static string FormatProtectedReferenceWarning(string documentName, string referenceName)
         => $"[WARN] VbaProjectReferences ({documentName}/{referenceName}): Unlisted protected reference remains.";
 
-    private ResolvedVbaProjectReference ResolveManifestInputReference(string referenceName)
+    private static ResolvedVbaProjectReference ResolveManifestInputReference(
+        VbaProjectReferenceNameResolution resolution)
     {
-        var resolution = Resolve(referenceName);
         if (resolution.Matches.Count == 0)
         {
-            throw new InvalidOperationException($"VbaProjectReference '{referenceName}' was not found.");
+            var detail = resolution.IsRegistered
+                ? "has no usable registry identity"
+                : "was not found";
+            throw new InvalidOperationException(
+                $"VbaProjectReference '{resolution.RequestedName}' {detail}.");
         }
 
         if (resolution.Matches.Count > 1)
         {
             throw new InvalidOperationException(
-                $"VbaProjectReference '{referenceName}' is ambiguous: {FormatNamedCandidates(resolution.Matches)}.");
+                $"VbaProjectReference '{resolution.RequestedName}' is ambiguous: {FormatNamedCandidates(resolution.Matches)}.");
         }
 
         return resolution.Matches[0];
     }
 
-    private VbaProjectReferenceResolution Resolve(string referenceName)
-        => new(referenceName, referenceResolver.Resolve(referenceName));
+    private VbaProjectReferenceNameResolution Resolve(string referenceName)
+    {
+        var batch = ResolveReferences([referenceName]);
+        EnsureComplete(batch);
+        return GetResolution(batch, referenceName);
+    }
+
+    private static void EnsureComplete(VbaProjectReferenceResolutionBatch batch)
+    {
+        if (batch.Complete)
+        {
+            return;
+        }
+
+        var diagnostic = batch.Diagnostic;
+        throw new InvalidOperationException(
+            diagnostic is null
+                ? "registryCatalogIncomplete: TypeLib registry catalog enumeration did not complete."
+                : $"{diagnostic.Code}: {diagnostic.Message}");
+    }
+
+    private static VbaProjectReferenceNameResolution GetResolution(
+        VbaProjectReferenceResolutionBatch batch,
+        string referenceName)
+        => batch.References.FirstOrDefault(reference =>
+               reference.RequestedName.Equals(referenceName, StringComparison.OrdinalIgnoreCase))
+           ?? throw new InvalidOperationException(
+               $"Reference resolver did not return a result for '{referenceName}'.");
 
     private static string FormatNamedCandidates(IReadOnlyList<ResolvedVbaProjectReference> matches)
         => string.Join(
@@ -164,7 +237,4 @@ public sealed class VbaProjectReferencePlanner
             ", ",
             matches.Select(match => $"{match.Guid} {match.Major}.{match.Minor}"));
 
-    private sealed record VbaProjectReferenceResolution(
-        string ReferenceName,
-        IReadOnlyList<ResolvedVbaProjectReference> Matches);
 }

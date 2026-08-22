@@ -3,6 +3,7 @@
   <ItemGroup>
     <ProjectReference Include="..\VbaDev.Domain\VbaDev.Domain.csproj" />
     <ProjectReference Include="..\VbaDev.App\VbaDev.App.csproj" />
+    <ProjectReference Include="..\VbaTools.TypeLibRegistry\VbaTools.TypeLibRegistry.csproj" />
   </ItemGroup>
 
   <ItemGroup>

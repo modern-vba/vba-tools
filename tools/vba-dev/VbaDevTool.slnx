@@ -5,6 +5,7 @@
     <Project Path="src/VbaDev.Composition/VbaDev.Composition.csproj" />
     <Project Path="src/VbaDev.Domain/VbaDev.Domain.csproj" />
     <Project Path="src/VbaDev.Infrastructure/VbaDev.Infrastructure.csproj" />
+    <Project Path="src/VbaTools.TypeLibRegistry/VbaTools.TypeLibRegistry.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/VbaDev.Tests/VbaDev.Tests.csproj" />

@@ -6,9 +6,9 @@ namespace VbaDev.App.Workbooks;
 public interface IVbaProjectReferenceResolver
 {
     /// <summary>
-    /// Finds reference identities that match a manifest reference name.
+    /// Resolves reference names from one catalog snapshot.
     /// </summary>
-    /// <param name="referenceName">The human-visible reference description.</param>
-    /// <returns>The matching reference identities, possibly empty or ambiguous.</returns>
-    IReadOnlyList<ResolvedVbaProjectReference> Resolve(string referenceName);
+    /// <param name="referenceNames">The ordered human-visible reference descriptions.</param>
+    /// <returns>The complete batch result, including catalog warnings or failure.</returns>
+    VbaProjectReferenceResolutionBatch Resolve(IReadOnlyList<string> referenceNames);
 }

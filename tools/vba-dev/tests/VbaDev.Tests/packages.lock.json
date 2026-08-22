@@ -115,7 +115,8 @@
         "type": "Project",
         "dependencies": {
           "VbaDev.Domain": "[0.1.0, )",
-          "VbaLanguageServer.Syntax": "[1.0.0, )"
+          "VbaLanguageServer.Syntax": "[1.0.0, )",
+          "VbaTools.TypeLibRegistry": "[0.1.0, )"
         }
       },
       "vbadev.composition": {
@@ -134,10 +135,14 @@
         "dependencies": {
           "OpenMcdf": "[3.1.4, )",
           "VbaDev.App": "[0.1.0, )",
-          "VbaDev.Domain": "[0.1.0, )"
+          "VbaDev.Domain": "[0.1.0, )",
+          "VbaTools.TypeLibRegistry": "[0.1.0, )"
         }
       },
       "vbalanguageserver.syntax": {
+        "type": "Project"
+      },
+      "vbatools.typelibregistry": {
         "type": "Project"
       }
     }

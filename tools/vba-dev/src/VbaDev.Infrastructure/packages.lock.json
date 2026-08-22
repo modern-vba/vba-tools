@@ -12,13 +12,17 @@
         "type": "Project",
         "dependencies": {
           "VbaDev.Domain": "[0.1.0, )",
-          "VbaLanguageServer.Syntax": "[1.0.0, )"
+          "VbaLanguageServer.Syntax": "[1.0.0, )",
+          "VbaTools.TypeLibRegistry": "[0.1.0, )"
         }
       },
       "vbadev.domain": {
         "type": "Project"
       },
       "vbalanguageserver.syntax": {
+        "type": "Project"
+      },
+      "vbatools.typelibregistry": {
         "type": "Project"
       }
     }

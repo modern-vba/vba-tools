@@ -22,6 +22,7 @@
     <ProjectReference Include="..\..\src\VbaDev.Domain\VbaDev.Domain.csproj" />
     <ProjectReference Include="..\..\src\VbaDev.Composition\VbaDev.Composition.csproj" />
     <ProjectReference Include="..\..\src\VbaDev.Infrastructure\VbaDev.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\VbaTools.TypeLibRegistry\VbaTools.TypeLibRegistry.csproj" />
   </ItemGroup>
 
 </Project>

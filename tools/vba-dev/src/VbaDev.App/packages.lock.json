@@ -7,6 +7,9 @@
       },
       "vbalanguageserver.syntax": {
         "type": "Project"
+      },
+      "vbatools.typelibregistry": {
+        "type": "Project"
       }
     }
   }
