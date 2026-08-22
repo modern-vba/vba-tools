@@ -509,7 +509,7 @@ public sealed class VbaProjectReferenceAmbiguityProbeTests
         public int RunCount { get; private set; }
 
         public async Task<TResult> RunAsync<TResult>(
-            string baselineWorkbookPath,
+            VbaProjectReferenceProbeBaseline baseline,
             WorkbookAutomationTimeouts timeouts,
             Func<IVbaProjectReferenceProbeSession, CancellationToken, Task<TResult>> operation,
             CancellationToken cancellationToken)
@@ -526,7 +526,6 @@ public sealed class VbaProjectReferenceAmbiguityProbeTests
         public List<ResolvedVbaProjectReference> Attempts { get; } = [];
 
         public Task<VbaProjectReferenceProbeAttemptResult> TryResolveAsync(
-            string baselineWorkbookPath,
             string referenceName,
             ResolvedVbaProjectReference candidate,
             CancellationToken cancellationToken)
@@ -540,7 +539,7 @@ public sealed class VbaProjectReferenceAmbiguityProbeTests
         : IVbaProjectReferenceProbeAutomation
     {
         public Task<TResult> RunAsync<TResult>(
-            string baselineWorkbookPath,
+            VbaProjectReferenceProbeBaseline baseline,
             WorkbookAutomationTimeouts timeouts,
             Func<IVbaProjectReferenceProbeSession, CancellationToken, Task<TResult>> operation,
             CancellationToken cancellationToken)
@@ -552,7 +551,7 @@ public sealed class VbaProjectReferenceAmbiguityProbeTests
         : IVbaProjectReferenceProbeAutomation
     {
         public async Task<TResult> RunAsync<TResult>(
-            string baselineWorkbookPath,
+            VbaProjectReferenceProbeBaseline baseline,
             WorkbookAutomationTimeouts timeouts,
             Func<IVbaProjectReferenceProbeSession, CancellationToken, Task<TResult>> operation,
             CancellationToken cancellationToken)

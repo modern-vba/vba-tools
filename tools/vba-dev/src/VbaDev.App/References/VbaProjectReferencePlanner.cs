@@ -10,6 +10,7 @@ namespace VbaDev.App.References;
 /// </summary>
 public sealed class VbaProjectReferencePlanner
 {
+    private const string VisualBasicForApplications = "Visual Basic For Applications";
     private readonly IVbaProjectReferenceResolver referenceResolver;
     private readonly IVbaProjectReferenceAmbiguityProbe? ambiguityProbe;
 
@@ -43,6 +44,73 @@ public sealed class VbaProjectReferencePlanner
     /// <returns>The complete batch result.</returns>
     public VbaProjectReferenceResolutionBatch ResolveReferences(IReadOnlyList<string> referenceNames)
         => referenceResolver.Resolve(referenceNames);
+
+    /// <summary>
+    /// Resolves and filters the registered available-reference inventory without probing ambiguity.
+    /// </summary>
+    /// <param name="excludedReferenceNames">Manifest names to remove using trimmed ordinal-ignore-case comparison.</param>
+    /// <returns>The ordered available-reference registry batch.</returns>
+    public VbaProjectReferenceResolutionBatch ResolveAvailableReferences(
+        IReadOnlyList<string> excludedReferenceNames)
+    {
+        var excludedNames = excludedReferenceNames
+            .Select(name => name.Trim())
+            .Append(VisualBasicForApplications)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var batch = referenceResolver.ResolveAvailable();
+        return batch with
+        {
+            References = batch.References
+                .Where(reference => !excludedNames.Contains(
+                    (reference.RegisteredName ?? reference.RequestedName).Trim()))
+                .ToArray()
+        };
+    }
+
+    /// <summary>
+    /// Resolves every registered description not already selected by the document.
+    /// </summary>
+    /// <param name="baselineWorkbookPath">The selected source-template ambiguity baseline.</param>
+    /// <param name="excludedReferenceNames">Manifest names to remove using trimmed ordinal-ignore-case comparison.</param>
+    /// <param name="cancellationToken">The cooperative command cancellation token.</param>
+    /// <returns>The ordered available-reference resolution batch.</returns>
+    public async Task<VbaProjectReferenceResolutionBatch> ResolveAvailableReferencesAsync(
+        string baselineWorkbookPath,
+        IReadOnlyList<string> excludedReferenceNames,
+        CancellationToken cancellationToken)
+        => await ResolveAvailableReferencesAsync(
+                VbaProjectReferenceProbeBaseline.SourceTemplate(baselineWorkbookPath),
+                excludedReferenceNames,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+    /// <summary>
+    /// Resolves every registered description not already selected in the requested scope.
+    /// </summary>
+    /// <param name="baseline">The source-template or blank-workbook ambiguity baseline.</param>
+    /// <param name="excludedReferenceNames">Names to remove using trimmed ordinal-ignore-case comparison.</param>
+    /// <param name="cancellationToken">The cooperative command cancellation token.</param>
+    /// <returns>The ordered available-reference resolution batch.</returns>
+    public async Task<VbaProjectReferenceResolutionBatch> ResolveAvailableReferencesAsync(
+        VbaProjectReferenceProbeBaseline baseline,
+        IReadOnlyList<string> excludedReferenceNames,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(baseline);
+        var batch = ResolveAvailableReferences(excludedReferenceNames);
+        if (!batch.Complete ||
+            ambiguityProbe is null ||
+            !batch.References.Any(reference => reference.Matches.Count > 1))
+        {
+            return batch;
+        }
+
+        return await ambiguityProbe.ResolveAsync(
+                baseline,
+                batch,
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
 
     /// <summary>
     /// Resolves reference names and probes registry ambiguity against the selected document template.
@@ -82,7 +150,7 @@ public sealed class VbaProjectReferencePlanner
         }
 
         return await ambiguityProbe.ResolveAsync(
-                baselineWorkbookPath,
+                VbaProjectReferenceProbeBaseline.SourceTemplate(baselineWorkbookPath),
                 batch,
                 cancellationToken)
             .ConfigureAwait(false);

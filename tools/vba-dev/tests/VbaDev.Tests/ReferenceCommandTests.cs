@@ -260,12 +260,406 @@ public sealed class ReferenceCommandTests
         Assert.True(parsed.RootElement.GetProperty("complete").GetBoolean());
         Assert.Empty(parsed.RootElement.GetProperty("warnings").EnumerateArray());
         var references = parsed.RootElement.GetProperty("references");
+        Assert.Equal(2, references.GetArrayLength());
         Assert.Equal("Microsoft Scripting Runtime", references[0].GetProperty("name").GetString());
         Assert.Equal("Microsoft Forms 2.0 Object Library", references[1].GetProperty("name").GetString());
         var identity = references[0].GetProperty("identity");
         Assert.Equal("420b2830-e718-11cf-893d-00a0c9054228", identity.GetProperty("guid").GetString());
         Assert.Equal(1, identity.GetProperty("major").GetInt32());
         Assert.Equal(0, identity.GetProperty("minor").GetInt32());
+    }
+
+    [Fact]
+    public async Task AvailableListExcludesOnlyTrimmedCaseInsensitiveManifestNamesInProjectScope()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(
+            temp,
+            new VbaProjectReference("Existing Library"));
+        File.Delete(Path.Combine(root, "src", "Book1", "Book1.xlsm"));
+        var resolver = new StubAvailableReferenceResolver(
+            new VbaProjectReferenceResolutionBatch(
+                true,
+                [],
+                null,
+                [
+                    new VbaProjectReferenceNameResolution(
+                        "  existing library  ",
+                        "  existing library  ",
+                        true,
+                        [
+                            new ResolvedVbaProjectReference(
+                                "  existing library  ",
+                                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                                1,
+                                0)
+                        ]),
+                    new VbaProjectReferenceNameResolution(
+                        "Available Library",
+                        "Available Library",
+                        true,
+                        [
+                            new ResolvedVbaProjectReference(
+                                "Available Library",
+                                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                                2,
+                                0)
+                        ]),
+                    new VbaProjectReferenceNameResolution(
+                        "Visual Basic For Applications",
+                        "Visual Basic For Applications",
+                        true,
+                        [
+                            new ResolvedVbaProjectReference(
+                                "Visual Basic For Applications",
+                                "000204ef-0000-0000-c000-000000000046",
+                                4,
+                                2)
+                        ])
+                ]));
+        var application = VbaDevCommandLine.Create(
+            ToolingCompositionRoot.CreateApplicationComposition(
+                root,
+                vbaProjectReferenceResolver: resolver,
+                vbaProjectReferenceAmbiguityProbe:
+                    new DelegateReferenceAmbiguityProbe(_ =>
+                        throw new InvalidOperationException(
+                            "Unique available references must not inspect the source template."))));
+
+        var result = await application.RunAsync([
+            "reference",
+            "list",
+            "--available",
+            "--format",
+            "json"]);
+
+        Assert.Equal(0, result.ExitCode);
+        using var parsed = JsonDocument.Parse(result.StandardOutput);
+        Assert.Equal("1.0", parsed.RootElement.GetProperty("schemaVersion").GetString());
+        Assert.Equal("project", parsed.RootElement.GetProperty("scope").GetString());
+        Assert.Equal(root, parsed.RootElement.GetProperty("project").GetString());
+        Assert.Equal("Book1", parsed.RootElement.GetProperty("document").GetString());
+        Assert.Equal("available", parsed.RootElement.GetProperty("mode").GetString());
+        Assert.True(parsed.RootElement.GetProperty("complete").GetBoolean());
+        var reference = Assert.Single(
+            parsed.RootElement.GetProperty("references").EnumerateArray());
+        AssertJsonPropertyNames(reference, "name", "status", "identity");
+        Assert.Equal("Available Library", reference.GetProperty("name").GetString());
+        Assert.Equal("resolved", reference.GetProperty("status").GetString());
+        AssertJsonPropertyNames(reference.GetProperty("identity"), "guid", "major", "minor");
+    }
+
+    [Fact]
+    public async Task AvailableListRetainsEveryKnownCandidateWhenVbeRejectsAllOfThem()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        var probe = new DelegateReferenceAmbiguityProbe(registryResolution =>
+            registryResolution with
+            {
+                References = registryResolution.References
+                    .Select(reference => reference with
+                    {
+                        Matches = [],
+                        Candidates = reference.Matches
+                    })
+                    .ToArray()
+            });
+        var application = VbaDevCommandLine.Create(
+            ToolingCompositionRoot.CreateApplicationComposition(
+                root,
+                vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
+                    new ResolvedVbaProjectReference(
+                        "Unavailable Library",
+                        "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                        2,
+                        0),
+                    new ResolvedVbaProjectReference(
+                        "Unavailable Library",
+                        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                        1,
+                        0))
+                {
+                    Warnings =
+                    [
+                        new TypeLibRegistryCatalogWarning(
+                            "malformedRegistrationsSkipped",
+                            "Skipped one malformed TypeLib registration.",
+                            1)
+                    ]
+                },
+                vbaProjectReferenceAmbiguityProbe: probe));
+
+        var result = await application.RunAsync([
+            "reference",
+            "list",
+            "--available",
+            "--format",
+            "json"]);
+
+        Assert.Equal(0, result.ExitCode);
+        using var parsed = JsonDocument.Parse(result.StandardOutput);
+        Assert.Equal(
+            "malformedRegistrationsSkipped",
+            Assert.Single(parsed.RootElement.GetProperty("warnings").EnumerateArray())
+                .GetProperty("code")
+                .GetString());
+        var reference = Assert.Single(
+            parsed.RootElement.GetProperty("references").EnumerateArray());
+        AssertJsonPropertyNames(reference, "name", "status", "reasonCode", "candidates", "message");
+        Assert.Equal("unavailable", reference.GetProperty("status").GetString());
+        Assert.Equal("noUsableIdentity", reference.GetProperty("reasonCode").GetString());
+        var candidates = reference.GetProperty("candidates");
+        Assert.Equal(2, candidates.GetArrayLength());
+        Assert.Equal(
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            candidates[0].GetProperty("guid").GetString());
+        Assert.Equal(
+            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            candidates[1].GetProperty("guid").GetString());
+    }
+
+    [Fact]
+    public async Task AvailableListSerializesConclusiveAmbiguityInCanonicalOrder()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        var firstIdentity = new ResolvedVbaProjectReference(
+            "Ambiguous Library",
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            1,
+            0);
+        var secondIdentity = new ResolvedVbaProjectReference(
+            "Ambiguous Library",
+            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            2,
+            0);
+        var probe = new DelegateReferenceAmbiguityProbe(registryResolution =>
+            registryResolution with
+            {
+                References = registryResolution.References
+                    .Select(reference => reference with
+                    {
+                        Matches = [secondIdentity, firstIdentity, secondIdentity],
+                        Candidates = [secondIdentity, firstIdentity, secondIdentity]
+                    })
+                    .ToArray()
+            });
+        var application = VbaDevCommandLine.Create(
+            ToolingCompositionRoot.CreateApplicationComposition(
+                root,
+                vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
+                    firstIdentity,
+                    secondIdentity),
+                vbaProjectReferenceAmbiguityProbe: probe));
+
+        var result = await application.RunAsync([
+            "reference",
+            "list",
+            "--available",
+            "--format",
+            "json"]);
+
+        Assert.Equal(0, result.ExitCode);
+        using var parsed = JsonDocument.Parse(result.StandardOutput);
+        Assert.True(parsed.RootElement.GetProperty("complete").GetBoolean());
+        var reference = Assert.Single(parsed.RootElement.GetProperty("references").EnumerateArray());
+        AssertJsonPropertyNames(reference, "name", "status", "reasonCode", "candidates", "message");
+        Assert.Equal("ambiguous", reference.GetProperty("status").GetString());
+        Assert.Equal("multipleUsableIdentities", reference.GetProperty("reasonCode").GetString());
+        var candidates = reference.GetProperty("candidates");
+        Assert.Equal(2, candidates.GetArrayLength());
+        Assert.Equal(firstIdentity.Guid, candidates[0].GetProperty("guid").GetString());
+        Assert.Equal(secondIdentity.Guid, candidates[1].GetProperty("guid").GetString());
+    }
+
+    [Fact]
+    public async Task AvailableListFallsBackToEnvironmentScopeWhenNoManifestIsDiscovered()
+    {
+        using var temp = TempDirectory.Create();
+        var workingDirectory = temp.CreateDirectory("NoProject");
+        var application = VbaDevCommandLine.Create(
+            ToolingCompositionRoot.CreateApplicationComposition(
+                workingDirectory,
+                vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
+                    new ResolvedVbaProjectReference(
+                        "Environment Library",
+                        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                        1,
+                        0))));
+
+        var result = await application.RunAsync([
+            "reference",
+            "list",
+            "--available",
+            "--format",
+            "json"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("projectManifestNotFound", result.StandardError, StringComparison.Ordinal);
+        using var parsed = JsonDocument.Parse(result.StandardOutput);
+        var output = parsed.RootElement;
+        AssertJsonPropertyNames(
+            output,
+            "schemaVersion",
+            "scope",
+            "project",
+            "document",
+            "mode",
+            "complete",
+            "warnings",
+            "references");
+        Assert.Equal("1.0", output.GetProperty("schemaVersion").GetString());
+        Assert.Equal("environment", output.GetProperty("scope").GetString());
+        Assert.Equal(JsonValueKind.Null, output.GetProperty("project").ValueKind);
+        Assert.Equal(JsonValueKind.Null, output.GetProperty("document").ValueKind);
+        Assert.Equal("available", output.GetProperty("mode").GetString());
+        Assert.True(output.GetProperty("complete").GetBoolean());
+        var warning = Assert.Single(output.GetProperty("warnings").EnumerateArray());
+        Assert.Equal("projectManifestNotFound", warning.GetProperty("code").GetString());
+        var reference = Assert.Single(output.GetProperty("references").EnumerateArray());
+        Assert.Equal("Environment Library", reference.GetProperty("name").GetString());
+        Assert.Equal("resolved", reference.GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task EnvironmentAvailableListUsesBlankWorkbookOnlyToResolveAmbiguity()
+    {
+        using var temp = TempDirectory.Create();
+        var workingDirectory = temp.CreateDirectory("NoProject");
+        var selectedIdentity = new ResolvedVbaProjectReference(
+            "Existing In Blank Library",
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            1,
+            0);
+        var probe = new RecordingReferenceAmbiguityProbe(selectedIdentity);
+        var application = VbaDevCommandLine.Create(
+            ToolingCompositionRoot.CreateApplicationComposition(
+                workingDirectory,
+                vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
+                    selectedIdentity,
+                    new ResolvedVbaProjectReference(
+                        "Existing In Blank Library",
+                        "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                        2,
+                        0),
+                    new ResolvedVbaProjectReference(
+                        "Unique Environment Library",
+                        "cccccccc-cccc-cccc-cccc-cccccccccccc",
+                        1,
+                        0)),
+                vbaProjectReferenceAmbiguityProbe: probe));
+
+        var result = await application.RunAsync([
+            "reference",
+            "list",
+            "--available",
+            "--format",
+            "json"]);
+
+        Assert.Equal(0, result.ExitCode);
+        var baseline = Assert.Single(probe.Baselines);
+        Assert.Equal(VbaProjectReferenceProbeBaselineKind.BlankWorkbook, baseline.Kind);
+        Assert.Null(baseline.WorkbookPath);
+        using var parsed = JsonDocument.Parse(result.StandardOutput);
+        var references = parsed.RootElement.GetProperty("references").EnumerateArray().ToArray();
+        Assert.Equal(2, references.Length);
+        Assert.Equal("Existing In Blank Library", references[0].GetProperty("name").GetString());
+        Assert.Equal("resolved", references[0].GetProperty("status").GetString());
+        Assert.Equal("Unique Environment Library", references[1].GetProperty("name").GetString());
+        Assert.Equal("resolved", references[1].GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task AvailableListDoesNotFallbackWhenAnExplicitProjectIsMissing()
+    {
+        using var temp = TempDirectory.Create();
+        var workingDirectory = temp.CreateDirectory("NoProject");
+        var missingProject = Path.Combine(temp.Path, "MissingProject");
+        var application = VbaDevCommandLine.Create(
+            ToolingCompositionRoot.CreateApplicationComposition(
+                workingDirectory,
+                vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
+                    new ResolvedVbaProjectReference(
+                        "Environment Library",
+                        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                        1,
+                        0))));
+
+        var result = await application.RunAsync([
+            "reference",
+            "list",
+            "--available",
+            "--project",
+            missingProject,
+            "--format",
+            "json"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.DoesNotContain("projectManifestNotFound", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("Project manifest was not found", result.StandardError, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AvailableListDoesNotFallbackWhenTheDiscoveredManifestIsMalformed()
+    {
+        using var temp = TempDirectory.Create();
+        var workingDirectory = temp.CreateDirectory("MalformedProject");
+        File.WriteAllText(
+            Path.Combine(workingDirectory, ProjectManifest.ManifestFileName),
+            "{ malformed",
+            new UTF8Encoding(false));
+        var application = VbaDevCommandLine.Create(
+            ToolingCompositionRoot.CreateApplicationComposition(
+                workingDirectory,
+                vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
+                    new ResolvedVbaProjectReference(
+                        "Environment Library",
+                        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                        1,
+                        0))));
+
+        var result = await application.RunAsync([
+            "reference",
+            "list",
+            "--available",
+            "--format",
+            "json"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.DoesNotContain("projectManifestNotFound", result.StandardError, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AvailableListDoesNotFallbackWhenAnExplicitDocumentIsUnknown()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        var application = VbaDevCommandLine.Create(
+            ToolingCompositionRoot.CreateApplicationComposition(
+                root,
+                vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
+                    new ResolvedVbaProjectReference(
+                        "Environment Library",
+                        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                        1,
+                        0))));
+
+        var result = await application.RunAsync([
+            "reference",
+            "list",
+            "--available",
+            "--document",
+            "MissingBook",
+            "--format",
+            "json"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.DoesNotContain("projectManifestNotFound", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("MissingBook", result.StandardError, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -332,6 +726,13 @@ public sealed class ReferenceCommandTests
         Assert.Equal(2, references.GetArrayLength());
         Assert.Equal("resolved", references[0].GetProperty("status").GetString());
         Assert.Equal("unverified", references[1].GetProperty("status").GetString());
+        AssertJsonPropertyNames(
+            references[1],
+            "name",
+            "status",
+            "reasonCode",
+            "candidates",
+            "message");
         Assert.Equal("probeTimeout", references[1].GetProperty("reasonCode").GetString());
         Assert.Equal(2, references[1].GetProperty("candidates").GetArrayLength());
         Assert.Equal(
@@ -488,6 +889,27 @@ public sealed class ReferenceCommandTests
         Assert.Equal("Broken Library", reference.GetProperty("name").GetString());
         Assert.Equal("unavailable", reference.GetProperty("status").GetString());
         Assert.Equal("noUsableIdentity", reference.GetProperty("reasonCode").GetString());
+    }
+
+    [Fact]
+    public void ConfiguredListSerializesNotRegisteredWithNoKnownCandidates()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp, new VbaProjectReference("Missing Library"));
+        var application = CommandLineTestFactory.Create(
+            root,
+            vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver());
+
+        var result = application.Run(["reference", "list", "--format", "json"]);
+
+        Assert.Equal(1, result.ExitCode);
+        using var parsed = JsonDocument.Parse(result.StandardOutput);
+        Assert.True(parsed.RootElement.GetProperty("complete").GetBoolean());
+        var reference = Assert.Single(parsed.RootElement.GetProperty("references").EnumerateArray());
+        AssertJsonPropertyNames(reference, "name", "status", "reasonCode", "candidates", "message");
+        Assert.Equal("unavailable", reference.GetProperty("status").GetString());
+        Assert.Equal("notRegistered", reference.GetProperty("reasonCode").GetString());
+        Assert.Empty(reference.GetProperty("candidates").EnumerateArray());
     }
 
     [Fact]
@@ -866,6 +1288,271 @@ public sealed class ReferenceCommandTests
         Assert.Contains("cancelled", result.StandardError, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public async Task AvailableListPublishesPartialInventoryWhenCancellationArrivesAfterScopeResolution()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        using var cancellation = new CancellationTokenSource();
+        var probe = new DelegateReferenceAmbiguityProbe(registryResolution =>
+        {
+            cancellation.Cancel();
+            return registryResolution with
+            {
+                Complete = false,
+                References = registryResolution.References
+                    .Select(reference => reference.Matches.Count > 1
+                        ? reference with
+                        {
+                            Matches = [],
+                            Candidates = reference.Matches,
+                            UnverifiedReasonCode = "cancelled",
+                            Message = "Reference probing was cancelled."
+                        }
+                        : reference)
+                    .ToArray(),
+                AdditionalDiagnostics =
+                [
+                    new TypeLibRegistryCatalogDiagnostic(
+                        "operationCancelled",
+                        "Reference probing was cancelled.")
+                ]
+            };
+        });
+        var application = VbaDevCommandLine.Create(
+            ToolingCompositionRoot.CreateApplicationComposition(
+                root,
+                vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
+                    new ResolvedVbaProjectReference(
+                        "Alpha Unique Library",
+                        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                        1,
+                        0),
+                    new ResolvedVbaProjectReference(
+                        "Zulu Ambiguous Library",
+                        "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                        1,
+                        0),
+                    new ResolvedVbaProjectReference(
+                        "Zulu Ambiguous Library",
+                        "cccccccc-cccc-cccc-cccc-cccccccccccc",
+                        2,
+                        0)),
+                vbaProjectReferenceAmbiguityProbe: probe));
+
+        var result = await application.RunAsync([
+            "reference",
+            "list",
+            "--available",
+            "--format",
+            "json"], cancellation.Token);
+
+        Assert.Equal(1, result.ExitCode);
+        using var parsed = JsonDocument.Parse(result.StandardOutput);
+        Assert.False(parsed.RootElement.GetProperty("complete").GetBoolean());
+        var references = parsed.RootElement.GetProperty("references").EnumerateArray().ToArray();
+        Assert.Equal("resolved", references[0].GetProperty("status").GetString());
+        Assert.Equal("unverified", references[1].GetProperty("status").GetString());
+        Assert.Equal("cancelled", references[1].GetProperty("reasonCode").GetString());
+        var diagnostic = Assert.Single(parsed.RootElement.GetProperty("diagnostics").EnumerateArray());
+        Assert.Equal("operationCancelled", diagnostic.GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task AvailableListRejectsAnUnknownUnverifiedReasonCode()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        var probe = new DelegateReferenceAmbiguityProbe(registryResolution =>
+            registryResolution with
+            {
+                Complete = false,
+                References = registryResolution.References
+                    .Select(reference => reference with
+                    {
+                        Matches = [],
+                        Candidates = reference.Matches,
+                        UnverifiedReasonCode = "unexpectedProbeState",
+                        Message = "The adapter returned an unknown probe state."
+                    })
+                    .ToArray()
+            });
+        var application = VbaDevCommandLine.Create(
+            ToolingCompositionRoot.CreateApplicationComposition(
+                root,
+                vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
+                    new ResolvedVbaProjectReference(
+                        "Ambiguous Library",
+                        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                        1,
+                        0),
+                    new ResolvedVbaProjectReference(
+                        "Ambiguous Library",
+                        "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                        2,
+                        0)),
+                vbaProjectReferenceAmbiguityProbe: probe));
+
+        var result = await application.RunAsync([
+            "reference",
+            "list",
+            "--available",
+            "--format",
+            "json"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Contains("unknown unverified reason code", result.StandardError, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task AvailableListMarksCatalogDiagnosticsAsIncomplete()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        var resolver = new FakeVbaProjectReferenceResolver(
+            new ResolvedVbaProjectReference(
+                "Visible Library",
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                1,
+                0))
+        {
+            Diagnostic = new TypeLibRegistryCatalogDiagnostic(
+                "registryCatalogIncomplete",
+                "Registry enumeration did not complete.")
+        };
+        var application = CommandLineTestFactory.Create(
+            root,
+            vbaProjectReferenceResolver: resolver);
+
+        var result = await application.RunAsync([
+            "reference",
+            "list",
+            "--available",
+            "--format",
+            "json"]);
+
+        Assert.Equal(1, result.ExitCode);
+        using var parsed = JsonDocument.Parse(result.StandardOutput);
+        Assert.False(parsed.RootElement.GetProperty("complete").GetBoolean());
+        var diagnostic = Assert.Single(parsed.RootElement.GetProperty("diagnostics").EnumerateArray());
+        Assert.Equal("registryCatalogIncomplete", diagnostic.GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task AvailableListTextSeparatesResolvedNamesFromEveryIssueStatus()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        var resolver = new FakeVbaProjectReferenceResolver(
+            new ResolvedVbaProjectReference(
+                "Alpha Resolved",
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                1,
+                0),
+            new ResolvedVbaProjectReference(
+                "Bravo Ambiguous",
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                1,
+                0),
+            new ResolvedVbaProjectReference(
+                "Bravo Ambiguous",
+                "cccccccc-cccc-cccc-cccc-cccccccccccc",
+                2,
+                0),
+            new ResolvedVbaProjectReference(
+                "Delta Unverified",
+                "dddddddd-dddd-dddd-dddd-dddddddddddd",
+                1,
+                0),
+            new ResolvedVbaProjectReference(
+                "Delta Unverified",
+                "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+                2,
+                0))
+        {
+            RegisteredNamesWithoutUsableIdentity = ["Charlie Unavailable"]
+        };
+        var probe = new DelegateReferenceAmbiguityProbe(registryResolution =>
+            registryResolution with
+            {
+                Complete = false,
+                References = registryResolution.References
+                    .Select(reference => reference.RequestedName == "Delta Unverified"
+                        ? reference with
+                        {
+                            Matches = [],
+                            Candidates = reference.Matches,
+                            UnverifiedReasonCode = "probeTimeout",
+                            Message = "The VBE reference attempt timed out."
+                        }
+                        : reference)
+                    .ToArray()
+            });
+        var application = VbaDevCommandLine.Create(
+            ToolingCompositionRoot.CreateApplicationComposition(
+                root,
+                vbaProjectReferenceResolver: resolver,
+                vbaProjectReferenceAmbiguityProbe: probe));
+
+        var result = await application.RunAsync([
+            "reference",
+            "list",
+            "--available"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("Available references:", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("  Alpha Resolved", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("Resolution issues:", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("Bravo Ambiguous [ambiguous]", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("Charlie Unavailable [unavailable]", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("Delta Unverified [unverified]", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AvailableListCanonicalizesAdapterOrderAtTheSchemaBoundary()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        var resolver = new FakeVbaProjectReferenceResolver(
+            new ResolvedVbaProjectReference(
+                "Alpha Library",
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                1,
+                0),
+            new ResolvedVbaProjectReference(
+                "Beta Library",
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                1,
+                0))
+        {
+            ReverseResolutionOrder = true
+        };
+        var application = CommandLineTestFactory.Create(
+            root,
+            vbaProjectReferenceResolver: resolver);
+
+        var result = await application.RunAsync([
+            "reference",
+            "list",
+            "--available",
+            "--format",
+            "json"]);
+
+        Assert.Equal(0, result.ExitCode);
+        using var parsed = JsonDocument.Parse(result.StandardOutput);
+        Assert.Equal(
+            ["Alpha Library", "Beta Library"],
+            parsed.RootElement.GetProperty("references")
+                .EnumerateArray()
+                .Select(reference => reference.GetProperty("name").GetString()));
+    }
+
+    private static void AssertJsonPropertyNames(JsonElement element, params string[] expectedNames)
+        => Assert.Equal(
+            expectedNames.Order(StringComparer.Ordinal),
+            element.EnumerateObject().Select(property => property.Name).Order(StringComparer.Ordinal));
+
     private static string CreateProject(TempDirectory temp, params VbaProjectReference[] references)
     {
         var root = temp.CreateDirectory("Project");
@@ -884,13 +1571,19 @@ public sealed class ReferenceCommandTests
         : IVbaProjectReferenceAmbiguityProbe
     {
         public List<string> BaselineWorkbookPaths { get; } = [];
+        public List<VbaProjectReferenceProbeBaseline> Baselines { get; } = [];
 
         public Task<VbaProjectReferenceResolutionBatch> ResolveAsync(
-            string baselineWorkbookPath,
+            VbaProjectReferenceProbeBaseline baseline,
             VbaProjectReferenceResolutionBatch registryResolution,
             CancellationToken cancellationToken)
         {
-            BaselineWorkbookPaths.Add(baselineWorkbookPath);
+            Baselines.Add(baseline);
+            if (baseline.WorkbookPath is not null)
+            {
+                BaselineWorkbookPaths.Add(baseline.WorkbookPath);
+            }
+
             return Task.FromResult(registryResolution with
             {
                 References = registryResolution.References
@@ -907,9 +1600,20 @@ public sealed class ReferenceCommandTests
         : IVbaProjectReferenceAmbiguityProbe
     {
         public Task<VbaProjectReferenceResolutionBatch> ResolveAsync(
-            string baselineWorkbookPath,
+            VbaProjectReferenceProbeBaseline baseline,
             VbaProjectReferenceResolutionBatch registryResolution,
             CancellationToken cancellationToken)
             => Task.FromResult(resolve(registryResolution));
+    }
+
+    private sealed class StubAvailableReferenceResolver(
+        VbaProjectReferenceResolutionBatch availableBatch)
+        : IVbaProjectReferenceResolver
+    {
+        public VbaProjectReferenceResolutionBatch ResolveAvailable() => availableBatch;
+
+        public VbaProjectReferenceResolutionBatch Resolve(IReadOnlyList<string> referenceNames)
+            => throw new InvalidOperationException(
+                "Configured reference resolution was not expected.");
     }
 }

@@ -13,6 +13,8 @@ internal interface IExcelComVbaProjectReferenceProbeLifecycle
 
     object OpenWorkbook(object host, string workbookPath);
 
+    object CreateBlankWorkbook(object host);
+
     object? FindReference(object workbook, string referenceName);
 
     object AddReference(object workbook, ResolvedVbaProjectReference candidate);
@@ -63,16 +65,18 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
 
     /// <inheritdoc />
     public async Task<TResult> RunAsync<TResult>(
-        string baselineWorkbookPath,
+        VbaProjectReferenceProbeBaseline baseline,
         WorkbookAutomationTimeouts timeouts,
         Func<IVbaProjectReferenceProbeSession, CancellationToken, Task<TResult>> operation,
         CancellationToken cancellationToken)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(baselineWorkbookPath);
+        ArgumentNullException.ThrowIfNull(baseline);
         ArgumentNullException.ThrowIfNull(timeouts);
         ArgumentNullException.ThrowIfNull(operation);
 
-        using var workspace = ReferenceProbeWorkspace.Create(baselineWorkbookPath);
+        var workspace = baseline.Kind == VbaProjectReferenceProbeBaselineKind.SourceTemplate
+            ? ReferenceProbeWorkspace.Create(baseline.WorkbookPath!)
+            : null;
         using var terminationController = new OwnedExcelTerminationController();
         IStaComDispatcher dispatcher;
         try
@@ -81,6 +85,25 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
         }
         catch (Exception exception)
         {
+            Exception? workspaceCleanupError = null;
+            try
+            {
+                workspace?.Dispose();
+            }
+            catch (Exception cleanupException)
+            {
+                workspaceCleanupError = cleanupException;
+            }
+
+            if (workspaceCleanupError is not null)
+            {
+                throw new VbaProjectReferenceProbeAttemptException(
+                    "cleanupFailure",
+                    "The reference-probe workspace could not be removed after dispatcher creation failed.",
+                    processTrusted: true,
+                    new AggregateException(exception, workspaceCleanupError));
+            }
+
             throw new VbaProjectReferenceProbeAttemptException(
                 "excelVbeFailure",
                 "The Excel STA dispatcher required for reference probing could not be created.",
@@ -116,8 +139,8 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
                 stageExecutor,
                 lifecycle,
                 host!,
+                baseline.Kind,
                 workspace,
-                baselineWorkbookPath,
                 timeouts,
                 () => terminationController.HasAttachedProcessExited);
             result = await operation(session, cancellationToken).ConfigureAwait(false);
@@ -147,7 +170,7 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
 
         try
         {
-            workspace.Dispose();
+            workspace?.Dispose();
         }
         catch (Exception exception)
         {
@@ -345,6 +368,7 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
 
     private static Exception NormalizeBaselineOpenError(
         Exception exception,
+        VbaProjectReferenceProbeBaselineKind baselineKind,
         CancellationToken cancellationToken)
         => exception switch
         {
@@ -355,7 +379,9 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
             WorkbookAutomationCleanupException or
             OperationCanceledException => NormalizeError(exception, cancellationToken),
             _ => new VbaProjectReferenceProbeBaselineException(
-                "A fresh copy of the selected source-template baseline could not be opened by Excel/VBE.",
+                baselineKind == VbaProjectReferenceProbeBaselineKind.BlankWorkbook
+                    ? "A fresh blank-workbook baseline could not be created or inspected by Excel/VBE."
+                    : "A fresh copy of the selected source-template baseline could not be opened by Excel/VBE.",
                 exception)
         };
 
@@ -364,26 +390,22 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
         WorkbookAutomationStageExecutor stageExecutor,
         IExcelComVbaProjectReferenceProbeLifecycle lifecycle,
         object host,
-        ReferenceProbeWorkspace workspace,
-        string baselineWorkbookPath,
+        VbaProjectReferenceProbeBaselineKind baselineKind,
+        ReferenceProbeWorkspace? workspace,
         WorkbookAutomationTimeouts timeouts,
         Func<bool> hasOwnedProcessExited) : IVbaProjectReferenceProbeSession
     {
         public async Task<VbaProjectReferenceProbeAttemptResult> TryResolveAsync(
-            string requestedBaselineWorkbookPath,
             string referenceName,
             ResolvedVbaProjectReference candidate,
             CancellationToken cancellationToken)
         {
-            if (!Path.GetFullPath(requestedBaselineWorkbookPath).Equals(
-                    Path.GetFullPath(baselineWorkbookPath),
-                    StringComparison.OrdinalIgnoreCase))
-            {
-                throw new VbaProjectReferenceProbeBaselineException(
-                    "The ambiguity probe request changed its selected source-template baseline.");
-            }
-
-            var attemptPath = workspace.CreateAttemptCopy();
+            var attemptPath = baselineKind == VbaProjectReferenceProbeBaselineKind.SourceTemplate
+                ? workspace!.CreateAttemptCopy()
+                : null;
+            var attemptName = attemptPath is null
+                ? "blank workbook"
+                : Path.GetFileName(attemptPath);
             object? workbook = null;
             object? reference = null;
             VbaProjectReferenceProbeAttemptResult? result = null;
@@ -395,14 +417,19 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
                     workbook = await ExecuteAsync(
                         new WorkbookAutomationStage(
                             WorkbookAutomationStageKind.WorkbookOpen,
-                            Path.GetFileName(attemptPath)),
+                            attemptName),
                         timeouts.WorkbookOpen,
                         cancellationToken,
-                        () => lifecycle.OpenWorkbook(host, attemptPath)).ConfigureAwait(false);
+                        () => attemptPath is null
+                            ? lifecycle.CreateBlankWorkbook(host)
+                            : lifecycle.OpenWorkbook(host, attemptPath)).ConfigureAwait(false);
                 }
                 catch (Exception exception)
                 {
-                    throw NormalizeBaselineOpenError(exception, cancellationToken);
+                    throw NormalizeBaselineOpenError(
+                        exception,
+                        baselineKind,
+                        cancellationToken);
                 }
 
                 try
@@ -417,7 +444,10 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
                 }
                 catch (Exception exception)
                 {
-                    throw NormalizeBaselineOpenError(exception, cancellationToken);
+                    throw NormalizeBaselineOpenError(
+                        exception,
+                        baselineKind,
+                        cancellationToken);
                 }
 
                 if (reference is null)
@@ -472,7 +502,7 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
                     await stageExecutor.ExecuteAsync(
                         new WorkbookAutomationStage(
                             WorkbookAutomationStageKind.ProcessCleanup,
-                            Path.GetFileName(attemptPath)),
+                            attemptName),
                         timeouts.ProcessCleanup,
                         timeouts.ProcessCleanup,
                         CancellationToken.None,
@@ -496,11 +526,12 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
             }
 
             if (cleanupError is null &&
+                attemptPath is not null &&
                 (!stageExecutor.HasAbandonedOperation || hasOwnedProcessExited()))
             {
                 try
                 {
-                    workspace.DeleteAttemptCopy(attemptPath);
+                    workspace!.DeleteAttemptCopy(attemptPath);
                 }
                 catch (Exception exception)
                 {
@@ -512,7 +543,7 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
             {
                 throw new VbaProjectReferenceProbeAttemptException(
                     "cleanupFailure",
-                    "The fresh reference-probe baseline could not be closed and removed.",
+                    "The fresh reference-probe baseline could not be closed or removed.",
                     processTrusted: false,
                     operationError is null
                         ? cleanupError
@@ -688,6 +719,13 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
             var excelHost = (ExcelComWorkbookSession.ExcelComHostObjects)host;
             dynamic workbooks = excelHost.WorkbooksObject;
             return workbooks.Open(workbookPath, 0, false);
+        }
+
+        public object CreateBlankWorkbook(object host)
+        {
+            var excelHost = (ExcelComWorkbookSession.ExcelComHostObjects)host;
+            dynamic workbooks = excelHost.WorkbooksObject;
+            return workbooks.Add();
         }
 
         public object? FindReference(object workbook, string referenceName)

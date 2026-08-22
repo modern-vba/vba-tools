@@ -26,6 +26,19 @@ public sealed class RegistryVbaProjectReferenceResolver : IVbaProjectReferenceRe
             LazyThreadSafetyMode.ExecutionAndPublication);
     }
 
+    /// <inheritdoc />
+    public VbaProjectReferenceResolutionBatch ResolveAvailable()
+    {
+        var snapshot = catalog.Value;
+        return new VbaProjectReferenceResolutionBatch(
+            snapshot.Complete,
+            snapshot.Warnings,
+            snapshot.Diagnostic,
+            snapshot.Names
+                .Select(name => Resolve(snapshot, name.Name))
+                .ToArray());
+    }
+
     /// <summary>
     /// Resolves the requested names from one catalog snapshot.
     /// </summary>

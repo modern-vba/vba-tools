@@ -28,6 +28,22 @@ internal sealed class FakeVbaProjectReferenceResolver : IVbaProjectReferenceReso
 
     public TypeLibRegistryCatalogDiagnostic? Diagnostic { get; init; }
 
+    public VbaProjectReferenceResolutionBatch ResolveAvailable()
+    {
+        var names = references
+            .Select(reference => reference.Name)
+            .Concat(RegisteredNamesWithoutUsableIdentity)
+            .GroupBy(name => name.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Select(group => group
+                .Select(name => name.Trim())
+                .Order(StringComparer.Ordinal)
+                .First())
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+        return Resolve(names);
+    }
+
     public VbaProjectReferenceResolutionBatch Resolve(IReadOnlyList<string> referenceNames)
     {
         if (ThrowOnResolve)

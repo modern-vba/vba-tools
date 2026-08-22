@@ -13,6 +13,15 @@ namespace VbaDev.App.References;
 /// </summary>
 public sealed class VbaProjectReferenceService
 {
+    private static readonly HashSet<string> UnverifiedReasonCodes = new(StringComparer.Ordinal)
+    {
+        "excelVbeFailure",
+        "probeTimeout",
+        "identityReadFailure",
+        "cleanupFailure",
+        "probeAborted",
+        "cancelled"
+    };
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -177,6 +186,85 @@ public sealed class VbaProjectReferenceService
         => ListAsync(context, format, CancellationToken.None).GetAwaiter().GetResult();
 
     /// <summary>
+    /// Lists registered references not already selected by the document.
+    /// </summary>
+    /// <param name="context">The resolved project and document context.</param>
+    /// <param name="format">The output format, either text or json.</param>
+    /// <param name="cancellationToken">The cooperative command cancellation token.</param>
+    /// <returns>The formatted available-reference inventory.</returns>
+    public async Task<CommandResult> ListAvailableAsync(
+        ResolvedProjectContext context,
+        string format,
+        CancellationToken cancellationToken)
+    {
+        var document = ProjectManifestEditor.GetDocument(context.Manifest, context.DocumentName);
+        VbaProjectReferenceResolutionBatch batch;
+        IReadOnlyList<VbaProjectReferenceListEntryOutput> references;
+        try
+        {
+            batch = await referencePlanner.ResolveAvailableReferencesAsync(
+                    context.TemplateDocumentPath,
+                    document.References.Select(reference => reference.Name).ToArray(),
+                    cancellationToken)
+                .ConfigureAwait(false);
+            references = CreateAvailableListReferences(batch);
+        }
+        catch (InvalidOperationException exception)
+        {
+            return CommandResult.UsageError(exception.Message);
+        }
+
+        return RenderList(
+            "project",
+            context.ProjectRoot,
+            context.DocumentName,
+            "available",
+            batch,
+            references,
+            format);
+    }
+
+    /// <summary>
+    /// Lists every registered reference description when no project manifest can be discovered.
+    /// </summary>
+    /// <param name="format">The output format, either text or json.</param>
+    /// <param name="cancellationToken">The cooperative command cancellation token.</param>
+    /// <returns>The formatted environment-reference inventory.</returns>
+    public async Task<CommandResult> ListAvailableEnvironmentAsync(
+        string format,
+        CancellationToken cancellationToken)
+    {
+        VbaProjectReferenceResolutionBatch batch;
+        IReadOnlyList<VbaProjectReferenceListEntryOutput> references;
+        try
+        {
+            batch = await referencePlanner.ResolveAvailableReferencesAsync(
+                    VbaProjectReferenceProbeBaseline.BlankWorkbook,
+                    [],
+                    cancellationToken)
+                .ConfigureAwait(false);
+            references = CreateAvailableListReferences(batch);
+        }
+        catch (InvalidOperationException exception)
+        {
+            return CommandResult.UsageError(exception.Message);
+        }
+
+        var warning = new VbaProjectReferenceWarningOutput(
+            "projectManifestNotFound",
+            "No vba-project.json was found; references were listed for the current environment.");
+        return RenderList(
+            "environment",
+            null,
+            null,
+            "available",
+            batch,
+            references,
+            format,
+            [warning]);
+    }
+
+    /// <summary>
     /// Lists references after completing any required VBE-equivalent ambiguity probe.
     /// </summary>
     /// <param name="context">The resolved project and document context.</param>
@@ -216,8 +304,29 @@ public sealed class VbaProjectReferenceService
                 "Reference list was cancelled before output was published.");
         }
 
-        var warnings = batch.Warnings
-            .Select(warning => new VbaProjectReferenceWarningOutput(warning.Code, warning.Message))
+        return RenderList(
+            "project",
+            context.ProjectRoot,
+            context.DocumentName,
+            "configured",
+            batch,
+            references,
+            format);
+    }
+
+    private static CommandResult RenderList(
+        string scope,
+        string? project,
+        string? document,
+        string mode,
+        VbaProjectReferenceResolutionBatch batch,
+        IReadOnlyList<VbaProjectReferenceListEntryOutput> references,
+        string format,
+        IReadOnlyList<VbaProjectReferenceWarningOutput>? additionalWarnings = null)
+    {
+        var warnings = (additionalWarnings ?? [])
+            .Concat(batch.Warnings.Select(warning =>
+                new VbaProjectReferenceWarningOutput(warning.Code, warning.Message)))
             .ToArray();
         var diagnostics = batch.Diagnostics.Count == 0
             ? null
@@ -226,33 +335,48 @@ public sealed class VbaProjectReferenceService
                     diagnostic.Code,
                     diagnostic.Message))
                 .ToArray();
-        var exitCode = batch.Complete
-            && references.All(reference => reference.Status == "resolved")
-                ? 0
-                : 1;
+        var complete = batch.Complete &&
+                       diagnostics is null &&
+                       references.All(reference => reference.Status != "unverified");
+        var exitCode = complete &&
+                       (mode.Equals("available", StringComparison.Ordinal) ||
+                        references.All(reference => reference.Status == "resolved"))
+            ? 0
+            : 1;
 
         if (format.Equals("json", StringComparison.OrdinalIgnoreCase))
         {
             var output = new VbaProjectReferenceListOutput(
                 "1.0",
-                "project",
-                context.ProjectRoot,
-                context.DocumentName,
-                "configured",
-                batch.Complete,
+                scope,
+                project,
+                document,
+                mode,
+                complete,
                 warnings,
                 references,
                 diagnostics);
             return new CommandResult(
                 exitCode,
                 JsonSerializer.Serialize(output, JsonOptions) + Environment.NewLine,
-                string.Empty);
+                FormatWarnings(additionalWarnings ?? []));
         }
 
         var builder = new StringBuilder();
-        builder.AppendLine($"Project: {context.ProjectRoot}");
-        builder.AppendLine($"Document: {context.DocumentName}");
-        builder.AppendLine("Configured references:");
+        builder.AppendLine($"Scope: {scope}");
+        if (project is not null)
+        {
+            builder.AppendLine($"Project: {project}");
+        }
+
+        if (document is not null)
+        {
+            builder.AppendLine($"Document: {document}");
+        }
+
+        builder.AppendLine(mode.Equals("available", StringComparison.Ordinal)
+            ? "Available references:"
+            : "Configured references:");
         var resolvedReferences = references
             .Where(reference => reference.Status == "resolved")
             .ToArray();
@@ -280,7 +404,7 @@ public sealed class VbaProjectReferenceService
             }
         }
 
-        var standardError = new StringBuilder(FormatWarnings(batch.Warnings));
+        var standardError = new StringBuilder(FormatWarnings(warnings));
         foreach (var diagnostic in batch.Diagnostics)
         {
             standardError.AppendLine($"[ERROR] {diagnostic.Code}: {diagnostic.Message}");
@@ -325,6 +449,41 @@ public sealed class VbaProjectReferenceService
             .ToArray();
     }
 
+    private static IReadOnlyList<VbaProjectReferenceListEntryOutput> CreateAvailableListReferences(
+        VbaProjectReferenceResolutionBatch batch)
+    {
+        var canonicalReferences = batch.References
+            .Select(reference =>
+            {
+                if (!reference.IsRegistered || string.IsNullOrWhiteSpace(reference.RegisteredName))
+                {
+                    throw new InvalidOperationException(
+                        "Available-reference resolution returned a name that was not registered.");
+                }
+
+                return (
+                    Name: reference.RegisteredName.Trim(),
+                    Resolution: reference);
+            })
+            .ToArray();
+        var duplicate = canonicalReferences
+            .GroupBy(reference => reference.Name, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(group => group.Count() > 1);
+        if (duplicate is not null)
+        {
+            throw new InvalidOperationException(
+                $"Available-reference resolution returned a duplicate name: '{duplicate.Key}'.");
+        }
+
+        return canonicalReferences
+            .OrderBy(reference => reference.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(reference => reference.Name, StringComparer.Ordinal)
+            .Select(reference => CreateListReference(
+                reference.Name,
+                reference.Resolution))
+            .ToArray();
+    }
+
     private static VbaProjectReferenceListEntryOutput CreateListReference(
         string manifestName,
         VbaProjectReferenceNameResolution resolution)
@@ -345,6 +504,12 @@ public sealed class VbaProjectReferenceService
             .ToArray();
         if (resolution.UnverifiedReasonCode is not null)
         {
+            if (!UnverifiedReasonCodes.Contains(resolution.UnverifiedReasonCode))
+            {
+                throw new InvalidOperationException(
+                    $"Reference resolver returned an unknown unverified reason code: '{resolution.UnverifiedReasonCode}'.");
+            }
+
             return new VbaProjectReferenceListEntryOutput(
                 manifestName,
                 "unverified",
@@ -387,7 +552,7 @@ public sealed class VbaProjectReferenceService
             "unavailable",
             null,
             reasonCode,
-            Array.Empty<VbaProjectReferenceIdentityOutput>(),
+            candidates,
             message);
     }
 
@@ -420,11 +585,16 @@ public sealed class VbaProjectReferenceService
         => string.Concat(warnings.Select(warning =>
             $"[WARN] {warning.Code}: {warning.Message}{Environment.NewLine}"));
 
+    private static string FormatWarnings(
+        IReadOnlyList<VbaProjectReferenceWarningOutput> warnings)
+        => string.Concat(warnings.Select(warning =>
+            $"[WARN] {warning.Code}: {warning.Message}{Environment.NewLine}"));
+
     private sealed record VbaProjectReferenceListOutput(
         string SchemaVersion,
         string Scope,
-        string Project,
-        string Document,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] string? Project,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] string? Document,
         string Mode,
         bool Complete,
         IReadOnlyList<VbaProjectReferenceWarningOutput> Warnings,

@@ -69,6 +69,27 @@ public sealed class ProjectContextResolver
             CommonModulesRepositoryPath: project.CommonModulesRepositoryPath);
     }
 
+    /// <summary>
+    /// Resolves the primary document only when upward discovery finds a project manifest.
+    /// </summary>
+    /// <param name="startDirectory">The directory from which to walk upward.</param>
+    /// <param name="context">The resolved primary-document context when found.</param>
+    /// <returns><see langword="true"/> when a manifest was discovered; otherwise <see langword="false"/>.</returns>
+    public bool TryResolveImplicitDocumentContext(
+        string startDirectory,
+        out ResolvedProjectContext? context)
+    {
+        var projectRoot = FindImplicitProjectRoot(startDirectory);
+        if (projectRoot is null)
+        {
+            context = null;
+            return false;
+        }
+
+        context = Resolve(new ProjectResolutionRequest(projectRoot, null, startDirectory));
+        return true;
+    }
+
     private static string ResolveProjectRoot(ProjectResolutionRequest request)
     {
         if (!string.IsNullOrWhiteSpace(request.ProjectRoot))
@@ -83,7 +104,18 @@ public sealed class ProjectContextResolver
             return explicitRoot;
         }
 
-        var current = new DirectoryInfo(Path.GetFullPath(request.StartDirectory));
+        var discoveredRoot = FindImplicitProjectRoot(request.StartDirectory);
+        if (discoveredRoot is not null)
+        {
+            return discoveredRoot;
+        }
+
+        throw new ProjectManifestException($"Project manifest was not found while walking upward from: {request.StartDirectory}");
+    }
+
+    private static string? FindImplicitProjectRoot(string startDirectory)
+    {
+        var current = new DirectoryInfo(Path.GetFullPath(startDirectory));
         while (current is not null)
         {
             if (File.Exists(Path.Combine(current.FullName, ProjectManifest.ManifestFileName)))
@@ -94,7 +126,7 @@ public sealed class ProjectContextResolver
             current = current.Parent;
         }
 
-        throw new ProjectManifestException($"Project manifest was not found while walking upward from: {request.StartDirectory}");
+        return null;
     }
 
     private static bool TryGetDocument(ProjectManifest manifest, string documentName, out ProjectDocument document)

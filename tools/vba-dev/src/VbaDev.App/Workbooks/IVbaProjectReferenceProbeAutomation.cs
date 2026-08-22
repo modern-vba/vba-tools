@@ -9,7 +9,7 @@ public interface IVbaProjectReferenceProbeAutomation
     /// Runs one operation through a single bounded, invocation-owned probe process.
     /// </summary>
     Task<TResult> RunAsync<TResult>(
-        string baselineWorkbookPath,
+        VbaProjectReferenceProbeBaseline baseline,
         WorkbookAutomationTimeouts timeouts,
         Func<IVbaProjectReferenceProbeSession, CancellationToken, Task<TResult>> operation,
         CancellationToken cancellationToken);
@@ -24,7 +24,6 @@ public interface IVbaProjectReferenceProbeSession
     /// Attempts one registered GUID/version candidate against a fresh baseline copy.
     /// </summary>
     Task<VbaProjectReferenceProbeAttemptResult> TryResolveAsync(
-        string baselineWorkbookPath,
         string referenceName,
         ResolvedVbaProjectReference candidate,
         CancellationToken cancellationToken);

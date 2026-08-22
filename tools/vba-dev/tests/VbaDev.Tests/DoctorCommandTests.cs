@@ -610,11 +610,11 @@ public sealed class DoctorCommandTests
         public List<string> BaselineWorkbookPaths { get; } = [];
 
         public Task<VbaProjectReferenceResolutionBatch> ResolveAsync(
-            string baselineWorkbookPath,
+            VbaProjectReferenceProbeBaseline baseline,
             VbaProjectReferenceResolutionBatch registryResolution,
             CancellationToken cancellationToken)
         {
-            BaselineWorkbookPaths.Add(baselineWorkbookPath);
+            BaselineWorkbookPaths.Add(baseline.WorkbookPath!);
             return Task.FromResult(registryResolution with
             {
                 References = registryResolution.References

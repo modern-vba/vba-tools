@@ -61,6 +61,82 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomationTests
     }
 
     [Fact]
+    public async Task UsesOneOwnedProcessAndAFreshBlankWorkbookForEveryCandidateAttempt()
+    {
+        var lifecycle = new FakeReferenceProbeLifecycle();
+        var automation = new ExcelComVbaProjectReferenceProbeAutomation(
+            new ImmediateDispatcherFactory(),
+            lifecycle);
+        var probe = new VbaProjectReferenceAmbiguityProbe(automation);
+        var registryResolution = new VbaProjectReferenceResolutionBatch(
+            true,
+            [],
+            null,
+            [
+                new VbaProjectReferenceNameResolution(
+                    "Widget Library",
+                    "Widget Library",
+                    true,
+                    [
+                        new ResolvedVbaProjectReference(
+                            "Widget Library",
+                            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                            1,
+                            0),
+                        new ResolvedVbaProjectReference(
+                            "Widget Library",
+                            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                            2,
+                            0)
+                    ])
+            ]);
+
+        var result = await probe.ResolveAsync(
+            VbaProjectReferenceProbeBaseline.BlankWorkbook,
+            registryResolution,
+            CancellationToken.None);
+
+        Assert.True(result.Complete);
+        Assert.Equal(2, Assert.Single(result.References).Matches.Count);
+        Assert.Equal(1, lifecycle.StartCalls);
+        Assert.Equal(1, lifecycle.DisposeHostCalls);
+        Assert.Equal(2, lifecycle.BlankWorkbookCreations);
+        Assert.Equal(2, lifecycle.BlankWorkbooks.Distinct().Count());
+        Assert.Empty(lifecycle.OpenedWorkbookPaths);
+        Assert.Equal(2, lifecycle.CloseWithoutSaveCalls);
+        Assert.Equal(2, lifecycle.ReleaseReferenceCalls);
+    }
+
+    [Fact]
+    public async Task BlankWorkbookCreationFailureIsReportedAsAnUnavailableProbeBaseline()
+    {
+        var lifecycle = new FakeReferenceProbeLifecycle
+        {
+            CreateBlankWorkbookError = new InvalidOperationException(
+                "A blank workbook could not be created.")
+        };
+        var probe = new VbaProjectReferenceAmbiguityProbe(
+            new ExcelComVbaProjectReferenceProbeAutomation(
+                new ImmediateDispatcherFactory(),
+                lifecycle));
+
+        var result = await probe.ResolveAsync(
+            VbaProjectReferenceProbeBaseline.BlankWorkbook,
+            CreateAmbiguousRegistryResolution(),
+            CancellationToken.None);
+
+        Assert.False(result.Complete);
+        Assert.Equal("probeAborted", Assert.Single(result.References).UnverifiedReasonCode);
+        var diagnostic = Assert.Single(result.Diagnostics);
+        Assert.Equal("probeBaselineUnavailable", diagnostic.Code);
+        Assert.Contains("blank-workbook", diagnostic.Message, StringComparison.Ordinal);
+        Assert.Equal(1, lifecycle.StartCalls);
+        Assert.Equal(1, lifecycle.DisposeHostCalls);
+        Assert.Equal(1, lifecycle.BlankWorkbookCreations);
+        Assert.Equal(0, lifecycle.CloseWithoutSaveCalls);
+    }
+
+    [Fact]
     public async Task IdentityReadFailureRemainsCandidateLocalAfterVerifiedBaselineCleanup()
     {
         using var temp = TempDirectory.Create();
@@ -595,6 +671,30 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomationTests
         }
     }
 
+    private static VbaProjectReferenceResolutionBatch CreateAmbiguousRegistryResolution()
+        => new(
+            true,
+            [],
+            null,
+            [
+                new VbaProjectReferenceNameResolution(
+                    "Widget Library",
+                    "Widget Library",
+                    true,
+                    [
+                        new ResolvedVbaProjectReference(
+                            "Widget Library",
+                            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                            1,
+                            0),
+                        new ResolvedVbaProjectReference(
+                            "Widget Library",
+                            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                            2,
+                            0)
+                    ])
+            ]);
+
     private sealed class FakeReferenceProbeLifecycle : IExcelComVbaProjectReferenceProbeLifecycle
     {
         private readonly FakeOwnedProcess owner = new();
@@ -607,17 +707,25 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomationTests
 
         public int AddReferenceCalls { get; private set; }
 
+        public int BlankWorkbookCreations { get; private set; }
+
+        public int ReleaseReferenceCalls { get; private set; }
+
         public int TerminateCalls => owner.TerminateCalls;
 
         public List<string> OpenedWorkbookPaths { get; } = [];
 
         public List<string> ObservedBaselineContents { get; } = [];
 
+        public List<object> BlankWorkbooks { get; } = [];
+
         public Exception? ReadIdentityError { get; init; }
 
         public ResolvedVbaProjectReference? ExistingReference { get; init; }
 
         public Exception? OpenWorkbookError { get; init; }
+
+        public Exception? CreateBlankWorkbookError { get; init; }
 
         public Exception? FindReferenceError { get; init; }
 
@@ -640,6 +748,19 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomationTests
             }
 
             return workbookPath;
+        }
+
+        public object CreateBlankWorkbook(object host)
+        {
+            BlankWorkbookCreations++;
+            if (CreateBlankWorkbookError is not null)
+            {
+                throw CreateBlankWorkbookError;
+            }
+
+            var workbook = new object();
+            BlankWorkbooks.Add(workbook);
+            return workbook;
         }
 
         public object? FindReference(object workbook, string referenceName)
@@ -674,6 +795,7 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomationTests
 
         public void ReleaseReference(object? reference)
         {
+            ReleaseReferenceCalls++;
         }
 
         public void CloseWorkbookWithoutSave(object workbook)

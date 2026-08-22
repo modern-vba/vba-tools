@@ -100,6 +100,47 @@ public sealed class RegistryVbaProjectReferenceResolverTests
         Assert.Equal(1, reader.ReadCount);
     }
 
+    [Fact]
+    public void ResolveAvailableReturnsEveryCatalogDescriptionFromOneSnapshot()
+    {
+        var warning = new TypeLibRegistryCatalogWarning(
+            "malformedRegistrationsSkipped",
+            "Skipped one malformed TypeLib registration.",
+            1);
+        var catalog = new TypeLibRegistryCatalog(
+            complete: true,
+            names:
+            [
+                new TypeLibRegistryCatalogName(
+                    "Alpha Library",
+                    [
+                        new TypeLibRegistryLineage(
+                            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                            [new TypeLibRegistryVersion(1, 0, [])])
+                    ]),
+                new TypeLibRegistryCatalogName("Broken Library", [])
+            ],
+            warnings: [warning],
+            diagnostic: null);
+        var reader = new FakeTypeLibRegistryCatalogReader(catalog);
+        var resolver = new RegistryVbaProjectReferenceResolver(reader);
+
+        var first = resolver.ResolveAvailable();
+        var second = resolver.ResolveAvailable();
+
+        Assert.Equal(1, reader.ReadCount);
+        Assert.Equal([warning], first.Warnings);
+        Assert.Equal(
+            ["Alpha Library", "Broken Library"],
+            first.References.Select(reference => reference.RequestedName));
+        Assert.All(first.References, reference => Assert.True(reference.IsRegistered));
+        Assert.Single(first.References[0].Matches);
+        Assert.Empty(first.References[1].Matches);
+        Assert.Equal(
+            first.References.Select(reference => reference.RequestedName),
+            second.References.Select(reference => reference.RequestedName));
+    }
+
     private sealed class FakeTypeLibRegistryCatalogReader(TypeLibRegistryCatalog catalog)
         : ITypeLibRegistryCatalogReader
     {

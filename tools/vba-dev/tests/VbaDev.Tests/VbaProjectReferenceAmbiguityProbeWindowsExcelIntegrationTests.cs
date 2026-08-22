@@ -60,6 +60,40 @@ public sealed class VbaProjectReferenceAmbiguityProbeWindowsExcelIntegrationTest
         Assert.True(initialProcesses.SetEquals(CaptureExcelProcessIds()));
     }
 
+    [WindowsExcelIntegrationFact]
+    [Trait("Category", "WindowsExcelIntegration")]
+    public async Task RealVbeResolvesAmbiguityFromFreshBlankWorkbooksWithoutProbeFiles()
+    {
+        var initialProcesses = CaptureExcelProcessIds();
+        var initialProbeWorkspaces = CaptureProbeWorkspaces();
+        var probe = new VbaProjectReferenceAmbiguityProbe(
+            new ExcelComVbaProjectReferenceProbeAutomation());
+        var registryResolution = CreateRegistryResolution();
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+
+        VbaProjectReferenceResolutionBatch result;
+        try
+        {
+            result = await probe.ResolveAsync(
+                VbaProjectReferenceProbeBaseline.BlankWorkbook,
+                registryResolution,
+                cancellation.Token);
+        }
+        finally
+        {
+            await WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20));
+        }
+
+        Assert.True(result.Complete);
+        Assert.Empty(result.Diagnostics);
+        var selected = Assert.Single(result.References[0].Matches);
+        Assert.Equal(ScriptingGuid, selected.Guid);
+        Assert.Equal(1, selected.Major);
+        Assert.Equal(0, selected.Minor);
+        Assert.True(initialProbeWorkspaces.SetEquals(CaptureProbeWorkspaces()));
+        Assert.True(initialProcesses.SetEquals(CaptureExcelProcessIds()));
+    }
+
     private static VbaProjectReferenceResolutionBatch CreateRegistryResolution()
     {
         var unavailableGuid = "11111111-2222-3333-4444-555555555555";

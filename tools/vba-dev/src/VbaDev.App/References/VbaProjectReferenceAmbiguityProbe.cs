@@ -15,21 +15,20 @@ public sealed class VbaProjectReferenceAmbiguityProbe(
 
     /// <inheritdoc />
     public async Task<VbaProjectReferenceResolutionBatch> ResolveAsync(
-        string baselineWorkbookPath,
+        VbaProjectReferenceProbeBaseline baseline,
         VbaProjectReferenceResolutionBatch registryResolution,
         CancellationToken cancellationToken)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(baselineWorkbookPath);
+        ArgumentNullException.ThrowIfNull(baseline);
         ArgumentNullException.ThrowIfNull(registryResolution);
 
         try
         {
             return await automation.RunAsync(
-                    baselineWorkbookPath,
+                    baseline,
                     timeouts,
                     (session, operationCancellationToken) => ResolveAsync(
                         session,
-                        baselineWorkbookPath,
                         registryResolution,
                         operationCancellationToken),
                     cancellationToken)
@@ -67,9 +66,20 @@ public sealed class VbaProjectReferenceAmbiguityProbe(
         }
     }
 
+    /// <summary>
+    /// Resolves ambiguity against fresh copies of an explicit source-template baseline.
+    /// </summary>
+    public Task<VbaProjectReferenceResolutionBatch> ResolveAsync(
+        string baselineWorkbookPath,
+        VbaProjectReferenceResolutionBatch registryResolution,
+        CancellationToken cancellationToken)
+        => ResolveAsync(
+            VbaProjectReferenceProbeBaseline.SourceTemplate(baselineWorkbookPath),
+            registryResolution,
+            cancellationToken);
+
     private static async Task<VbaProjectReferenceResolutionBatch> ResolveAsync(
         IVbaProjectReferenceProbeSession session,
-        string baselineWorkbookPath,
         VbaProjectReferenceResolutionBatch registryResolution,
         CancellationToken cancellationToken)
     {
@@ -99,7 +109,6 @@ public sealed class VbaProjectReferenceAmbiguityProbe(
             {
                 probeResult = await ResolveAsync(
                         session,
-                        baselineWorkbookPath,
                         reference,
                         cancellationToken)
                     .ConfigureAwait(false);
@@ -161,7 +170,6 @@ public sealed class VbaProjectReferenceAmbiguityProbe(
 
     private static async Task<ReferenceProbeResult> ResolveAsync(
         IVbaProjectReferenceProbeSession session,
-        string baselineWorkbookPath,
         VbaProjectReferenceNameResolution registryResolution,
         CancellationToken cancellationToken)
     {
@@ -178,7 +186,6 @@ public sealed class VbaProjectReferenceAmbiguityProbe(
                 try
                 {
                     attempt = await session.TryResolveAsync(
-                            baselineWorkbookPath,
                             registryResolution.RegisteredName ?? registryResolution.RequestedName,
                             candidate,
                             cancellationToken)

@@ -25,7 +25,7 @@ vba-dev --version
 | `common-module list` | document | List CommonModules entries for the selected document. |
 | `common-module update` | project | Update installed CommonModules entries. |
 | `reference add` | document | Add VBA project references to the selected document manifest. |
-| `reference list` | document | List VBA project references for the selected document. |
+| `reference list` | document or environment fallback | List configured or available VBA project references. |
 | `reference remove` | document | Remove VBA project references from the selected document manifest. |
 | `build` | document | Build the selected document into bin output. |
 | `test` | document | Run VBA unit tests for the selected document. |
@@ -175,8 +175,16 @@ Usage:
 Options:
   --project <path>               Project root containing vba-project.json.
   --document <name>, -d <name>   Document name from the project manifest.
+  --available                    List registered references not selected by the document.
   --format <text|json>, -f <text|json> Reference output format.
 ```
+
+Without `--available`, the command resolves the selected document's configured
+references in manifest order. With `--available`, project scope lists registered
+descriptions not present in the selected document. If no project or document was
+specified and upward discovery finds no manifest, available mode warns and lists
+the current environment instead. JSON output uses schema version `1.0` and marks
+that fallback with `scope: "environment"` and null project/document fields.
 
 ### reference remove
 

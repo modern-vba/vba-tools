@@ -198,6 +198,11 @@ public sealed class VbaDevCommandLine
             "1.0",
             capabilityCommands);
         var referenceListOptions = AddProjectDocumentOptions(referenceListCommand);
+        var referenceListAvailableOption = new Option<bool>("--available")
+        {
+            Description = "List registered references not selected by the document."
+        };
+        referenceListCommand.Add(referenceListAvailableOption);
         var referenceListFormatOption = CreateStringOption(
             "--format",
             "Reference output format.",
@@ -207,14 +212,12 @@ public sealed class VbaDevCommandLine
         referenceListCommand.Add(referenceListFormatOption);
         referenceListCommand.SetAction(async (parseResult, cancellationToken) => WriteCommandResult(
             parseResult,
-            await ResolveDocumentContextAsync(
+            await RunReferenceListAsync(
                     parseResult,
                     composition,
                     referenceListOptions,
-                    (context, operationCancellationToken) => composition.ReferenceService.ListAsync(
-                        context,
-                        parseResult.GetValue(referenceListFormatOption) ?? "text",
-                        operationCancellationToken),
+                    referenceListAvailableOption,
+                    referenceListFormatOption,
                     cancellationToken)
                 .ConfigureAwait(false)));
         var referenceRemoveCommand = AddCapabilityCommand(
@@ -609,6 +612,61 @@ public sealed class VbaDevCommandLine
         catch (ProjectManifestException ex)
         {
             return CommandResult.UsageError(ex.Message);
+        }
+    }
+
+    private static async Task<CommandResult> RunReferenceListAsync(
+        ParseResult parseResult,
+        ToolingApplicationComposition composition,
+        ProjectDocumentOptions options,
+        Option<bool> availableOption,
+        Option<string> formatOption,
+        CancellationToken cancellationToken)
+    {
+        var available = parseResult.GetValue(availableOption);
+        var format = parseResult.GetValue(formatOption) ?? "text";
+        if (!available ||
+            parseResult.GetResult(options.Project) is not null ||
+            parseResult.GetResult(options.Document) is not null)
+        {
+            return await ResolveDocumentContextAsync(
+                    parseResult,
+                    composition,
+                    options,
+                    (context, operationCancellationToken) => available
+                        ? composition.ReferenceService.ListAvailableAsync(
+                            context,
+                            format,
+                            operationCancellationToken)
+                        : composition.ReferenceService.ListAsync(
+                            context,
+                            format,
+                            operationCancellationToken),
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        try
+        {
+            if (composition.ProjectContextResolver.TryResolveImplicitDocumentContext(
+                    composition.WorkingDirectory,
+                    out var context))
+            {
+                return await composition.ReferenceService.ListAvailableAsync(
+                        context!,
+                        format,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            return await composition.ReferenceService.ListAvailableEnvironmentAsync(
+                    format,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (ProjectManifestException exception)
+        {
+            return CommandResult.UsageError(exception.Message);
         }
     }
 

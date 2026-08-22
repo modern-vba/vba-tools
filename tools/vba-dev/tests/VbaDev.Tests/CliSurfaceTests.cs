@@ -121,7 +121,7 @@ public sealed class CliSurfaceTests
             ["common-module list"] = ["--project <path>", "--document <name>", "--format <text|json>", "-f"],
             ["common-module update"] = ["--project <path>"],
             ["reference add"] = ["--project <path>", "--document <name>", "-d"],
-            ["reference list"] = ["--project <path>", "--document <name>", "--format <text|json>", "-f"],
+            ["reference list"] = ["--project <path>", "--document <name>", "--available", "--format <text|json>", "-f"],
             ["reference remove"] = ["--project <path>", "--document <name>", "-d"],
             ["build"] = ["--project <path>", "--document <name>", "-d"],
             ["test"] = ["--project <path>", "--document <name>", "--format <text|ndjson>", "--no-build"],
