@@ -194,11 +194,63 @@ public sealed class NewProjectCommandTests
         Assert.Equal("../common_modules_repo", manifest.CommonModulesRepository);
         Assert.Equal(
             [
-                new InstalledCommonModule("Core", Requested: false),
-                new InstalledCommonModule("Runtime", Requested: true),
-                new InstalledCommonModule("UnitTest", Requested: true)
+                new InstalledCommonModule("Core", "Core.bas", Requested: false, TestOnly: false),
+                new InstalledCommonModule("Runtime", "Runtime.bas", Requested: true, TestOnly: false),
+                new InstalledCommonModule("UnitTest", "UnitTest.bas", Requested: true, TestOnly: true)
             ],
             manifest.Documents["SampleProject"].CommonModules);
+    }
+
+    [Fact]
+    public void NewRejectsFlatInstalledIdentityCollisionBeforeCopyingCommonModules()
+    {
+        using var temp = TempDirectory.Create();
+        var commonModulesRepository = Path.Combine(temp.Path, "common_modules_repo");
+        Directory.CreateDirectory(commonModulesRepository);
+        WriteCommonModulesManifest(
+            commonModulesRepository,
+            ("a/Foo.bas", "optional", ""),
+            ("b/FOO.bas", "optional", ""),
+            ("Root.bas", "runtime-baseline", "a/Foo.bas,b/FOO.bas"));
+        WriteModule(commonModulesRepository, Path.Combine("a", "Foo.bas"), "first foo");
+        WriteModule(commonModulesRepository, Path.Combine("b", "FOO.bas"), "second foo");
+        WriteModule(commonModulesRepository, "Root.bas", "root");
+        var application = CommandLineTestFactory.Create(
+            temp.Path,
+            initialWorkbookCreator: new FakeInitialWorkbookCreator());
+
+        var result = application.Run(["new", "excel", "--name", "SampleProject"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("duplicate CommonModules", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        var projectRoot = Path.Combine(temp.Path, "SampleProject");
+        var sourceSet = Path.Combine(projectRoot, "src", "SampleProject");
+        Assert.False(Directory.Exists(Path.Combine(sourceSet, "common-modules")));
+        Assert.False(File.Exists(Path.Combine(projectRoot, ProjectManifest.ManifestFileName)));
+    }
+
+    [Fact]
+    public void NewPreflightsEverySelectedCommonModulesSourceBeforeCopyingCommonModules()
+    {
+        using var temp = TempDirectory.Create();
+        var commonModulesRepository = temp.CreateDirectory("common_modules_repo");
+        WriteCommonModulesManifest(
+            commonModulesRepository,
+            ("First.bas", "runtime-baseline", ""),
+            ("Missing.bas", "test-foundation", ""));
+        WriteModule(commonModulesRepository, "First.bas", "first");
+        var application = CommandLineTestFactory.Create(
+            temp.Path,
+            initialWorkbookCreator: new FakeInitialWorkbookCreator());
+
+        var result = application.Run(["new", "excel", "--name", "SampleProject"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("source file was not found", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        var projectRoot = Path.Combine(temp.Path, "SampleProject");
+        var sourceSet = Path.Combine(projectRoot, "src", "SampleProject");
+        Assert.False(Directory.Exists(Path.Combine(sourceSet, "common-modules")));
+        Assert.False(File.Exists(Path.Combine(projectRoot, ProjectManifest.ManifestFileName)));
     }
 
     private static void WriteCommonModulesManifest(string commonModulesRepository)
@@ -212,6 +264,28 @@ public sealed class NewProjectCommandTests
             "UnitTest.bas\ttest-foundation\tRuntime.bas",
             "Optional.bas\toptional\t") + "\n";
         File.WriteAllText(Path.Combine(commonModulesRepository, "common-modules-manifest.tsv"), text, new UTF8Encoding(false));
+    }
+
+    private static void WriteCommonModulesManifest(
+        string commonModulesRepository,
+        params (string ModuleFile, string Categories, string Dependencies)[] rows)
+    {
+        var lines = new List<string>
+        {
+            "ModuleFile\tCategories\tDependencies"
+        };
+        lines.AddRange(rows.Select(row => $"{row.ModuleFile}\t{row.Categories}\t{row.Dependencies}"));
+        File.WriteAllText(
+            Path.Combine(commonModulesRepository, "common-modules-manifest.tsv"),
+            string.Join("\n", lines) + "\n",
+            new UTF8Encoding(false));
+    }
+
+    private static void WriteModule(string directory, string fileName, string content)
+    {
+        var path = Path.Combine(directory, fileName);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, content, new UTF8Encoding(false));
     }
 }
 

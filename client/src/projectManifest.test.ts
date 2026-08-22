@@ -9,7 +9,7 @@ test('ProjectManifest adapter reads canonical manifest fixture for Test Explorer
   const manifest = parseProjectManifest(readProjectManifestFixture('document-source-set.json'));
 
   assert.deepEqual(manifest, {
-    projectName: 'BookProject',
+    projectName: 'DocumentSourceSetProject',
     primaryDocument: 'Book1',
     documents: [
       {

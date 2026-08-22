@@ -24,6 +24,15 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
     /// <inheritdoc />
     public void AddDiagnostics(List<DiagnosticResult> results, ResolvedProject project)
     {
+        foreach (var (documentName, document) in project.Manifest.Documents.OrderBy(item => item.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            var sourceSetPath = project.ResolvePath(document.SourcePath);
+            foreach (var module in document.CommonModules)
+            {
+                AddStoredSourceDiagnostic(results, documentName, module, sourceSetPath);
+            }
+        }
+
         if (project.CommonModulesRepositoryPath is null || !Directory.Exists(project.CommonModulesRepositoryPath))
         {
             return;
@@ -43,11 +52,34 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
         var entriesByFile = entries.ToDictionary(entry => entry.ModuleFile, StringComparer.OrdinalIgnoreCase);
         foreach (var (documentName, document) in project.Manifest.Documents.OrderBy(item => item.Key, StringComparer.OrdinalIgnoreCase))
         {
-            AddDocumentCommonModulesDiagnostics(results, project, documentName, document, entries, entriesByFile);
+            AddDocumentRepositoryDiagnostics(results, project, documentName, document, entries, entriesByFile);
         }
     }
 
-    private static void AddDocumentCommonModulesDiagnostics(
+    private static void AddStoredSourceDiagnostic(
+        List<DiagnosticResult> results,
+        string documentName,
+        InstalledCommonModule module,
+        string sourceSetPath)
+    {
+        var sourceMatches = DocumentSourceSetLayout.FindSourceMatches(sourceSetPath, module.ModuleFile);
+        if (sourceMatches.Count == 0)
+        {
+            results.Add(DiagnosticResult.Fail(
+                $"CommonModules ({documentName}/{module.Name})",
+                $"Installed CommonModule source file was not found under {sourceSetPath}: {module.ModuleFile}."));
+            return;
+        }
+
+        if (sourceMatches.Count > 1)
+        {
+            results.Add(DiagnosticResult.Fail(
+                $"CommonModules ({documentName}/{module.Name})",
+                $"Installed CommonModule has multiple source matches for '{module.ModuleFile}': {string.Join(", ", sourceMatches)}."));
+        }
+    }
+
+    private static void AddDocumentRepositoryDiagnostics(
         List<DiagnosticResult> results,
         ResolvedProject project,
         string documentName,
@@ -100,7 +132,7 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
                     "Installed dependency entry is unreachable from requested CommonModules roots."));
             }
 
-            AddSourceDriftDiagnostic(results, documentName, module.Name, sourceSetPath, project.CommonModulesRepositoryPath!, entry);
+            AddSourceDriftDiagnostic(results, documentName, module, sourceSetPath, project.CommonModulesRepositoryPath!, entry);
         }
     }
 
@@ -152,42 +184,43 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
     private static void AddSourceDriftDiagnostic(
         List<DiagnosticResult> results,
         string documentName,
-        string moduleName,
+        InstalledCommonModule module,
         string sourceSetPath,
         string commonModulesRepositoryPath,
         CommonModuleManifestEntry entry)
     {
-        var sourceMatches = DocumentSourceSetLayout.FindSourceMatches(sourceSetPath, entry.ModuleFile);
+        var sourceMatches = DocumentSourceSetLayout.FindSourceMatches(sourceSetPath, module.ModuleFile);
         var repositoryPath = Path.Combine(commonModulesRepositoryPath, entry.ModuleFile);
-        if (sourceMatches.Count == 0)
+        if (sourceMatches.Count != 1)
         {
-            results.Add(DiagnosticResult.Fail(
-                $"CommonModules ({documentName}/{moduleName})",
-                $"Manifest-listed source file was not found under {sourceSetPath}: {entry.ModuleFile}."));
-            return;
-        }
-
-        if (sourceMatches.Count > 1)
-        {
-            results.Add(DiagnosticResult.Fail(
-                $"CommonModules ({documentName}/{moduleName})",
-                $"Installed CommonModule has multiple source matches for '{entry.ModuleFile}': {string.Join(", ", sourceMatches)}."));
             return;
         }
 
         if (!File.Exists(repositoryPath))
         {
             results.Add(DiagnosticResult.Fail(
-                $"CommonModules ({documentName}/{moduleName})",
+                $"CommonModules ({documentName}/{module.Name})",
                 $"CommonModulesRepository source file was not found: {repositoryPath}."));
             return;
         }
 
         var sourcePath = sourceMatches[0];
-        if (!File.ReadAllBytes(sourcePath).SequenceEqual(File.ReadAllBytes(repositoryPath)))
+        var sourceSidecarPath = DocumentSourceSetLayout.ResolveExistingSidecarPath(sourcePath);
+        var repositorySidecarPath = DocumentSourceSetLayout.ResolveExistingSidecarPath(repositoryPath);
+        var hasDifferentFormSidecar = false;
+        if (DocumentSourceSetLayout.IsFormFile(sourcePath) &&
+            DocumentSourceSetLayout.IsFormFile(repositoryPath))
+        {
+            hasDifferentFormSidecar = sourceSidecarPath is null || repositorySidecarPath is null
+                ? sourceSidecarPath != repositorySidecarPath
+                : !File.ReadAllBytes(sourceSidecarPath).SequenceEqual(File.ReadAllBytes(repositorySidecarPath));
+        }
+
+        if (!File.ReadAllBytes(sourcePath).SequenceEqual(File.ReadAllBytes(repositoryPath)) ||
+            hasDifferentFormSidecar)
         {
             results.Add(DiagnosticResult.Warn(
-                $"CommonModules ({documentName}/{moduleName})",
+                $"CommonModules ({documentName}/{module.Name})",
                 $"Source file differs from CommonModulesRepository: {sourcePath}."));
         }
     }

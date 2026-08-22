@@ -89,7 +89,9 @@
       "type": "object",
       "required": [
         "name",
-        "requested"
+        "moduleFile",
+        "requested",
+        "testOnly"
       ],
       "additionalProperties": false,
       "properties": {
@@ -97,7 +99,15 @@
           "type": "string",
           "minLength": 1
         },
+        "moduleFile": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^/\\\\]+\\.([bB][aA][sS]|[cC][lL][sS]|[fF][rR][mM])$"
+        },
         "requested": {
+          "type": "boolean"
+        },
+        "testOnly": {
           "type": "boolean"
         }
       }

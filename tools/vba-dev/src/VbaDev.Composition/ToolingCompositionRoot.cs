@@ -48,7 +48,7 @@ public static class ToolingCompositionRoot
         var referencePlanner = new VbaProjectReferencePlanner(
             vbaProjectReferenceResolver ?? new RegistryVbaProjectReferenceResolver());
         var buildAutomation = workbookBuildAutomation ?? new ExcelComWorkbookBuildAutomation();
-        var sourcePlanner = new WorkbookSourcePlanner(commonModulesManifestReader);
+        var sourcePlanner = new WorkbookSourcePlanner();
         var generationPipeline = new WorkbookGenerationPipeline(
             buildAutomation,
             new WorkbookReferenceNormalizer(referencePlanner));
@@ -126,8 +126,7 @@ public static class ToolingCompositionRoot
             manifestStore,
             initialWorkbookCreator ?? new ExcelComInitialWorkbookCreator(),
             commonModulesManifestReader);
-        var sourcePlanner = new WorkbookSourcePlanner(
-            commonModulesManifestReader);
+        var sourcePlanner = new WorkbookSourcePlanner();
         var generationPipeline = new WorkbookGenerationPipeline(
             buildAutomation,
             new WorkbookReferenceNormalizer(referencePlanner));

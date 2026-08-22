@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using VbaDev.App.Projects;
 using VbaDev.Domain;
 using VbaDev.Infrastructure.Projects;
@@ -21,8 +22,8 @@ public sealed class ProjectManifestTests
             projectRoot,
             commonModulesRepository,
             [
-                new InstalledCommonModule("Runtime", Requested: true),
-                new InstalledCommonModule("CommonDependency", Requested: false)
+                new InstalledCommonModule("Runtime", "Runtime.bas", Requested: true, TestOnly: false),
+                new InstalledCommonModule("CommonDependency", "CommonDependency.cls", Requested: false, TestOnly: true)
             ],
             [new VbaProjectReference("Microsoft Scripting Runtime")]);
         var store = new JsonProjectManifestStore();
@@ -35,13 +36,18 @@ public sealed class ProjectManifestTests
         Assert.Equal(0xFE, bytes[1]);
 
         using var document = JsonDocument.Parse(Encoding.Unicode.GetString(bytes[2..]));
+        Assert.Equal(1, document.RootElement.GetProperty("schemaVersion").GetInt32());
         Assert.Equal("../common_modules_repo", document.RootElement.GetProperty("commonModulesRepository").GetString());
         var book = document.RootElement.GetProperty("documents").GetProperty("Book1");
         var commonModules = book.GetProperty("commonModules");
         Assert.Equal("Runtime", commonModules[0].GetProperty("name").GetString());
+        Assert.Equal("Runtime.bas", commonModules[0].GetProperty("moduleFile").GetString());
         Assert.True(commonModules[0].GetProperty("requested").GetBoolean());
+        Assert.False(commonModules[0].GetProperty("testOnly").GetBoolean());
         Assert.Equal("CommonDependency", commonModules[1].GetProperty("name").GetString());
+        Assert.Equal("CommonDependency.cls", commonModules[1].GetProperty("moduleFile").GetString());
         Assert.False(commonModules[1].GetProperty("requested").GetBoolean());
+        Assert.True(commonModules[1].GetProperty("testOnly").GetBoolean());
         Assert.Equal("Microsoft Scripting Runtime", book.GetProperty("references")[0].GetProperty("name").GetString());
     }
 
@@ -63,6 +69,74 @@ public sealed class ProjectManifestTests
         Assert.Equal("Utf8Project", utf8Manifest.ProjectName);
         Assert.Empty(utf8Manifest.Documents["Book1"].CommonModules);
         Assert.Empty(utf8Manifest.Documents["Book1"].References);
+    }
+
+    [Theory]
+    [InlineData("name")]
+    [InlineData("moduleFile")]
+    [InlineData("requested")]
+    [InlineData("testOnly")]
+    public void InstalledCommonModuleRequiresCompleteBaseMetadata(string propertyToRemove)
+    {
+        var json = $$"""
+        {
+          "schemaVersion": 1,
+          "projectName": "Project",
+          "primaryDocument": "Book1",
+          "documents": {
+            "Book1": {
+              "kind": "excel",
+              "sourcePath": "src/Book1",
+              "templatePath": "src/Book1/Book1.xlsm",
+              "binPath": "bin/Book1.xlsm",
+              "publishPath": "publish/Book1.xlsm",
+              "commonModules": [
+                {
+                  "name": "Runtime",
+                  "moduleFile": "Runtime.bas",
+                  "requested": true,
+                  "testOnly": false
+                }
+              ]
+            }
+          }
+        }
+        """;
+        var node = JsonNode.Parse(json)!;
+        var installed = node["documents"]!["Book1"]!["commonModules"]![0]!.AsObject();
+        installed.Remove(propertyToRemove);
+
+        var ex = Assert.Throws<VbaProjectManifestException>(
+            () => ProjectManifestReader.Parse(node.ToJsonString(), "vba-project.json"));
+
+        Assert.Contains(propertyToRemove, ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void InstalledCommonModuleRejectsNullArrayEntryAsManifestError()
+    {
+        var json = """
+        {
+          "schemaVersion": 1,
+          "projectName": "Project",
+          "primaryDocument": "Book1",
+          "documents": {
+            "Book1": {
+              "kind": "excel",
+              "sourcePath": "src/Book1",
+              "templatePath": "src/Book1/Book1.xlsm",
+              "binPath": "bin/Book1.xlsm",
+              "publishPath": "publish/Book1.xlsm",
+              "commonModules": [null]
+            }
+          }
+        }
+        """;
+
+        var ex = Assert.Throws<VbaProjectManifestException>(
+            () => ProjectManifestReader.Parse(json, "vba-project.json"));
+
+        Assert.Contains("null CommonModules entry", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

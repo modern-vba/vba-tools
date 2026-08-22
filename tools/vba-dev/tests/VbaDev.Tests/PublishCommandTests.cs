@@ -42,16 +42,19 @@ public sealed class PublishCommandTests
     }
 
     [Fact]
-    public void PublishExcludesCommonModulesTestOnlyClassifications()
+    public void PublishExcludesRecordedTestOnlyCommonModulesWithoutRepositoryLookup()
     {
         using var temp = TempDirectory.Create();
         var root = temp.CreateDirectory("Project");
-        var commonModulesRepository = temp.CreateDirectory("common_modules_repo");
-        File.WriteAllText(
-            Path.Combine(commonModulesRepository, "common-modules-manifest.tsv"),
-            "ModuleFile\tCategories\tDependencies\nRuntime.bas\truntime\t\nLib_UnitTest.bas\ttest-foundation\tRuntime.bas\nWorkbookServiceTestDouble.cls\ttest-double\tRuntime.bas\n",
-            Encoding.UTF8);
-        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, commonModulesRepository));
+        var missingCommonModulesRepository = Path.Combine(temp.Path, "missing_common_modules_repo");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, missingCommonModulesRepository);
+        manifest.Documents["Book1"].CommonModules.AddRange(
+        [
+            new InstalledCommonModule("Runtime", "Runtime.bas", Requested: true, TestOnly: false),
+            new InstalledCommonModule("Lib_UnitTest", "Lib_UnitTest.bas", Requested: true, TestOnly: true),
+            new InstalledCommonModule("WorkbookServiceTestDouble", "WorkbookServiceTestDouble.cls", Requested: false, TestOnly: true)
+        ]);
+        new JsonProjectManifestStore().Save(root, manifest);
         CreateWorkbookSource(
             root,
             "Book1",

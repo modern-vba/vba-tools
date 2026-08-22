@@ -53,7 +53,7 @@ public static class ProjectManifestReader
         }
         catch (JsonException ex)
         {
-            throw new VbaProjectManifestException($"Project manifest could not be parsed: {manifestName}", ex);
+            throw new VbaProjectManifestException($"Project manifest could not be parsed: {manifestName}. {ex.Message}", ex);
         }
 
         if (manifest is null)
@@ -129,11 +129,44 @@ public static class ProjectManifestValidator
             throw new VbaProjectManifestException($"Document '{name}' must define sourcePath, templatePath, binPath, and publishPath: {manifestName}");
         }
 
+        var commonModuleNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var commonModuleFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var commonModule in document.CommonModules ?? [])
         {
+            if (commonModule is null)
+            {
+                throw new VbaProjectManifestException($"Document '{name}' contains a null CommonModules entry: {manifestName}");
+            }
+
             if (string.IsNullOrWhiteSpace(commonModule.Name))
             {
                 throw new VbaProjectManifestException($"Document '{name}' contains an empty CommonModules name: {manifestName}");
+            }
+
+            if (string.IsNullOrWhiteSpace(commonModule.ModuleFile))
+            {
+                throw new VbaProjectManifestException($"Document '{name}' contains an empty CommonModules moduleFile for '{commonModule.Name}': {manifestName}");
+            }
+
+            if (!string.Equals(commonModule.ModuleFile, Path.GetFileName(commonModule.ModuleFile), StringComparison.Ordinal)
+                || !IsSupportedVbaSourceFile(commonModule.ModuleFile))
+            {
+                throw new VbaProjectManifestException($"Document '{name}' contains invalid CommonModules moduleFile '{commonModule.ModuleFile}': {manifestName}");
+            }
+
+            if (!string.Equals(commonModule.Name, Path.GetFileNameWithoutExtension(commonModule.ModuleFile), StringComparison.OrdinalIgnoreCase))
+            {
+                throw new VbaProjectManifestException($"Document '{name}' CommonModules name '{commonModule.Name}' does not match moduleFile '{commonModule.ModuleFile}': {manifestName}");
+            }
+
+            if (!commonModuleNames.Add(commonModule.Name))
+            {
+                throw new VbaProjectManifestException($"Document '{name}' contains duplicate CommonModules name '{commonModule.Name}': {manifestName}");
+            }
+
+            if (!commonModuleFiles.Add(commonModule.ModuleFile))
+            {
+                throw new VbaProjectManifestException($"Document '{name}' contains duplicate CommonModules moduleFile '{commonModule.ModuleFile}': {manifestName}");
             }
         }
 
@@ -145,4 +178,7 @@ public static class ProjectManifestValidator
             }
         }
     }
+
+    private static bool IsSupportedVbaSourceFile(string path)
+        => Path.GetExtension(path).ToLowerInvariant() is ".bas" or ".cls" or ".frm";
 }

@@ -61,6 +61,7 @@ public sealed class CommonModulesInstallationTransaction
         var repositoryPath = GetRepositoryPath(context);
         var entries = manifestReader.Load(repositoryPath);
         var orderedEntries = CommonModulesDependencyResolver.ResolveRequestedEntries(entries, normalizedRequestedModules);
+        ValidateSelectedEntryIdentities(orderedEntries);
         var requestedNames = normalizedRequestedModules
             .Select(GetCommonModuleName)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -69,12 +70,14 @@ public sealed class CommonModulesInstallationTransaction
         var installedByName = document.CommonModules.ToDictionary(
             module => module.Name,
             StringComparer.OrdinalIgnoreCase);
+        ValidateInstalledSourceIdentities(orderedEntries, installedByName);
         var entriesToCopy = orderedEntries
-            .Where(entry => !installedByName.ContainsKey(GetCommonModuleName(entry.ModuleFile)))
+            .Where(entry => !installedByName.ContainsKey(entry.Name))
             .ToArray();
 
         var copyPlan = PlanCopyEntries(repositoryPath, context.DocumentSourceSetPath, entriesToCopy, "Copied", force, documentName: null);
         var changed = ApplyInstalledEntries(document, orderedEntries, requestedNames, installedByName);
+        ValidatePlannedManifest(plannedManifest);
         ExecuteCopyPlan(copyPlan);
 
         if (changed)
@@ -123,18 +126,21 @@ public sealed class CommonModulesInstallationTransaction
                 .Select(module => CommonModulesDependencyResolver.ResolveEntry(entries, module))
                 .ToArray();
             var orderedEntries = CommonModulesDependencyResolver.MergeEntries(dependencyClosureEntries, installedEntries);
+            ValidateSelectedEntryIdentities(orderedEntries);
             var installedByName = document.CommonModules.ToDictionary(
                 module => module.Name,
                 StringComparer.OrdinalIgnoreCase);
             var requestedNames = requestedModuleNames.ToHashSet(StringComparer.OrdinalIgnoreCase);
 
+            ValidateInstalledSourceIdentities(orderedEntries, installedByName);
             copyPlans.AddRange(PlanCopyEntries(repositoryPath, documentSourceSetPath, orderedEntries, "Updated", overwrite: true, documentName));
-            if (ApplyInstalledEntries(document, dependencyClosureEntries, requestedNames, installedByName))
+            if (ApplyInstalledEntries(document, orderedEntries, requestedNames, installedByName))
             {
                 manifestChanged = true;
             }
         }
 
+        ValidatePlannedManifest(plannedManifest);
         ExecuteCopyPlan(copyPlans);
 
         if (manifestChanged)
@@ -157,6 +163,7 @@ public sealed class CommonModulesInstallationTransaction
         string? documentName = null)
     {
         var plans = new List<CommonModuleCopyPlan>();
+        var plannedTargets = new Dictionary<string, CommonModuleManifestEntry>(StringComparer.OrdinalIgnoreCase);
         foreach (var entry in entries)
         {
             var sourcePath = Path.Combine(repositoryPath, entry.ModuleFile);
@@ -165,7 +172,15 @@ public sealed class CommonModulesInstallationTransaction
                 throw new CommonModulesManifestException($"CommonModules source file was not found: {sourcePath}");
             }
 
-            var targetPath = ResolveTargetPath(documentSourceSetPath, entry.ModuleFile, overwrite);
+            var targetPath = ResolveTargetPath(documentSourceSetPath, entry.InstalledModuleFile, overwrite);
+            var canonicalTargetPath = Path.GetFullPath(targetPath);
+            if (plannedTargets.TryGetValue(canonicalTargetPath, out var conflictingEntry))
+            {
+                throw new CommonModulesManifestException(
+                    $"CommonModules entries '{conflictingEntry.ModuleFile}' and '{entry.ModuleFile}' resolve to the same target source file: {targetPath}");
+            }
+
+            plannedTargets.Add(canonicalTargetPath, entry);
             var sidecarDeletePaths = DocumentSourceSetLayout.IsFormFile(entry.ModuleFile)
                 ? DocumentSourceSetLayout.FindFormSidecars(documentSourceSetPath, entry.ModuleFile)
                 : [];
@@ -275,30 +290,99 @@ public sealed class CommonModulesInstallationTransaction
         ProjectDocument document,
         IReadOnlyList<CommonModuleManifestEntry> orderedEntries,
         IReadOnlySet<string> requestedNames,
-        IReadOnlyDictionary<string, InstalledCommonModule> installedByName)
+        IDictionary<string, InstalledCommonModule> installedByName)
     {
         var changed = false;
         foreach (var entry in orderedEntries)
         {
-            var name = GetCommonModuleName(entry.ModuleFile);
+            var name = entry.Name;
             var requested = requestedNames.Contains(name);
             if (installedByName.TryGetValue(name, out var installed))
             {
-                if (requested && !installed.Requested)
+                var refreshed = installed with
+                {
+                    Name = entry.Name,
+                    ModuleFile = entry.InstalledModuleFile,
+                    Requested = installed.Requested || requested,
+                    TestOnly = entry.TestOnly
+                };
+                if (refreshed != installed)
                 {
                     var index = document.CommonModules.FindIndex(module => module.Name.Equals(installed.Name, StringComparison.OrdinalIgnoreCase));
-                    document.CommonModules[index] = installed with { Requested = true };
+                    document.CommonModules[index] = refreshed;
+                    installedByName[name] = refreshed;
                     changed = true;
                 }
 
                 continue;
             }
 
-            document.CommonModules.Add(new InstalledCommonModule(name, requested));
+            var installedEntry = new InstalledCommonModule(
+                entry.Name,
+                entry.InstalledModuleFile,
+                requested,
+                entry.TestOnly);
+            document.CommonModules.Add(installedEntry);
+            installedByName.Add(name, installedEntry);
             changed = true;
         }
 
         return changed;
+    }
+
+    private static void ValidateSelectedEntryIdentities(IReadOnlyList<CommonModuleManifestEntry> entries)
+    {
+        var byName = new Dictionary<string, CommonModuleManifestEntry>(StringComparer.OrdinalIgnoreCase);
+        var byModuleFile = new Dictionary<string, CommonModuleManifestEntry>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in entries)
+        {
+            if (byName.TryGetValue(entry.Name, out var matchingName))
+            {
+                throw new CommonModulesManifestException(
+                    $"CommonModules selection contains duplicate CommonModules name '{entry.Name}': " +
+                    $"'{matchingName.ModuleFile}' and '{entry.ModuleFile}'.");
+            }
+
+            if (byModuleFile.TryGetValue(entry.InstalledModuleFile, out var matchingModuleFile))
+            {
+                throw new CommonModulesManifestException(
+                    $"CommonModules selection contains duplicate flat moduleFile '{entry.InstalledModuleFile}': " +
+                    $"'{matchingModuleFile.ModuleFile}' and '{entry.ModuleFile}'.");
+            }
+
+            byName.Add(entry.Name, entry);
+            byModuleFile.Add(entry.InstalledModuleFile, entry);
+        }
+    }
+
+    private static void ValidatePlannedManifest(ProjectManifest manifest)
+    {
+        try
+        {
+            ProjectManifestValidator.Validate(manifest, ProjectManifest.ManifestFileName);
+        }
+        catch (VbaProjectManifestException ex)
+        {
+            throw new CommonModulesManifestException(ex.Message);
+        }
+    }
+
+    private static void ValidateInstalledSourceIdentities(
+        IReadOnlyList<CommonModuleManifestEntry> entries,
+        IReadOnlyDictionary<string, InstalledCommonModule> installedByName)
+    {
+        foreach (var entry in entries)
+        {
+            if (!installedByName.TryGetValue(entry.Name, out var installed)
+                || installed.ModuleFile.Equals(entry.InstalledModuleFile, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            throw new CommonModulesManifestException(
+                $"Installed CommonModules source identity changed for '{installed.Name}': " +
+                $"'{installed.ModuleFile}' -> '{entry.InstalledModuleFile}'. Rename inference is not supported.");
+        }
     }
 
     private static string GetCommonModuleName(string moduleFile)

@@ -12,6 +12,21 @@ public sealed record CommonModuleManifestEntry(
     IReadOnlyList<string> Dependencies)
 {
     /// <summary>
+    /// Gets the canonical extensionless CommonModule name.
+    /// </summary>
+    public string Name => Path.GetFileNameWithoutExtension(ModuleFile);
+
+    /// <summary>
+    /// Gets the flat exported source file name recorded in a project manifest.
+    /// </summary>
+    public string InstalledModuleFile => Path.GetFileName(ModuleFile);
+
+    /// <summary>
+    /// Gets whether publish excludes the installed source.
+    /// </summary>
+    public bool TestOnly => HasCategory("test-foundation") || HasCategory("test-double");
+
+    /// <summary>
     /// Determines whether the entry belongs to a category, ignoring case.
     /// </summary>
     /// <param name="category">The category name to check.</param>

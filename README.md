@@ -180,8 +180,8 @@ expected.
 
 Mark project-local test modules with `'#ExcludePublish` near the top of the
 file when they should not be included in published workbooks. Test-only
-CommonModules are excluded from publish output automatically through the
-CommonModules manifest.
+CommonModules are excluded from publish output through each installed entry's
+recorded `testOnly` value in `vba-project.json`.
 
 The Test Explorer view shows workbook-backed projects and documents after the
 extension discovers `vba-project.json`. Select a project or document and click the
@@ -333,8 +333,9 @@ default, tests build first so the workbook under test matches the source tree.
 
 ### Publish
 
-`VBA Tools: Publish` creates the publish workbook and excludes test-only
-CommonModules and source files marked for publish exclusion.
+`VBA Tools: Publish` creates the publish workbook and excludes CommonModules
+recorded as test-only in `vba-project.json` plus source files marked for publish
+exclusion.
 
 From the `vba-dev` terminal, run:
 
@@ -344,8 +345,9 @@ vba-dev publish
 
 Publish is the command for producing the distributable workbook. It uses the
 same source import and reference normalization path as build, but writes to the
-document's publish output and omits test-only CommonModules plus project-local
-files marked with `'#ExcludePublish`.
+document's publish output and omits CommonModules recorded with `testOnly: true`
+plus project-local files marked with `'#ExcludePublish`. Build and publish do not
+consult the current CommonModules repository.
 
 ### Export
 

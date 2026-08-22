@@ -118,25 +118,72 @@ public sealed class NewProjectCommand
             .Select(entry => entry.ModuleFile)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var selectedEntries = CommonModulesDependencyResolver.ResolveRequestedEntries(entries, requestedModuleFiles.ToArray());
-
-        foreach (var entry in selectedEntries)
-        {
-            var sourcePath = Path.Combine(commonModulesRepository, entry.ModuleFile);
-            if (!File.Exists(sourcePath))
+        ValidateSelectedEntryIdentities(selectedEntries, sourceSetPath);
+        var copyPlan = selectedEntries
+            .Select(entry => new
             {
-                throw new CommonModulesManifestException($"CommonModules source file was not found: {sourcePath}");
+                SourcePath = Path.Combine(commonModulesRepository, entry.ModuleFile),
+                TargetPath = Path.Combine(sourceSetPath, "common-modules", entry.InstalledModuleFile)
+            })
+            .ToArray();
+        foreach (var plan in copyPlan)
+        {
+            if (!File.Exists(plan.SourcePath))
+            {
+                throw new CommonModulesManifestException($"CommonModules source file was not found: {plan.SourcePath}");
             }
+        }
 
-            var targetPath = Path.Combine(sourceSetPath, "common-modules", Path.GetFileName(entry.ModuleFile));
-            Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
-            File.Copy(sourcePath, targetPath, overwrite: true);
+        foreach (var plan in copyPlan)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(plan.TargetPath)!);
+            File.Copy(plan.SourcePath, plan.TargetPath, overwrite: true);
         }
 
         return selectedEntries
             .Select(entry => new InstalledCommonModule(
-                Path.GetFileNameWithoutExtension(entry.ModuleFile),
-                requestedModuleFiles.Contains(entry.ModuleFile)))
+                entry.Name,
+                entry.InstalledModuleFile,
+                requestedModuleFiles.Contains(entry.ModuleFile),
+                entry.TestOnly))
             .ToArray();
+    }
+
+    private static void ValidateSelectedEntryIdentities(
+        IReadOnlyList<CommonModuleManifestEntry> entries,
+        string sourceSetPath)
+    {
+        var byName = new Dictionary<string, CommonModuleManifestEntry>(StringComparer.OrdinalIgnoreCase);
+        var byModuleFile = new Dictionary<string, CommonModuleManifestEntry>(StringComparer.OrdinalIgnoreCase);
+        var byTargetPath = new Dictionary<string, CommonModuleManifestEntry>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in entries)
+        {
+            if (byName.TryGetValue(entry.Name, out var matchingName))
+            {
+                throw new CommonModulesManifestException(
+                    $"CommonModules selection contains duplicate CommonModules name '{entry.Name}': " +
+                    $"'{matchingName.ModuleFile}' and '{entry.ModuleFile}'.");
+            }
+
+            if (byModuleFile.TryGetValue(entry.InstalledModuleFile, out var matchingModuleFile))
+            {
+                throw new CommonModulesManifestException(
+                    $"CommonModules selection contains duplicate flat moduleFile '{entry.InstalledModuleFile}': " +
+                    $"'{matchingModuleFile.ModuleFile}' and '{entry.ModuleFile}'.");
+            }
+
+            var targetPath = Path.GetFullPath(Path.Combine(sourceSetPath, "common-modules", entry.InstalledModuleFile));
+            if (byTargetPath.TryGetValue(targetPath, out var matchingTarget))
+            {
+                throw new CommonModulesManifestException(
+                    $"CommonModules entries '{matchingTarget.ModuleFile}' and '{entry.ModuleFile}' " +
+                    $"resolve to the same target source file: {targetPath}");
+            }
+
+            byName.Add(entry.Name, entry);
+            byModuleFile.Add(entry.InstalledModuleFile, entry);
+            byTargetPath.Add(targetPath, entry);
+        }
     }
 
     private static string ResolveProjectRoot(NewProjectCommandRequest request)

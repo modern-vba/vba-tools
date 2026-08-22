@@ -1,6 +1,6 @@
-using VbaDev.App.CommonModules;
 using VbaDev.App.Projects;
 using VbaDev.App.Workbooks;
+using VbaDev.Domain;
 
 namespace VbaDev.App.Build;
 
@@ -11,17 +11,6 @@ public sealed class WorkbookSourcePlanner
 {
     private const int PublishMarkerScanLineLimit = 32;
     private const string PublishExclusionMarker = "'#ExcludePublish";
-
-    private readonly CommonModulesManifestReader commonModulesManifestReader;
-
-    /// <summary>
-    /// Creates the workbook source planner.
-    /// </summary>
-    /// <param name="commonModulesManifestReader">The reader used to resolve installed CommonModules dependencies.</param>
-    public WorkbookSourcePlanner(CommonModulesManifestReader commonModulesManifestReader)
-    {
-        this.commonModulesManifestReader = commonModulesManifestReader;
-    }
 
     /// <summary>
     /// Resolves the source files for build output, including test-only project and CommonModules sources.
@@ -42,12 +31,12 @@ public sealed class WorkbookSourcePlanner
     public IReadOnlyList<VbaSourceFile> ResolvePublishSourceFiles(ResolvedProjectContext context)
         => ResolveSourceFiles(
             context,
-            includeCommonModule: entry => !IsTestOnlyCommonModule(entry),
+            includeCommonModule: entry => !entry.TestOnly,
             includeProjectLocalSource: source => !HasPublishExclusionMarker(source));
 
     private IReadOnlyList<VbaSourceFile> ResolveSourceFiles(
         ResolvedProjectContext context,
-        Func<CommonModuleManifestEntry, bool> includeCommonModule,
+        Func<InstalledCommonModule, bool> includeCommonModule,
         Func<VbaSourceFile, bool> includeProjectLocalSource)
     {
         if (!File.Exists(context.TemplateDocumentPath))
@@ -69,7 +58,7 @@ public sealed class WorkbookSourcePlanner
         var sourceFilesByName = discoveredSourceFiles
             .ToDictionary(source => source.FileName, StringComparer.OrdinalIgnoreCase);
 
-        var installedCommonModuleEntries = ResolveInstalledCommonModuleEntries(context, sourceFilesByName);
+        var installedCommonModuleEntries = context.Document.CommonModules;
         var commonModuleEntries = installedCommonModuleEntries
             .Where(includeCommonModule)
             .ToArray();
@@ -79,12 +68,10 @@ public sealed class WorkbookSourcePlanner
         var orderedSourceFiles = new List<VbaSourceFile>();
         foreach (var entry in commonModuleEntries)
         {
-            if (!sourceFilesByName.TryGetValue(entry.ModuleFile, out var sourceFile))
+            if (sourceFilesByName.TryGetValue(entry.ModuleFile, out var sourceFile))
             {
-                throw new CommonModulesManifestException($"CommonModules dependency '{entry.ModuleFile}' is required but not installed in {context.DocumentSourceSetPath}.");
+                orderedSourceFiles.Add(sourceFile);
             }
-
-            orderedSourceFiles.Add(sourceFile);
         }
 
         orderedSourceFiles.AddRange(sourceFilesByName
@@ -95,31 +82,6 @@ public sealed class WorkbookSourcePlanner
 
         return orderedSourceFiles;
     }
-
-    private IReadOnlyList<CommonModuleManifestEntry> ResolveInstalledCommonModuleEntries(
-        ResolvedProjectContext context,
-        IReadOnlyDictionary<string, VbaSourceFile> sourceFilesByName)
-    {
-        if (context.CommonModulesRepositoryPath is null ||
-            !Directory.Exists(context.CommonModulesRepositoryPath) ||
-            !File.Exists(Path.Combine(context.CommonModulesRepositoryPath, CommonModulesManifestReader.ManifestFileName)))
-        {
-            return [];
-        }
-
-        var entries = commonModulesManifestReader.Load(context.CommonModulesRepositoryPath);
-        var installedModuleFiles = entries
-            .Where(entry => sourceFilesByName.ContainsKey(entry.ModuleFile))
-            .Select(entry => entry.ModuleFile)
-            .ToArray();
-
-        return CommonModulesDependencyResolver
-            .ResolveRequestedEntries(entries, installedModuleFiles)
-            .ToArray();
-    }
-
-    private static bool IsTestOnlyCommonModule(CommonModuleManifestEntry entry)
-        => entry.HasCategory("test-foundation") || entry.HasCategory("test-double");
 
     private static bool HasPublishExclusionMarker(VbaSourceFile source)
     {

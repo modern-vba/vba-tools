@@ -121,16 +121,21 @@ public sealed class BuildCommandTests
     }
 
     [Fact]
-    public void BuildImportsCommonModulesInDependencyOrderThenLocalSourcesInStableOrder()
+    public void BuildImportsRecordedCommonModulesIncludingTestOnlyInManifestOrderWithoutRepositoryLookup()
     {
         using var temp = TempDirectory.Create();
         var root = temp.CreateDirectory("Project");
         var commonModulesRepository = temp.CreateDirectory("common_modules_repo");
         File.WriteAllText(
             Path.Combine(commonModulesRepository, "common-modules-manifest.tsv"),
-            "ModuleFile\tCategories\tDependencies\nFeature.bas\tRuntime\tBase.bas\nBase.bas\tRuntime\t\n",
+            "malformed repository metadata",
             Encoding.UTF8);
         var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, commonModulesRepository);
+        manifest.Documents["Book1"].CommonModules.AddRange(
+        [
+            new InstalledCommonModule("Base", "Base.bas", Requested: false, TestOnly: false),
+            new InstalledCommonModule("Feature", "Feature.bas", Requested: true, TestOnly: true)
+        ]);
         new JsonProjectManifestStore().Save(root, manifest);
         CreateWorkbookSource(
             root,
@@ -157,6 +162,25 @@ public sealed class BuildCommandTests
                 "save"
             ],
             automation.Events);
+    }
+
+    [Fact]
+    public void BuildLeavesMissingRecordedCommonModuleSourceForDoctorAndImportsAvailableSources()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        manifest.Documents["Book1"].CommonModules.Add(
+            new InstalledCommonModule("Missing", "Missing.bas", Requested: true, TestOnly: false));
+        new JsonProjectManifestStore().Save(root, manifest);
+        CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
+        var automation = new FakeWorkbookBuildAutomation();
+        var application = CommandLineTestFactory.Create(root, workbookBuildAutomation: automation);
+
+        var result = application.Run(["build"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(["import:Local.bas", "save"], automation.Events);
     }
 
     [Fact]

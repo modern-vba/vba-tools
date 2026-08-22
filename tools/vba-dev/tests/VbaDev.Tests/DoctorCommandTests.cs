@@ -69,6 +69,44 @@ public sealed class DoctorCommandTests
     }
 
     [Fact]
+    public void DoctorFailsThroughProjectManifestDiagnosticForMissingCommonModuleBaseMetadata()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var json = """
+            {
+              "schemaVersion": 1,
+              "projectName": "Project",
+              "primaryDocument": "Book1",
+              "documents": {
+                "Book1": {
+                  "kind": "excel",
+                  "sourcePath": "src/Book1",
+                  "templatePath": "src/Book1/Book1.xlsm",
+                  "binPath": "bin/Book1.xlsm",
+                  "publishPath": "publish/Book1.xlsm",
+                  "commonModules": [
+                    {
+                      "name": "Feature",
+                      "requested": true,
+                      "testOnly": false
+                    }
+                  ]
+                }
+              }
+            }
+            """;
+        File.WriteAllText(Path.Combine(root, ProjectManifest.ManifestFileName), json, new UTF8Encoding(false));
+        var application = CommandLineTestFactory.Create(root, new FakeEnvironmentDiagnosticPort());
+
+        var result = application.Run(["doctor"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("[FAIL] Project manifest", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("moduleFile", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void DoctorMapsFakeEnvironmentDiagnosticStatuses()
     {
         using var temp = TempDirectory.Create();
@@ -120,7 +158,7 @@ public sealed class DoctorCommandTests
         using var temp = TempDirectory.Create();
         var (root, commonRepo) = CreateDoctorProject(temp);
         WriteManifest(commonRepo, ("Feature.bas", "optional", ""));
-        AddInstalledCommonModules(root, new InstalledCommonModule("Missing", Requested: true));
+        AddInstalledCommonModules(root, new InstalledCommonModule("Missing", "Missing.bas", Requested: true, TestOnly: false));
         var application = CommandLineTestFactory.Create(root, new FakeEnvironmentDiagnosticPort());
 
         var result = application.Run(["doctor"]);
@@ -128,6 +166,39 @@ public sealed class DoctorCommandTests
         Assert.Equal(1, result.ExitCode);
         Assert.Contains("[FAIL] CommonModules (Book1/Missing)", result.StandardOutput, StringComparison.Ordinal);
         Assert.Contains("unknown", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void DoctorFailsForMissingStoredCommonModuleSourceWithoutRepository()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateDoctorProjectWithoutRepository(temp);
+        AddInstalledCommonModules(root, new InstalledCommonModule("Feature", "Feature.cls", Requested: true, TestOnly: false));
+        var application = CommandLineTestFactory.Create(root, new FakeEnvironmentDiagnosticPort());
+
+        var result = application.Run(["doctor"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("[FAIL] CommonModules (Book1/Feature)", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("Feature.cls", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DoctorFailsForAmbiguousStoredCommonModuleSourceWithoutRepository()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateDoctorProjectWithoutRepository(temp);
+        var sourceSet = Path.Combine(root, "src", "Book1");
+        WriteModule(sourceSet, Path.Combine("first", "Feature.cls"), "first");
+        WriteModule(sourceSet, Path.Combine("second", "feature.cls"), "second");
+        AddInstalledCommonModules(root, new InstalledCommonModule("Feature", "Feature.cls", Requested: true, TestOnly: false));
+        var application = CommandLineTestFactory.Create(root, new FakeEnvironmentDiagnosticPort());
+
+        var result = application.Run(["doctor"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("[FAIL] CommonModules (Book1/Feature)", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("multiple source matches", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -141,7 +212,7 @@ public sealed class DoctorCommandTests
             ("Feature.bas", "optional", "Base.bas"));
         WriteModule(commonRepo, "Feature.bas", "feature");
         WriteModule(Path.Combine(root, "src", "Book1"), "Feature.bas", "feature");
-        AddInstalledCommonModules(root, new InstalledCommonModule("Feature", Requested: true));
+        AddInstalledCommonModules(root, new InstalledCommonModule("Feature", "Feature.bas", Requested: true, TestOnly: false));
         var application = CommandLineTestFactory.Create(root, new FakeEnvironmentDiagnosticPort());
 
         var result = application.Run(["doctor"]);
@@ -159,7 +230,7 @@ public sealed class DoctorCommandTests
         WriteManifest(commonRepo, ("Base.bas", "optional", ""));
         WriteModule(commonRepo, "Base.bas", "base");
         WriteModule(Path.Combine(root, "src", "Book1"), "Base.bas", "base");
-        AddInstalledCommonModules(root, new InstalledCommonModule("Base", Requested: false));
+        AddInstalledCommonModules(root, new InstalledCommonModule("Base", "Base.bas", Requested: false, TestOnly: false));
         var application = CommandLineTestFactory.Create(root, new FakeEnvironmentDiagnosticPort());
 
         var result = application.Run(["doctor"]);
@@ -177,7 +248,7 @@ public sealed class DoctorCommandTests
         WriteManifest(commonRepo, ("Feature.bas", "optional", ""));
         WriteModule(commonRepo, "Feature.bas", "canonical");
         WriteModule(Path.Combine(root, "src", "Book1"), "Feature.bas", "local edit");
-        AddInstalledCommonModules(root, new InstalledCommonModule("Feature", Requested: true));
+        AddInstalledCommonModules(root, new InstalledCommonModule("Feature", "Feature.bas", Requested: true, TestOnly: false));
         var application = CommandLineTestFactory.Create(root, new FakeEnvironmentDiagnosticPort());
 
         var result = application.Run(["doctor"]);
@@ -185,6 +256,88 @@ public sealed class DoctorCommandTests
         Assert.Equal(0, result.ExitCode);
         Assert.Contains("[WARN] CommonModules (Book1/Feature)", result.StandardOutput, StringComparison.Ordinal);
         Assert.Contains("differs from CommonModulesRepository", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void DoctorWarnsWhenOnlyOneCommonModulesFormHasSidecar(bool canonicalHasSidecar)
+    {
+        using var temp = TempDirectory.Create();
+        var (root, commonRepo) = CreateDoctorProject(temp);
+        var sourceSet = Path.Combine(root, "src", "Book1");
+        WriteManifest(commonRepo, ("Dialog.frm", "optional", ""));
+        WriteModule(commonRepo, "Dialog.frm", "form");
+        WriteModule(sourceSet, "Dialog.frm", "form");
+        WriteBytes(
+            Path.Combine(canonicalHasSidecar ? commonRepo : sourceSet, "Dialog.frx"),
+            [1, 2, 3]);
+        AddInstalledCommonModules(root, new InstalledCommonModule("Dialog", "Dialog.frm", Requested: true, TestOnly: false));
+        var application = CommandLineTestFactory.Create(root, new FakeEnvironmentDiagnosticPort());
+
+        var result = application.Run(["doctor"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("[WARN] CommonModules (Book1/Dialog)", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("differs from CommonModulesRepository", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DoctorDoesNotWarnWhenMatchingCommonModulesFormsHaveNoSidecars()
+    {
+        using var temp = TempDirectory.Create();
+        var (root, commonRepo) = CreateDoctorProject(temp);
+        var sourceSet = Path.Combine(root, "src", "Book1");
+        WriteManifest(commonRepo, ("Dialog.frm", "optional", ""));
+        WriteModule(commonRepo, "Dialog.frm", "form");
+        WriteModule(sourceSet, "Dialog.frm", "form");
+        AddInstalledCommonModules(root, new InstalledCommonModule("Dialog", "Dialog.frm", Requested: true, TestOnly: false));
+        var application = CommandLineTestFactory.Create(root, new FakeEnvironmentDiagnosticPort());
+
+        var result = application.Run(["doctor"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.DoesNotContain("[WARN] CommonModules (Book1/Dialog)", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DoctorWarnsWhenCommonModulesFormSidecarBytesDiffer()
+    {
+        using var temp = TempDirectory.Create();
+        var (root, commonRepo) = CreateDoctorProject(temp);
+        var sourceSet = Path.Combine(root, "src", "Book1");
+        WriteManifest(commonRepo, ("Dialog.frm", "optional", ""));
+        WriteModule(commonRepo, "Dialog.frm", "form");
+        WriteBytes(Path.Combine(commonRepo, "Dialog.frx"), [1, 2, 3]);
+        WriteModule(sourceSet, "Dialog.frm", "form");
+        WriteBytes(Path.Combine(sourceSet, "Dialog.frx"), [3, 2, 1]);
+        AddInstalledCommonModules(root, new InstalledCommonModule("Dialog", "Dialog.frm", Requested: true, TestOnly: false));
+        var application = CommandLineTestFactory.Create(root, new FakeEnvironmentDiagnosticPort());
+
+        var result = application.Run(["doctor"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("[WARN] CommonModules (Book1/Dialog)", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("differs from CommonModulesRepository", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DoctorComparesStoredSourceWithCanonicalRepositoryEntryResolvedByName()
+    {
+        using var temp = TempDirectory.Create();
+        var (root, commonRepo) = CreateDoctorProject(temp);
+        WriteManifest(commonRepo, ("runtime/Feature.cls", "optional", ""));
+        WriteModule(commonRepo, Path.Combine("runtime", "Feature.cls"), "canonical");
+        WriteModule(Path.Combine(root, "src", "Book1"), "Feature.cls", "local edit");
+        AddInstalledCommonModules(root, new InstalledCommonModule("Feature", "Feature.cls", Requested: true, TestOnly: false));
+        var application = CommandLineTestFactory.Create(root, new FakeEnvironmentDiagnosticPort());
+
+        var result = application.Run(["doctor"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("[WARN] CommonModules (Book1/Feature)", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("differs from CommonModulesRepository", result.StandardOutput, StringComparison.Ordinal);
+        Assert.DoesNotContain("source file was not found", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -219,7 +372,7 @@ public sealed class DoctorCommandTests
         WriteManifest(commonRepo, ("Feature.bas", "optional", ""));
         WriteModule(commonRepo, "Feature.bas", "canonical");
         WriteModule(Path.Combine(root, "src", "Book1"), Path.Combine("nested", "Feature.bas"), "local edit");
-        AddInstalledCommonModules(root, new InstalledCommonModule("Feature", Requested: true));
+        AddInstalledCommonModules(root, new InstalledCommonModule("Feature", "Feature.bas", Requested: true, TestOnly: false));
         var application = CommandLineTestFactory.Create(root, new FakeEnvironmentDiagnosticPort());
 
         var drift = application.Run(["doctor"]);
@@ -377,6 +530,17 @@ public sealed class DoctorCommandTests
         File.WriteAllText(Path.Combine(root, "src", "Book1", "Book1.xlsm"), string.Empty);
         new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, commonRepo));
         return (root, commonRepo);
+    }
+
+    private static string CreateDoctorProjectWithoutRepository(TempDirectory temp)
+    {
+        var root = temp.CreateDirectory("Project");
+        Directory.CreateDirectory(Path.Combine(root, "src", "Book1"));
+        Directory.CreateDirectory(Path.Combine(root, "bin"));
+        Directory.CreateDirectory(Path.Combine(root, "publish"));
+        File.WriteAllText(Path.Combine(root, "src", "Book1", "Book1.xlsm"), string.Empty);
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        return root;
     }
 
     private static void AddInstalledCommonModules(string root, params InstalledCommonModule[] modules)

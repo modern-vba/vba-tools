@@ -75,8 +75,8 @@ public sealed class CommonModulesCommandTests
         var manifest = new JsonProjectManifestStore().Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
         Assert.Equal(
             [
-                new InstalledCommonModule("Base", Requested: false),
-                new InstalledCommonModule("Feature", Requested: true)
+                Installed("Base", requested: false),
+                Installed("Feature", requested: true)
             ],
             manifest.Documents["Book1"].CommonModules);
         Assert.True(standardOutput.ToString().IndexOf("Copied common-modules/Base.bas", StringComparison.Ordinal) < standardOutput.ToString().IndexOf("Copied common-modules/Feature.bas", StringComparison.Ordinal));
@@ -88,7 +88,7 @@ public sealed class CommonModulesCommandTests
         using var temp = TempDirectory.Create();
         var projectRoot = CreateProjectWithCommonModules(temp, "Project");
         var commonRepo = Path.Combine(temp.Path, "common_modules_repo");
-        WriteManifest(commonRepo, ("runtime/Feature.bas", "optional", ""));
+        WriteManifest(commonRepo, ("runtime/Feature.bas", "test-double", ""));
         WriteModule(commonRepo, Path.Combine("runtime", "Feature.bas"), "feature");
         var application = CommandLineTestFactory.Create(projectRoot);
 
@@ -99,6 +99,10 @@ public sealed class CommonModulesCommandTests
         Assert.Equal("feature", File.ReadAllText(Path.Combine(sourceSet, "common-modules", "Feature.bas")));
         Assert.False(File.Exists(Path.Combine(sourceSet, "Feature.bas")));
         Assert.False(File.Exists(Path.Combine(sourceSet, "common-modules", "runtime", "Feature.bas")));
+        var manifest = new JsonProjectManifestStore().Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
+        Assert.Equal(
+            [new InstalledCommonModule("Feature", "Feature.bas", Requested: true, TestOnly: true)],
+            manifest.Documents["Book1"].CommonModules);
         Assert.Contains("Copied common-modules/Feature.bas", result.StandardOutput, StringComparison.Ordinal);
     }
 
@@ -153,9 +157,9 @@ public sealed class CommonModulesCommandTests
         var manifest = new JsonProjectManifestStore().Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
         Assert.Equal(
             [
-                new InstalledCommonModule("ObjectSet", Requested: false),
-                new InstalledCommonModule("ObjectList", Requested: false),
-                new InstalledCommonModule("Root", Requested: true)
+                Installed("ObjectSet", requested: false, moduleFile: "ObjectSet.cls"),
+                Installed("ObjectList", requested: false, moduleFile: "ObjectList.cls"),
+                Installed("Root", requested: true)
             ],
             manifest.Documents["Book1"].CommonModules);
         Assert.Equal(1, manifest.Documents["Book1"].CommonModules.Count(module => module.Name.Equals("ObjectList", StringComparison.OrdinalIgnoreCase)));
@@ -168,13 +172,14 @@ public sealed class CommonModulesCommandTests
         using var temp = TempDirectory.Create();
         var projectRoot = CreateProjectWithCommonModules(temp, "Project");
         var commonRepo = Path.Combine(temp.Path, "common_modules_repo");
-        WriteManifest(commonRepo, ("Base.bas", "optional", ""));
+        WriteManifest(commonRepo, ("Base.bas", "test-foundation", ""));
         WriteModule(commonRepo, "Base.bas", "base v2");
         var sourceSet = Path.Combine(projectRoot, "src", "Book1");
         WriteModule(sourceSet, "Base.bas", "base v1");
         var store = new JsonProjectManifestStore();
         var manifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
-        manifest.Documents["Book1"].CommonModules.Add(new InstalledCommonModule("Base", Requested: false));
+        manifest.Documents["Book1"].CommonModules.Add(
+            new InstalledCommonModule("base", "base.bas", Requested: false, TestOnly: false));
         store.Save(projectRoot, manifest);
         var application = CommandLineTestFactory.Create(projectRoot);
 
@@ -183,7 +188,9 @@ public sealed class CommonModulesCommandTests
         Assert.Equal(0, result.ExitCode);
         Assert.Equal("base v1", File.ReadAllText(Path.Combine(sourceSet, "Base.bas")));
         var updatedManifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
-        Assert.Equal([new InstalledCommonModule("Base", Requested: true)], updatedManifest.Documents["Book1"].CommonModules);
+        Assert.Equal(
+            [Installed("Base", requested: true, testOnly: true)],
+            updatedManifest.Documents["Book1"].CommonModules);
     }
 
     [Fact]
@@ -204,7 +211,7 @@ public sealed class CommonModulesCommandTests
         var sourceSet = Path.Combine(projectRoot, "src", "Book1");
         Assert.Equal("feature v1", File.ReadAllText(Path.Combine(sourceSet, "common-modules", "Feature.bas")));
         var manifest = new JsonProjectManifestStore().Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
-        Assert.Equal([new InstalledCommonModule("Feature", Requested: true)], manifest.Documents["Book1"].CommonModules);
+        Assert.Equal([Installed("Feature", requested: true)], manifest.Documents["Book1"].CommonModules);
     }
 
     [Fact]
@@ -232,7 +239,7 @@ public sealed class CommonModulesCommandTests
         Assert.Equal(0, forced.ExitCode);
         Assert.Equal("repo feature", File.ReadAllText(Path.Combine(sourceSet, "Feature.bas")));
         var manifest = new JsonProjectManifestStore().Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
-        Assert.Equal([new InstalledCommonModule("Feature", Requested: true)], manifest.Documents["Book1"].CommonModules);
+        Assert.Equal([Installed("Feature", requested: true)], manifest.Documents["Book1"].CommonModules);
     }
 
     [Fact]
@@ -312,8 +319,8 @@ public sealed class CommonModulesCommandTests
         Assert.Equal(0, application.Run(["common-module", "add", "Feature", "--document", "SecondBook"]).ExitCode);
 
         var manifest = new JsonProjectManifestStore().Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
-        Assert.Equal([new InstalledCommonModule("Feature", Requested: true)], manifest.Documents["Book1"].CommonModules);
-        Assert.Equal([new InstalledCommonModule("Feature", Requested: true)], manifest.Documents["SecondBook"].CommonModules);
+        Assert.Equal([Installed("Feature", requested: true)], manifest.Documents["Book1"].CommonModules);
+        Assert.Equal([Installed("Feature", requested: true)], manifest.Documents["SecondBook"].CommonModules);
     }
 
     [Fact]
@@ -325,8 +332,8 @@ public sealed class CommonModulesCommandTests
         var manifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
         manifest.Documents["Book1"].CommonModules.AddRange(
             [
-                new InstalledCommonModule("Base", Requested: false),
-                new InstalledCommonModule("Feature", Requested: true)
+                Installed("Base", requested: false),
+                Installed("Feature", requested: true)
             ]);
         store.Save(projectRoot, manifest);
         var application = VbaDevCommandLine.Create(
@@ -373,6 +380,33 @@ public sealed class CommonModulesCommandTests
     }
 
     [Fact]
+    public void AddRejectsFlatInstalledIdentityCollisionBeforeMutation()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = CreateProjectWithCommonModules(temp, "Project");
+        var commonRepo = Path.Combine(temp.Path, "common_modules_repo");
+        WriteManifest(
+            commonRepo,
+            ("a/Foo.bas", "optional", ""),
+            ("b/FOO.bas", "optional", ""),
+            ("Root.bas", "optional", "a/Foo.bas,b/FOO.bas"));
+        WriteModule(commonRepo, Path.Combine("a", "Foo.bas"), "first foo");
+        WriteModule(commonRepo, Path.Combine("b", "FOO.bas"), "second foo");
+        WriteModule(commonRepo, "Root.bas", "root");
+        var application = CommandLineTestFactory.Create(projectRoot);
+
+        var result = application.Run(["common-module", "add", "Root"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("duplicate CommonModules", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        var sourceSet = Path.Combine(projectRoot, "src", "Book1");
+        Assert.False(Directory.Exists(Path.Combine(sourceSet, "common-modules")));
+        var unchangedManifest = new JsonProjectManifestStore().Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
+        Assert.Empty(unchangedManifest.Documents["Book1"].CommonModules);
+        Assert.Empty(Directory.EnumerateFiles(projectRoot, "vba-project.failed-*.json"));
+    }
+
+    [Fact]
     public void AddFailsWhenCommonModulesRepositoryIsMissing()
     {
         using var temp = TempDirectory.Create();
@@ -397,8 +431,8 @@ public sealed class CommonModulesCommandTests
         var manifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
         manifest.Documents["Book1"].CommonModules.AddRange(
             [
-                new InstalledCommonModule("Base", Requested: false),
-                new InstalledCommonModule("Feature", Requested: true)
+                Installed("Base", requested: false),
+                Installed("Feature", requested: true)
             ]);
         store.Save(projectRoot, manifest);
         var commonRepo = Path.Combine(temp.Path, "common_modules_repo");
@@ -428,8 +462,8 @@ public sealed class CommonModulesCommandTests
         var updatedManifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
         Assert.Equal(
             [
-                new InstalledCommonModule("Base", Requested: false),
-                new InstalledCommonModule("Feature", Requested: true)
+                Installed("Base", requested: false),
+                Installed("Feature", requested: true)
             ],
             updatedManifest.Documents["Book1"].CommonModules);
         Assert.Contains("Updated Book1/common-modules/Base.bas", result.StandardOutput, StringComparison.Ordinal);
@@ -443,7 +477,7 @@ public sealed class CommonModulesCommandTests
         var projectRoot = CreateProjectWithCommonModules(temp, "Project");
         var store = new JsonProjectManifestStore();
         var manifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
-        manifest.Documents["Book1"].CommonModules.Add(new InstalledCommonModule("Feature", Requested: true));
+        manifest.Documents["Book1"].CommonModules.Add(Installed("Feature", requested: true));
         store.Save(projectRoot, manifest);
         var commonRepo = Path.Combine(temp.Path, "common_modules_repo");
         WriteManifest(
@@ -468,6 +502,92 @@ public sealed class CommonModulesCommandTests
     }
 
     [Fact]
+    public void UpdateRefreshesCanonicalMetadataForInstalledModuleOutsideRequestedClosure()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = CreateProjectWithCommonModules(temp, "Project");
+        var store = new JsonProjectManifestStore();
+        var manifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
+        manifest.Documents["Book1"].CommonModules.Add(
+            new InstalledCommonModule("feature", "feature.bas", Requested: false, TestOnly: false));
+        store.Save(projectRoot, manifest);
+        var commonRepo = Path.Combine(temp.Path, "common_modules_repo");
+        WriteManifest(commonRepo, ("nested/Feature.bas", "test-double", ""));
+        WriteModule(commonRepo, Path.Combine("nested", "Feature.bas"), "feature v2");
+        var sourceSet = Path.Combine(projectRoot, "src", "Book1");
+        WriteModule(sourceSet, "feature.bas", "feature v1");
+        var application = CommandLineTestFactory.Create(projectRoot);
+
+        var result = application.Run(["common-module", "update"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal("feature v2", File.ReadAllText(Path.Combine(sourceSet, "feature.bas")));
+        var updatedManifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
+        Assert.Equal(
+            [new InstalledCommonModule("Feature", "Feature.bas", Requested: false, TestOnly: true)],
+            updatedManifest.Documents["Book1"].CommonModules);
+    }
+
+    [Fact]
+    public void UpdateRejectsSubstantiveInstalledSourceIdentityChangeWithoutMutation()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = CreateProjectWithCommonModules(temp, "Project");
+        var store = new JsonProjectManifestStore();
+        var manifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
+        manifest.Documents["Book1"].CommonModules.Add(Installed("Feature", requested: false));
+        store.Save(projectRoot, manifest);
+        var commonRepo = Path.Combine(temp.Path, "common_modules_repo");
+        WriteManifest(commonRepo, ("Feature.cls", "optional", ""));
+        WriteModule(commonRepo, "Feature.cls", "feature class v2");
+        var sourceSet = Path.Combine(projectRoot, "src", "Book1");
+        WriteModule(sourceSet, "Feature.bas", "feature module v1");
+        var application = CommandLineTestFactory.Create(projectRoot);
+
+        var result = application.Run(["common-module", "update"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("source identity", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("feature module v1", File.ReadAllText(Path.Combine(sourceSet, "Feature.bas")));
+        Assert.False(File.Exists(Path.Combine(sourceSet, "common-modules", "Feature.cls")));
+        var unchangedManifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
+        Assert.Equal([Installed("Feature", requested: false)], unchangedManifest.Documents["Book1"].CommonModules);
+    }
+
+    [Fact]
+    public void UpdateRejectsFlatInstalledIdentityCollisionBeforeMutation()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = CreateProjectWithCommonModules(temp, "Project");
+        var store = new JsonProjectManifestStore();
+        var manifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
+        manifest.Documents["Book1"].CommonModules.Add(Installed("Root", requested: true));
+        store.Save(projectRoot, manifest);
+        var commonRepo = Path.Combine(temp.Path, "common_modules_repo");
+        WriteManifest(
+            commonRepo,
+            ("a/Foo.bas", "optional", ""),
+            ("b/FOO.bas", "optional", ""),
+            ("Root.bas", "optional", "a/Foo.bas,b/FOO.bas"));
+        WriteModule(commonRepo, Path.Combine("a", "Foo.bas"), "first foo");
+        WriteModule(commonRepo, Path.Combine("b", "FOO.bas"), "second foo");
+        WriteModule(commonRepo, "Root.bas", "root v2");
+        var sourceSet = Path.Combine(projectRoot, "src", "Book1");
+        WriteModule(sourceSet, "Root.bas", "root v1");
+        var application = CommandLineTestFactory.Create(projectRoot);
+
+        var result = application.Run(["common-module", "update"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("duplicate CommonModules", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("root v1", File.ReadAllText(Path.Combine(sourceSet, "Root.bas")));
+        Assert.False(Directory.Exists(Path.Combine(sourceSet, "common-modules")));
+        var unchangedManifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
+        Assert.Equal([Installed("Root", requested: true)], unchangedManifest.Documents["Book1"].CommonModules);
+        Assert.Empty(Directory.EnumerateFiles(projectRoot, "vba-project.failed-*.json"));
+    }
+
+    [Fact]
     public void UpdateFailsOnDuplicateNestedMatchesBeforeAnyFileOrManifestMutation()
     {
         using var temp = TempDirectory.Create();
@@ -476,8 +596,8 @@ public sealed class CommonModulesCommandTests
         var manifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
         manifest.Documents["Book1"].CommonModules.AddRange(
             [
-                new InstalledCommonModule("Base", Requested: false),
-                new InstalledCommonModule("Feature", Requested: true)
+                Installed("Base", requested: false),
+                Installed("Feature", requested: true)
             ]);
         store.Save(projectRoot, manifest);
         var commonRepo = Path.Combine(temp.Path, "common_modules_repo");
@@ -502,8 +622,8 @@ public sealed class CommonModulesCommandTests
         var updatedManifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
         Assert.Equal(
             [
-                new InstalledCommonModule("Base", Requested: false),
-                new InstalledCommonModule("Feature", Requested: true)
+                Installed("Base", requested: false),
+                Installed("Feature", requested: true)
             ],
             updatedManifest.Documents["Book1"].CommonModules);
     }
@@ -515,7 +635,7 @@ public sealed class CommonModulesCommandTests
         var projectRoot = CreateProjectWithCommonModules(temp, "Project");
         var store = new JsonProjectManifestStore();
         var manifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
-        manifest.Documents["Book1"].CommonModules.Add(new InstalledCommonModule("Feature", Requested: true));
+        manifest.Documents["Book1"].CommonModules.Add(Installed("Feature", requested: true));
         store.Save(projectRoot, manifest);
         var commonRepo = Path.Combine(temp.Path, "common_modules_repo");
         WriteManifest(
@@ -537,8 +657,8 @@ public sealed class CommonModulesCommandTests
         var updatedManifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
         Assert.Equal(
             [
-                new InstalledCommonModule("Feature", Requested: true),
-                new InstalledCommonModule("Base", Requested: false)
+                Installed("Feature", requested: true),
+                Installed("Base", requested: false)
             ],
             updatedManifest.Documents["Book1"].CommonModules);
     }
@@ -555,8 +675,8 @@ public sealed class CommonModulesCommandTests
         {
             CommonModulesRepository = "../common_modules_repo"
         };
-        manifest.Documents["Book1"].CommonModules.Add(new InstalledCommonModule("Feature", Requested: true));
-        manifest.Documents["SecondBook"].CommonModules.Add(new InstalledCommonModule("Feature", Requested: true));
+        manifest.Documents["Book1"].CommonModules.Add(Installed("Feature", requested: true));
+        manifest.Documents["SecondBook"].CommonModules.Add(Installed("Feature", requested: true));
         var store = new JsonProjectManifestStore();
         store.Save(projectRoot, manifest);
         WriteManifest(
@@ -581,14 +701,14 @@ public sealed class CommonModulesCommandTests
         var updatedManifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
         Assert.Equal(
             [
-                new InstalledCommonModule("Feature", Requested: true),
-                new InstalledCommonModule("Base", Requested: false)
+                Installed("Feature", requested: true),
+                Installed("Base", requested: false)
             ],
             updatedManifest.Documents["Book1"].CommonModules);
         Assert.Equal(
             [
-                new InstalledCommonModule("Feature", Requested: true),
-                new InstalledCommonModule("Base", Requested: false)
+                Installed("Feature", requested: true),
+                Installed("Base", requested: false)
             ],
             updatedManifest.Documents["SecondBook"].CommonModules);
     }
@@ -600,7 +720,7 @@ public sealed class CommonModulesCommandTests
         var projectRoot = CreateProjectWithCommonModules(temp, "Project");
         var store = new JsonProjectManifestStore();
         var manifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
-        manifest.Documents["Book1"].CommonModules.Add(new InstalledCommonModule("Feature", Requested: true));
+        manifest.Documents["Book1"].CommonModules.Add(Installed("Feature", requested: true));
         store.Save(projectRoot, manifest);
         var commonRepo = Path.Combine(temp.Path, "common_modules_repo");
         WriteManifest(
@@ -620,8 +740,8 @@ public sealed class CommonModulesCommandTests
         var updatedManifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
         Assert.Equal(
             [
-                new InstalledCommonModule("Feature", Requested: true),
-                new InstalledCommonModule("Base", Requested: false)
+                Installed("Feature", requested: true),
+                Installed("Base", requested: false)
             ],
             updatedManifest.Documents["Book1"].CommonModules);
         Assert.Equal(1, updatedManifest.Documents["Book1"].CommonModules.Count(module => module.Name.Equals("Base", StringComparison.OrdinalIgnoreCase)));
@@ -636,7 +756,7 @@ public sealed class CommonModulesCommandTests
         File.WriteAllText(Path.Combine(sourceSet, "Book1.xlsm"), string.Empty, new UTF8Encoding(false));
         var store = new JsonProjectManifestStore();
         var manifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
-        manifest.Documents["Book1"].CommonModules.Add(new InstalledCommonModule("Feature", Requested: true));
+        manifest.Documents["Book1"].CommonModules.Add(Installed("Feature", requested: true));
         store.Save(projectRoot, manifest);
         var commonRepo = Path.Combine(temp.Path, "common_modules_repo");
         WriteManifest(
@@ -674,13 +794,13 @@ public sealed class CommonModulesCommandTests
         };
         manifest.Documents["Book1"].CommonModules.AddRange(
             [
-                new InstalledCommonModule("Base", Requested: false),
-                new InstalledCommonModule("Feature", Requested: true)
+                Installed("Base", requested: false),
+                Installed("Feature", requested: true)
             ]);
         manifest.Documents["SecondBook"].CommonModules.AddRange(
             [
-                new InstalledCommonModule("Base", Requested: false),
-                new InstalledCommonModule("Feature", Requested: true)
+                Installed("Base", requested: false),
+                Installed("Feature", requested: true)
             ]);
         new JsonProjectManifestStore().Save(projectRoot, manifest);
         WriteManifest(
@@ -782,7 +902,10 @@ public sealed class CommonModulesCommandTests
         var recoveryBytes = File.ReadAllBytes(recoveryFile);
         Assert.Equal(0xff, recoveryBytes[0]);
         Assert.Equal(0xfe, recoveryBytes[1]);
-        Assert.Contains("\"Feature\"", File.ReadAllText(recoveryFile, Encoding.Unicode), StringComparison.Ordinal);
+        var recoveryManifest = new JsonProjectManifestStore().Load(recoveryFile);
+        Assert.Equal(
+            [new InstalledCommonModule("Feature", "Feature.bas", Requested: true, TestOnly: false)],
+            recoveryManifest.Documents["Book1"].CommonModules);
         var manifest = new JsonProjectManifestStore().Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
         Assert.Empty(manifest.Documents["Book1"].CommonModules);
     }
@@ -845,6 +968,13 @@ public sealed class CommonModulesCommandTests
         new JsonProjectManifestStore().Save(projectRoot, ProjectManifest.CreateDefault(projectName, "Book1", projectRoot, commonRepo));
         return projectRoot;
     }
+
+    private static InstalledCommonModule Installed(
+        string name,
+        bool requested,
+        string? moduleFile = null,
+        bool testOnly = false)
+        => new(name, moduleFile ?? $"{name}.bas", requested, testOnly);
 
     private static void WriteManifest(string repo, params (string ModuleFile, string Categories, string Dependencies)[] rows)
     {

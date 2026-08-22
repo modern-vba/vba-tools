@@ -3,6 +3,7 @@ import './distributionManifest.test';
 import './languageServer.test';
 import './documentFormatting.test';
 import './extensionContributions.test';
+import './projectManifest.test';
 import './projectDiscovery.test';
 import './devtoolCommand.test';
 import './vbaDevTerminalCommand.test';

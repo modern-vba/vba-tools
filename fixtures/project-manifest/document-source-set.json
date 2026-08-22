@@ -12,11 +12,15 @@
       "commonModules": [
         {
           "name": "LibArray",
-          "requested": true
+          "moduleFile": "LibArray.bas",
+          "requested": true,
+          "testOnly": false
         },
         {
           "name": "LibString",
-          "requested": false
+          "moduleFile": "LibString.bas",
+          "requested": false,
+          "testOnly": false
         }
       ]
     }
