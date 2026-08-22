@@ -45,7 +45,9 @@ public sealed class WorkbookOutputCommand
         => RunAsyncCore(
             context,
             profile,
-            () => profile.ResolveSourceFiles(sourcePlanner, context),
+            () => new BorrowedWorkbookGenerationSourceInput(
+                profile.ResolveSourceFiles(sourcePlanner, context)),
+            () => profile.ResolveTargetDocumentPath(context),
             cancellationToken);
 
     /// <summary>
@@ -65,13 +67,28 @@ public sealed class WorkbookOutputCommand
         => RunAsyncCore(
             context,
             profile,
-            () => sourceFiles,
+            () => new BorrowedWorkbookGenerationSourceInput(sourceFiles),
+            () => profile.ResolveTargetDocumentPath(context),
+            cancellationToken);
+
+    internal Task<CommandResult> RunWithOwnedSourceAsync(
+        ResolvedProjectContext context,
+        WorkbookOutputProfile profile,
+        Func<IWorkbookGenerationSourceInput> resolveSourceInput,
+        Func<string> resolveTargetDocumentPath,
+        CancellationToken cancellationToken)
+        => RunAsyncCore(
+            context,
+            profile,
+            resolveSourceInput,
+            resolveTargetDocumentPath,
             cancellationToken);
 
     private async Task<CommandResult> RunAsyncCore(
         ResolvedProjectContext context,
         WorkbookOutputProfile profile,
-        Func<IReadOnlyList<VbaSourceFile>> resolveSourceFiles,
+        Func<IWorkbookGenerationSourceInput> resolveSourceInput,
+        Func<string> resolveTargetDocumentPath,
         CancellationToken cancellationToken)
     {
         try
@@ -87,20 +104,21 @@ public sealed class WorkbookOutputCommand
                 return CommandResult.UsageError($"{profile.DisplayName} supports only Excel documents: {context.DocumentName}");
             }
 
-            var sourceFiles = resolveSourceFiles();
-            var targetDocumentPath = profile.ResolveTargetDocumentPath(context);
+            var targetDocumentPath = resolveTargetDocumentPath();
             var defaultTimeouts = WorkbookAutomationTimeouts.Default;
             var timeouts = defaultTimeouts with
             {
                 WorkbookOpen = CommandDefaultResolver.ResolveWorkbookOpenTimeout(context.Manifest),
                 WorkbookSave = CommandDefaultResolver.ResolveWorkbookSaveTimeout(context.Manifest)
             };
+            var sourceInput = resolveSourceInput();
+            var sourceFiles = sourceInput.SourceFiles;
             var generationResult = await generationPipeline.GenerateAsync(
                 context.DocumentName,
                 context.TemplateDocumentPath,
                 targetDocumentPath,
                 context.Document.References,
-                sourceFiles,
+                sourceInput,
                 timeouts,
                 cancellationToken).ConfigureAwait(false);
 

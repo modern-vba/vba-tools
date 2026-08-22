@@ -53,6 +53,96 @@ public sealed class WorkbookGenerationPipelineTests
     }
 
     [Fact]
+    public async Task OwnedSnapshotIsReleasedAfterImportMirrorCreationAndBeforeOutputOrExcelStarts()
+    {
+        using var temp = TempDirectory.Create();
+        var templatePath = Path.Combine(temp.Path, "Template.xlsm");
+        var targetPath = Path.Combine(temp.Path, "Book1.xlsm");
+        var sourcePath = Path.Combine(temp.Path, "Module1.bas");
+        File.WriteAllText(templatePath, "new-workbook", Encoding.UTF8);
+        File.WriteAllText(
+            sourcePath,
+            "Attribute VB_Name = \"Module1\"\r\n",
+            new UTF8Encoding(false));
+        var events = new List<string>();
+        var sourceInput = new RecordingSourceInput(
+            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
+            () =>
+            {
+                File.Delete(sourcePath);
+                events.Add("snapshot-release");
+            });
+        var pipeline = CreatePipeline(
+            new RecordingWorkbookGenerationAutomation(events),
+            new RecordingTransactionFactory(events));
+
+        await pipeline.GenerateAsync(
+            "Book1",
+            templatePath,
+            targetPath,
+            [],
+            sourceInput,
+            WorkbookAutomationTimeouts.Default,
+            CancellationToken.None);
+
+        Assert.False(File.Exists(sourcePath));
+        Assert.Equal(
+            [
+                "snapshot-release",
+                "transaction-create",
+                "open",
+                "get-references",
+                "get-modules",
+                "verify",
+                "save"
+            ],
+            events);
+    }
+
+    [Fact]
+    public async Task OwnedSnapshotCleanupFailureStopsBeforeOutputOrExcelStarts()
+    {
+        using var temp = TempDirectory.Create();
+        var templatePath = Path.Combine(temp.Path, "Template.xlsm");
+        var targetPath = Path.Combine(temp.Path, "Book1.xlsm");
+        var sourcePath = Path.Combine(temp.Path, "Module1.bas");
+        File.WriteAllText(templatePath, "new-workbook", Encoding.UTF8);
+        File.WriteAllText(targetPath, "previous-workbook", Encoding.UTF8);
+        File.WriteAllText(
+            sourcePath,
+            "Attribute VB_Name = \"Module1\"\r\n",
+            new UTF8Encoding(false));
+        var events = new List<string>();
+        var disposeAttempts = 0;
+        var sourceInput = new RecordingSourceInput(
+            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
+            () =>
+            {
+                disposeAttempts++;
+                throw new InvalidOperationException("snapshot cleanup failed");
+            });
+        var pipeline = CreatePipeline(
+            new RecordingWorkbookGenerationAutomation(events),
+            new RecordingTransactionFactory(events));
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            pipeline.GenerateAsync(
+                "Book1",
+                templatePath,
+                targetPath,
+                [],
+                sourceInput,
+                WorkbookAutomationTimeouts.Default,
+                CancellationToken.None));
+
+        Assert.Contains("snapshot cleanup failed", error.Message, StringComparison.Ordinal);
+        Assert.Equal(1, disposeAttempts);
+        Assert.Empty(events);
+        Assert.Equal("previous-workbook", File.ReadAllText(targetPath, Encoding.UTF8));
+        Assert.Empty(Directory.EnumerateFiles(temp.Path, ".Book1.*.tmp.xlsm"));
+    }
+
+    [Fact]
     public async Task MissingAmbiguousReferenceUsesTheSelectedTemplateAndAddsTheProbeIdentity()
     {
         using var temp = TempDirectory.Create();
@@ -459,6 +549,29 @@ public sealed class WorkbookGenerationPipelineTests
         }
 
         public void Dispose() => inner.Dispose();
+    }
+
+    private sealed class RecordingTransactionFactory(
+        List<string> events) : IWorkbookOutputTransactionFactory
+    {
+        public IWorkbookOutputTransaction Create(
+            string templateWorkbookPath,
+            string targetWorkbookPath)
+        {
+            events.Add("transaction-create");
+            return WorkbookOutputTransaction.Create(
+                templateWorkbookPath,
+                targetWorkbookPath);
+        }
+    }
+
+    private sealed class RecordingSourceInput(
+        IReadOnlyList<VbaSourceFile> sourceFiles,
+        Action onDispose) : IWorkbookGenerationSourceInput
+    {
+        public IReadOnlyList<VbaSourceFile> SourceFiles => sourceFiles;
+
+        public void Dispose() => onDispose();
     }
 
     private sealed class ThrowingWorkbookGenerationAutomation(

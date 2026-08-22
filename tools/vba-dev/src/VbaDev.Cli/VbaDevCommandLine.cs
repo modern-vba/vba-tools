@@ -313,13 +313,24 @@ public sealed class VbaDevCommandLine
             "1.0",
             capabilityCommands);
         var buildOptions = AddProjectDocumentOptions(buildCommand);
+        var buildSourceSnapshotOption = CreateStringOption(
+            "--source-snapshot",
+            "Complete caller-owned source snapshot directory.",
+            "dir");
+        var buildOutputOption = CreateStringOption(
+            "--output",
+            "Caller-owned workbook output path for snapshot builds.",
+            "workbook");
+        buildCommand.Add(buildSourceSnapshotOption);
+        buildCommand.Add(buildOutputOption);
         buildCommand.SetAction(async (parseResult, cancellationToken) => WriteCommandResult(
             parseResult,
-            await ResolveDocumentContextAsync(
+            await RunBuildCommandAsync(
                     parseResult,
                     composition,
                     buildOptions,
-                    composition.BuildCommand.RunAsync,
+                    buildSourceSnapshotOption,
+                    buildOutputOption,
                     cancellationToken)
                 .ConfigureAwait(false)));
         var testCommand = AddCapabilityCommand(
@@ -446,6 +457,10 @@ public sealed class VbaDevCommandLine
             var capabilities = new ToolCapabilities(
                 ReleaseVersion,
                 "1.0",
+                new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["build.sourceSnapshot"] = "1.0"
+                },
                 capabilityCommands
                     .OrderBy(registration => registration.Name, StringComparer.OrdinalIgnoreCase)
                     .ToDictionary(
@@ -733,6 +748,42 @@ public sealed class VbaDevCommandLine
         }
     }
 
+    private static Task<CommandResult> RunBuildCommandAsync(
+        ParseResult parseResult,
+        ToolingApplicationComposition composition,
+        ProjectDocumentOptions options,
+        Option<string> sourceSnapshotOption,
+        Option<string> outputOption,
+        CancellationToken cancellationToken)
+    {
+        var hasSourceSnapshot = parseResult.GetResult(sourceSnapshotOption) is not null;
+        var hasOutput = parseResult.GetResult(outputOption) is not null;
+        if (hasSourceSnapshot != hasOutput)
+        {
+            return Task.FromResult(CommandResult.UsageError(
+                "--source-snapshot and --output must be supplied together."));
+        }
+
+        return ResolveDocumentContextAsync(
+            parseResult,
+            composition,
+            options,
+            (context, operationCancellationToken) => hasSourceSnapshot
+                ? composition.BuildCommand.RunSnapshotAsync(
+                    context,
+                    Path.GetFullPath(
+                        parseResult.GetValue(sourceSnapshotOption)!,
+                        composition.WorkingDirectory),
+                    Path.GetFullPath(
+                        parseResult.GetValue(outputOption)!,
+                        composition.WorkingDirectory),
+                    operationCancellationToken)
+                : composition.BuildCommand.RunAsync(
+                    context,
+                    operationCancellationToken),
+            cancellationToken);
+    }
+
     private static CommandResult ResolveProject(
         ParseResult parseResult,
         ToolingApplicationComposition composition,
@@ -876,6 +927,7 @@ public sealed class VbaDevCommandLine
     private sealed record ToolCapabilities(
         string ToolVersion,
         string ContractVersion,
+        IReadOnlyDictionary<string, string> FeatureVersions,
         IReadOnlyDictionary<string, CommandCapability> Commands,
         DebugAdapterCapability DebugAdapter);
 

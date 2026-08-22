@@ -10,14 +10,29 @@ namespace VbaDev.App.Build;
 public sealed class BuildCommand
 {
     private readonly WorkbookOutputCommand outputCommand;
+    private readonly BuildSourceSnapshotCaptureFactory snapshotCaptureFactory;
+    private readonly BuildSourceSnapshotOutputSafetyValidator snapshotOutputSafetyValidator;
 
     /// <summary>
     /// Creates the build command.
     /// </summary>
     /// <param name="outputCommand">The shared workbook output command implementation.</param>
     public BuildCommand(WorkbookOutputCommand outputCommand)
+        : this(
+            outputCommand,
+            new BuildSourceSnapshotCaptureFactory(),
+            new BuildSourceSnapshotOutputSafetyValidator())
+    {
+    }
+
+    internal BuildCommand(
+        WorkbookOutputCommand outputCommand,
+        BuildSourceSnapshotCaptureFactory snapshotCaptureFactory,
+        BuildSourceSnapshotOutputSafetyValidator snapshotOutputSafetyValidator)
     {
         this.outputCommand = outputCommand;
+        this.snapshotCaptureFactory = snapshotCaptureFactory;
+        this.snapshotOutputSafetyValidator = snapshotOutputSafetyValidator;
     }
 
     /// <summary>
@@ -56,4 +71,30 @@ public sealed class BuildCommand
             WorkbookOutputProfile.Build,
             sourceFiles,
             cancellationToken);
+
+    /// <summary>
+    /// Generates a caller-selected workbook from a complete caller-owned source snapshot.
+    /// </summary>
+    public Task<CommandResult> RunSnapshotAsync(
+        ResolvedProjectContext context,
+        string sourceSnapshotPath,
+        string outputPath,
+        CancellationToken cancellationToken)
+    {
+        BuildSourceSnapshotValidatedPaths? validatedPaths = null;
+        BuildSourceSnapshotValidatedPaths ResolveValidatedPaths()
+            => validatedPaths ??= snapshotOutputSafetyValidator.Validate(
+                context,
+                sourceSnapshotPath,
+                outputPath);
+
+        return outputCommand.RunWithOwnedSourceAsync(
+            context,
+            WorkbookOutputProfile.Build,
+            () => snapshotCaptureFactory.Create(
+                ResolveValidatedPaths().SourceSnapshotPath,
+                cancellationToken),
+            () => ResolveValidatedPaths().OutputPath,
+            cancellationToken);
+    }
 }

@@ -79,7 +79,7 @@ public sealed class CliSurfaceTests
 
         Assert.Equal(0, exitCode);
         Assert.Equal(
-            "{\"toolVersion\":\"0.1.0\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"1.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"import\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"1.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"debugAdapter\":{\"protocolVersion\":\"1.1\",\"transport\":\"stdio\",\"command\":\"debug-adapter\"}}" + Environment.NewLine,
+            "{\"toolVersion\":\"0.1.0\",\"contractVersion\":\"1.0\",\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"},\"commands\":{\"build\":{\"outputSchemaVersion\":\"1.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"import\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"1.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"debugAdapter\":{\"protocolVersion\":\"1.1\",\"transport\":\"stdio\",\"command\":\"debug-adapter\"}}" + Environment.NewLine,
             standardOutput.ToString());
         Assert.Empty(standardError.ToString());
     }
@@ -123,7 +123,14 @@ public sealed class CliSurfaceTests
             ["reference add"] = ["--project <path>", "--document <name>", "-d"],
             ["reference list"] = ["--project <path>", "--document <name>", "--available", "--format <text|json>", "-f"],
             ["reference remove"] = ["--project <path>", "--document <name>", "-d"],
-            ["build"] = ["--project <path>", "--document <name>", "-d"],
+            ["build"] =
+            [
+                "--project <path>",
+                "--document <name>",
+                "-d",
+                "--source-snapshot <dir>",
+                "--output <workbook>"
+            ],
             ["test"] = ["--project <path>", "--document <name>", "--format <text|ndjson>", "--no-build"],
             ["publish"] = ["--project <path>", "--document <name>", "-d"],
             ["export"] = ["--project <path>", "--document <name>", "--from <path>", "--to <dir>"],
@@ -298,6 +305,22 @@ public sealed class CliSurfaceTests
             "\"debugAdapter\":{\"protocolVersion\":\"1.1\",\"transport\":\"stdio\",\"command\":\"debug-adapter\"}",
             result.StandardOutput,
             StringComparison.Ordinal);
+        Assert.Empty(result.StandardError);
+    }
+
+    [Fact]
+    public void CapabilitiesAdvertiseSnapshotBuildFeatureVersion()
+    {
+        var result = application.Run(["capabilities", "--format", "json"]);
+
+        Assert.Equal(0, result.ExitCode);
+        using var capabilities = JsonDocument.Parse(result.StandardOutput);
+        Assert.Equal(
+            "1.0",
+            capabilities.RootElement
+                .GetProperty("featureVersions")
+                .GetProperty("build.sourceSnapshot")
+                .GetString());
         Assert.Empty(result.StandardError);
     }
 

@@ -1,3 +1,4 @@
+using System.Runtime.ExceptionServices;
 using VbaDev.App.Workbooks;
 using VbaDev.Domain;
 
@@ -117,7 +118,7 @@ public sealed class WorkbookGenerationPipeline
     /// <summary>
     /// Generates and atomically commits a workbook through one bounded owned Excel process.
     /// </summary>
-    public async Task<WorkbookGenerationResult> GenerateAsync(
+    public Task<WorkbookGenerationResult> GenerateAsync(
         string documentName,
         string templateWorkbookPath,
         string targetWorkbookPath,
@@ -125,14 +126,33 @@ public sealed class WorkbookGenerationPipeline
         IReadOnlyList<VbaSourceFile> sourceFiles,
         WorkbookAutomationTimeouts timeouts,
         CancellationToken cancellationToken)
+        => GenerateAsync(
+            documentName,
+            templateWorkbookPath,
+            targetWorkbookPath,
+            desiredReferences,
+            new BorrowedWorkbookGenerationSourceInput(sourceFiles),
+            timeouts,
+            cancellationToken);
+
+    internal async Task<WorkbookGenerationResult> GenerateAsync(
+        string documentName,
+        string templateWorkbookPath,
+        string targetWorkbookPath,
+        IReadOnlyList<VbaProjectReference> desiredReferences,
+        IWorkbookGenerationSourceInput sourceInput,
+        WorkbookAutomationTimeouts timeouts,
+        CancellationToken cancellationToken)
     {
-        ThrowIfCanceled(
-            cancellationToken,
-            new WorkbookAutomationStage(WorkbookAutomationStageKind.ExcelStartup));
-        using var importSourceSet = importSourceSetFactory.Create(sourceFiles);
-        var transaction = transactionFactory.Create(templateWorkbookPath, targetWorkbookPath);
+        VbeImportSourceSet? importSourceSet = CreateImportSourceSetAndReleaseInput(
+            sourceInput,
+            cancellationToken);
+        IWorkbookOutputTransaction? transaction = null;
         try
         {
+            transaction = transactionFactory.Create(
+                templateWorkbookPath,
+                targetWorkbookPath);
             var warnings = await workbookGenerationAutomation.RunAsync(
                 transaction.StagingWorkbookPath,
                 timeouts,
@@ -168,7 +188,9 @@ public sealed class WorkbookGenerationPipeline
                 },
                 cancellationToken).ConfigureAwait(false);
 
-            importSourceSet.Dispose();
+            var completedImportSourceSet = importSourceSet;
+            importSourceSet = null;
+            completedImportSourceSet.Dispose();
 
             ThrowIfCanceled(
                 cancellationToken,
@@ -188,27 +210,118 @@ public sealed class WorkbookGenerationPipeline
                 throw new BuildCommandException($"Target workbook is locked or unavailable: {targetWorkbookPath}", ex);
             }
 
-            transaction.Dispose();
+            var completedTransaction = transaction;
+            transaction = null;
+            completedTransaction.Dispose();
 
             // Commit is the success boundary. A later cancellation cannot turn replaced output into cancellation.
             return new WorkbookGenerationResult(warnings);
         }
         catch (Exception operationError)
         {
-            try
-            {
-                transaction.Dispose();
-            }
-            catch (Exception cleanupError)
-            {
-                throw new BuildCommandException(
-                    $"{operationError.Message} {cleanupError.Message}",
-                    new AggregateException(operationError, cleanupError));
-            }
-
+            var failure = operationError;
+            failure = DisposeAfterFailure(importSourceSet, failure);
+            failure = DisposeTransactionAfterFailure(transaction, failure);
+            ExceptionDispatchInfo.Capture(failure).Throw();
             throw;
         }
     }
+
+    private static Exception DisposeAfterFailure(
+        IDisposable? resource,
+        Exception failure)
+    {
+        if (resource is null)
+        {
+            return failure;
+        }
+
+        try
+        {
+            resource.Dispose();
+            return failure;
+        }
+        catch (Exception cleanupError)
+        {
+            return CombineFailures(failure, cleanupError);
+        }
+    }
+
+    private static Exception DisposeTransactionAfterFailure(
+        IWorkbookOutputTransaction? transaction,
+        Exception failure)
+    {
+        if (transaction is null)
+        {
+            return failure;
+        }
+
+        try
+        {
+            transaction.Dispose();
+            return failure;
+        }
+        catch (Exception cleanupError)
+        {
+            return new BuildCommandException(
+                $"{failure.Message} {cleanupError.Message}",
+                new AggregateException(failure, cleanupError));
+        }
+    }
+
+    private VbeImportSourceSet CreateImportSourceSetAndReleaseInput(
+        IWorkbookGenerationSourceInput sourceInput,
+        CancellationToken cancellationToken)
+    {
+        VbeImportSourceSet? importSourceSet = null;
+        Exception? failure = null;
+        try
+        {
+            ThrowIfCanceled(
+                cancellationToken,
+                new WorkbookAutomationStage(WorkbookAutomationStageKind.ExcelStartup));
+            importSourceSet = importSourceSetFactory.Create(sourceInput.SourceFiles);
+        }
+        catch (Exception ex)
+        {
+            failure = ex;
+        }
+
+        try
+        {
+            sourceInput.Dispose();
+        }
+        catch (Exception ex)
+        {
+            failure = CombineFailures(failure, ex);
+        }
+
+        if (failure is not null)
+        {
+            if (importSourceSet is not null)
+            {
+                try
+                {
+                    importSourceSet.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    failure = CombineFailures(failure, ex);
+                }
+            }
+
+            ExceptionDispatchInfo.Capture(failure).Throw();
+        }
+
+        return importSourceSet!;
+    }
+
+    private static Exception CombineFailures(Exception? operationError, Exception cleanupError)
+        => operationError is null
+            ? cleanupError
+            : new InvalidOperationException(
+                $"{operationError.Message} {cleanupError.Message}",
+                new AggregateException(operationError, cleanupError));
 
     /// <summary>
     /// Contains non-fatal warnings emitted while generating a workbook.

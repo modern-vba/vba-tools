@@ -233,9 +233,13 @@ Usage:
 Options:
   --project <path>               Project root containing vba-project.json.
   --document <name>, -d <name>   Document name from the project manifest.
+  --source-snapshot <dir>        Complete caller-owned source snapshot directory.
+  --output <workbook>            Caller-owned workbook output path for snapshot builds.
 ```
 
 `build` creates the bin workbook from the source template, normalizes manifest-defined VBA project references, recursively imports source files, and writes the selected document's bin output. Project-local source files are imported after CommonModules dependency ordering, sorted by extension-including exported file name. Duplicate `.bas`, `.cls`, or `.frm` file names fail before source import. `.frx` files are not imported or validated independently.
+
+Supplying `--source-snapshot` and `--output` together instead builds from that complete recursive source inventory without reading the persistent document source set. Snapshot builds preserve caller bytes in invocation scratch, reject filesystem-canonical output aliases to caller or manifest-owned inputs and outputs, and atomically replace only the selected caller output. Neither option is valid by itself.
 
 ### test
 
