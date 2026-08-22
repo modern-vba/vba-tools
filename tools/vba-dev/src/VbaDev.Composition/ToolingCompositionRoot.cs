@@ -124,6 +124,9 @@ public static class ToolingCompositionRoot
             ambiguityProbe);
         var referenceService = new VbaProjectReferenceService(manifestEditor, referencePlanner);
         var projectContextResolver = new ProjectContextResolver(manifestStore);
+        var referenceCompletionService = new VbaProjectReferenceCompletionService(
+            projectContextResolver,
+            referencePlanner);
         var buildAutomation = workbookBuildAutomation ?? new ExcelComWorkbookBuildAutomation();
         var doctorPipeline = new DoctorDiagnosticPipeline(
             projectContextResolver,
@@ -164,6 +167,7 @@ public static class ToolingCompositionRoot
             newProjectCommand,
             commonModulesService,
             referenceService,
+            referenceCompletionService,
             buildCommand,
             publishCommand,
             testCommand,
@@ -188,6 +192,7 @@ public static class ToolingCompositionRoot
 /// <param name="NewProjectCommand">The project creation command.</param>
 /// <param name="CommonModulesService">The CommonModules service.</param>
 /// <param name="ReferenceService">The VBA reference service.</param>
+/// <param name="ReferenceCompletionService">The quiet reference-name completion service.</param>
 /// <param name="BuildCommand">The workbook build command.</param>
 /// <param name="PublishCommand">The workbook publish command.</param>
 /// <param name="TestCommand">The workbook test command.</param>
@@ -200,6 +205,7 @@ public sealed record ToolingApplicationComposition(
     NewProjectCommand NewProjectCommand,
     CommonModulesService CommonModulesService,
     VbaProjectReferenceService ReferenceService,
+    VbaProjectReferenceCompletionService ReferenceCompletionService,
     BuildCommand BuildCommand,
     PublishCommand PublishCommand,
     TestCommand TestCommand,

@@ -16,6 +16,21 @@ vba-dev --version
 `vba-dev capabilities --format json` reports the same three-part SemVer as
 `toolVersion`, independently from the VS Code extension version.
 
+## PowerShell completion
+
+Load completion into the current Windows PowerShell 5.1 or PowerShell 7
+session:
+
+```powershell
+vba-dev completions script pwsh | Out-String | Invoke-Expression
+```
+
+The command writes a self-contained registration script to stdout. It does not
+edit a PowerShell profile or create a sidecar module. The script embeds the
+absolute path of the `vba-dev` executable that generated it, so registered
+completion continues to work when `PATH` changes. Regenerate and reload the
+script after moving or replacing that executable.
+
 ## Commands
 
 | Command | Scope | Description |
@@ -24,6 +39,7 @@ vba-dev --version
 | `common-module add` | document | Copy CommonModules entries into the selected document source set. |
 | `common-module list` | document | List CommonModules entries for the selected document. |
 | `common-module update` | project | Update installed CommonModules entries. |
+| `completions script pwsh` | current PowerShell session | Generate PowerShell completion registration. |
 | `reference add` | document | Add VBA project references to the selected document manifest. |
 | `reference list` | document or environment fallback | List configured or available VBA project references. |
 | `reference remove` | document | Remove VBA project references from the selected document manifest. |
@@ -55,6 +71,7 @@ Usage:
 Commands:
   new            Create an Excel workbook-backed VBA project.
   common-module  Copy CommonModules entries into the selected document source set.
+  completions    Generate shell completion setup.
   reference      Add VBA project references to the selected document manifest.
   build          Build the selected document into bin output.
   test           Run VBA unit tests for the selected document.

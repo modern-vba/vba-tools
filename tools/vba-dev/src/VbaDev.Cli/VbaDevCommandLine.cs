@@ -61,7 +61,18 @@ public sealed class VbaDevCommandLine
     public static VbaDevCommandLine Create(
         ToolingApplicationComposition composition,
         Func<CancellationToken, Task<int>>? debugAdapterRunner = null)
+        => Create(
+            composition,
+            Environment.ProcessPath
+            ?? throw new InvalidOperationException("The generating vba-dev executable path is unavailable."),
+            debugAdapterRunner);
+
+    internal static VbaDevCommandLine Create(
+        ToolingApplicationComposition composition,
+        string generatingExecutablePath,
+        Func<CancellationToken, Task<int>>? debugAdapterRunner = null)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(generatingExecutablePath);
         var rootCommand = new RootCommand("VBA development tooling.");
         var helpOption = rootCommand.Options.OfType<HelpOption>().Single();
         rootCommand.Action = new RootHelpAction(
@@ -165,6 +176,22 @@ public sealed class VbaDevCommandLine
                 commonModuleUpdateProjectOption,
                 composition.CommonModulesService.Update)));
 
+        var completionsCommand = AddCommand(rootCommand, "completions", "Generate shell completion setup.");
+        var completionsScriptCommand = AddCommand(
+            completionsCommand,
+            "script",
+            "Write a shell completion registration script.");
+        var completionsPowerShellCommand = AddCommand(
+            completionsScriptCommand,
+            "pwsh",
+            "Write a PowerShell completion registration script.");
+        completionsPowerShellCommand.SetAction(parseResult =>
+        {
+            parseResult.InvocationConfiguration.Output.Write(
+                PowerShellCompletionScriptRenderer.Render(generatingExecutablePath));
+            return 0;
+        });
+
         var referenceCommand = AddCommand(rootCommand, "reference", "Manage VBA project references.");
         var referenceAddCommand = AddCapabilityCommand(
             referenceCommand,
@@ -178,6 +205,24 @@ public sealed class VbaDevCommandLine
             Arity = ArgumentArity.OneOrMore,
             Description = "VBA project reference names to add."
         };
+        referenceAddArguments.CompletionSources.Add(completionContext =>
+        {
+            if (completionContext is not TextCompletionContext)
+            {
+                return [];
+            }
+
+            return composition.ReferenceCompletionService.CompleteAdd(
+                    new ProjectResolutionRequest(
+                        completionContext.ParseResult.GetValue(referenceAddOptions.Project),
+                        completionContext.ParseResult.GetValue(referenceAddOptions.Document),
+                        composition.WorkingDirectory),
+                    completionContext.ParseResult.GetResult(referenceAddArguments)?.Tokens
+                        .Select(token => token.Value)
+                        .ToArray()
+                    ?? [])
+                .Select(name => new CompletionItem(name));
+        });
         referenceAddCommand.Add(referenceAddArguments);
         referenceAddCommand.SetAction(async (parseResult, cancellationToken) => WriteCommandResult(
             parseResult,
@@ -232,6 +277,24 @@ public sealed class VbaDevCommandLine
             Arity = ArgumentArity.OneOrMore,
             Description = "VBA project reference names to remove."
         };
+        referenceRemoveArguments.CompletionSources.Add(completionContext =>
+        {
+            if (completionContext is not TextCompletionContext)
+            {
+                return [];
+            }
+
+            return composition.ReferenceCompletionService.CompleteRemove(
+                    new ProjectResolutionRequest(
+                        completionContext.ParseResult.GetValue(referenceRemoveOptions.Project),
+                        completionContext.ParseResult.GetValue(referenceRemoveOptions.Document),
+                        composition.WorkingDirectory),
+                    completionContext.ParseResult.GetResult(referenceRemoveArguments)?.Tokens
+                        .Select(token => token.Value)
+                        .ToArray()
+                    ?? [])
+                .Select(name => new CompletionItem(name));
+        });
         referenceRemoveCommand.Add(referenceRemoveArguments);
         referenceRemoveCommand.SetAction(parseResult => WriteCommandResult(
             parseResult,

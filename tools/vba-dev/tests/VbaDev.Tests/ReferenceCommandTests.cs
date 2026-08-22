@@ -139,6 +139,316 @@ public sealed class ReferenceCommandTests
     }
 
     [Fact]
+    public void AddCompletionOffersRegisteredNamesExceptSelectedManifestNames()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp, new VbaProjectReference("Existing Library"));
+        var application = CommandLineTestFactory.Create(
+            root,
+            vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
+                new ResolvedVbaProjectReference(
+                    "Available Library",
+                    "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                    1,
+                    0),
+                new ResolvedVbaProjectReference(
+                    "Existing Library",
+                    "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                    1,
+                    0)));
+
+        var result = application.Run(["[suggest:14]", "reference add "]);
+        var suggestions = result.StandardOutput.Split(
+            Environment.NewLine,
+            StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.True(
+            result.ExitCode == 0,
+            $"stdout: {result.StandardOutput}{Environment.NewLine}stderr: {result.StandardError}");
+        Assert.Contains("Available Library", suggestions);
+        Assert.DoesNotContain("Existing Library", suggestions);
+        Assert.Empty(result.StandardError);
+    }
+
+    [Fact]
+    public void AddCompletionCanonicalizesUsableRegistryNamesWithoutProbingExcel()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        var resolver = new FakeVbaProjectReferenceResolver(
+            new ResolvedVbaProjectReference(
+                "Alpha",
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                1,
+                0),
+            new ResolvedVbaProjectReference(
+                "Ambiguous",
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                1,
+                0),
+            new ResolvedVbaProjectReference(
+                "Ambiguous",
+                "cccccccc-cccc-cccc-cccc-cccccccccccc",
+                2,
+                0),
+            new ResolvedVbaProjectReference(
+                "beta",
+                "dddddddd-dddd-dddd-dddd-dddddddddddd",
+                1,
+                0),
+            new ResolvedVbaProjectReference(
+                "Beta",
+                "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+                2,
+                0),
+            new ResolvedVbaProjectReference(
+                "Visual Basic For Applications",
+                "ffffffff-ffff-ffff-ffff-ffffffffffff",
+                4,
+                2))
+        {
+            RegisteredNamesWithoutUsableIdentity = ["Unusable"]
+        };
+        var application = CommandLineTestFactory.Create(
+            root,
+            vbaProjectReferenceResolver: resolver,
+            vbaProjectReferenceAmbiguityProbe: new DelegateReferenceAmbiguityProbe(
+                _ => throw new InvalidOperationException("Completion must not probe Excel.")));
+
+        var result = application.Run(["[suggest:20]", "reference add Alpha "]);
+        var suggestions = result.StandardOutput.Split(
+            Environment.NewLine,
+            StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.DoesNotContain("Alpha", suggestions);
+        Assert.DoesNotContain("Unusable", suggestions);
+        Assert.DoesNotContain("Visual Basic For Applications", suggestions);
+        Assert.Contains("Ambiguous", suggestions);
+        Assert.Contains("Beta", suggestions);
+        Assert.DoesNotContain("beta", suggestions);
+        Assert.True(
+            Array.IndexOf(suggestions, "Ambiguous") < Array.IndexOf(suggestions, "Beta"));
+        Assert.Empty(result.StandardError);
+    }
+
+    [Fact]
+    public void AddCompletionUsesThePrimaryDocumentByDefaultAndHonorsExplicitDocument()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        Directory.CreateDirectory(Path.Combine(root, "src", "Book1"));
+        Directory.CreateDirectory(Path.Combine(root, "src", "SecondBook"));
+        var manifest = ProjectManifestTestData.TwoDocumentManifest(root);
+        manifest.Documents["Book1"].References.Add(new VbaProjectReference("Primary Selected"));
+        manifest.Documents["SecondBook"].References.Add(new VbaProjectReference("Second Selected"));
+        new JsonProjectManifestStore().Save(root, manifest);
+        var application = CommandLineTestFactory.Create(
+            root,
+            vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
+                new ResolvedVbaProjectReference(
+                    "Primary Selected",
+                    "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                    1,
+                    0),
+                new ResolvedVbaProjectReference(
+                    "Second Selected",
+                    "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                    1,
+                    0)));
+
+        var primaryLine = "reference add ";
+        var primaryResult = application.Run([$"[suggest:{primaryLine.Length}]", primaryLine]);
+        var primarySuggestions = primaryResult.StandardOutput.Split(
+            Environment.NewLine,
+            StringSplitOptions.RemoveEmptyEntries);
+        var explicitLine = "reference add --document SecondBook ";
+        var explicitResult = application.Run([$"[suggest:{explicitLine.Length}]", explicitLine]);
+        var explicitSuggestions = explicitResult.StandardOutput.Split(
+            Environment.NewLine,
+            StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.Equal(0, primaryResult.ExitCode);
+        Assert.DoesNotContain("Primary Selected", primarySuggestions);
+        Assert.Contains("Second Selected", primarySuggestions);
+        Assert.Empty(primaryResult.StandardError);
+        Assert.Equal(0, explicitResult.ExitCode);
+        Assert.Contains("Primary Selected", explicitSuggestions);
+        Assert.DoesNotContain("Second Selected", explicitSuggestions);
+        Assert.Empty(explicitResult.StandardError);
+    }
+
+    [Fact]
+    public void AddCompletionKeepsUsableCandidatesWhenRegistryWarningsAreNonFatal()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        var resolver = new FakeVbaProjectReferenceResolver(
+            new ResolvedVbaProjectReference(
+                "Available Library",
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                1,
+                0))
+        {
+            Warnings =
+            [
+                new TypeLibRegistryCatalogWarning(
+                    "malformedRegistrationsSkipped",
+                    "Skipped one malformed TypeLib registration.",
+                    1)
+            ]
+        };
+        var application = CommandLineTestFactory.Create(
+            root,
+            vbaProjectReferenceResolver: resolver);
+        var line = "reference add Av";
+
+        var result = application.Run([$"[suggest:{line.Length}]", line]);
+        var suggestions = result.StandardOutput.Split(
+            Environment.NewLine,
+            StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("Available Library", suggestions);
+        Assert.Empty(result.StandardError);
+    }
+
+    [Fact]
+    public void AddCompletionFailsQuietlyWhenTheRegistryScanIsIncomplete()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        var resolver = new FakeVbaProjectReferenceResolver(
+            new ResolvedVbaProjectReference(
+                "Zulu Library",
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                1,
+                0))
+        {
+            Complete = false,
+            Diagnostic = new TypeLibRegistryCatalogDiagnostic(
+                "registryReadFailed",
+                "The registry scan did not complete.")
+        };
+        var application = CommandLineTestFactory.Create(
+            root,
+            vbaProjectReferenceResolver: resolver);
+        var line = "reference add Z";
+
+        var result = application.Run([$"[suggest:{line.Length}]", line]);
+        var suggestions = result.StandardOutput.Split(
+            Environment.NewLine,
+            StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(suggestions);
+        Assert.Empty(result.StandardError);
+    }
+
+    [Fact]
+    public void AddCompletionFailsQuietlyWhenProjectContextIsMissing()
+    {
+        using var temp = TempDirectory.Create();
+        var resolver = new FakeVbaProjectReferenceResolver
+        {
+            ThrowOnResolve = true
+        };
+        var application = CommandLineTestFactory.Create(
+            temp.Path,
+            vbaProjectReferenceResolver: resolver);
+        var line = "reference add Z";
+
+        var result = application.Run([$"[suggest:{line.Length}]", line]);
+        var suggestions = result.StandardOutput.Split(
+            Environment.NewLine,
+            StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(suggestions);
+        Assert.Empty(resolver.RequestedNames);
+        Assert.Empty(result.StandardError);
+    }
+
+    [Fact]
+    public void AddCompletionFailsQuietlyForAnInvalidExplicitProject()
+    {
+        using var temp = TempDirectory.Create();
+        var resolver = new FakeVbaProjectReferenceResolver
+        {
+            ThrowOnResolve = true
+        };
+        var application = CommandLineTestFactory.Create(
+            temp.Path,
+            vbaProjectReferenceResolver: resolver);
+        var missingProject = Path.Combine(temp.Path, "Missing Project");
+        var line = $"reference add --project \"{missingProject}\" Z";
+
+        var result = application.Run([$"[suggest:{line.Length}]", line]);
+        var suggestions = result.StandardOutput.Split(
+            Environment.NewLine,
+            StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(suggestions);
+        Assert.Empty(resolver.RequestedNames);
+        Assert.Empty(result.StandardError);
+    }
+
+    [Fact]
+    public void AddCompletionFailsQuietlyForAnUnknownDocument()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        var resolver = new FakeVbaProjectReferenceResolver
+        {
+            ThrowOnResolve = true
+        };
+        var application = CommandLineTestFactory.Create(
+            root,
+            vbaProjectReferenceResolver: resolver);
+        var line = "reference add --document Missing Z";
+
+        var result = application.Run([$"[suggest:{line.Length}]", line]);
+        var suggestions = result.StandardOutput.Split(
+            Environment.NewLine,
+            StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(suggestions);
+        Assert.Empty(resolver.RequestedNames);
+        Assert.Empty(result.StandardError);
+    }
+
+    [Fact]
+    public void AddCompletionFailsQuietlyForAMalformedManifest()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        File.WriteAllText(
+            Path.Combine(root, ProjectManifest.ManifestFileName),
+            "{ malformed",
+            new UTF8Encoding(false));
+        var resolver = new FakeVbaProjectReferenceResolver
+        {
+            ThrowOnResolve = true
+        };
+        var application = CommandLineTestFactory.Create(
+            root,
+            vbaProjectReferenceResolver: resolver);
+        var line = "reference add Z";
+
+        var result = application.Run([$"[suggest:{line.Length}]", line]);
+        var suggestions = result.StandardOutput.Split(
+            Environment.NewLine,
+            StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(suggestions);
+        Assert.Empty(resolver.RequestedNames);
+        Assert.Empty(result.StandardError);
+    }
+
+    [Fact]
     public async Task RemoveDeletesCaseInsensitiveMatchesAndSucceedsForAbsentReferences()
     {
         using var temp = TempDirectory.Create();
@@ -159,6 +469,101 @@ public sealed class ReferenceCommandTests
         Assert.Empty(resolver.RequestedNames);
         var manifest = new JsonProjectManifestStore().Load(Path.Combine(root, ProjectManifest.ManifestFileName));
         Assert.Equal(["Microsoft VBScript Regular Expressions 5.5"], manifest.Documents["Book1"].References.Select(reference => reference.Name));
+    }
+
+    [Fact]
+    public void RemoveCompletionOffersOnlyManifestNamesNotAlreadySupplied()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(
+            temp,
+            new VbaProjectReference("Alpha"),
+            new VbaProjectReference("Beta"),
+            new VbaProjectReference("Visual Basic For Applications"));
+        var resolver = new FakeVbaProjectReferenceResolver
+        {
+            ThrowOnResolve = true
+        };
+        var application = CommandLineTestFactory.Create(
+            root,
+            vbaProjectReferenceResolver: resolver);
+
+        var result = application.Run(["[suggest:23]", "reference remove Alpha "]);
+        var suggestions = result.StandardOutput.Split(
+            Environment.NewLine,
+            StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("Beta", suggestions);
+        Assert.DoesNotContain("Alpha", suggestions);
+        Assert.DoesNotContain("Visual Basic For Applications", suggestions);
+        Assert.Empty(resolver.RequestedNames);
+        Assert.Empty(result.StandardError);
+    }
+
+    [Fact]
+    public void RemoveCompletionUsesThePrimaryDocumentByDefaultAndHonorsExplicitDocument()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        Directory.CreateDirectory(Path.Combine(root, "src", "Book1"));
+        Directory.CreateDirectory(Path.Combine(root, "src", "SecondBook"));
+        var manifest = ProjectManifestTestData.TwoDocumentManifest(root);
+        manifest.Documents["Book1"].References.Add(new VbaProjectReference("Primary Selected"));
+        manifest.Documents["SecondBook"].References.Add(new VbaProjectReference("Second Selected"));
+        new JsonProjectManifestStore().Save(root, manifest);
+        var resolver = new FakeVbaProjectReferenceResolver
+        {
+            ThrowOnResolve = true
+        };
+        var application = CommandLineTestFactory.Create(
+            root,
+            vbaProjectReferenceResolver: resolver);
+
+        var primaryLine = "reference remove ";
+        var primaryResult = application.Run([$"[suggest:{primaryLine.Length}]", primaryLine]);
+        var primarySuggestions = primaryResult.StandardOutput.Split(
+            Environment.NewLine,
+            StringSplitOptions.RemoveEmptyEntries);
+        var explicitLine = "reference remove --document SecondBook ";
+        var explicitResult = application.Run([$"[suggest:{explicitLine.Length}]", explicitLine]);
+        var explicitSuggestions = explicitResult.StandardOutput.Split(
+            Environment.NewLine,
+            StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.Equal(0, primaryResult.ExitCode);
+        Assert.Contains("Primary Selected", primarySuggestions);
+        Assert.DoesNotContain("Second Selected", primarySuggestions);
+        Assert.Empty(primaryResult.StandardError);
+        Assert.Equal(0, explicitResult.ExitCode);
+        Assert.DoesNotContain("Primary Selected", explicitSuggestions);
+        Assert.Contains("Second Selected", explicitSuggestions);
+        Assert.Empty(explicitResult.StandardError);
+        Assert.Empty(resolver.RequestedNames);
+    }
+
+    [Fact]
+    public void RemoveCompletionFailsQuietlyWhenProjectContextIsMissing()
+    {
+        using var temp = TempDirectory.Create();
+        var resolver = new FakeVbaProjectReferenceResolver
+        {
+            ThrowOnResolve = true
+        };
+        var application = CommandLineTestFactory.Create(
+            temp.Path,
+            vbaProjectReferenceResolver: resolver);
+        var line = "reference remove Z";
+
+        var result = application.Run([$"[suggest:{line.Length}]", line]);
+        var suggestions = result.StandardOutput.Split(
+            Environment.NewLine,
+            StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(suggestions);
+        Assert.Empty(resolver.RequestedNames);
+        Assert.Empty(result.StandardError);
     }
 
     [Fact]

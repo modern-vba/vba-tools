@@ -352,6 +352,35 @@ public sealed class CliSurfaceTests
     }
 
     [Fact]
+    public void ReferenceHelpDoesNotEvaluateDynamicCompletionSources()
+    {
+        using var temp = TempDirectory.Create();
+        File.WriteAllText(
+            Path.Combine(temp.Path, ProjectManifest.ManifestFileName),
+            "completion help sentinel");
+        var manifestStore = new CountingProjectManifestStore(
+            ProjectManifest.CreateDefault("Project", "Book1", temp.Path, null));
+        var referenceResolver = new CountingReferenceResolver();
+        var commandLine = CommandLineTestFactory.Create(
+            temp.Path,
+            vbaProjectReferenceResolver: referenceResolver,
+            projectManifestStore: manifestStore);
+
+        var addHelp = commandLine.Run(["reference", "add", "--help"]);
+        var removeHelp = commandLine.Run(["reference", "remove", "--help"]);
+
+        Assert.Equal(0, addHelp.ExitCode);
+        Assert.Equal(0, removeHelp.ExitCode);
+        Assert.Contains("<references>...", addHelp.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("<references>...", removeHelp.StandardOutput, StringComparison.Ordinal);
+        Assert.Empty(addHelp.StandardError);
+        Assert.Empty(removeHelp.StandardError);
+        Assert.Equal(0, manifestStore.LoadCount);
+        Assert.Equal(0, referenceResolver.ResolveAvailableCount);
+        Assert.Equal(0, referenceResolver.ResolveCount);
+    }
+
+    [Fact]
     public void StaticCompletionComesFromTheInvokedRootCommandGraph()
     {
         var result = application.Run(["[suggest:1]", "b"]);
@@ -365,6 +394,99 @@ public sealed class CliSurfaceTests
         Assert.Contains("capabilities", suggestions);
         Assert.DoesNotContain("debug-adapter", suggestions);
         Assert.Empty(result.StandardError);
+    }
+
+    [Fact]
+    public void StaticOptionCompletionComesFromTheInvokedRootCommandGraph()
+    {
+        var line = "reference add --";
+
+        var result = application.Run([$"[suggest:{line.Length}]", line]);
+        var suggestions = result.StandardOutput.Split(
+            Environment.NewLine,
+            StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("--project", suggestions);
+        Assert.Contains("--document", suggestions);
+        Assert.Contains("--help", suggestions);
+        Assert.Empty(result.StandardError);
+    }
+
+    [Fact]
+    public void PowerShellCompletionRegistrationScriptIsWrittenToStandardOutput()
+    {
+        var result = application.Run(["completions", "script", "pwsh"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("Register-ArgumentCompleter", result.StandardOutput, StringComparison.Ordinal);
+        Assert.DoesNotContain("$PROFILE", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Set-Content", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Add-Content", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Out-File", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Import-Module", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("dotnet-suggest", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(".psm1", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Visual Studio Code", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(result.StandardError);
+    }
+
+    [Fact]
+    public void PowerShellCompletionScriptEmbedsAndRegistersTheExactGeneratingExecutable()
+    {
+        const string executablePath = @"C:\Program Files\VBA Tools\owner's 日本語\vba-dev.exe";
+        var commandLine = CommandLineTestFactory.Create(
+            Directory.GetCurrentDirectory(),
+            generatingExecutablePath: executablePath);
+
+        var result = commandLine.Run(["completions", "script", "pwsh"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains(
+            "$vbaDevExecutable = 'C:\\Program Files\\VBA Tools\\owner''s 日本語\\vba-dev.exe'",
+            result.StandardOutput,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "-CommandName @('vba-dev', 'vba-dev.exe', $vbaDevExecutable)",
+            result.StandardOutput,
+            StringComparison.Ordinal);
+        Assert.Empty(result.StandardError);
+    }
+
+    [Fact]
+    public void PowerShellCompletionScriptInvokesTheStandardSuggestDirective()
+    {
+        var result = application.Run(["completions", "script", "pwsh"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains(
+            "$suggestDirective = \"[suggest:$completionCursor]\"",
+            result.StandardOutput,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "& $vbaDevExecutable $suggestDirective $completionCommandLine",
+            result.StandardOutput,
+            StringComparison.Ordinal);
+        Assert.Empty(result.StandardError);
+    }
+
+    [Fact]
+    public void CompletionDoesNotIntroduceAPublicCompleteCommand()
+    {
+        var complete = application.Run(["complete"]);
+        var help = application.Run(["--help"]);
+
+        Assert.Equal(1, complete.ExitCode);
+        Assert.Contains("complete", complete.StandardError, StringComparison.Ordinal);
+        Assert.Equal(0, help.ExitCode);
+        Assert.DoesNotContain(
+            Environment.NewLine + "  complete ",
+            help.StandardOutput,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            Environment.NewLine + "  completions ",
+            help.StandardOutput,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -436,6 +558,41 @@ public sealed class CliSurfaceTests
 
         public void Save(string projectRoot, ProjectManifest manifest)
             => throw new InvalidOperationException("Help must not save project state.");
+    }
+
+    private sealed class CountingProjectManifestStore(ProjectManifest manifest)
+        : IProjectManifestStore
+    {
+        public int LoadCount { get; private set; }
+
+        public ProjectManifest Load(string manifestPath)
+        {
+            LoadCount++;
+            return manifest;
+        }
+
+        public void Save(string projectRoot, ProjectManifest projectManifest)
+            => throw new InvalidOperationException("Project manifest writes were not expected.");
+    }
+
+    private sealed class CountingReferenceResolver : VbaDev.App.Workbooks.IVbaProjectReferenceResolver
+    {
+        public int ResolveAvailableCount { get; private set; }
+
+        public int ResolveCount { get; private set; }
+
+        public VbaDev.App.Workbooks.VbaProjectReferenceResolutionBatch ResolveAvailable()
+        {
+            ResolveAvailableCount++;
+            return new VbaDev.App.Workbooks.VbaProjectReferenceResolutionBatch(true, [], null, []);
+        }
+
+        public VbaDev.App.Workbooks.VbaProjectReferenceResolutionBatch Resolve(
+            IReadOnlyList<string> referenceNames)
+        {
+            ResolveCount++;
+            return new VbaDev.App.Workbooks.VbaProjectReferenceResolutionBatch(true, [], null, []);
+        }
     }
 
     private sealed class ThrowingEnvironmentDiagnosticPort : IEnvironmentDiagnosticPort

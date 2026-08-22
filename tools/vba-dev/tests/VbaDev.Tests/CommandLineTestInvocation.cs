@@ -51,8 +51,11 @@ internal static class CommandLineTestFactory
         IWorkbookModuleExporter? workbookModuleExporter = null,
         IVbaProjectReferenceResolver? vbaProjectReferenceResolver = null,
         IProjectManifestStore? projectManifestStore = null,
-        IDebugEnvironmentProbeFactory? debugEnvironmentProbeFactory = null)
-        => VbaDevCommandLine.Create(ToolingCompositionRoot.CreateApplicationComposition(
+        IDebugEnvironmentProbeFactory? debugEnvironmentProbeFactory = null,
+        IVbaProjectReferenceAmbiguityProbe? vbaProjectReferenceAmbiguityProbe = null,
+        string? generatingExecutablePath = null)
+    {
+        var composition = ToolingCompositionRoot.CreateApplicationComposition(
             workingDirectory,
             environmentDiagnosticPort,
             initialWorkbookCreator,
@@ -61,5 +64,10 @@ internal static class CommandLineTestFactory
             workbookModuleExporter,
             vbaProjectReferenceResolver,
             projectManifestStore,
-            debugEnvironmentProbeFactory));
+            debugEnvironmentProbeFactory,
+            vbaProjectReferenceAmbiguityProbe);
+        return generatingExecutablePath is null
+            ? VbaDevCommandLine.Create(composition)
+            : VbaDevCommandLine.Create(composition, generatingExecutablePath);
+    }
 }
