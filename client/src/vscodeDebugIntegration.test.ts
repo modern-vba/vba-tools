@@ -3,6 +3,11 @@ import assert from 'node:assert/strict';
 import * as path from 'node:path';
 
 import {
+  VbaDevCapabilities,
+  VbaDevCompatibilityError,
+  VbaDevSessionResolver
+} from './devtool';
+import {
   VscodeDebugIntegration,
   createVbaDebugConfigurationProvider,
   handleVbaDebugSessionTermination,
@@ -472,7 +477,7 @@ test('only the owning VBA debug session release cancels its pending restart prep
   }
 });
 
-test('VBA debug startup uses the configured compatible executable and advertised command', async () => {
+test('VBA debug startup reuses the session-pinned executable and advertised command', async () => {
   const configuredPath = path.join('D:', 'tools', 'vba-dev.exe');
   const capabilityCalls: Array<{ file: string; args: readonly string[] }> = [];
   const capabilities = compatibleCapabilities();
@@ -481,17 +486,28 @@ test('VBA debug startup uses the configured compatible executable and advertised
     transport: 'stdio',
     command: 'vba-debug-adapter'
   };
-  const integration = new VscodeDebugIntegration({
+  const vbaDevResolver = new VbaDevSessionResolver({
     extensionRoot: path.resolve(__dirname, '..', '..'),
-    getConfiguredDevToolPath: () => configuredPath,
-    capabilitiesProcess: async (file, args) => {
+    configuredPath,
+    runProcess: async (file, args) => {
       capabilityCalls.push({ file, args });
       return { stdout: JSON.stringify(capabilities), stderr: '' };
     },
     requiredContract: requiredContract()
   });
+  const integration = new VscodeDebugIntegration({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    getConfiguredDevToolPath: () => undefined,
+    vbaDevResolver,
+    capabilitiesProcess: async () => {
+      throw new Error('debug integration must not resolve vba-dev independently');
+    },
+    requiredContract: requiredContract()
+  });
 
   const descriptor = await integration.createDebugAdapterExecutable({ id: 'session-1' });
+  integration.releaseSession('session-1');
+  const secondDescriptor = await integration.createDebugAdapterExecutable({ id: 'session-2' });
 
   assert.deepEqual(capabilityCalls, [{
     file: configuredPath,
@@ -500,6 +516,41 @@ test('VBA debug startup uses the configured compatible executable and advertised
   assert.deepEqual(descriptor, {
     command: configuredPath,
     args: ['vba-debug-adapter', '--stdio'],
+    options: undefined
+  });
+  assert.deepEqual(secondDescriptor, descriptor);
+});
+
+test('VBA debug startup suppresses an already reported resolution failure and releases the session', async () => {
+  const executablePath = path.join('D:', 'tools', 'vba-dev.exe');
+  let attempts = 0;
+  const integration = new VscodeDebugIntegration({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    getConfiguredDevToolPath: () => undefined,
+    vbaDevResolver: {
+      resolve: async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          throw new VbaDevCompatibilityError('no compatible vba-dev', true);
+        }
+
+        return {
+          executablePath,
+          bundledPath: executablePath,
+          source: 'bundled',
+          capabilities: compatibleCapabilities()
+        };
+      }
+    }
+  });
+
+  const suppressed = await integration.createDebugAdapterExecutable({ id: 'session-1' });
+  const recovered = await integration.createDebugAdapterExecutable({ id: 'session-2' });
+
+  assert.equal(suppressed, undefined);
+  assert.deepEqual(recovered, {
+    command: executablePath,
+    args: ['debug-adapter', '--stdio'],
     options: undefined
   });
 });
@@ -534,7 +585,7 @@ test('VBA debug startup releases its session reservation after compatibility fai
   await integration.createDebugAdapterExecutable({ id: 'session-2' });
 });
 
-function compatibleCapabilities(): Record<string, unknown> {
+function compatibleCapabilities(): VbaDevCapabilities {
   return {
     toolVersion: '0.1.0',
     contractVersion: '1.0',

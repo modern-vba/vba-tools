@@ -2,9 +2,11 @@ import * as path from 'node:path';
 import { createHash } from 'node:crypto';
 
 import {
+  CompanionExecutableResolver,
   ProcessRunner,
   RequiredVbaDevContract,
   VbaDevCompatibilityError,
+  isReportedVbaDevResolutionFailure,
   resolveCompatibleVbaDev
 } from './devtool';
 import {
@@ -149,6 +151,7 @@ export interface VbaDebugAdapterExecutableSpec {
 export interface VscodeDebugIntegrationOptions {
   extensionRoot: string;
   getConfiguredDevToolPath: () => string | undefined;
+  vbaDevResolver?: CompanionExecutableResolver | undefined;
   capabilitiesProcess?: ProcessRunner | undefined;
   requiredContract?: RequiredVbaDevContract | undefined;
   debugConfigurationHost?: VbaDebugConfigurationHost | undefined;
@@ -412,16 +415,18 @@ export class VscodeDebugIntegration {
 
   public async createDebugAdapterExecutable(
     session: VbaDebugSessionLike
-  ): Promise<VbaDebugAdapterExecutableSpec> {
+  ): Promise<VbaDebugAdapterExecutableSpec | undefined> {
     this.reserveSession(session.id);
     try {
       this.bindRestartPreparation(session);
-      const devtool = await resolveCompatibleVbaDev({
-        extensionRoot: this.options.extensionRoot,
-        configuredPath: this.options.getConfiguredDevToolPath(),
-        runProcess: this.options.capabilitiesProcess,
-        requiredContract: this.options.requiredContract
-      });
+      const devtool = this.options.vbaDevResolver === undefined
+        ? await resolveCompatibleVbaDev({
+            extensionRoot: this.options.extensionRoot,
+            configuredPath: this.options.getConfiguredDevToolPath(),
+            runProcess: this.options.capabilitiesProcess,
+            requiredContract: this.options.requiredContract
+          })
+        : await this.options.vbaDevResolver.resolve();
       const debugAdapter = devtool.capabilities.debugAdapter;
       if (!debugAdapter) {
         throw new VbaDevCompatibilityError(
@@ -438,6 +443,9 @@ export class VscodeDebugIntegration {
       };
     } catch (error) {
       this.releaseSession(session.id);
+      if (isReportedVbaDevResolutionFailure(error)) {
+        return undefined;
+      }
       throw error;
     }
   }

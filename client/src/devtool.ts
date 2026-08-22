@@ -40,12 +40,257 @@ export interface CompatibleVbaDev {
   capabilities: VbaDevCapabilities;
 }
 
+export const configuredVbaDevFallbackMessage =
+  'The configured vba-dev executable is unavailable or incompatible. VBA Tools is using its bundled vba-dev for this window.';
+export const noCompatibleVbaDevMessage =
+  'VBA Tools could not find a compatible vba-dev executable.';
+
+export const VbaDevResolutionNoticeAction = {
+  OpenSettings: 'Open Settings',
+  ShowOutput: 'Show Output'
+} as const;
+
+export type VbaDevResolutionNoticeAction = typeof VbaDevResolutionNoticeAction[
+  keyof typeof VbaDevResolutionNoticeAction
+];
+
+export interface VbaDevResolutionNotice {
+  readonly severity: 'warning' | 'error';
+  readonly message: string;
+  readonly actions: readonly VbaDevResolutionNoticeAction[];
+}
+
+export interface VbaDevResolutionFailure {
+  readonly source: 'configured' | 'bundled';
+  readonly executablePath: string;
+  readonly message: string;
+}
+
+export interface VbaDevResolutionLog {
+  readonly outcome: 'resolved' | 'failed';
+  readonly configuredPath?: string | undefined;
+  readonly bundledPath: string;
+  readonly effectivePath?: string | undefined;
+  readonly source?: 'configured' | 'bundled' | undefined;
+  readonly requiredContract: RequiredVbaDevContract;
+  readonly failures: readonly VbaDevResolutionFailure[];
+}
+
+export function formatVbaDevResolutionLog(log: VbaDevResolutionLog): readonly string[] {
+  const lines = [`vba-dev companion resolution: ${log.outcome}`];
+  if (log.configuredPath !== undefined) {
+    lines.push(`  Configured candidate: ${log.configuredPath}`);
+    for (const failure of log.failures.filter((candidate) => candidate.source === 'configured')) {
+      lines.push(`  Configured failure: ${failure.message}`);
+    }
+  }
+  lines.push(`  Bundled candidate: ${log.bundledPath}`);
+  for (const failure of log.failures.filter((candidate) => candidate.source === 'bundled')) {
+    lines.push(`  Bundled failure: ${failure.message}`);
+  }
+  if (log.effectivePath !== undefined) {
+    lines.push(`  Effective executable: ${log.effectivePath}`);
+  }
+  lines.push(`  Required contract: ${JSON.stringify(log.requiredContract)}`);
+  return lines;
+}
+
+export interface CompanionExecutableResolution extends CompatibleVbaDev {
+  readonly configuredPath?: string | undefined;
+  readonly bundledPath: string;
+  readonly source: 'configured' | 'bundled';
+  readonly configuredFailure?: string | undefined;
+}
+
+export interface CompanionExecutableResolver {
+  resolve(): Promise<CompanionExecutableResolution>;
+}
+
+export interface VbaDevSessionResolverOptions extends CompatibleVbaDevResolutionOptions {
+  configuredPathProvider?: (() => string | undefined) | undefined;
+  reportNotice?: ((notice: VbaDevResolutionNotice) => void) | undefined;
+  reportLog?: ((log: VbaDevResolutionLog) => void) | undefined;
+}
+
 export const requiredVbaDevContractFileName = 'vba-dev-contract.json';
 
 export class VbaDevCompatibilityError extends VbaDevOutputContractError {
-  public constructor(message: string) {
+  public constructor(
+    message: string,
+    public readonly resolutionNoticeReported = false
+  ) {
     super(message);
     this.name = 'VbaDevCompatibilityError';
+  }
+}
+
+export function isReportedVbaDevResolutionFailure(
+  error: unknown
+): error is VbaDevCompatibilityError {
+  return error instanceof VbaDevCompatibilityError
+    && error.resolutionNoticeReported;
+}
+
+export class VbaDevSessionResolver implements CompanionExecutableResolver {
+  private resolved: CompanionExecutableResolution | undefined;
+  private inFlight: Promise<CompanionExecutableResolution> | undefined;
+
+  public constructor(private readonly options: VbaDevSessionResolverOptions) {}
+
+  public resolve(): Promise<CompanionExecutableResolution> {
+    if (this.resolved !== undefined) {
+      return Promise.resolve(this.resolved);
+    }
+    if (this.inFlight !== undefined) {
+      return this.inFlight;
+    }
+
+    const attempt = this.resolveUncached();
+    this.inFlight = attempt;
+    void attempt.then(
+      (resolution) => {
+        this.resolved = resolution;
+        if (this.inFlight === attempt) {
+          this.inFlight = undefined;
+        }
+      },
+      () => {
+        if (this.inFlight === attempt) {
+          this.inFlight = undefined;
+        }
+      }
+    );
+    return attempt;
+  }
+
+  private async resolveUncached(): Promise<CompanionExecutableResolution> {
+    const configuredCandidate = this.options.configuredPathProvider?.()
+      ?? this.options.configuredPath;
+    const configuredPath = configuredCandidate?.trim().length
+      ? configuredCandidate
+      : undefined;
+    const requiredContract = this.options.requiredContract
+      ?? loadRequiredVbaDevContract(this.options.extensionRoot);
+    const runProcess = this.options.runProcess ?? runProcessWithExecFile;
+    const bundledPath = path.resolve(resolveVbaDevPath({
+      extensionRoot: this.options.extensionRoot
+    }));
+    const failures: VbaDevResolutionFailure[] = [];
+
+    if (configuredPath !== undefined) {
+      try {
+        const configured = await inspectCompatibleVbaDev(
+          configuredPath,
+          requiredContract,
+          runProcess
+        );
+        const resolution = Object.freeze<CompanionExecutableResolution>({
+          ...configured,
+          configuredPath,
+          bundledPath,
+          source: 'configured'
+        });
+        this.reportLog({
+          outcome: 'resolved',
+          configuredPath,
+          bundledPath,
+          effectivePath: configured.executablePath,
+          source: 'configured',
+          requiredContract,
+          failures
+        });
+        return resolution;
+      } catch (error) {
+        failures.push({
+          source: 'configured',
+          executablePath: configuredPath,
+          message: errorMessage(error)
+        });
+      }
+    }
+
+    try {
+      const bundled = await inspectCompatibleVbaDev(
+        bundledPath,
+        requiredContract,
+        runProcess
+      );
+      const configuredFailure = failures.find((failure) => failure.source === 'configured')?.message;
+      const resolution = Object.freeze<CompanionExecutableResolution>({
+        ...bundled,
+        configuredPath,
+        bundledPath,
+        source: 'bundled',
+        configuredFailure
+      });
+      this.reportLog({
+        outcome: 'resolved',
+        configuredPath,
+        bundledPath,
+        effectivePath: bundled.executablePath,
+        source: 'bundled',
+        requiredContract,
+        failures: [...failures]
+      });
+      if (configuredPath !== undefined) {
+        this.reportNotice({
+          severity: 'warning',
+          message: configuredVbaDevFallbackMessage,
+          actions: [
+            VbaDevResolutionNoticeAction.OpenSettings,
+            VbaDevResolutionNoticeAction.ShowOutput
+          ]
+        });
+      }
+      return resolution;
+    } catch (error) {
+      failures.push({
+        source: 'bundled',
+        executablePath: bundledPath,
+        message: errorMessage(error)
+      });
+      this.reportLog({
+        outcome: 'failed',
+        configuredPath,
+        bundledPath,
+        requiredContract,
+        failures: [...failures]
+      });
+      const resolutionNoticeReported = this.reportNotice({
+        severity: 'error',
+        message: noCompatibleVbaDevMessage,
+        actions: [
+          VbaDevResolutionNoticeAction.OpenSettings,
+          VbaDevResolutionNoticeAction.ShowOutput
+        ]
+      });
+      throw new VbaDevCompatibilityError(
+        `${noCompatibleVbaDevMessage} ${failures
+          .map((failure) => `${failure.source} '${failure.executablePath}': ${failure.message}`)
+          .join(' ')}`,
+        resolutionNoticeReported
+      );
+    }
+  }
+
+  private reportLog(log: VbaDevResolutionLog): void {
+    try {
+      this.options.reportLog?.(log);
+    } catch {
+      // Reporting must not change executable compatibility or selection.
+    }
+  }
+
+  private reportNotice(notice: VbaDevResolutionNotice): boolean {
+    if (this.options.reportNotice === undefined) {
+      return false;
+    }
+    try {
+      this.options.reportNotice(notice);
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
 
@@ -84,6 +329,19 @@ export async function resolveCompatibleVbaDev(
   const executablePath = resolveVbaDevPath(options);
   const requiredContract = options.requiredContract ?? loadRequiredVbaDevContract(options.extensionRoot);
   const runProcess = options.runProcess ?? runProcessWithExecFile;
+  return inspectCompatibleVbaDev(executablePath, requiredContract, runProcess);
+}
+
+async function inspectCompatibleVbaDev(
+  executablePath: string,
+  requiredContract: RequiredVbaDevContract,
+  runProcess: ProcessRunner
+): Promise<CompatibleVbaDev> {
+  if (!path.isAbsolute(executablePath)) {
+    throw new VbaDevCompatibilityError(
+      `The configured VbaDev path '${executablePath}' must be an absolute path.`
+    );
+  }
   const result = await runProcess(executablePath, ['capabilities', '--format', 'json']);
   let capabilities: VbaDevCapabilities;
   try {
@@ -97,6 +355,10 @@ export async function resolveCompatibleVbaDev(
     executablePath,
     capabilities
   };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function runProcessWithExecFile(file: string, args: readonly string[]): Promise<ProcessResult> {

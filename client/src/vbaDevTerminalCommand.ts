@@ -1,8 +1,10 @@
 import * as path from 'node:path';
 
 import {
+  CompanionExecutableResolver,
   ProcessRunner,
   RequiredVbaDevContract,
+  isReportedVbaDevResolutionFailure,
   resolveCompatibleVbaDev
 } from './devtool';
 
@@ -19,6 +21,7 @@ export interface VbaDevTerminalOptionsLike {
 export interface VbaDevTerminalCommandOptions {
   extensionRoot: string;
   configuredDevToolPath?: string | undefined;
+  vbaDevResolver?: CompanionExecutableResolver | undefined;
   activeFilePath?: string | undefined;
   workspaceRoots: readonly string[];
   processEnv?: NodeJS.ProcessEnv | undefined;
@@ -54,14 +57,18 @@ export async function openVbaDevTerminal(
 
   let executablePath: string;
   try {
-    executablePath = (await resolveCompatibleVbaDev({
-      extensionRoot: options.extensionRoot,
-      configuredPath: options.configuredDevToolPath,
-      runProcess: options.capabilitiesProcess,
-      requiredContract: options.requiredContract
-    })).executablePath;
+    executablePath = options.vbaDevResolver === undefined
+      ? (await resolveCompatibleVbaDev({
+          extensionRoot: options.extensionRoot,
+          configuredPath: options.configuredDevToolPath,
+          runProcess: options.capabilitiesProcess,
+          requiredContract: options.requiredContract
+        })).executablePath
+      : (await options.vbaDevResolver.resolve()).executablePath;
   } catch (error) {
-    await options.showErrorMessage(`Could not open vba-dev terminal. ${error instanceof Error ? error.message : String(error)}`);
+    if (!isReportedVbaDevResolutionFailure(error)) {
+      await options.showErrorMessage(`Could not open vba-dev terminal. ${error instanceof Error ? error.message : String(error)}`);
+    }
     return undefined;
   }
 

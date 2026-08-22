@@ -80,6 +80,17 @@ import {
   openVbaDevTerminal
 } from './vbaDevTerminalCommand';
 import {
+  CompanionExecutableResolution,
+  CompanionExecutableResolver,
+  VbaDevResolutionLog,
+  VbaDevResolutionNotice,
+  VbaDevResolutionNoticeAction,
+  VbaDevSessionResolver,
+  formatVbaDevResolutionLog,
+  isReportedVbaDevResolutionFailure,
+  noCompatibleVbaDevMessage
+} from './devtool';
+import {
   runBlockSkeletonInsertionAfterNativeEnter
 } from './blockSkeletonInsertionAdapter';
 import {
@@ -106,9 +117,24 @@ let toolDiagnosticReporter: VbaDevDiagnosticReporter | undefined;
 export async function activate(context: ExtensionContext): Promise<void> {
   outputChannel = window.createOutputChannel('VBA Tools');
   context.subscriptions.push(outputChannel);
+  const vbaDevResolver = new VbaDevSessionResolver({
+    extensionRoot: context.extensionPath,
+    configuredPathProvider: getConfiguredDevToolPath,
+    reportLog: (log) => appendVbaDevResolutionLog(outputChannel, log),
+    reportNotice: (notice) => reportVbaDevResolutionNotice(outputChannel, notice)
+  });
+  let initialVbaDevResolution: CompanionExecutableResolution | undefined;
+  try {
+    initialVbaDevResolution = await vbaDevResolver.resolve();
+  } catch (error) {
+    if (!isReportedVbaDevResolutionFailure(error)) {
+      reportUnreportedVbaDevResolutionFailure(outputChannel, error);
+    }
+  }
   const vscodeDebugIntegration = new VscodeDebugIntegration({
     extensionRoot: context.extensionPath,
     getConfiguredDevToolPath,
+    vbaDevResolver,
     debugConfigurationHost: {
       get workspaceRoots() {
         return workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [];
@@ -188,6 +214,9 @@ export async function activate(context: ExtensionContext): Promise<void> {
             workspaceRoot: session.workspaceFolder?.uri.fsPath,
             configuration: session.configuration as VbaDebugConfiguration
           });
+          if (executable === undefined) {
+            return undefined;
+          }
           return new DebugAdapterExecutable(
             executable.command,
             [...executable.args],
@@ -233,6 +262,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
   try {
     const serverOptions = createVbaLanguageServerOptions({
       extensionRoot: context.extensionPath,
+      vbaDevExecutablePath: initialVbaDevResolution?.executablePath,
       referenceCatalogCacheRoot: createVbaLanguageServerReferenceCatalogCacheRoot(
         context.globalStorageUri.fsPath
       )
@@ -332,7 +362,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
   const workbookBackedTestExplorer = createWorkbookBackedTestExplorer({
     controller: createVscodeTestControllerAdapter(testController),
     extensionRoot: context.extensionPath,
-    configuredDevToolPath: getConfiguredDevToolPath(),
+    vbaDevResolver,
     workspaceRoots: workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [],
     findProjectManifests,
     readTextFile,
@@ -379,10 +409,10 @@ export async function activate(context: ExtensionContext): Promise<void> {
     showErrorMessage: (message) => window.showErrorMessage(message)
   });
   context.subscriptions.push(commands.registerCommand('vbaTools.doctor', async () => {
-    await runDoctorWithProgress(context);
+    await runDoctorWithProgress(context, vbaDevResolver);
   }));
   context.subscriptions.push(commands.registerCommand('vbaTools.openVbaDevTerminal', async () => {
-    await openVbaDevTerminalCommand(context);
+    await openVbaDevTerminalCommand(context, vbaDevResolver);
   }));
   context.subscriptions.push(commands.registerCommand(
     'vbaTools.blockSkeletonInsertion.afterNativeEnter',
@@ -409,24 +439,39 @@ export async function activate(context: ExtensionContext): Promise<void> {
   ));
   for (const command of WorkbookBackedProjectCommands) {
     context.subscriptions.push(commands.registerCommand(command.commandId, async () => {
-      await runWorkbookBackedProjectCommandWithProgress(context, command.toolCommandName, command.title);
+      await runWorkbookBackedProjectCommandWithProgress(
+        context,
+        vbaDevResolver,
+        command.toolCommandName,
+        command.title
+      );
     }));
   }
   for (const command of CommonModulesCommands) {
     context.subscriptions.push(commands.registerCommand(command.commandId, async () => {
-      await runCommonModulesCommandWithProgress(context, command.toolCommandName, command.title);
+      await runCommonModulesCommandWithProgress(
+        context,
+        vbaDevResolver,
+        command.toolCommandName,
+        command.title
+      );
     }));
   }
   for (const command of ReferenceCommands) {
     context.subscriptions.push(commands.registerCommand(command.commandId, async () => {
-      await runReferenceCommandWithProgress(context, command.toolCommandName, command.title);
+      await runReferenceCommandWithProgress(
+        context,
+        vbaDevResolver,
+        command.toolCommandName,
+        command.title
+      );
     }));
   }
 
   await client?.start();
   await projectManifestLanguageServerSync?.flush();
   await workbookBackedTestExplorer.refresh();
-  await promptForActiveWorkbookBackedProject(context);
+  await promptForActiveWorkbookBackedProject(context, vbaDevResolver);
 }
 
 const WorkbookBackedProjectCommands: ReadonlyArray<{
@@ -467,7 +512,10 @@ export async function deactivate(): Promise<void> {
   toolDiagnosticReporter = undefined;
 }
 
-async function promptForActiveWorkbookBackedProject(context: ExtensionContext): Promise<void> {
+async function promptForActiveWorkbookBackedProject(
+  context: ExtensionContext,
+  vbaDevResolver: CompanionExecutableResolver
+): Promise<void> {
   const activeFilePath = getActiveFilePath();
   if (!activeFilePath) {
     return;
@@ -482,12 +530,15 @@ async function promptForActiveWorkbookBackedProject(context: ExtensionContext): 
     workspaceState: context.workspaceState,
     showInformationMessage: (message, ...items) => window.showInformationMessage(message, ...items),
     runDoctor: async () => {
-      await runDoctorWithProgress(context);
+      await runDoctorWithProgress(context, vbaDevResolver);
     }
   });
 }
 
-async function runDoctorWithProgress(context: ExtensionContext): Promise<void> {
+async function runDoctorWithProgress(
+  context: ExtensionContext,
+  vbaDevResolver: CompanionExecutableResolver
+): Promise<void> {
   const channel = outputChannel ?? window.createOutputChannel('VBA Tools');
   outputChannel = channel;
 
@@ -500,7 +551,7 @@ async function runDoctorWithProgress(context: ExtensionContext): Promise<void> {
     async (_progress, token) => {
       await runDoctorCommand({
         extensionRoot: context.extensionPath,
-        configuredDevToolPath: getConfiguredDevToolPath(),
+        vbaDevResolver,
         activeFilePath: getActiveFilePath(),
         workspaceRoots: workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [],
         fileExists,
@@ -515,10 +566,13 @@ async function runDoctorWithProgress(context: ExtensionContext): Promise<void> {
   );
 }
 
-async function openVbaDevTerminalCommand(context: ExtensionContext): Promise<void> {
+async function openVbaDevTerminalCommand(
+  context: ExtensionContext,
+  vbaDevResolver: CompanionExecutableResolver
+): Promise<void> {
   await openVbaDevTerminal({
     extensionRoot: context.extensionPath,
-    configuredDevToolPath: getConfiguredDevToolPath(),
+    vbaDevResolver,
     activeFilePath: getActiveFilePath(),
     workspaceRoots: workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [],
     chooseWorkspaceRoot,
@@ -529,6 +583,7 @@ async function openVbaDevTerminalCommand(context: ExtensionContext): Promise<voi
 
 async function runWorkbookBackedProjectCommandWithProgress(
   context: ExtensionContext,
+  vbaDevResolver: CompanionExecutableResolver,
   toolCommandName: WorkbookBackedProjectToolCommand,
   title: string
 ): Promise<void> {
@@ -546,7 +601,7 @@ async function runWorkbookBackedProjectCommandWithProgress(
         toolCommandName,
         title,
         extensionRoot: context.extensionPath,
-        configuredDevToolPath: getConfiguredDevToolPath(),
+        vbaDevResolver,
         activeFilePath: getActiveFilePath(),
         workspaceRoots: workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [],
         fileExists,
@@ -563,6 +618,7 @@ async function runWorkbookBackedProjectCommandWithProgress(
 
 async function runCommonModulesCommandWithProgress(
   context: ExtensionContext,
+  vbaDevResolver: CompanionExecutableResolver,
   toolCommandName: CommonModulesToolCommand,
   title: string
 ): Promise<void> {
@@ -584,7 +640,7 @@ async function runCommonModulesCommandWithProgress(
     async (_progress, token) => {
       const options = {
         extensionRoot: context.extensionPath,
-        configuredDevToolPath: getConfiguredDevToolPath(),
+        vbaDevResolver,
         activeFilePath: getActiveFilePath(),
         workspaceRoots: workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [],
         fileExists,
@@ -626,6 +682,7 @@ async function promptForCommonModuleNames(): Promise<readonly string[] | undefin
 
 async function runReferenceCommandWithProgress(
   context: ExtensionContext,
+  vbaDevResolver: CompanionExecutableResolver,
   toolCommandName: ReferenceToolCommand,
   title: string
 ): Promise<void> {
@@ -647,7 +704,7 @@ async function runReferenceCommandWithProgress(
     async (_progress, token) => {
       const options = {
         extensionRoot: context.extensionPath,
-        configuredDevToolPath: getConfiguredDevToolPath(),
+        vbaDevResolver,
         activeFilePath: getActiveFilePath(),
         workspaceRoots: workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [],
         fileExists,
@@ -680,6 +737,48 @@ async function promptForReferenceName(title: string): Promise<string | undefined
   }
 
   return value.trim();
+}
+
+function appendVbaDevResolutionLog(
+  channel: OutputChannel | undefined,
+  log: VbaDevResolutionLog
+): void {
+  for (const line of formatVbaDevResolutionLog(log)) {
+    channel?.appendLine(line);
+  }
+}
+
+function reportVbaDevResolutionNotice(
+  channel: OutputChannel | undefined,
+  notice: VbaDevResolutionNotice
+): void {
+  const response = notice.severity === 'warning'
+    ? window.showWarningMessage(notice.message, ...notice.actions)
+    : window.showErrorMessage(notice.message, ...notice.actions);
+  void response.then((action) => {
+    if (action === VbaDevResolutionNoticeAction.OpenSettings) {
+      void commands.executeCommand('workbench.action.openSettings', 'vbaTools.devtool.path');
+    } else if (action === VbaDevResolutionNoticeAction.ShowOutput) {
+      channel?.show();
+    }
+  });
+}
+
+function reportUnreportedVbaDevResolutionFailure(
+  channel: OutputChannel | undefined,
+  error: unknown
+): void {
+  channel?.appendLine(
+    `vba-dev companion resolution failed before candidate validation: ${error instanceof Error ? error.message : String(error)}`
+  );
+  reportVbaDevResolutionNotice(channel, {
+    severity: 'error',
+    message: noCompatibleVbaDevMessage,
+    actions: [
+      VbaDevResolutionNoticeAction.OpenSettings,
+      VbaDevResolutionNoticeAction.ShowOutput
+    ]
+  });
 }
 
 function getConfiguredDevToolPath(): string | undefined {

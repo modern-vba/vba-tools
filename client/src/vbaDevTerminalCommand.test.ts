@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as path from 'node:path';
 
+import { VbaDevSessionResolver } from './devtool';
 import {
   createVbaDevTerminalEnvironment,
   openVbaDevTerminal,
@@ -173,4 +174,95 @@ test('vba-dev Terminal environment preserves PATH casing when Path is unavailabl
       PATH: `${path.join('D:', 'tools')}${path.delimiter}${path.join('C:', 'Windows')}`
     }
   );
+});
+
+test('Open vba-dev Terminal reuses the session-pinned executable', async () => {
+  const executablePath = path.join('D:', 'tools', 'vba-dev.exe');
+  let capabilityCalls = 0;
+  const vbaDevResolver = new VbaDevSessionResolver({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    configuredPath: executablePath,
+    requiredContract: {
+      contractVersion: '1.0',
+      debugAdapterProtocolVersion: '1.0',
+      commandSchemaVersions: {}
+    },
+    runProcess: async () => {
+      capabilityCalls += 1;
+      return {
+        stdout: JSON.stringify({
+          toolVersion: '0.1.0',
+          contractVersion: '1.0',
+          commands: {},
+          debugAdapter: {
+            protocolVersion: '1.0',
+            transport: 'stdio',
+            command: 'debug-adapter'
+          }
+        }),
+        stderr: ''
+      };
+    }
+  });
+  const terminalPaths: string[] = [];
+  const options = {
+    extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
+    vbaDevResolver,
+    workspaceRoots: [] as readonly string[],
+    processEnv: { Path: path.join('C:', 'Windows') },
+    chooseWorkspaceRoot: async () => undefined,
+    createTerminal: (terminalOptions: VbaDevTerminalOptionsLike) => {
+      terminalPaths.push(terminalOptions.env.Path ?? '');
+      return { show: () => undefined };
+    },
+    showErrorMessage: async () => undefined
+  };
+
+  const first = await openVbaDevTerminal(options);
+  const second = await openVbaDevTerminal(options);
+
+  assert.equal(first?.executablePath, executablePath);
+  assert.equal(second?.executablePath, executablePath);
+  assert.equal(capabilityCalls, 1);
+  assert.equal(terminalPaths.length, 2);
+  assert.ok(terminalPaths.every((value) => value.startsWith(path.dirname(executablePath))));
+});
+
+test('Open vba-dev Terminal does not duplicate a reported total resolution failure', async () => {
+  const notices: unknown[] = [];
+  const errors: string[] = [];
+  let terminalCreates = 0;
+  const vbaDevResolver = new VbaDevSessionResolver({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    configuredPath: path.join('D:', 'missing', 'vba-dev.exe'),
+    requiredContract: {
+      contractVersion: '1.0',
+      debugAdapterProtocolVersion: '1.0',
+      commandSchemaVersions: {}
+    },
+    runProcess: async () => {
+      throw new Error('unavailable');
+    },
+    reportNotice: (notice) => notices.push(notice)
+  });
+
+  const result = await openVbaDevTerminal({
+    extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
+    vbaDevResolver,
+    workspaceRoots: [],
+    chooseWorkspaceRoot: async () => undefined,
+    createTerminal: () => {
+      terminalCreates += 1;
+      return { show: () => undefined };
+    },
+    showErrorMessage: async (message) => {
+      errors.push(message);
+      return undefined;
+    }
+  });
+
+  assert.equal(result, undefined);
+  assert.equal(notices.length, 1);
+  assert.deepEqual(errors, []);
+  assert.equal(terminalCreates, 0);
 });

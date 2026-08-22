@@ -3,11 +3,408 @@ import assert from 'node:assert/strict';
 import * as path from 'node:path';
 
 import {
+  VbaDevSessionResolver,
   VbaDevCompatibilityError,
+  VbaDevResolutionNoticeAction,
+  configuredVbaDevFallbackMessage,
+  formatVbaDevResolutionLog,
   loadRequiredVbaDevContract,
+  noCompatibleVbaDevMessage,
   resolveCompatibleVbaDev,
   resolveVbaDevPath
 } from './devtool';
+
+const requiredContract = {
+  contractVersion: '1.0',
+  debugAdapterProtocolVersion: '1.0',
+  commandSchemaVersions: {}
+};
+
+function compatibleCapabilities(): string {
+  return JSON.stringify({
+    toolVersion: '0.1.0',
+    contractVersion: '1.0',
+    commands: {},
+    debugAdapter: {
+      protocolVersion: '1.0',
+      transport: 'stdio',
+      command: 'debug-adapter'
+    }
+  });
+}
+
+test('VbaDev session resolution falls back from a missing override and pins the bundled executable', async () => {
+  const extensionRoot = path.resolve(__dirname, '..', '..');
+  const configuredPath = path.join('D:', 'missing', 'vba-dev.exe');
+  const bundledPath = path.join(extensionRoot, 'bin', 'vba-dev', 'win-x64', 'vba-dev.exe');
+  const calls: string[] = [];
+  const notices: unknown[] = [];
+  const logs: unknown[] = [];
+  const resolver = new VbaDevSessionResolver({
+    extensionRoot,
+    configuredPath,
+    requiredContract,
+    runProcess: async (file) => {
+      calls.push(file);
+      if (file === configuredPath) {
+        throw new Error('ENOENT');
+      }
+
+      return { stdout: compatibleCapabilities(), stderr: '' };
+    },
+    reportNotice: (notice) => notices.push(notice),
+    reportLog: (log) => logs.push(log)
+  });
+
+  const first = await resolver.resolve();
+  const second = await resolver.resolve();
+
+  assert.equal(first, second);
+  assert.equal(first.configuredPath, configuredPath);
+  assert.equal(first.executablePath, bundledPath);
+  assert.equal(first.source, 'bundled');
+  assert.deepEqual(calls, [configuredPath, bundledPath]);
+  assert.deepEqual(notices, [{
+    severity: 'warning',
+    message: configuredVbaDevFallbackMessage,
+    actions: [
+      VbaDevResolutionNoticeAction.OpenSettings,
+      VbaDevResolutionNoticeAction.ShowOutput
+    ]
+  }]);
+  assert.deepEqual(logs, [{
+    outcome: 'resolved',
+    configuredPath,
+    bundledPath,
+    effectivePath: bundledPath,
+    source: 'bundled',
+    requiredContract,
+    failures: [{
+      source: 'configured',
+      executablePath: configuredPath,
+      message: 'ENOENT'
+    }]
+  }]);
+});
+
+test('VbaDev session resolution validates and pins the bundled executable when no override is configured', async () => {
+  const extensionRoot = path.resolve(__dirname, '..', '..');
+  const bundledPath = path.join(extensionRoot, 'bin', 'vba-dev', 'win-x64', 'vba-dev.exe');
+  const calls: string[] = [];
+  const notices: unknown[] = [];
+  const resolver = new VbaDevSessionResolver({
+    extensionRoot,
+    requiredContract,
+    runProcess: async (file) => {
+      calls.push(file);
+      return { stdout: compatibleCapabilities(), stderr: '' };
+    },
+    reportNotice: (notice) => notices.push(notice)
+  });
+
+  const first = await resolver.resolve();
+  const second = await resolver.resolve();
+
+  assert.equal(first, second);
+  assert.equal(first.source, 'bundled');
+  assert.equal(first.executablePath, bundledPath);
+  assert.deepEqual(calls, [bundledPath]);
+  assert.deepEqual(notices, []);
+});
+
+test('VbaDev session resolution pins a valid override without probing the bundled executable', async () => {
+  const extensionRoot = path.resolve(__dirname, '..', '..');
+  const configuredPath = path.join('D:', 'tools', 'vba-dev.exe');
+  const calls: string[] = [];
+  const resolver = new VbaDevSessionResolver({
+    extensionRoot,
+    configuredPath,
+    requiredContract,
+    runProcess: async (file) => {
+      calls.push(file);
+      return { stdout: compatibleCapabilities(), stderr: '' };
+    }
+  });
+
+  const resolution = await resolver.resolve();
+
+  assert.equal(resolution.source, 'configured');
+  assert.equal(resolution.executablePath, configuredPath);
+  assert.deepEqual(calls, [configuredPath]);
+});
+
+test('VbaDev session resolution rejects a relative override before falling back to bundled', async () => {
+  const extensionRoot = path.resolve(__dirname, '..', '..');
+  const configuredPath = path.join('tools', 'vba-dev.exe');
+  const bundledPath = path.join(extensionRoot, 'bin', 'vba-dev', 'win-x64', 'vba-dev.exe');
+  const calls: string[] = [];
+  const resolver = new VbaDevSessionResolver({
+    extensionRoot,
+    configuredPath,
+    requiredContract,
+    runProcess: async (file) => {
+      calls.push(file);
+      return { stdout: compatibleCapabilities(), stderr: '' };
+    }
+  });
+
+  const resolution = await resolver.resolve();
+
+  assert.equal(resolution.executablePath, bundledPath);
+  assert.match(resolution.configuredFailure ?? '', /absolute path/);
+  assert.deepEqual(calls, [bundledPath]);
+});
+
+test('VbaDev session resolution rejects an incompatible override before falling back to bundled', async () => {
+  const extensionRoot = path.resolve(__dirname, '..', '..');
+  const configuredPath = path.join('D:', 'old', 'vba-dev.exe');
+  const bundledPath = path.join(extensionRoot, 'bin', 'vba-dev', 'win-x64', 'vba-dev.exe');
+  const calls: string[] = [];
+  const resolver = new VbaDevSessionResolver({
+    extensionRoot,
+    configuredPath,
+    requiredContract,
+    runProcess: async (file) => {
+      calls.push(file);
+      return {
+        stdout: file === configuredPath
+          ? JSON.stringify({
+              toolVersion: '0.1.0',
+              contractVersion: '0.9',
+              commands: {}
+            })
+          : compatibleCapabilities(),
+        stderr: ''
+      };
+    }
+  });
+
+  const resolution = await resolver.resolve();
+
+  assert.equal(resolution.executablePath, bundledPath);
+  assert.match(resolution.configuredFailure ?? '', /contractVersion 0\.9/);
+  assert.deepEqual(calls, [configuredPath, bundledPath]);
+});
+
+test('Concurrent VbaDev session consumers share one fallback and one warning', async () => {
+  const extensionRoot = path.resolve(__dirname, '..', '..');
+  const configuredPath = path.join('D:', 'missing', 'vba-dev.exe');
+  const bundledPath = path.join(extensionRoot, 'bin', 'vba-dev', 'win-x64', 'vba-dev.exe');
+  const calls: string[] = [];
+  const notices: unknown[] = [];
+  let releaseConfigured: (() => void) | undefined;
+  const configuredMayFinish = new Promise<void>((resolve) => {
+    releaseConfigured = resolve;
+  });
+  const resolver = new VbaDevSessionResolver({
+    extensionRoot,
+    configuredPath,
+    requiredContract,
+    runProcess: async (file) => {
+      calls.push(file);
+      if (file === configuredPath) {
+        await configuredMayFinish;
+        throw new Error('ENOENT');
+      }
+
+      return { stdout: compatibleCapabilities(), stderr: '' };
+    },
+    reportNotice: (notice) => notices.push(notice)
+  });
+
+  const first = resolver.resolve();
+  const second = resolver.resolve();
+  releaseConfigured?.();
+  const [firstResolution, secondResolution] = await Promise.all([first, second]);
+
+  assert.equal(firstResolution, secondResolution);
+  assert.equal(firstResolution.executablePath, bundledPath);
+  assert.deepEqual(calls, [configuredPath, bundledPath]);
+  assert.equal(notices.length, 1);
+  assert.deepEqual(notices[0], {
+    severity: 'warning',
+    message: configuredVbaDevFallbackMessage,
+    actions: [
+      VbaDevResolutionNoticeAction.OpenSettings,
+      VbaDevResolutionNoticeAction.ShowOutput
+    ]
+  });
+});
+
+test('VbaDev session resolution clears a total failure so a later invocation can recover', async () => {
+  const extensionRoot = path.resolve(__dirname, '..', '..');
+  const configuredPath = path.join('D:', 'tools', 'vba-dev.exe');
+  const calls: string[] = [];
+  const notices: unknown[] = [];
+  let repaired = false;
+  const resolver = new VbaDevSessionResolver({
+    extensionRoot,
+    configuredPath,
+    requiredContract,
+    runProcess: async (file) => {
+      calls.push(file);
+      if (!repaired) {
+        throw new Error(`${path.basename(file)} unavailable`);
+      }
+
+      return { stdout: compatibleCapabilities(), stderr: '' };
+    },
+    reportNotice: (notice) => notices.push(notice)
+  });
+
+  await assert.rejects(
+    () => resolver.resolve(),
+    (error) => {
+      assert.ok(error instanceof VbaDevCompatibilityError);
+      assert.match(error.message, /configured .* unavailable/);
+      assert.match(error.message, /bundled .* unavailable/);
+      return true;
+    }
+  );
+  assert.equal(calls.length, 2, 'resolution must not search for a third executable');
+  repaired = true;
+
+  const recovered = await resolver.resolve();
+  const pinned = await resolver.resolve();
+
+  assert.equal(recovered, pinned);
+  assert.equal(recovered.executablePath, configuredPath);
+  assert.equal(calls.length, 3);
+  assert.deepEqual(notices[0], {
+    severity: 'error',
+    message: noCompatibleVbaDevMessage,
+    actions: [
+      VbaDevResolutionNoticeAction.OpenSettings,
+      VbaDevResolutionNoticeAction.ShowOutput
+    ]
+  });
+  assert.equal(notices.length, 1);
+});
+
+test('VbaDev session resolution reads a corrected configured path after total failure and then pins it', async () => {
+  const extensionRoot = path.resolve(__dirname, '..', '..');
+  const firstConfiguredPath = path.join('D:', 'missing', 'vba-dev.exe');
+  const correctedConfiguredPath = path.join('E:', 'tools', 'vba-dev.exe');
+  const bundledPath = path.join(extensionRoot, 'bin', 'vba-dev', 'win-x64', 'vba-dev.exe');
+  let configuredPath = firstConfiguredPath;
+  let configuredPathReads = 0;
+  const calls: string[] = [];
+  const notices: unknown[] = [];
+  const resolver = new VbaDevSessionResolver({
+    extensionRoot,
+    configuredPathProvider: () => {
+      configuredPathReads += 1;
+      return configuredPath;
+    },
+    requiredContract,
+    runProcess: async (file) => {
+      calls.push(file);
+      if (file !== correctedConfiguredPath) {
+        throw new Error('unavailable');
+      }
+
+      return { stdout: compatibleCapabilities(), stderr: '' };
+    },
+    reportNotice: (notice) => notices.push(notice)
+  });
+
+  await assert.rejects(
+    () => resolver.resolve(),
+    (error) => error instanceof VbaDevCompatibilityError
+      && error.resolutionNoticeReported
+  );
+  configuredPath = correctedConfiguredPath;
+
+  const recovered = await resolver.resolve();
+  const pinned = await resolver.resolve();
+
+  assert.equal(recovered, pinned);
+  assert.equal(recovered.executablePath, correctedConfiguredPath);
+  assert.equal(recovered.source, 'configured');
+  assert.equal(configuredPathReads, 2);
+  assert.deepEqual(calls, [firstConfiguredPath, bundledPath, correctedConfiguredPath]);
+  assert.equal(notices.length, 1);
+});
+
+test('VbaDev session resolution keeps a bundled fallback when reporting callbacks throw', async () => {
+  const extensionRoot = path.resolve(__dirname, '..', '..');
+  const configuredPath = path.join('D:', 'missing', 'vba-dev.exe');
+  const bundledPath = path.join(extensionRoot, 'bin', 'vba-dev', 'win-x64', 'vba-dev.exe');
+  const calls: string[] = [];
+  const resolver = new VbaDevSessionResolver({
+    extensionRoot,
+    configuredPath,
+    requiredContract,
+    runProcess: async (file) => {
+      calls.push(file);
+      if (file === configuredPath) {
+        throw new Error('ENOENT');
+      }
+
+      return { stdout: compatibleCapabilities(), stderr: '' };
+    },
+    reportLog: () => {
+      throw new Error('output channel disposed');
+    },
+    reportNotice: () => {
+      throw new Error('notification host disposed');
+    }
+  });
+
+  const resolution = await resolver.resolve();
+
+  assert.equal(resolution.executablePath, bundledPath);
+  assert.equal(resolution.source, 'bundled');
+  assert.deepEqual(calls, [configuredPath, bundledPath]);
+});
+
+test('VbaDev session resolution leaves a total failure unreported when the notice callback throws', async () => {
+  const resolver = new VbaDevSessionResolver({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    requiredContract,
+    runProcess: async () => {
+      throw new Error('unavailable');
+    },
+    reportLog: () => {
+      throw new Error('output channel disposed');
+    },
+    reportNotice: () => {
+      throw new Error('notification host disposed');
+    }
+  });
+
+  await assert.rejects(
+    () => resolver.resolve(),
+    (error) => error instanceof VbaDevCompatibilityError
+      && !error.resolutionNoticeReported
+  );
+});
+
+test('VbaDev resolution log exposes configured and effective paths with the required contract', () => {
+  const configuredPath = path.join('D:', 'old', 'vba-dev.exe');
+  const bundledPath = path.join('C:', 'extension', 'bin', 'vba-dev.exe');
+
+  assert.deepEqual(formatVbaDevResolutionLog({
+    outcome: 'resolved',
+    configuredPath,
+    bundledPath,
+    effectivePath: bundledPath,
+    source: 'bundled',
+    requiredContract,
+    failures: [{
+      source: 'configured',
+      executablePath: configuredPath,
+      message: 'contractVersion 0.9 is incompatible'
+    }]
+  }), [
+    'vba-dev companion resolution: resolved',
+    `  Configured candidate: ${configuredPath}`,
+    `  Configured failure: contractVersion 0.9 is incompatible`,
+    `  Bundled candidate: ${bundledPath}`,
+    `  Effective executable: ${bundledPath}`,
+    '  Required contract: {"contractVersion":"1.0","debugAdapterProtocolVersion":"1.0","commandSchemaVersions":{}}'
+  ]);
+});
 
 test('VbaDev resolution uses the bundled Windows executable by default', () => {
   const extensionRoot = path.resolve(__dirname, '..', '..');

@@ -1,6 +1,8 @@
 import {
+  CompanionExecutableResolver,
   ProcessRunner,
   RequiredVbaDevContract,
+  isReportedVbaDevResolutionFailure,
   resolveCompatibleVbaDev
 } from './devtool';
 import {
@@ -22,6 +24,7 @@ import {
 export interface VbaDevInvocationRuntimeOptions {
   extensionRoot: string;
   configuredDevToolPath?: string | undefined;
+  vbaDevResolver?: CompanionExecutableResolver | undefined;
   capabilitiesProcess?: ProcessRunner | undefined;
   startProcess?: StartVbaDevProcess | undefined;
   outputChannel: VbaToolsOutputChannel;
@@ -70,12 +73,10 @@ export async function resolveVbaDevProjectCommandContext(
     return undefined;
   }
 
-  const devtool = await resolveCompatibleVbaDev({
-    extensionRoot: options.extensionRoot,
-    configuredPath: options.configuredDevToolPath,
-    runProcess: options.capabilitiesProcess,
-    requiredContract: options.requiredContract
-  });
+  const devtool = await resolveInvocationVbaDev(options);
+  if (devtool === undefined) {
+    return undefined;
+  }
 
   return {
     project,
@@ -112,13 +113,11 @@ export async function runResolvedVbaDevProjectCommand(
 export async function runVbaDevProjectCommandInvocation(
   options: VbaDevInvocationRuntimeOptions,
   invocation: VbaDevProjectCommandInvocation
-): Promise<VbaDevProjectCommandRunResult> {
-  const devtool = await resolveCompatibleVbaDev({
-    extensionRoot: options.extensionRoot,
-    configuredPath: options.configuredDevToolPath,
-    runProcess: options.capabilitiesProcess,
-    requiredContract: options.requiredContract
-  });
+): Promise<VbaDevProjectCommandRunResult | undefined> {
+  const devtool = await resolveInvocationVbaDev(options);
+  if (devtool === undefined) {
+    return undefined;
+  }
 
   return runResolvedVbaDevProjectCommandInvocation(options, devtool.executablePath, invocation);
 }
@@ -154,4 +153,32 @@ export async function runResolvedVbaDevProjectCommandInvocation(
     exitCode: result.exitCode,
     cancelled: result.cancelled
   };
+}
+
+async function resolveInvocationVbaDev(
+  options: VbaDevInvocationRuntimeOptions
+): Promise<{
+  executablePath: string;
+} | undefined> {
+  try {
+    if (options.vbaDevResolver !== undefined) {
+      const resolution = await options.vbaDevResolver.resolve();
+      return {
+        executablePath: resolution.executablePath
+      };
+    }
+
+    const devtool = await resolveCompatibleVbaDev({
+      extensionRoot: options.extensionRoot,
+      configuredPath: options.configuredDevToolPath,
+      runProcess: options.capabilitiesProcess,
+      requiredContract: options.requiredContract
+    });
+    return { executablePath: devtool.executablePath };
+  } catch (error) {
+    if (isReportedVbaDevResolutionFailure(error)) {
+      return undefined;
+    }
+    throw error;
+  }
 }

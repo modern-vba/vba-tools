@@ -6,7 +6,9 @@ if (args is ["--version"] or ["-v"])
     return;
 }
 
+var vbaDevStartupState = await VbaDevReferenceListStartupState.ResolveAsync(args);
 var server = VbaLanguageServerRuntime.CreateDefault(
     Console.OpenStandardInput(),
-    Console.OpenStandardOutput());
+    Console.OpenStandardOutput(),
+    vbaDevStartupState);
 await server.RunAsync();

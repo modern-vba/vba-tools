@@ -1,6 +1,7 @@
 import {
   VbaDevCommandRuntimeOptions,
-  runVbaDevProjectCommand
+  resolveVbaDevProjectCommandContext,
+  runResolvedVbaDevProjectCommand
 } from './devtoolRuntime';
 
 export const FirstRunDoctorPromptState = {
@@ -31,10 +32,21 @@ export interface FirstRunDoctorPromptOptions {
 }
 
 export async function runDoctorCommand(options: DoctorCommandOptions): Promise<DoctorCommandResult | undefined> {
-  const result = await runVbaDevProjectCommand(options, ['doctor']);
-  if (!result) {
+  const context = await resolveVbaDevProjectCommandContext(options);
+  if (!context) {
     return undefined;
   }
+  const resolution = await options.vbaDevResolver?.resolve();
+  if (
+    resolution?.source === 'bundled'
+    && resolution.configuredPath !== undefined
+  ) {
+    options.outputChannel.appendLine('vba-dev executable fallback:');
+    options.outputChannel.appendLine(`  Configured: ${resolution.configuredPath}`);
+    options.outputChannel.appendLine(`  Effective: ${resolution.executablePath}`);
+  }
+
+  const result = await runResolvedVbaDevProjectCommand(options, context, ['doctor']);
 
   if (!result.cancelled && hasBlockingDoctorFinding(result.exitCode, result.stdout, result.stderr)) {
     await options.showErrorMessage('VBA Tools: Doctor found blocking issues. See the VBA Tools output for details.');

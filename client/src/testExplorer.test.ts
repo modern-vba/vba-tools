@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { VbaDevCompatibilityError, noCompatibleVbaDevMessage } from './devtool';
 import { CommandCancellationToken } from './devtoolCommand';
 import {
   TestControllerAdapter,
@@ -1539,6 +1540,38 @@ test('Cancelled VS Code test runs terminate the spawned CLI process', async () =
   ]);
 });
 
+test('Test Explorer stops before process startup without duplicating a reported resolution failure', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const controller = new FakeTestController();
+  const errorMessages: string[] = [];
+  let processStarts = 0;
+  const explorer = createExplorer(controller, {
+    manifests: new Map([
+      [path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]
+    ]),
+    vbaDevResolver: {
+      resolve: async () => {
+        throw new VbaDevCompatibilityError('no compatible vba-dev', true);
+      }
+    },
+    startProcess: () => {
+      processStarts += 1;
+      throw new Error('Test command must not start');
+    },
+    errorMessages
+  });
+  await explorer.refresh();
+
+  await explorer.run({ include: [controller.items[0]] }, uncancelledToken());
+
+  assert.equal(processStarts, 0);
+  assert.deepEqual(errorMessages, []);
+  assert.deepEqual(controller.runs[0].events, [
+    `errored:${controller.items[0].id}:${noCompatibleVbaDevMessage}`,
+    'end'
+  ]);
+});
+
 function createExplorer(
   controller: FakeTestController,
   options: {
@@ -1556,6 +1589,7 @@ function createExplorer(
       save(): Promise<boolean>;
     }[];
     errorMessages?: string[];
+    vbaDevResolver?: Parameters<typeof createWorkbookBackedTestExplorer>[0]['vbaDevResolver'];
   }
 ) {
   const calls = options.calls ?? [];
@@ -1564,6 +1598,7 @@ function createExplorer(
     controller,
     extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
     configuredDevToolPath: path.join('D:', 'tools', 'vba-dev.exe'),
+    vbaDevResolver: options.vbaDevResolver,
     workspaceRoots: [path.join('C:', 'work')],
     findProjectManifests: async () => [...options.manifests.keys()],
     readTextFile: options.readTextFile ?? (async (filePath) => {

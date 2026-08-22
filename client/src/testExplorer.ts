@@ -1,8 +1,11 @@
 import * as path from 'node:path';
 
 import {
+  CompanionExecutableResolver,
   ProcessRunner,
-  RequiredVbaDevContract
+  RequiredVbaDevContract,
+  isReportedVbaDevResolutionFailure,
+  noCompatibleVbaDevMessage
 } from './devtool';
 import {
   CommandCancellationToken,
@@ -81,6 +84,7 @@ export interface WorkbookBackedTestExplorerOptions {
   controller: TestControllerAdapter;
   extensionRoot: string;
   configuredDevToolPath?: string | undefined;
+  vbaDevResolver?: CompanionExecutableResolver | undefined;
   workspaceRoots: readonly string[];
   findProjectManifests: (workspaceRoots: readonly string[]) => Promise<readonly string[]>;
   readTextFile: (filePath: string) => Promise<string>;
@@ -201,6 +205,19 @@ async function runTests(
   const run = options.controller.createTestRun(request);
   try {
     const items = nodeIndex.selectedRunnableItems(request);
+    try {
+      await options.vbaDevResolver?.resolve();
+    } catch (error) {
+      if (!isReportedVbaDevResolutionFailure(error)) {
+        throw error;
+      }
+
+      const errorItem = items[0];
+      if (errorItem !== undefined) {
+        run.errored(errorItem, noCompatibleVbaDevMessage);
+      }
+      return;
+    }
     const selections = items.flatMap((item) => {
       const metadata = nodeIndex.getMetadata(item);
       return metadata ? [{ item, metadata }] : [];
@@ -311,6 +328,10 @@ async function runTestItem(
     argsBeforeProject: ['test'],
     argsAfterProject: createTestSelectorArgs(metadata, runOptions.noBuild)
   });
+  if (result === undefined) {
+    testRun.errored(item, noCompatibleVbaDevMessage);
+    return;
+  }
   testRun.appendOutput(result.stdout);
   testRun.appendOutput(result.stderr);
 

@@ -16,6 +16,8 @@ internal sealed class VbaLanguageServerRuntime
     private readonly VbaInteractiveWorkSchedulerOptions? schedulerOptions;
     private readonly IVbaProjectReconciliationRuntimeLifecycle?
         projectReconciliationLifecycle;
+    private readonly VbaDevReferenceListStartupState? vbaDevStartupState;
+    private int startupWarningPublished;
 
     /// <summary>
     /// Creates a language-server runtime from transport, request, and lifecycle components.
@@ -26,6 +28,7 @@ internal sealed class VbaLanguageServerRuntime
     /// <param name="catalogLifecycle">The optional background catalog lifecycle owner.</param>
     /// <param name="schedulerOptions">Optional scheduler options used by deterministic tests.</param>
     /// <param name="projectReconciliationLifecycle">The optional background project reconciliation owner.</param>
+    /// <param name="vbaDevStartupState">The optional startup-validated VbaDev reference-list capability.</param>
     public VbaLanguageServerRuntime(
         LspMessageTransport transport,
         VbaLspRequestExecution requestExecution,
@@ -33,7 +36,8 @@ internal sealed class VbaLanguageServerRuntime
         IReferenceCatalogRuntimeLifecycle? catalogLifecycle = null,
         VbaInteractiveWorkSchedulerOptions? schedulerOptions = null,
         IVbaProjectReconciliationRuntimeLifecycle?
-            projectReconciliationLifecycle = null)
+            projectReconciliationLifecycle = null,
+        VbaDevReferenceListStartupState? vbaDevStartupState = null)
     {
         this.transport = transport;
         this.requestExecution = requestExecution;
@@ -41,6 +45,7 @@ internal sealed class VbaLanguageServerRuntime
         this.catalogLifecycle = catalogLifecycle;
         this.schedulerOptions = schedulerOptions;
         this.projectReconciliationLifecycle = projectReconciliationLifecycle;
+        this.vbaDevStartupState = vbaDevStartupState;
     }
 
     /// <summary>
@@ -49,7 +54,10 @@ internal sealed class VbaLanguageServerRuntime
     /// <param name="input">The JSON-RPC input stream.</param>
     /// <param name="output">The JSON-RPC output stream.</param>
     /// <returns>The configured language-server runtime.</returns>
-    public static VbaLanguageServerRuntime CreateDefault(Stream input, Stream output)
+    public static VbaLanguageServerRuntime CreateDefault(
+        Stream input,
+        Stream output,
+        VbaDevReferenceListStartupState? vbaDevStartupState = null)
     {
         var transport = new LspMessageTransport(input, output);
         var referenceCatalogCache = new VbaProjectReferenceCatalogCache(
@@ -78,7 +86,8 @@ internal sealed class VbaLanguageServerRuntime
             requestExecution,
             documentLifecycle,
             catalogRefresh,
-            projectReconciliationLifecycle: projectReconciler);
+            projectReconciliationLifecycle: projectReconciler,
+            vbaDevStartupState: vbaDevStartupState);
     }
 
     /// <summary>
@@ -381,6 +390,9 @@ internal sealed class VbaLanguageServerRuntime
     {
         switch (method)
         {
+            case "initialized":
+                await PublishStartupWarningAsync(cancellationToken);
+                return;
             case "textDocument/didOpen":
                 await documentLifecycle.RecordOpenedDocumentAsync(parameters, cancellationToken);
                 return;
@@ -396,6 +408,15 @@ internal sealed class VbaLanguageServerRuntime
             default:
                 return;
         }
+    }
+
+    private Task PublishStartupWarningAsync(CancellationToken cancellationToken)
+    {
+        var warning = vbaDevStartupState?.WarningMessage;
+        return warning is not null
+            && Interlocked.Exchange(ref startupWarningPublished, 1) == 0
+                ? transport.WriteLogMessageAsync(2, warning, cancellationToken)
+                : Task.CompletedTask;
     }
 
     private sealed class ResponseLifetimeCancellation(

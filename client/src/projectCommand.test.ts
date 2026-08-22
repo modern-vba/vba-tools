@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as path from 'node:path';
 
+import { VbaDevCompatibilityError, VbaDevSessionResolver } from './devtool';
 import { runWorkbookBackedProjectCommand } from './projectCommand';
 
 for (const commandName of ['build', 'test', 'publish', 'export'] as const) {
@@ -140,6 +141,115 @@ test('WorkbookBackedProject command failure is surfaced to the user', async () =
   });
 
   assert.match(errors[0], /Build failed/);
+});
+
+test('WorkbookBackedProject commands reuse one session-pinned vba-dev executable', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const executablePath = path.join('D:', 'tools', 'vba-dev.exe');
+  const capabilityCalls: string[] = [];
+  const commandCalls: string[] = [];
+  const requiredContract = {
+    contractVersion: '1.0',
+    debugAdapterProtocolVersion: '1.0',
+    commandSchemaVersions: {
+      build: '1.0'
+    }
+  };
+  const vbaDevResolver = new VbaDevSessionResolver({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    configuredPath: executablePath,
+    requiredContract,
+    runProcess: async (file) => {
+      capabilityCalls.push(file);
+      return {
+        stdout: JSON.stringify({
+          toolVersion: '0.1.0',
+          contractVersion: '1.0',
+          commands: {
+            build: { outputSchemaVersion: '1.0' }
+          },
+          debugAdapter: {
+            protocolVersion: '1.0',
+            transport: 'stdio',
+            command: 'debug-adapter'
+          }
+        }),
+        stderr: ''
+      };
+    }
+  });
+  const options = {
+    toolCommandName: 'build' as const,
+    title: 'VBA Tools: Build',
+    extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
+    vbaDevResolver,
+    activeFilePath: path.join(projectRoot, 'vba-project.json'),
+    workspaceRoots: [path.dirname(projectRoot)],
+    fileExists: async (candidate: string) => candidate === path.join(projectRoot, 'vba-project.json'),
+    findProjectManifests: async () => [],
+    chooseProject: async () => undefined,
+    startProcess: (file: string) => {
+      commandCalls.push(file);
+      return {
+        onStdout: () => undefined,
+        onStderr: () => undefined,
+        onExit: (listener: (exitCode: number, signal: string | null) => void) => listener(0, null),
+        kill: () => undefined
+      };
+    },
+    outputChannel: {
+      append: () => undefined,
+      appendLine: () => undefined,
+      show: () => undefined
+    },
+    showErrorMessage: async () => undefined,
+    requiredContract
+  };
+
+  await runWorkbookBackedProjectCommand(options);
+  await runWorkbookBackedProjectCommand(options);
+
+  assert.deepEqual(capabilityCalls, [executablePath]);
+  assert.deepEqual(commandCalls, [executablePath, executablePath]);
+});
+
+test('WorkbookBackedProject command stops without another notification after a reported resolution failure', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  let processStarts = 0;
+  const notifications: string[] = [];
+
+  const result = await runWorkbookBackedProjectCommand({
+    toolCommandName: 'build',
+    title: 'VBA Tools: Build',
+    extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
+    vbaDevResolver: {
+      resolve: async () => {
+        throw new VbaDevCompatibilityError('no compatible vba-dev', true);
+      }
+    },
+    activeFilePath: path.join(projectRoot, 'vba-project.json'),
+    workspaceRoots: [path.dirname(projectRoot)],
+    fileExists: async (candidate) => candidate === path.join(projectRoot, 'vba-project.json'),
+    findProjectManifests: async () => [],
+    chooseProject: async () => undefined,
+    startProcess: () => {
+      processStarts += 1;
+      throw new Error('Build must not start');
+    },
+    outputChannel: {
+      append: () => undefined,
+      appendLine: () => undefined,
+      show: () => undefined
+    },
+    showErrorMessage: async (message) => {
+      notifications.push(message);
+      return undefined;
+    }
+  });
+
+  assert.equal(result, undefined);
+  assert.equal(processStarts, 0);
+  assert.deepEqual(notifications, []);
 });
 
 function toTitle(commandName: string): string {

@@ -62,27 +62,32 @@ test('VbaLanguageServer resolution uses the bundled Windows executable by defaul
 test('VbaLanguageServer launch options use stdio command transport', () => {
   const extensionRoot = path.resolve(__dirname, '..', '..');
   const executablePath = resolveVbaLanguageServerPath({ extensionRoot });
+  const vbaDevExecutablePath = path.join(extensionRoot, 'bin', 'vba-dev', 'win-x64', 'vba-dev.exe');
   const referenceCatalogCacheRoot = path.join(extensionRoot, 'globalStorage', 'reference-catalogs');
   const options = createVbaLanguageServerOptions({
     extensionRoot,
     platform: 'win32',
+    vbaDevExecutablePath,
     referenceCatalogCacheRoot
   });
 
   const launchOptions = options as {
     readonly run: {
       readonly command: string;
+      readonly args?: readonly string[];
       readonly transport: number;
       readonly options: { readonly env?: NodeJS.ProcessEnv };
     };
     readonly debug: {
       readonly command: string;
+      readonly args?: readonly string[];
       readonly transport: number;
       readonly options: { readonly env?: NodeJS.ProcessEnv };
     };
   };
 
   assert.equal(launchOptions.run.command, executablePath);
+  assert.deepEqual(launchOptions.run.args, ['--vba-dev', vbaDevExecutablePath]);
   assert.equal(launchOptions.run.transport, 0);
   assert.equal(
     launchOptions.run.options.env?.[referenceCatalogCacheRootEnvironmentVariable],
@@ -108,6 +113,19 @@ test('VbaLanguageServer reference catalog cache root is derived from VS Code glo
     createVbaLanguageServerReferenceCatalogCacheRoot(globalStorageRoot),
     path.join(globalStorageRoot, 'reference-catalogs')
   );
+});
+
+test('VbaLanguageServer launch omits vba-dev arguments when no compatible executable is available', () => {
+  const options = createVbaLanguageServerOptions({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    platform: 'win32'
+  }) as {
+    readonly run: { readonly args?: readonly string[] };
+    readonly debug: { readonly args?: readonly string[] };
+  };
+
+  assert.equal(options.run.args, undefined);
+  assert.equal(options.debug.args, undefined);
 });
 
 test('VbaLanguageServer launch options reject non-Windows platforms with a clear message', () => {

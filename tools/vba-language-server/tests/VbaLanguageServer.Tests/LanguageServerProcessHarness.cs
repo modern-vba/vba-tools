@@ -88,7 +88,8 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
 
     public static Task<LanguageServerProcessHarness> StartAsync(
         string? referenceCatalogCacheRoot = null,
-        IReadOnlyDictionary<string, string>? environment = null)
+        IReadOnlyDictionary<string, string>? environment = null,
+        IReadOnlyList<string>? serverArguments = null)
     {
         var serverProjectPath = Path.GetFullPath(
             Path.Combine(
@@ -101,13 +102,18 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
                 "src",
                 "VbaLanguageServer.Cli",
                 "VbaLanguageServer.Cli.csproj"));
-        return StartFromProjectAsync(serverProjectPath, referenceCatalogCacheRoot, environment);
+        return StartFromProjectAsync(
+            serverProjectPath,
+            referenceCatalogCacheRoot,
+            environment,
+            serverArguments);
     }
 
     private static Task<LanguageServerProcessHarness> StartFromProjectAsync(
         string serverProjectPath,
         string? referenceCatalogCacheRoot = null,
-        IReadOnlyDictionary<string, string>? environment = null)
+        IReadOnlyDictionary<string, string>? environment = null,
+        IReadOnlyList<string>? serverArguments = null)
     {
         var ownsCacheRoot = referenceCatalogCacheRoot is null;
         var cacheRoot = referenceCatalogCacheRoot
@@ -137,6 +143,14 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
                 ?? "Debug");
         startInfo.ArgumentList.Add("--project");
         startInfo.ArgumentList.Add(serverProjectPath);
+        if (serverArguments is { Count: > 0 })
+        {
+            startInfo.ArgumentList.Add("--");
+            foreach (var argument in serverArguments)
+            {
+                startInfo.ArgumentList.Add(argument);
+            }
+        }
 
         try
         {

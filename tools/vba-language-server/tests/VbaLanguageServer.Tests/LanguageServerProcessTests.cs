@@ -8,6 +8,81 @@ namespace VbaLanguageServer.Tests;
 public sealed class LanguageServerProcessTests
 {
     [Fact]
+    public async Task Server_without_a_supplied_vba_dev_warns_after_initialized_and_keeps_running()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+
+        await server.InitializeAsync();
+
+        var warning = await server.WaitForLogMessageAsync(
+            "did not receive one absolute --vba-dev executable path");
+        Assert.Equal(2, warning.GetProperty("params").GetProperty("type").GetInt32());
+
+        var afterWarning = server.TranscriptCheckpoint;
+        await server.SendNotificationAsync("initialized", new { });
+        await Assert.ThrowsAsync<TimeoutException>(() => server.WaitForMessageAsync(
+            afterWarning,
+            message => message.TryGetProperty("method", out var method)
+                && method.GetString() == "window/logMessage"
+                && message.GetProperty("params").GetProperty("message").GetString()
+                    ?.Contains("--vba-dev", StringComparison.Ordinal) == true,
+            TimeSpan.FromMilliseconds(250)));
+
+        var completion = await server.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = "file:///C:/work/Module1.bas" },
+                position = new { line = 0, character = 0 }
+            });
+        Assert.Equal(JsonValueKind.Array, completion.GetProperty("result").ValueKind);
+    }
+
+    [Fact]
+    public async Task Server_does_not_search_for_or_normalize_a_relative_vba_dev_path()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync(
+            serverArguments: ["--vba-dev", "vba-dev.exe"]);
+
+        await server.InitializeAsync();
+
+        var warning = await server.WaitForLogMessageAsync(
+            "did not receive one absolute --vba-dev executable path");
+        Assert.Contains(
+            "registry-only discovery remains available",
+            warning.GetProperty("params").GetProperty("message").GetString());
+    }
+
+    [Fact]
+    public async Task Server_survives_a_supplied_vba_dev_probe_failure_without_corrupting_stdio()
+    {
+        var missingExecutablePath = Path.GetFullPath(Path.Combine(
+            Path.GetTempPath(),
+            $"missing-vba-dev-{Guid.NewGuid():N}.exe"));
+        await using var server = await LanguageServerProcessHarness.StartAsync(
+            serverArguments: ["--vba-dev", missingExecutablePath]);
+
+        var initialize = await server.InitializeAsync();
+
+        Assert.Equal(1, initialize.GetProperty("id").GetInt32());
+        var warning = await server.WaitForLogMessageAsync(missingExecutablePath);
+        Assert.Contains(
+            "could not be validated",
+            warning.GetProperty("params").GetProperty("message").GetString());
+
+        var completion = await server.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = "file:///C:/work/Module1.bas" },
+                position = new { line = 0, character = 0 }
+            });
+        Assert.Equal(JsonValueKind.Array, completion.GetProperty("result").ValueKind);
+    }
+
+    [Fact]
     public async Task Server_handles_initialize_text_sync_completion_and_shutdown()
     {
         await using var server = await LanguageServerProcessHarness.StartAsync();

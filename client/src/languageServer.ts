@@ -20,6 +20,7 @@ export interface VbaLanguageServerPathOptions {
 
 export interface VbaLanguageServerOptions extends VbaLanguageServerPathOptions {
   readonly platform?: PlatformName;
+  readonly vbaDevExecutablePath?: string;
   readonly referenceCatalogCacheRoot?: string;
 }
 
@@ -68,13 +69,18 @@ export function createVbaLanguageServerOptions(options: VbaLanguageServerOptions
 
   const executablePath = resolveVbaLanguageServerPath(options);
   const processOptions = createVbaLanguageServerProcessOptions(options.referenceCatalogCacheRoot);
+  const argumentsOptions = options.vbaDevExecutablePath === undefined
+    ? {}
+    : { args: ['--vba-dev', options.vbaDevExecutablePath] };
   const executable = processOptions === undefined
     ? {
         command: executablePath,
+        ...argumentsOptions,
         transport: stdioTransportKind
       }
     : {
         command: executablePath,
+        ...argumentsOptions,
         transport: stdioTransportKind,
         options: processOptions
       };
