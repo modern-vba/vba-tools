@@ -32,10 +32,10 @@ public interface IWorkbookGenerationSession
 
     Task RemoveModuleAsync(string moduleName, CancellationToken cancellationToken);
 
-    Task ImportModuleAsync(VbaSourceFile sourceFile, CancellationToken cancellationToken);
+    Task ImportModuleAsync(VbeImportSourceFile sourceFile, CancellationToken cancellationToken);
 
     /// <summary>
-    /// Runs the generation verification boundary before save. Exact imported-code verification is added separately.
+    /// Verifies every imported component's exact identity, kind, and projected code before save.
     /// </summary>
     Task VerifyAsync(CancellationToken cancellationToken);
 
@@ -85,14 +85,11 @@ internal sealed class SynchronousWorkbookGenerationAutomation(
         public Task RemoveModuleAsync(string moduleName, CancellationToken cancellationToken)
             => RunAsync(() => session.RemoveModule(moduleName), cancellationToken);
 
-        public Task ImportModuleAsync(VbaSourceFile sourceFile, CancellationToken cancellationToken)
+        public Task ImportModuleAsync(VbeImportSourceFile sourceFile, CancellationToken cancellationToken)
             => RunAsync(() => session.ImportModule(sourceFile), cancellationToken);
 
         public Task VerifyAsync(CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            return Task.CompletedTask;
-        }
+            => RunAsync(session.VerifyImportedModules, cancellationToken);
 
         public Task SaveAsync(CancellationToken cancellationToken)
             => RunAsync(session.Save, cancellationToken);

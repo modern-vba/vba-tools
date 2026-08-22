@@ -2,7 +2,6 @@ using VbaDev.App.Build;
 using VbaDev.App.Cli;
 using VbaDev.App.Projects;
 using VbaDev.App.Workbooks;
-using VbaLanguageServer.Syntax;
 
 namespace VbaDev.App.Debugging;
 
@@ -160,13 +159,6 @@ public sealed class BuildCommandDebugWorkbookBuilder : IDebugWorkbookBuilder
                     var sourcePath = Path.GetFullPath(source.SourcePath);
                     var sourceBytes = ReadSourceBytes(sourcePath);
                     var capturedText = snapshotByPath[sourcePath].Text;
-                    if (!VbaSourceFileTextReader.Decode(sourceBytes).Equals(
-                        capturedText,
-                        StringComparison.Ordinal))
-                    {
-                        throw new DebugSetupException(
-                            $"Debug source snapshot content does not match build source '{sourcePath}'.");
-                    }
 
                     var stagedSourcePath = Path.Combine(stagingPath, Path.GetFileName(sourcePath));
                     File.WriteAllBytes(stagedSourcePath, sourceBytes);
@@ -174,7 +166,11 @@ public sealed class BuildCommandDebugWorkbookBuilder : IDebugWorkbookBuilder
                     stagedSources.Add(new VbaSourceFile(
                         stagedSourcePath,
                         source.Kind,
-                        stagedBinaryPath));
+                        stagedBinaryPath)
+                    {
+                        ExpectedUnicodeText = capturedText,
+                        ExpectedUnicodeTextSourcePath = sourcePath
+                    });
                 }
 
                 return new DebugBuildSourceStaging(stagingPath, stagedSources);

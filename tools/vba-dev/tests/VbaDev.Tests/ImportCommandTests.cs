@@ -1,4 +1,5 @@
 using System.Text;
+using VbaDev.App.Import;
 using VbaDev.App.Workbooks;
 using VbaDev.Cli;
 using VbaDev.Composition;
@@ -71,7 +72,9 @@ public sealed class ImportCommandTests
         Assert.Equal(0, result.ExitCode);
         Assert.Equal([targetWorkbook], automation.OpenedWorkbooks);
         var importedSource = Assert.Single(automation.ImportedSources);
-        Assert.Equal(Path.Combine(sourceDirectory, "Module1.bas"), importedSource.SourcePath);
+        Assert.Equal("Module1.bas", importedSource.FileName);
+        Assert.NotEqual(Path.Combine(sourceDirectory, "Module1.bas"), importedSource.SourcePath);
+        Assert.False(File.Exists(importedSource.SourcePath));
     }
 
     [Fact]
@@ -95,7 +98,11 @@ public sealed class ImportCommandTests
         Assert.Equal(0, result.ExitCode);
         Assert.Equal(["Alpha.bas", "Dialog.frm", "Nested.bas", "Zeta.cls"], automation.ImportedSources.Select(source => source.FileName));
         var importedForm = Assert.Single(automation.ImportedSources, source => source.Kind == VbaSourceKind.Form);
-        Assert.Equal(Path.Combine(sourceDirectory, "forms", "Dialog.frx"), importedForm.BinaryPath);
+        Assert.NotNull(importedForm.BinaryPath);
+        Assert.Equal(Path.GetDirectoryName(importedForm.SourcePath), Path.GetDirectoryName(importedForm.BinaryPath));
+        Assert.Equal("Dialog.frx", Path.GetFileName(importedForm.BinaryPath));
+        Assert.False(File.Exists(importedForm.BinaryPath));
+        Assert.Equal(new byte[] { 1, 2, 3 }, File.ReadAllBytes(Path.Combine(sourceDirectory, "forms", "Dialog.frx")));
     }
 
     [Fact]
@@ -252,6 +259,113 @@ public sealed class ImportCommandTests
         Assert.Contains("import failed", result.StandardError, StringComparison.Ordinal);
         Assert.Contains("remove:OldModule", automation.Events);
         Assert.DoesNotContain("save", automation.Events);
+    }
+
+    [Fact]
+    public void ImportCommandRejectsLossySourceBeforeOpeningExcelAndPreservesCallerFiles()
+    {
+        using var temp = TempDirectory.Create();
+        var sourceDirectory = temp.CreateDirectory("src");
+        var sourcePath = Path.Combine(sourceDirectory, "Lossy.bas");
+        var targetWorkbook = Path.Combine(temp.Path, "target.xlsm");
+        const string sourceText = "Attribute VB_Name = \"Lossy\"\r\nPublic Const Minus As String = \"−\"\r\n";
+        var sourceBytes = new UTF8Encoding(false, true).GetBytes(sourceText);
+        byte[] targetBytes = [1, 2, 3, 4];
+        File.WriteAllBytes(sourcePath, sourceBytes);
+        File.WriteAllBytes(targetWorkbook, targetBytes);
+        var automation = new FakeWorkbookBuildAutomation();
+        var codePageReads = 0;
+        var command = new ImportCommand(
+            automation,
+            new VbeImportSourceSetFactory(() =>
+            {
+                codePageReads++;
+                return 1252;
+            }));
+
+        var result = command.Run(new ImportCommandRequest(
+            sourceDirectory,
+            targetWorkbook,
+            temp.Path));
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("Windows code page 1252", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, codePageReads);
+        Assert.Empty(automation.OpenedWorkbooks);
+        Assert.Equal(sourceBytes, File.ReadAllBytes(sourcePath));
+        Assert.Equal(targetBytes, File.ReadAllBytes(targetWorkbook));
+    }
+
+    [Fact]
+    public void ImportCommandDoesNotSaveWhenImportedProjectionVerificationFails()
+    {
+        using var temp = TempDirectory.Create();
+        var sourceDirectory = temp.CreateDirectory("src");
+        var targetWorkbook = Path.Combine(temp.Path, "target.xlsm");
+        File.WriteAllText(
+            Path.Combine(sourceDirectory, "Module1.bas"),
+            "Attribute VB_Name = \"Module1\"",
+            new UTF8Encoding(false));
+        File.WriteAllText(targetWorkbook, "workbook", Encoding.UTF8);
+        var automation = new FakeWorkbookBuildAutomation
+        {
+            ThrowOnVerify = true
+        };
+        var application = CommandLineTestFactory.Create(temp.Path, workbookBuildAutomation: automation);
+
+        var result = application.Run(["import", "--from", sourceDirectory, "--to", targetWorkbook]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("verification failed", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("import:Module1.bas", automation.Events);
+        Assert.DoesNotContain("save", automation.Events);
+    }
+
+    [Fact]
+    public void ImportMirrorCleanupFailurePreventsVerificationAndInPlaceSave()
+    {
+        using var temp = TempDirectory.Create();
+        var sourceDirectory = temp.CreateDirectory("src");
+        var targetWorkbook = Path.Combine(temp.Path, "target.xlsm");
+        File.WriteAllText(
+            Path.Combine(sourceDirectory, "Module1.bas"),
+            "Attribute VB_Name = \"Module1\"\r\n",
+            new UTF8Encoding(false));
+        File.WriteAllText(targetWorkbook, "workbook", Encoding.UTF8);
+        FileStream? stagingLock = null;
+        string? stagingPath = null;
+        var automation = new FakeWorkbookBuildAutomation();
+        automation.OnImport = () =>
+        {
+            var source = Assert.Single(automation.ImportedSources);
+            stagingPath = Path.GetDirectoryName(source.SourcePath);
+            stagingLock = File.Open(source.SourcePath, FileMode.Open, FileAccess.Read, FileShare.None);
+        };
+        var command = new ImportCommand(
+            automation,
+            new VbeImportSourceSetFactory(() => 65001));
+
+        try
+        {
+            var result = command.Run(new ImportCommandRequest(
+                sourceDirectory,
+                targetWorkbook,
+                temp.Path));
+
+            Assert.Equal(1, result.ExitCode);
+            Assert.Contains("could not be removed", result.StandardError, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(0, automation.VerifyCalls);
+            Assert.Equal(0, automation.SaveCalls);
+            Assert.Equal("workbook", File.ReadAllText(targetWorkbook, Encoding.UTF8));
+        }
+        finally
+        {
+            stagingLock?.Dispose();
+            if (stagingPath is not null && Directory.Exists(stagingPath))
+            {
+                Directory.Delete(stagingPath, recursive: true);
+            }
+        }
     }
 
     private static void WriteText(string path, string content)

@@ -223,8 +223,14 @@ public sealed class BuildCommandTests
         Assert.Equal(0, result.ExitCode);
         var importedForm = Assert.Single(automation.ImportedSources);
         Assert.Equal(VbaSourceKind.Form, importedForm.Kind);
-        Assert.Equal(Path.Combine(root, "src", "Book1", "Dialog.frm"), importedForm.SourcePath);
-        Assert.Equal(frxPath, importedForm.BinaryPath);
+        Assert.Equal("Dialog.frm", importedForm.FileName);
+        Assert.NotEqual(Path.Combine(root, "src", "Book1", "Dialog.frm"), importedForm.SourcePath);
+        Assert.NotNull(importedForm.BinaryPath);
+        Assert.Equal(Path.GetDirectoryName(importedForm.SourcePath), Path.GetDirectoryName(importedForm.BinaryPath));
+        Assert.Equal("Dialog.frx", Path.GetFileName(importedForm.BinaryPath));
+        Assert.False(File.Exists(importedForm.SourcePath));
+        Assert.False(File.Exists(importedForm.BinaryPath));
+        Assert.Equal(new byte[] { 1, 2, 3 }, File.ReadAllBytes(frxPath));
     }
 
     [Fact]
@@ -435,7 +441,9 @@ internal sealed class FakeWorkbookBuildAutomation : IWorkbookBuildAutomation
 
     public bool ThrowOnRemove { get; init; }
 
-    public Action? OnImport { get; init; }
+    public bool ThrowOnVerify { get; init; }
+
+    public Action? OnImport { get; set; }
 
     public COMException? ReferenceError { get; init; }
 
@@ -443,9 +451,13 @@ internal sealed class FakeWorkbookBuildAutomation : IWorkbookBuildAutomation
 
     public List<string> Events { get; } = [];
 
-    public List<VbaSourceFile> ImportedSources { get; } = [];
+    public List<VbeImportSourceFile> ImportedSources { get; } = [];
 
     public List<WorkbookReference> References { get; } = [];
+
+    public int VerifyCalls { get; private set; }
+
+    public int SaveCalls { get; private set; }
 
     public IWorkbookBuildSession OpenWorkbook(string workbookPath)
     {
@@ -505,7 +517,7 @@ internal sealed class FakeWorkbookBuildAutomation : IWorkbookBuildAutomation
             owner.Events.Add($"remove:{moduleName}");
         }
 
-        public void ImportModule(VbaSourceFile sourceFile)
+        public void ImportModule(VbeImportSourceFile sourceFile)
         {
             if (owner.ThrowOnImport)
             {
@@ -517,8 +529,18 @@ internal sealed class FakeWorkbookBuildAutomation : IWorkbookBuildAutomation
             owner.OnImport?.Invoke();
         }
 
+        public void VerifyImportedModules()
+        {
+            owner.VerifyCalls++;
+            if (owner.ThrowOnVerify)
+            {
+                throw new InvalidOperationException("verification failed");
+            }
+        }
+
         public void Save()
         {
+            owner.SaveCalls++;
             owner.Events.Add("save");
         }
 

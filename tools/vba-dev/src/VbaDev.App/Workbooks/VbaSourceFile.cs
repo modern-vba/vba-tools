@@ -12,6 +12,16 @@ public sealed record VbaSourceFile(
     string? BinaryPath)
 {
     /// <summary>
+    /// Gets the exact caller snapshot text that strict import decoding must reproduce, when supplied.
+    /// </summary>
+    internal string? ExpectedUnicodeText { get; init; }
+
+    /// <summary>
+    /// Gets the caller-facing path used when reporting a snapshot text mismatch, when supplied.
+    /// </summary>
+    internal string? ExpectedUnicodeTextSourcePath { get; init; }
+
+    /// <summary>
     /// Gets the source file name used as flat source identity inside a document source set.
     /// </summary>
     public string FileName => Path.GetFileName(SourcePath);

@@ -110,8 +110,14 @@ public sealed class PublishCommandTests
         Assert.Equal(0, result.ExitCode);
         var importedForm = Assert.Single(automation.ImportedSources);
         Assert.Equal(VbaSourceKind.Form, importedForm.Kind);
-        Assert.Equal(Path.Combine(root, "src", "Book1", "Dialog.frm"), importedForm.SourcePath);
-        Assert.Equal(frxPath, importedForm.BinaryPath);
+        Assert.Equal("Dialog.frm", importedForm.FileName);
+        Assert.NotEqual(Path.Combine(root, "src", "Book1", "Dialog.frm"), importedForm.SourcePath);
+        Assert.NotNull(importedForm.BinaryPath);
+        Assert.Equal(Path.GetDirectoryName(importedForm.SourcePath), Path.GetDirectoryName(importedForm.BinaryPath));
+        Assert.Equal("Dialog.frx", Path.GetFileName(importedForm.BinaryPath));
+        Assert.False(File.Exists(importedForm.SourcePath));
+        Assert.False(File.Exists(importedForm.BinaryPath));
+        Assert.Equal(new byte[] { 1, 2, 3 }, File.ReadAllBytes(frxPath));
     }
 
     [Fact]

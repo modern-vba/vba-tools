@@ -386,20 +386,20 @@ internal sealed class ExcelComDebugProbeWorkbookBuilder(
         }
 
         IWorkbookBuildSession? buildSession = null;
+        VbeImportSourceSet? importSourceSet = null;
         DebugEnvironmentProbeStartException? stageError = null;
         OperationCanceledException? cancellationError = null;
         Exception? cleanupError = null;
         try
         {
+            importSourceSet = new VbeImportSourceSetFactory().Create(
+                [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)]);
             buildSession = workbookAutomation.CreateMacroEnabledWorkbook(
                 workbookPath,
                 cancellationToken);
             try
             {
-                buildSession.ImportModule(new VbaSourceFile(
-                    sourcePath,
-                    VbaSourceKind.StandardModule,
-                    null));
+                buildSession.ImportModule(importSourceSet.SourceFiles[0]);
             }
             catch (Exception ex)
             {
@@ -409,6 +409,22 @@ internal sealed class ExcelComDebugProbeWorkbookBuilder(
                     "'Trust access to the VBA project object model' in Excel Trust Center.",
                     ex,
                     cleanupVerified: true);
+            }
+
+            if (stageError is null)
+            {
+                try
+                {
+                    buildSession.VerifyImportedModules();
+                }
+                catch (Exception ex)
+                {
+                    stageError = new DebugEnvironmentProbeStartException(
+                        "VBIDE project access",
+                        "The hidden Excel build could not verify the imported Doctor probe module.",
+                        ex,
+                        cleanupVerified: true);
+                }
             }
 
             if (stageError is null)
@@ -454,6 +470,20 @@ internal sealed class ExcelComDebugProbeWorkbookBuilder(
                 catch (Exception ex)
                 {
                     cleanupError = ex;
+                }
+            }
+
+            if (importSourceSet is not null)
+            {
+                try
+                {
+                    importSourceSet.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    cleanupError = cleanupError is null
+                        ? ex
+                        : new AggregateException(cleanupError, ex);
                 }
             }
         }

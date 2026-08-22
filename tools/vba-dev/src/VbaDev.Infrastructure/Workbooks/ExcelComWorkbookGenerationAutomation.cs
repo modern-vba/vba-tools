@@ -452,7 +452,7 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookGeneratio
                 () => session.RemoveModule(moduleName));
 
         public Task ImportModuleAsync(
-            VbaSourceFile sourceFile,
+            VbeImportSourceFile sourceFile,
             CancellationToken cancellationToken)
             => ExecuteAsync(
                 new WorkbookAutomationStage(
@@ -467,7 +467,7 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookGeneratio
                 new WorkbookAutomationStage(WorkbookAutomationStageKind.Verification),
                 timeouts.ModuleImport,
                 cancellationToken,
-                static () => { });
+                session.VerifyImportedModules);
 
         public Task SaveAsync(CancellationToken cancellationToken)
             => ExecuteAsync(

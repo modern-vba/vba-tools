@@ -65,7 +65,15 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
                 await session.GetModulesAsync(cancellationToken);
                 await session.RemoveModuleAsync("LegacyModule", cancellationToken);
                 await session.ImportModuleAsync(
-                    new VbaSourceFile("Feature.bas", VbaSourceKind.StandardModule, null),
+                    new VbeImportSourceFile(
+                        "Feature.bas",
+                        VbaSourceKind.StandardModule,
+                        null,
+                        new VbeImportVerification(
+                            "Feature",
+                            VbaSourceKind.StandardModule,
+                            [],
+                            "utf8")),
                     cancellationToken);
                 await session.VerifyAsync(cancellationToken);
                 await session.SaveAsync(cancellationToken);
@@ -85,6 +93,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
                 "get-modules",
                 "remove-module:LegacyModule",
                 "import:Feature.bas",
+                "verify",
                 "save",
                 "callback-complete",
                 "cleanup-session:00:00:05",
@@ -684,8 +693,11 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
         public void RemoveModule(string moduleName)
             => events.Add($"remove-module:{moduleName}");
 
-        public void ImportModule(VbaSourceFile sourceFile)
+        public void ImportModule(VbeImportSourceFile sourceFile)
             => events.Add($"import:{sourceFile.FileName}");
+
+        public void VerifyImportedModules()
+            => events.Add("verify");
 
         public void Save()
         {
@@ -791,7 +803,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
             => Task.CompletedTask;
 
         public Task ImportModuleAsync(
-            VbaSourceFile sourceFile,
+            VbeImportSourceFile sourceFile,
             CancellationToken cancellationToken)
         {
             events.Add($"import:{sourceFile.FileName}");

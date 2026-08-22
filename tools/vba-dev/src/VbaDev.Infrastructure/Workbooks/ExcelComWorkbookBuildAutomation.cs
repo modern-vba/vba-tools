@@ -109,6 +109,8 @@ public sealed partial class ExcelComWorkbookBuildAutomation :
     private sealed class ExcelComWorkbookBuildSession : IWorkbookBuildSession
     {
         private readonly ExcelComWorkbookSession session;
+        private readonly List<(VbeImportVerification Expected, string ImportedComponentName)>
+            pendingImportVerifications = [];
 
         /// <summary>
         /// Initializes a build session over an Excel application and workbook COM object.
@@ -316,7 +318,7 @@ public sealed partial class ExcelComWorkbookBuildAutomation :
         /// Imports a VBA source file into the workbook.
         /// </summary>
         /// <param name="sourceFile">The source file to import.</param>
-        public void ImportModule(VbaSourceFile sourceFile)
+        public void ImportModule(VbeImportSourceFile sourceFile)
         {
             dynamic workbook = session.WorkbookObject;
             object? vbProjectObject = null;
@@ -329,12 +331,75 @@ public sealed partial class ExcelComWorkbookBuildAutomation :
                 componentsObject = vbProject.VBComponents;
                 dynamic components = componentsObject;
                 importedComponent = components.Import(sourceFile.SourcePath);
+                dynamic component = importedComponent;
+                pendingImportVerifications.Add((
+                    sourceFile.ImportVerification,
+                    (string)component.Name));
             }
             finally
             {
                 ComObjectReleaser.Release(importedComponent);
                 ComObjectReleaser.Release(componentsObject);
                 ComObjectReleaser.Release(vbProjectObject);
+            }
+        }
+
+        /// <summary>
+        /// Verifies every imported component captured by this session.
+        /// </summary>
+        public void VerifyImportedModules()
+        {
+            dynamic workbook = session.WorkbookObject;
+            object? vbProjectObject = null;
+            object? componentsObject = null;
+            try
+            {
+                vbProjectObject = workbook.VBProject;
+                dynamic vbProject = vbProjectObject;
+                componentsObject = vbProject.VBComponents;
+                dynamic components = componentsObject;
+                foreach (var verification in pendingImportVerifications)
+                {
+                    VerifyImportedModule(components, verification);
+                }
+            }
+            finally
+            {
+                ComObjectReleaser.Release(componentsObject);
+                ComObjectReleaser.Release(vbProjectObject);
+            }
+        }
+
+        private static void VerifyImportedModule(
+            dynamic components,
+            (VbeImportVerification Expected, string ImportedComponentName) verification)
+        {
+            object? componentObject = null;
+            object? codeModuleObject = null;
+            try
+            {
+                componentObject = components.Item(verification.ImportedComponentName);
+                dynamic component = componentObject;
+                codeModuleObject = component.CodeModule;
+                dynamic codeModule = codeModuleObject;
+                var lineCount = (int)codeModule.CountOfLines;
+                var codeModuleLines = new string[lineCount];
+                for (var line = 1; line <= lineCount; line++)
+                {
+                    codeModuleLines[line - 1] = (string)codeModule.Lines(line, 1);
+                }
+
+                VbeImportedComponentVerifier.Verify(
+                    verification.Expected,
+                    new VbeImportedComponent(
+                        (string)component.Name,
+                        MapImportedComponentType((int)component.Type),
+                        codeModuleLines));
+            }
+            finally
+            {
+                ComObjectReleaser.Release(codeModuleObject);
+                ComObjectReleaser.Release(componentObject);
             }
         }
 
@@ -364,6 +429,16 @@ public sealed partial class ExcelComWorkbookBuildAutomation :
                 VbextComponentTypeForm => WorkbookModuleKind.Form,
                 VbextComponentTypeDocument => WorkbookModuleKind.Document,
                 _ => WorkbookModuleKind.Other
+            };
+
+        private static VbaSourceKind MapImportedComponentType(int type)
+            => type switch
+            {
+                VbextComponentTypeStandardModule => VbaSourceKind.StandardModule,
+                VbextComponentTypeClassModule => VbaSourceKind.ClassModule,
+                VbextComponentTypeForm => VbaSourceKind.Form,
+                _ => throw new InvalidOperationException(
+                    $"VBIDE imported an unsupported component type '{type}'.")
             };
     }
 

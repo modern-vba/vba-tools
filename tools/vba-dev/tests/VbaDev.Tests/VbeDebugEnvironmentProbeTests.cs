@@ -110,7 +110,9 @@ public sealed class VbeDebugEnvironmentProbeTests
         var directoryPath = Path.GetDirectoryName(artifact.WorkbookPath)!;
         try
         {
-            Assert.Equal(["create-hidden", "import-module", "save-workbook", "hidden-dispose"], events);
+            Assert.Equal(
+                ["create-hidden", "import-module", "verify-imported", "save-workbook", "hidden-dispose"],
+                events);
             Assert.Contains("Option Private Module", automation.ImportedSource, StringComparison.Ordinal);
             Assert.Contains("vba-tools-doctor-complete", artifact.Breakpoint.ExpectedCodeLine, StringComparison.Ordinal);
             Assert.Equal("VbaToolsDoctorProbe", artifact.Breakpoint.ModuleName);
@@ -122,6 +124,48 @@ public sealed class VbeDebugEnvironmentProbeTests
         }
 
         Assert.False(Directory.Exists(directoryPath));
+    }
+
+    [Fact]
+    public void WorkbookBuilderClassifiesImportMirrorCleanupFailureAsCleanupDiagnostic()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var automation = new FakeDebugProbeWorkbookAutomation([])
+        {
+            LockImportedSource = true
+        };
+        var builder = new ExcelComDebugProbeWorkbookBuilder(
+            automation,
+            new BreakpointSourceMapper());
+
+        try
+        {
+            var error = Assert.Throws<DebugEnvironmentProbeStartException>(() =>
+                builder.Build(CancellationToken.None));
+
+            Assert.Equal("Temporary debug probe cleanup", error.DiagnosticName);
+            Assert.False(error.CleanupVerified);
+            Assert.NotNull(error.CleanupException);
+            Assert.Contains("could not be removed", error.CleanupException.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            automation.ReleaseImportedSourceLock();
+            if (automation.ImportStagingPath is not null && Directory.Exists(automation.ImportStagingPath))
+            {
+                Directory.Delete(automation.ImportStagingPath, recursive: true);
+            }
+
+            var workbookDirectory = Path.GetDirectoryName(automation.WorkbookPath);
+            if (workbookDirectory is not null && Directory.Exists(workbookDirectory))
+            {
+                Directory.Delete(workbookDirectory, recursive: true);
+            }
+        }
     }
 
     [Fact]
@@ -249,9 +293,21 @@ public sealed class VbeDebugEnvironmentProbeTests
     private sealed class FakeDebugProbeWorkbookAutomation(List<string> events)
         : IDebugProbeWorkbookAutomation
     {
+        private FileStream? importedSourceLock;
+
         public string? WorkbookPath { get; private set; }
 
         public string ImportedSource { get; private set; } = string.Empty;
+
+        public bool LockImportedSource { get; init; }
+
+        public string? ImportStagingPath { get; private set; }
+
+        public void ReleaseImportedSourceLock()
+        {
+            importedSourceLock?.Dispose();
+            importedSourceLock = null;
+        }
 
         public IWorkbookBuildSession CreateMacroEnabledWorkbook(
             string workbookPath,
@@ -279,11 +335,22 @@ public sealed class VbeDebugEnvironmentProbeTests
 
             public void RemoveModule(string moduleName) => throw new NotSupportedException();
 
-            public void ImportModule(VbaSourceFile sourceFile)
+            public void ImportModule(VbeImportSourceFile sourceFile)
             {
                 events.Add("import-module");
                 owner.ImportedSource = File.ReadAllText(sourceFile.SourcePath);
+                if (owner.LockImportedSource)
+                {
+                    owner.ImportStagingPath = Path.GetDirectoryName(sourceFile.SourcePath);
+                    owner.importedSourceLock = File.Open(
+                        sourceFile.SourcePath,
+                        FileMode.Open,
+                        FileAccess.Read,
+                        FileShare.None);
+                }
             }
+
+            public void VerifyImportedModules() => events.Add("verify-imported");
 
             public void Save() => events.Add("save-workbook");
 

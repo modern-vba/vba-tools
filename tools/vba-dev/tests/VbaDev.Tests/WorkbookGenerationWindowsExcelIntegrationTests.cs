@@ -7,12 +7,20 @@ using VbaDev.App.Workbooks;
 using VbaDev.Infrastructure.Debugging;
 using VbaDev.Infrastructure.Workbooks;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace VbaDev.Tests;
 
 [Collection(WindowsExcelIntegrationCollection.Name)]
 public sealed class WorkbookGenerationWindowsExcelIntegrationTests
 {
+    private readonly ITestOutputHelper output;
+
+    public WorkbookGenerationWindowsExcelIntegrationTests(ITestOutputHelper output)
+    {
+        this.output = output;
+    }
+
     [WindowsExcelIntegrationFact]
     [Trait("Category", "WindowsExcelIntegration")]
     public async Task ExplicitlyLaunchedOwnedExcelCanBeBoundAndReleased()
@@ -225,6 +233,124 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         await WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20));
     }
 
+    [WindowsExcelIntegrationFact]
+    [Trait("Category", "WindowsExcelIntegration")]
+    public async Task ActiveCodePageImportPreservesAttributesNestedFormStateAndProjectedCodeAfterReopen()
+    {
+        using var temp = TempDirectory.Create();
+        var initialProcesses = CaptureExcelProcessIds();
+        var activeCodePage = ActiveWindowsAnsiCodePage.Get();
+        var nonAsciiText = SelectNonAsciiFixtureText(activeCodePage);
+        var formSourcePath = Path.Combine(temp.Path, "Dialog.frm");
+        var formSidecarPath = Path.Combine(temp.Path, "Dialog.frx");
+        var seedWorkbookPath = Path.Combine(temp.Path, "FormSeed.xlsm");
+        CreateEmptyMacroEnabledWorkbook(seedWorkbookPath);
+        var seedExcelVersion = ExportNestedUserFormFixture(
+            seedWorkbookPath,
+            formSourcePath,
+            nonAsciiText);
+        Assert.True(File.Exists(formSidecarPath));
+        Assert.NotEmpty(File.ReadAllBytes(formSidecarPath));
+        var formSourceText = DecodeActiveCodePageFile(formSourcePath, activeCodePage);
+        Assert.Contains("Dialog.frx", formSourceText, StringComparison.OrdinalIgnoreCase);
+
+        var standardSourcePath = Path.Combine(temp.Path, "UnicodeModule.bas");
+        var classSourcePath = Path.Combine(temp.Path, "ContractClass.cls");
+        var standardSourceText = string.Join("\r\n", [
+            "Attribute VB_Name = \"UnicodeModule\"",
+            "Option Explicit",
+            $"Public Const NonAsciiValue As String = \"{nonAsciiText}\"",
+            string.Empty
+        ]);
+        var classSourceText = string.Join("\r\n", [
+            "VERSION 1.0 CLASS",
+            "BEGIN",
+            "  MultiUse = -1  'True",
+            "END",
+            "Attribute VB_Name = \"ContractClass\"",
+            "Attribute VB_GlobalNameSpace = False",
+            "Attribute VB_Creatable = False",
+            "Attribute VB_PredeclaredId = True",
+            "Attribute VB_Exposed = False",
+            "Option Explicit",
+            "Public Function Item() As String",
+            $"Attribute Item.VB_Description = \"Default member {nonAsciiText}\"",
+            "Attribute Item.VB_UserMemId = 0",
+            $"    Item = \"{nonAsciiText}\"",
+            "End Function",
+            string.Empty
+        ]);
+        var utf16Be = new UnicodeEncoding(
+            bigEndian: true,
+            byteOrderMark: true,
+            throwOnInvalidBytes: true);
+        var utf8Bom = new UTF8Encoding(
+            encoderShouldEmitUTF8Identifier: true,
+            throwOnInvalidBytes: true);
+        File.WriteAllBytes(
+            standardSourcePath,
+            utf16Be.GetPreamble().Concat(utf16Be.GetBytes(standardSourceText)).ToArray());
+        File.WriteAllBytes(
+            classSourcePath,
+            utf8Bom.GetPreamble().Concat(utf8Bom.GetBytes(classSourceText)).ToArray());
+        var originalStandardBytes = File.ReadAllBytes(standardSourcePath);
+        var originalClassBytes = File.ReadAllBytes(classSourcePath);
+        var originalFormBytes = File.ReadAllBytes(formSourcePath);
+        var originalSidecarBytes = File.ReadAllBytes(formSidecarPath);
+        var targetWorkbookPath = Path.Combine(temp.Path, "Imported.xlsm");
+        CreateEmptyMacroEnabledWorkbook(targetWorkbookPath);
+        var productionTemplatePath = Path.Combine(temp.Path, "ProductionTemplate.xlsm");
+        var productionTargetPath = Path.Combine(temp.Path, "bin", "ProductionImported.xlsm");
+        CreateEmptyMacroEnabledWorkbook(productionTemplatePath);
+
+        using (var importSourceSet = VbeImportSourceSet.Create(
+            [
+                new VbaSourceFile(standardSourcePath, VbaSourceKind.StandardModule, null),
+                new VbaSourceFile(classSourcePath, VbaSourceKind.ClassModule, null),
+                new VbaSourceFile(formSourcePath, VbaSourceKind.Form, formSidecarPath)
+            ],
+            activeCodePage))
+        {
+            var directImportExcelVersion = ImportAndAssertImmediatelyAndAfterReopen(
+                targetWorkbookPath,
+                importSourceSet.SourceFiles,
+                activeCodePage,
+                nonAsciiText,
+                temp.Path);
+            await CreateGenerationPipeline().GenerateAsync(
+                "ProductionImported",
+                productionTemplatePath,
+                productionTargetPath,
+                [],
+                [
+                    new VbaSourceFile(standardSourcePath, VbaSourceKind.StandardModule, null),
+                    new VbaSourceFile(classSourcePath, VbaSourceKind.ClassModule, null),
+                    new VbaSourceFile(formSourcePath, VbaSourceKind.Form, formSidecarPath)
+                ],
+                WorkbookAutomationTimeouts.Default,
+                CancellationToken.None);
+            var productionExcelVersion = OpenAndAssertPersistedWorkbook(
+                productionTargetPath,
+                importSourceSet.SourceFiles,
+                activeCodePage,
+                nonAsciiText,
+                Path.Combine(temp.Path, "ProductionContractClass.cls"));
+            Assert.False(string.IsNullOrWhiteSpace(seedExcelVersion));
+            Assert.False(string.IsNullOrWhiteSpace(directImportExcelVersion));
+            Assert.False(string.IsNullOrWhiteSpace(productionExcelVersion));
+            output.WriteLine(
+                $"VBE import integration: direct Excel {directImportExcelVersion}; production Excel {productionExcelVersion}; " +
+                $"active ACP {activeCodePage}; seed Excel {seedExcelVersion}; " +
+                $"source encodings {string.Join(", ", importSourceSet.SourceFiles.Select(source => source.ImportVerification.OriginalEncoding))}.");
+        }
+
+        Assert.Equal(originalStandardBytes, File.ReadAllBytes(standardSourcePath));
+        Assert.Equal(originalClassBytes, File.ReadAllBytes(classSourcePath));
+        Assert.Equal(originalFormBytes, File.ReadAllBytes(formSourcePath));
+        Assert.Equal(originalSidecarBytes, File.ReadAllBytes(formSidecarPath));
+        await WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20));
+    }
+
     private static WorkbookGenerationPipeline CreateGenerationPipeline()
         => new(
             (IWorkbookGenerationAutomation)new ExcelComWorkbookBuildAutomation(),
@@ -254,6 +380,467 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         excel.Visible = false;
         excel.DisplayAlerts = false;
         return excelObject;
+    }
+
+    private static string ExportNestedUserFormFixture(
+        string workbookPath,
+        string formSourcePath,
+        string nonAsciiText)
+    {
+        object? excelObject = null;
+        object? workbooksObject = null;
+        object? workbookObject = null;
+        object? projectObject = null;
+        object? componentsObject = null;
+        object? formComponentObject = null;
+        object? codeModuleObject = null;
+        object? designerObject = null;
+        object? controlsObject = null;
+        object? frameObject = null;
+        object? frameControlsObject = null;
+        object? labelObject = null;
+        object? textBoxObject = null;
+        try
+        {
+            excelObject = CreateHiddenExcelApplication();
+            dynamic excel = excelObject;
+            var excelVersion = Convert.ToString(excel.Version) ?? string.Empty;
+            workbooksObject = excel.Workbooks;
+            dynamic workbooks = workbooksObject;
+            workbookObject = workbooks.Open(workbookPath);
+            dynamic workbook = workbookObject;
+            projectObject = workbook.VBProject;
+            dynamic project = projectObject;
+            componentsObject = project.VBComponents;
+            dynamic components = componentsObject;
+            formComponentObject = components.Add(3);
+            dynamic formComponent = formComponentObject;
+            formComponent.Name = "Dialog";
+            codeModuleObject = formComponent.CodeModule;
+            dynamic codeModule = codeModuleObject;
+            codeModule.AddFromString(
+                "Option Explicit\r\nPrivate Sub UserForm_Initialize()\r\nEnd Sub\r\n");
+            designerObject = formComponent.Designer;
+            dynamic designer = designerObject;
+            designer.Caption = $"Dialog {nonAsciiText}";
+            controlsObject = designer.Controls;
+            dynamic controls = controlsObject;
+            frameObject = controls.Add("Forms.Frame.1", "FrameMain", true);
+            dynamic frame = frameObject;
+            frame.Caption = $"Frame {nonAsciiText}";
+            frame.Left = 12;
+            frame.Top = 12;
+            frame.Width = 180;
+            frame.Height = 96;
+            frameControlsObject = frame.Controls;
+            dynamic frameControls = frameControlsObject;
+            labelObject = frameControls.Add("Forms.Label.1", "LabelMessage", true);
+            dynamic label = labelObject;
+            label.Caption = $"Label {nonAsciiText}";
+            label.Left = 6;
+            label.Top = 12;
+            textBoxObject = frameControls.Add("Forms.TextBox.1", "InputText", true);
+            dynamic textBox = textBoxObject;
+            textBox.Left = 6;
+            textBox.Top = 36;
+            textBox.Width = 144;
+            textBox.Height = 36;
+            textBox.MultiLine = true;
+            textBox.Value = $"{nonAsciiText}\r\nsidecar-value";
+            formComponent.Export(formSourcePath);
+            workbook.Close(false);
+            ComObjectReleaser.Release(workbookObject);
+            workbookObject = null;
+            return excelVersion;
+        }
+        finally
+        {
+            ComObjectReleaser.Release(textBoxObject);
+            ComObjectReleaser.Release(labelObject);
+            ComObjectReleaser.Release(frameControlsObject);
+            ComObjectReleaser.Release(frameObject);
+            ComObjectReleaser.Release(controlsObject);
+            ComObjectReleaser.Release(designerObject);
+            ComObjectReleaser.Release(codeModuleObject);
+            ComObjectReleaser.Release(formComponentObject);
+            ComObjectReleaser.Release(componentsObject);
+            ComObjectReleaser.Release(projectObject);
+            if (workbookObject is not null)
+            {
+                try
+                {
+                    dynamic workbook = workbookObject;
+                    workbook.Close(false);
+                }
+                catch
+                {
+                }
+            }
+
+            ComObjectReleaser.Release(workbookObject);
+            ComObjectReleaser.Release(workbooksObject);
+            QuitExcel(excelObject);
+        }
+    }
+
+    private static string ImportAndAssertImmediatelyAndAfterReopen(
+        string workbookPath,
+        IReadOnlyList<VbeImportSourceFile> sources,
+        int activeCodePage,
+        string nonAsciiText,
+        string artifactDirectory)
+    {
+        object? excelObject = null;
+        object? workbooksObject = null;
+        object? workbookObject = null;
+        try
+        {
+            excelObject = CreateHiddenExcelApplication();
+            dynamic excel = excelObject;
+            var excelVersion = Convert.ToString(excel.Version) ?? string.Empty;
+            workbooksObject = excel.Workbooks;
+            dynamic workbooks = workbooksObject;
+            workbookObject = workbooks.Open(workbookPath);
+            ImportAndAssertCurrentWorkbook(
+                workbookObject,
+                sources,
+                activeCodePage,
+                nonAsciiText,
+                Path.Combine(artifactDirectory, "ImmediateContractClass.cls"));
+            dynamic workbook = workbookObject;
+            workbook.Save();
+            workbook.Close(false);
+            ComObjectReleaser.Release(workbookObject);
+            workbookObject = null;
+
+            workbookObject = workbooks.Open(workbookPath);
+            AssertCurrentWorkbookAfterReopen(
+                workbookObject,
+                sources,
+                activeCodePage,
+                nonAsciiText,
+                Path.Combine(artifactDirectory, "ReopenedContractClass.cls"));
+            workbook = workbookObject;
+            workbook.Close(false);
+            ComObjectReleaser.Release(workbookObject);
+            workbookObject = null;
+            return excelVersion;
+        }
+        finally
+        {
+            if (workbookObject is not null)
+            {
+                try
+                {
+                    dynamic workbook = workbookObject;
+                    workbook.Close(false);
+                }
+                catch
+                {
+                }
+            }
+
+            ComObjectReleaser.Release(workbookObject);
+            ComObjectReleaser.Release(workbooksObject);
+            QuitExcel(excelObject);
+        }
+    }
+
+    private static string OpenAndAssertPersistedWorkbook(
+        string workbookPath,
+        IReadOnlyList<VbeImportSourceFile> sources,
+        int activeCodePage,
+        string nonAsciiText,
+        string classExportPath)
+    {
+        object? excelObject = null;
+        object? workbooksObject = null;
+        object? workbookObject = null;
+        try
+        {
+            excelObject = CreateHiddenExcelApplication();
+            dynamic excel = excelObject;
+            var excelVersion = Convert.ToString(excel.Version) ?? string.Empty;
+            workbooksObject = excel.Workbooks;
+            dynamic workbooks = workbooksObject;
+            workbookObject = workbooks.Open(workbookPath);
+            AssertCurrentWorkbookAfterReopen(
+                workbookObject,
+                sources,
+                activeCodePage,
+                nonAsciiText,
+                classExportPath);
+            dynamic workbook = workbookObject;
+            workbook.Close(false);
+            ComObjectReleaser.Release(workbookObject);
+            workbookObject = null;
+            return excelVersion;
+        }
+        finally
+        {
+            if (workbookObject is not null)
+            {
+                try
+                {
+                    dynamic workbook = workbookObject;
+                    workbook.Close(false);
+                }
+                catch
+                {
+                }
+            }
+
+            ComObjectReleaser.Release(workbookObject);
+            ComObjectReleaser.Release(workbooksObject);
+            QuitExcel(excelObject);
+        }
+    }
+
+    private static void ImportAndAssertCurrentWorkbook(
+        object workbookObject,
+        IReadOnlyList<VbeImportSourceFile> sources,
+        int activeCodePage,
+        string nonAsciiText,
+        string classExportPath)
+    {
+        object? projectObject = null;
+        object? componentsObject = null;
+        try
+        {
+            dynamic workbook = workbookObject;
+            projectObject = workbook.VBProject;
+            dynamic project = projectObject;
+            componentsObject = project.VBComponents;
+            dynamic components = componentsObject;
+            foreach (var source in sources)
+            {
+                object? componentObject = null;
+                try
+                {
+                    componentObject = components.Import(source.SourcePath);
+                    AssertImportedComponentProjection(componentObject, source.ImportVerification);
+                }
+                finally
+                {
+                    ComObjectReleaser.Release(componentObject);
+                }
+            }
+
+            AssertClassAttributes(componentsObject, classExportPath, activeCodePage, nonAsciiText);
+            AssertNestedFormState(componentsObject, nonAsciiText);
+        }
+        finally
+        {
+            ComObjectReleaser.Release(componentsObject);
+            ComObjectReleaser.Release(projectObject);
+        }
+    }
+
+    private static void AssertCurrentWorkbookAfterReopen(
+        object workbookObject,
+        IReadOnlyList<VbeImportSourceFile> sources,
+        int activeCodePage,
+        string nonAsciiText,
+        string classExportPath)
+    {
+        object? projectObject = null;
+        object? componentsObject = null;
+        try
+        {
+            dynamic workbook = workbookObject;
+            projectObject = workbook.VBProject;
+            dynamic project = projectObject;
+            componentsObject = project.VBComponents;
+            dynamic components = componentsObject;
+            foreach (var source in sources)
+            {
+                object? componentObject = null;
+                try
+                {
+                    componentObject = components.Item(source.ImportVerification.ComponentName);
+                    AssertImportedComponentProjection(componentObject, source.ImportVerification);
+                }
+                finally
+                {
+                    ComObjectReleaser.Release(componentObject);
+                }
+            }
+
+            AssertClassAttributes(componentsObject, classExportPath, activeCodePage, nonAsciiText);
+            AssertNestedFormState(componentsObject, nonAsciiText);
+        }
+        finally
+        {
+            ComObjectReleaser.Release(componentsObject);
+            ComObjectReleaser.Release(projectObject);
+        }
+    }
+
+    private static void AssertImportedComponentProjection(
+        object componentObject,
+        VbeImportVerification expected)
+    {
+        object? codeModuleObject = null;
+        try
+        {
+            dynamic component = componentObject;
+            var actualKind = (int)component.Type switch
+            {
+                1 => VbaSourceKind.StandardModule,
+                2 => VbaSourceKind.ClassModule,
+                3 => VbaSourceKind.Form,
+                var type => throw new InvalidOperationException($"Unexpected imported component type '{type}'.")
+            };
+            codeModuleObject = component.CodeModule;
+            dynamic codeModule = codeModuleObject;
+            var lineCount = (int)codeModule.CountOfLines;
+            var lines = new string[lineCount];
+            for (var line = 1; line <= lineCount; line++)
+            {
+                lines[line - 1] = (string)codeModule.Lines(line, 1);
+            }
+
+            VbeImportedComponentVerifier.Verify(
+                expected,
+                new VbeImportedComponent((string)component.Name, actualKind, lines));
+        }
+        finally
+        {
+            ComObjectReleaser.Release(codeModuleObject);
+        }
+    }
+
+    private static void AssertClassAttributes(
+        object componentsObject,
+        string exportPath,
+        int activeCodePage,
+        string nonAsciiText)
+    {
+        object? componentObject = null;
+        try
+        {
+            dynamic components = componentsObject;
+            componentObject = components.Item("ContractClass");
+            dynamic component = componentObject;
+            Assert.Equal(2, (int)component.Type);
+            component.Export(exportPath);
+            var exportedText = DecodeActiveCodePageFile(exportPath, activeCodePage);
+            Assert.Contains("Attribute VB_PredeclaredId = True", exportedText, StringComparison.Ordinal);
+            Assert.Contains(
+                $"Attribute Item.VB_Description = \"Default member {nonAsciiText}\"",
+                exportedText,
+                StringComparison.Ordinal);
+            Assert.Contains("Attribute Item.VB_UserMemId = 0", exportedText, StringComparison.Ordinal);
+        }
+        finally
+        {
+            ComObjectReleaser.Release(componentObject);
+        }
+    }
+
+    private static void AssertNestedFormState(
+        object componentsObject,
+        string nonAsciiText)
+    {
+        object? formComponentObject = null;
+        object? designerObject = null;
+        object? controlsObject = null;
+        object? frameObject = null;
+        object? frameControlsObject = null;
+        object? labelObject = null;
+        object? textBoxObject = null;
+        object? labelParentObject = null;
+        object? textBoxParentObject = null;
+        try
+        {
+            dynamic components = componentsObject;
+            formComponentObject = components.Item("Dialog");
+            dynamic formComponent = formComponentObject;
+            Assert.Equal(3, (int)formComponent.Type);
+            designerObject = formComponent.Designer;
+            dynamic designer = designerObject;
+            Assert.Equal($"Dialog {nonAsciiText}", Convert.ToString(designer.Caption));
+            controlsObject = designer.Controls;
+            dynamic controls = controlsObject;
+            frameObject = controls.Item("FrameMain");
+            dynamic frame = frameObject;
+            Assert.Contains(
+                "Frame",
+                Microsoft.VisualBasic.Information.TypeName(frameObject),
+                StringComparison.OrdinalIgnoreCase);
+            frameControlsObject = frame.Controls;
+            dynamic frameControls = frameControlsObject;
+            labelObject = frameControls.Item("LabelMessage");
+            textBoxObject = frameControls.Item("InputText");
+            dynamic label = labelObject;
+            dynamic textBox = textBoxObject;
+            Assert.Contains(
+                "Label",
+                Microsoft.VisualBasic.Information.TypeName(labelObject),
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(
+                Microsoft.VisualBasic.Information.TypeName(textBoxObject),
+                new[] { "TextBox", "IMdcText" },
+                StringComparer.OrdinalIgnoreCase);
+            Assert.Equal($"Label {nonAsciiText}", Convert.ToString(label.Caption));
+            Assert.True(Convert.ToBoolean(textBox.MultiLine));
+            Assert.Equal($"{nonAsciiText}\r\nsidecar-value", Convert.ToString(textBox.Value));
+            labelParentObject = label.Parent;
+            textBoxParentObject = textBox.Parent;
+            dynamic labelParent = labelParentObject;
+            dynamic textBoxParent = textBoxParentObject;
+            Assert.Equal("FrameMain", Convert.ToString(labelParent.Name));
+            Assert.Equal("FrameMain", Convert.ToString(textBoxParent.Name));
+        }
+        finally
+        {
+            ComObjectReleaser.Release(textBoxParentObject);
+            ComObjectReleaser.Release(labelParentObject);
+            ComObjectReleaser.Release(textBoxObject);
+            ComObjectReleaser.Release(labelObject);
+            ComObjectReleaser.Release(frameControlsObject);
+            ComObjectReleaser.Release(frameObject);
+            ComObjectReleaser.Release(controlsObject);
+            ComObjectReleaser.Release(designerObject);
+            ComObjectReleaser.Release(formComponentObject);
+        }
+    }
+
+    private static string DecodeActiveCodePageFile(string path, int activeCodePage)
+        => StrictEncoding(activeCodePage).GetString(File.ReadAllBytes(path));
+
+    private static string SelectNonAsciiFixtureText(int activeCodePage)
+    {
+        var encoding = StrictEncoding(activeCodePage);
+        foreach (var candidate in new[] { "日本語", "café", "δοκιμή", "тест" })
+        {
+            try
+            {
+                var bytes = encoding.GetBytes(candidate);
+                if (bytes.Any(value => value >= 0x80) &&
+                    encoding.GetString(bytes).Equals(candidate, StringComparison.Ordinal))
+                {
+                    return candidate;
+                }
+            }
+            catch (EncoderFallbackException)
+            {
+            }
+        }
+
+        throw new InvalidOperationException(
+            $"Active Windows code page {activeCodePage} cannot represent the integration fixture's non-ASCII text.");
+    }
+
+    private static Encoding StrictEncoding(int codePage)
+    {
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+        return codePage == 65001
+            ? new UTF8Encoding(false, true)
+            : Encoding.GetEncoding(
+                codePage,
+                EncoderFallback.ExceptionFallback,
+                DecoderFallback.ExceptionFallback);
     }
 
     private static void QuitExcel(object? excelObject)

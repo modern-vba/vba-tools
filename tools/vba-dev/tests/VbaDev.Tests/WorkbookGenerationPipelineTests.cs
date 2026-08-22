@@ -142,19 +142,158 @@ public sealed class WorkbookGenerationPipelineTests
         Assert.Equal("previous-workbook", File.ReadAllText(targetPath, Encoding.UTF8));
     }
 
+    [Fact]
+    public async Task LossySourceFailsBeforeOwnedExcelOrOutputStagingStarts()
+    {
+        using var temp = TempDirectory.Create();
+        var templatePath = Path.Combine(temp.Path, "Template.xlsm");
+        var targetPath = Path.Combine(temp.Path, "Book1.xlsm");
+        var sourcePath = Path.Combine(temp.Path, "Lossy.bas");
+        File.WriteAllText(templatePath, "new-workbook", Encoding.UTF8);
+        File.WriteAllText(targetPath, "previous-workbook", Encoding.UTF8);
+        const string sourceText = "Attribute VB_Name = \"Lossy\"\r\nPublic Const Minus As String = \"−\"\r\n";
+        var sourceBytes = new UTF8Encoding(false, true).GetBytes(sourceText);
+        File.WriteAllBytes(sourcePath, sourceBytes);
+        var events = new List<string>();
+        var codePageReads = 0;
+        var pipeline = CreatePipeline(
+            new RecordingWorkbookGenerationAutomation(events),
+            importSourceSetFactory: new VbeImportSourceSetFactory(() =>
+            {
+                codePageReads++;
+                return 1252;
+            }));
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+            "Book1",
+            templatePath,
+            targetPath,
+            [],
+            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
+            WorkbookAutomationTimeouts.Default,
+            CancellationToken.None));
+
+        Assert.Contains("Windows code page 1252", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, codePageReads);
+        Assert.Empty(events);
+        Assert.Equal(sourceBytes, File.ReadAllBytes(sourcePath));
+        Assert.Equal("previous-workbook", File.ReadAllText(targetPath, Encoding.UTF8));
+        Assert.Empty(Directory.EnumerateFiles(temp.Path, ".Book1.*.tmp.xlsm"));
+    }
+
+    [Fact]
+    public async Task DebugSnapshotTextMismatchFailsBeforeOwnedExcelOrOutputStagingStarts()
+    {
+        using var temp = TempDirectory.Create();
+        var templatePath = Path.Combine(temp.Path, "Template.xlsm");
+        var targetPath = Path.Combine(temp.Path, "Book1.xlsm");
+        var sourcePath = Path.Combine(temp.Path, "Module1.bas");
+        File.WriteAllText(templatePath, "new-workbook", Encoding.UTF8);
+        File.WriteAllText(targetPath, "previous-workbook", Encoding.UTF8);
+        const string sourceText = "Attribute VB_Name = \"Module1\"\r\nPublic Sub CurrentCode()\r\nEnd Sub\r\n";
+        var sourceBytes = new UTF8Encoding(false, true).GetBytes(sourceText);
+        File.WriteAllBytes(sourcePath, sourceBytes);
+        var events = new List<string>();
+        var codePageReads = 0;
+        var pipeline = CreatePipeline(
+            new RecordingWorkbookGenerationAutomation(events),
+            importSourceSetFactory: new VbeImportSourceSetFactory(() =>
+            {
+                codePageReads++;
+                return 65001;
+            }));
+        var source = new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)
+        {
+            ExpectedUnicodeText = sourceText.Replace("CurrentCode", "StaleCode", StringComparison.Ordinal),
+            ExpectedUnicodeTextSourcePath = sourcePath
+        };
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+            "Book1",
+            templatePath,
+            targetPath,
+            [],
+            [source],
+            WorkbookAutomationTimeouts.Default,
+            CancellationToken.None));
+
+        Assert.Contains("snapshot", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(sourcePath, error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, codePageReads);
+        Assert.Empty(events);
+        Assert.Equal(sourceBytes, File.ReadAllBytes(sourcePath));
+        Assert.Equal("previous-workbook", File.ReadAllText(targetPath, Encoding.UTF8));
+        Assert.Empty(Directory.EnumerateFiles(temp.Path, ".Book1.*.tmp.xlsm"));
+    }
+
+    [Fact]
+    public async Task ImportMirrorCleanupFailurePreventsFinalOutputCommit()
+    {
+        using var temp = TempDirectory.Create();
+        var templatePath = Path.Combine(temp.Path, "Template.xlsm");
+        var targetPath = Path.Combine(temp.Path, "Book1.xlsm");
+        var sourcePath = Path.Combine(temp.Path, "Module1.bas");
+        File.WriteAllText(templatePath, "new-workbook", Encoding.UTF8);
+        File.WriteAllText(targetPath, "previous-workbook", Encoding.UTF8);
+        File.WriteAllText(
+            sourcePath,
+            "Attribute VB_Name = \"Module1\"\r\n",
+            new UTF8Encoding(false));
+        FileStream? stagingLock = null;
+        string? importStagingPath = null;
+        var events = new List<string>();
+        var automation = new RecordingWorkbookGenerationAutomation(events)
+        {
+            OnImport = source =>
+            {
+                importStagingPath = Path.GetDirectoryName(source.SourcePath);
+                stagingLock = File.Open(source.SourcePath, FileMode.Open, FileAccess.Read, FileShare.None);
+            }
+        };
+        var pipeline = CreatePipeline(automation);
+
+        try
+        {
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+                "Book1",
+                templatePath,
+                targetPath,
+                [],
+                [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
+                WorkbookAutomationTimeouts.Default,
+                CancellationToken.None));
+
+            Assert.Contains("could not be removed", error.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("save", events);
+            Assert.Equal("previous-workbook", File.ReadAllText(targetPath, Encoding.UTF8));
+        }
+        finally
+        {
+            stagingLock?.Dispose();
+            if (importStagingPath is not null && Directory.Exists(importStagingPath))
+            {
+                Directory.Delete(importStagingPath, recursive: true);
+            }
+        }
+    }
+
     private static WorkbookGenerationPipeline CreatePipeline(
         IWorkbookGenerationAutomation automation,
-        IWorkbookOutputTransactionFactory? transactionFactory = null)
+        IWorkbookOutputTransactionFactory? transactionFactory = null,
+        VbeImportSourceSetFactory? importSourceSetFactory = null)
         => new(
             automation,
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),
-            transactionFactory ?? new WorkbookOutputTransactionFactory());
+            transactionFactory ?? new WorkbookOutputTransactionFactory(),
+            importSourceSetFactory ?? new VbeImportSourceSetFactory(() => 65001));
 
     private sealed class RecordingWorkbookGenerationAutomation(
         List<string> events) : IWorkbookGenerationAutomation
     {
         public Action? BeforeReturn { get; init; }
+
+        public Action<VbeImportSourceFile>? OnImport { get; init; }
 
         public WorkbookAutomationTimeouts? Timeouts { get; private set; }
 
@@ -167,7 +306,7 @@ public sealed class WorkbookGenerationPipelineTests
             events.Add("open");
             Timeouts = timeouts;
             var result = await operation(
-                new RecordingWorkbookGenerationSession(events),
+                new RecordingWorkbookGenerationSession(events, OnImport),
                 cancellationToken);
             BeforeReturn?.Invoke();
             return result;
@@ -175,7 +314,8 @@ public sealed class WorkbookGenerationPipelineTests
     }
 
     private sealed class RecordingWorkbookGenerationSession(
-        List<string> events) : IWorkbookGenerationSession
+        List<string> events,
+        Action<VbeImportSourceFile>? onImport = null) : IWorkbookGenerationSession
     {
         public Task<IReadOnlyList<WorkbookModule>> GetModulesAsync(CancellationToken cancellationToken)
         {
@@ -200,8 +340,11 @@ public sealed class WorkbookGenerationPipelineTests
         public Task RemoveModuleAsync(string moduleName, CancellationToken cancellationToken)
             => Task.CompletedTask;
 
-        public Task ImportModuleAsync(VbaSourceFile sourceFile, CancellationToken cancellationToken)
-            => Task.CompletedTask;
+        public Task ImportModuleAsync(VbeImportSourceFile sourceFile, CancellationToken cancellationToken)
+        {
+            onImport?.Invoke(sourceFile);
+            return Task.CompletedTask;
+        }
 
         public Task VerifyAsync(CancellationToken cancellationToken)
         {

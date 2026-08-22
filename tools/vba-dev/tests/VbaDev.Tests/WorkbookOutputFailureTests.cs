@@ -298,7 +298,7 @@ public sealed class WorkbookOutputFailureTests
         public Task RemoveModuleAsync(string moduleName, CancellationToken cancellationToken)
             => Task.CompletedTask;
 
-        public Task ImportModuleAsync(VbaSourceFile sourceFile, CancellationToken cancellationToken)
+        public Task ImportModuleAsync(VbeImportSourceFile sourceFile, CancellationToken cancellationToken)
             => Task.CompletedTask;
 
         public Task VerifyAsync(CancellationToken cancellationToken)

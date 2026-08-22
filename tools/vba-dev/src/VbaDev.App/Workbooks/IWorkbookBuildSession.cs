@@ -40,7 +40,12 @@ public interface IWorkbookBuildSession : IDisposable
     /// Imports an exported VBA source file into the workbook's VBA project.
     /// </summary>
     /// <param name="sourceFile">The source file and optional form sidecar to import.</param>
-    void ImportModule(VbaSourceFile sourceFile);
+    void ImportModule(VbeImportSourceFile sourceFile);
+
+    /// <summary>
+    /// Verifies every component imported during this session before the workbook is saved.
+    /// </summary>
+    void VerifyImportedModules();
 
     /// <summary>
     /// Saves the workbook after automation changes.

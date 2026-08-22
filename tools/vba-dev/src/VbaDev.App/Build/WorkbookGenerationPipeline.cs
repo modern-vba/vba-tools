@@ -11,6 +11,7 @@ public sealed class WorkbookGenerationPipeline
     private readonly IWorkbookGenerationAutomation workbookGenerationAutomation;
     private readonly WorkbookReferenceNormalizer referenceNormalizer;
     private readonly IWorkbookOutputTransactionFactory transactionFactory;
+    private readonly VbeImportSourceSetFactory importSourceSetFactory;
 
     /// <summary>
     /// Creates the workbook generation pipeline.
@@ -23,7 +24,8 @@ public sealed class WorkbookGenerationPipeline
         : this(
             new SynchronousWorkbookGenerationAutomation(workbookBuildAutomation),
             referenceNormalizer,
-            new WorkbookOutputTransactionFactory())
+            new WorkbookOutputTransactionFactory(),
+            new VbeImportSourceSetFactory())
     {
     }
 
@@ -36,7 +38,8 @@ public sealed class WorkbookGenerationPipeline
         : this(
             workbookGenerationAutomation,
             referenceNormalizer,
-            new WorkbookOutputTransactionFactory())
+            new WorkbookOutputTransactionFactory(),
+            new VbeImportSourceSetFactory())
     {
     }
 
@@ -47,10 +50,24 @@ public sealed class WorkbookGenerationPipeline
         IWorkbookGenerationAutomation workbookGenerationAutomation,
         WorkbookReferenceNormalizer referenceNormalizer,
         IWorkbookOutputTransactionFactory transactionFactory)
+        : this(
+            workbookGenerationAutomation,
+            referenceNormalizer,
+            transactionFactory,
+            new VbeImportSourceSetFactory())
+    {
+    }
+
+    internal WorkbookGenerationPipeline(
+        IWorkbookGenerationAutomation workbookGenerationAutomation,
+        WorkbookReferenceNormalizer referenceNormalizer,
+        IWorkbookOutputTransactionFactory transactionFactory,
+        VbeImportSourceSetFactory importSourceSetFactory)
     {
         this.workbookGenerationAutomation = workbookGenerationAutomation;
         this.referenceNormalizer = referenceNormalizer;
         this.transactionFactory = transactionFactory;
+        this.importSourceSetFactory = importSourceSetFactory;
     }
 
     /// <summary>
@@ -112,6 +129,7 @@ public sealed class WorkbookGenerationPipeline
         ThrowIfCanceled(
             cancellationToken,
             new WorkbookAutomationStage(WorkbookAutomationStageKind.ExcelStartup));
+        using var importSourceSet = importSourceSetFactory.Create(sourceFiles);
         var transaction = transactionFactory.Create(templateWorkbookPath, targetWorkbookPath);
         try
         {
@@ -136,7 +154,7 @@ public sealed class WorkbookGenerationPipeline
                             .ConfigureAwait(false);
                     }
 
-                    foreach (var sourceFile in sourceFiles)
+                    foreach (var sourceFile in importSourceSet.SourceFiles)
                     {
                         await session
                             .ImportModuleAsync(sourceFile, operationCancellationToken)
@@ -148,6 +166,8 @@ public sealed class WorkbookGenerationPipeline
                     return result;
                 },
                 cancellationToken).ConfigureAwait(false);
+
+            importSourceSet.Dispose();
 
             ThrowIfCanceled(
                 cancellationToken,

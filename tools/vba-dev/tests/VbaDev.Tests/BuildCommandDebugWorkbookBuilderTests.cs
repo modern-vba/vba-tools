@@ -102,13 +102,14 @@ public sealed class BuildCommandDebugWorkbookBuilderTests
         var buildCalls = 0;
         var builder = new BuildCommandDebugWorkbookBuilder(
             resolveBuildSources: _ => [Source(sourcePath)],
-            runBuild: (_, _) =>
+            runBuild: (_, stagedSources) =>
             {
+                using var sourceSet = VbeImportSourceSet.Create(stagedSources, 65001);
                 buildCalls++;
                 return CommandResult.Success(string.Empty);
             });
 
-        var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             builder.BuildAsync(context, snapshot, CancellationToken.None));
 
         Assert.Contains("snapshot", error.Message, StringComparison.OrdinalIgnoreCase);
@@ -146,6 +147,42 @@ public sealed class BuildCommandDebugWorkbookBuilderTests
             CancellationToken.None);
 
         Assert.Equal(["Built immutable input."], result.Output);
+    }
+
+    [Fact]
+    public async Task ActiveCodePageSnapshotIsValidatedByStrictImportStagingWithoutChangingCapturedBytes()
+    {
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+        var cp1252 = Encoding.GetEncoding(
+            1252,
+            EncoderFallback.ExceptionFallback,
+            DecoderFallback.ExceptionFallback);
+        using var temp = TempDirectory.Create();
+        var context = CreateContext(temp);
+        var sourcePath = Path.Combine(context.DocumentSourceSetPath, "Module1.bas");
+        Directory.CreateDirectory(context.DocumentSourceSetPath);
+        var snapshotText =
+            "Attribute VB_Name = \"Module1\"\r\nPublic Sub RunTarget()\r\n    Debug.Print \"café\"\r\nEnd Sub\r\n";
+        var capturedBytes = cp1252.GetBytes(snapshotText);
+        File.WriteAllBytes(sourcePath, capturedBytes);
+        var builder = new BuildCommandDebugWorkbookBuilder(
+            resolveBuildSources: _ => [Source(sourcePath)],
+            runBuild: (_, stagedSources) =>
+            {
+                using var vbeSources = VbeImportSourceSet.Create(stagedSources, 1252);
+                var staged = Assert.Single(vbeSources.SourceFiles);
+                Assert.Equal(snapshotText, cp1252.GetString(File.ReadAllBytes(staged.SourcePath)));
+                Assert.Equal(capturedBytes, File.ReadAllBytes(sourcePath));
+                return CommandResult.Success("Built ACP snapshot.");
+            });
+
+        var result = await builder.BuildAsync(
+            context,
+            Snapshot((sourcePath, snapshotText)),
+            CancellationToken.None);
+
+        Assert.Equal(["Built ACP snapshot."], result.Output);
+        Assert.Equal(capturedBytes, File.ReadAllBytes(sourcePath));
     }
 
     [Fact]

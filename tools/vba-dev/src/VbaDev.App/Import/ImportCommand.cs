@@ -10,14 +10,23 @@ namespace VbaDev.App.Import;
 public sealed class ImportCommand
 {
     private readonly IWorkbookBuildAutomation workbookBuildAutomation;
+    private readonly VbeImportSourceSetFactory importSourceSetFactory;
 
     /// <summary>
     /// Creates the import command.
     /// </summary>
     /// <param name="workbookBuildAutomation">The workbook automation port used to modify the target workbook.</param>
     public ImportCommand(IWorkbookBuildAutomation workbookBuildAutomation)
+        : this(workbookBuildAutomation, new VbeImportSourceSetFactory())
+    {
+    }
+
+    internal ImportCommand(
+        IWorkbookBuildAutomation workbookBuildAutomation,
+        VbeImportSourceSetFactory importSourceSetFactory)
     {
         this.workbookBuildAutomation = workbookBuildAutomation;
+        this.importSourceSetFactory = importSourceSetFactory;
     }
 
     /// <summary>
@@ -53,6 +62,7 @@ public sealed class ImportCommand
             var targetWorkbookPath = ResolveOptionPath(request.WorkingDirectory, request.ToPath);
             var sourceFiles = ResolveSourceFiles(sourceDirectory);
             ValidateTargetWorkbook(targetWorkbookPath);
+            using var importSourceSet = importSourceSetFactory.Create(sourceFiles);
 
             using (var session = workbookBuildAutomation.OpenWorkbook(targetWorkbookPath))
             {
@@ -61,11 +71,13 @@ public sealed class ImportCommand
                     session.RemoveModule(component.Name);
                 }
 
-                foreach (var sourceFile in sourceFiles)
+                foreach (var sourceFile in importSourceSet.SourceFiles)
                 {
                     session.ImportModule(sourceFile);
                 }
 
+                importSourceSet.Dispose();
+                session.VerifyImportedModules();
                 session.Save();
             }
 
