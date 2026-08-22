@@ -7,6 +7,53 @@ namespace VbaDev.Tests;
 public sealed class DebugExcelProcessOwnerTests
 {
     [Fact]
+    public void DisposedJobRejectsAtomicLaunchBeforeProcessCreation()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var job = WindowsDebugProcessJob.Create();
+        job.Dispose();
+
+        Assert.Throws<ObjectDisposedException>(() =>
+            job.StartSuspended("not-started.exe", []));
+    }
+
+    [Fact]
+    public async Task AtomicJobLaunchKeepsThePrimaryThreadSuspendedUntilResume()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var job = WindowsDebugProcessJob.Create();
+        DebugSuspendedProcessLaunch? launch = null;
+        try
+        {
+            launch = job.StartSuspended(
+                Path.Combine(Environment.SystemDirectory, "cmd.exe"),
+                ["/d", "/c", "exit", "0"]);
+
+            await Task.Delay(TimeSpan.FromMilliseconds(50));
+            Assert.False(launch.Process.HasExited);
+
+            launch.PrimaryThread.ResumeExactlyOnce();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await launch.Process.WaitForExitAsync(timeout.Token);
+            Assert.True(launch.Process.HasExited);
+        }
+        finally
+        {
+            launch?.PrimaryThread.Dispose();
+            job.Dispose();
+            launch?.Process.Dispose();
+        }
+    }
+
+    [Fact]
     public void CaptureRejectsAWindowBelongingToAnExistingExcelProcess()
     {
         var started = new DateTime(2026, 7, 21, 8, 0, 0, DateTimeKind.Local);
@@ -68,6 +115,28 @@ public sealed class DebugExcelProcessOwnerTests
     }
 
     [Fact]
+    public async Task OwnStartedProcessAssignsTheExactLaunchedProcessWithoutWindowDiscovery()
+    {
+        var process = new FakeDebugOwnedProcess(
+            107,
+            new DateTime(2026, 8, 22, 8, 45, 0, DateTimeKind.Local));
+        var job = new FakeDebugProcessJob(process);
+        var processApi = new FakeDebugExcelProcessApi(
+            windowProcessId: 999,
+            process,
+            job);
+
+        await using var owner = DebugExcelProcessOwner.OwnStartedProcess(
+            process,
+            processApi);
+
+        Assert.Equal(107, owner.ProcessId);
+        Assert.Equal(0, processApi.OpenProcessCalls);
+        Assert.Equal(1, processApi.CreateJobCalls);
+        Assert.Same(process, job.AssignedProcess);
+    }
+
+    [Fact]
     public void AssignmentFailureDisposesTheJobBeforeKillingAndDisposingTheExactProcess()
     {
         var events = new List<string>();
@@ -101,6 +170,28 @@ public sealed class DebugExcelProcessOwnerTests
     }
 
     [Fact]
+    public void AssignmentFailureReportsUnverifiedCleanupWhenExactProcessKillFails()
+    {
+        var process = new FakeDebugOwnedProcess(
+            108,
+            new DateTime(2026, 8, 22, 8, 55, 0, DateTimeKind.Local),
+            killAction: static () => throw new InvalidOperationException("kill failed"));
+        var assignmentError = new DebugSetupException("assignment failed");
+        var processApi = new FakeDebugExcelProcessApi(
+            windowProcessId: process.Id,
+            process,
+            new FakeDebugProcessJob(process, assignmentError: assignmentError));
+
+        var error = Assert.Throws<DebugProcessOwnershipCleanupException>(() =>
+            DebugExcelProcessOwner.OwnStartedProcess(process, processApi));
+
+        Assert.Same(assignmentError, error.OwnershipException);
+        Assert.Contains("kill failed", error.CleanupException.ToString());
+        Assert.False(process.HasExited);
+        Assert.True(process.Disposed);
+    }
+
+    [Fact]
     public async Task TerminateKillsOnlyTheCapturedProcessAndIsIdempotent()
     {
         var process = new FakeDebugOwnedProcess(
@@ -120,7 +211,7 @@ public sealed class DebugExcelProcessOwnerTests
     }
 
     [Fact]
-    public async Task TerminateJobFailureFallsBackToTheExactProcessBeforeDisposingOwnershipHandles()
+    public async Task TerminateJobFailureCleansTheRootButReportsTreeCleanupAsUnverified()
     {
         var events = new List<string>();
         var process = new FakeDebugOwnedProcess(
@@ -139,8 +230,11 @@ public sealed class DebugExcelProcessOwnerTests
             new Dictionary<int, DateTime>(),
             new FakeDebugExcelProcessApi(process.Id, process, job));
 
-        await owner.DisposeAsync();
+        var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
+            owner.DisposeAsync().AsTask());
 
+        Assert.Contains("tree cleanup", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("TerminateJobObject failure", error.ToString(), StringComparison.Ordinal);
         Assert.Equal(
             [
                 "job-assign",
@@ -156,6 +250,31 @@ public sealed class DebugExcelProcessOwnerTests
         Assert.Equal(0, unrelatedProcess.KillCalls);
         Assert.True(process.Disposed);
         Assert.True(job.Disposed);
+    }
+
+    [Fact]
+    public async Task FailedJobAndRootTerminationStillDisposeOwnershipWithoutWaitingForExitForever()
+    {
+        var process = new FakeDebugOwnedProcess(
+            129,
+            new DateTime(2026, 7, 21, 9, 6, 0, DateTimeKind.Local),
+            killAction: static () => throw new IOException("root kill failed"),
+            exitOnKill: false);
+        var job = new FakeDebugProcessJob(
+            process,
+            terminateError: new IOException("job termination failed"));
+        var owner = DebugExcelProcessOwner.Capture(
+            (nint)9014,
+            new Dictionary<int, DateTime>(),
+            new FakeDebugExcelProcessApi(process.Id, process, job));
+
+        var error = await Assert.ThrowsAsync<IOException>(() =>
+            owner.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(1)));
+
+        Assert.Equal("root kill failed", error.Message);
+        Assert.True(process.Disposed);
+        Assert.True(job.Disposed);
+        Assert.False(process.HasExited);
     }
 
     [Fact]
@@ -283,11 +402,14 @@ internal sealed class FakeDebugOwnedProcess(
     DateTime startTime,
     DebugExcelProcessArchitecture architecture = DebugExcelProcessArchitecture.X64,
     Action? killAction = null,
-    List<string>? events = null)
+    List<string>? events = null,
+    bool exitOnKill = true,
+    Exception? hasExitedAfterDisposeError = null)
     : IDebugOwnedProcess
 {
     private readonly TaskCompletionSource completion =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private bool hasExited;
 
     public int Id { get; } = id;
 
@@ -295,7 +417,18 @@ internal sealed class FakeDebugOwnedProcess(
 
     public DateTime StartTime { get; } = startTime;
 
-    public bool HasExited { get; private set; }
+    public bool HasExited
+    {
+        get
+        {
+            if (Disposed && hasExitedAfterDisposeError is not null)
+            {
+                throw hasExitedAfterDisposeError;
+            }
+
+            return hasExited;
+        }
+    }
 
     public int ExitCode { get; private set; }
 
@@ -311,14 +444,17 @@ internal sealed class FakeDebugOwnedProcess(
         events?.Add("process-kill");
         KillCalls++;
         killAction?.Invoke();
-        Exit(-1);
+        if (exitOnKill)
+        {
+            Exit(-1);
+        }
     }
 
     public void Exit(int exitCode)
     {
         events?.Add("process-exit");
         ExitCode = exitCode;
-        HasExited = true;
+        hasExited = true;
         completion.TrySetResult();
     }
 

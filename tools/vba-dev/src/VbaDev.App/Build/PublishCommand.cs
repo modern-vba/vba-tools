@@ -26,4 +26,15 @@ public sealed class PublishCommand
     /// <returns>The command result describing the published workbook or any user-facing failure.</returns>
     public CommandResult Run(ResolvedProjectContext context)
         => outputCommand.Run(context, WorkbookOutputProfile.Publish);
+
+    /// <summary>
+    /// Generates the publish workbook with cooperative invocation cancellation.
+    /// </summary>
+    public Task<CommandResult> RunAsync(
+        ResolvedProjectContext context,
+        CancellationToken cancellationToken)
+        => outputCommand.RunAsync(
+            context,
+            WorkbookOutputProfile.Publish,
+            cancellationToken);
 }

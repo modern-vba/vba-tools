@@ -241,13 +241,15 @@ public sealed class VbaDevCommandLine
             "1.0",
             capabilityCommands);
         var buildOptions = AddProjectDocumentOptions(buildCommand);
-        buildCommand.SetAction(parseResult => WriteCommandResult(
+        buildCommand.SetAction(async (parseResult, cancellationToken) => WriteCommandResult(
             parseResult,
-            ResolveDocumentContext(
-                parseResult,
-                composition,
-                buildOptions,
-                composition.BuildCommand.Run)));
+            await ResolveDocumentContextAsync(
+                    parseResult,
+                    composition,
+                    buildOptions,
+                    composition.BuildCommand.RunAsync,
+                    cancellationToken)
+                .ConfigureAwait(false)));
         var testCommand = AddCapabilityCommand(
             rootCommand,
             "test",
@@ -290,13 +292,15 @@ public sealed class VbaDevCommandLine
             "1.0",
             capabilityCommands);
         var publishOptions = AddProjectDocumentOptions(publishCommand);
-        publishCommand.SetAction(parseResult => WriteCommandResult(
+        publishCommand.SetAction(async (parseResult, cancellationToken) => WriteCommandResult(
             parseResult,
-            ResolveDocumentContext(
-                parseResult,
-                composition,
-                publishOptions,
-                composition.PublishCommand.Run)));
+            await ResolveDocumentContextAsync(
+                    parseResult,
+                    composition,
+                    publishOptions,
+                    composition.PublishCommand.RunAsync,
+                    cancellationToken)
+                .ConfigureAwait(false)));
         var exportCommand = AddCapabilityCommand(
             rootCommand,
             "export",
@@ -574,6 +578,27 @@ public sealed class VbaDevCommandLine
                 parseResult.GetValue(options.Document),
                 composition.WorkingDirectory));
             return run(context);
+        }
+        catch (ProjectManifestException ex)
+        {
+            return CommandResult.UsageError(ex.Message);
+        }
+    }
+
+    private static async Task<CommandResult> ResolveDocumentContextAsync(
+        ParseResult parseResult,
+        ToolingApplicationComposition composition,
+        ProjectDocumentOptions options,
+        Func<ResolvedProjectContext, CancellationToken, Task<CommandResult>> run,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var context = composition.ProjectContextResolver.Resolve(new ProjectResolutionRequest(
+                parseResult.GetValue(options.Project),
+                parseResult.GetValue(options.Document),
+                composition.WorkingDirectory));
+            return await run(context, cancellationToken).ConfigureAwait(false);
         }
         catch (ProjectManifestException ex)
         {

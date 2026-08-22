@@ -107,6 +107,25 @@ public static class ProjectManifestValidator
         {
             ValidateDocument(name, document, manifestName);
         }
+
+        ValidateCommandDefaults(manifest.CommandDefaults, manifestName);
+    }
+
+    private static void ValidateCommandDefaults(CommandDefaults? commandDefaults, string manifestName)
+    {
+        if (commandDefaults?.ExcelAutomation?.WorkbookOpenTimeoutSeconds is int workbookOpenTimeoutSeconds
+            && workbookOpenTimeoutSeconds <= 0)
+        {
+            throw new VbaProjectManifestException(
+                $"commandDefaults.excelAutomation.workbookOpenTimeoutSeconds must be positive whole seconds: {manifestName}");
+        }
+
+        if (commandDefaults?.ExcelAutomation?.WorkbookSaveTimeoutSeconds is int workbookSaveTimeoutSeconds
+            && workbookSaveTimeoutSeconds <= 0)
+        {
+            throw new VbaProjectManifestException(
+                $"commandDefaults.excelAutomation.workbookSaveTimeoutSeconds must be positive whole seconds: {manifestName}");
+        }
     }
 
     private static void ValidateDocument(string name, ProjectDocument document, string manifestName)

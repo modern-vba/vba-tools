@@ -91,6 +91,18 @@ internal sealed class WindowsDebugProcessJob : IDebugProcessJob
         }
     }
 
+    internal DebugSuspendedProcessLaunch StartSuspended(
+        string applicationPath,
+        IReadOnlyList<string> arguments)
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
+        return WindowsJobProcessLauncher.StartSuspended(
+            handle,
+            applicationPath,
+            arguments,
+            Terminate);
+    }
+
     public void Dispose()
     {
         if (Interlocked.Exchange(ref disposed, 1) == 0)

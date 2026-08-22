@@ -25,6 +25,13 @@ test('ProjectManifest adapter rejects fixtures that violate required project ide
   assert.equal(parseProjectManifest(readProjectManifestFixture('invalid-primary-document-not-defined.json')), undefined);
 });
 
+test('ProjectManifest adapter accepts Excel automation defaults in the shared manifest contract', () => {
+  const manifest = parseProjectManifest(readProjectManifestFixture('primary-document.json'));
+
+  assert.equal(manifest?.projectName, 'PrimaryDocumentProject');
+  assert.equal(manifest?.primaryDocument, 'Book1');
+});
+
 function readProjectManifestFixture(fileName: string): string {
   return readFileSync(path.join(process.cwd(), 'fixtures', 'project-manifest', fileName), 'utf8');
 }

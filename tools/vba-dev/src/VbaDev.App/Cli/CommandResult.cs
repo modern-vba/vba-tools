@@ -30,6 +30,14 @@ public sealed record CommandResult(int ExitCode, string StandardOutput, string S
     public static CommandResult UsageError(string error) => new(1, string.Empty, error + Environment.NewLine);
 
     /// <summary>
+    /// Creates a cooperative cancellation result with the conventional process exit code.
+    /// </summary>
+    /// <param name="message">The stage-aware cancellation message.</param>
+    /// <returns>An exit-code-130 result.</returns>
+    public static CommandResult Cancelled(string message)
+        => new(130, string.Empty, message + Environment.NewLine);
+
+    /// <summary>
     /// Creates a result for command surfaces that are intentionally not implemented yet.
     /// </summary>
     /// <param name="message">The user-facing not-implemented message.</param>

@@ -250,6 +250,107 @@ public sealed class ProjectManifestTests
     }
 
     [Fact]
+    public void WorkbookOpenTimeoutResolutionUsesManifestThenBuiltInDefault()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null) with
+        {
+            CommandDefaults = new CommandDefaults(
+                ExcelAutomation: new ExcelAutomationCommandDefaults(WorkbookOpenTimeoutSeconds: 42))
+        };
+
+        Assert.Equal(TimeSpan.FromSeconds(42), CommandDefaultResolver.ResolveWorkbookOpenTimeout(manifest));
+        Assert.Equal(
+            TimeSpan.FromSeconds(300),
+            CommandDefaultResolver.ResolveWorkbookOpenTimeout(ProjectManifest.CreateDefault("Project", "Book1", root, null)));
+    }
+
+    [Fact]
+    public void WorkbookSaveTimeoutResolutionUsesManifestThenBuiltInDefault()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null) with
+        {
+            CommandDefaults = new CommandDefaults(
+                ExcelAutomation: new ExcelAutomationCommandDefaults(WorkbookSaveTimeoutSeconds: 73))
+        };
+
+        Assert.Equal(TimeSpan.FromSeconds(73), CommandDefaultResolver.ResolveWorkbookSaveTimeout(manifest));
+        Assert.Equal(
+            TimeSpan.FromSeconds(300),
+            CommandDefaultResolver.ResolveWorkbookSaveTimeout(ProjectManifest.CreateDefault("Project", "Book1", root, null)));
+    }
+
+    [Fact]
+    public void ProjectManifestRejectsNonPositiveWorkbookOpenTimeout()
+    {
+        var json = ProjectManifestTestData.ValidJson("Project").Replace(
+            "\"commandDefaults\": {",
+            "\"commandDefaults\": { \"excelAutomation\": { \"workbookOpenTimeoutSeconds\": 0 },",
+            StringComparison.Ordinal);
+
+        var ex = Assert.Throws<VbaProjectManifestException>(
+            () => ProjectManifestReader.Parse(json, "vba-project.json"));
+
+        Assert.Contains("workbookOpenTimeoutSeconds", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("positive whole seconds", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ProjectManifestRejectsNonPositiveWorkbookSaveTimeout()
+    {
+        var json = ProjectManifestTestData.ValidJson("Project").Replace(
+            "\"commandDefaults\": {",
+            "\"commandDefaults\": { \"excelAutomation\": { \"workbookSaveTimeoutSeconds\": -1 },",
+            StringComparison.Ordinal);
+
+        var ex = Assert.Throws<VbaProjectManifestException>(
+            () => ProjectManifestReader.Parse(json, "vba-project.json"));
+
+        Assert.Contains("workbookSaveTimeoutSeconds", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("positive whole seconds", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ProjectManifestRejectsFractionalExcelAutomationTimeout()
+    {
+        var json = ProjectManifestTestData.ValidJson("Project").Replace(
+            "\"commandDefaults\": {",
+            "\"commandDefaults\": { \"excelAutomation\": { \"workbookOpenTimeoutSeconds\": 1.5 },",
+            StringComparison.Ordinal);
+
+        var ex = Assert.Throws<VbaProjectManifestException>(
+            () => ProjectManifestReader.Parse(json, "vba-project.json"));
+
+        Assert.Contains("workbookOpenTimeoutSeconds", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SaveOmitsUnspecifiedExcelAutomationTimeouts()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null) with
+        {
+            CommandDefaults = new CommandDefaults(
+                ExcelAutomation: new ExcelAutomationCommandDefaults(WorkbookOpenTimeoutSeconds: 45))
+        };
+        var store = new JsonProjectManifestStore();
+
+        store.Save(root, manifest);
+
+        var bytes = File.ReadAllBytes(Path.Combine(root, ProjectManifest.ManifestFileName));
+        using var document = JsonDocument.Parse(Encoding.Unicode.GetString(bytes[2..]));
+        var commandDefaults = document.RootElement.GetProperty("commandDefaults");
+        Assert.False(commandDefaults.TryGetProperty("test", out _));
+        var excelAutomation = commandDefaults.GetProperty("excelAutomation");
+        Assert.Equal(45, excelAutomation.GetProperty("workbookOpenTimeoutSeconds").GetInt32());
+        Assert.False(excelAutomation.TryGetProperty("workbookSaveTimeoutSeconds", out _));
+    }
+
+    [Fact]
     public void CliRejectsInvalidManifestAsUsageErrorBeforePlaceholderAction()
     {
         using var temp = TempDirectory.Create();
@@ -280,6 +381,16 @@ public sealed class ProjectManifestTests
         Assert.Equal(expectedProjectName, manifest.ProjectName);
         Assert.Equal(expectedPrimaryDocument, manifest.PrimaryDocument);
         Assert.Equal(expectedDocumentCount, manifest.Documents.Count);
+    }
+
+    [Fact]
+    public void SharedPrimaryDocumentFixtureDefinesExcelAutomationTimeoutDefaults()
+    {
+        var manifest = new JsonProjectManifestStore().Load(ProjectManifestFixturePath("primary-document.json"));
+
+        Assert.Equal(TimeSpan.FromSeconds(120), CommandDefaultResolver.ResolveWorkbookOpenTimeout(manifest));
+        Assert.Equal(TimeSpan.FromSeconds(180), CommandDefaultResolver.ResolveWorkbookSaveTimeout(manifest));
+        Assert.Equal(ProjectManifest.CurrentSchemaVersion, manifest.SchemaVersion);
     }
 
     [Theory]

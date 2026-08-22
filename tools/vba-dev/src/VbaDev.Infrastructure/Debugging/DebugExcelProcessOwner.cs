@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+using System.Runtime.ExceptionServices;
 using VbaDev.App.Debugging;
 
 namespace VbaDev.Infrastructure.Debugging;
@@ -39,6 +41,15 @@ internal interface IDebugOwnedProcess : IDisposable
     void Kill();
 }
 
+internal interface IDebugSuspendedPrimaryThread : IDisposable
+{
+    void ResumeExactlyOnce();
+}
+
+internal sealed record DebugSuspendedProcessLaunch(
+    IDebugOwnedProcess Process,
+    IDebugSuspendedPrimaryThread PrimaryThread);
+
 internal sealed class ExistingExcelProcessOwnershipRejectedException : DebugSetupException
 {
     public ExistingExcelProcessOwnershipRejectedException()
@@ -49,14 +60,27 @@ internal sealed class ExistingExcelProcessOwnershipRejectedException : DebugSetu
     }
 }
 
+internal sealed class DebugProcessOwnershipCleanupException(
+    Exception ownershipException,
+    Exception cleanupException) : DebugSetupException(
+        "Exact Excel process ownership failed, and cleanup of the launched process could not be verified.",
+        new AggregateException(ownershipException, cleanupException))
+{
+    public Exception OwnershipException { get; } = ownershipException;
+
+    public Exception CleanupException { get; } = cleanupException;
+}
+
 /// <summary>
 /// Owns one exactly identified visible Excel process for a debug session.
 /// </summary>
 internal sealed class DebugExcelProcessOwner : IAsyncDisposable
 {
+    private static readonly TimeSpan FailedOwnershipCleanupTimeout = TimeSpan.FromSeconds(5);
     private readonly IDebugOwnedProcess process;
     private readonly IDebugProcessJob job;
     private readonly SemaphoreSlim terminationLock = new(1, 1);
+    private Exception? terminationFailure;
     private int terminationCompleted;
     private int disposed;
 
@@ -79,6 +103,9 @@ internal sealed class DebugExcelProcessOwner : IAsyncDisposable
 
     public Task<DebugProcessExit> Completion { get; }
 
+    internal bool HasExited =>
+        Volatile.Read(ref disposed) != 0 || process.HasExited;
+
     public static DebugExcelProcessOwner Capture(
         nint windowHandle,
         IReadOnlyDictionary<int, DateTime> existingExcelProcesses,
@@ -97,26 +124,66 @@ internal sealed class DebugExcelProcessOwner : IAsyncDisposable
         }
 
         var process = processApi.OpenProcess(processId);
+        if (process.Id != processId)
+        {
+            DisposeAfterOwnershipFailure(
+                process,
+                job: null,
+                new DebugSetupException(
+                    "The visible Excel process changed identity before debug ownership was established."));
+        }
+
+        return OwnStartedProcess(process, processApi);
+    }
+
+    /// <summary>
+    /// Establishes kill-on-close ownership over an exact process returned by an explicit launch.
+    /// </summary>
+    internal static DebugExcelProcessOwner OwnStartedProcess(
+        IDebugOwnedProcess process,
+        IDebugExcelProcessApi processApi)
+    {
+        ArgumentNullException.ThrowIfNull(process);
+        ArgumentNullException.ThrowIfNull(processApi);
         IDebugProcessJob? job = null;
         try
         {
-            if (process.Id != processId || process.HasExited)
+            if (process.HasExited)
             {
                 throw new DebugSetupException(
-                    "The visible Excel process exited or changed identity before debug ownership was established.");
+                    "The explicitly launched Excel process exited before ownership was established.");
             }
 
             job = processApi.CreateKillOnCloseJob();
             job.Assign(process);
             return new DebugExcelProcessOwner(process, job);
         }
-        catch
+        catch (Exception ownershipException)
         {
-            job?.Dispose();
-            TryTerminateExactProcess(process);
-            process.Dispose();
+            DisposeAfterOwnershipFailure(process, job, ownershipException);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Adopts a suspended process that was atomically created inside the supplied kill-on-close job.
+    /// </summary>
+    internal static DebugExcelProcessOwner AdoptPreassignedProcess(
+        IDebugOwnedProcess process,
+        IDebugProcessJob job)
+    {
+        ArgumentNullException.ThrowIfNull(process);
+        ArgumentNullException.ThrowIfNull(job);
+        if (process.HasExited)
+        {
+            DisposeAfterOwnershipFailure(
+                process,
+                job,
+                new DebugSetupException(
+                    "The atomically owned Excel process exited before its primary thread could be resumed."));
+        }
+
+        return new DebugExcelProcessOwner(process, job);
     }
 
     public async ValueTask TerminateAsync()
@@ -134,6 +201,13 @@ internal sealed class DebugExcelProcessOwner : IAsyncDisposable
                 return;
             }
 
+            if (terminationFailure is not null)
+            {
+                ExceptionDispatchInfo.Capture(terminationFailure).Throw();
+            }
+
+            Exception? cleanupFailure = null;
+            Exception? fallbackKillFailure = null;
             if (!process.HasExited)
             {
                 try
@@ -143,13 +217,42 @@ internal sealed class DebugExcelProcessOwner : IAsyncDisposable
                 catch (Exception) when (process.HasExited)
                 {
                 }
-                catch
+                catch (Exception ex)
                 {
-                    process.Kill();
+                    cleanupFailure = ex;
+                    try
+                    {
+                        process.Kill();
+                    }
+                    catch (Exception killException)
+                    {
+                        fallbackKillFailure = killException;
+                        cleanupFailure = killException;
+                    }
                 }
             }
 
-            await Completion.ConfigureAwait(false);
+            if (cleanupFailure is null || process.HasExited)
+            {
+                try
+                {
+                    await Completion.ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    cleanupFailure = Combine(cleanupFailure, ex);
+                }
+            }
+
+            if (cleanupFailure is not null)
+            {
+                terminationFailure = fallbackKillFailure
+                    ?? new DebugSetupException(
+                        "The owned Excel process tree termination could not be verified.",
+                        cleanupFailure);
+                ExceptionDispatchInfo.Capture(terminationFailure).Throw();
+            }
+
             Volatile.Write(ref terminationCompleted, 1);
         }
         finally
@@ -165,41 +268,136 @@ internal sealed class DebugExcelProcessOwner : IAsyncDisposable
             return;
         }
 
+        Exception? terminationException = null;
         try
         {
             await TerminateAsync().ConfigureAwait(false);
         }
-        finally
+        catch (Exception ex)
         {
-            try
-            {
-                process.Dispose();
-            }
-            finally
-            {
-                job.Dispose();
-            }
+            terminationException = ex;
         }
-    }
 
-    private static void TryTerminateExactProcess(IDebugOwnedProcess process)
-    {
-        if (process.HasExited)
+        Exception? disposalFailure = null;
+        try
         {
-            return;
+            process.Dispose();
+        }
+        catch (Exception ex)
+        {
+            disposalFailure = Combine(disposalFailure, ex);
         }
 
         try
         {
-            process.Kill();
+            job.Dispose();
         }
-        catch (Exception) when (process.HasExited)
+        catch (Exception ex)
         {
+            disposalFailure = Combine(disposalFailure, ex);
         }
-        catch (InvalidOperationException)
+
+        if (disposalFailure is not null)
         {
+            throw new DebugSetupException(
+                "The owned Excel process tree cleanup could not be verified.",
+                Combine(terminationException, disposalFailure));
+        }
+
+        if (terminationException is DebugSetupException)
+        {
+            throw new DebugSetupException(
+                "The owned Excel process tree cleanup could not be verified.",
+                terminationException);
+        }
+
+        if (terminationException is not null)
+        {
+            ExceptionDispatchInfo.Capture(terminationException).Throw();
         }
     }
+
+    [DoesNotReturn]
+    private static void DisposeAfterOwnershipFailure(
+        IDebugOwnedProcess process,
+        IDebugProcessJob? job,
+        Exception ownershipException)
+    {
+        Exception? cleanupException = null;
+        try
+        {
+            job?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            cleanupException = ex;
+        }
+
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill();
+            }
+        }
+        catch (Exception ex)
+        {
+            cleanupException = Combine(cleanupException, ex);
+        }
+
+        try
+        {
+            if (!process.HasExited)
+            {
+                using var cleanupTimeout = new CancellationTokenSource(
+                    FailedOwnershipCleanupTimeout);
+                process.WaitForExitAsync(cleanupTimeout.Token)
+                    .GetAwaiter()
+                    .GetResult();
+            }
+
+            if (!process.HasExited)
+            {
+                cleanupException = Combine(
+                    cleanupException,
+                    new InvalidOperationException(
+                        "The exactly launched Excel process remained live after failed ownership cleanup."));
+            }
+        }
+        catch (OperationCanceledException ex)
+        {
+            cleanupException = Combine(
+                cleanupException,
+                new TimeoutException(
+                    "Timed out while verifying cleanup of the exactly launched Excel process.",
+                    ex));
+        }
+        catch (Exception ex)
+        {
+            cleanupException = Combine(cleanupException, ex);
+        }
+
+        try
+        {
+            process.Dispose();
+        }
+        catch (Exception ex)
+        {
+            cleanupException = Combine(cleanupException, ex);
+        }
+
+        if (cleanupException is not null)
+        {
+            throw new DebugProcessOwnershipCleanupException(
+                ownershipException,
+                cleanupException);
+        }
+
+        ExceptionDispatchInfo.Capture(ownershipException).Throw();
+    }
+
+    private static Exception Combine(Exception? current, Exception next)
+        => current is null ? next : new AggregateException(current, next);
 
     private static async Task<DebugProcessExit> MonitorExitAsync(IDebugOwnedProcess process)
     {

@@ -6,7 +6,7 @@ namespace VbaDev.Infrastructure.Workbooks;
 /// <summary>
 /// Implements workbook build automation through Excel COM and VBIDE.
 /// </summary>
-public sealed class ExcelComWorkbookBuildAutomation :
+public sealed partial class ExcelComWorkbookBuildAutomation :
     IWorkbookBuildAutomation,
     IDebugProbeWorkbookAutomation
 {
@@ -352,6 +352,9 @@ public sealed class ExcelComWorkbookBuildAutomation :
         /// </summary>
         public void Dispose()
             => session.Dispose();
+
+        internal void DisposeOwnedGeneration(TimeSpan cleanupGrace)
+            => session.DisposeOwnedGeneration(cleanupGrace);
 
         private static WorkbookModuleKind MapComponentType(int type)
             => type switch

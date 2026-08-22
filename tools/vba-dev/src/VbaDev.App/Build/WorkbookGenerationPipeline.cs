@@ -8,8 +8,9 @@ namespace VbaDev.App.Build;
 /// </summary>
 public sealed class WorkbookGenerationPipeline
 {
-    private readonly IWorkbookBuildAutomation workbookBuildAutomation;
+    private readonly IWorkbookGenerationAutomation workbookGenerationAutomation;
     private readonly WorkbookReferenceNormalizer referenceNormalizer;
+    private readonly IWorkbookOutputTransactionFactory transactionFactory;
 
     /// <summary>
     /// Creates the workbook generation pipeline.
@@ -19,9 +20,37 @@ public sealed class WorkbookGenerationPipeline
     public WorkbookGenerationPipeline(
         IWorkbookBuildAutomation workbookBuildAutomation,
         WorkbookReferenceNormalizer referenceNormalizer)
+        : this(
+            new SynchronousWorkbookGenerationAutomation(workbookBuildAutomation),
+            referenceNormalizer,
+            new WorkbookOutputTransactionFactory())
     {
-        this.workbookBuildAutomation = workbookBuildAutomation;
+    }
+
+    /// <summary>
+    /// Creates the pipeline over a strongly owned workbook generation adapter.
+    /// </summary>
+    public WorkbookGenerationPipeline(
+        IWorkbookGenerationAutomation workbookGenerationAutomation,
+        WorkbookReferenceNormalizer referenceNormalizer)
+        : this(
+            workbookGenerationAutomation,
+            referenceNormalizer,
+            new WorkbookOutputTransactionFactory())
+    {
+    }
+
+    /// <summary>
+    /// Creates the pipeline with an explicit atomic output transaction factory.
+    /// </summary>
+    public WorkbookGenerationPipeline(
+        IWorkbookGenerationAutomation workbookGenerationAutomation,
+        WorkbookReferenceNormalizer referenceNormalizer,
+        IWorkbookOutputTransactionFactory transactionFactory)
+    {
+        this.workbookGenerationAutomation = workbookGenerationAutomation;
         this.referenceNormalizer = referenceNormalizer;
+        this.transactionFactory = transactionFactory;
     }
 
     /// <summary>
@@ -57,51 +86,106 @@ public sealed class WorkbookGenerationPipeline
         IReadOnlyList<VbaProjectReference> desiredReferences,
         IReadOnlyList<VbaSourceFile> sourceFiles,
         CancellationToken cancellationToken)
+        => GenerateAsync(
+                documentName,
+                templateWorkbookPath,
+                targetWorkbookPath,
+                desiredReferences,
+                sourceFiles,
+                WorkbookAutomationTimeouts.Default,
+                cancellationToken)
+            .GetAwaiter()
+            .GetResult();
+
+    /// <summary>
+    /// Generates and atomically commits a workbook through one bounded owned Excel process.
+    /// </summary>
+    public async Task<WorkbookGenerationResult> GenerateAsync(
+        string documentName,
+        string templateWorkbookPath,
+        string targetWorkbookPath,
+        IReadOnlyList<VbaProjectReference> desiredReferences,
+        IReadOnlyList<VbaSourceFile> sourceFiles,
+        WorkbookAutomationTimeouts timeouts,
+        CancellationToken cancellationToken)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        var targetDirectory = Path.GetDirectoryName(targetWorkbookPath)
-            ?? throw new BuildCommandException($"Target workbook path is invalid: {targetWorkbookPath}");
-        Directory.CreateDirectory(targetDirectory);
-
-        var tempWorkbookPath = Path.Combine(
-            targetDirectory,
-            $".{Path.GetFileNameWithoutExtension(targetWorkbookPath)}.{Guid.NewGuid():N}.tmp{Path.GetExtension(targetWorkbookPath)}");
-
+        ThrowIfCanceled(
+            cancellationToken,
+            new WorkbookAutomationStage(WorkbookAutomationStageKind.ExcelStartup));
+        var transaction = transactionFactory.Create(templateWorkbookPath, targetWorkbookPath);
         try
         {
-            File.Copy(templateWorkbookPath, tempWorkbookPath, overwrite: false);
-            cancellationToken.ThrowIfCancellationRequested();
-            IReadOnlyList<string> warnings;
-            using (var session = workbookBuildAutomation.OpenWorkbook(
-                tempWorkbookPath,
-                cancellationToken))
+            var warnings = await workbookGenerationAutomation.RunAsync(
+                transaction.StagingWorkbookPath,
+                timeouts,
+                async (session, operationCancellationToken) =>
+                {
+                    var result = await referenceNormalizer.NormalizeAsync(
+                            session,
+                            documentName,
+                            desiredReferences,
+                            operationCancellationToken)
+                        .ConfigureAwait(false);
+                    var modules = await session
+                        .GetModulesAsync(operationCancellationToken)
+                        .ConfigureAwait(false);
+                    foreach (var component in modules.Where(component => component.Kind.IsImportable()))
+                    {
+                        await session
+                            .RemoveModuleAsync(component.Name, operationCancellationToken)
+                            .ConfigureAwait(false);
+                    }
+
+                    foreach (var sourceFile in sourceFiles)
+                    {
+                        await session
+                            .ImportModuleAsync(sourceFile, operationCancellationToken)
+                            .ConfigureAwait(false);
+                    }
+
+                    await session.VerifyAsync(operationCancellationToken).ConfigureAwait(false);
+                    await session.SaveAsync(operationCancellationToken).ConfigureAwait(false);
+                    return result;
+                },
+                cancellationToken).ConfigureAwait(false);
+
+            ThrowIfCanceled(
+                cancellationToken,
+                new WorkbookAutomationStage(
+                    WorkbookAutomationStageKind.OutputCommit,
+                    Path.GetFileName(targetWorkbookPath)));
+            try
             {
-                warnings = referenceNormalizer.Normalize(session, documentName, desiredReferences);
-                cancellationToken.ThrowIfCancellationRequested();
-                foreach (var component in session.GetModules().Where(component => component.Kind.IsImportable()))
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    session.RemoveModule(component.Name);
-                }
-
-                foreach (var sourceFile in sourceFiles)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    session.ImportModule(sourceFile);
-                }
-
-                cancellationToken.ThrowIfCancellationRequested();
-                session.Save();
-                cancellationToken.ThrowIfCancellationRequested();
+                transaction.Commit();
+            }
+            catch (IOException ex)
+            {
+                throw new BuildCommandException($"Target workbook is locked or unavailable: {targetWorkbookPath}", ex);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                throw new BuildCommandException($"Target workbook is locked or unavailable: {targetWorkbookPath}", ex);
             }
 
-            cancellationToken.ThrowIfCancellationRequested();
-            ReplaceTarget(tempWorkbookPath, targetWorkbookPath);
+            transaction.Dispose();
+
+            // Commit is the success boundary. A later cancellation cannot turn replaced output into cancellation.
             return new WorkbookGenerationResult(warnings);
         }
-        finally
+        catch (Exception operationError)
         {
-            DeleteIfExists(tempWorkbookPath);
+            try
+            {
+                transaction.Dispose();
+            }
+            catch (Exception cleanupError)
+            {
+                throw new BuildCommandException(
+                    $"{operationError.Message} {cleanupError.Message}",
+                    new AggregateException(operationError, cleanupError));
+            }
+
+            throw;
         }
     }
 
@@ -111,36 +195,13 @@ public sealed class WorkbookGenerationPipeline
     /// <param name="Warnings">The warnings that should be included in command output.</param>
     public sealed record WorkbookGenerationResult(IReadOnlyList<string> Warnings);
 
-    private static void ReplaceTarget(string tempWorkbookPath, string targetWorkbookPath)
+    private static void ThrowIfCanceled(
+        CancellationToken cancellationToken,
+        WorkbookAutomationStage stage)
     {
-        try
+        if (cancellationToken.IsCancellationRequested)
         {
-            File.Move(tempWorkbookPath, targetWorkbookPath, overwrite: true);
-        }
-        catch (IOException ex)
-        {
-            throw new BuildCommandException($"Target workbook is locked or unavailable: {targetWorkbookPath}", ex);
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            throw new BuildCommandException($"Target workbook is locked or unavailable: {targetWorkbookPath}", ex);
-        }
-    }
-
-    private static void DeleteIfExists(string path)
-    {
-        try
-        {
-            if (File.Exists(path))
-            {
-                File.Delete(path);
-            }
-        }
-        catch (IOException)
-        {
-        }
-        catch (UnauthorizedAccessException)
-        {
+            throw new WorkbookAutomationCanceledException(stage, cancellationToken);
         }
     }
 }

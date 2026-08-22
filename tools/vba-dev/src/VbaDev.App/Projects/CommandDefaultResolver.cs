@@ -7,6 +7,9 @@ namespace VbaDev.App.Projects;
 /// </summary>
 public static class CommandDefaultResolver
 {
+    private static readonly TimeSpan DefaultWorkbookOpenTimeout = TimeSpan.FromSeconds(300);
+    private static readonly TimeSpan DefaultWorkbookSaveTimeout = TimeSpan.FromSeconds(300);
+
     private static readonly HashSet<string> SupportedTestFormats = new(StringComparer.OrdinalIgnoreCase)
     {
         "ndjson",
@@ -37,4 +40,24 @@ public static class CommandDefaultResolver
 
         return format;
     }
+
+    /// <summary>
+    /// Resolves the workbook-open timeout from the project manifest or the built-in default.
+    /// </summary>
+    /// <param name="manifest">The project manifest that may define Excel automation defaults.</param>
+    /// <returns>The effective workbook-open timeout.</returns>
+    public static TimeSpan ResolveWorkbookOpenTimeout(ProjectManifest manifest)
+        => manifest.CommandDefaults?.ExcelAutomation?.WorkbookOpenTimeoutSeconds is int seconds
+            ? TimeSpan.FromSeconds(seconds)
+            : DefaultWorkbookOpenTimeout;
+
+    /// <summary>
+    /// Resolves the workbook-save timeout from the project manifest or the built-in default.
+    /// </summary>
+    /// <param name="manifest">The project manifest that may define Excel automation defaults.</param>
+    /// <returns>The effective workbook-save timeout.</returns>
+    public static TimeSpan ResolveWorkbookSaveTimeout(ProjectManifest manifest)
+        => manifest.CommandDefaults?.ExcelAutomation?.WorkbookSaveTimeoutSeconds is int seconds
+            ? TimeSpan.FromSeconds(seconds)
+            : DefaultWorkbookSaveTimeout;
 }

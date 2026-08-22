@@ -15,6 +15,10 @@
   "commandDefaults": {
     "test": {
       "format": "text"
+    },
+    "excelAutomation": {
+      "workbookOpenTimeoutSeconds": 120,
+      "workbookSaveTimeoutSeconds": 180
     }
   }
 }

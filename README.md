@@ -246,6 +246,19 @@ vba-dev new excel -o <project-dir> -n <project-name>
 workbook, applies manifest-defined references, imports exported source files,
 and writes the generated workbook output.
 
+Workbook open and save stages each use a 300-second timeout by default. A
+project can set positive whole-second overrides through
+`commandDefaults.excelAutomation.workbookOpenTimeoutSeconds` and
+`commandDefaults.excelAutomation.workbookSaveTimeoutSeconds` in
+`vba-project.json`; these values have no per-invocation CLI options.
+
+Build and publish run in a dedicated hidden Excel process and stage their
+selected output beside its destination. Excel startup uses a 30-second
+deadline, each reference attempt 60 seconds, each module import 30 seconds,
+and cooperative cleanup 5 seconds. The prior completed output remains in place
+until reference normalization, import, verification, save, and owned-process
+cleanup have completed; only then is the selected target replaced atomically.
+
 From the `vba-dev` terminal, run:
 
 ```text

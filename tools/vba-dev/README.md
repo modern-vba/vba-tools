@@ -360,6 +360,10 @@ Example:
   "commandDefaults": {
     "test": {
       "format": "text"
+    },
+    "excelAutomation": {
+      "workbookOpenTimeoutSeconds": 300,
+      "workbookSaveTimeoutSeconds": 300
     }
   }
 }
@@ -385,3 +389,14 @@ Example:
 | `documents.<document>.references[].name` | Human-visible `Reference.Description`-style reference name. |
 | `commonModulesRepository` | CommonModules repository path, or `null` when no repository is discovered. |
 | `commandDefaults.test.format` | Default test output format. The generated value is `text`. |
+| `commandDefaults.excelAutomation.workbookOpenTimeoutSeconds` | Optional workbook-open timeout in positive whole seconds. The built-in default is `300`. |
+| `commandDefaults.excelAutomation.workbookSaveTimeoutSeconds` | Optional workbook-save timeout in positive whole seconds. The built-in default is `300`. |
+
+Workbook open and save timeouts are project-level manifest defaults. `vba-dev`
+does not expose per-invocation command-line options for these two values.
+Build and publish use a dedicated hidden Excel process with a 30-second startup
+deadline, a 60-second deadline for each reference attempt, a 30-second deadline
+for each module import, and a 5-second cooperative cleanup grace period. They
+preserve an existing completed output on failure or cancellation and atomically
+replace only the selected output after the staged workbook and owned process
+have completed successfully.

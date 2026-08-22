@@ -28,7 +28,10 @@ public sealed class BuildCommand
     public CommandResult Run(ResolvedProjectContext context)
         => outputCommand.Run(context, WorkbookOutputProfile.Build);
 
-    internal Task<CommandResult> RunAsync(
+    /// <summary>
+    /// Generates the document's bin workbook with cooperative invocation cancellation.
+    /// </summary>
+    public Task<CommandResult> RunAsync(
         ResolvedProjectContext context,
         CancellationToken cancellationToken)
         => outputCommand.RunAsync(

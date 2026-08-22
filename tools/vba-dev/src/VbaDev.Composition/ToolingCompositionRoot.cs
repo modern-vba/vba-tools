@@ -49,7 +49,7 @@ public static class ToolingCompositionRoot
             vbaProjectReferenceResolver ?? new RegistryVbaProjectReferenceResolver());
         var buildAutomation = workbookBuildAutomation ?? new ExcelComWorkbookBuildAutomation();
         var sourcePlanner = new WorkbookSourcePlanner();
-        var generationPipeline = new WorkbookGenerationPipeline(
+        var generationPipeline = CreateWorkbookGenerationPipeline(
             buildAutomation,
             new WorkbookReferenceNormalizer(referencePlanner));
         var buildCommand = new BuildCommand(
@@ -127,7 +127,7 @@ public static class ToolingCompositionRoot
             initialWorkbookCreator ?? new ExcelComInitialWorkbookCreator(),
             commonModulesManifestReader);
         var sourcePlanner = new WorkbookSourcePlanner();
-        var generationPipeline = new WorkbookGenerationPipeline(
+        var generationPipeline = CreateWorkbookGenerationPipeline(
             buildAutomation,
             new WorkbookReferenceNormalizer(referencePlanner));
         var workbookOutputCommand = new WorkbookOutputCommand(sourcePlanner, generationPipeline);
@@ -154,6 +154,13 @@ public static class ToolingCompositionRoot
             projectContextResolver,
             workingDirectory);
     }
+
+    private static WorkbookGenerationPipeline CreateWorkbookGenerationPipeline(
+        IWorkbookBuildAutomation buildAutomation,
+        WorkbookReferenceNormalizer referenceNormalizer)
+        => buildAutomation is IWorkbookGenerationAutomation generationAutomation
+            ? new WorkbookGenerationPipeline(generationAutomation, referenceNormalizer)
+            : new WorkbookGenerationPipeline(buildAutomation, referenceNormalizer);
 }
 
 /// <summary>

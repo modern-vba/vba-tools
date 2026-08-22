@@ -1,0 +1,366 @@
+using System.Text;
+using VbaDev.App.Build;
+using VbaDev.App.Diagnostics;
+using VbaDev.App.Projects;
+using VbaDev.App.References;
+using VbaDev.App.Workbooks;
+using VbaDev.Domain;
+using VbaDev.Infrastructure.Projects;
+using Xunit;
+
+namespace VbaDev.Tests;
+
+public sealed class WorkbookOutputFailureTests
+{
+    [Theory]
+    [InlineData("build")]
+    [InlineData("publish")]
+    public async Task StageTimeoutPreservesCompletedOutputsAndRemovesOwnedStaging(string commandName)
+    {
+        using var temp = TempDirectory.Create();
+        var project = CreateProject(temp);
+        var automation = new FailingWorkbookGenerationAutomation(
+            _ => new WorkbookAutomationTimeoutException(
+                new WorkbookAutomationStage(
+                    WorkbookAutomationStageKind.ModuleImport,
+                    "Local.bas"),
+                TimeSpan.FromSeconds(30)));
+        var command = CreateCommand(project.Context, automation);
+
+        var result = await RunAsync(commandName, command, project.Context, CancellationToken.None);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("module import 'Local.bas'", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("30 seconds", result.StandardError, StringComparison.Ordinal);
+        Assert.Equal("previous-bin", File.ReadAllText(project.Context.BinDocumentPath, Encoding.UTF8));
+        Assert.Equal("previous-publish", File.ReadAllText(project.Context.PublishDocumentPath, Encoding.UTF8));
+        Assert.Empty(EnumerateOwnedStaging(project.SelectedOutputDirectory(commandName)));
+    }
+
+    [Theory]
+    [InlineData("build")]
+    [InlineData("publish")]
+    public async Task OwnedProcessLossReportsItsStageAndPreservesCompletedOutputs(string commandName)
+    {
+        using var temp = TempDirectory.Create();
+        var project = CreateProject(temp);
+        var automation = new FailingWorkbookGenerationAutomation(
+            _ => new WorkbookAutomationProcessLostException(
+                new WorkbookAutomationStage(WorkbookAutomationStageKind.WorkbookSave)));
+        var command = CreateCommand(project.Context, automation);
+
+        var result = await RunAsync(commandName, command, project.Context, CancellationToken.None);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("owned Excel process exited", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("workbook save", result.StandardError, StringComparison.Ordinal);
+        Assert.Equal("previous-bin", File.ReadAllText(project.Context.BinDocumentPath, Encoding.UTF8));
+        Assert.Equal("previous-publish", File.ReadAllText(project.Context.PublishDocumentPath, Encoding.UTF8));
+        Assert.Empty(EnumerateOwnedStaging(project.SelectedOutputDirectory(commandName)));
+    }
+
+    [Theory]
+    [InlineData("build")]
+    [InlineData("publish")]
+    public async Task CooperativeCancellationReturns130WithItsStageAndPreservesCompletedOutputs(string commandName)
+    {
+        using var temp = TempDirectory.Create();
+        var project = CreateProject(temp);
+        using var cancellation = new CancellationTokenSource();
+        var automation = new FailingWorkbookGenerationAutomation(
+            token =>
+            {
+                cancellation.Cancel();
+                return new WorkbookAutomationCanceledException(
+                    new WorkbookAutomationStage(
+                        WorkbookAutomationStageKind.ReferenceAttempt,
+                        "Microsoft Scripting Runtime"),
+                    token);
+            });
+        var command = CreateCommand(project.Context, automation);
+
+        var result = await RunAsync(commandName, command, project.Context, cancellation.Token);
+
+        Assert.Equal(130, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Contains("reference attempt 'Microsoft Scripting Runtime'", result.StandardError, StringComparison.Ordinal);
+        Assert.Equal("previous-bin", File.ReadAllText(project.Context.BinDocumentPath, Encoding.UTF8));
+        Assert.Equal("previous-publish", File.ReadAllText(project.Context.PublishDocumentPath, Encoding.UTF8));
+        Assert.Empty(EnumerateOwnedStaging(project.SelectedOutputDirectory(commandName)));
+    }
+
+    [Theory]
+    [InlineData("build")]
+    [InlineData("publish")]
+    public async Task CancellationAfterAtomicCommitDoesNotOverrideCommandSuccess(string commandName)
+    {
+        using var temp = TempDirectory.Create();
+        var project = CreateProject(temp);
+        using var cancellation = new CancellationTokenSource();
+        var command = CreateCommand(
+            project.Context,
+            new CompletingWorkbookGenerationAutomation(),
+            new CancelAfterCommitTransactionFactory(cancellation));
+
+        var result = await RunAsync(commandName, command, project.Context, cancellation.Token);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.StandardError);
+        Assert.True(cancellation.IsCancellationRequested);
+        var selectedOutputPath = commandName == "build"
+            ? project.Context.BinDocumentPath
+            : project.Context.PublishDocumentPath;
+        var siblingOutputPath = commandName == "build"
+            ? project.Context.PublishDocumentPath
+            : project.Context.BinDocumentPath;
+        Assert.Equal("new-template", File.ReadAllText(selectedOutputPath, Encoding.UTF8));
+        Assert.Equal(
+            commandName == "build" ? "previous-publish" : "previous-bin",
+            File.ReadAllText(siblingOutputPath, Encoding.UTF8));
+        Assert.Empty(EnumerateOwnedStaging(project.SelectedOutputDirectory(commandName)));
+    }
+
+    [Theory]
+    [InlineData("build")]
+    [InlineData("publish")]
+    public void OutputGenerationDoesNotRunDoctorOrValidateTheCommonModulesRepository(string commandName)
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var commonModulesRepository = temp.CreateDirectory("common_modules_repo");
+        File.WriteAllText(
+            Path.Combine(commonModulesRepository, "common-modules-manifest.tsv"),
+            "malformed repository metadata",
+            Encoding.UTF8);
+        var manifest = ProjectManifest.CreateDefault(
+            "Project",
+            "Book1",
+            root,
+            commonModulesRepository);
+        manifest.Documents["Book1"].CommonModules.Add(
+            new InstalledCommonModule(
+                "Runtime",
+                "Runtime.bas",
+                Requested: true,
+                TestOnly: false));
+        new JsonProjectManifestStore().Save(root, manifest);
+        var sourceDirectory = Path.Combine(root, "src", "Book1");
+        Directory.CreateDirectory(sourceDirectory);
+        File.WriteAllText(
+            Path.Combine(sourceDirectory, "Book1.xlsm"),
+            "new-template",
+            Encoding.UTF8);
+        File.WriteAllText(
+            Path.Combine(sourceDirectory, "Runtime.bas"),
+            "Attribute VB_Name = \"Runtime\"",
+            Encoding.UTF8);
+        var automation = new FakeWorkbookBuildAutomation();
+        var application = CommandLineTestFactory.Create(
+            root,
+            environmentDiagnosticPort: new ThrowingEnvironmentDiagnosticPort(),
+            workbookBuildAutomation: automation);
+
+        var result = application.Run([commandName]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.StandardError);
+        Assert.Equal(["import:Runtime.bas", "save"], automation.Events);
+    }
+
+    [Theory]
+    [InlineData("build")]
+    [InlineData("publish")]
+    public async Task CliForwardsInvocationCancellationToBuildAndPublish(string commandName)
+    {
+        using var temp = TempDirectory.Create();
+        var project = CreateProject(temp);
+        var automation = new BlockingOpenWorkbookAutomation();
+        var application = CommandLineTestFactory.Create(
+            project.Context.ProjectRoot,
+            workbookBuildAutomation: automation);
+        using var cancellation = new CancellationTokenSource();
+        var invocation = Task.Run(
+            () => application.RunAsync([commandName], cancellation.Token));
+
+        await automation.OpenStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cancellation.Cancel();
+        var result = await invocation.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.True(automation.ReceivedCancellationTokenCanBeCanceled);
+        Assert.Equal(130, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Contains("cancelled", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("previous-bin", File.ReadAllText(project.Context.BinDocumentPath, Encoding.UTF8));
+        Assert.Equal("previous-publish", File.ReadAllText(project.Context.PublishDocumentPath, Encoding.UTF8));
+        Assert.Empty(EnumerateOwnedStaging(project.SelectedOutputDirectory(commandName)));
+    }
+
+    private static WorkbookOutputCommand CreateCommand(
+        ResolvedProjectContext context,
+        IWorkbookGenerationAutomation automation,
+        IWorkbookOutputTransactionFactory? transactionFactory = null)
+    {
+        var pipeline = new WorkbookGenerationPipeline(
+            automation,
+            new WorkbookReferenceNormalizer(
+                new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),
+            transactionFactory ?? new WorkbookOutputTransactionFactory());
+        return new WorkbookOutputCommand(new WorkbookSourcePlanner(), pipeline);
+    }
+
+    private static Task<VbaDev.App.Cli.CommandResult> RunAsync(
+        string commandName,
+        WorkbookOutputCommand outputCommand,
+        ResolvedProjectContext context,
+        CancellationToken cancellationToken)
+        => commandName switch
+        {
+            "build" => new BuildCommand(outputCommand).RunAsync(context, cancellationToken),
+            "publish" => new PublishCommand(outputCommand).RunAsync(context, cancellationToken),
+            _ => throw new ArgumentOutOfRangeException(nameof(commandName), commandName, null)
+        };
+
+    private static IEnumerable<string> EnumerateOwnedStaging(string directory)
+        => Directory.EnumerateFiles(
+            directory,
+            ".Book1.*.tmp.xlsm",
+            SearchOption.TopDirectoryOnly);
+
+    private static ProjectFixture CreateProject(TempDirectory temp)
+    {
+        var root = temp.CreateDirectory("Project");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        new JsonProjectManifestStore().Save(root, manifest);
+        var sourceDirectory = Path.Combine(root, "src", "Book1");
+        Directory.CreateDirectory(sourceDirectory);
+        File.WriteAllText(
+            Path.Combine(sourceDirectory, "Book1.xlsm"),
+            "new-template",
+            Encoding.UTF8);
+        File.WriteAllText(
+            Path.Combine(sourceDirectory, "Local.bas"),
+            "Attribute VB_Name = \"Local\"",
+            Encoding.UTF8);
+        var context = new ProjectContextResolver(new JsonProjectManifestStore()).Resolve(
+            new ProjectResolutionRequest(root, null, root));
+        Directory.CreateDirectory(Path.GetDirectoryName(context.BinDocumentPath)!);
+        Directory.CreateDirectory(Path.GetDirectoryName(context.PublishDocumentPath)!);
+        File.WriteAllText(context.BinDocumentPath, "previous-bin", Encoding.UTF8);
+        File.WriteAllText(context.PublishDocumentPath, "previous-publish", Encoding.UTF8);
+        return new ProjectFixture(context);
+    }
+
+    private sealed record ProjectFixture(ResolvedProjectContext Context)
+    {
+        public string SelectedOutputDirectory(string commandName)
+            => Path.GetDirectoryName(commandName == "build"
+                ? Context.BinDocumentPath
+                : Context.PublishDocumentPath)!;
+    }
+
+    private sealed class FailingWorkbookGenerationAutomation(
+        Func<CancellationToken, Exception> createFailure) : IWorkbookGenerationAutomation
+    {
+        public Task<TResult> RunAsync<TResult>(
+            string workbookPath,
+            WorkbookAutomationTimeouts timeouts,
+            Func<IWorkbookGenerationSession, CancellationToken, Task<TResult>> operation,
+            CancellationToken cancellationToken)
+            => Task.FromException<TResult>(createFailure(cancellationToken));
+    }
+
+    private sealed class CompletingWorkbookGenerationAutomation : IWorkbookGenerationAutomation
+    {
+        public Task<TResult> RunAsync<TResult>(
+            string workbookPath,
+            WorkbookAutomationTimeouts timeouts,
+            Func<IWorkbookGenerationSession, CancellationToken, Task<TResult>> operation,
+            CancellationToken cancellationToken)
+            => operation(new EmptyWorkbookGenerationSession(), cancellationToken);
+    }
+
+    private sealed class EmptyWorkbookGenerationSession : IWorkbookGenerationSession
+    {
+        public Task<IReadOnlyList<WorkbookModule>> GetModulesAsync(CancellationToken cancellationToken)
+            => Task.FromResult<IReadOnlyList<WorkbookModule>>([]);
+
+        public Task<IReadOnlyList<WorkbookReference>> GetReferencesAsync(CancellationToken cancellationToken)
+            => Task.FromResult<IReadOnlyList<WorkbookReference>>([]);
+
+        public Task<bool> RemoveReferenceAsync(string referenceName, CancellationToken cancellationToken)
+            => Task.FromResult(true);
+
+        public Task AddReferenceAsync(
+            ResolvedVbaProjectReference reference,
+            CancellationToken cancellationToken)
+            => Task.CompletedTask;
+
+        public Task RemoveModuleAsync(string moduleName, CancellationToken cancellationToken)
+            => Task.CompletedTask;
+
+        public Task ImportModuleAsync(VbaSourceFile sourceFile, CancellationToken cancellationToken)
+            => Task.CompletedTask;
+
+        public Task VerifyAsync(CancellationToken cancellationToken)
+            => Task.CompletedTask;
+
+        public Task SaveAsync(CancellationToken cancellationToken)
+            => Task.CompletedTask;
+    }
+
+    private sealed class CancelAfterCommitTransactionFactory(
+        CancellationTokenSource cancellation) : IWorkbookOutputTransactionFactory
+    {
+        public IWorkbookOutputTransaction Create(string templateWorkbookPath, string targetWorkbookPath)
+            => new CancelAfterCommitTransaction(
+                WorkbookOutputTransaction.Create(templateWorkbookPath, targetWorkbookPath),
+                cancellation);
+    }
+
+    private sealed class CancelAfterCommitTransaction(
+        WorkbookOutputTransaction inner,
+        CancellationTokenSource cancellation) : IWorkbookOutputTransaction
+    {
+        public string StagingWorkbookPath => inner.StagingWorkbookPath;
+
+        public void Commit()
+        {
+            inner.Commit();
+            cancellation.Cancel();
+        }
+
+        public void Dispose() => inner.Dispose();
+    }
+
+    private sealed class ThrowingEnvironmentDiagnosticPort : IEnvironmentDiagnosticPort
+    {
+        public IReadOnlyList<DiagnosticResult> RunEnvironmentDiagnostics()
+            => throw new InvalidOperationException("Doctor must not run during build or publish.");
+    }
+
+    private sealed class BlockingOpenWorkbookAutomation : IWorkbookBuildAutomation
+    {
+        public TaskCompletionSource OpenStarted { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public bool ReceivedCancellationTokenCanBeCanceled { get; private set; }
+
+        public IWorkbookBuildSession OpenWorkbook(string workbookPath)
+            => throw new InvalidOperationException("The cancellable workbook-open overload was not used.");
+
+        public IWorkbookBuildSession OpenWorkbook(
+            string workbookPath,
+            CancellationToken cancellationToken)
+        {
+            ReceivedCancellationTokenCanBeCanceled = cancellationToken.CanBeCanceled;
+            OpenStarted.TrySetResult();
+            if (!cancellationToken.WaitHandle.WaitOne(TimeSpan.FromSeconds(5)))
+            {
+                throw new TimeoutException("The CLI did not forward invocation cancellation.");
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            throw new InvalidOperationException("Cancellation was expected to stop workbook open.");
+        }
+    }
+}

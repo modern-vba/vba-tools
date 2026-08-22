@@ -140,6 +140,20 @@
               ]
             }
           }
+        },
+        "excelAutomation": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "workbookOpenTimeoutSeconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "workbookSaveTimeoutSeconds": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
         }
       }
     }

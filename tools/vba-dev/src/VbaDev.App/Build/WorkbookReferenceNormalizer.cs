@@ -63,4 +63,53 @@ public sealed class WorkbookReferenceNormalizer
 
         return warnings;
     }
+
+    /// <summary>
+    /// Removes and adds references through the bounded owned-generation session.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> NormalizeAsync(
+        IWorkbookGenerationSession session,
+        string documentName,
+        IReadOnlyList<VbaProjectReference> desiredReferences,
+        CancellationToken cancellationToken)
+    {
+        var warnings = new List<string>();
+        var desiredNames = desiredReferences
+            .Select(reference => reference.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var currentReferences = (await session
+                .GetReferencesAsync(cancellationToken)
+                .ConfigureAwait(false))
+            .ToArray();
+        foreach (var reference in currentReferences)
+        {
+            if (desiredNames.Contains(reference.Name))
+            {
+                continue;
+            }
+
+            if (!reference.IsRemovable || !await session
+                    .RemoveReferenceAsync(reference.Name, cancellationToken)
+                    .ConfigureAwait(false))
+            {
+                warnings.Add(VbaProjectReferencePlanner.FormatProtectedReferenceWarning(documentName, reference.Name));
+            }
+        }
+
+        var currentNames = currentReferences
+            .Select(reference => reference.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var reference in desiredReferences)
+        {
+            if (!currentNames.Contains(reference.Name))
+            {
+                await session.AddReferenceAsync(
+                        referencePlanner.ResolveDocumentReference(documentName, reference.Name),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+
+        return warnings;
+    }
 }

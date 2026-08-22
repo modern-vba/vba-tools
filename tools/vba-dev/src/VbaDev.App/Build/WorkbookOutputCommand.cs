@@ -36,11 +36,7 @@ public sealed class WorkbookOutputCommand
     /// <param name="profile">The output profile to run.</param>
     /// <returns>The command result for the generated workbook.</returns>
     public CommandResult Run(ResolvedProjectContext context, WorkbookOutputProfile profile)
-        => RunCore(
-            context,
-            profile,
-            () => profile.ResolveSourceFiles(sourcePlanner, context),
-            CancellationToken.None);
+        => RunAsync(context, profile, CancellationToken.None).GetAwaiter().GetResult();
 
     internal Task<CommandResult> RunAsync(
         ResolvedProjectContext context,
@@ -59,11 +55,7 @@ public sealed class WorkbookOutputCommand
         ResolvedProjectContext context,
         WorkbookOutputProfile profile,
         IReadOnlyList<VbaSourceFile> sourceFiles)
-        => RunCore(
-            context,
-            profile,
-            () => sourceFiles,
-            CancellationToken.None);
+        => RunAsync(context, profile, sourceFiles, CancellationToken.None).GetAwaiter().GetResult();
 
     internal Task<CommandResult> RunAsync(
         ResolvedProjectContext context,
@@ -76,19 +68,7 @@ public sealed class WorkbookOutputCommand
             () => sourceFiles,
             cancellationToken);
 
-    private Task<CommandResult> RunAsyncCore(
-        ResolvedProjectContext context,
-        WorkbookOutputProfile profile,
-        Func<IReadOnlyList<VbaSourceFile>> resolveSourceFiles,
-        CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        return Task.Run(
-            () => RunCore(context, profile, resolveSourceFiles, cancellationToken),
-            CancellationToken.None);
-    }
-
-    private CommandResult RunCore(
+    private async Task<CommandResult> RunAsyncCore(
         ResolvedProjectContext context,
         WorkbookOutputProfile profile,
         Func<IReadOnlyList<VbaSourceFile>> resolveSourceFiles,
@@ -96,32 +76,55 @@ public sealed class WorkbookOutputCommand
     {
         try
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return CommandResult.Cancelled(
+                    "Workbook automation was cancelled during Excel startup.");
+            }
+
             if (!context.Document.Kind.Equals(ProjectDocument.ExcelKind, StringComparison.OrdinalIgnoreCase))
             {
                 return CommandResult.UsageError($"{profile.DisplayName} supports only Excel documents: {context.DocumentName}");
             }
 
             var sourceFiles = resolveSourceFiles();
-            cancellationToken.ThrowIfCancellationRequested();
             var targetDocumentPath = profile.ResolveTargetDocumentPath(context);
-            var generationResult = generationPipeline.Generate(
+            var defaultTimeouts = WorkbookAutomationTimeouts.Default;
+            var timeouts = defaultTimeouts with
+            {
+                WorkbookOpen = CommandDefaultResolver.ResolveWorkbookOpenTimeout(context.Manifest),
+                WorkbookSave = CommandDefaultResolver.ResolveWorkbookSaveTimeout(context.Manifest)
+            };
+            var generationResult = await generationPipeline.GenerateAsync(
                 context.DocumentName,
                 context.TemplateDocumentPath,
                 targetDocumentPath,
                 context.Document.References,
                 sourceFiles,
-                cancellationToken);
-            cancellationToken.ThrowIfCancellationRequested();
+                timeouts,
+                cancellationToken).ConfigureAwait(false);
 
             return CommandResult.Success(RenderOutput(profile, targetDocumentPath, sourceFiles, generationResult.Warnings));
         }
-        catch (Exception ex) when (cancellationToken.IsCancellationRequested)
+        catch (WorkbookAutomationCanceledException ex)
         {
-            throw new OperationCanceledException(
-                "Workbook generation was cancelled.",
-                ex,
-                cancellationToken);
+            return CommandResult.Cancelled(ex.Message);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return CommandResult.Cancelled("Workbook automation was cancelled during the active generation stage.");
+        }
+        catch (WorkbookAutomationTimeoutException ex)
+        {
+            return CommandResult.UsageError(ex.Message);
+        }
+        catch (WorkbookAutomationProcessLostException ex)
+        {
+            return CommandResult.UsageError(ex.Message);
+        }
+        catch (WorkbookAutomationCleanupException ex)
+        {
+            return CommandResult.UsageError(ex.Message);
         }
         catch (BuildCommandException ex)
         {
