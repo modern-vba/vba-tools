@@ -164,9 +164,36 @@ public interface IVbaProjectReferenceCatalogPersistentStore
 }
 
 /// <summary>
+/// Loads and saves generated catalogs whose selected identity is authoritative
+/// only for one manifest-document scope and reference-selection fingerprint.
+/// </summary>
+public interface IVbaProjectReferenceCatalogScopedPersistentStore
+{
+    /// <summary>
+    /// Loads persisted state for one reference in an exact project selection scope.
+    /// </summary>
+    Task<VbaProjectReferenceCatalogPersistentLoadResult> LoadScopedAsync(
+        string referenceName,
+        string scopeKey,
+        string selectionFingerprint,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Saves a generated catalog for one exact project selection scope.
+    /// </summary>
+    Task SaveScopedAsync(
+        VbaProjectReferenceCatalogPersistentEntry entry,
+        string scopeKey,
+        string selectionFingerprint,
+        CancellationToken cancellationToken);
+}
+
+/// <summary>
 /// Stores generated reference catalogs on disk for reuse across language-server sessions.
 /// </summary>
-public sealed class VbaProjectReferenceCatalogPersistentStore : IVbaProjectReferenceCatalogPersistentStore
+public sealed class VbaProjectReferenceCatalogPersistentStore
+    : IVbaProjectReferenceCatalogPersistentStore,
+      IVbaProjectReferenceCatalogScopedPersistentStore
 {
     /// <summary>
     /// The environment variable that overrides the persistent reference catalog root directory.
@@ -263,19 +290,39 @@ public sealed class VbaProjectReferenceCatalogPersistentStore : IVbaProjectRefer
     /// <param name="referenceName">The human-visible reference name.</param>
     /// <returns>The load result.</returns>
     public VbaProjectReferenceCatalogPersistentLoadResult Load(string referenceName)
-        => LoadCoreAsync(referenceName, CancellationToken.None).GetAwaiter().GetResult();
+        => LoadCoreAsync(
+            referenceName,
+            GetReferenceIndexPath(referenceName),
+            CancellationToken.None).GetAwaiter().GetResult();
 
     /// <inheritdoc />
     public Task<VbaProjectReferenceCatalogPersistentLoadResult> LoadAsync(
         string referenceName,
         CancellationToken cancellationToken)
-        => LoadCoreAsync(referenceName, cancellationToken);
+        => LoadCoreAsync(
+            referenceName,
+            GetReferenceIndexPath(referenceName),
+            cancellationToken);
+
+    /// <inheritdoc />
+    public Task<VbaProjectReferenceCatalogPersistentLoadResult> LoadScopedAsync(
+        string referenceName,
+        string scopeKey,
+        string selectionFingerprint,
+        CancellationToken cancellationToken)
+        => LoadCoreAsync(
+            referenceName,
+            GetScopedReferenceIndexPath(
+                referenceName,
+                scopeKey,
+                selectionFingerprint),
+            cancellationToken);
 
     private async Task<VbaProjectReferenceCatalogPersistentLoadResult> LoadCoreAsync(
         string referenceName,
+        string indexPath,
         CancellationToken cancellationToken)
     {
-        var indexPath = GetReferenceIndexPath(referenceName);
         if (!File.Exists(indexPath))
         {
             return VbaProjectReferenceCatalogPersistentLoadResult.Miss();
@@ -343,21 +390,41 @@ public sealed class VbaProjectReferenceCatalogPersistentStore : IVbaProjectRefer
     /// </summary>
     /// <param name="entry">The generated catalog entry to persist.</param>
     public void Save(VbaProjectReferenceCatalogPersistentEntry entry)
-        => SaveCoreAsync(entry, CancellationToken.None).GetAwaiter().GetResult();
+        => SaveCoreAsync(
+            entry,
+            GetReferenceIndexPath(entry.Identity.ReferenceName),
+            CancellationToken.None).GetAwaiter().GetResult();
 
     /// <inheritdoc />
     public Task SaveAsync(
         VbaProjectReferenceCatalogPersistentEntry entry,
         CancellationToken cancellationToken)
-        => SaveCoreAsync(entry, cancellationToken);
+        => SaveCoreAsync(
+            entry,
+            GetReferenceIndexPath(entry.Identity.ReferenceName),
+            cancellationToken);
+
+    /// <inheritdoc />
+    public Task SaveScopedAsync(
+        VbaProjectReferenceCatalogPersistentEntry entry,
+        string scopeKey,
+        string selectionFingerprint,
+        CancellationToken cancellationToken)
+        => SaveCoreAsync(
+            entry,
+            GetScopedReferenceIndexPath(
+                entry.Identity.ReferenceName,
+                scopeKey,
+                selectionFingerprint),
+            cancellationToken);
 
     private async Task SaveCoreAsync(
         VbaProjectReferenceCatalogPersistentEntry entry,
+        string indexPath,
         CancellationToken cancellationToken)
     {
         var catalogEntryKey = CreateCatalogEntryKey(entry.Identity);
         var catalogEntryPath = GetCatalogEntryPath(catalogEntryKey);
-        var indexPath = GetReferenceIndexPath(entry.Identity.ReferenceName);
         var currentEntry = entry with
         {
             SchemaVersion = CurrentSchemaVersion,
@@ -382,6 +449,19 @@ public sealed class VbaProjectReferenceCatalogPersistentStore : IVbaProjectRefer
 
     private string GetCatalogEntryPath(string catalogEntryKey)
         => Path.Combine(rootDirectory, CatalogsDirectoryName, catalogEntryKey);
+
+    private string GetScopedReferenceIndexPath(
+        string referenceName,
+        string scopeKey,
+        string selectionFingerprint)
+        => Path.Combine(
+            rootDirectory,
+            ReferencesDirectoryName,
+            $"scope-{HashKey(string.Join(
+                "\u001f",
+                scopeKey,
+                selectionFingerprint,
+                NormalizeReferenceName(referenceName)))}.json");
 
     private static async Task<T> ReadJsonAsync<T>(
         string path,

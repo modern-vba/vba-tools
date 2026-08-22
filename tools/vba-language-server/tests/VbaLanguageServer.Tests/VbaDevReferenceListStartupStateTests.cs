@@ -1,4 +1,5 @@
 using VbaLanguageServer.Lsp;
+using VbaLanguageServer.SourceModel;
 using Xunit;
 
 namespace VbaLanguageServer.Tests;
@@ -124,5 +125,34 @@ public sealed class VbaDevReferenceListStartupStateTests
         Assert.Contains(executablePath, state.WarningMessage);
         Assert.Contains("registry-only discovery remains available", state.WarningMessage);
         Assert.Equal(1, processCalls);
+    }
+
+    [Fact]
+    public void DefaultRuntimeUsesPinnedCliFactoryOnlyForValidatedStartupState()
+    {
+        var registryDiscovery = new StubRegistryDiscovery();
+        var executablePath = Path.GetFullPath(Path.Combine("tools", "vba-dev.exe"));
+
+        var available = VbaLanguageServerRuntime.CreateReferenceCatalogDiscovery(
+            registryDiscovery,
+            new VbaDevReferenceListStartupState(executablePath, null));
+        var unavailable = VbaLanguageServerRuntime.CreateReferenceCatalogDiscovery(
+            registryDiscovery,
+            new VbaDevReferenceListStartupState(
+                null,
+                "CLI-backed reference catalog resolution is disabled."));
+
+        Assert.IsType<VbaDevReferenceListCatalogDiscoveryFactory>(available);
+        Assert.Same(registryDiscovery, unavailable);
+    }
+
+    private sealed class StubRegistryDiscovery : IVbaProjectReferenceCatalogDiscovery
+    {
+        public Task<VbaProjectReferenceCatalogDiscoveryResult> DiscoverAsync(
+            string referenceName,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult(VbaProjectReferenceCatalogDiscoveryResult.Failure(
+                referenceName,
+                "No registry result is needed for this factory-selection test."));
     }
 }

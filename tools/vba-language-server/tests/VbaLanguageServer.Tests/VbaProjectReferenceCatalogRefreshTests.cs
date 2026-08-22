@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
+using System.Text.Json;
 using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.SourceModel;
 using VbaTools.TypeLibRegistry;
@@ -150,6 +151,593 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
         Assert.Equal(2, registryReader.ReadCount);
         Assert.True(cache.HasIdentity("Library A"));
         Assert.True(cache.HasIdentity("Library B"));
+    }
+
+    [Fact]
+    public async Task BackgroundRefreshUsesPinnedCliOnceToResolveAmbiguousNeutralIdentity()
+    {
+        const string referenceName = "Ambiguous Library";
+        const string selectedGuid = "22222222-2222-2222-2222-222222222222";
+        var projectPath = Path.GetFullPath(Path.Combine("projects", "Sample"));
+        var executablePath = Path.GetFullPath(Path.Combine("tools", "vba-dev.exe"));
+        var processCalls = new List<(string File, IReadOnlyList<string> Arguments)>();
+        var registryCatalog = new TypeLibRegistryCatalog(
+            complete: true,
+            names:
+            [
+                new TypeLibRegistryCatalogName(
+                    referenceName,
+                    [
+                        CreateNeutralRegistryCatalog(
+                            referenceName,
+                            "11111111-1111-1111-1111-111111111111").Names[0].Lineages[0],
+                        CreateNeutralRegistryCatalog(
+                            referenceName,
+                            selectedGuid).Names[0].Lineages[0]
+                    ])
+            ],
+            warnings: [],
+            diagnostic: null);
+        var registryReader = new FakeTypeLibRegistryCatalogReader(registryCatalog);
+        var discovery = new VbaDevReferenceListCatalogDiscoveryFactory(
+            new TypeLibReferenceCatalogDiscovery(
+                registryReader,
+                new FakeTypeLibCatalogMetadataReader(
+                    new TypeLibCatalogMetadata(
+                        "Ambiguous",
+                        [
+                            new TypeLibCatalogType(
+                                "ResolvedType",
+                                VbaSourceDefinitionKind.Class,
+                                null,
+                                [])
+                        ]))),
+            executablePath,
+            (file, arguments, _) =>
+            {
+                processCalls.Add((file, arguments));
+                return Task.FromResult(new VbaDevReferenceListProcessResult(
+                    0,
+                    JsonSerializer.Serialize(new
+                    {
+                        schemaVersion = "1.0",
+                        scope = "project",
+                        project = projectPath,
+                        document = "Book1",
+                        mode = "configured",
+                        complete = true,
+                        warnings = Array.Empty<object>(),
+                        references = new[]
+                        {
+                            new
+                            {
+                                name = referenceName,
+                                status = "resolved",
+                                identity = new
+                                {
+                                    guid = selectedGuid,
+                                    major = 1,
+                                    minor = 0
+                                }
+                            }
+                        }
+                    }),
+                    ""));
+            });
+        var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
+        var service = new VbaProjectReferenceCatalogRefreshService(cache, discovery);
+        var selection = VbaProjectReferenceSelection.Create(
+            ProjectDocument.ExcelKind,
+            [new VbaProjectReference(referenceName)]);
+
+        var results = await service.RefreshAutomaticallyAsync(
+            new VbaProjectReferenceCatalogRefreshContext(projectPath, "Book1", selection),
+            CancellationToken.None);
+
+        Assert.True(Assert.Single(results).DiscoveryResult.HasUsableCatalog);
+        var call = Assert.Single(processCalls);
+        Assert.Equal(executablePath, call.File);
+        Assert.Equal(
+            [
+                "reference",
+                "list",
+                "--project",
+                projectPath,
+                "--document",
+                "Book1",
+                "--format",
+                "json"
+            ],
+            call.Arguments);
+        Assert.Equal(selectedGuid, cache.Identities[referenceName].Guid);
+        Assert.Equal(1, registryReader.ReadCount);
+        Assert.Contains(
+            cache.Current.GetActiveDefinitions(selection),
+            definition => definition.Name == "ResolvedType");
+    }
+
+    [Fact]
+    public async Task CompleteMixedNonzeroCliResultCommitsResolvedSiblingAndPreservesAmbiguousLastKnownGood()
+    {
+        const string ambiguousName = "Library A";
+        const string resolvedName = "Library B";
+        const string resolvedGuid = "dddddddd-dddd-dddd-dddd-dddddddddddd";
+        var projectPath = Path.GetFullPath(Path.Combine("projects", "Mixed"));
+        var executablePath = Path.GetFullPath(Path.Combine("tools", "vba-dev.exe"));
+        var registryCatalog = new TypeLibRegistryCatalog(
+            complete: true,
+            names:
+            [
+                new TypeLibRegistryCatalogName(
+                    ambiguousName,
+                    [
+                        CreateNeutralRegistryCatalog(
+                            ambiguousName,
+                            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").Names[0].Lineages[0],
+                        CreateNeutralRegistryCatalog(
+                            ambiguousName,
+                            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").Names[0].Lineages[0]
+                    ]),
+                new TypeLibRegistryCatalogName(
+                    resolvedName,
+                    [
+                        CreateNeutralRegistryCatalog(
+                            resolvedName,
+                            "cccccccc-cccc-cccc-cccc-cccccccccccc").Names[0].Lineages[0],
+                        CreateNeutralRegistryCatalog(
+                            resolvedName,
+                            resolvedGuid).Names[0].Lineages[0]
+                    ])
+            ],
+            warnings: [],
+            diagnostic: null);
+        var processCallCount = 0;
+        var discovery = new VbaDevReferenceListCatalogDiscoveryFactory(
+            new TypeLibReferenceCatalogDiscovery(
+                new FakeTypeLibRegistryCatalogReader(registryCatalog),
+                new FakeTypeLibCatalogMetadataReader(
+                    new TypeLibCatalogMetadata(
+                        "Mixed",
+                        [
+                            new TypeLibCatalogType(
+                                "ResolvedSiblingType",
+                                VbaSourceDefinitionKind.Class,
+                                null,
+                                [])
+                        ]))),
+            executablePath,
+            (_, _, _) =>
+            {
+                Interlocked.Increment(ref processCallCount);
+                return Task.FromResult(new VbaDevReferenceListProcessResult(
+                    7,
+                    JsonSerializer.Serialize(new
+                    {
+                        schemaVersion = "1.0",
+                        scope = "project",
+                        project = projectPath,
+                        document = "Book1",
+                        mode = "configured",
+                        complete = true,
+                        warnings = Array.Empty<object>(),
+                        references = new object[]
+                        {
+                            new
+                            {
+                                name = ambiguousName,
+                                status = "ambiguous",
+                                reasonCode = "multipleUsableIdentities",
+                                candidates = new[]
+                                {
+                                    new { guid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", major = 1, minor = 0 },
+                                    new { guid = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", major = 1, minor = 0 }
+                                },
+                                message = "Multiple registered identities remain usable."
+                            },
+                            new
+                            {
+                                name = resolvedName,
+                                status = "resolved",
+                                identity = new { guid = resolvedGuid, major = 1, minor = 0 }
+                            }
+                        }
+                    }),
+                    "conclusive ambiguity"));
+            });
+        var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
+        cache.StoreStaleCatalog(CreateReferenceCatalog(ambiguousName, "LastKnownGoodType"));
+        var ambiguousSelection = VbaProjectReferenceSelection.Create(
+            ProjectDocument.ExcelKind,
+            [new VbaProjectReference(ambiguousName)]);
+        var revisionBefore = cache.CaptureSelectionState(ambiguousSelection.References).Revision;
+        var service = new VbaProjectReferenceCatalogRefreshService(cache, discovery);
+        var selection = VbaProjectReferenceSelection.Create(
+            ProjectDocument.ExcelKind,
+            [new VbaProjectReference(ambiguousName), new VbaProjectReference(resolvedName)]);
+
+        var results = await service.RefreshAutomaticallyAsync(
+            new VbaProjectReferenceCatalogRefreshContext(projectPath, "Book1", selection),
+            CancellationToken.None);
+
+        Assert.Equal(2, results.Count);
+        Assert.True(results[0].DiscoveryResult.IsAmbiguous);
+        Assert.True(results[1].DiscoveryResult.HasUsableCatalog);
+        Assert.Equal(1, processCallCount);
+        Assert.Equal(VbaProjectReferenceCatalogSource.StalePersisted, cache.GetCatalogSource(ambiguousName));
+        Assert.Equal(revisionBefore, cache.CaptureSelectionState(ambiguousSelection.References).Revision);
+        Assert.Contains(
+            cache.Current.GetActiveDefinitions(ambiguousSelection),
+            definition => definition.Name == "LastKnownGoodType");
+        Assert.Equal(resolvedGuid, cache.Identities[resolvedName].Guid);
+    }
+
+    [Fact]
+    public async Task MissingPinnedCliPreservesLastKnownGoodWithoutFallback()
+    {
+        const string referenceName = "Ambiguous Library";
+        var projectPath = Path.GetFullPath(Path.Combine("projects", "CliLoss"));
+        var executablePath = Path.GetFullPath(Path.Combine("missing", "vba-dev.exe"));
+        var registryCatalog = new TypeLibRegistryCatalog(
+            complete: true,
+            names:
+            [
+                new TypeLibRegistryCatalogName(
+                    referenceName,
+                    [
+                        CreateNeutralRegistryCatalog(
+                            referenceName,
+                            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").Names[0].Lineages[0],
+                        CreateNeutralRegistryCatalog(
+                            referenceName,
+                            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").Names[0].Lineages[0]
+                    ])
+            ],
+            warnings: [],
+            diagnostic: null);
+        var processCalls = 0;
+        var discovery = new VbaDevReferenceListCatalogDiscoveryFactory(
+            new TypeLibReferenceCatalogDiscovery(
+                new FakeTypeLibRegistryCatalogReader(registryCatalog),
+                new FakeTypeLibCatalogMetadataReader(new TypeLibCatalogMetadata("Missing", []))),
+            executablePath,
+            (_, _, _) =>
+            {
+                Interlocked.Increment(ref processCalls);
+                throw new FileNotFoundException("The pinned executable disappeared.", executablePath);
+            });
+        var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
+        cache.StoreStaleCatalog(CreateReferenceCatalog(referenceName, "LastKnownGoodType"));
+        var selection = VbaProjectReferenceSelection.Create(
+            ProjectDocument.ExcelKind,
+            [new VbaProjectReference(referenceName)]);
+        var revisionBefore = cache.CaptureSelectionState(selection.References).Revision;
+        var service = new VbaProjectReferenceCatalogRefreshService(cache, discovery);
+
+        var result = Assert.Single(await service.RefreshAutomaticallyAsync(
+            new VbaProjectReferenceCatalogRefreshContext(projectPath, "Book1", selection),
+            CancellationToken.None));
+
+        Assert.True(result.DiscoveryResult.IsFailure);
+        Assert.Contains("pinned executable disappeared", result.DiscoveryResult.ErrorMessage);
+        Assert.Equal(1, processCalls);
+        Assert.Equal(VbaProjectReferenceCatalogSource.StalePersisted, cache.GetCatalogSource(referenceName));
+        Assert.Equal(revisionBefore, cache.CaptureSelectionState(selection.References).Revision);
+        Assert.Contains(
+            cache.Current.GetActiveDefinitions(selection),
+            definition => definition.Name == "LastKnownGoodType");
+    }
+
+    [Fact]
+    public async Task SupersededContextCannotCommitAfterEnteringMutationLane()
+    {
+        const string referenceName = "Scoped Library";
+        const string scopeKey = "scope-a";
+        var selection = VbaProjectReferenceSelection.Create(
+            ProjectDocument.ExcelKind,
+            [new VbaProjectReference(referenceName)]);
+        var discoveryResult = VbaProjectReferenceCatalogDiscoveryResult.Success(
+            new VbaProjectReferenceCatalogIdentity(
+                referenceName,
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                1,
+                0,
+                0,
+                @"C:\TypeLibs\Scoped.tlb"),
+            CreateReferenceCatalog(referenceName, "SupersededType"));
+        var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
+        var service = new VbaProjectReferenceCatalogRefreshService(
+            cache,
+            new InlineCatalogDiscovery(discoveryResult));
+        var mutationLane = new BlockingMutationLane();
+        service.AttachMutationLane(mutationLane);
+        var current = 1;
+        var refresh = service.RefreshAutomaticallyAsync(
+            new VbaProjectReferenceCatalogRefreshContext(
+                Path.GetFullPath(@"C:\work\Scoped"),
+                "Book1",
+                selection,
+                scopeKey,
+                SelectionFingerprint: "fingerprint-a",
+                IsCurrent: () => Volatile.Read(ref current) == 1),
+            CancellationToken.None);
+        await mutationLane.CommitStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Volatile.Write(ref current, 0);
+        mutationLane.Release();
+        await refresh.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var state = cache.CaptureSelectionState(selection.References, scopeKey);
+        Assert.DoesNotContain(
+            state.CatalogSet.GetActiveDefinitions(selection),
+            definition => definition.Name == "SupersededType");
+    }
+
+    [Fact]
+    public async Task CompleteUnavailableCliEntryPreservesScopedLastKnownGood()
+    {
+        const string referenceName = "Unavailable Library";
+        const string scopeKey = "unavailable-scope";
+        var projectPath = Path.GetFullPath(@"C:\work\Unavailable");
+        var registryCatalog = new TypeLibRegistryCatalog(
+            complete: true,
+            names:
+            [
+                new TypeLibRegistryCatalogName(
+                    referenceName,
+                    [
+                        CreateNeutralRegistryCatalog(
+                            referenceName,
+                            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").Names[0].Lineages[0],
+                        CreateNeutralRegistryCatalog(
+                            referenceName,
+                            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").Names[0].Lineages[0]
+                    ])
+            ],
+            warnings: [],
+            diagnostic: null);
+        var discovery = new VbaDevReferenceListCatalogDiscoveryFactory(
+            new TypeLibReferenceCatalogDiscovery(
+                new FakeTypeLibRegistryCatalogReader(registryCatalog),
+                new FakeTypeLibCatalogMetadataReader(new TypeLibCatalogMetadata("Unavailable", []))),
+            Path.GetFullPath(@"C:\tools\vba-dev.exe"),
+            (_, _, _) => Task.FromResult(new VbaDevReferenceListProcessResult(
+                3,
+                JsonSerializer.Serialize(new
+                {
+                    schemaVersion = "1.0",
+                    scope = "project",
+                    project = projectPath,
+                    document = "Book1",
+                    mode = "configured",
+                    complete = true,
+                    warnings = Array.Empty<object>(),
+                    references = new[]
+                    {
+                        new
+                        {
+                            name = referenceName,
+                            status = "unavailable",
+                            reasonCode = "noUsableIdentity",
+                            candidates = new[]
+                            {
+                                new { guid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", major = 1, minor = 0 },
+                                new { guid = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", major = 1, minor = 0 }
+                            },
+                            message = "No candidate was usable by the selected project."
+                        }
+                    }
+                }),
+                "unavailable")));
+        var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
+        cache.StoreStaleCatalog(
+            CreateReferenceCatalog(referenceName, "ScopedLastKnownGoodType"),
+            scopeKey);
+        var selection = VbaProjectReferenceSelection.Create(
+            ProjectDocument.ExcelKind,
+            [new VbaProjectReference(referenceName)]);
+        var revisionBefore = cache.CaptureSelectionState(selection.References, scopeKey).Revision;
+        var service = new VbaProjectReferenceCatalogRefreshService(cache, discovery);
+
+        var result = Assert.Single(await service.RefreshAutomaticallyAsync(
+            new VbaProjectReferenceCatalogRefreshContext(
+                projectPath,
+                "Book1",
+                selection,
+                scopeKey),
+            CancellationToken.None));
+
+        Assert.True(result.DiscoveryResult.IsFailure);
+        var state = cache.CaptureSelectionState(selection.References, scopeKey);
+        Assert.Equal(revisionBefore, state.Revision);
+        Assert.Contains(
+            state.CatalogSet.GetActiveDefinitions(selection),
+            definition => definition.Name == "ScopedLastKnownGoodType");
+    }
+
+    [Fact]
+    public async Task ContextSpecificRefreshDoesNotAdoptNameOnlyPersistedCatalogAsScopedLastKnownGood()
+    {
+        const string referenceName = "Ambiguous Library";
+        const string scopeKey = "project-b-scope";
+        var persistedEntry = new VbaProjectReferenceCatalogPersistentEntry(
+            new VbaProjectReferenceCatalogIdentity(
+                referenceName,
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                1,
+                0,
+                0,
+                @"C:\TypeLibs\ProjectA.tlb"),
+            CreateReferenceCatalog(referenceName, "ProjectAType"));
+        var persistentStore = new SingleEntryPersistentStore(persistedEntry);
+        var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
+        var service = new VbaProjectReferenceCatalogRefreshService(
+            cache,
+            new FailingContextCatalogDiscovery(),
+            persistentStore);
+        var selection = VbaProjectReferenceSelection.Create(
+            ProjectDocument.ExcelKind,
+            [new VbaProjectReference(referenceName)]);
+
+        var results = await service.RefreshAutomaticallyAsync(
+            new VbaProjectReferenceCatalogRefreshContext(
+                Path.GetFullPath(@"C:\work\ProjectB"),
+                "Book1",
+                selection,
+                scopeKey,
+                SelectionFingerprint: "project-b-fingerprint"),
+            CancellationToken.None);
+
+        Assert.Equal(0, persistentStore.LoadCount);
+        Assert.Contains(results, result => result.DiscoveryResult.IsFailure);
+        var state = cache.CaptureSelectionState(selection.References, scopeKey);
+        Assert.DoesNotContain(
+            state.CatalogSet.GetActiveDefinitions(selection),
+            definition => definition.Name == "ProjectAType");
+    }
+
+    [Fact]
+    public async Task ScopedPersistentCatalogsRemainIsolatedAcrossLanguageServerSessions()
+    {
+        const string referenceName = "Ambiguous Library";
+        const string selectionFingerprint = "shared-fingerprint";
+        const string projectAScope = "project-a-scope";
+        const string projectBScope = "project-b-scope";
+        var projectAPath = Path.GetFullPath(@"C:\work\ProjectA");
+        var projectBPath = Path.GetFullPath(@"C:\work\ProjectB");
+        var cacheRoot = Directory.CreateTempSubdirectory("vba-ls-scoped-catalog-store-").FullName;
+        try
+        {
+            var store = new VbaProjectReferenceCatalogPersistentStore(cacheRoot);
+            var selection = VbaProjectReferenceSelection.Create(
+                ProjectDocument.ExcelKind,
+                [new VbaProjectReference(referenceName)]);
+            var initialService = new VbaProjectReferenceCatalogRefreshService(
+                new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty),
+                new ProjectContextCatalogDiscoveryFactory(),
+                store);
+            await initialService.RefreshAutomaticallyAsync(
+                new VbaProjectReferenceCatalogRefreshContext(
+                    projectAPath,
+                    "Book1",
+                    selection,
+                    projectAScope,
+                    selectionFingerprint),
+                CancellationToken.None);
+            await initialService.RefreshAutomaticallyAsync(
+                new VbaProjectReferenceCatalogRefreshContext(
+                    projectBPath,
+                    "Book1",
+                    selection,
+                    projectBScope,
+                    selectionFingerprint),
+                CancellationToken.None);
+
+            var resumedCache = new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.Empty);
+            var resumedDiscovery = new FailingContextCatalogDiscovery();
+            var resumedService = new VbaProjectReferenceCatalogRefreshService(
+                resumedCache,
+                resumedDiscovery,
+                store);
+            var projectAResults = await resumedService.RefreshAutomaticallyAsync(
+                new VbaProjectReferenceCatalogRefreshContext(
+                    projectAPath,
+                    "Book1",
+                    selection,
+                    projectAScope,
+                    selectionFingerprint),
+                CancellationToken.None);
+            var projectBResults = await resumedService.RefreshAutomaticallyAsync(
+                new VbaProjectReferenceCatalogRefreshContext(
+                    projectBPath,
+                    "Book1",
+                    selection,
+                    projectBScope,
+                    selectionFingerprint),
+                CancellationToken.None);
+
+            Assert.All(
+                projectAResults.Concat(projectBResults),
+                result => Assert.Equal(
+                    VbaProjectReferenceCatalogRefreshStatus.SkippedValidPersistentCache,
+                    result.Status));
+            Assert.Equal(0, resumedDiscovery.CallCount);
+            var projectAState = resumedCache.CaptureSelectionState(
+                selection.References,
+                projectAScope);
+            var projectBState = resumedCache.CaptureSelectionState(
+                selection.References,
+                projectBScope);
+            Assert.Contains(
+                projectAState.CatalogSet.GetActiveDefinitions(selection),
+                definition => definition.Name == "ProjectAType");
+            Assert.DoesNotContain(
+                projectAState.CatalogSet.GetActiveDefinitions(selection),
+                definition => definition.Name == "ProjectBType");
+            Assert.Contains(
+                projectBState.CatalogSet.GetActiveDefinitions(selection),
+                definition => definition.Name == "ProjectBType");
+            Assert.DoesNotContain(
+                projectBState.CatalogSet.GetActiveDefinitions(selection),
+                definition => definition.Name == "ProjectAType");
+        }
+        finally
+        {
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task RegistryConclusiveOrIncompleteResultsNeverInvokePinnedCli()
+    {
+        const string referenceName = "Registry Library";
+        var processCalls = 0;
+        var projectPath = Path.GetFullPath(@"C:\work\RegistryOnly");
+
+        async Task<VbaProjectReferenceCatalogDiscoveryResult> DiscoverAsync(
+            TypeLibRegistryCatalog registryCatalog)
+        {
+            var factory = new VbaDevReferenceListCatalogDiscoveryFactory(
+                new TypeLibReferenceCatalogDiscovery(
+                    new FakeTypeLibRegistryCatalogReader(registryCatalog),
+                    new FakeTypeLibCatalogMetadataReader(
+                        new TypeLibCatalogMetadata("Registry", []))),
+                Path.GetFullPath(@"C:\tools\vba-dev.exe"),
+                (_, _, _) =>
+                {
+                    Interlocked.Increment(ref processCalls);
+                    throw new InvalidOperationException("The CLI must not run.");
+                });
+            var selection = VbaProjectReferenceSelection.Create(
+                ProjectDocument.ExcelKind,
+                [new VbaProjectReference(referenceName)]);
+            var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
+            var service = new VbaProjectReferenceCatalogRefreshService(cache, factory);
+            return Assert.Single(await service.RefreshAutomaticallyAsync(
+                new VbaProjectReferenceCatalogRefreshContext(projectPath, "Book1", selection),
+                CancellationToken.None)).DiscoveryResult;
+        }
+
+        var unique = await DiscoverAsync(CreateNeutralRegistryCatalog(
+            referenceName,
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"));
+        var missing = await DiscoverAsync(new TypeLibRegistryCatalog(
+            complete: true,
+            names: [],
+            warnings: [],
+            diagnostic: null));
+        var incomplete = await DiscoverAsync(new TypeLibRegistryCatalog(
+            complete: false,
+            names: [],
+            warnings: [],
+            diagnostic: new TypeLibRegistryCatalogDiagnostic(
+                "registryCatalogIncomplete",
+                "The registry catalog is incomplete.")));
+
+        Assert.True(unique.HasUsableCatalog);
+        Assert.True(missing.IsFailure);
+        Assert.True(incomplete.IsFailure);
+        Assert.Equal(0, processCalls);
     }
 
     [Fact]
@@ -950,7 +1538,15 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
     private sealed class FakeTypeLibRegistryCatalogReader(TypeLibRegistryCatalog catalog)
         : ITypeLibRegistryCatalogReader
     {
-        public TypeLibRegistryCatalog Read() => catalog;
+        private int readCount;
+
+        public int ReadCount => Volatile.Read(ref readCount);
+
+        public TypeLibRegistryCatalog Read()
+        {
+            Interlocked.Increment(ref readCount);
+            return catalog;
+        }
     }
 
     private sealed class SequencedTypeLibRegistryCatalogReader(params TypeLibRegistryCatalog[] catalogs)
@@ -1150,6 +1746,83 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
             => Task.FromResult(VbaProjectReferenceCatalogDiscoveryResult.Failure(referenceName, message));
     }
 
+    private sealed class FailingContextCatalogDiscovery
+        : IVbaProjectReferenceCatalogDiscovery,
+          IVbaProjectReferenceCatalogContextDiscoveryFactory
+    {
+        private int callCount;
+
+        public int CallCount => Volatile.Read(ref callCount);
+
+        public Task<VbaProjectReferenceCatalogDiscoveryResult> DiscoverAsync(
+            string referenceName,
+            CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref callCount);
+            return Task.FromResult(VbaProjectReferenceCatalogDiscoveryResult.Failure(
+                referenceName,
+                "The project-specific identity could not be resolved."));
+        }
+
+        public IVbaProjectReferenceCatalogDiscovery CreateContextDiscovery(
+            VbaProjectReferenceCatalogRefreshContext context)
+            => this;
+    }
+
+    private sealed class ProjectContextCatalogDiscoveryFactory
+        : IVbaProjectReferenceCatalogDiscovery,
+          IVbaProjectReferenceCatalogContextDiscoveryFactory
+    {
+        public Task<VbaProjectReferenceCatalogDiscoveryResult> DiscoverAsync(
+            string referenceName,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult(VbaProjectReferenceCatalogDiscoveryResult.Failure(
+                referenceName,
+                "Context-free discovery is not authoritative for this test."));
+
+        public IVbaProjectReferenceCatalogDiscovery CreateContextDiscovery(
+            VbaProjectReferenceCatalogRefreshContext context)
+        {
+            var isProjectA = context.ProjectPath.EndsWith(
+                "ProjectA",
+                StringComparison.OrdinalIgnoreCase);
+            return new InlineCatalogDiscovery(VbaProjectReferenceCatalogDiscoveryResult.Success(
+                new VbaProjectReferenceCatalogIdentity(
+                    "Ambiguous Library",
+                    isProjectA
+                        ? "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+                        : "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                    1,
+                    0,
+                    0,
+                    isProjectA
+                        ? @"C:\TypeLibs\ProjectA.tlb"
+                        : @"C:\TypeLibs\ProjectB.tlb"),
+                CreateReferenceCatalog(
+                    "Ambiguous Library",
+                    isProjectA ? "ProjectAType" : "ProjectBType")));
+        }
+    }
+
+    private sealed class SingleEntryPersistentStore(VbaProjectReferenceCatalogPersistentEntry entry)
+        : IVbaProjectReferenceCatalogPersistentStore
+    {
+        public int LoadCount { get; private set; }
+
+        public Task<VbaProjectReferenceCatalogPersistentLoadResult> LoadAsync(
+            string referenceName,
+            CancellationToken cancellationToken)
+        {
+            LoadCount++;
+            return Task.FromResult(VbaProjectReferenceCatalogPersistentLoadResult.Current(entry));
+        }
+
+        public Task SaveAsync(
+            VbaProjectReferenceCatalogPersistentEntry savedEntry,
+            CancellationToken cancellationToken)
+            => Task.CompletedTask;
+    }
+
     private sealed class CancellationAwareCatalogDiscovery : IVbaProjectReferenceCatalogDiscovery
     {
         public Task<VbaProjectReferenceCatalogDiscoveryResult> DiscoverAsync(
@@ -1161,5 +1834,35 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
                 referenceName,
                 "Cancellation was not observed."));
         }
+    }
+
+    private sealed class InlineCatalogDiscovery(VbaProjectReferenceCatalogDiscoveryResult result)
+        : IVbaProjectReferenceCatalogDiscovery
+    {
+        public Task<VbaProjectReferenceCatalogDiscoveryResult> DiscoverAsync(
+            string referenceName,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult(result);
+    }
+
+    private sealed class BlockingMutationLane : IVbaProjectReferenceCatalogMutationLane
+    {
+        private readonly TaskCompletionSource release =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource CommitStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task CommitAsync(
+            string authorityKey,
+            Action commit,
+            CancellationToken cancellationToken)
+        {
+            CommitStarted.TrySetResult();
+            await release.Task.WaitAsync(cancellationToken);
+            commit();
+        }
+
+        public void Release() => release.TrySetResult();
     }
 }

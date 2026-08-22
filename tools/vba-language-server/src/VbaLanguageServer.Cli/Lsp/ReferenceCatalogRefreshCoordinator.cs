@@ -116,6 +116,8 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
     private readonly HashSet<Task> backgroundTasks = [];
     private readonly Dictionary<string, long> latestLifecycleScopeRevisions =
         new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> latestLifecycleScopeFingerprints =
+        new(StringComparer.OrdinalIgnoreCase);
     private readonly CancellationTokenSource lifetimeCancellation = new();
     private VbaInteractiveWorkScheduler? scheduler;
     private VbaLatestOnlyBackgroundMailbox? lifecycleMailbox;
@@ -224,7 +226,7 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
     public void DeactivateManifest(string uri)
     {
         var scopePrefix = CreateManifestScopePrefix(uri);
-        var removedFingerprints = new HashSet<string>(StringComparer.Ordinal);
+        var removedWorkKeys = new HashSet<string>(StringComparer.Ordinal);
         lock (lifecyclePlanGate)
         {
             VbaLatestOnlyBackgroundMailbox? mailbox;
@@ -238,9 +240,10 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
                     .ToArray())
                 {
                     latestLifecycleScopeRevisions.Remove(scopeKey);
+                    latestLifecycleScopeFingerprints.Remove(scopeKey);
                     if (lifecycleStates.Remove(scopeKey, out var state))
                     {
-                        removedFingerprints.Add(state.Fingerprint);
+                        removedWorkKeys.Add(state.WorkKey);
                     }
                 }
             }
@@ -248,7 +251,7 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
             mailbox?.Discard(uri);
         }
 
-        CancelUnusedSharedWork(removedFingerprints);
+        CancelUnusedSharedWork(removedWorkKeys);
     }
 
     /// <summary>
@@ -293,6 +296,7 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
                     stopping = true;
                     cancel = true;
                     latestLifecycleScopeRevisions.Clear();
+                    latestLifecycleScopeFingerprints.Clear();
                 }
 
                 mailbox = lifecycleMailbox;
@@ -373,6 +377,14 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
                         scopeRevision.Value;
                 }
 
+                foreach (var selection in plan.Selections)
+                {
+                    latestLifecycleScopeFingerprints[selection.ScopeKey] =
+                        CreateSelectionFingerprint(selection);
+                }
+
+                InvalidateMissingManifestScopesCore(plan.Uri, plan.Selections);
+
                 scheduledPlan = plan with
                 {
                     Revision = revision,
@@ -401,7 +413,7 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
     private void ScheduleLifecycleCore(ReferenceCatalogRefreshPlan plan)
     {
         var scheduledSelections = new List<ScheduledReferenceCatalogSelection>();
-        var replacedFingerprints = new HashSet<string>(StringComparer.Ordinal);
+        var replacedWorkKeys = new HashSet<string>(StringComparer.Ordinal);
         lock (lifecycleGate)
         {
             if (stopping)
@@ -427,12 +439,13 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
 
                 if (current is not null)
                 {
-                    replacedFingerprints.Add(current.Fingerprint);
+                    replacedWorkKeys.Add(current.WorkKey);
                 }
 
                 lifecycleRevision++;
                 var state = new ReferenceCatalogLifecycleState(
                     fingerprint,
+                    CreateAutomaticWorkKey(selection, fingerprint),
                     lifecycleRevision);
                 lifecycleStates[selection.ScopeKey] = state;
                 scheduledSelections.Add(new ScheduledReferenceCatalogSelection(
@@ -442,9 +455,9 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
             }
         }
 
-        CancelUnusedSharedWork(replacedFingerprints);
+        CancelUnusedSharedWork(replacedWorkKeys);
         foreach (var selectionGroup in scheduledSelections.GroupBy(
-            selection => selection.State.Fingerprint,
+            selection => selection.State.WorkKey,
             StringComparer.Ordinal))
         {
             SharedReferenceCatalogWork? automaticWork = null;
@@ -575,8 +588,8 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
                 return null;
             }
 
-            var fingerprint = selection.State.Fingerprint;
-            if (sharedAutomaticWork.TryGetValue(fingerprint, out var existing)
+            var workKey = selection.State.WorkKey;
+            if (sharedAutomaticWork.TryGetValue(workKey, out var existing)
                 && !existing.Cancellation.IsCancellationRequested)
             {
                 return existing;
@@ -596,7 +609,7 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
                     TaskCreationOptions.RunContinuationsAsynchronously);
             var task = Task.Run(
                 () => RunAutomaticWorkAsync(
-                    selection.Context,
+                    selection,
                     dependencies,
                     persistedPreloadResults,
                     cancellation.Token),
@@ -606,21 +619,22 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
                 persistedPreloadResults.Task,
                 cancellation,
                 referenceNames);
-            sharedAutomaticWork[fingerprint] = sharedWork;
+            sharedAutomaticWork[workKey] = sharedWork;
             activeAutomaticWork.Add(sharedWork);
             backgroundTasks.Add(task);
-            ObserveSharedAutomaticWork(fingerprint, sharedWork);
+            ObserveSharedAutomaticWork(workKey, sharedWork);
             return sharedWork;
         }
     }
 
     private async Task<IReadOnlyList<VbaProjectReferenceCatalogRefreshResult>> RunAutomaticWorkAsync(
-        VbaProjectReferenceSelectionContext selectionContext,
+        ScheduledReferenceCatalogSelection scheduledSelection,
         IReadOnlyList<Task<IReadOnlyList<VbaProjectReferenceCatalogRefreshResult>>> dependencies,
         TaskCompletionSource<IReadOnlyList<VbaProjectReferenceCatalogRefreshResult>>
             persistedPreloadResults,
         CancellationToken cancellationToken)
     {
+        var selectionContext = scheduledSelection.Context;
         try
         {
             if (dependencies.Count > 0)
@@ -630,7 +644,19 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
 
             cancellationToken.ThrowIfCancellationRequested();
             return await refreshService.RefreshAutomaticallyAsync(
-                selectionContext.Selection,
+                new VbaProjectReferenceCatalogRefreshContext(
+                    selectionContext.ProjectPath,
+                    selectionContext.DocumentName,
+                    selectionContext.Selection,
+                    refreshService.UsesContextSpecificDiscovery
+                        ? selectionContext.ScopeKey
+                        : null,
+                    refreshService.UsesContextSpecificDiscovery
+                        ? scheduledSelection.State.Fingerprint
+                        : null,
+                    refreshService.UsesContextSpecificDiscovery
+                        ? () => IsCurrentLifecycle(scheduledSelection)
+                        : null),
                 results => persistedPreloadResults.TrySetResult(results),
                 cancellationToken);
         }
@@ -671,21 +697,27 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
 
     private bool IsCurrentLifecycleCore(ScheduledReferenceCatalogSelection selection)
         => lifecycleStates.TryGetValue(selection.Context.ScopeKey, out var current)
+            && latestLifecycleScopeFingerprints.TryGetValue(
+                selection.Context.ScopeKey,
+                out var latestFingerprint)
+            && latestFingerprint.Equals(
+                selection.State.Fingerprint,
+                StringComparison.Ordinal)
             && current.Fingerprint.Equals(
                 selection.State.Fingerprint,
                 StringComparison.Ordinal)
             && current.Revision == selection.State.Revision;
 
-    private void CancelUnusedSharedWork(IEnumerable<string> fingerprints)
+    private void CancelUnusedSharedWork(IEnumerable<string> workKeys)
     {
         var workToCancel = new List<SharedReferenceCatalogWork>();
         lock (lifecycleGate)
         {
-            foreach (var fingerprint in fingerprints.Distinct(StringComparer.Ordinal))
+            foreach (var workKey in workKeys.Distinct(StringComparer.Ordinal))
             {
                 if (lifecycleStates.Values.Any(state =>
-                        state.Fingerprint.Equals(fingerprint, StringComparison.Ordinal))
-                    || !sharedAutomaticWork.Remove(fingerprint, out var sharedWork))
+                        state.WorkKey.Equals(workKey, StringComparison.Ordinal))
+                    || !sharedAutomaticWork.Remove(workKey, out var sharedWork))
                 {
                     continue;
                 }
@@ -715,7 +747,7 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
             TaskScheduler.Default);
 
     private void ObserveSharedAutomaticWork(
-        string fingerprint,
+        string workKey,
         SharedReferenceCatalogWork sharedWork)
         => _ = sharedWork.Task.ContinueWith(
             completed =>
@@ -724,10 +756,10 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
                 {
                     backgroundTasks.Remove(completed);
                     activeAutomaticWork.Remove(sharedWork);
-                    if (sharedAutomaticWork.TryGetValue(fingerprint, out var current)
+                    if (sharedAutomaticWork.TryGetValue(workKey, out var current)
                         && ReferenceEquals(current, sharedWork))
                     {
-                        sharedAutomaticWork.Remove(fingerprint);
+                        sharedAutomaticWork.Remove(workKey);
                     }
                 }
 
@@ -884,7 +916,13 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
                 $"selection-warning\u001f{context.ScopeKey}\u001f{context.Selection.MissingExpectedMainReference}"));
         }
 
-        foreach (var referenceName in catalogCache.Current.GetMissingCatalogReferenceNames(context.Selection))
+        var scopeKey = refreshService.UsesContextSpecificDiscovery
+            ? context.ScopeKey
+            : null;
+        var catalogState = catalogCache.CaptureSelectionState(
+            context.Selection.References,
+            scopeKey);
+        foreach (var referenceName in catalogState.CatalogSet.GetMissingCatalogReferenceNames(context.Selection))
         {
             messages.Add(CreateDirectMessage(
                 3,
@@ -892,18 +930,23 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
                 $"availability-missing\u001f{context.ScopeKey}\u001f{referenceName}"));
         }
 
-        AddAvailabilityMessages(messages, context.DocumentName, context.Selection);
+        AddAvailabilityMessages(
+            messages,
+            context.DocumentName,
+            context.Selection,
+            scopeKey);
         return messages;
     }
 
     private void AddAvailabilityMessages(
         ICollection<ReferenceCatalogRefreshSessionMessage> messages,
         string documentName,
-        VbaProjectReferenceSelection selection)
+        VbaProjectReferenceSelection selection,
+        string? scopeKey)
     {
         foreach (var reference in selection.References)
         {
-            var source = catalogCache.GetCatalogSource(reference.Name);
+            var source = catalogCache.GetCatalogSource(reference.Name, scopeKey);
             if (source == VbaProjectReferenceCatalogSource.Unavailable)
             {
                 continue;
@@ -962,7 +1005,7 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
             .Select(selection => selection.ScopeKey)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var scopePrefix = CreateManifestScopePrefix(uri);
-        var removedFingerprints = new HashSet<string>(StringComparer.Ordinal);
+        var removedWorkKeys = new HashSet<string>(StringComparer.Ordinal);
         lock (lifecycleGate)
         {
             foreach (var scopeKey in latestLifecycleScopeRevisions.Keys
@@ -973,14 +1016,35 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
                 .ToArray())
             {
                 latestLifecycleScopeRevisions.Remove(scopeKey);
+                latestLifecycleScopeFingerprints.Remove(scopeKey);
                 if (lifecycleStates.Remove(scopeKey, out var state))
                 {
-                    removedFingerprints.Add(state.Fingerprint);
+                    removedWorkKeys.Add(state.WorkKey);
                 }
             }
         }
 
-        CancelUnusedSharedWork(removedFingerprints);
+        CancelUnusedSharedWork(removedWorkKeys);
+    }
+
+    private void InvalidateMissingManifestScopesCore(
+        string uri,
+        IReadOnlyList<VbaProjectReferenceSelectionContext> selections)
+    {
+        var retainedScopes = selections
+            .Select(selection => selection.ScopeKey)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var scopePrefix = CreateManifestScopePrefix(uri);
+        foreach (var scopeKey in latestLifecycleScopeRevisions.Keys
+            .Concat(lifecycleStates.Keys)
+            .Where(key => key.StartsWith(scopePrefix, StringComparison.OrdinalIgnoreCase))
+            .Where(key => !retainedScopes.Contains(key))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray())
+        {
+            latestLifecycleScopeRevisions.Remove(scopeKey);
+            latestLifecycleScopeFingerprints.Remove(scopeKey);
+        }
     }
 
     private static string CreateSelectionFingerprint(VbaProjectReferenceSelectionContext context)
@@ -992,9 +1056,14 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
             string.Join(
                 "\u001e",
                 context.Selection.References
-                    .Select(reference => reference.Name.Trim().ToUpperInvariant())
-                    .Distinct(StringComparer.Ordinal)
-                    .OrderBy(name => name, StringComparer.Ordinal)));
+                    .Select(reference => reference.Name.Trim().ToUpperInvariant())));
+
+    private string CreateAutomaticWorkKey(
+        VbaProjectReferenceSelectionContext context,
+        string fingerprint)
+        => refreshService.UsesContextSpecificDiscovery
+            ? string.Join("\u001d", fingerprint, context.ScopeKey)
+            : fingerprint;
 
     private static string CreateManifestScopePrefix(string uri)
     {
@@ -1008,7 +1077,10 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
         string key)
         => new(new ReferenceCatalogRefreshLogMessage(type, text, key), PublishOnce: false);
 
-    private sealed record ReferenceCatalogLifecycleState(string Fingerprint, long Revision);
+    private sealed record ReferenceCatalogLifecycleState(
+        string Fingerprint,
+        string WorkKey,
+        long Revision);
 
     private sealed record ScheduledReferenceCatalogSelection(
         string Uri,

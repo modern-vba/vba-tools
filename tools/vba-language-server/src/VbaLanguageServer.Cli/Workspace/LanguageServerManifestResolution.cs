@@ -14,11 +14,13 @@ internal sealed record VbaLanguageServerManifestMessage(int Type, string Text);
 /// Represents the reference selection resolved for one manifest document.
 /// </summary>
 /// <param name="ScopeKey">The stable manifest-document scope key.</param>
+/// <param name="ProjectPath">The canonical project root containing the manifest.</param>
 /// <param name="DocumentName">The manifest document name.</param>
 /// <param name="DocumentKind">The manifest document kind.</param>
 /// <param name="Selection">The reference selection for the document.</param>
 internal sealed record VbaProjectReferenceSelectionContext(
     string ScopeKey,
+    string ProjectPath,
     string DocumentName,
     string DocumentKind,
     VbaProjectReferenceSelection Selection);
@@ -122,6 +124,7 @@ internal static class LanguageServerManifestResolution
                 selections = manifest.Documents
                     .Select(document => new VbaProjectReferenceSelectionContext(
                         CreateScopeKey(manifestIdentity, document.Key),
+                        CreateProjectPath(manifestIdentity),
                         document.Key,
                         document.Value.Kind,
                         VbaProjectReferenceSelection.Create(
@@ -159,6 +162,7 @@ internal static class LanguageServerManifestResolution
                 CreateScopeKey(
                     resolution.ManifestPath ?? resolution.RootPath,
                     resolution.DocumentName),
+                CreateProjectPath(resolution.ManifestPath ?? resolution.RootPath),
                 resolution.DocumentName,
                 resolution.DocumentKind,
                 VbaProjectReferenceSelection.Create(
@@ -173,6 +177,21 @@ internal static class LanguageServerManifestResolution
             "\u001f",
             Path.GetFullPath(manifestIdentity),
             documentName);
+
+    internal static string? CreateScopeKey(VbaProjectResolution resolution)
+        => resolution.Kind == VbaProjectResolutionKind.ManifestDocument
+            && !string.IsNullOrEmpty(resolution.DocumentName)
+            && !string.IsNullOrEmpty(resolution.ManifestPath)
+                ? CreateScopeKey(resolution.ManifestPath, resolution.DocumentName)
+                : null;
+
+    private static string CreateProjectPath(string manifestIdentity)
+    {
+        var manifestPath = Path.GetFullPath(manifestIdentity);
+        return Path.GetDirectoryName(manifestPath)
+            ?? throw new InvalidOperationException(
+                $"The project manifest path '{manifestPath}' has no parent directory.");
+    }
 
     private static IReadOnlyList<VbaLanguageServerManifestMessage> CreateReferenceSelectionMessages(
         VbaProjectResolution resolution,

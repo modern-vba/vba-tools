@@ -219,7 +219,8 @@ internal sealed class VbaProjectSnapshotProvider
             seed.Resolution,
             manifestBarriers,
             referenceCatalogCache.CaptureSelectionState(
-                seed.Resolution.ReferenceEntries),
+                seed.Resolution.ReferenceEntries,
+                LanguageServerManifestResolution.CreateScopeKey(seed.Resolution)),
             new VbaProjectSnapshotIdentity(seed.CacheKey),
             SupersededCacheIdentity: null);
     }
@@ -267,7 +268,8 @@ internal sealed class VbaProjectSnapshotProvider
         var manifestCapture = ResolveCurrentManifest(activeUri);
         var resolution = manifestCapture.Resolution;
         var referenceCatalogState = referenceCatalogCache.CaptureSelectionState(
-            resolution.ReferenceEntries);
+            resolution.ReferenceEntries,
+            LanguageServerManifestResolution.CreateScopeKey(resolution));
         var cacheIdentity = VbaProjectSnapshotIdentity.Create(activeUri, resolution);
         return new ProjectScopeCapture(
             activeUri,

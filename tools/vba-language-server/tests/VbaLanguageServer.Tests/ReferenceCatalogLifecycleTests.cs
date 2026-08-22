@@ -401,7 +401,7 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
         await lifecycle.WaitForIdleAsync();
         lifecycle.ApplyManifestSelectionChange(
             manifestUri,
-            CreateManifestText("library b", "library a").Replace(
+            CreateManifestText("library a", "library b").Replace(
                 "LifecycleProject",
                 "RenamedLifecycleProject",
                 StringComparison.Ordinal));
@@ -606,6 +606,137 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
         Assert.Equal(["Library B"], discovery.ReferenceNames);
         await lifecycle.StopAsync();
         await scheduler.StopAsync(VbaInteractiveStopReason.Complete);
+    }
+
+    [Fact]
+    public async Task ReservedManifestReplacementRejectsOlderContextCommitBeforeReplacementPosts()
+    {
+        const string manifestUri = "file:///C:/work/ReservationFence/vba-project.json";
+        var catalogCache = new VbaProjectReferenceCatalogCache(
+            VbaProjectReferenceCatalogSet.Empty);
+        var discovery = new BlockingFirstContextSuccessFactory();
+        var refreshService = new VbaProjectReferenceCatalogRefreshService(
+            catalogCache,
+            discovery,
+            persistentStore: null,
+            new InlineRefreshWorker());
+        var planObserver = new BlockingSecondPlanReservationObserver();
+        await using var output = new MemoryStream();
+        var lifecycle = new ReferenceCatalogRefreshCoordinator(
+            catalogCache,
+            refreshService,
+            new VbaProjectManifestWorkspace(),
+            new LspMessageTransport(Stream.Null, output),
+            lifecycleObserver: null,
+            planObserver: planObserver);
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        lifecycle.AttachScheduler(scheduler);
+
+        try
+        {
+            lifecycle.ApplyManifestSelectionChange(
+                manifestUri,
+                CreateManifestText("Library A", "Library B"));
+            await discovery.FirstDiscoveryStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var replacement = Task.Run(() => lifecycle.ApplyManifestSelectionChange(
+                manifestUri,
+                CreateManifestText("Library B", "Library A")));
+            await planObserver.SecondPlanReserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            discovery.ReleaseFirstDiscovery();
+            await lifecycle.WaitForIdleAsync().WaitAsync(TimeSpan.FromSeconds(5));
+
+            var manifestPath = Path.GetFullPath(@"C:\work\ReservationFence\vba-project.json");
+            var scopeKey = $"{manifestPath}\u001fBook1";
+            var selection = CreateSelection("Library A", "Library B");
+            var supersededState = catalogCache.CaptureSelectionState(
+                selection.References,
+                scopeKey);
+            Assert.DoesNotContain(
+                supersededState.CatalogSet.GetActiveDefinitions(selection),
+                definition => definition.Name.StartsWith("Superseded", StringComparison.Ordinal));
+
+            planObserver.ReleaseSecondPlan();
+            await replacement.WaitAsync(TimeSpan.FromSeconds(5));
+            await lifecycle.WaitForIdleAsync().WaitAsync(TimeSpan.FromSeconds(5));
+
+            var currentState = catalogCache.CaptureSelectionState(selection.References, scopeKey);
+            Assert.Contains(
+                currentState.CatalogSet.GetActiveDefinitions(selection),
+                definition => definition.Name == "CurrentLibraryAType");
+            Assert.Contains(
+                currentState.CatalogSet.GetActiveDefinitions(selection),
+                definition => definition.Name == "CurrentLibraryBType");
+        }
+        finally
+        {
+            discovery.ReleaseFirstDiscovery();
+            planObserver.ReleaseSecondPlan();
+            await lifecycle.StopAsync();
+            await scheduler.StopAsync(VbaInteractiveStopReason.Complete);
+        }
+    }
+
+    [Fact]
+    public async Task ReservedManifestReplacementRejectsRemovedContextCommitBeforeReplacementPosts()
+    {
+        const string manifestUri = "file:///C:/work/RemovedReservationFence/vba-project.json";
+        var catalogCache = new VbaProjectReferenceCatalogCache(
+            VbaProjectReferenceCatalogSet.Empty);
+        var discovery = new BlockingFirstContextSuccessFactory("Book1");
+        var refreshService = new VbaProjectReferenceCatalogRefreshService(
+            catalogCache,
+            discovery,
+            persistentStore: null,
+            new InlineRefreshWorker());
+        var planObserver = new BlockingSecondPlanReservationObserver();
+        await using var output = new MemoryStream();
+        var lifecycle = new ReferenceCatalogRefreshCoordinator(
+            catalogCache,
+            refreshService,
+            new VbaProjectManifestWorkspace(),
+            new LspMessageTransport(Stream.Null, output),
+            lifecycleObserver: null,
+            planObserver: planObserver);
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        lifecycle.AttachScheduler(scheduler);
+
+        try
+        {
+            lifecycle.ApplyManifestSelectionChange(
+                manifestUri,
+                CreateTwoDocumentManifestText("Removed Library", "Retained Library"));
+            await discovery.FirstDiscoveryStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var replacement = Task.Run(() => lifecycle.ApplyManifestSelectionChange(
+                manifestUri,
+                CreateSingleBook2ManifestText("Retained Library")));
+            await planObserver.SecondPlanReserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            discovery.ReleaseFirstDiscovery();
+            await lifecycle.WaitForIdleAsync().WaitAsync(TimeSpan.FromSeconds(5));
+
+            var manifestPath = Path.GetFullPath(
+                @"C:\work\RemovedReservationFence\vba-project.json");
+            var removedScopeKey = $"{manifestPath}\u001fBook1";
+            var removedSelection = CreateSelection("Removed Library");
+            var removedState = catalogCache.CaptureSelectionState(
+                removedSelection.References,
+                removedScopeKey);
+            Assert.DoesNotContain(
+                removedState.CatalogSet.GetActiveDefinitions(removedSelection),
+                definition => definition.Name == "SupersededRemovedLibraryType");
+
+            planObserver.ReleaseSecondPlan();
+            await replacement.WaitAsync(TimeSpan.FromSeconds(5));
+            await lifecycle.WaitForIdleAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            discovery.ReleaseFirstDiscovery();
+            planObserver.ReleaseSecondPlan();
+            await lifecycle.StopAsync();
+            await scheduler.StopAsync(VbaInteractiveStopReason.Complete);
+        }
     }
 
     [Fact]
@@ -1276,6 +1407,177 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
 
         Assert.Equal(1, persistentStore.LoadCount);
         Assert.Equal(1, discovery.CallCount);
+        await lifecycle.StopAsync();
+    }
+
+    [Fact]
+    public async Task AutomaticLifecycleSuppliesCanonicalProjectAndDocumentToContextDiscovery()
+    {
+        var catalogCache = new VbaProjectReferenceCatalogCache(
+            VbaProjectReferenceCatalogSet.Empty);
+        var discovery = new RecordingContextDiscoveryFactory();
+        var refreshService = new VbaProjectReferenceCatalogRefreshService(
+            catalogCache,
+            discovery,
+            persistentStore: null,
+            new InlineRefreshWorker());
+        await using var output = new MemoryStream();
+        var lifecycle = new ReferenceCatalogRefreshCoordinator(
+            catalogCache,
+            refreshService,
+            new VbaProjectManifestWorkspace(),
+            new LspMessageTransport(Stream.Null, output));
+        lifecycle.AttachScheduler(defaultScheduler);
+        const string manifestUri = "file:///C:/work/ContextProject/vba-project.json";
+
+        lifecycle.ApplyManifestSelectionChange(
+            manifestUri,
+            CreateManifestText("Ambiguous Library"));
+        await lifecycle.WaitForIdleAsync();
+
+        var context = Assert.Single(discovery.Contexts);
+        Assert.Equal(Path.GetFullPath(@"C:\work\ContextProject"), context.ProjectPath);
+        Assert.Equal("Book1", context.DocumentName);
+        Assert.Equal("Ambiguous Library", Assert.Single(context.Selection.References).Name);
+        await lifecycle.StopAsync();
+    }
+
+    [Fact]
+    public async Task EqualFingerprintsKeepContextSpecificDiscoverySeparatePerDocument()
+    {
+        var catalogCache = new VbaProjectReferenceCatalogCache(
+            VbaProjectReferenceCatalogSet.Empty);
+        var discovery = new RecordingContextDiscoveryFactory();
+        var refreshService = new VbaProjectReferenceCatalogRefreshService(
+            catalogCache,
+            discovery,
+            persistentStore: null,
+            new InlineRefreshWorker());
+        await using var output = new MemoryStream();
+        var lifecycle = new ReferenceCatalogRefreshCoordinator(
+            catalogCache,
+            refreshService,
+            new VbaProjectManifestWorkspace(),
+            new LspMessageTransport(Stream.Null, output));
+        lifecycle.AttachScheduler(defaultScheduler);
+
+        lifecycle.ApplyManifestSelectionChange(
+            "file:///C:/work/ContextProject/vba-project.json",
+            CreateTwoDocumentManifestText("Ambiguous Library"));
+        await lifecycle.WaitForIdleAsync();
+
+        Assert.Equal(
+            ["Book1", "Book2"],
+            discovery.Contexts
+                .Select(context => context.DocumentName)
+                .OrderBy(name => name, StringComparer.Ordinal));
+        await lifecycle.StopAsync();
+    }
+
+    [Fact]
+    public async Task ContextResolvedCatalogBindingsRemainIsolatedPerManifestDocument()
+    {
+        var catalogCache = new VbaProjectReferenceCatalogCache(
+            VbaProjectReferenceCatalogSet.Empty);
+        var discovery = new ScopedContextDiscoveryFactory();
+        var refreshService = new VbaProjectReferenceCatalogRefreshService(
+            catalogCache,
+            discovery,
+            persistentStore: null,
+            new InlineRefreshWorker());
+        await using var output = new MemoryStream();
+        var lifecycle = new ReferenceCatalogRefreshCoordinator(
+            catalogCache,
+            refreshService,
+            new VbaProjectManifestWorkspace(),
+            new LspMessageTransport(Stream.Null, output));
+        lifecycle.AttachScheduler(defaultScheduler);
+        const string manifestUri = "file:///C:/work/ScopedProject/vba-project.json";
+        lifecycle.ApplyManifestSelectionChange(
+            manifestUri,
+            CreateTwoDocumentManifestText("Ambiguous Library"));
+        await lifecycle.WaitForIdleAsync();
+
+        var manifestPath = Path.GetFullPath(@"C:\work\ScopedProject\vba-project.json");
+        var selection = CreateSelection("Ambiguous Library");
+        var book1State = catalogCache.CaptureSelectionState(
+            selection.References,
+            $"{manifestPath}\u001fBook1");
+        var book2State = catalogCache.CaptureSelectionState(
+            selection.References,
+            $"{manifestPath}\u001fBook2");
+
+        Assert.Contains(
+            book1State.CatalogSet.GetActiveDefinitions(selection),
+            definition => definition.Name == "Book1ResolvedType");
+        Assert.DoesNotContain(
+            book1State.CatalogSet.GetActiveDefinitions(selection),
+            definition => definition.Name == "Book2ResolvedType");
+        Assert.Contains(
+            book2State.CatalogSet.GetActiveDefinitions(selection),
+            definition => definition.Name == "Book2ResolvedType");
+        Assert.DoesNotContain(
+            book2State.CatalogSet.GetActiveDefinitions(selection),
+            definition => definition.Name == "Book1ResolvedType");
+        await lifecycle.StopAsync();
+    }
+
+    [Fact]
+    public async Task ManifestReferenceReorderRefreshesSuccessfulContextCatalogForNewFingerprint()
+    {
+        var catalogCache = new VbaProjectReferenceCatalogCache(
+            VbaProjectReferenceCatalogSet.Empty);
+        var discovery = new BlockingFirstContextSuccessFactory();
+        discovery.ReleaseFirstDiscovery();
+        var refreshService = new VbaProjectReferenceCatalogRefreshService(
+            catalogCache,
+            discovery,
+            persistentStore: null,
+            new InlineRefreshWorker());
+        await using var output = new MemoryStream();
+        var lifecycle = new ReferenceCatalogRefreshCoordinator(
+            catalogCache,
+            refreshService,
+            new VbaProjectManifestWorkspace(),
+            new LspMessageTransport(Stream.Null, output));
+        lifecycle.AttachScheduler(defaultScheduler);
+        const string manifestUri = "file:///C:/work/Reordered/vba-project.json";
+
+        lifecycle.ApplyManifestSelectionChange(
+            manifestUri,
+            CreateManifestText("Library A", "Library B"));
+        await lifecycle.WaitForIdleAsync();
+        var manifestPath = Path.GetFullPath(@"C:\work\Reordered\vba-project.json");
+        var scopeKey = $"{manifestPath}\u001fBook1";
+        var selection = CreateSelection("Library A", "Library B");
+        var initialState = catalogCache.CaptureSelectionState(
+            selection.References,
+            scopeKey);
+        Assert.Contains(
+            initialState.CatalogSet.GetActiveDefinitions(selection),
+            definition => definition.Name == "SupersededLibraryAType");
+        Assert.Contains(
+            initialState.CatalogSet.GetActiveDefinitions(selection),
+            definition => definition.Name == "SupersededLibraryBType");
+
+        lifecycle.ApplyManifestSelectionChange(
+            manifestUri,
+            CreateManifestText("Library B", "Library A"));
+        await lifecycle.WaitForIdleAsync();
+
+        var reorderedState = catalogCache.CaptureSelectionState(
+            selection.References,
+            scopeKey);
+        var reorderedDefinitions = reorderedState.CatalogSet.GetActiveDefinitions(selection);
+        Assert.Contains(
+            reorderedDefinitions,
+            definition => definition.Name == "CurrentLibraryAType");
+        Assert.Contains(
+            reorderedDefinitions,
+            definition => definition.Name == "CurrentLibraryBType");
+        Assert.DoesNotContain(
+            reorderedDefinitions,
+            definition => definition.Name.StartsWith("Superseded", StringComparison.Ordinal));
         await lifecycle.StopAsync();
     }
 
@@ -2129,6 +2431,18 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
             }
         });
 
+    private static string CreateSingleBook2ManifestText(string referenceName)
+        => JsonSerializer.Serialize(new
+        {
+            schemaVersion = 1,
+            projectName = "SharedLifecycleProject",
+            primaryDocument = "Book2",
+            documents = new Dictionary<string, object>
+            {
+                ["Book2"] = CreateDocument("src/Book2", referenceName)
+            }
+        });
+
     private static string CreateOverlappingDocumentManifestText(bool includeReferenceOwner)
     {
         var documents = new Dictionary<string, object>();
@@ -2228,6 +2542,35 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
             => releaseFirstPlan.TrySetResult();
     }
 
+    private sealed class BlockingSecondPlanReservationObserver
+        : IReferenceCatalogRefreshPlanObserver
+    {
+        private readonly TaskCompletionSource releaseSecondPlan = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int observationCount;
+
+        public TaskCompletionSource SecondPlanReserved { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void AfterPlanReservedBeforePost(string uri, long revision)
+        {
+            if (Interlocked.Increment(ref observationCount) != 2)
+            {
+                return;
+            }
+
+            SecondPlanReserved.TrySetResult();
+            releaseSecondPlan.Task.GetAwaiter().GetResult();
+        }
+
+        public void BeforePlanCommit(string uri, long revision)
+        {
+        }
+
+        public void ReleaseSecondPlan()
+            => releaseSecondPlan.TrySetResult();
+    }
+
     private sealed class RecordingReferenceCatalogLifecycle : IReferenceCatalogLifecycle
     {
         public int ProjectActivationCount { get; private set; }
@@ -2309,6 +2652,173 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
                 VbaProjectReferenceCatalogDiscoveryResult.Failure(
                     referenceName,
                     "Expected lifecycle test result."));
+        }
+    }
+
+    private sealed class RecordingContextDiscoveryFactory
+        : IVbaProjectReferenceCatalogDiscovery,
+          IVbaProjectReferenceCatalogContextDiscoveryFactory
+    {
+        private readonly object gate = new();
+        private readonly List<VbaProjectReferenceCatalogRefreshContext> contexts = [];
+
+        public IReadOnlyList<VbaProjectReferenceCatalogRefreshContext> Contexts
+        {
+            get
+            {
+                lock (gate)
+                {
+                    return contexts.ToArray();
+                }
+            }
+        }
+
+        public Task<VbaProjectReferenceCatalogDiscoveryResult> DiscoverAsync(
+            string referenceName,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult(VbaProjectReferenceCatalogDiscoveryResult.Failure(
+                referenceName,
+                "Context-free discovery should not be selected for automatic lifecycle work."));
+
+        public IVbaProjectReferenceCatalogDiscovery CreateContextDiscovery(
+            VbaProjectReferenceCatalogRefreshContext context)
+        {
+            lock (gate)
+            {
+                contexts.Add(context);
+            }
+
+            return this;
+        }
+    }
+
+    private sealed class ScopedContextDiscoveryFactory
+        : IVbaProjectReferenceCatalogDiscovery,
+          IVbaProjectReferenceCatalogContextDiscoveryFactory
+    {
+        public Task<VbaProjectReferenceCatalogDiscoveryResult> DiscoverAsync(
+            string referenceName,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult(VbaProjectReferenceCatalogDiscoveryResult.Failure(
+                referenceName,
+                "Context-free discovery is not authoritative for this test."));
+
+        public IVbaProjectReferenceCatalogDiscovery CreateContextDiscovery(
+            VbaProjectReferenceCatalogRefreshContext context)
+            => new ScopedContextDiscovery(context.DocumentName);
+
+        private sealed class ScopedContextDiscovery(string documentName)
+            : IVbaProjectReferenceCatalogDiscovery
+        {
+            public Task<VbaProjectReferenceCatalogDiscoveryResult> DiscoverAsync(
+                string referenceName,
+                CancellationToken cancellationToken = default)
+            {
+                var guid = documentName.Equals("Book1", StringComparison.Ordinal)
+                    ? "11111111-1111-1111-1111-111111111111"
+                    : "22222222-2222-2222-2222-222222222222";
+                return Task.FromResult(VbaProjectReferenceCatalogDiscoveryResult.Success(
+                    new VbaProjectReferenceCatalogIdentity(
+                        referenceName,
+                        guid,
+                        1,
+                        0,
+                        0,
+                        $@"C:\TypeLibs\{documentName}.tlb"),
+                    new VbaProjectReferenceCatalog(
+                        referenceName,
+                        [],
+                        [
+                            new VbaProjectReferenceDefinition(
+                                referenceName,
+                                $"{documentName}ResolvedType",
+                                VbaSourceDefinitionKind.Class)
+                        ])));
+            }
+        }
+    }
+
+    private sealed class BlockingFirstContextSuccessFactory
+        : IVbaProjectReferenceCatalogDiscovery,
+          IVbaProjectReferenceCatalogContextDiscoveryFactory
+    {
+        private readonly TaskCompletionSource releaseFirstDiscovery = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly string? blockedDocumentName;
+        private int contextCount;
+
+        public BlockingFirstContextSuccessFactory(string? blockedDocumentName = null)
+        {
+            this.blockedDocumentName = blockedDocumentName;
+        }
+
+        public TaskCompletionSource FirstDiscoveryStarted { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task<VbaProjectReferenceCatalogDiscoveryResult> DiscoverAsync(
+            string referenceName,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult(VbaProjectReferenceCatalogDiscoveryResult.Failure(
+                referenceName,
+                "Context-free discovery is not authoritative for this test."));
+
+        public IVbaProjectReferenceCatalogDiscovery CreateContextDiscovery(
+            VbaProjectReferenceCatalogRefreshContext context)
+            => new ContextDiscovery(
+                this,
+                blockedDocumentName is null
+                    ? Interlocked.Increment(ref contextCount) == 1
+                    : context.DocumentName.Equals(
+                        blockedDocumentName,
+                        StringComparison.Ordinal));
+
+        public void ReleaseFirstDiscovery()
+            => releaseFirstDiscovery.TrySetResult();
+
+        private async Task<VbaProjectReferenceCatalogDiscoveryResult> DiscoverContextAsync(
+            string referenceName,
+            bool isFirstContext,
+            CancellationToken cancellationToken)
+        {
+            if (isFirstContext)
+            {
+                FirstDiscoveryStarted.TrySetResult();
+                await releaseFirstDiscovery.Task.WaitAsync(cancellationToken);
+            }
+
+            var prefix = isFirstContext ? "Superseded" : "Current";
+            var compactReferenceName = referenceName.Replace(" ", "", StringComparison.Ordinal);
+            return VbaProjectReferenceCatalogDiscoveryResult.Success(
+                new VbaProjectReferenceCatalogIdentity(
+                    referenceName,
+                    "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                    1,
+                    0,
+                    0,
+                    $@"C:\TypeLibs\{prefix}.tlb"),
+                new VbaProjectReferenceCatalog(
+                    referenceName,
+                    [],
+                    [
+                        new VbaProjectReferenceDefinition(
+                            referenceName,
+                            $"{prefix}{compactReferenceName}Type",
+                            VbaSourceDefinitionKind.Class)
+                    ]));
+        }
+
+        private sealed class ContextDiscovery(
+            BlockingFirstContextSuccessFactory owner,
+            bool isFirstContext)
+            : IVbaProjectReferenceCatalogDiscovery
+        {
+            public Task<VbaProjectReferenceCatalogDiscoveryResult> DiscoverAsync(
+                string referenceName,
+                CancellationToken cancellationToken = default)
+                => owner.DiscoverContextAsync(
+                    referenceName,
+                    isFirstContext,
+                    cancellationToken);
         }
     }
 

@@ -28,11 +28,13 @@ public sealed record VbaProjectReferenceCatalogIdentity(
 /// <param name="Identities">The matching catalog identities.</param>
 /// <param name="Catalog">The discovered catalog metadata, when available.</param>
 /// <param name="ErrorMessage">The discovery error message, when discovery failed.</param>
+/// <param name="RequiresExternalIdentityResolution">Whether registry discovery could not select one concrete identity.</param>
 public sealed record VbaProjectReferenceCatalogDiscoveryResult(
     string ReferenceName,
     IReadOnlyList<VbaProjectReferenceCatalogIdentity> Identities,
     VbaProjectReferenceCatalog? Catalog,
-    string? ErrorMessage = null)
+    string? ErrorMessage = null,
+    bool RequiresExternalIdentityResolution = false)
 {
     /// <summary>
     /// Gets whether discovery found more than one possible identity.
@@ -83,7 +85,11 @@ public sealed record VbaProjectReferenceCatalogDiscoveryResult(
     public static VbaProjectReferenceCatalogDiscoveryResult Ambiguous(
         string referenceName,
         IReadOnlyList<VbaProjectReferenceCatalogIdentity> identities)
-        => new(referenceName, identities, null);
+        => new(
+            referenceName,
+            identities,
+            null,
+            RequiresExternalIdentityResolution: true);
 
     /// <summary>
     /// Creates a failed discovery result.
@@ -116,12 +122,43 @@ internal interface IVbaProjectReferenceCatalogDiscoveryBatchFactory
     IVbaProjectReferenceCatalogDiscovery CreateBatchDiscovery();
 }
 
+internal sealed record VbaProjectReferenceCatalogIdentityKey(
+    string Guid,
+    int MajorVersion,
+    int MinorVersion);
+
+internal interface IVbaProjectReferenceCatalogIdentityDiscovery
+{
+    Task<VbaProjectReferenceCatalogDiscoveryResult> DiscoverIdentityAsync(
+        string referenceName,
+        VbaProjectReferenceCatalogIdentityKey identity,
+        CancellationToken cancellationToken = default);
+}
+
+internal sealed record VbaProjectReferenceCatalogRefreshContext(
+    string ProjectPath,
+    string DocumentName,
+    VbaProjectReferenceSelection Selection,
+    string? ScopeKey = null,
+    string? SelectionFingerprint = null,
+    Func<bool>? IsCurrent = null);
+
+internal interface IVbaProjectReferenceCatalogContextDiscoveryFactory
+{
+    bool UsesContextSpecificResolution => true;
+
+    IVbaProjectReferenceCatalogDiscovery CreateContextDiscovery(
+        VbaProjectReferenceCatalogRefreshContext context);
+}
+
 /// <summary>
 /// Adds a file-based blocking hook around catalog discovery for language-server process tests.
 /// </summary>
 internal sealed class BlockingReferenceCatalogDiscoveryHook
     : IVbaProjectReferenceCatalogDiscovery,
-      IVbaProjectReferenceCatalogDiscoveryBatchFactory
+      IVbaProjectReferenceCatalogDiscoveryBatchFactory,
+      IVbaProjectReferenceCatalogIdentityDiscovery,
+      IVbaProjectReferenceCatalogContextDiscoveryFactory
 {
     /// <summary>
     /// The environment variable containing the file written when discovery reaches the hook.
@@ -136,6 +173,10 @@ internal sealed class BlockingReferenceCatalogDiscoveryHook
     private readonly IVbaProjectReferenceCatalogDiscovery inner;
     private readonly string? startedFile;
     private readonly string? releaseFile;
+
+    bool IVbaProjectReferenceCatalogContextDiscoveryFactory.UsesContextSpecificResolution =>
+        inner is IVbaProjectReferenceCatalogContextDiscoveryFactory contextFactory
+        && contextFactory.UsesContextSpecificResolution;
 
     private BlockingReferenceCatalogDiscoveryHook(
         IVbaProjectReferenceCatalogDiscovery inner,
@@ -191,6 +232,30 @@ internal sealed class BlockingReferenceCatalogDiscoveryHook
                 releaseFile)
             : this;
 
+    Task<VbaProjectReferenceCatalogDiscoveryResult>
+        IVbaProjectReferenceCatalogIdentityDiscovery.DiscoverIdentityAsync(
+            string referenceName,
+            VbaProjectReferenceCatalogIdentityKey identity,
+            CancellationToken cancellationToken)
+        => inner is IVbaProjectReferenceCatalogIdentityDiscovery identityDiscovery
+            ? identityDiscovery.DiscoverIdentityAsync(
+                referenceName,
+                identity,
+                cancellationToken)
+            : Task.FromResult(VbaProjectReferenceCatalogDiscoveryResult.Failure(
+                referenceName,
+                "The wrapped discovery cannot load a selected TypeLib identity."));
+
+    IVbaProjectReferenceCatalogDiscovery
+        IVbaProjectReferenceCatalogContextDiscoveryFactory.CreateContextDiscovery(
+            VbaProjectReferenceCatalogRefreshContext context)
+        => inner is IVbaProjectReferenceCatalogContextDiscoveryFactory contextFactory
+            ? new BlockingReferenceCatalogDiscoveryHook(
+                contextFactory.CreateContextDiscovery(context),
+                startedFile,
+                releaseFile)
+            : this;
+
     private void WriteStartedFile(string referenceName)
     {
         if (string.IsNullOrWhiteSpace(startedFile))
@@ -213,7 +278,8 @@ internal sealed class BlockingReferenceCatalogDiscoveryHook
 /// </summary>
 public sealed class TypeLibReferenceCatalogDiscovery
     : IVbaProjectReferenceCatalogDiscovery,
-      IVbaProjectReferenceCatalogDiscoveryBatchFactory
+      IVbaProjectReferenceCatalogDiscoveryBatchFactory,
+      IVbaProjectReferenceCatalogIdentityDiscovery
 {
     private readonly ITypeLibRegistryCatalogReader neutralRegistryReader;
     private readonly Lazy<TypeLibRegistryCatalog>? registryCatalog;
@@ -325,6 +391,70 @@ public sealed class TypeLibReferenceCatalogDiscovery
         };
     }
 
+    Task<VbaProjectReferenceCatalogDiscoveryResult>
+        IVbaProjectReferenceCatalogIdentityDiscovery.DiscoverIdentityAsync(
+            string referenceName,
+            VbaProjectReferenceCatalogIdentityKey identity,
+            CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var catalog = registryCatalog?.Value ?? neutralRegistryReader.Read();
+        return Task.FromResult(DiscoverExactIdentity(
+            catalog,
+            referenceName,
+            identity,
+            cancellationToken));
+    }
+
+    private VbaProjectReferenceCatalogDiscoveryResult DiscoverExactIdentity(
+        TypeLibRegistryCatalog catalog,
+        string referenceName,
+        VbaProjectReferenceCatalogIdentityKey identity,
+        CancellationToken cancellationToken)
+    {
+        if (!catalog.Complete)
+        {
+            return VbaProjectReferenceCatalogDiscoveryResult.Failure(
+                referenceName,
+                catalog.Diagnostic?.Message ?? "The TypeLib registry catalog is incomplete.");
+        }
+
+        var registeredName = catalog.Find(referenceName);
+        var matchingLineages = registeredName?.Lineages
+            .Where(lineage => lineage.Guid.Equals(identity.Guid, StringComparison.Ordinal))
+            .ToArray() ?? [];
+        if (matchingLineages.Length != 1)
+        {
+            return VbaProjectReferenceCatalogDiscoveryResult.Failure(
+                referenceName,
+                "The externally resolved TypeLib GUID is not present in the neutral registry snapshot.");
+        }
+
+        var matchingVersions = matchingLineages[0].Versions
+            .Where(version => version.Major == identity.MajorVersion
+                && version.Minor == identity.MinorVersion)
+            .ToArray();
+        if (matchingVersions.Length != 1)
+        {
+            return VbaProjectReferenceCatalogDiscoveryResult.Failure(
+                referenceName,
+                "The externally resolved TypeLib version is not present in the neutral registry snapshot.");
+        }
+
+        var candidate = CreateLineageCandidate(
+            registeredName!.Name,
+            matchingLineages[0],
+            matchingVersions[0]);
+        return candidate is null
+            ? VbaProjectReferenceCatalogDiscoveryResult.Failure(
+                referenceName,
+                "The externally resolved TypeLib identity has no usable registered location.")
+            : DiscoverCatalog(
+                registeredName.Name,
+                candidate,
+                cancellationToken);
+    }
+
     private static NeutralRegistryIdentityCandidate? CreateLineageCandidate(
         string referenceName,
         TypeLibRegistryLineage lineage)
@@ -333,7 +463,17 @@ public sealed class TypeLibReferenceCatalogDiscovery
             .OrderByDescending(candidate => candidate.Major)
             .ThenByDescending(candidate => candidate.Minor)
             .FirstOrDefault();
-        var locations = version?.Locales
+        return version is null
+            ? null
+            : CreateLineageCandidate(referenceName, lineage, version);
+    }
+
+    private static NeutralRegistryIdentityCandidate? CreateLineageCandidate(
+        string referenceName,
+        TypeLibRegistryLineage lineage,
+        TypeLibRegistryVersion version)
+    {
+        var locations = version.Locales
             .SelectMany(
                 locale => locale.Paths,
                 (locale, path) => new { locale.Lcid, Path = path })
@@ -345,7 +485,7 @@ public sealed class TypeLibReferenceCatalogDiscovery
                 candidate.Path.Platform,
                 candidate.Path.Path))
             .ToArray();
-        return version is null || locations is null || locations.Length == 0
+        return locations is null || locations.Length == 0
             ? null
             : new NeutralRegistryIdentityCandidate(
                 referenceName,
@@ -439,6 +579,8 @@ public sealed class VbaProjectReferenceCatalogCache
     private readonly Dictionary<string, VbaProjectReferenceCatalogSource> catalogSources = new(VbaProjectReferenceName.Comparer);
     private readonly Dictionary<string, long> referenceChangeVersions =
         new(VbaProjectReferenceName.Comparer);
+    private readonly Dictionary<string, Dictionary<string, ScopedReferenceCatalogBinding>>
+        scopedBindings = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> refreshesInProgress = new(VbaProjectReferenceName.Comparer);
     private readonly Dictionary<string, SemaphoreSlim> refreshOwnership =
         new(VbaProjectReferenceName.Comparer);
@@ -486,22 +628,43 @@ public sealed class VbaProjectReferenceCatalogCache
 
     internal VbaProjectReferenceCatalogSelectionState CaptureSelectionState(
         IReadOnlyList<VbaProjectReference> references)
+        => CaptureSelectionState(references, scopeKey: null);
+
+    internal VbaProjectReferenceCatalogSelectionState CaptureSelectionState(
+        IReadOnlyList<VbaProjectReference> references,
+        string? scopeKey)
     {
         lock (gate)
         {
             var selectedRevision = 0L;
+            var selectedCatalogSet = catalogSet;
+            Dictionary<string, ScopedReferenceCatalogBinding>? scopeBindings = null;
+            if (scopeKey is not null)
+            {
+                scopedBindings.TryGetValue(scopeKey, out scopeBindings);
+            }
             for (var index = 0; index < references.Count; index++)
             {
+                var referenceName = references[index].Name;
                 if (referenceChangeVersions.TryGetValue(
-                    references[index].Name,
+                    referenceName,
                     out var revision))
                 {
                     selectedRevision = Math.Max(selectedRevision, revision);
                 }
+
+                if (scopeBindings is not null
+                    && scopeBindings.TryGetValue(referenceName, out var scopedBinding))
+                {
+                    selectedCatalogSet = selectedCatalogSet.WithCatalog(scopedBinding.Catalog);
+                    selectedRevision = Math.Max(
+                        selectedRevision,
+                        scopedBinding.ChangeVersion);
+                }
             }
 
             return new VbaProjectReferenceCatalogSelectionState(
-                catalogSet,
+                selectedCatalogSet,
                 selectedRevision);
         }
     }
@@ -544,9 +707,21 @@ public sealed class VbaProjectReferenceCatalogCache
     /// <param name="referenceName">The human-visible reference name.</param>
     /// <returns>The catalog source, or <see cref="VbaProjectReferenceCatalogSource.Unavailable"/>.</returns>
     public VbaProjectReferenceCatalogSource GetCatalogSource(string referenceName)
+        => GetCatalogSource(referenceName, scopeKey: null);
+
+    internal VbaProjectReferenceCatalogSource GetCatalogSource(
+        string referenceName,
+        string? scopeKey)
     {
         lock (gate)
         {
+            if (scopeKey is not null
+                && scopedBindings.TryGetValue(scopeKey, out var scopeBindings)
+                && scopeBindings.TryGetValue(referenceName, out var scopedBinding))
+            {
+                return scopedBinding.Source;
+            }
+
             return catalogSources.TryGetValue(referenceName, out var source)
                 ? source
                 : VbaProjectReferenceCatalogSource.Unavailable;
@@ -559,9 +734,27 @@ public sealed class VbaProjectReferenceCatalogCache
     /// <param name="referenceName">The human-visible reference name.</param>
     /// <returns>True when an identity is already cached for the reference.</returns>
     public bool HasIdentity(string referenceName)
+        => HasIdentity(referenceName, scopeKey: null, selectionFingerprint: null);
+
+    internal bool HasIdentity(
+        string referenceName,
+        string? scopeKey,
+        string? selectionFingerprint)
     {
         lock (gate)
         {
+            if (scopeKey is not null
+                && scopedBindings.TryGetValue(scopeKey, out var scopeBindings)
+                && scopeBindings.TryGetValue(referenceName, out var scopedBinding)
+                && scopedBinding.Identity is not null
+                && string.Equals(
+                    scopedBinding.SelectionFingerprint,
+                    selectionFingerprint,
+                    StringComparison.Ordinal))
+            {
+                return true;
+            }
+
             return identities.ContainsKey(referenceName);
         }
     }
@@ -580,20 +773,28 @@ public sealed class VbaProjectReferenceCatalogCache
     }
 
     internal VbaProjectReferenceCatalogRefreshBatchReservation ReserveRefreshCandidateBatch(
-        VbaProjectReferenceSelection selection)
+        VbaProjectReferenceSelection selection,
+        string? scopeKey = null,
+        string? selectionFingerprint = null)
     {
         lock (gate)
         {
             return new VbaProjectReferenceCatalogRefreshBatchReservation(
                 this,
-                TakeRefreshCandidateReferenceNamesCore(selection));
+                TakeRefreshCandidateReferenceNamesCore(
+                    selection,
+                    scopeKey,
+                    selectionFingerprint),
+                scopeKey,
+                selectionFingerprint);
         }
     }
 
     internal async Task<VbaProjectReferenceCatalogRefreshLease> AcquireRefreshLeaseAsync(
         IReadOnlyList<VbaProjectReference> references,
         bool waitForExistingOwners,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? scopeKey = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
         KeyValuePair<string, SemaphoreSlim>[] ownership;
@@ -605,10 +806,11 @@ public sealed class VbaProjectReferenceCatalogCache
                 .OrderBy(name => name, VbaProjectReferenceName.OrderingComparer)
                 .Select(name =>
                 {
-                    if (!refreshOwnership.TryGetValue(name, out var semaphore))
+                    var authorityKey = CreateAuthorityKey(scopeKey, name);
+                    if (!refreshOwnership.TryGetValue(authorityKey, out var semaphore))
                     {
                         semaphore = new SemaphoreSlim(1, 1);
-                        refreshOwnership[name] = semaphore;
+                        refreshOwnership[authorityKey] = semaphore;
                     }
 
                     return new KeyValuePair<string, SemaphoreSlim>(name, semaphore);
@@ -666,17 +868,19 @@ public sealed class VbaProjectReferenceCatalogCache
 
     internal void StoreReservedDiscoveryResult(
         string reservedReferenceName,
-        VbaProjectReferenceCatalogDiscoveryResult result)
+        VbaProjectReferenceCatalogDiscoveryResult result,
+        string? scopeKey,
+        string? selectionFingerprint)
     {
         lock (gate)
         {
             try
             {
-                StoreCore(result);
+                StoreCore(result, scopeKey, selectionFingerprint);
             }
             finally
             {
-                refreshesInProgress.Remove(reservedReferenceName);
+                refreshesInProgress.Remove(CreateAuthorityKey(scopeKey, reservedReferenceName));
             }
         }
     }
@@ -686,9 +890,31 @@ public sealed class VbaProjectReferenceCatalogCache
     /// </summary>
     /// <param name="entry">The persisted catalog entry.</param>
     public void StorePersistedCatalog(VbaProjectReferenceCatalogPersistentEntry entry)
+        => StorePersistedCatalog(
+            entry,
+            scopeKey: null,
+            identityAuthoritative: true,
+            selectionFingerprint: null);
+
+    internal void StorePersistedCatalog(
+        VbaProjectReferenceCatalogPersistentEntry entry,
+        string? scopeKey,
+        bool identityAuthoritative,
+        string? selectionFingerprint)
     {
         lock (gate)
         {
+            if (scopeKey is not null)
+            {
+                StoreScopedBinding(
+                    scopeKey,
+                    identityAuthoritative ? entry.Identity : null,
+                    entry.Catalog,
+                    VbaProjectReferenceCatalogSource.Persisted,
+                    selectionFingerprint);
+                return;
+            }
+
             identities[entry.Identity.ReferenceName] = entry.Identity;
             catalogSet = catalogSet.WithCatalog(entry.Catalog);
             catalogSources[entry.Identity.ReferenceName] = VbaProjectReferenceCatalogSource.Persisted;
@@ -702,9 +928,25 @@ public sealed class VbaProjectReferenceCatalogCache
     /// </summary>
     /// <param name="catalog">The stale catalog to make available to editor features.</param>
     public void StoreStaleCatalog(VbaProjectReferenceCatalog catalog)
+        => StoreStaleCatalog(catalog, scopeKey: null);
+
+    internal void StoreStaleCatalog(
+        VbaProjectReferenceCatalog catalog,
+        string? scopeKey)
     {
         lock (gate)
         {
+            if (scopeKey is not null)
+            {
+                StoreScopedBinding(
+                    scopeKey,
+                    identity: null,
+                    catalog,
+                    VbaProjectReferenceCatalogSource.StalePersisted,
+                    selectionFingerprint: null);
+                return;
+            }
+
             catalogSet = catalogSet.WithCatalog(catalog);
             catalogSources[catalog.ReferenceName] = VbaProjectReferenceCatalogSource.StalePersisted;
             version++;
@@ -725,38 +967,67 @@ public sealed class VbaProjectReferenceCatalogCache
     }
 
     internal void ReleaseRefreshCandidates(IEnumerable<string> referenceNames)
+        => ReleaseRefreshCandidates(referenceNames, scopeKey: null);
+
+    internal void ReleaseRefreshCandidates(
+        IEnumerable<string> referenceNames,
+        string? scopeKey)
     {
         lock (gate)
         {
             foreach (var referenceName in referenceNames)
             {
-                refreshesInProgress.Remove(referenceName);
+                refreshesInProgress.Remove(CreateAuthorityKey(scopeKey, referenceName));
             }
         }
     }
 
     private IReadOnlyList<string> TakeRefreshCandidateReferenceNamesCore(
-        VbaProjectReferenceSelection selection)
+        VbaProjectReferenceSelection selection,
+        string? scopeKey = null,
+        string? selectionFingerprint = null)
     {
         var candidateNames = selection.References
-            .Where(reference => !identities.ContainsKey(reference.Name))
-            .Where(reference => !refreshesInProgress.Contains(reference.Name))
+            .Where(reference => !HasIdentityCore(
+                reference.Name,
+                scopeKey,
+                selectionFingerprint))
+            .Where(reference => !refreshesInProgress.Contains(
+                CreateAuthorityKey(scopeKey, reference.Name)))
             .Select(reference => reference.Name)
             .Distinct(VbaProjectReferenceName.Comparer)
             .OrderBy(name => name, VbaProjectReferenceName.OrderingComparer)
             .ToArray();
         foreach (var candidateName in candidateNames)
         {
-            refreshesInProgress.Add(candidateName);
+            refreshesInProgress.Add(CreateAuthorityKey(scopeKey, candidateName));
         }
 
         return candidateNames;
     }
 
-    private void StoreCore(VbaProjectReferenceCatalogDiscoveryResult result)
+    private void StoreCore(
+        VbaProjectReferenceCatalogDiscoveryResult result,
+        string? scopeKey = null,
+        string? selectionFingerprint = null)
     {
         if (!result.IsSuccessful)
         {
+            return;
+        }
+
+        if (scopeKey is not null)
+        {
+            if (result.Catalog is not null)
+            {
+                StoreScopedBinding(
+                    scopeKey,
+                    result.Identities[0],
+                    result.Catalog,
+                    VbaProjectReferenceCatalogSource.Generated,
+                    selectionFingerprint);
+            }
+
             return;
         }
 
@@ -773,6 +1044,55 @@ public sealed class VbaProjectReferenceCatalogCache
 
     private void MarkReferenceChanged(string referenceName)
         => referenceChangeVersions[referenceName] = version;
+
+    private bool HasIdentityCore(
+        string referenceName,
+        string? scopeKey,
+        string? selectionFingerprint)
+        => (scopeKey is not null
+                && scopedBindings.TryGetValue(scopeKey, out var scopeBindings)
+                && scopeBindings.TryGetValue(referenceName, out var scopedBinding)
+                && scopedBinding.Identity is not null
+                && string.Equals(
+                    scopedBinding.SelectionFingerprint,
+                    selectionFingerprint,
+                    StringComparison.Ordinal))
+            || identities.ContainsKey(referenceName);
+
+    private void StoreScopedBinding(
+        string scopeKey,
+        VbaProjectReferenceCatalogIdentity? identity,
+        VbaProjectReferenceCatalog catalog,
+        VbaProjectReferenceCatalogSource source,
+        string? selectionFingerprint)
+    {
+        if (!scopedBindings.TryGetValue(scopeKey, out var scopeBindings))
+        {
+            scopeBindings = new Dictionary<string, ScopedReferenceCatalogBinding>(
+                VbaProjectReferenceName.Comparer);
+            scopedBindings[scopeKey] = scopeBindings;
+        }
+
+        version++;
+        scopeBindings[catalog.ReferenceName] = new ScopedReferenceCatalogBinding(
+            identity,
+            catalog,
+            source,
+            version,
+            selectionFingerprint);
+    }
+
+    private static string CreateAuthorityKey(string? scopeKey, string referenceName)
+        => scopeKey is null
+            ? referenceName
+            : $"{scopeKey}\u001d{referenceName}";
+
+    private sealed record ScopedReferenceCatalogBinding(
+        VbaProjectReferenceCatalogIdentity? Identity,
+        VbaProjectReferenceCatalog Catalog,
+        VbaProjectReferenceCatalogSource Source,
+        long ChangeVersion,
+        string? SelectionFingerprint);
 }
 
 /// <summary>
@@ -783,13 +1103,19 @@ internal sealed class VbaProjectReferenceCatalogRefreshBatchReservation
     private readonly VbaProjectReferenceCatalogCache cache;
     private readonly IReadOnlyList<string> referenceNames;
     private readonly HashSet<string> remainingReferenceNames;
+    private readonly string? scopeKey;
+    private readonly string? selectionFingerprint;
 
     internal VbaProjectReferenceCatalogRefreshBatchReservation(
         VbaProjectReferenceCatalogCache cache,
-        IReadOnlyList<string> referenceNames)
+        IReadOnlyList<string> referenceNames,
+        string? scopeKey,
+        string? selectionFingerprint)
     {
         this.cache = cache;
         this.referenceNames = referenceNames;
+        this.scopeKey = scopeKey;
+        this.selectionFingerprint = selectionFingerprint;
         remainingReferenceNames = new HashSet<string>(
             referenceNames,
             VbaProjectReferenceName.Comparer);
@@ -807,7 +1133,11 @@ internal sealed class VbaProjectReferenceCatalogRefreshBatchReservation
                 $"Reference catalog refresh reservation for '{referenceName}' is not active.");
         }
 
-        cache.StoreReservedDiscoveryResult(referenceName, result);
+        cache.StoreReservedDiscoveryResult(
+            referenceName,
+            result,
+            scopeKey,
+            selectionFingerprint);
     }
 
     internal void ReleaseRemaining()
@@ -819,7 +1149,7 @@ internal sealed class VbaProjectReferenceCatalogRefreshBatchReservation
 
         var referenceNamesToRelease = remainingReferenceNames.ToArray();
         remainingReferenceNames.Clear();
-        cache.ReleaseRefreshCandidates(referenceNamesToRelease);
+        cache.ReleaseRefreshCandidates(referenceNamesToRelease, scopeKey);
     }
 }
 
@@ -990,6 +1320,10 @@ public sealed class VbaProjectReferenceCatalogRefreshService
     private IVbaProjectReferenceCatalogMutationLane mutationLane =
         InlineVbaProjectReferenceCatalogMutationLane.Instance;
 
+    internal bool UsesContextSpecificDiscovery =>
+        discovery is IVbaProjectReferenceCatalogContextDiscoveryFactory contextFactory
+        && contextFactory.UsesContextSpecificResolution;
+
     /// <summary>
     /// Creates a catalog refresh service.
     /// </summary>
@@ -1085,6 +1419,7 @@ public sealed class VbaProjectReferenceCatalogRefreshService
             selection,
             waitForExistingOwners: false,
             persistedPreloadCompleted: null,
+            refreshContext: null,
             cancellationToken);
     }
 
@@ -1096,6 +1431,7 @@ public sealed class VbaProjectReferenceCatalogRefreshService
             selection,
             waitForExistingOwners: true,
             persistedPreloadCompleted: null,
+            refreshContext: null,
             cancellationToken);
 
     internal Task<IReadOnlyList<VbaProjectReferenceCatalogRefreshResult>>
@@ -1107,18 +1443,49 @@ public sealed class VbaProjectReferenceCatalogRefreshService
             selection,
             waitForExistingOwners: true,
             persistedPreloadCompleted,
+            refreshContext: null,
+            cancellationToken);
+
+    internal Task<IReadOnlyList<VbaProjectReferenceCatalogRefreshResult>>
+        RefreshAutomaticallyAsync(
+            VbaProjectReferenceCatalogRefreshContext context,
+            CancellationToken cancellationToken)
+        => RefreshCoreAsync(
+            context.Selection,
+            waitForExistingOwners: true,
+            persistedPreloadCompleted: null,
+            context,
+            cancellationToken);
+
+    internal Task<IReadOnlyList<VbaProjectReferenceCatalogRefreshResult>>
+        RefreshAutomaticallyAsync(
+            VbaProjectReferenceCatalogRefreshContext context,
+            Action<IReadOnlyList<VbaProjectReferenceCatalogRefreshResult>> persistedPreloadCompleted,
+            CancellationToken cancellationToken)
+        => RefreshCoreAsync(
+            context.Selection,
+            waitForExistingOwners: true,
+            persistedPreloadCompleted,
+            context,
             cancellationToken);
 
     private async Task<IReadOnlyList<VbaProjectReferenceCatalogRefreshResult>> RefreshCoreAsync(
         VbaProjectReferenceSelection selection,
         bool waitForExistingOwners,
         Action<IReadOnlyList<VbaProjectReferenceCatalogRefreshResult>>? persistedPreloadCompleted,
+        VbaProjectReferenceCatalogRefreshContext? refreshContext,
         CancellationToken cancellationToken)
     {
+        if (refreshContext?.IsCurrent?.Invoke() == false)
+        {
+            return [];
+        }
+
         using var refreshLease = await cache.AcquireRefreshLeaseAsync(
             selection.References,
             waitForExistingOwners,
-            cancellationToken);
+            cancellationToken,
+            refreshContext?.ScopeKey);
         if (refreshLease.ReferenceNames.Count == 0)
         {
             return [];
@@ -1135,12 +1502,24 @@ public sealed class VbaProjectReferenceCatalogRefreshService
         var results = new List<VbaProjectReferenceCatalogRefreshResult>();
         var persistedPreloadResults = await PreloadPersistedCatalogsAsync(
             ownedSelection,
+            refreshContext?.ScopeKey,
+            refreshContext?.SelectionFingerprint,
+            refreshContext?.IsCurrent,
             cancellationToken);
         results.AddRange(persistedPreloadResults);
         persistedPreloadCompleted?.Invoke(persistedPreloadResults);
         cancellationToken.ThrowIfCancellationRequested();
+        var activeDiscovery = refreshContext is not null
+            && discovery is IVbaProjectReferenceCatalogContextDiscoveryFactory contextFactory
+            && contextFactory.UsesContextSpecificResolution
+                ? contextFactory.CreateContextDiscovery(refreshContext)
+                : discovery;
         results.AddRange(await DiscoverMissingCatalogsAsync(
             ownedSelection,
+            activeDiscovery,
+            refreshContext?.ScopeKey,
+            refreshContext?.SelectionFingerprint,
+            refreshContext?.IsCurrent,
             cancellationToken));
         return results;
     }
@@ -1153,19 +1532,26 @@ public sealed class VbaProjectReferenceCatalogRefreshService
     /// <returns>The discovery results for references that were attempted.</returns>
     private async Task<IReadOnlyList<VbaProjectReferenceCatalogRefreshResult>> DiscoverMissingCatalogsAsync(
         VbaProjectReferenceSelection selection,
+        IVbaProjectReferenceCatalogDiscovery activeDiscovery,
+        string? scopeKey,
+        string? selectionFingerprint,
+        Func<bool>? commitGuard,
         CancellationToken cancellationToken = default)
     {
         var results = new List<VbaProjectReferenceCatalogRefreshResult>();
-        var batchDiscovery = discovery is IVbaProjectReferenceCatalogDiscoveryBatchFactory batchFactory
+        var batchDiscovery = activeDiscovery is IVbaProjectReferenceCatalogDiscoveryBatchFactory batchFactory
             ? batchFactory.CreateBatchDiscovery()
-            : discovery;
-        var reservation = cache.ReserveRefreshCandidateBatch(selection);
+            : activeDiscovery;
+        var reservation = cache.ReserveRefreshCandidateBatch(
+            selection,
+            scopeKey,
+            selectionFingerprint);
         try
         {
             foreach (var referenceName in reservation.ReferenceNames)
             {
                 VbaProjectReferenceCatalogDiscoveryResult discoveryResult;
-                var sourceBeforeDiscovery = cache.GetCatalogSource(referenceName);
+                var sourceBeforeDiscovery = cache.GetCatalogSource(referenceName, scopeKey);
                 var stopwatch = Stopwatch.StartNew();
                 try
                 {
@@ -1191,10 +1577,16 @@ public sealed class VbaProjectReferenceCatalogRefreshService
                 discoveryResult = ValidateDiscoveryResultReferenceName(
                     referenceName,
                     discoveryResult);
-                await CommitCatalogMutationAsync(
-                    referenceName,
+                var committed = await CommitCatalogMutationAsync(
+                    CreateMutationAuthorityKey(scopeKey, referenceName),
                     () => reservation.StoreDiscoveryResult(referenceName, discoveryResult),
+                    commitGuard,
                     cancellationToken);
+                if (!committed)
+                {
+                    return results;
+                }
+
                 if (discoveryResult.HasUsableCatalog)
                 {
                     lifecycleObserver.Record(new VbaProjectReferenceCatalogLifecycleEvent(
@@ -1204,6 +1596,8 @@ public sealed class VbaProjectReferenceCatalogRefreshService
 
                 var saveWarning = await SavePersistedCatalogAsync(
                     discoveryResult,
+                    scopeKey,
+                    selectionFingerprint,
                     cancellationToken);
                 var source = discoveryResult.HasUsableCatalog
                     ? VbaProjectReferenceCatalogSource.Generated
@@ -1233,9 +1627,21 @@ public sealed class VbaProjectReferenceCatalogRefreshService
     /// <returns>The preload results for references that had persisted cache state.</returns>
     private async Task<IReadOnlyList<VbaProjectReferenceCatalogRefreshResult>> PreloadPersistedCatalogsAsync(
         VbaProjectReferenceSelection selection,
+        string? scopeKey,
+        string? selectionFingerprint,
+        Func<bool>? commitGuard,
         CancellationToken cancellationToken = default)
     {
         if (persistentStore is null)
+        {
+            return [];
+        }
+
+        var scopedPersistentStore = persistentStore
+            as IVbaProjectReferenceCatalogScopedPersistentStore;
+        if (scopeKey is not null
+            && (selectionFingerprint is null
+                || scopedPersistentStore is null))
         {
             return [];
         }
@@ -1246,12 +1652,13 @@ public sealed class VbaProjectReferenceCatalogRefreshService
             .Distinct(VbaProjectReferenceName.Comparer)
             .OrderBy(name => name, VbaProjectReferenceName.OrderingComparer))
         {
-            if (cache.HasIdentity(referenceName))
+            if (cache.HasIdentity(referenceName, scopeKey, selectionFingerprint))
             {
                 continue;
             }
 
-            if (cache.GetCatalogSource(referenceName) == VbaProjectReferenceCatalogSource.StalePersisted)
+            if (cache.GetCatalogSource(referenceName, scopeKey)
+                == VbaProjectReferenceCatalogSource.StalePersisted)
             {
                 continue;
             }
@@ -1260,7 +1667,13 @@ public sealed class VbaProjectReferenceCatalogRefreshService
             lifecycleObserver.Record(new VbaProjectReferenceCatalogLifecycleEvent(
                 VbaProjectReferenceCatalogLifecycleOperation.PersistedPreload,
                 ReferenceName: referenceName));
-            var loadResult = await persistentStore.LoadAsync(referenceName, cancellationToken);
+            var loadResult = scopeKey is null
+                ? await persistentStore.LoadAsync(referenceName, cancellationToken)
+                : await scopedPersistentStore!.LoadScopedAsync(
+                    referenceName,
+                    scopeKey,
+                    selectionFingerprint!,
+                    cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             stopwatch.Stop();
             if (loadResult.Entry is null && loadResult.WarningMessage is not null)
@@ -1269,7 +1682,7 @@ public sealed class VbaProjectReferenceCatalogRefreshService
                     referenceName,
                     VbaProjectReferenceCatalogDiscoveryResult.Failure(referenceName, loadResult.WarningMessage),
                     VbaProjectReferenceCatalogRefreshStatus.PersistentCacheReadWarning,
-                    cache.GetCatalogSource(referenceName),
+                    cache.GetCatalogSource(referenceName, scopeKey),
                     "persistent-load",
                     ExpensiveMetadataRan: false,
                     Elapsed: stopwatch.Elapsed,
@@ -1280,10 +1693,20 @@ public sealed class VbaProjectReferenceCatalogRefreshService
             if (loadResult.Entry is not null
                 && loadResult.Status == VbaProjectReferenceCatalogPersistentLoadStatus.Current)
             {
-                await CommitCatalogMutationAsync(
-                    referenceName,
-                    () => cache.StorePersistedCatalog(loadResult.Entry),
+                var committed = await CommitCatalogMutationAsync(
+                    CreateMutationAuthorityKey(scopeKey, referenceName),
+                    () => cache.StorePersistedCatalog(
+                        loadResult.Entry,
+                        scopeKey,
+                        identityAuthoritative: true,
+                        selectionFingerprint),
+                    commitGuard,
                     cancellationToken);
+                if (!committed)
+                {
+                    return results;
+                }
+
                 lifecycleObserver.Record(new VbaProjectReferenceCatalogLifecycleEvent(
                     VbaProjectReferenceCatalogLifecycleOperation.Commit,
                     ReferenceName: referenceName));
@@ -1303,10 +1726,16 @@ public sealed class VbaProjectReferenceCatalogRefreshService
             if (loadResult.Entry is not null
                 && loadResult.Status == VbaProjectReferenceCatalogPersistentLoadStatus.Stale)
             {
-                await CommitCatalogMutationAsync(
-                    referenceName,
-                    () => cache.StoreStaleCatalog(loadResult.Entry.Catalog),
+                var committed = await CommitCatalogMutationAsync(
+                    CreateMutationAuthorityKey(scopeKey, referenceName),
+                    () => cache.StoreStaleCatalog(loadResult.Entry.Catalog, scopeKey),
+                    commitGuard,
                     cancellationToken);
+                if (!committed)
+                {
+                    return results;
+                }
+
                 lifecycleObserver.Record(new VbaProjectReferenceCatalogLifecycleEvent(
                     VbaProjectReferenceCatalogLifecycleOperation.Commit,
                     ReferenceName: referenceName));
@@ -1329,6 +1758,8 @@ public sealed class VbaProjectReferenceCatalogRefreshService
 
     private async Task<string?> SavePersistedCatalogAsync(
         VbaProjectReferenceCatalogDiscoveryResult discoveryResult,
+        string? scopeKey,
+        string? selectionFingerprint,
         CancellationToken cancellationToken)
     {
         if (persistentStore is null || !discoveryResult.HasUsableCatalog)
@@ -1338,11 +1769,23 @@ public sealed class VbaProjectReferenceCatalogRefreshService
 
         try
         {
-            await persistentStore.SaveAsync(
-                new VbaProjectReferenceCatalogPersistentEntry(
-                    discoveryResult.Identities[0],
-                    discoveryResult.Catalog!),
-                cancellationToken);
+            var entry = new VbaProjectReferenceCatalogPersistentEntry(
+                discoveryResult.Identities[0],
+                discoveryResult.Catalog!);
+            if (scopeKey is null)
+            {
+                await persistentStore.SaveAsync(entry, cancellationToken);
+            }
+            else if (selectionFingerprint is not null
+                && persistentStore is IVbaProjectReferenceCatalogScopedPersistentStore scopedStore)
+            {
+                await scopedStore.SaveScopedAsync(
+                    entry,
+                    scopeKey,
+                    selectionFingerprint,
+                    cancellationToken);
+            }
+
             return null;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -1351,9 +1794,10 @@ public sealed class VbaProjectReferenceCatalogRefreshService
         }
     }
 
-    private Task CommitCatalogMutationAsync(
+    private async Task<bool> CommitCatalogMutationAsync(
         string authorityKey,
         Action commit,
+        Func<bool>? commitGuard,
         CancellationToken cancellationToken)
     {
         IVbaProjectReferenceCatalogMutationLane currentMutationLane;
@@ -1362,11 +1806,29 @@ public sealed class VbaProjectReferenceCatalogRefreshService
             currentMutationLane = mutationLane;
         }
 
-        return currentMutationLane.CommitAsync(
+        var committed = false;
+        await currentMutationLane.CommitAsync(
             authorityKey,
-            commit,
+            () =>
+            {
+                if (commitGuard?.Invoke() == false)
+                {
+                    return;
+                }
+
+                commit();
+                committed = true;
+            },
             cancellationToken);
+        return committed;
     }
+
+    private static string CreateMutationAuthorityKey(
+        string? scopeKey,
+        string referenceName)
+        => scopeKey is null
+            ? referenceName
+            : $"{scopeKey}\u001d{referenceName}";
 
     private static VbaProjectReferenceCatalogDiscoveryResult ValidateDiscoveryResultReferenceName(
         string requestedReferenceName,

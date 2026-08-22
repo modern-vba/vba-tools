@@ -63,8 +63,11 @@ internal sealed class VbaLanguageServerRuntime
         var transport = new LspMessageTransport(input, output);
         var referenceCatalogCache = new VbaProjectReferenceCatalogCache(
             VbaProjectReferenceCatalogSet.CreateBundled());
-        var catalogDiscovery = BlockingReferenceCatalogDiscoveryHook.WrapIfConfigured(
+        var registryDiscovery = BlockingReferenceCatalogDiscoveryHook.WrapIfConfigured(
             new TypeLibReferenceCatalogDiscovery(new RegistryTypeLibRegistryCatalogReader()));
+        var catalogDiscovery = CreateReferenceCatalogDiscovery(
+            registryDiscovery,
+            vbaDevStartupState);
         var catalogRefreshService = new VbaProjectReferenceCatalogRefreshService(
             referenceCatalogCache,
             catalogDiscovery,
@@ -89,6 +92,18 @@ internal sealed class VbaLanguageServerRuntime
             catalogRefresh,
             projectReconciliationLifecycle: projectReconciler,
             vbaDevStartupState: vbaDevStartupState);
+    }
+
+    internal static IVbaProjectReferenceCatalogDiscovery CreateReferenceCatalogDiscovery(
+        IVbaProjectReferenceCatalogDiscovery registryDiscovery,
+        VbaDevReferenceListStartupState? vbaDevStartupState)
+    {
+        ArgumentNullException.ThrowIfNull(registryDiscovery);
+        return vbaDevStartupState?.ExecutablePath is { } executablePath
+            ? new VbaDevReferenceListCatalogDiscoveryFactory(
+                registryDiscovery,
+                executablePath)
+            : registryDiscovery;
     }
 
     /// <summary>
