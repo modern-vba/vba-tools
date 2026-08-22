@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using VbaDev.App.Projects;
 using VbaDev.App.Workbooks;
 using VbaDev.Cli;
 using VbaDev.Composition;
@@ -183,6 +184,49 @@ public sealed class ReferenceCommandTests
     }
 
     [Fact]
+    public async Task AddProbesTheExplicitDocumentSourceTemplateWhenRegistryMatchesRemainAmbiguous()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        Directory.CreateDirectory(Path.Combine(root, "src", "Book1"));
+        Directory.CreateDirectory(Path.Combine(root, "src", "SecondBook"));
+        new JsonProjectManifestStore().Save(root, ProjectManifestTestData.TwoDocumentManifest(root));
+        var probe = new RecordingReferenceAmbiguityProbe(
+            new ResolvedVbaProjectReference(
+                "Ambiguous Library",
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                2,
+                0));
+        var application = VbaDevCommandLine.Create(
+            ToolingCompositionRoot.CreateApplicationComposition(
+                root,
+                vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
+                    new ResolvedVbaProjectReference(
+                        "Ambiguous Library",
+                        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                        1,
+                        0),
+                    new ResolvedVbaProjectReference(
+                        "Ambiguous Library",
+                        "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                        2,
+                        0)),
+                vbaProjectReferenceAmbiguityProbe: probe));
+
+        var result = await application.RunAsync([
+            "reference",
+            "add",
+            "Ambiguous Library",
+            "--document",
+            "SecondBook"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(
+            [Path.Combine(root, "src", "SecondBook", "SecondBook.xlsm")],
+            probe.BaselineWorkbookPaths);
+    }
+
+    [Fact]
     public async Task ListOutputsSelectedDocumentAsTextAndJson()
     {
         using var temp = TempDirectory.Create();
@@ -222,6 +266,130 @@ public sealed class ReferenceCommandTests
         Assert.Equal("420b2830-e718-11cf-893d-00a0c9054228", identity.GetProperty("guid").GetString());
         Assert.Equal(1, identity.GetProperty("major").GetInt32());
         Assert.Equal(0, identity.GetProperty("minor").GetInt32());
+    }
+
+    [Fact]
+    public async Task ListRetainsEveryEntryWhenAnAmbiguityProbeIsUnverified()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(
+            temp,
+            new VbaProjectReference("Unique Library"),
+            new VbaProjectReference("Ambiguous Library"));
+        var probe = new DelegateReferenceAmbiguityProbe(registryResolution =>
+            registryResolution with
+            {
+                Complete = false,
+                References = registryResolution.References
+                    .Select(reference => reference.Matches.Count > 1
+                        ? reference with
+                        {
+                            Matches = [],
+                            Candidates = reference.Matches,
+                            UnverifiedReasonCode = "probeTimeout",
+                            Message = "The VBE reference attempt timed out."
+                        }
+                        : reference)
+                    .ToArray(),
+                AdditionalDiagnostics =
+                [
+                    new TypeLibRegistryCatalogDiagnostic(
+                        "probeProcessUntrusted",
+                        "The owned reference probe process became untrusted.")
+                ]
+            });
+        var application = VbaDevCommandLine.Create(
+            ToolingCompositionRoot.CreateApplicationComposition(
+                root,
+                vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
+                    new ResolvedVbaProjectReference(
+                        "Unique Library",
+                        "11111111-1111-1111-1111-111111111111",
+                        1,
+                        0),
+                    new ResolvedVbaProjectReference(
+                        "Ambiguous Library",
+                        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                        2,
+                        0),
+                    new ResolvedVbaProjectReference(
+                        "Ambiguous Library",
+                        "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                        3,
+                        0)),
+                vbaProjectReferenceAmbiguityProbe: probe));
+
+        var result = await application.RunAsync([
+            "reference",
+            "list",
+            "--format",
+            "json"]);
+
+        Assert.Equal(1, result.ExitCode);
+        using var parsed = JsonDocument.Parse(result.StandardOutput);
+        Assert.False(parsed.RootElement.GetProperty("complete").GetBoolean());
+        var references = parsed.RootElement.GetProperty("references");
+        Assert.Equal(2, references.GetArrayLength());
+        Assert.Equal("resolved", references[0].GetProperty("status").GetString());
+        Assert.Equal("unverified", references[1].GetProperty("status").GetString());
+        Assert.Equal("probeTimeout", references[1].GetProperty("reasonCode").GetString());
+        Assert.Equal(2, references[1].GetProperty("candidates").GetArrayLength());
+        Assert.Equal(
+            "probeProcessUntrusted",
+            Assert.Single(parsed.RootElement.GetProperty("diagnostics").EnumerateArray())
+                .GetProperty("code")
+                .GetString());
+    }
+
+    [Fact]
+    public async Task ListTextIncludesEveryDistinctReturnedIdentityInCanonicalOrder()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(
+            temp,
+            new VbaProjectReference("Ambiguous Library"));
+        var firstIdentity = new ResolvedVbaProjectReference(
+            "Ambiguous Library",
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            1,
+            2);
+        var secondIdentity = new ResolvedVbaProjectReference(
+            "Ambiguous Library",
+            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            3,
+            4);
+        var probe = new DelegateReferenceAmbiguityProbe(registryResolution =>
+            registryResolution with
+            {
+                References = registryResolution.References
+                    .Select(reference => reference with
+                    {
+                        Matches = [secondIdentity, firstIdentity],
+                        Candidates = [secondIdentity, firstIdentity]
+                    })
+                    .ToArray()
+            });
+        var application = VbaDevCommandLine.Create(
+            ToolingCompositionRoot.CreateApplicationComposition(
+                root,
+                vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
+                    firstIdentity,
+                    secondIdentity),
+                vbaProjectReferenceAmbiguityProbe: probe));
+
+        var result = await application.RunAsync(["reference", "list"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardError);
+        Assert.Contains("ambiguous", result.StandardOutput, StringComparison.Ordinal);
+        var firstIndex = result.StandardOutput.IndexOf(
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa 1.2",
+            StringComparison.Ordinal);
+        var secondIndex = result.StandardOutput.IndexOf(
+            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb 3.4",
+            StringComparison.Ordinal);
+        Assert.True(firstIndex >= 0);
+        Assert.True(secondIndex > firstIndex);
     }
 
     [Fact]
@@ -437,6 +605,267 @@ public sealed class ReferenceCommandTests
         Assert.Empty(manifest.Documents["Book1"].References);
     }
 
+    [Fact]
+    public async Task AddKeepsTheManifestByteIdenticalWhenAnyRequestedNameIsUnverified()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        var manifestPath = Path.Combine(root, ProjectManifest.ManifestFileName);
+        var originalManifest = File.ReadAllBytes(manifestPath);
+        var probe = new DelegateReferenceAmbiguityProbe(registryResolution =>
+            registryResolution with
+            {
+                Complete = false,
+                References = registryResolution.References
+                    .Select(reference => reference.Matches.Count > 1
+                        ? reference with
+                        {
+                            Matches = [],
+                            Candidates = reference.Matches,
+                            UnverifiedReasonCode = "probeTimeout",
+                            Message = "The VBE reference attempt timed out."
+                        }
+                        : reference)
+                    .ToArray(),
+                AdditionalDiagnostics =
+                [
+                    new TypeLibRegistryCatalogDiagnostic(
+                        "probeProcessUntrusted",
+                        "The owned reference probe process became untrusted.")
+                ]
+            });
+        var application = VbaDevCommandLine.Create(
+            ToolingCompositionRoot.CreateApplicationComposition(
+                root,
+                vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
+                    new ResolvedVbaProjectReference(
+                        "Unique Library",
+                        "11111111-1111-1111-1111-111111111111",
+                        1,
+                        0),
+                    new ResolvedVbaProjectReference(
+                        "Ambiguous Library",
+                        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                        2,
+                        0),
+                    new ResolvedVbaProjectReference(
+                        "Ambiguous Library",
+                        "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                        3,
+                        0)),
+                vbaProjectReferenceAmbiguityProbe: probe));
+
+        var result = await application.RunAsync([
+            "reference",
+            "add",
+            "Unique Library",
+            "Ambiguous Library"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("probeProcessUntrusted", result.StandardError, StringComparison.Ordinal);
+        Assert.Equal(originalManifest, File.ReadAllBytes(manifestPath));
+    }
+
+    [Fact]
+    public async Task AddSurfacesTheCandidateReasonWhenIdentityVerificationIsIncomplete()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        var manifestPath = Path.Combine(root, ProjectManifest.ManifestFileName);
+        var originalManifest = File.ReadAllBytes(manifestPath);
+        var probe = new DelegateReferenceAmbiguityProbe(registryResolution =>
+            registryResolution with
+            {
+                Complete = false,
+                References = registryResolution.References
+                    .Select(reference => reference with
+                    {
+                        Matches = [],
+                        Candidates = reference.Matches,
+                        UnverifiedReasonCode = "identityReadFailure",
+                        Message = "VBE accepted the candidate, but its concrete identity could not be read."
+                    })
+                    .ToArray()
+            });
+        var application = VbaDevCommandLine.Create(
+            ToolingCompositionRoot.CreateApplicationComposition(
+                root,
+                vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
+                    new ResolvedVbaProjectReference(
+                        "Ambiguous Library",
+                        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                        2,
+                        0),
+                    new ResolvedVbaProjectReference(
+                        "Ambiguous Library",
+                        "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                        3,
+                        0)),
+                vbaProjectReferenceAmbiguityProbe: probe));
+
+        var result = await application.RunAsync([
+            "reference",
+            "add",
+            "Ambiguous Library"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("identityReadFailure", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("concrete identity could not be read", result.StandardError, StringComparison.Ordinal);
+        Assert.Equal(originalManifest, File.ReadAllBytes(manifestPath));
+    }
+
+    [Fact]
+    public async Task AddKeepsTheManifestByteIdenticalWhenCancellationArrivesAfterSuccessfulProbe()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        var manifestPath = Path.Combine(root, ProjectManifest.ManifestFileName);
+        var originalManifest = File.ReadAllBytes(manifestPath);
+        using var cancellation = new CancellationTokenSource();
+        var resolvedReference = new ResolvedVbaProjectReference(
+            "Ambiguous Library",
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            2,
+            0);
+        var probe = new DelegateReferenceAmbiguityProbe(registryResolution =>
+        {
+            cancellation.Cancel();
+            return registryResolution with
+            {
+                References = registryResolution.References
+                    .Select(reference => reference with { Matches = [resolvedReference] })
+                    .ToArray()
+            };
+        });
+        var composition = ToolingCompositionRoot.CreateApplicationComposition(
+            root,
+            vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
+                resolvedReference,
+                new ResolvedVbaProjectReference(
+                    "Ambiguous Library",
+                    "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                    3,
+                    0)),
+            vbaProjectReferenceAmbiguityProbe: probe);
+        var context = composition.ProjectContextResolver.Resolve(
+            new ProjectResolutionRequest(null, null, root));
+
+        var result = await composition.ReferenceService.AddAsync(
+            context,
+            ["Ambiguous Library"],
+            cancellation.Token);
+
+        Assert.Equal(130, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Contains("cancelled", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(originalManifest, File.ReadAllBytes(manifestPath));
+    }
+
+    [Fact]
+    public async Task AddReturnsCancelledWhenTheProbeReportsCancellationAsAnIncompleteBatch()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        var manifestPath = Path.Combine(root, ProjectManifest.ManifestFileName);
+        var originalManifest = File.ReadAllBytes(manifestPath);
+        using var cancellation = new CancellationTokenSource();
+        var probe = new DelegateReferenceAmbiguityProbe(registryResolution =>
+        {
+            cancellation.Cancel();
+            return registryResolution with
+            {
+                Complete = false,
+                References = registryResolution.References
+                    .Select(reference => reference with
+                    {
+                        Matches = [],
+                        Candidates = reference.Matches,
+                        UnverifiedReasonCode = "cancelled",
+                        Message = "Reference probing was cancelled."
+                    })
+                    .ToArray(),
+                AdditionalDiagnostics =
+                [
+                    new TypeLibRegistryCatalogDiagnostic(
+                        "operationCancelled",
+                        "Reference probing was cancelled.")
+                ]
+            };
+        });
+        var composition = ToolingCompositionRoot.CreateApplicationComposition(
+            root,
+            vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
+                new ResolvedVbaProjectReference(
+                    "Ambiguous Library",
+                    "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                    2,
+                    0),
+                new ResolvedVbaProjectReference(
+                    "Ambiguous Library",
+                    "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                    3,
+                    0)),
+            vbaProjectReferenceAmbiguityProbe: probe);
+        var context = composition.ProjectContextResolver.Resolve(
+            new ProjectResolutionRequest(null, null, root));
+
+        var result = await composition.ReferenceService.AddAsync(
+            context,
+            ["Ambiguous Library"],
+            cancellation.Token);
+
+        Assert.Equal(130, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Contains("cancelled", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(originalManifest, File.ReadAllBytes(manifestPath));
+    }
+
+    [Fact]
+    public async Task ListDoesNotPublishACompletedSnapshotWhenCancellationArrivesAfterSuccessfulProbe()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(
+            temp,
+            new VbaProjectReference("Ambiguous Library"));
+        using var cancellation = new CancellationTokenSource();
+        var resolvedReference = new ResolvedVbaProjectReference(
+            "Ambiguous Library",
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            2,
+            0);
+        var probe = new DelegateReferenceAmbiguityProbe(registryResolution =>
+        {
+            cancellation.Cancel();
+            return registryResolution with
+            {
+                References = registryResolution.References
+                    .Select(reference => reference with { Matches = [resolvedReference] })
+                    .ToArray()
+            };
+        });
+        var composition = ToolingCompositionRoot.CreateApplicationComposition(
+            root,
+            vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
+                resolvedReference,
+                new ResolvedVbaProjectReference(
+                    "Ambiguous Library",
+                    "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                    3,
+                    0)),
+            vbaProjectReferenceAmbiguityProbe: probe);
+        var context = composition.ProjectContextResolver.Resolve(
+            new ProjectResolutionRequest(null, null, root));
+
+        var result = await composition.ReferenceService.ListAsync(
+            context,
+            "json",
+            cancellation.Token);
+
+        Assert.Equal(130, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Contains("cancelled", result.StandardError, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static string CreateProject(TempDirectory temp, params VbaProjectReference[] references)
     {
         var root = temp.CreateDirectory("Project");
@@ -448,5 +877,39 @@ public sealed class ReferenceCommandTests
         manifest.Documents["Book1"].References.AddRange(references);
         new JsonProjectManifestStore().Save(root, manifest);
         return root;
+    }
+
+    private sealed class RecordingReferenceAmbiguityProbe(
+        ResolvedVbaProjectReference resolvedReference)
+        : IVbaProjectReferenceAmbiguityProbe
+    {
+        public List<string> BaselineWorkbookPaths { get; } = [];
+
+        public Task<VbaProjectReferenceResolutionBatch> ResolveAsync(
+            string baselineWorkbookPath,
+            VbaProjectReferenceResolutionBatch registryResolution,
+            CancellationToken cancellationToken)
+        {
+            BaselineWorkbookPaths.Add(baselineWorkbookPath);
+            return Task.FromResult(registryResolution with
+            {
+                References = registryResolution.References
+                    .Select(reference => reference.Matches.Count > 1
+                        ? reference with { Matches = [resolvedReference] }
+                        : reference)
+                    .ToArray()
+            });
+        }
+    }
+
+    private sealed class DelegateReferenceAmbiguityProbe(
+        Func<VbaProjectReferenceResolutionBatch, VbaProjectReferenceResolutionBatch> resolve)
+        : IVbaProjectReferenceAmbiguityProbe
+    {
+        public Task<VbaProjectReferenceResolutionBatch> ResolveAsync(
+            string baselineWorkbookPath,
+            VbaProjectReferenceResolutionBatch registryResolution,
+            CancellationToken cancellationToken)
+            => Task.FromResult(resolve(registryResolution));
     }
 }

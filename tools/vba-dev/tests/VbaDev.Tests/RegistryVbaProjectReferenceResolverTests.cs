@@ -49,6 +49,41 @@ public sealed class RegistryVbaProjectReferenceResolverTests
     }
 
     [Fact]
+    public void ResolveRetainsEveryVersionInDescendingProbeFallbackOrder()
+    {
+        var catalog = new TypeLibRegistryCatalog(
+            complete: true,
+            names:
+            [
+                new TypeLibRegistryCatalogName(
+                    "Widget Library",
+                    [
+                        new TypeLibRegistryLineage(
+                            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                            [
+                                new TypeLibRegistryVersion(9, 15, []),
+                                new TypeLibRegistryVersion(10, 16, [])
+                            ])
+                    ])
+            ],
+            warnings: [],
+            diagnostic: null);
+        var resolver = new RegistryVbaProjectReferenceResolver(
+            new FakeTypeLibRegistryCatalogReader(catalog));
+
+        var resolution = Assert.Single(resolver.Resolve(["Widget Library"]).References);
+
+        var lineage = Assert.Single(resolution.CandidateLineages);
+        Assert.Equal("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", lineage.Guid);
+        Assert.Equal(
+            [(10, 16), (9, 15)],
+            lineage.Versions.Select(version => (version.Major, version.Minor)));
+        Assert.Equal(
+            [(10, 16)],
+            resolution.Matches.Select(match => (match.Major, match.Minor)));
+    }
+
+    [Fact]
     public void ResolveReusesOneCatalogSnapshotAcrossBatches()
     {
         var catalog = new TypeLibRegistryCatalog(

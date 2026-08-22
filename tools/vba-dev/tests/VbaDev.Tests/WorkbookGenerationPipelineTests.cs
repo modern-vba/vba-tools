@@ -2,6 +2,7 @@ using System.Text;
 using VbaDev.App.Build;
 using VbaDev.App.References;
 using VbaDev.App.Workbooks;
+using VbaDev.Domain;
 using Xunit;
 
 namespace VbaDev.Tests;
@@ -49,6 +50,49 @@ public sealed class WorkbookGenerationPipelineTests
         Assert.Equal(
             ["open", "get-references", "get-modules", "verify", "save", "cleanup-proved"],
             events);
+    }
+
+    [Fact]
+    public async Task MissingAmbiguousReferenceUsesTheSelectedTemplateAndAddsTheProbeIdentity()
+    {
+        using var temp = TempDirectory.Create();
+        var templatePath = Path.Combine(temp.Path, "Template.xlsm");
+        var targetPath = Path.Combine(temp.Path, "bin", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
+        File.WriteAllText(templatePath, "new-workbook", Encoding.UTF8);
+        var events = new List<string>();
+        var automation = new RecordingWorkbookGenerationAutomation(events);
+        var resolvedIdentity = new ResolvedVbaProjectReference(
+            "Ambiguous Library",
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            2,
+            0);
+        var probe = new RecordingBuildAmbiguityProbe(resolvedIdentity);
+        var pipeline = new WorkbookGenerationPipeline(
+            automation,
+            new WorkbookReferenceNormalizer(
+                new VbaProjectReferencePlanner(
+                    new FakeVbaProjectReferenceResolver(
+                        resolvedIdentity,
+                        new ResolvedVbaProjectReference(
+                            "Ambiguous Library",
+                            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                            3,
+                            0)),
+                    probe)));
+
+        await pipeline.GenerateAsync(
+            "Book1",
+            templatePath,
+            targetPath,
+            [new VbaProjectReference("Ambiguous Library")],
+            [],
+            WorkbookAutomationTimeouts.Default,
+            CancellationToken.None);
+
+        Assert.Equal([templatePath], probe.BaselineWorkbookPaths);
+        Assert.Equal([resolvedIdentity], automation.AddedReferences);
+        Assert.True(File.Exists(targetPath));
     }
 
     [Fact]
@@ -297,6 +341,8 @@ public sealed class WorkbookGenerationPipelineTests
 
         public WorkbookAutomationTimeouts? Timeouts { get; private set; }
 
+        public List<ResolvedVbaProjectReference> AddedReferences { get; } = [];
+
         public async Task<TResult> RunAsync<TResult>(
             string workbookPath,
             WorkbookAutomationTimeouts timeouts,
@@ -306,7 +352,10 @@ public sealed class WorkbookGenerationPipelineTests
             events.Add("open");
             Timeouts = timeouts;
             var result = await operation(
-                new RecordingWorkbookGenerationSession(events, OnImport),
+                new RecordingWorkbookGenerationSession(
+                    events,
+                    AddedReferences,
+                    OnImport),
                 cancellationToken);
             BeforeReturn?.Invoke();
             return result;
@@ -315,6 +364,7 @@ public sealed class WorkbookGenerationPipelineTests
 
     private sealed class RecordingWorkbookGenerationSession(
         List<string> events,
+        List<ResolvedVbaProjectReference> addedReferences,
         Action<VbeImportSourceFile>? onImport = null) : IWorkbookGenerationSession
     {
         public Task<IReadOnlyList<WorkbookModule>> GetModulesAsync(CancellationToken cancellationToken)
@@ -335,7 +385,10 @@ public sealed class WorkbookGenerationPipelineTests
         public Task AddReferenceAsync(
             ResolvedVbaProjectReference reference,
             CancellationToken cancellationToken)
-            => Task.CompletedTask;
+        {
+            addedReferences.Add(reference);
+            return Task.CompletedTask;
+        }
 
         public Task RemoveModuleAsync(string moduleName, CancellationToken cancellationToken)
             => Task.CompletedTask;
@@ -356,6 +409,31 @@ public sealed class WorkbookGenerationPipelineTests
         {
             events.Add("save");
             return Task.CompletedTask;
+        }
+    }
+
+    private sealed class RecordingBuildAmbiguityProbe(
+        ResolvedVbaProjectReference resolvedIdentity)
+        : IVbaProjectReferenceAmbiguityProbe
+    {
+        public List<string> BaselineWorkbookPaths { get; } = [];
+
+        public Task<VbaProjectReferenceResolutionBatch> ResolveAsync(
+            string baselineWorkbookPath,
+            VbaProjectReferenceResolutionBatch registryResolution,
+            CancellationToken cancellationToken)
+        {
+            BaselineWorkbookPaths.Add(baselineWorkbookPath);
+            return Task.FromResult(registryResolution with
+            {
+                References = registryResolution.References
+                    .Select(reference => reference with
+                    {
+                        Matches = [resolvedIdentity],
+                        Candidates = [resolvedIdentity]
+                    })
+                    .ToArray()
+            });
         }
     }
 

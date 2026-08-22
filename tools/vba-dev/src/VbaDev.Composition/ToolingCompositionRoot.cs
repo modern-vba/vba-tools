@@ -35,18 +35,28 @@ public static class ToolingCompositionRoot
     /// <param name="vbeDebugSessionFactory">The optional visible Excel/VBE session adapter.</param>
     /// <param name="vbaProjectReferenceResolver">The optional VBA reference catalog adapter.</param>
     /// <param name="projectManifestStore">The optional project manifest persistence adapter.</param>
+    /// <param name="vbaProjectReferenceAmbiguityProbe">The optional VBE-equivalent ambiguity probe.</param>
     /// <returns>The composed project resolver and launch coordinator.</returns>
     public static DebugAdapterComposition CreateDebugAdapterComposition(
         string workingDirectory,
         IWorkbookBuildAutomation? workbookBuildAutomation = null,
         IVbeDebugSessionFactory? vbeDebugSessionFactory = null,
         IVbaProjectReferenceResolver? vbaProjectReferenceResolver = null,
-        IProjectManifestStore? projectManifestStore = null)
+        IProjectManifestStore? projectManifestStore = null,
+        IVbaProjectReferenceAmbiguityProbe? vbaProjectReferenceAmbiguityProbe = null)
     {
         var manifestStore = projectManifestStore ?? new JsonProjectManifestStore();
         var commonModulesManifestReader = new CommonModulesManifestReader();
+        var referenceResolver = vbaProjectReferenceResolver
+                                ?? new RegistryVbaProjectReferenceResolver();
+        var ambiguityProbe = vbaProjectReferenceAmbiguityProbe
+                             ?? (vbaProjectReferenceResolver is null
+                                 ? new VbaProjectReferenceAmbiguityProbe(
+                                     new ExcelComVbaProjectReferenceProbeAutomation())
+                                 : null);
         var referencePlanner = new VbaProjectReferencePlanner(
-            vbaProjectReferenceResolver ?? new RegistryVbaProjectReferenceResolver());
+            referenceResolver,
+            ambiguityProbe);
         var buildAutomation = workbookBuildAutomation ?? new ExcelComWorkbookBuildAutomation();
         var sourcePlanner = new WorkbookSourcePlanner();
         var generationPipeline = CreateWorkbookGenerationPipeline(
@@ -95,7 +105,8 @@ public static class ToolingCompositionRoot
         IWorkbookModuleExporter? workbookModuleExporter = null,
         IVbaProjectReferenceResolver? vbaProjectReferenceResolver = null,
         IProjectManifestStore? projectManifestStore = null,
-        IDebugEnvironmentProbeFactory? debugEnvironmentProbeFactory = null)
+        IDebugEnvironmentProbeFactory? debugEnvironmentProbeFactory = null,
+        IVbaProjectReferenceAmbiguityProbe? vbaProjectReferenceAmbiguityProbe = null)
     {
         var manifestStore = projectManifestStore ?? new JsonProjectManifestStore();
         var manifestEditor = new ProjectManifestEditor(manifestStore);
@@ -103,7 +114,14 @@ public static class ToolingCompositionRoot
         var commonModulesInstallationTransaction = new CommonModulesInstallationTransaction(commonModulesManifestReader, manifestEditor);
         var commonModulesService = new CommonModulesService(commonModulesInstallationTransaction);
         var referenceResolver = vbaProjectReferenceResolver ?? new RegistryVbaProjectReferenceResolver();
-        var referencePlanner = new VbaProjectReferencePlanner(referenceResolver);
+        var ambiguityProbe = vbaProjectReferenceAmbiguityProbe
+                             ?? (vbaProjectReferenceResolver is null
+                                 ? new VbaProjectReferenceAmbiguityProbe(
+                                     new ExcelComVbaProjectReferenceProbeAutomation())
+                                 : null);
+        var referencePlanner = new VbaProjectReferencePlanner(
+            referenceResolver,
+            ambiguityProbe);
         var referenceService = new VbaProjectReferenceService(manifestEditor, referencePlanner);
         var projectContextResolver = new ProjectContextResolver(manifestStore);
         var buildAutomation = workbookBuildAutomation ?? new ExcelComWorkbookBuildAutomation();
@@ -112,7 +130,7 @@ public static class ToolingCompositionRoot
             [
                 new ProjectConfigurationDiagnosticProvider(),
                 new CommonModulesDiagnosticProvider(commonModulesManifestReader),
-                new VbaProjectReferenceDiagnosticProvider(referencePlanner, buildAutomation),
+                new VbaProjectReferenceDiagnosticProvider(referencePlanner),
                 new CommandDefaultsDiagnosticProvider()
             ],
             environmentDiagnosticPort ?? new DebugEnvironmentDiagnostic(

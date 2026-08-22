@@ -277,7 +277,10 @@ public sealed partial class ExcelComWorkbookBuildAutomation :
                 dynamic vbProject = vbProjectObject;
                 referencesObject = vbProject.References;
                 dynamic references = referencesObject;
-                referenceObject = references.AddFromGuid(reference.Guid, reference.Major, reference.Minor);
+                referenceObject = references.AddFromGuid(
+                    Guid.Parse(reference.Guid).ToString("B"),
+                    reference.Major,
+                    reference.Minor);
             }
             finally
             {

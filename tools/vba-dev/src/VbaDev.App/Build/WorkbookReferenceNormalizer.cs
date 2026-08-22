@@ -70,6 +70,7 @@ public sealed class WorkbookReferenceNormalizer
     public async Task<IReadOnlyList<string>> NormalizeAsync(
         IWorkbookGenerationSession session,
         string documentName,
+        string baselineWorkbookPath,
         IReadOnlyList<VbaProjectReference> desiredReferences,
         CancellationToken cancellationToken)
     {
@@ -99,12 +100,35 @@ public sealed class WorkbookReferenceNormalizer
         var currentNames = currentReferences
             .Select(reference => reference.Name)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var reference in desiredReferences)
+        var missingNames = desiredReferences
+            .Where(reference => !currentNames.Contains(reference.Name))
+            .Select(reference => reference.Name)
+            .ToArray();
+        if (missingNames.Length > 0)
         {
-            if (!currentNames.Contains(reference.Name))
+            var resolutionBatch = await referencePlanner.ResolveReferencesAsync(
+                    baselineWorkbookPath,
+                    missingNames,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            IReadOnlyList<ResolvedVbaProjectReference> resolvedReferences;
+            try
+            {
+                resolvedReferences = referencePlanner.SelectManifestInputReferences(
+                    resolutionBatch,
+                    missingNames);
+            }
+            catch (InvalidOperationException exception)
+            {
+                throw new InvalidOperationException(
+                    $"Reference resolution for document '{documentName}' failed: {exception.Message}",
+                    exception);
+            }
+
+            foreach (var resolvedReference in resolvedReferences)
             {
                 await session.AddReferenceAsync(
-                        referencePlanner.ResolveDocumentReference(documentName, reference.Name),
+                        resolvedReference,
                         cancellationToken)
                     .ConfigureAwait(false);
             }

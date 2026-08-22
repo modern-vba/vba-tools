@@ -1,4 +1,3 @@
-using System.Runtime.InteropServices;
 using VbaDev.App.Projects;
 using VbaDev.App.References;
 using VbaDev.App.Workbooks;
@@ -12,19 +11,15 @@ namespace VbaDev.App.Diagnostics;
 public sealed class VbaProjectReferenceDiagnosticProvider : IDoctorProjectDiagnosticProvider
 {
     private readonly VbaProjectReferencePlanner referencePlanner;
-    private readonly IWorkbookBuildAutomation workbookBuildAutomation;
 
     /// <summary>
     /// Creates a VBA project reference diagnostic provider.
     /// </summary>
     /// <param name="referencePlanner">The planner used to resolve and diagnose references.</param>
-    /// <param name="workbookBuildAutomation">The workbook automation port used to inspect source template references.</param>
     public VbaProjectReferenceDiagnosticProvider(
-        VbaProjectReferencePlanner referencePlanner,
-        IWorkbookBuildAutomation workbookBuildAutomation)
+        VbaProjectReferencePlanner referencePlanner)
     {
         this.referencePlanner = referencePlanner;
-        this.workbookBuildAutomation = workbookBuildAutomation;
     }
 
     /// <inheritdoc />
@@ -39,67 +34,72 @@ public sealed class VbaProjectReferenceDiagnosticProvider : IDoctorProjectDiagno
             }
 
             results.AddRange(referencePlanner.CreateReferenceCatalogAvailabilityDiagnostics(documentName, document));
-            var templateReferences = GetTemplateReferenceNames(results, project, documentName, document);
+            var referencesToResolve = document.References.ToArray();
+            VbaProjectReferenceResolutionBatch? resolutionBatch = null;
+            if (referencesToResolve.Length > 0)
+            {
+                resolutionBatch = referencePlanner.ResolveReferencesAsync(
+                        project.ResolvePath(document.TemplatePath),
+                        referencesToResolve.Select(reference => reference.Name).ToArray(),
+                        CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
+                AddResolutionBatchDiagnostics(results, documentName, resolutionBatch);
+            }
+
+            var resolutionIndex = 0;
             foreach (var reference in document.References)
             {
-                results.Add(referencePlanner.CreateReferenceResolutionDiagnostic(documentName, reference, templateReferences));
+                if (resolutionBatch is null ||
+                    resolutionIndex >= resolutionBatch.References.Count)
+                {
+                    results.Add(DiagnosticResult.Fail(
+                        $"VbaProjectReferences ({documentName}/{reference.Name})",
+                        "Reference resolver returned an incomplete ordered result batch."));
+                    continue;
+                }
+
+                var resolution = resolutionBatch.References[resolutionIndex++];
+                if (!resolutionBatch.Complete && resolution.UnverifiedReasonCode is null)
+                {
+                    results.Add(DiagnosticResult.Fail(
+                        $"VbaProjectReferences ({documentName}/{reference.Name})",
+                        "Reference verification did not complete because the shared resolver batch was incomplete."));
+                    continue;
+                }
+
+                results.Add(referencePlanner.CreateReferenceResolutionDiagnostic(
+                    documentName,
+                    reference,
+                    resolution));
             }
         }
     }
 
-    private IReadOnlySet<string> GetTemplateReferenceNames(
-        List<DiagnosticResult> results,
-        ResolvedProject project,
-        string documentName,
-        ProjectDocument document)
-    {
-        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (document.References.Count == 0)
-        {
-            return names;
-        }
-
-        var templatePath = project.ResolvePath(document.TemplatePath);
-        if (!File.Exists(templatePath))
-        {
-            return names;
-        }
-
-        try
-        {
-            using var session = workbookBuildAutomation.OpenWorkbook(templatePath);
-            foreach (var reference in session.GetReferences())
-            {
-                names.Add(reference.Name);
-            }
-        }
-        catch (COMException ex)
-        {
-            AddTemplateInspectionWarning(results, documentName, ex.Message);
-        }
-        catch (InvalidOperationException ex)
-        {
-            AddTemplateInspectionWarning(results, documentName, ex.Message);
-        }
-        catch (IOException ex)
-        {
-            AddTemplateInspectionWarning(results, documentName, ex.Message);
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            AddTemplateInspectionWarning(results, documentName, ex.Message);
-        }
-
-        return names;
-    }
-
-    private static void AddTemplateInspectionWarning(
+    private static void AddResolutionBatchDiagnostics(
         List<DiagnosticResult> results,
         string documentName,
-        string message)
+        VbaProjectReferenceResolutionBatch resolutionBatch)
     {
-        results.Add(DiagnosticResult.Warn(
-            $"VbaProjectReferences ({documentName})",
-            $"Could not inspect source template references: {message}"));
+        if (resolutionBatch.Complete)
+        {
+            return;
+        }
+
+        if (resolutionBatch.Diagnostics.Count == 0)
+        {
+            results.Add(DiagnosticResult.Fail(
+                $"VbaProjectReferences ({documentName})",
+                "referenceResolutionIncomplete: Reference resolution did not complete."));
+            return;
+        }
+
+        foreach (var diagnostic in resolutionBatch.Diagnostics)
+        {
+            results.Add(DiagnosticResult.Fail(
+                $"VbaProjectReferences ({documentName})",
+                $"{diagnostic.Code}: {diagnostic.Message}"));
+        }
     }
+
 }

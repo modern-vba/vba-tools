@@ -1,4 +1,5 @@
 using VbaDev.App.Diagnostics;
+using VbaDev.App.Projects;
 using VbaDev.App.Workbooks;
 using VbaDev.Domain;
 
@@ -10,14 +11,18 @@ namespace VbaDev.App.References;
 public sealed class VbaProjectReferencePlanner
 {
     private readonly IVbaProjectReferenceResolver referenceResolver;
+    private readonly IVbaProjectReferenceAmbiguityProbe? ambiguityProbe;
 
     /// <summary>
     /// Creates the reference planner.
     /// </summary>
     /// <param name="referenceResolver">The resolver that maps manifest reference names to concrete catalog identities.</param>
-    public VbaProjectReferencePlanner(IVbaProjectReferenceResolver referenceResolver)
+    public VbaProjectReferencePlanner(
+        IVbaProjectReferenceResolver referenceResolver,
+        IVbaProjectReferenceAmbiguityProbe? ambiguityProbe = null)
     {
         this.referenceResolver = referenceResolver;
+        this.ambiguityProbe = ambiguityProbe;
     }
 
     /// <summary>
@@ -38,6 +43,50 @@ public sealed class VbaProjectReferencePlanner
     /// <returns>The complete batch result.</returns>
     public VbaProjectReferenceResolutionBatch ResolveReferences(IReadOnlyList<string> referenceNames)
         => referenceResolver.Resolve(referenceNames);
+
+    /// <summary>
+    /// Resolves reference names and probes registry ambiguity against the selected document template.
+    /// </summary>
+    /// <param name="context">The selected project document context.</param>
+    /// <param name="referenceNames">The ordered human-visible reference names.</param>
+    /// <param name="cancellationToken">The cooperative command cancellation token.</param>
+    /// <returns>The complete or partial ordered resolution batch.</returns>
+    public async Task<VbaProjectReferenceResolutionBatch> ResolveReferencesAsync(
+        ResolvedProjectContext context,
+        IReadOnlyList<string> referenceNames,
+        CancellationToken cancellationToken)
+        => await ResolveReferencesAsync(
+                context.TemplateDocumentPath,
+                referenceNames,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+    /// <summary>
+    /// Resolves reference names and probes registry ambiguity against an explicit source-template baseline.
+    /// </summary>
+    /// <param name="baselineWorkbookPath">The caller-selected source-template workbook.</param>
+    /// <param name="referenceNames">The ordered human-visible reference names.</param>
+    /// <param name="cancellationToken">The cooperative command cancellation token.</param>
+    /// <returns>The complete or partial ordered resolution batch.</returns>
+    public async Task<VbaProjectReferenceResolutionBatch> ResolveReferencesAsync(
+        string baselineWorkbookPath,
+        IReadOnlyList<string> referenceNames,
+        CancellationToken cancellationToken)
+    {
+        var batch = ResolveReferences(referenceNames);
+        if (!batch.Complete ||
+            ambiguityProbe is null ||
+            !batch.References.Any(reference => reference.Matches.Count > 1))
+        {
+            return batch;
+        }
+
+        return await ambiguityProbe.ResolveAsync(
+                baselineWorkbookPath,
+                batch,
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
 
     /// <summary>
     /// Selects unique identities for names from an existing complete batch.
@@ -149,6 +198,27 @@ public sealed class VbaProjectReferencePlanner
         }
 
         var resolution = Resolve(reference.Name);
+        return CreateReferenceResolutionDiagnostic(
+            documentName,
+            reference,
+            resolution);
+    }
+
+    /// <summary>
+    /// Creates a Doctor diagnostic from one already completed registry/VBE resolution entry.
+    /// </summary>
+    public DiagnosticResult CreateReferenceResolutionDiagnostic(
+        string documentName,
+        VbaProjectReference reference,
+        VbaProjectReferenceNameResolution resolution)
+    {
+        if (resolution.UnverifiedReasonCode is not null)
+        {
+            return DiagnosticResult.Fail(
+                $"VbaProjectReferences ({documentName}/{reference.Name})",
+                $"Reference verification did not complete ({resolution.UnverifiedReasonCode}): {resolution.Message}");
+        }
+
         if (resolution.Matches.Count == 0)
         {
             return DiagnosticResult.Fail(
@@ -212,11 +282,18 @@ public sealed class VbaProjectReferencePlanner
             return;
         }
 
-        var diagnostic = batch.Diagnostic;
+        var diagnostics = batch.Diagnostics
+            .Select(diagnostic => $"{diagnostic.Code}: {diagnostic.Message}")
+            .Concat(batch.References
+                .Where(reference => reference.UnverifiedReasonCode is not null)
+                .Select(reference =>
+                    $"{reference.UnverifiedReasonCode} ({reference.RequestedName}): " +
+                    (reference.Message ?? "Reference verification did not complete.")))
+            .ToArray();
         throw new InvalidOperationException(
-            diagnostic is null
-                ? "registryCatalogIncomplete: TypeLib registry catalog enumeration did not complete."
-                : $"{diagnostic.Code}: {diagnostic.Message}");
+            diagnostics.Length == 0
+                ? "referenceResolutionIncomplete: Reference resolution did not complete."
+                : string.Join(Environment.NewLine, diagnostics));
     }
 
     private static VbaProjectReferenceNameResolution GetResolution(

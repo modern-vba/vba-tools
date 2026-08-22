@@ -4,6 +4,7 @@ using VbaDev.Cli;
 using VbaDev.Composition;
 using VbaDev.Domain;
 using VbaDev.Infrastructure.Projects;
+using VbaTools.TypeLibRegistry;
 using System.Text;
 using Xunit;
 
@@ -419,7 +420,7 @@ public sealed class DoctorCommandTests
     }
 
     [Fact]
-    public void DoctorTreatsTemplateWorkbookReferencesAsResolvedBeforeRegistryValidation()
+    public void DoctorDoesNotOpenTheSourceTemplateToOverrideARegistryUnavailableReference()
     {
         using var temp = TempDirectory.Create();
         var root = temp.CreateDirectory("Project");
@@ -430,9 +431,7 @@ public sealed class DoctorCommandTests
         new JsonProjectManifestStore().Save(root, manifest);
         var automation = new FakeWorkbookBuildAutomation();
         automation.References.Add(new WorkbookReference("OLE Automation", IsRemovable: false));
-        var resolver = new FakeVbaProjectReferenceResolver(
-            new ResolvedVbaProjectReference("OLE Automation", "{00020430-0000-0000-C000-000000000046}", 1, 0),
-            new ResolvedVbaProjectReference("OLE Automation", "{00020430-0000-0000-C000-000000000046}", 2, 0));
+        var resolver = new FakeVbaProjectReferenceResolver();
         var application = CommandLineTestFactory.Create(
             root,
             new FakeEnvironmentDiagnosticPort(),
@@ -441,10 +440,94 @@ public sealed class DoctorCommandTests
 
         var result = application.Run(["doctor"]);
 
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("[FAIL] VbaProjectReferences (Book1/OLE Automation)", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Equal(["OLE Automation"], resolver.RequestedNames);
+        Assert.Empty(automation.OpenedWorkbooks);
+    }
+
+    [Fact]
+    public void DoctorUsesTheDocumentTemplateToResolveAMissingAmbiguousReference()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        Directory.CreateDirectory(Path.Combine(root, "src", "Book1"));
+        var templatePath = Path.Combine(root, "src", "Book1", "Book1.xlsm");
+        File.WriteAllText(templatePath, string.Empty);
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        manifest.Documents["Book1"].References.Add(
+            new VbaProjectReference("Ambiguous Library"));
+        new JsonProjectManifestStore().Save(root, manifest);
+        var resolvedIdentity = new ResolvedVbaProjectReference(
+            "Ambiguous Library",
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            2,
+            0);
+        var probe = new RecordingDoctorAmbiguityProbe(resolvedIdentity);
+        var application = VbaDevCommandLine.Create(
+            ToolingCompositionRoot.CreateApplicationComposition(
+                root,
+                environmentDiagnosticPort: new FakeEnvironmentDiagnosticPort(),
+                workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+                vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
+                    resolvedIdentity,
+                    new ResolvedVbaProjectReference(
+                        "Ambiguous Library",
+                        "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                        3,
+                        0)),
+                vbaProjectReferenceAmbiguityProbe: probe));
+
+        var result = application.Run(["doctor"]);
+
         Assert.Equal(0, result.ExitCode);
-        Assert.Contains("[PASS] VbaProjectReferences (Book1/OLE Automation)", result.StandardOutput, StringComparison.Ordinal);
-        Assert.DoesNotContain("ambiguous", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
-        Assert.Empty(resolver.RequestedNames);
+        Assert.Contains(
+            "[PASS] VbaProjectReferences (Book1/Ambiguous Library)",
+            result.StandardOutput,
+            StringComparison.Ordinal);
+        Assert.Equal([templatePath], probe.BaselineWorkbookPaths);
+    }
+
+    [Fact]
+    public void DoctorFailsAnOtherwiseResolvedReferenceWhenTheSharedBatchIsIncomplete()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        Directory.CreateDirectory(Path.Combine(root, "src", "Book1"));
+        File.WriteAllText(Path.Combine(root, "src", "Book1", "Book1.xlsm"), string.Empty);
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        manifest.Documents["Book1"].References.Add(new VbaProjectReference("Unique Library"));
+        new JsonProjectManifestStore().Save(root, manifest);
+        var resolver = new FakeVbaProjectReferenceResolver(
+            new ResolvedVbaProjectReference(
+                "Unique Library",
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                1,
+                0))
+        {
+            Complete = false,
+            Diagnostic = new TypeLibRegistryCatalogDiagnostic(
+                "registryEnumerationFailure",
+                "The reference catalog could not be enumerated completely.")
+        };
+        var application = CommandLineTestFactory.Create(
+            root,
+            new FakeEnvironmentDiagnosticPort(),
+            workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+            vbaProjectReferenceResolver: resolver);
+
+        var result = application.Run(["doctor"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains(
+            "[FAIL] VbaProjectReferences (Book1)",
+            result.StandardOutput,
+            StringComparison.Ordinal);
+        Assert.Contains("registryEnumerationFailure", result.StandardOutput, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "[PASS] VbaProjectReferences (Book1/Unique Library)",
+            result.StandardOutput,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -518,6 +601,31 @@ public sealed class DoctorCommandTests
         Assert.Contains("[WARN] VbaProjectReferenceCatalog (Book1/Uncataloged Reference Library)", result.StandardOutput, StringComparison.Ordinal);
         Assert.Contains("No bundled or cached VbaProjectReferenceCatalog metadata is available", result.StandardOutput, StringComparison.Ordinal);
         Assert.Contains("[PASS] VbaProjectReferences (Book1/Uncataloged Reference Library)", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    private sealed class RecordingDoctorAmbiguityProbe(
+        ResolvedVbaProjectReference resolvedIdentity)
+        : IVbaProjectReferenceAmbiguityProbe
+    {
+        public List<string> BaselineWorkbookPaths { get; } = [];
+
+        public Task<VbaProjectReferenceResolutionBatch> ResolveAsync(
+            string baselineWorkbookPath,
+            VbaProjectReferenceResolutionBatch registryResolution,
+            CancellationToken cancellationToken)
+        {
+            BaselineWorkbookPaths.Add(baselineWorkbookPath);
+            return Task.FromResult(registryResolution with
+            {
+                References = registryResolution.References
+                    .Select(reference => reference with
+                    {
+                        Matches = [resolvedIdentity],
+                        Candidates = [resolvedIdentity]
+                    })
+                    .ToArray()
+            });
+        }
     }
 
     private static (string Root, string CommonRepo) CreateDoctorProject(TempDirectory temp)

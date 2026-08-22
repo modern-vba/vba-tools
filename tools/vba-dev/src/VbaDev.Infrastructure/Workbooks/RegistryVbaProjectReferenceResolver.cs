@@ -62,8 +62,10 @@ public sealed class RegistryVbaProjectReferenceResolver : IVbaProjectReferenceRe
                 []);
         }
 
-        var matches = registeredName.Lineages
-            .Select(lineage => lineage.Versions
+        var lineages = registeredName.Lineages
+            .Select(lineage => new VbaProjectReferenceCandidateLineage(
+                lineage.Guid,
+                lineage.Versions
                 .OrderByDescending(version => version.Major)
                 .ThenByDescending(version => version.Minor)
                 .Select(version => new ResolvedVbaProjectReference(
@@ -71,13 +73,17 @@ public sealed class RegistryVbaProjectReferenceResolver : IVbaProjectReferenceRe
                     lineage.Guid,
                     version.Major,
                     version.Minor))
-                .First())
+                .ToArray()))
+            .ToArray();
+        var matches = lineages
+            .Select(lineage => lineage.Versions[0])
             .ToArray();
 
         return new VbaProjectReferenceNameResolution(
             requestedName,
             registeredName.Name,
             true,
-            matches);
+            matches,
+            lineages);
     }
 }

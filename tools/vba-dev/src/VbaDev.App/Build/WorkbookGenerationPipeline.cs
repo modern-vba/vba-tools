@@ -141,6 +141,7 @@ public sealed class WorkbookGenerationPipeline
                     var result = await referenceNormalizer.NormalizeAsync(
                             session,
                             documentName,
+                            templateWorkbookPath,
                             desiredReferences,
                             operationCancellationToken)
                         .ConfigureAwait(false);

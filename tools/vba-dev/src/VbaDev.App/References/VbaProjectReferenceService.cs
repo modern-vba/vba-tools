@@ -55,6 +55,19 @@ public sealed class VbaProjectReferenceService
     /// <param name="referenceNames">The requested human-visible reference names.</param>
     /// <returns>The command result describing manifest changes or validation errors.</returns>
     public CommandResult Add(ResolvedProjectContext context, IReadOnlyList<string> referenceNames)
+        => AddAsync(context, referenceNames, CancellationToken.None).GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Adds references after completing any required VBE-equivalent ambiguity probe.
+    /// </summary>
+    /// <param name="context">The resolved project and document context.</param>
+    /// <param name="referenceNames">The requested human-visible reference names.</param>
+    /// <param name="cancellationToken">The cooperative command cancellation token.</param>
+    /// <returns>The command result describing manifest changes or validation errors.</returns>
+    public async Task<CommandResult> AddAsync(
+        ResolvedProjectContext context,
+        IReadOnlyList<string> referenceNames,
+        CancellationToken cancellationToken)
     {
         var normalizedNames = NormalizeNames(referenceNames);
         if (normalizedNames.Length == 0)
@@ -76,7 +89,17 @@ public sealed class VbaProjectReferenceService
         IReadOnlyList<ResolvedVbaProjectReference> resolvedReferences;
         try
         {
-            resolutionBatch = referencePlanner.ResolveReferences(missingNames);
+            resolutionBatch = await referencePlanner.ResolveReferencesAsync(
+                    context,
+                    missingNames,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return CommandResult.Cancelled(
+                    "Reference add was cancelled before the manifest update.");
+            }
+
             resolvedReferences = referencePlanner.SelectManifestInputReferences(
                 resolutionBatch,
                 missingNames);
@@ -84,6 +107,12 @@ public sealed class VbaProjectReferenceService
         catch (InvalidOperationException ex)
         {
             return CommandResult.UsageError(ex.Message);
+        }
+
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return CommandResult.Cancelled(
+                "Reference add was cancelled before the manifest update.");
         }
 
         var output = new StringBuilder();
@@ -145,6 +174,19 @@ public sealed class VbaProjectReferenceService
     /// <param name="format">The output format, either text or json.</param>
     /// <returns>The formatted command result.</returns>
     public CommandResult List(ResolvedProjectContext context, string format)
+        => ListAsync(context, format, CancellationToken.None).GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Lists references after completing any required VBE-equivalent ambiguity probe.
+    /// </summary>
+    /// <param name="context">The resolved project and document context.</param>
+    /// <param name="format">The output format, either text or json.</param>
+    /// <param name="cancellationToken">The cooperative command cancellation token.</param>
+    /// <returns>The formatted command result.</returns>
+    public async Task<CommandResult> ListAsync(
+        ResolvedProjectContext context,
+        string format,
+        CancellationToken cancellationToken)
     {
         var document = ProjectManifestEditor.GetDocument(context.Manifest, context.DocumentName);
         var names = document.References
@@ -156,7 +198,11 @@ public sealed class VbaProjectReferenceService
         {
             batch = names.Length == 0
                 ? new VbaProjectReferenceResolutionBatch(true, [], null, [])
-                : referencePlanner.ResolveReferences(names);
+                : await referencePlanner.ResolveReferencesAsync(
+                        context,
+                        names,
+                        cancellationToken)
+                    .ConfigureAwait(false);
             references = CreateListReferences(document.References, batch);
         }
         catch (InvalidOperationException exception)
@@ -164,17 +210,22 @@ public sealed class VbaProjectReferenceService
             return CommandResult.UsageError(exception.Message);
         }
 
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return CommandResult.Cancelled(
+                "Reference list was cancelled before output was published.");
+        }
+
         var warnings = batch.Warnings
             .Select(warning => new VbaProjectReferenceWarningOutput(warning.Code, warning.Message))
             .ToArray();
-        var diagnostics = batch.Diagnostic is null
+        var diagnostics = batch.Diagnostics.Count == 0
             ? null
-            : new[]
-            {
-                new VbaProjectReferenceDiagnosticOutput(
-                    batch.Diagnostic.Code,
-                    batch.Diagnostic.Message)
-            };
+            : batch.Diagnostics
+                .Select(diagnostic => new VbaProjectReferenceDiagnosticOutput(
+                    diagnostic.Code,
+                    diagnostic.Message))
+                .ToArray();
         var exitCode = batch.Complete
             && references.All(reference => reference.Status == "resolved")
                 ? 0
@@ -230,9 +281,9 @@ public sealed class VbaProjectReferenceService
         }
 
         var standardError = new StringBuilder(FormatWarnings(batch.Warnings));
-        if (batch.Diagnostic is not null)
+        foreach (var diagnostic in batch.Diagnostics)
         {
-            standardError.AppendLine($"[ERROR] {batch.Diagnostic.Code}: {batch.Diagnostic.Message}");
+            standardError.AppendLine($"[ERROR] {diagnostic.Code}: {diagnostic.Message}");
         }
 
         return new CommandResult(
@@ -252,11 +303,6 @@ public sealed class VbaProjectReferenceService
         IReadOnlyList<VbaProjectReference> manifestReferences,
         VbaProjectReferenceResolutionBatch batch)
     {
-        if (!batch.Complete)
-        {
-            return [];
-        }
-
         if (manifestReferences.Count != batch.References.Count)
         {
             throw new InvalidOperationException(
@@ -283,33 +329,51 @@ public sealed class VbaProjectReferenceService
         string manifestName,
         VbaProjectReferenceNameResolution resolution)
     {
-        var candidates = resolution.Matches
+        var matches = resolution.Matches
             .Select(CreateIdentity)
             .Distinct()
             .OrderBy(identity => identity.Guid, StringComparer.Ordinal)
             .ThenBy(identity => identity.Major)
             .ThenBy(identity => identity.Minor)
             .ToArray();
-        if (candidates.Length == 1)
+        var candidates = resolution.Candidates
+            .Select(CreateIdentity)
+            .Distinct()
+            .OrderBy(identity => identity.Guid, StringComparer.Ordinal)
+            .ThenBy(identity => identity.Major)
+            .ThenBy(identity => identity.Minor)
+            .ToArray();
+        if (resolution.UnverifiedReasonCode is not null)
+        {
+            return new VbaProjectReferenceListEntryOutput(
+                manifestName,
+                "unverified",
+                null,
+                resolution.UnverifiedReasonCode,
+                candidates,
+                resolution.Message ?? "Reference verification did not complete.");
+        }
+
+        if (matches.Length == 1)
         {
             return new VbaProjectReferenceListEntryOutput(
                 manifestName,
                 "resolved",
-                candidates[0],
+                matches[0],
                 null,
                 null,
                 null);
         }
 
-        if (candidates.Length > 1)
+        if (matches.Length > 1)
         {
             return new VbaProjectReferenceListEntryOutput(
                 manifestName,
                 "ambiguous",
                 null,
                 "multipleUsableIdentities",
-                candidates,
-                "Multiple usable registered TypeLib identities matched this name.");
+                matches,
+                $"Multiple usable TypeLib identities matched this name: {FormatIdentities(matches)}.");
         }
 
         var reasonCode = resolution.IsRegistered
@@ -343,6 +407,13 @@ public sealed class VbaProjectReferenceService
             reference.Major,
             reference.Minor);
     }
+
+    private static string FormatIdentities(
+        IReadOnlyList<VbaProjectReferenceIdentityOutput> identities)
+        => string.Join(
+            ", ",
+            identities.Select(identity =>
+                $"{identity.Guid} {identity.Major}.{identity.Minor}"));
 
     private static string FormatWarnings(
         IReadOnlyList<VbaTools.TypeLibRegistry.TypeLibRegistryCatalogWarning> warnings)

@@ -179,15 +179,18 @@ public sealed class VbaDevCommandLine
             Description = "VBA project reference names to add."
         };
         referenceAddCommand.Add(referenceAddArguments);
-        referenceAddCommand.SetAction(parseResult => WriteCommandResult(
+        referenceAddCommand.SetAction(async (parseResult, cancellationToken) => WriteCommandResult(
             parseResult,
-            ResolveDocumentContext(
-                parseResult,
-                composition,
-                referenceAddOptions,
-                context => composition.ReferenceService.Add(
-                    context,
-                    parseResult.GetValue(referenceAddArguments) ?? []))));
+            await ResolveDocumentContextAsync(
+                    parseResult,
+                    composition,
+                    referenceAddOptions,
+                    (context, operationCancellationToken) => composition.ReferenceService.AddAsync(
+                        context,
+                        parseResult.GetValue(referenceAddArguments) ?? [],
+                        operationCancellationToken),
+                    cancellationToken)
+                .ConfigureAwait(false)));
         var referenceListCommand = AddCapabilityCommand(
             referenceCommand,
             "list",
@@ -202,15 +205,18 @@ public sealed class VbaDevCommandLine
             ["text", "json"],
             "-f");
         referenceListCommand.Add(referenceListFormatOption);
-        referenceListCommand.SetAction(parseResult => WriteCommandResult(
+        referenceListCommand.SetAction(async (parseResult, cancellationToken) => WriteCommandResult(
             parseResult,
-            ResolveDocumentContext(
-                parseResult,
-                composition,
-                referenceListOptions,
-                context => composition.ReferenceService.List(
-                    context,
-                    parseResult.GetValue(referenceListFormatOption) ?? "text"))));
+            await ResolveDocumentContextAsync(
+                    parseResult,
+                    composition,
+                    referenceListOptions,
+                    (context, operationCancellationToken) => composition.ReferenceService.ListAsync(
+                        context,
+                        parseResult.GetValue(referenceListFormatOption) ?? "text",
+                        operationCancellationToken),
+                    cancellationToken)
+                .ConfigureAwait(false)));
         var referenceRemoveCommand = AddCapabilityCommand(
             referenceCommand,
             "remove",
