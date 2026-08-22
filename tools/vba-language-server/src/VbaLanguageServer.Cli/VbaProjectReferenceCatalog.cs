@@ -86,7 +86,7 @@ public sealed class VbaProjectReferenceCatalogSet
     /// Gets an empty catalog set.
     /// </summary>
     public static VbaProjectReferenceCatalogSet Empty { get; } =
-        new(new Dictionary<string, VbaProjectReferenceCatalog>(StringComparer.OrdinalIgnoreCase));
+        new(new Dictionary<string, VbaProjectReferenceCatalog>(VbaProjectReferenceName.Comparer));
 
     /// <summary>
     /// Creates the bundled minimal reference catalog set shipped with the language server.
@@ -354,7 +354,7 @@ public sealed class VbaProjectReferenceCatalogSet
         return new VbaProjectReferenceCatalogSet(
             bundledCatalogs.ToDictionary(
                 catalog => catalog.ReferenceName,
-                StringComparer.OrdinalIgnoreCase));
+                VbaProjectReferenceName.Comparer));
     }
 
     /// <summary>
@@ -362,7 +362,7 @@ public sealed class VbaProjectReferenceCatalogSet
     /// </summary>
     public IReadOnlyList<string> ReferenceNames
         => catalogs.Keys
-            .OrderBy(referenceName => referenceName, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(referenceName => referenceName, VbaProjectReferenceName.OrderingComparer)
             .ToArray();
 
     /// <summary>
@@ -380,7 +380,7 @@ public sealed class VbaProjectReferenceCatalogSet
     /// <returns>The merged catalog set.</returns>
     public VbaProjectReferenceCatalogSet WithCatalog(VbaProjectReferenceCatalog catalog)
     {
-        var merged = new Dictionary<string, VbaProjectReferenceCatalog>(catalogs, StringComparer.OrdinalIgnoreCase)
+        var merged = new Dictionary<string, VbaProjectReferenceCatalog>(catalogs, VbaProjectReferenceName.Comparer)
         {
             [catalog.ReferenceName] = catalog
         };
@@ -415,8 +415,8 @@ public sealed class VbaProjectReferenceCatalogSet
         return selection.References
             .Where(reference => !catalogs.ContainsKey(reference.Name))
             .Select(reference => reference.Name)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .Distinct(VbaProjectReferenceName.Comparer)
+            .OrderBy(name => name, VbaProjectReferenceName.OrderingComparer)
             .ToArray();
     }
 
@@ -468,7 +468,9 @@ public sealed class VbaProjectReferenceCatalogSet
         string qualifier)
     {
         return GetActiveCatalogs(selection)
-            .Where(catalog => catalog.Catalog.ReferenceName.Equals(referenceName, StringComparison.OrdinalIgnoreCase))
+            .Where(catalog => VbaProjectReferenceName.AreEquivalent(
+                catalog.Catalog.ReferenceName,
+                referenceName))
             .SelectMany(catalog => catalog.Catalog.QualifierAliases)
             .FirstOrDefault(alias => alias.Equals(qualifier, StringComparison.OrdinalIgnoreCase));
     }
@@ -498,7 +500,9 @@ public sealed class VbaProjectReferenceCatalogSet
 
         foreach (var reference in selection.References)
         {
-            if (reference.Name.Equals(StandardLibraryReferenceName, StringComparison.OrdinalIgnoreCase))
+            if (VbaProjectReferenceName.AreEquivalent(
+                    reference.Name,
+                    StandardLibraryReferenceName))
             {
                 continue;
             }

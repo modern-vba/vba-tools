@@ -315,13 +315,13 @@ public sealed class VbaProjectReferenceCatalogPersistentStore : IVbaProjectRefer
                     $"Persisted reference catalog entry for '{referenceName}' uses unsupported generator version '{entry.GeneratorVersion}'.");
             }
 
-            if (!entry.Identity.ReferenceName.Equals(referenceName, StringComparison.OrdinalIgnoreCase))
+            if (!VbaProjectReferenceName.AreEquivalent(entry.Identity.ReferenceName, referenceName))
             {
                 return VbaProjectReferenceCatalogPersistentLoadResult.Warning(
                     $"Persisted reference catalog entry for '{referenceName}' contains reference '{entry.Identity.ReferenceName}'.");
             }
 
-            if (!entry.Catalog.ReferenceName.Equals(referenceName, StringComparison.OrdinalIgnoreCase))
+            if (!VbaProjectReferenceName.AreEquivalent(entry.Catalog.ReferenceName, referenceName))
             {
                 return VbaProjectReferenceCatalogPersistentLoadResult.Warning(
                     $"Persisted reference catalog entry for '{referenceName}' contains catalog '{entry.Catalog.ReferenceName}'.");

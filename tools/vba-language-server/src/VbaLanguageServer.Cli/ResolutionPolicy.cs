@@ -52,7 +52,7 @@ internal sealed class VbaResolutionPolicy
         if (bestRank == ReferenceRank && referenceSelection?.MainVbaProjectReference is not null)
         {
             var mainReferenceCandidates = bestDefinitions
-                .Where(definition => SameName(
+                .Where(definition => VbaProjectReferenceName.AreEquivalent(
                     definition.ModuleName,
                     referenceSelection.MainVbaProjectReference.Name))
                 .ToArray();
@@ -73,9 +73,6 @@ internal sealed class VbaResolutionPolicy
             candidates.Select(candidate => new VbaRankedDefinition(candidate, ReferenceRank)),
             referenceSelection);
     }
-
-    private static bool SameName(string left, string right)
-        => string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
 }
 
 /// <summary>

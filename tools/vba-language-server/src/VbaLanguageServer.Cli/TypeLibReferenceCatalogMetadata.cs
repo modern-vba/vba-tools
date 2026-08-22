@@ -230,21 +230,41 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
     [SupportedOSPlatform("windows")]
     private static ITypeLib LoadWindowsTypeLib(VbaProjectReferenceCatalogIdentity identity)
     {
-        if (Guid.TryParse(identity.Guid, out var guid))
+        LoadTypeLibEx(identity.Path, REGKIND.REGKIND_NONE, out var pathTypeLib);
+        ValidateWindowsTypeLibIdentity(pathTypeLib, identity);
+        return pathTypeLib;
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void ValidateWindowsTypeLibIdentity(
+        ITypeLib typeLib,
+        VbaProjectReferenceCatalogIdentity identity)
+    {
+        var attrPointer = IntPtr.Zero;
+        try
         {
-            try
+            typeLib.GetLibAttr(out attrPointer);
+            var attributes = Marshal.PtrToStructure<TYPELIBATTR>(attrPointer);
+            var loadedMajorVersion = unchecked((ushort)attributes.wMajorVerNum);
+            var loadedMinorVersion = unchecked((ushort)attributes.wMinorVerNum);
+            if (!Guid.TryParse(identity.Guid, out var expectedGuid)
+                || attributes.guid != expectedGuid
+                || loadedMajorVersion != identity.MajorVersion
+                || loadedMinorVersion != identity.MinorVersion)
             {
-                LoadRegTypeLib(ref guid, (ushort)identity.MajorVersion, (ushort)identity.MinorVersion, identity.Lcid, out var registeredTypeLib);
-                return registeredTypeLib;
-            }
-            catch (COMException)
-            {
-                // Some registry entries point at resource-indexed files that are still loadable by path.
+                throw new InvalidDataException(
+                    $"The TypeLib at '{identity.Path}' has identity "
+                    + $"{attributes.guid:D} {loadedMajorVersion}.{loadedMinorVersion}; "
+                    + $"expected {identity.Guid} {identity.MajorVersion}.{identity.MinorVersion}.");
             }
         }
-
-        LoadTypeLibEx(identity.Path, REGKIND.REGKIND_NONE, out var pathTypeLib);
-        return pathTypeLib;
+        finally
+        {
+            if (attrPointer != IntPtr.Zero)
+            {
+                typeLib.ReleaseTLibAttr(attrPointer);
+            }
+        }
     }
 
     [SupportedOSPlatform("windows")]
@@ -805,14 +825,6 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
     private static extern void LoadTypeLibEx(
         string szFile,
         REGKIND regkind,
-        [MarshalAs(UnmanagedType.Interface)] out ITypeLib pptlib);
-
-    [DllImport("oleaut32.dll", PreserveSig = false)]
-    private static extern void LoadRegTypeLib(
-        ref Guid rguid,
-        ushort wVerMajor,
-        ushort wVerMinor,
-        int lcid,
         [MarshalAs(UnmanagedType.Interface)] out ITypeLib pptlib);
 
     private enum REGKIND

@@ -2,12 +2,243 @@ using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
 using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.SourceModel;
+using VbaTools.TypeLibRegistry;
 using Xunit;
 
 namespace VbaLanguageServer.Tests;
 
 public sealed class VbaProjectReferenceCatalogRefreshTests
 {
+    [Fact]
+    public async Task TypeLibDiscoveryResolvesHighestVersionFromOneNeutralGuidLineage()
+    {
+        var discovery = new TypeLibReferenceCatalogDiscovery(
+            new FakeTypeLibRegistryCatalogReader(
+                new TypeLibRegistryCatalog(
+                    complete: true,
+                    names:
+                    [
+                        new TypeLibRegistryCatalogName(
+                            "Custom Library",
+                            [
+                                new TypeLibRegistryLineage(
+                                    "11111111-1111-1111-1111-111111111111",
+                                    [
+                                        new TypeLibRegistryVersion(
+                                            16,
+                                            0,
+                                            [
+                                                new TypeLibRegistryLocale(
+                                                    0,
+                                                    [new TypeLibRegistryPath("win32", @"C:\TypeLibs\Custom16.tlb")])
+                                            ]),
+                                        new TypeLibRegistryVersion(
+                                            1,
+                                            0,
+                                            [
+                                                new TypeLibRegistryLocale(
+                                                    0,
+                                                    [new TypeLibRegistryPath("win32", @"C:\TypeLibs\Custom1.tlb")])
+                                            ])
+                                    ])
+                            ])
+                    ],
+                    warnings: [],
+                    diagnostic: null)),
+            new FakeTypeLibCatalogMetadataReader(new TypeLibCatalogMetadata("Custom", [])));
+
+        var result = await discovery.DiscoverAsync(" custom library ");
+
+        var identity = Assert.Single(result.Identities);
+        Assert.True(result.HasUsableCatalog);
+        Assert.Equal("Custom Library", identity.ReferenceName);
+        Assert.Equal("11111111-1111-1111-1111-111111111111", identity.Guid);
+        Assert.Equal(16, identity.MajorVersion);
+        Assert.Equal(0, identity.MinorVersion);
+        Assert.Equal(@"C:\TypeLibs\Custom16.tlb", identity.Path);
+    }
+
+    [Fact]
+    public async Task TypeLibDiscoveryTriesEveryLocationForTheUniqueNeutralIdentity()
+    {
+        const string availablePath = @"C:\TypeLibs\English64.tlb";
+        var metadataReader = new PathFallbackTypeLibCatalogMetadataReader(availablePath);
+        var discovery = new TypeLibReferenceCatalogDiscovery(
+            new FakeTypeLibRegistryCatalogReader(
+                new TypeLibRegistryCatalog(
+                    complete: true,
+                    names:
+                    [
+                        new TypeLibRegistryCatalogName(
+                            "Custom Library",
+                            [
+                                new TypeLibRegistryLineage(
+                                    "11111111-1111-1111-1111-111111111111",
+                                    [
+                                        new TypeLibRegistryVersion(
+                                            1,
+                                            0,
+                                            [
+                                                new TypeLibRegistryLocale(
+                                                    0,
+                                                    [
+                                                        new TypeLibRegistryPath("win64", @"C:\TypeLibs\Neutral64.tlb"),
+                                                        new TypeLibRegistryPath("win32", @"C:\TypeLibs\Neutral32.tlb")
+                                                    ]),
+                                                new TypeLibRegistryLocale(
+                                                    0x409,
+                                                    [
+                                                        new TypeLibRegistryPath("win64", availablePath),
+                                                        new TypeLibRegistryPath("win32", @"C:\TypeLibs\English32.tlb")
+                                                    ])
+                                            ])
+                                    ])
+                            ])
+                    ],
+                    warnings: [],
+                    diagnostic: null)),
+            metadataReader);
+
+        var result = await discovery.DiscoverAsync("Custom Library");
+
+        var identity = Assert.Single(result.Identities);
+        Assert.True(result.HasUsableCatalog);
+        Assert.Equal(0x409, identity.Lcid);
+        Assert.Equal(availablePath, identity.Path);
+        Assert.Equal(
+            [
+                @"C:\TypeLibs\Neutral32.tlb",
+                @"C:\TypeLibs\Neutral64.tlb",
+                @"C:\TypeLibs\English32.tlb",
+                availablePath
+            ],
+            metadataReader.AttemptedPaths);
+    }
+
+    [Fact]
+    public async Task ExplicitCatalogRetryReadsOneFreshNeutralRegistrySnapshotForTheBatch()
+    {
+        var registryReader = new SequencedTypeLibRegistryCatalogReader(
+            new TypeLibRegistryCatalog(
+                complete: false,
+                names: [],
+                warnings: [],
+                diagnostic: new TypeLibRegistryCatalogDiagnostic(
+                    "registryCatalogIncomplete",
+                    "The first registry scan did not complete.")),
+            CreateNeutralRegistryCatalog("Library A", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            CreateNeutralRegistryCatalog("Library B", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"));
+        var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
+        var service = new VbaProjectReferenceCatalogRefreshService(
+            cache,
+            new TypeLibReferenceCatalogDiscovery(
+                registryReader,
+                new FakeTypeLibCatalogMetadataReader(new TypeLibCatalogMetadata("Custom", []))));
+        var selection = VbaProjectReferenceSelection.Create(
+            ProjectDocument.ExcelKind,
+            [new VbaProjectReference("Library A"), new VbaProjectReference("Library B")]);
+
+        var first = await service.RefreshAsync(selection);
+        var second = await service.RefreshAsync(selection);
+        var cached = await service.RefreshAsync(selection);
+
+        Assert.Equal(2, first.Count);
+        Assert.All(first, result => Assert.True(result.DiscoveryResult.IsFailure));
+        Assert.Equal(2, second.Count);
+        Assert.All(second, result => Assert.True(result.DiscoveryResult.HasUsableCatalog));
+        Assert.Empty(cached);
+        Assert.Equal(2, registryReader.ReadCount);
+        Assert.True(cache.HasIdentity("Library A"));
+        Assert.True(cache.HasIdentity("Library B"));
+    }
+
+    [Fact]
+    public async Task CatalogRefreshActivatesCanonicalNeutralCatalogForTrimmedManifestLookup()
+    {
+        var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
+        var service = new VbaProjectReferenceCatalogRefreshService(
+            cache,
+            new TypeLibReferenceCatalogDiscovery(
+                new FakeTypeLibRegistryCatalogReader(CreateNeutralRegistryCatalog(
+                    "Custom Library",
+                    "11111111-1111-1111-1111-111111111111")),
+                new FakeTypeLibCatalogMetadataReader(
+                    new TypeLibCatalogMetadata(
+                        "Custom",
+                        [
+                            new TypeLibCatalogType(
+                                "CustomType",
+                                VbaSourceDefinitionKind.Class,
+                                null,
+                                [])
+                        ]))));
+        var selection = VbaProjectReferenceSelection.Create(
+            ProjectDocument.ExcelKind,
+            [new VbaProjectReference(" custom library ")]);
+
+        var results = await service.RefreshAsync(selection);
+
+        Assert.True(Assert.Single(results).DiscoveryResult.HasUsableCatalog);
+        Assert.True(cache.HasIdentity(" custom library "));
+        Assert.True(cache.Current.HasCatalog(" custom library "));
+        Assert.Contains(
+            cache.Current.GetActiveDefinitions(selection),
+            definition => definition.Name == "CustomType");
+    }
+
+    [Fact]
+    public void ReferenceSelectionPreservesSpellingWhileMatchingTrimmedMainReferenceName()
+    {
+        const string storedName = " Microsoft Excel 16.0 Object Library ";
+
+        var selection = VbaProjectReferenceSelection.Create(
+            ProjectDocument.ExcelKind,
+            [new VbaProjectReference(storedName)]);
+
+        Assert.Equal(storedName, selection.MainVbaProjectReference?.Name);
+        Assert.Null(selection.MissingExpectedMainReference);
+    }
+
+    [Fact]
+    public async Task NeutralCatalogRefreshPreservesLastKnownGoodPerReference()
+    {
+        var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
+        cache.StoreStaleCatalog(CreateReferenceCatalog("Library A", "AKnownType"));
+        cache.StoreStaleCatalog(CreateReferenceCatalog("Library B", "BOldType"));
+        var service = new VbaProjectReferenceCatalogRefreshService(
+            cache,
+            new TypeLibReferenceCatalogDiscovery(
+                new FakeTypeLibRegistryCatalogReader(CreateNeutralRegistryCatalog(
+                    "Library B",
+                    "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")),
+                new FakeTypeLibCatalogMetadataReader(
+                    new TypeLibCatalogMetadata(
+                        "LibraryB",
+                        [
+                            new TypeLibCatalogType(
+                                "BFreshType",
+                                VbaSourceDefinitionKind.Class,
+                                null,
+                                [])
+                        ]))));
+        var selection = VbaProjectReferenceSelection.Create(
+            ProjectDocument.ExcelKind,
+            [new VbaProjectReference("Library A"), new VbaProjectReference("Library B")]);
+
+        var results = await service.RefreshAsync(selection);
+
+        Assert.True(results.Single(result => result.ReferenceName == "Library A").DiscoveryResult.IsFailure);
+        Assert.True(results.Single(result => result.ReferenceName == "Library B").DiscoveryResult.HasUsableCatalog);
+        Assert.Equal(VbaProjectReferenceCatalogSource.StalePersisted, cache.GetCatalogSource("Library A"));
+        Assert.Equal(VbaProjectReferenceCatalogSource.Generated, cache.GetCatalogSource("Library B"));
+        var activeNames = cache.Current.GetActiveDefinitions(selection)
+            .Select(definition => definition.Name)
+            .ToArray();
+        Assert.Contains("AKnownType", activeNames);
+        Assert.Contains("BFreshType", activeNames);
+        Assert.DoesNotContain("BOldType", activeNames);
+    }
+
     [Fact]
     public void TypeLibCatalogBuilderMarksCallableSignaturesAsSupportingNamedArguments()
     {
@@ -170,14 +401,11 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
     public async Task TypeLibDiscoveryResolvesReferenceCatalogIdentity()
     {
         var discovery = new TypeLibReferenceCatalogDiscovery(
-            new FakeTypeLibRegistryReader(
-                new TypeLibRegistryEntry(
-                    "Custom Library",
-                    "{11111111-1111-1111-1111-111111111111}",
-                    1,
-                    2,
-                    0,
-                    @"C:\TypeLibs\Custom.tlb")),
+            new FakeTypeLibRegistryCatalogReader(CreateNeutralRegistryCatalog(
+                "Custom Library",
+                "11111111-1111-1111-1111-111111111111",
+                minor: 2,
+                path: @"C:\TypeLibs\Custom.tlb")),
             new FakeTypeLibCatalogMetadataReader(new TypeLibCatalogMetadata("Custom", [])));
 
         var result = await discovery.DiscoverAsync("custom library");
@@ -186,7 +414,7 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
         Assert.False(result.IsAmbiguous);
         var identity = Assert.Single(result.Identities);
         Assert.Equal("Custom Library", identity.ReferenceName);
-        Assert.Equal("{11111111-1111-1111-1111-111111111111}", identity.Guid);
+        Assert.Equal("11111111-1111-1111-1111-111111111111", identity.Guid);
         Assert.Equal(1, identity.MajorVersion);
         Assert.Equal(2, identity.MinorVersion);
         Assert.Equal(0, identity.Lcid);
@@ -196,21 +424,25 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
     [Fact]
     public async Task TypeLibDiscoveryReportsAmbiguousMatchesInsteadOfGuessing()
     {
-        var discovery = new TypeLibReferenceCatalogDiscovery(new FakeTypeLibRegistryReader(
-            new TypeLibRegistryEntry(
-                "Ambiguous Library",
-                "{11111111-1111-1111-1111-111111111111}",
-                1,
-                0,
-                0,
-                @"C:\TypeLibs\AmbiguousA.tlb"),
-            new TypeLibRegistryEntry(
-                "Ambiguous Library",
-                "{22222222-2222-2222-2222-222222222222}",
-                1,
-                0,
-                0,
-                @"C:\TypeLibs\AmbiguousB.tlb")));
+        var discovery = new TypeLibReferenceCatalogDiscovery(
+            new FakeTypeLibRegistryCatalogReader(
+                new TypeLibRegistryCatalog(
+                    complete: true,
+                    names:
+                    [
+                        new TypeLibRegistryCatalogName(
+                            "Ambiguous Library",
+                            [
+                                CreateNeutralRegistryCatalog(
+                                    "Ambiguous Library",
+                                    "11111111-1111-1111-1111-111111111111").Names[0].Lineages[0],
+                                CreateNeutralRegistryCatalog(
+                                    "Ambiguous Library",
+                                    "22222222-2222-2222-2222-222222222222").Names[0].Lineages[0]
+                            ])
+                    ],
+                    warnings: [],
+                    diagnostic: null)));
 
         var result = await discovery.DiscoverAsync("Ambiguous Library");
 
@@ -257,27 +489,18 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
     }
 
     [Fact]
-    public void ComTypeLibCatalogMetadataReaderReadsRegisteredRegExpMetadataWhenAvailable()
+    public async Task ComTypeLibCatalogMetadataReaderReadsRegisteredRegExpMetadataWhenAvailable()
     {
-        var registryEntry = new RegistryTypeLibRegistryReader()
-            .ReadTypeLibraries()
-            .FirstOrDefault(entry => entry.ReferenceName.Equals(
-                "Microsoft VBScript Regular Expressions 5.5",
-                StringComparison.OrdinalIgnoreCase));
-        if (registryEntry is null)
+        const string referenceName = "Microsoft VBScript Regular Expressions 5.5";
+        var registryCatalog = new RegistryTypeLibRegistryCatalogReader().Read();
+        if (!registryCatalog.Complete || registryCatalog.Find(referenceName) is null)
         {
             return;
         }
 
-        var identity = new VbaProjectReferenceCatalogIdentity(
-            registryEntry.ReferenceName,
-            registryEntry.Guid,
-            registryEntry.MajorVersion,
-            registryEntry.MinorVersion,
-            registryEntry.Lcid,
-            registryEntry.Path);
-        var metadata = new ComTypeLibCatalogMetadataReader().ReadMetadata(identity);
-        var catalog = TypeLibReferenceCatalogBuilder.Build(registryEntry.ReferenceName, metadata);
+        var result = await new TypeLibReferenceCatalogDiscovery(
+            new FakeTypeLibRegistryCatalogReader(registryCatalog)).DiscoverAsync(referenceName);
+        var catalog = Assert.IsType<VbaProjectReferenceCatalog>(result.Catalog);
 
         Assert.Contains(catalog.Definitions, definition =>
             definition.Name == "RegExp"
@@ -292,28 +515,61 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
             && definition.ParentTypeName == "RegExp");
     }
 
-    [Fact]
-    public void ComTypeLibCatalogMetadataReaderReadsRegisteredExcelWorkbookMetadataWhenAvailable()
+    [Theory]
+    [InlineData("guid")]
+    [InlineData("major")]
+    [InlineData("minor")]
+    public async Task ComTypeLibCatalogMetadataReaderRejectsMismatchedRegisteredIdentityWhenAvailable(
+        string mismatchedComponent)
     {
-        var registryEntry = new RegistryTypeLibRegistryReader()
-            .ReadTypeLibraries()
-            .FirstOrDefault(entry => entry.ReferenceName.Equals(
-                "Microsoft Excel 16.0 Object Library",
-                StringComparison.OrdinalIgnoreCase));
-        if (registryEntry is null)
+        const string referenceName = "Microsoft VBScript Regular Expressions 5.5";
+        var registryCatalog = new RegistryTypeLibRegistryCatalogReader().Read();
+        if (!OperatingSystem.IsWindows()
+            || !registryCatalog.Complete
+            || registryCatalog.Find(referenceName) is null)
         {
             return;
         }
 
-        var identity = new VbaProjectReferenceCatalogIdentity(
-            registryEntry.ReferenceName,
-            registryEntry.Guid,
-            registryEntry.MajorVersion,
-            registryEntry.MinorVersion,
-            registryEntry.Lcid,
-            registryEntry.Path);
-        var metadata = new ComTypeLibCatalogMetadataReader().ReadMetadata(identity);
-        var catalog = TypeLibReferenceCatalogBuilder.Build(registryEntry.ReferenceName, metadata);
+        var resolved = await new TypeLibReferenceCatalogDiscovery(
+            new FakeTypeLibRegistryCatalogReader(registryCatalog),
+            new FakeTypeLibCatalogMetadataReader(new TypeLibCatalogMetadata("VBScript_RegExp_55", [])))
+            .DiscoverAsync(referenceName);
+        var registeredIdentity = Assert.Single(resolved.Identities);
+        var mismatchedIdentity = mismatchedComponent switch
+        {
+            "guid" => registeredIdentity with
+            {
+                Guid = "00000000-0000-0000-0000-000000000000"
+            },
+            "major" => registeredIdentity with
+            {
+                MajorVersion = registeredIdentity.MajorVersion + 1
+            },
+            "minor" => registeredIdentity with
+            {
+                MinorVersion = registeredIdentity.MinorVersion + 1
+            },
+            _ => throw new ArgumentOutOfRangeException(nameof(mismatchedComponent))
+        };
+
+        Assert.Throws<InvalidDataException>(
+            () => new ComTypeLibCatalogMetadataReader().ReadMetadata(mismatchedIdentity));
+    }
+
+    [Fact]
+    public async Task ComTypeLibCatalogMetadataReaderReadsRegisteredExcelWorkbookMetadataWhenAvailable()
+    {
+        const string referenceName = "Microsoft Excel 16.0 Object Library";
+        var registryCatalog = new RegistryTypeLibRegistryCatalogReader().Read();
+        if (!registryCatalog.Complete || registryCatalog.Find(referenceName) is null)
+        {
+            return;
+        }
+
+        var result = await new TypeLibReferenceCatalogDiscovery(
+            new FakeTypeLibRegistryCatalogReader(registryCatalog)).DiscoverAsync(referenceName);
+        var catalog = Assert.IsType<VbaProjectReferenceCatalog>(result.Catalog);
 
         Assert.Contains(catalog.Definitions, definition =>
             definition.Name == "Workbook"
@@ -431,14 +687,10 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
     {
         var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
         var discovery = new TypeLibReferenceCatalogDiscovery(
-            new FakeTypeLibRegistryReader(
-                new TypeLibRegistryEntry(
-                    "Generated Library",
-                    "{33333333-3333-3333-3333-333333333333}",
-                    1,
-                    0,
-                    0,
-                    @"C:\TypeLibs\Generated.tlb")),
+            new FakeTypeLibRegistryCatalogReader(CreateNeutralRegistryCatalog(
+                "Generated Library",
+                "33333333-3333-3333-3333-333333333333",
+                path: @"C:\TypeLibs\Generated.tlb")),
             new FakeTypeLibCatalogMetadataReader(
                 new TypeLibCatalogMetadata(
                     "Generated",
@@ -537,14 +789,10 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
         var cache = new VbaProjectReferenceCatalogCache(
             VbaProjectReferenceCatalogSet.Empty.WithCatalog(bundledCatalog));
         var discovery = new TypeLibReferenceCatalogDiscovery(
-            new FakeTypeLibRegistryReader(
-                new TypeLibRegistryEntry(
-                    "Generated Library",
-                    "{33333333-3333-3333-3333-333333333333}",
-                    1,
-                    0,
-                    0,
-                    @"C:\TypeLibs\Generated.tlb")),
+            new FakeTypeLibRegistryCatalogReader(CreateNeutralRegistryCatalog(
+                "Generated Library",
+                "33333333-3333-3333-3333-333333333333",
+                path: @"C:\TypeLibs\Generated.tlb")),
             new FakeTypeLibCatalogMetadataReader(
                 new TypeLibCatalogMetadata(
                     "Generated",
@@ -699,16 +947,36 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
         Assert.False(cache.Current.HasCatalog("Cancelable Library"));
     }
 
-    private sealed class FakeTypeLibRegistryReader : ITypeLibRegistryReader
+    private sealed class FakeTypeLibRegistryCatalogReader(TypeLibRegistryCatalog catalog)
+        : ITypeLibRegistryCatalogReader
     {
-        private readonly IReadOnlyList<TypeLibRegistryEntry> entries;
+        public TypeLibRegistryCatalog Read() => catalog;
+    }
 
-        public FakeTypeLibRegistryReader(params TypeLibRegistryEntry[] entries)
+    private sealed class SequencedTypeLibRegistryCatalogReader(params TypeLibRegistryCatalog[] catalogs)
+        : ITypeLibRegistryCatalogReader
+    {
+        private int readCount;
+
+        public int ReadCount => Volatile.Read(ref readCount);
+
+        public TypeLibRegistryCatalog Read()
         {
-            this.entries = entries;
-        }
+            var index = Interlocked.Increment(ref readCount) - 1;
+            if (index == 0)
+            {
+                return catalogs[0];
+            }
 
-        public IReadOnlyList<TypeLibRegistryEntry> ReadTypeLibraries() => entries;
+            return new TypeLibRegistryCatalog(
+                complete: true,
+                names: catalogs
+                    .Skip(1)
+                    .SelectMany(catalog => catalog.Names)
+                    .ToArray(),
+                warnings: [],
+                diagnostic: null);
+        }
     }
 
     private sealed class FakeTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataReader
@@ -724,16 +992,74 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
             => metadata;
     }
 
+    private sealed class PathFallbackTypeLibCatalogMetadataReader(string availablePath)
+        : ITypeLibCatalogMetadataReader
+    {
+        private readonly List<string> attemptedPaths = [];
+
+        public IReadOnlyList<string> AttemptedPaths => attemptedPaths;
+
+        public TypeLibCatalogMetadata ReadMetadata(VbaProjectReferenceCatalogIdentity identity)
+        {
+            attemptedPaths.Add(identity.Path);
+            return identity.Path.Equals(availablePath, StringComparison.OrdinalIgnoreCase)
+                ? new TypeLibCatalogMetadata("Custom", [])
+                : throw new FileNotFoundException("The registered TypeLib location is unavailable.", identity.Path);
+        }
+    }
+
+    private static TypeLibRegistryCatalog CreateNeutralRegistryCatalog(
+        string name,
+        string guid,
+        int major = 1,
+        int minor = 0,
+        string? path = null)
+        => new(
+            complete: true,
+            names:
+            [
+                new TypeLibRegistryCatalogName(
+                    name,
+                    [
+                        new TypeLibRegistryLineage(
+                            guid,
+                            [
+                                new TypeLibRegistryVersion(
+                                    major,
+                                    minor,
+                                    [
+                                        new TypeLibRegistryLocale(
+                                            0,
+                                            [new TypeLibRegistryPath("win32", path ?? $@"C:\TypeLibs\{name}.tlb")])
+                                    ])
+                            ])
+                    ])
+            ],
+            warnings: [],
+            diagnostic: null);
+
+    private static VbaProjectReferenceCatalog CreateReferenceCatalog(
+        string referenceName,
+        string typeName)
+        => new(
+            referenceName,
+            [],
+            [
+                new VbaProjectReferenceDefinition(
+                    referenceName,
+                    typeName,
+                    VbaSourceDefinitionKind.Class,
+                    null)
+            ]);
+
     private static TypeLibReferenceCatalogDiscovery CreateRegExpDiscovery()
         => new(
-            new FakeTypeLibRegistryReader(
-                new TypeLibRegistryEntry(
-                    "Microsoft VBScript Regular Expressions 5.5",
-                    "{3F4DACA7-160D-11D2-A8E9-00104B365C9F}",
-                    5,
-                    5,
-                    0,
-                    @"C:\Windows\System32\vbscript.dll\3")),
+            new FakeTypeLibRegistryCatalogReader(CreateNeutralRegistryCatalog(
+                "Microsoft VBScript Regular Expressions 5.5",
+                "3f4daca7-160d-11d2-a8e9-00104b365c9f",
+                major: 5,
+                minor: 5,
+                path: @"C:\Windows\System32\vbscript.dll\3")),
             new FakeTypeLibCatalogMetadataReader(
                 new TypeLibCatalogMetadata(
                     "VBScript_RegExp_55",

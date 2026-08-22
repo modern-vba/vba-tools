@@ -16,6 +16,7 @@
   <ItemGroup>
     <ProjectReference Include="..\VbaLanguageServer.Syntax\VbaLanguageServer.Syntax.csproj" />
     <ProjectReference Include="..\..\..\vba-dev\src\VbaDev.Domain\VbaDev.Domain.csproj" />
+    <ProjectReference Include="..\..\..\vba-dev\src\VbaTools.TypeLibRegistry\VbaTools.TypeLibRegistry.csproj" />
   </ItemGroup>
 
   <ItemGroup>

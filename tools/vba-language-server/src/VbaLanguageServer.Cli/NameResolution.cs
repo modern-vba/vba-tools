@@ -611,7 +611,7 @@ public sealed class VbaNameResolutionService
             ReferenceDefinitionGlobalExposure.LibraryGlobal => true,
             ReferenceDefinitionGlobalExposure.MainHostGlobal =>
                 candidates.ReferenceSelection?.MainVbaProjectReference is not null
-                && SameName(
+                && VbaProjectReferenceName.AreEquivalent(
                     candidates.ReferenceSelection.MainVbaProjectReference.Name,
                     definition.ModuleName),
             _ => definition.ParentTypeName is null
@@ -783,7 +783,9 @@ internal sealed class VbaNameCandidateInventory
 
     public string? GetCanonicalReferenceQualifier(string referenceName, string qualifier)
         => activeReferenceQualifiers
-            .Where(candidate => candidate.ReferenceName.Equals(referenceName, StringComparison.OrdinalIgnoreCase))
+            .Where(candidate => VbaProjectReferenceName.AreEquivalent(
+                candidate.ReferenceName,
+                referenceName))
             .Select(candidate => candidate.Qualifier)
             .FirstOrDefault(candidate => candidate.Equals(qualifier, StringComparison.OrdinalIgnoreCase));
 }

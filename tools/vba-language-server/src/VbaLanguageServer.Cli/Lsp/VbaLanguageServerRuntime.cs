@@ -1,6 +1,7 @@
 using System.Text.Json.Nodes;
 using VbaLanguageServer.SourceModel;
 using VbaLanguageServer.Workspace;
+using VbaTools.TypeLibRegistry;
 
 namespace VbaLanguageServer.Lsp;
 
@@ -63,7 +64,7 @@ internal sealed class VbaLanguageServerRuntime
         var referenceCatalogCache = new VbaProjectReferenceCatalogCache(
             VbaProjectReferenceCatalogSet.CreateBundled());
         var catalogDiscovery = BlockingReferenceCatalogDiscoveryHook.WrapIfConfigured(
-            new TypeLibReferenceCatalogDiscovery(new RegistryTypeLibRegistryReader()));
+            new TypeLibReferenceCatalogDiscovery(new RegistryTypeLibRegistryCatalogReader()));
         var catalogRefreshService = new VbaProjectReferenceCatalogRefreshService(
             referenceCatalogCache,
             catalogDiscovery,

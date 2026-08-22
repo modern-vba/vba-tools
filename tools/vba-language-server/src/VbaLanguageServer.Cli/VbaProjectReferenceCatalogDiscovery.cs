@@ -1,7 +1,6 @@
-using Microsoft.Win32;
 using System.Diagnostics;
-using System.Runtime.Versioning;
 using VbaLanguageServer.ProjectModel;
+using VbaTools.TypeLibRegistry;
 
 namespace VbaLanguageServer.SourceModel;
 
@@ -51,13 +50,13 @@ public sealed record VbaProjectReferenceCatalogDiscoveryResult(
     public bool IsSuccessful =>
         !IsFailure
         && Identities.Count == 1
-        && ReferenceName.Equals(
-            Identities[0].ReferenceName,
-            StringComparison.OrdinalIgnoreCase)
+        && VbaProjectReferenceName.AreEquivalent(
+            ReferenceName,
+            Identities[0].ReferenceName)
         && (Catalog is null
-            || ReferenceName.Equals(
-                Catalog.ReferenceName,
-                StringComparison.OrdinalIgnoreCase));
+            || VbaProjectReferenceName.AreEquivalent(
+                ReferenceName,
+                Catalog.ReferenceName));
 
     /// <summary>
     /// Gets whether discovery produced usable catalog metadata.
@@ -112,10 +111,17 @@ public interface IVbaProjectReferenceCatalogDiscovery
         CancellationToken cancellationToken = default);
 }
 
+internal interface IVbaProjectReferenceCatalogDiscoveryBatchFactory
+{
+    IVbaProjectReferenceCatalogDiscovery CreateBatchDiscovery();
+}
+
 /// <summary>
 /// Adds a file-based blocking hook around catalog discovery for language-server process tests.
 /// </summary>
-internal sealed class BlockingReferenceCatalogDiscoveryHook : IVbaProjectReferenceCatalogDiscovery
+internal sealed class BlockingReferenceCatalogDiscoveryHook
+    : IVbaProjectReferenceCatalogDiscovery,
+      IVbaProjectReferenceCatalogDiscoveryBatchFactory
 {
     /// <summary>
     /// The environment variable containing the file written when discovery reaches the hook.
@@ -176,6 +182,15 @@ internal sealed class BlockingReferenceCatalogDiscoveryHook : IVbaProjectReferen
         return await inner.DiscoverAsync(referenceName, cancellationToken);
     }
 
+    IVbaProjectReferenceCatalogDiscovery
+        IVbaProjectReferenceCatalogDiscoveryBatchFactory.CreateBatchDiscovery()
+        => inner is IVbaProjectReferenceCatalogDiscoveryBatchFactory batchFactory
+            ? new BlockingReferenceCatalogDiscoveryHook(
+                batchFactory.CreateBatchDiscovery(),
+                startedFile,
+                releaseFile)
+            : this;
+
     private void WriteStartedFile(string referenceName)
     {
         if (string.IsNullOrWhiteSpace(startedFile))
@@ -194,61 +209,52 @@ internal sealed class BlockingReferenceCatalogDiscoveryHook : IVbaProjectReferen
 }
 
 /// <summary>
-/// Represents one TypeLib registry entry that may satisfy a VBA project reference.
-/// </summary>
-/// <param name="ReferenceName">The human-visible TypeLib description.</param>
-/// <param name="Guid">The TypeLib GUID.</param>
-/// <param name="MajorVersion">The TypeLib major version.</param>
-/// <param name="MinorVersion">The TypeLib minor version.</param>
-/// <param name="Lcid">The TypeLib locale identifier.</param>
-/// <param name="Path">The registry-resolved TypeLib path.</param>
-public sealed record TypeLibRegistryEntry(
-    string ReferenceName,
-    string Guid,
-    int MajorVersion,
-    int MinorVersion,
-    int Lcid,
-    string Path);
-
-/// <summary>
-/// Reads TypeLib registry entries from the host machine.
-/// </summary>
-public interface ITypeLibRegistryReader
-{
-    /// <summary>
-    /// Reads TypeLib entries available to VBA references.
-    /// </summary>
-    /// <returns>The discovered TypeLib registry entries.</returns>
-    IReadOnlyList<TypeLibRegistryEntry> ReadTypeLibraries();
-}
-
-/// <summary>
 /// Discovers reference catalog identities from TypeLib registry entries.
 /// </summary>
-public sealed class TypeLibReferenceCatalogDiscovery : IVbaProjectReferenceCatalogDiscovery
+public sealed class TypeLibReferenceCatalogDiscovery
+    : IVbaProjectReferenceCatalogDiscovery,
+      IVbaProjectReferenceCatalogDiscoveryBatchFactory
 {
-    private readonly ITypeLibRegistryReader registryReader;
+    private readonly ITypeLibRegistryCatalogReader neutralRegistryReader;
+    private readonly Lazy<TypeLibRegistryCatalog>? registryCatalog;
     private readonly ITypeLibCatalogMetadataReader metadataReader;
 
     /// <summary>
-    /// Creates a TypeLib-backed catalog discovery service.
+    /// Creates a TypeLib-backed catalog discovery service from the neutral registry catalog.
     /// </summary>
-    /// <param name="registryReader">The registry reader used to enumerate TypeLib entries.</param>
-    public TypeLibReferenceCatalogDiscovery(ITypeLibRegistryReader registryReader)
+    /// <param name="registryReader">The neutral registry catalog reader.</param>
+    public TypeLibReferenceCatalogDiscovery(ITypeLibRegistryCatalogReader registryReader)
         : this(registryReader, new ComTypeLibCatalogMetadataReader())
     {
     }
 
     /// <summary>
-    /// Creates a TypeLib-backed catalog discovery service.
+    /// Creates a TypeLib-backed catalog discovery service from the neutral registry catalog.
     /// </summary>
-    /// <param name="registryReader">The registry reader used to enumerate TypeLib entries.</param>
+    /// <param name="registryReader">The neutral registry catalog reader.</param>
     /// <param name="metadataReader">The reader used to extract TypeLib metadata.</param>
     public TypeLibReferenceCatalogDiscovery(
-        ITypeLibRegistryReader registryReader,
+        ITypeLibRegistryCatalogReader registryReader,
         ITypeLibCatalogMetadataReader metadataReader)
+        : this(registryReader, metadataReader, cacheSnapshot: false)
     {
-        this.registryReader = registryReader;
+    }
+
+    private TypeLibReferenceCatalogDiscovery(
+        ITypeLibRegistryCatalogReader registryReader,
+        ITypeLibCatalogMetadataReader metadataReader,
+        bool cacheSnapshot)
+    {
+        ArgumentNullException.ThrowIfNull(registryReader);
+        ArgumentNullException.ThrowIfNull(metadataReader);
+        neutralRegistryReader = registryReader;
+        if (cacheSnapshot)
+        {
+            registryCatalog = new Lazy<TypeLibRegistryCatalog>(
+                registryReader.Read,
+                LazyThreadSafetyMode.ExecutionAndPublication);
+        }
+
         this.metadataReader = metadataReader;
     }
 
@@ -263,34 +269,130 @@ public sealed class TypeLibReferenceCatalogDiscovery : IVbaProjectReferenceCatal
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var matches = registryReader
-            .ReadTypeLibraries()
-            .Where(entry => entry.ReferenceName.Equals(referenceName, StringComparison.OrdinalIgnoreCase))
-            .Select(entry => new VbaProjectReferenceCatalogIdentity(
-                entry.ReferenceName,
-                entry.Guid,
-                entry.MajorVersion,
-                entry.MinorVersion,
-                entry.Lcid,
-                entry.Path))
-            .DistinctBy(identity => (
-                identity.Guid.ToUpperInvariant(),
-                identity.MajorVersion,
-                identity.MinorVersion,
-                identity.Lcid,
-                identity.Path.ToUpperInvariant()))
-            .ToArray();
+        var catalog = registryCatalog?.Value ?? neutralRegistryReader.Read();
+        return Task.FromResult(DiscoverFromNeutralCatalog(
+            catalog,
+            referenceName,
+            cancellationToken));
+    }
 
-        var result = matches.Length switch
+    IVbaProjectReferenceCatalogDiscovery
+        IVbaProjectReferenceCatalogDiscoveryBatchFactory.CreateBatchDiscovery()
+        => new TypeLibReferenceCatalogDiscovery(
+            neutralRegistryReader,
+            metadataReader,
+            cacheSnapshot: true);
+
+    private VbaProjectReferenceCatalogDiscoveryResult DiscoverFromNeutralCatalog(
+        TypeLibRegistryCatalog catalog,
+        string referenceName,
+        CancellationToken cancellationToken)
+    {
+        if (!catalog.Complete)
+        {
+            return VbaProjectReferenceCatalogDiscoveryResult.Failure(
+                referenceName,
+                catalog.Diagnostic?.Message ?? "The TypeLib registry catalog is incomplete.");
+        }
+
+        var registeredName = catalog.Find(referenceName);
+        if (registeredName is null)
+        {
+            return VbaProjectReferenceCatalogDiscoveryResult.Failure(
+                referenceName,
+                "No matching TypeLib registry entry was found.");
+        }
+
+        var candidates = registeredName.Lineages
+            .Select(lineage => CreateLineageCandidate(registeredName.Name, lineage))
+            .Where(candidate => candidate is not null)
+            .Cast<NeutralRegistryIdentityCandidate>()
+            .ToArray();
+        return candidates.Length switch
         {
             0 => VbaProjectReferenceCatalogDiscoveryResult.Failure(
-                referenceName,
-                "No matching TypeLib registry entry was found."),
-            1 => DiscoverCatalog(referenceName, matches[0], cancellationToken),
-            _ => VbaProjectReferenceCatalogDiscoveryResult.Ambiguous(referenceName, matches)
+                registeredName.Name,
+                "No well-formed TypeLib registry identity was found."),
+            1 => DiscoverCatalog(
+                registeredName.Name,
+                candidates[0],
+                cancellationToken),
+            _ => VbaProjectReferenceCatalogDiscoveryResult.Ambiguous(
+                registeredName.Name,
+                candidates
+                    .Select(candidate => CreateIdentity(candidate, candidate.Locations[0]))
+                    .ToArray())
         };
-        return Task.FromResult(result);
     }
+
+    private static NeutralRegistryIdentityCandidate? CreateLineageCandidate(
+        string referenceName,
+        TypeLibRegistryLineage lineage)
+    {
+        var version = lineage.Versions
+            .OrderByDescending(candidate => candidate.Major)
+            .ThenByDescending(candidate => candidate.Minor)
+            .FirstOrDefault();
+        var locations = version?.Locales
+            .SelectMany(
+                locale => locale.Paths,
+                (locale, path) => new { locale.Lcid, Path = path })
+            .OrderBy(candidate => candidate.Lcid)
+            .ThenBy(candidate => candidate.Path.Platform, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(candidate => candidate.Path.Path, StringComparer.OrdinalIgnoreCase)
+            .Select(candidate => new NeutralRegistryCatalogLocation(
+                candidate.Lcid,
+                candidate.Path.Platform,
+                candidate.Path.Path))
+            .ToArray();
+        return version is null || locations is null || locations.Length == 0
+            ? null
+            : new NeutralRegistryIdentityCandidate(
+                referenceName,
+                lineage.Guid,
+                version.Major,
+                version.Minor,
+                locations);
+    }
+
+    private VbaProjectReferenceCatalogDiscoveryResult DiscoverCatalog(
+        string referenceName,
+        NeutralRegistryIdentityCandidate candidate,
+        CancellationToken cancellationToken)
+    {
+        var failures = new List<string>();
+        foreach (var location in candidate.Locations)
+        {
+            var identity = CreateIdentity(candidate, location);
+            var result = DiscoverCatalog(referenceName, identity, cancellationToken);
+            if (result.HasUsableCatalog)
+            {
+                return result;
+            }
+
+            if (!string.IsNullOrWhiteSpace(result.ErrorMessage))
+            {
+                failures.Add(result.ErrorMessage);
+            }
+        }
+
+        return VbaProjectReferenceCatalogDiscoveryResult.Failure(
+            referenceName,
+            failures.Count == 0
+                ? "TypeLib catalog metadata could not be read from any registered location."
+                : string.Join(" ", failures.Distinct(StringComparer.Ordinal)));
+    }
+
+    private static VbaProjectReferenceCatalogIdentity CreateIdentity(
+        NeutralRegistryIdentityCandidate candidate,
+        NeutralRegistryCatalogLocation location)
+        => new(
+            candidate.ReferenceName,
+            candidate.Guid,
+            candidate.MajorVersion,
+            candidate.MinorVersion,
+            location.Lcid,
+            location.Path);
 
     private VbaProjectReferenceCatalogDiscoveryResult DiscoverCatalog(
         string referenceName,
@@ -311,122 +413,18 @@ public sealed class TypeLibReferenceCatalogDiscovery : IVbaProjectReferenceCatal
                 $"TypeLib catalog metadata could not be read: {ex.Message}");
         }
     }
-}
 
-/// <summary>
-/// Reads TypeLib entries from the Windows registry.
-/// </summary>
-public sealed class RegistryTypeLibRegistryReader : ITypeLibRegistryReader
-{
-    /// <summary>
-    /// Reads TypeLib entries, returning an empty list on non-Windows platforms.
-    /// </summary>
-    /// <returns>The TypeLib registry entries available on the host.</returns>
-    public IReadOnlyList<TypeLibRegistryEntry> ReadTypeLibraries()
-    {
-        if (!OperatingSystem.IsWindows())
-        {
-            return [];
-        }
+    private sealed record NeutralRegistryIdentityCandidate(
+        string ReferenceName,
+        string Guid,
+        int MajorVersion,
+        int MinorVersion,
+        IReadOnlyList<NeutralRegistryCatalogLocation> Locations);
 
-        return ReadWindowsTypeLibraries();
-    }
-
-    [SupportedOSPlatform("windows")]
-    private static IReadOnlyList<TypeLibRegistryEntry> ReadWindowsTypeLibraries()
-    {
-        using var typeLibRoot = Registry.ClassesRoot.OpenSubKey("TypeLib");
-        if (typeLibRoot is null)
-        {
-            return [];
-        }
-
-        var entries = new List<TypeLibRegistryEntry>();
-        foreach (var guid in typeLibRoot.GetSubKeyNames())
-        {
-            using var guidKey = typeLibRoot.OpenSubKey(guid);
-            if (guidKey is null)
-            {
-                continue;
-            }
-
-            foreach (var version in guidKey.GetSubKeyNames())
-            {
-                using var versionKey = guidKey.OpenSubKey(version);
-                if (versionKey is null)
-                {
-                    continue;
-                }
-
-                var description = versionKey.GetValue(null) as string;
-                if (string.IsNullOrWhiteSpace(description) || !TryParseVersion(version, out var major, out var minor))
-                {
-                    continue;
-                }
-
-                foreach (var lcid in versionKey.GetSubKeyNames())
-                {
-                    if (!int.TryParse(lcid, out var lcidValue))
-                    {
-                        continue;
-                    }
-
-                    using var lcidKey = versionKey.OpenSubKey(lcid);
-                    var path = ReadTypeLibPath(lcidKey);
-                    if (string.IsNullOrWhiteSpace(path))
-                    {
-                        continue;
-                    }
-
-                    entries.Add(new TypeLibRegistryEntry(
-                        description,
-                        guid,
-                        major,
-                        minor,
-                        lcidValue,
-                        path));
-                }
-            }
-        }
-
-        return entries;
-    }
-
-    [SupportedOSPlatform("windows")]
-    private static string? ReadTypeLibPath(RegistryKey? lcidKey)
-    {
-        if (lcidKey is null)
-        {
-            return null;
-        }
-
-        foreach (var platform in new[] { "win64", "win32" })
-        {
-            using var platformKey = lcidKey.OpenSubKey(platform);
-            var rawPath = platformKey?.GetValue(null) as string;
-            if (!string.IsNullOrWhiteSpace(rawPath))
-            {
-                return Environment.ExpandEnvironmentVariables(rawPath);
-            }
-        }
-
-        return null;
-    }
-
-    private static bool TryParseVersion(string version, out int major, out int minor)
-    {
-        var parts = version.Split('.', 2);
-        if (parts.Length == 2 &&
-            int.TryParse(parts[0], out major) &&
-            int.TryParse(parts[1], out minor))
-        {
-            return true;
-        }
-
-        major = 0;
-        minor = 0;
-        return false;
-    }
+    private sealed record NeutralRegistryCatalogLocation(
+        int Lcid,
+        string Platform,
+        string Path);
 }
 
 /// <summary>
@@ -437,13 +435,13 @@ public sealed class VbaProjectReferenceCatalogCache
     private readonly object gate = new();
     private VbaProjectReferenceCatalogSet catalogSet;
     private long version;
-    private readonly Dictionary<string, VbaProjectReferenceCatalogIdentity> identities = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, VbaProjectReferenceCatalogSource> catalogSources = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, VbaProjectReferenceCatalogIdentity> identities = new(VbaProjectReferenceName.Comparer);
+    private readonly Dictionary<string, VbaProjectReferenceCatalogSource> catalogSources = new(VbaProjectReferenceName.Comparer);
     private readonly Dictionary<string, long> referenceChangeVersions =
-        new(StringComparer.OrdinalIgnoreCase);
-    private readonly HashSet<string> refreshesInProgress = new(StringComparer.OrdinalIgnoreCase);
+        new(VbaProjectReferenceName.Comparer);
+    private readonly HashSet<string> refreshesInProgress = new(VbaProjectReferenceName.Comparer);
     private readonly Dictionary<string, SemaphoreSlim> refreshOwnership =
-        new(StringComparer.OrdinalIgnoreCase);
+        new(VbaProjectReferenceName.Comparer);
 
     /// <summary>
     /// Creates a catalog cache with an initial catalog set.
@@ -517,7 +515,9 @@ public sealed class VbaProjectReferenceCatalogCache
         {
             lock (gate)
             {
-                return new Dictionary<string, VbaProjectReferenceCatalogIdentity>(identities, StringComparer.OrdinalIgnoreCase);
+                return new Dictionary<string, VbaProjectReferenceCatalogIdentity>(
+                    identities,
+                    VbaProjectReferenceName.Comparer);
             }
         }
     }
@@ -533,7 +533,7 @@ public sealed class VbaProjectReferenceCatalogCache
             {
                 return new Dictionary<string, VbaProjectReferenceCatalogSource>(
                     catalogSources,
-                    StringComparer.OrdinalIgnoreCase);
+                    VbaProjectReferenceName.Comparer);
             }
         }
     }
@@ -601,8 +601,8 @@ public sealed class VbaProjectReferenceCatalogCache
         {
             ownership = references
                 .Select(reference => reference.Name)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+                .Distinct(VbaProjectReferenceName.Comparer)
+                .OrderBy(name => name, VbaProjectReferenceName.OrderingComparer)
                 .Select(name =>
                 {
                     if (!refreshOwnership.TryGetValue(name, out var semaphore))
@@ -742,8 +742,8 @@ public sealed class VbaProjectReferenceCatalogCache
             .Where(reference => !identities.ContainsKey(reference.Name))
             .Where(reference => !refreshesInProgress.Contains(reference.Name))
             .Select(reference => reference.Name)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .Distinct(VbaProjectReferenceName.Comparer)
+            .OrderBy(name => name, VbaProjectReferenceName.OrderingComparer)
             .ToArray();
         foreach (var candidateName in candidateNames)
         {
@@ -790,7 +790,9 @@ internal sealed class VbaProjectReferenceCatalogRefreshBatchReservation
     {
         this.cache = cache;
         this.referenceNames = referenceNames;
-        remainingReferenceNames = new HashSet<string>(referenceNames, StringComparer.OrdinalIgnoreCase);
+        remainingReferenceNames = new HashSet<string>(
+            referenceNames,
+            VbaProjectReferenceName.Comparer);
     }
 
     internal IReadOnlyList<string> ReferenceNames => referenceNames;
@@ -1123,7 +1125,7 @@ public sealed class VbaProjectReferenceCatalogRefreshService
         }
 
         var ownedReferenceNames = refreshLease.ReferenceNames.ToHashSet(
-            StringComparer.OrdinalIgnoreCase);
+            VbaProjectReferenceName.Comparer);
         var ownedSelection = selection with
         {
             References = selection.References
@@ -1154,6 +1156,9 @@ public sealed class VbaProjectReferenceCatalogRefreshService
         CancellationToken cancellationToken = default)
     {
         var results = new List<VbaProjectReferenceCatalogRefreshResult>();
+        var batchDiscovery = discovery is IVbaProjectReferenceCatalogDiscoveryBatchFactory batchFactory
+            ? batchFactory.CreateBatchDiscovery()
+            : discovery;
         var reservation = cache.ReserveRefreshCandidateBatch(selection);
         try
         {
@@ -1167,7 +1172,10 @@ public sealed class VbaProjectReferenceCatalogRefreshService
                     lifecycleObserver.Record(new VbaProjectReferenceCatalogLifecycleEvent(
                         VbaProjectReferenceCatalogLifecycleOperation.Discovery,
                         ReferenceName: referenceName));
-                    discoveryResult = await refreshWorker.DiscoverAsync(discovery, referenceName, cancellationToken);
+                    discoveryResult = await refreshWorker.DiscoverAsync(
+                        batchDiscovery,
+                        referenceName,
+                        cancellationToken);
                     cancellationToken.ThrowIfCancellationRequested();
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
@@ -1235,8 +1243,8 @@ public sealed class VbaProjectReferenceCatalogRefreshService
         var results = new List<VbaProjectReferenceCatalogRefreshResult>();
         foreach (var referenceName in selection.References
             .Select(reference => reference.Name)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase))
+            .Distinct(VbaProjectReferenceName.Comparer)
+            .OrderBy(name => name, VbaProjectReferenceName.OrderingComparer))
         {
             if (cache.HasIdentity(referenceName))
             {
@@ -1370,15 +1378,17 @@ public sealed class VbaProjectReferenceCatalogRefreshService
         }
 
         var namesMatch =
-            result.ReferenceName.Equals(requestedReferenceName, StringComparison.OrdinalIgnoreCase)
+            VbaProjectReferenceName.AreEquivalent(
+                result.ReferenceName,
+                requestedReferenceName)
             && result.Identities.All(identity =>
-                identity.ReferenceName.Equals(
-                    requestedReferenceName,
-                    StringComparison.OrdinalIgnoreCase))
+                VbaProjectReferenceName.AreEquivalent(
+                    identity.ReferenceName,
+                    requestedReferenceName))
             && (result.Catalog is null
-                || result.Catalog.ReferenceName.Equals(
-                    requestedReferenceName,
-                    StringComparison.OrdinalIgnoreCase));
+                || VbaProjectReferenceName.AreEquivalent(
+                    result.Catalog.ReferenceName,
+                    requestedReferenceName));
         return namesMatch
             ? result
             : VbaProjectReferenceCatalogDiscoveryResult.Failure(

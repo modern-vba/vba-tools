@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using VbaLanguageServer.SourceModel;
+using VbaTools.TypeLibRegistry;
 using Xunit;
 
 namespace VbaLanguageServer.Tests;
@@ -2601,6 +2602,11 @@ public sealed class LanguageServerProcessTests
                 uri,
                 text,
                 "Application").WaitAsync(TimeSpan.FromSeconds(1));
+            var definition = await SendPositionRequestAsync(process, 10,
+                "textDocument/definition",
+                uri,
+                text,
+                "target_book.W").WaitAsync(TimeSpan.FromSeconds(1));
 
             Assert.Contains("Worksheets", completionLabels);
             Assert.Contains("Microsoft Excel 16.0 Object Library", staleMessage);
@@ -2642,9 +2648,10 @@ public sealed class LanguageServerProcessTests
                 token.Text == "Range"
                 && token.TokenType == "property"
                 && token.Line == 8);
+            Assert.Equal(JsonValueKind.Object, definition.GetProperty("result").ValueKind);
 
             File.WriteAllText(discoveryReleaseFile, "release");
-            await process.ShutdownAsync(10);
+            await process.ShutdownAsync(11);
         }
         finally
         {
@@ -4691,9 +4698,11 @@ public sealed class LanguageServerProcessTests
     }
 
     private static bool HasRegisteredTypeLib(string referenceName)
-        => new RegistryTypeLibRegistryReader()
-            .ReadTypeLibraries()
-            .Any(entry => entry.ReferenceName.Equals(referenceName, StringComparison.OrdinalIgnoreCase));
+    {
+        var catalog = new RegistryTypeLibRegistryCatalogReader().Read();
+        return catalog.Complete
+            && catalog.Find(referenceName)?.Lineages.Count > 0;
+    }
 
     private static void WriteReferenceCatalogProjectManifest(string projectRoot, params string[] referenceNames)
     {

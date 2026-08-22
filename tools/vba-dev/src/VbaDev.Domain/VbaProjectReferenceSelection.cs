@@ -45,7 +45,7 @@ public sealed record VbaProjectReferenceSelection(
         }
 
         var manifestReference = references.FirstOrDefault(reference =>
-            reference.Name.Equals(expectedMainReference.Name, StringComparison.OrdinalIgnoreCase));
+            VbaProjectReferenceName.AreEquivalent(reference.Name, expectedMainReference.Name));
         return manifestReference is null
             ? new VbaProjectReferenceSelection(references, null, expectedMainReference.Name)
             : new VbaProjectReferenceSelection(

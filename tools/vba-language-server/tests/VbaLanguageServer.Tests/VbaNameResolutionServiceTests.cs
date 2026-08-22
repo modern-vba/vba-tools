@@ -103,11 +103,12 @@ public sealed class VbaNameResolutionServiceTests
         const string firstUri = "file:///C:/work/First.bas";
         const string secondUri = "file:///C:/work/Second.bas";
         const string mainReferenceName = "Microsoft Excel 16.0 Object Library";
+        const string storedMainReferenceName = " Microsoft Excel 16.0 Object Library ";
         const string secondaryReferenceName = "Secondary Reference";
         var selection = VbaProjectReferenceSelection.Create(
             ProjectDocument.ExcelKind,
             [
-                new VbaProjectReference(mainReferenceName),
+                new VbaProjectReference(storedMainReferenceName),
                 new VbaProjectReference(secondaryReferenceName)
             ]);
         var documents = new[]
