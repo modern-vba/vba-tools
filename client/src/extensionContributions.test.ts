@@ -255,6 +255,18 @@ test('extension contributes the Doctor command', () => {
   assert.ok(packageJson.activationEvents?.includes('onCommand:vbaTools.doctor'));
 });
 
+test('extension wires the configured debug adapter path into Doctor', () => {
+  const extensionSource = fs.readFileSync(
+    path.resolve(__dirname, '..', 'src', 'extension.ts'),
+    'utf8'
+  );
+
+  assert.match(
+    extensionSource,
+    /runDoctorCommand\(\{[\s\S]*?configuredDebugAdapterPath:\s*getConfiguredDebugAdapterPath\(\)[\s\S]*?\}\)/
+  );
+});
+
 test('extension contributes the vba-dev Terminal command', () => {
   const packageJson = readPackageJson<{
     activationEvents?: string[];

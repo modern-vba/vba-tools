@@ -84,7 +84,8 @@ The extension-owned compatibility requirement stored as
 Its initial capability contract requires adapter contract `1.0`, DAP extension
 protocol `1.1`, stdio transport, lowercase-hex-32 session IDs, cleanup and
 Doctor commands, Doctor schema `1.0`, and required VbaDev feature
-`build.sourceSnapshot` version `1.0`. `VbaDev` advertises that build primitive
+`build.sourceSnapshot` version `1.0`, plus adapter feature
+`doctor.stdinCancellation` version `1.0`. `VbaDev` advertises that build primitive
 under `featureVersions` and does not advertise a debug-adapter protocol. The
 adapter validates only the feature version it consumes rather than the CLI tool
 version or complete project-command contract. Both capability inspections are
@@ -865,6 +866,10 @@ deadline. A stage timeout is `unverified`; a classified timeout with completed
 cleanup remains complete, while cancellation or infrastructure that prevents
 terminal classification is incomplete. Unexpected modal UI is bounded by the
 current Doctor stage.
+Machine callers may opt into `doctor.stdinCancellation` version `1.0` with the
+hidden `--cancellation-transport stdin-v1` argument. The exact BOM-less
+`cancel\n` frame requests cooperative cancellation; Doctor still completes its
+fresh-token cleanup and terminal JSON before the caller classifies the result.
 _Avoid_: vba-dev doctor, debug launch, static capability declaration
 
 **VbaToolsDoctor**:

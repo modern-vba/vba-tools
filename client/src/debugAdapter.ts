@@ -7,6 +7,7 @@ import {
   loadDistributionManifest,
   resolveBundledRuntimePath
 } from './distributionManifest';
+import type { CommandCancellationToken } from './devtoolCommand';
 
 export interface RequiredVbaDebugAdapterContract {
   readonly contractVersion: string;
@@ -15,6 +16,7 @@ export interface RequiredVbaDebugAdapterContract {
   readonly sessionIdFormat: string;
   readonly commands: readonly string[];
   readonly commandSchemaVersions: Readonly<Record<string, string>>;
+  readonly featureVersions: Readonly<Record<string, string>>;
   readonly requiredVbaDevFeatureVersions: Readonly<Record<string, string>>;
 }
 
@@ -36,7 +38,25 @@ export interface CompatibleVbaDebugAdapterResolutionOptions {
   readonly configuredPath?: string | undefined;
   readonly requiredContract?: RequiredVbaDebugAdapterContract | undefined;
   readonly runProcess?: ProcessRunner | undefined;
+  readonly cancellationToken?: CommandCancellationToken | undefined;
+  readonly startCapabilitiesProcess?: StartDebugAdapterProcess | undefined;
 }
+
+export interface StartedDebugAdapterProcess {
+  kill(): void;
+}
+
+export type CompleteDebugAdapterProcess = (
+  error: Error | null,
+  stdout: string,
+  stderr: string
+) => void;
+
+export type StartDebugAdapterProcess = (
+  file: string,
+  args: readonly string[],
+  complete: CompleteDebugAdapterProcess
+) => StartedDebugAdapterProcess;
 
 export class VbaDebugAdapterCompatibilityError extends Error {
   public constructor(message: string) {
@@ -98,7 +118,12 @@ export async function resolveCompatibleVbaDebugAdapter(
   );
   const requiredContract = options.requiredContract
     ?? loadRequiredVbaDebugAdapterContract(options.extensionRoot);
-  const runProcess = options.runProcess ?? runDebugAdapterProcess;
+  const runProcess = options.runProcess ?? ((file, args) => runDebugAdapterProcess(
+    file,
+    args,
+    options.cancellationToken,
+    options.startCapabilitiesProcess
+  ));
 
   try {
     const result = await runProcess(executablePath, ['capabilities', '--format', 'json']);
@@ -162,6 +187,15 @@ function validateCapabilities(
     }
   }
 
+  for (const [name, requiredVersion] of Object.entries(required.featureVersions)) {
+    if (actual.featureVersions?.[name] !== requiredVersion) {
+      throw new VbaDebugAdapterCompatibilityError(
+        `vba-debug-adapter at '${executablePath}' reports incompatible feature ${name}; ` +
+        `this extension requires ${requiredVersion}.`
+      );
+    }
+  }
+
   if (
     !equalStringRecords(actual.commandSchemaVersions, required.commandSchemaVersions) ||
     !equalStringRecords(
@@ -183,6 +217,7 @@ function isRequiredContract(value: unknown): value is RequiredVbaDebugAdapterCon
     typeof value.sessionIdFormat === 'string' &&
     isStringArray(value.commands) &&
     isStringRecord(value.commandSchemaVersions) &&
+    isStringRecord(value.featureVersions) &&
     isStringRecord(value.requiredVbaDevFeatureVersions);
 }
 
@@ -223,17 +258,69 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function runDebugAdapterProcess(
   file: string,
-  args: readonly string[]
+  args: readonly string[],
+  cancellationToken?: CommandCancellationToken | undefined,
+  startProcess: StartDebugAdapterProcess = startNodeDebugAdapterProcess
 ): Promise<ProcessResult> {
   return new Promise((resolve, reject) => {
-    execFile(file, [...args], { windowsHide: true }, (error, stdout, stderr) => {
-      if (error) {
-        reject(error);
+    let settled = false;
+    let process: StartedDebugAdapterProcess | undefined;
+    let cancellationSubscription: { dispose(): void } | undefined;
+    const settle = (complete: () => void): void => {
+      if (settled) {
         return;
       }
-      resolve({ stdout, stderr });
+      settled = true;
+      cancellationSubscription?.dispose();
+      complete();
+    };
+    const cancel = (): void => {
+      settle(() => {
+        process?.kill();
+        reject(new Error('vba-debug-adapter capabilities command cancelled.'));
+      });
+    };
+
+    if (cancellationToken?.isCancellationRequested) {
+      cancel();
+      return;
+    }
+
+    process = startProcess(file, args, (error, stdout, stderr) => {
+      if (error) {
+        settle(() => reject(error));
+        return;
+      }
+      settle(() => resolve({ stdout, stderr }));
     });
+    if (settled) {
+      return;
+    }
+
+    cancellationSubscription = cancellationToken?.onCancellationRequested(cancel);
+    if (settled) {
+      cancellationSubscription?.dispose();
+      return;
+    }
+    if (cancellationToken?.isCancellationRequested) {
+      cancel();
+    }
   });
+}
+
+function startNodeDebugAdapterProcess(
+  file: string,
+  args: readonly string[],
+  complete: CompleteDebugAdapterProcess
+): StartedDebugAdapterProcess {
+  const child = execFile(file, [...args], { windowsHide: true }, (error, stdout, stderr) => {
+    complete(error, stdout, stderr);
+  });
+  return {
+    kill: () => {
+      child.kill();
+    }
+  };
 }
 
 function errorMessage(error: unknown): string {

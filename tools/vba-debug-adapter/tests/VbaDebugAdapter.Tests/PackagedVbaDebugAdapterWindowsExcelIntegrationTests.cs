@@ -152,6 +152,119 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
 
     [WindowsExcelIntegrationFact]
     [Trait("Category", "WindowsExcelIntegration")]
+    public async Task PackagedDoctorCancellationCompletesTerminalCleanup()
+    {
+        var repositoryRoot = ResolveRepositoryRoot();
+        var assets = ResolvePackagedDebugAssets(repositoryRoot);
+        using var temp = TempDirectory.Create();
+        var poisonProjectPath = Path.Combine(temp.Path, "vba-project.json");
+        var sentinelSourcePath = Path.Combine(temp.Path, "PersistentSentinel.bas");
+        var poisonBytes = Encoding.UTF8.GetBytes("{ this is deliberately invalid project json");
+        var sentinelBytes = Encoding.UTF8.GetBytes(
+            "Attribute VB_Name = \"PersistentSentinel\"\r\n" +
+            "Option Explicit\r\n");
+        File.WriteAllBytes(poisonProjectPath, poisonBytes);
+        File.WriteAllBytes(sentinelSourcePath, sentinelBytes);
+        var baselineExcelProcessIds = CaptureExcelProcessIds();
+        var workspaceRoot = Path.Combine(
+            Path.GetTempPath(),
+            "vba-debug-adapter",
+            "workspaces");
+        var baselineWorkspaceEntries = CaptureWorkspaceEntries(workspaceRoot);
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = assets.DebugAdapterExecutablePath,
+            WorkingDirectory = temp.Path,
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+        foreach (var argument in new[]
+                 {
+                     "doctor",
+                     "--format",
+                     "json",
+                     "--cancellation-transport",
+                     "stdin-v1"
+                 })
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+
+        using var process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException(
+                $"Process did not start: {assets.DebugAdapterExecutablePath}");
+        var standardOutput = process.StandardOutput.ReadToEndAsync();
+        var standardError = process.StandardError.ReadToEndAsync();
+        using var foregroundAssistCancellation = new CancellationTokenSource();
+        var foregroundAssist = AssistPackagedDebugForegroundAsync(
+            baselineExcelProcessIds,
+            foregroundAssistCancellation.Token);
+        int ownedExcelProcessId;
+        try
+        {
+            ownedExcelProcessId = await WaitForNewExcelProcessAsync(
+                baselineExcelProcessIds,
+                TimeSpan.FromSeconds(60));
+            Assert.False(baselineWorkspaceEntries.SequenceEqual(
+                CaptureWorkspaceEntries(workspaceRoot),
+                StringComparer.Ordinal));
+            await process.StandardInput.WriteAsync("cancel\n");
+            await process.StandardInput.FlushAsync();
+            process.StandardInput.Close();
+            await process.WaitForExitAsync().WaitAsync(TimeSpan.FromMinutes(2));
+        }
+        finally
+        {
+            foregroundAssistCancellation.Cancel();
+            try
+            {
+                await foregroundAssist;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+                await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(15));
+            }
+        }
+
+        var result = new ProcessResult(
+            process.ExitCode,
+            await standardOutput,
+            await standardError);
+        Assert.NotEqual(0, result.ExitCode);
+        using var report = JsonDocument.Parse(result.StandardOutput);
+        var root = report.RootElement;
+        Assert.Equal("1.0", root.GetProperty("schemaVersion").GetString());
+        Assert.False(root.GetProperty("complete").GetBoolean());
+        var checks = root.GetProperty("checks").EnumerateArray().ToArray();
+        foreach (var cleanupId in new[]
+                 {
+                     "vbe.breakpointCleanup",
+                     "excel.processClose",
+                     "workspace.deletion"
+                 })
+        {
+            var cleanup = checks.Single(check =>
+                check.GetProperty("id").GetString() == cleanupId);
+            Assert.NotEqual("skipped", cleanup.GetProperty("status").GetString());
+        }
+        Assert.False(IsProcessRunning(ownedExcelProcessId, "EXCEL"));
+        Assert.True(File.ReadAllBytes(poisonProjectPath).AsSpan().SequenceEqual(poisonBytes));
+        Assert.True(File.ReadAllBytes(sentinelSourcePath).AsSpan().SequenceEqual(sentinelBytes));
+        Assert.Equal(baselineWorkspaceEntries, CaptureWorkspaceEntries(workspaceRoot));
+        await WaitForNoNewExcelProcessesAsync(
+            baselineExcelProcessIds,
+            TimeSpan.FromSeconds(15));
+    }
+
+    [WindowsExcelIntegrationFact]
+    [Trait("Category", "WindowsExcelIntegration")]
     public async Task PackagedVsCodeAssetsCompleteTheNativeBreakpointWorkflowAndReportTerminalLifecycle()
     {
         var repositoryRoot = ResolveRepositoryRoot();
@@ -1315,6 +1428,33 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
             throw new TimeoutException(
                 $"Packaged debug smoke Excel processes did not exit within {timeout}: " +
                 string.Join(", ", remaining));
+        }
+    }
+
+    private static async Task<int> WaitForNewExcelProcessAsync(
+        IReadOnlySet<int> baselineProcessIds,
+        TimeSpan timeout)
+    {
+        using var cancellation = new CancellationTokenSource(timeout);
+        try
+        {
+            while (true)
+            {
+                var processId = CaptureExcelProcessIds()
+                    .Except(baselineProcessIds)
+                    .Order()
+                    .FirstOrDefault();
+                if (processId != 0)
+                {
+                    return processId;
+                }
+                await Task.Delay(TimeSpan.FromMilliseconds(100), cancellation.Token);
+            }
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                $"Packaged Doctor did not start an owned Excel process within {timeout}.");
         }
     }
 

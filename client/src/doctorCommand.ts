@@ -3,6 +3,23 @@ import {
   resolveVbaDevProjectCommandContext,
   runResolvedVbaDevProjectCommand
 } from './devtoolRuntime';
+import {
+  CompatibleVbaDebugAdapter,
+  RequiredVbaDebugAdapterContract,
+  VbaDebugAdapterResolver,
+  resolveCompatibleVbaDebugAdapter
+} from './debugAdapter';
+import { ProcessRunner } from './devtool';
+import {
+  parseVbaDebugAdapterDoctorReport,
+  renderVbaDebugAdapterDoctorReport
+} from './debugAdapterDoctorOutput';
+import {
+  CancellationDisposable,
+  CommandCancellationToken,
+  StartVbaDevProcess,
+  runCompanionCommand
+} from './devtoolCommand';
 
 export const FirstRunDoctorPromptState = {
   Prompted: 'vbaTools.doctor.firstRunPrompted',
@@ -14,7 +31,13 @@ export interface WorkspaceState {
   update(key: string, value: unknown): Thenable<void> | Promise<void>;
 }
 
-export interface DoctorCommandOptions extends VbaDevCommandRuntimeOptions {}
+export interface DoctorCommandOptions extends VbaDevCommandRuntimeOptions {
+  vbaDebugAdapterResolver?: VbaDebugAdapterResolver | undefined;
+  configuredDebugAdapterPath?: string | undefined;
+  requiredDebugAdapterContract?: RequiredVbaDebugAdapterContract | undefined;
+  debugAdapterCapabilitiesProcess?: ProcessRunner | undefined;
+  startDebugAdapterProcess?: StartVbaDevProcess | undefined;
+}
 
 export interface DoctorCommandResult {
   projectRoot: string;
@@ -36,6 +59,7 @@ export async function runDoctorCommand(options: DoctorCommandOptions): Promise<D
   if (!context) {
     return undefined;
   }
+  options.outputChannel.appendLine('Project automation');
   const resolution = await options.vbaDevResolver?.resolve();
   if (
     resolution?.source === 'bundled'
@@ -47,15 +71,101 @@ export async function runDoctorCommand(options: DoctorCommandOptions): Promise<D
   }
 
   const result = await runResolvedVbaDevProjectCommand(options, context, ['doctor']);
+  let adapterBlocking = false;
+  let adapterCancelled = false;
+  const adapterResolver = options.vbaDebugAdapterResolver ?? {
+    resolve: () => resolveCompatibleVbaDebugAdapter({
+      extensionRoot: options.extensionRoot,
+      configuredPath: options.configuredDebugAdapterPath,
+      requiredContract: options.requiredDebugAdapterContract,
+      runProcess: options.debugAdapterCapabilitiesProcess,
+      cancellationToken: options.cancellationToken
+    })
+  };
 
-  if (!result.cancelled && hasBlockingDoctorFinding(result.exitCode, result.stdout, result.stderr)) {
+  if (!result.cancelled) {
+    options.outputChannel.appendLine('VBE debugging');
+    let adapterProcessClosed = false;
+    try {
+      const adapter = await resolveAdapterWithCancellation(
+        adapterResolver,
+        options.cancellationToken
+      );
+      if (options.cancellationToken?.isCancellationRequested) {
+        adapterCancelled = true;
+        options.outputChannel.appendLine('VBE debugging command cancelled.');
+      } else {
+        const adapterResult = await runCompanionCommand({
+          executablePath: adapter.executablePath,
+          args: [
+            'doctor',
+            '--format',
+            'json',
+            '--cancellation-transport',
+            'stdin-v1'
+          ],
+          outputChannel: options.outputChannel,
+          displayName: 'VBE debugging',
+          cancellationTransport: 'stdin-v1',
+          cancellationToken: options.cancellationToken,
+          startProcess: options.startDebugAdapterProcess
+        });
+        adapterProcessClosed = true;
+        const report = parseVbaDebugAdapterDoctorReport(
+          adapterResult.stdout,
+          adapter.capabilities.commandSchemaVersions.doctor,
+          adapter.capabilities.toolVersion,
+          adapterResult.exitCode,
+          adapterResult.cancelled && adapterResult.cancellationRequestDelivered === true
+        );
+        for (const line of renderVbaDebugAdapterDoctorReport(report)) {
+          options.outputChannel.appendLine(line);
+        }
+        if (adapterResult.cancellationRequestDelivered === false) {
+          throw new Error('VBE debugging cancellation request could not be delivered.');
+        }
+        adapterCancelled = adapterResult.cancelled && !report.complete;
+        adapterBlocking = adapterCancelled
+          ? report.checks.some((check) =>
+            (
+              check.id === 'vbe.breakpointCleanup' ||
+              check.id === 'excel.processClose' ||
+              check.id === 'workspace.deletion'
+            ) && (
+              check.status === 'fail' || check.status === 'unverified'
+            )
+          )
+          : report.status === 'fail' || report.status === 'unverified';
+      }
+    } catch (error) {
+      if (
+        options.cancellationToken?.isCancellationRequested &&
+        !adapterProcessClosed
+      ) {
+        adapterCancelled = true;
+        options.outputChannel.appendLine('VBE debugging command cancelled.');
+      } else {
+        adapterBlocking = true;
+        options.outputChannel.appendLine(
+          `Doctor command infrastructure failure: ${getErrorMessage(error)}`
+        );
+      }
+    }
+  }
+
+  const projectBlocking = !result.cancelled && hasBlockingDoctorFinding(
+    result.exitCode,
+    result.stdout,
+    result.stderr
+  );
+  if (projectBlocking || adapterBlocking) {
     await options.showErrorMessage('VBA Tools: Doctor found blocking issues. See the VBA Tools output for details.');
   }
 
   return {
     projectRoot: result.projectRoot,
     exitCode: result.exitCode,
-    cancelled: result.cancelled
+    cancelled: result.cancelled || adapterCancelled
   };
 }
 
@@ -87,4 +197,48 @@ export async function promptForFirstRunDoctor(options: FirstRunDoctorPromptOptio
 
 function hasBlockingDoctorFinding(exitCode: number, stdout: string, stderr: string): boolean {
   return exitCode !== 0 || stdout.includes('[FAIL]') || stderr.trim().length > 0;
+}
+
+function resolveAdapterWithCancellation(
+  resolver: VbaDebugAdapterResolver,
+  cancellationToken?: CommandCancellationToken | undefined
+): Promise<CompatibleVbaDebugAdapter> {
+  if (cancellationToken === undefined) {
+    return resolver.resolve();
+  }
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let cancellationSubscription: CancellationDisposable | undefined;
+    const settle = (complete: () => void): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cancellationSubscription?.dispose();
+      complete();
+    };
+    const cancel = (): void => {
+      settle(() => reject(new Error('VBE debugging command cancelled.')));
+    };
+
+    cancellationSubscription = cancellationToken.onCancellationRequested(cancel);
+    if (settled) {
+      cancellationSubscription.dispose();
+      return;
+    }
+    if (cancellationToken.isCancellationRequested) {
+      cancel();
+      return;
+    }
+
+    resolver.resolve().then(
+      (adapter) => settle(() => resolve(adapter)),
+      (error: unknown) => settle(() => reject(error))
+    );
+  });
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

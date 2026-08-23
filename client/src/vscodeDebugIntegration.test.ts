@@ -1083,6 +1083,7 @@ function compatibleDebugAdapterCapabilities() {
     sessionIdFormat: 'lowercase-hex-32',
     commands: ['cleanup', 'doctor'],
     commandSchemaVersions: { doctor: '1.0' },
+    featureVersions: { 'doctor.stdinCancellation': '1.0' },
     requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '1.0' }
   };
 }

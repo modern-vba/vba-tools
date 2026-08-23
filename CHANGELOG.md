@@ -18,6 +18,9 @@ CLI history.
 - An independent `vba-debug-adapter doctor --format json` diagnostic that proves
   native breakpoint, Continue, process ownership, and cleanup readiness without
   project input or persistent project changes.
+- A combined `VBA Tools: Doctor` action that labels project automation and VBE
+  diagnostics separately, validates adapter results, and cooperatively cancels
+  VBE checks without bypassing terminal cleanup.
 - Immutable debug snapshots that include dirty editor content without saving and
   run in disposable same-filename workbooks without changing persistent outputs.
 - Bound Restart Debugging with generation-scoped snapshots, owned process-tree

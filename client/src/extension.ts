@@ -633,6 +633,7 @@ async function runDoctorWithProgress(
       await runDoctorCommand({
         extensionRoot: context.extensionPath,
         vbaDevResolver,
+        configuredDebugAdapterPath: getConfiguredDebugAdapterPath(),
         activeFilePath: getActiveFilePath(),
         workspaceRoots: workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [],
         fileExists,

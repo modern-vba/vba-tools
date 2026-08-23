@@ -245,7 +245,8 @@ argument. The extension-owned `vba-debug-adapter-contract.json` requires a
 capability response containing `toolVersion`, adapter `contractVersion: "1.0"`,
 `protocolVersion: "1.1"`, `transports: ["stdio"]`,
 `sessionIdFormat: "lowercase-hex-32"`, `commands: ["cleanup", "doctor"]`,
-`commandSchemaVersions: { "doctor": "1.0" }`, and
+`commandSchemaVersions: { "doctor": "1.0" }`,
+`featureVersions: { "doctor.stdinCancellation": "1.0" }`, and
 `requiredVbaDevFeatureVersions: { "build.sourceSnapshot": "1.0" }`. The
 extension validates that response independently from `vba-dev` before launch.
 The adapter is an internal extension companion rather than a user-facing
@@ -324,6 +325,16 @@ diagnoses native VBE command context, breakpoint and break-mode operation,
 visible debug-process ownership, session workspace leases, reaping, and debug
 cleanup. A native-debug failure does not make `vba-dev` project automation
 unready.
+
+The extension invokes adapter Doctor as `doctor --format json
+--cancellation-transport stdin-v1`. That hidden caller-neutral transport accepts
+only the BOM-less byte frame `cancel\n`; malformed, incomplete, CRLF, BOM-marked,
+or oversized frames and EOF alone are neutral. Ordinary `doctor --format json`
+does not read stdin, and DAP `--stdio` retains exclusive ownership of its input.
+After requesting cancellation, the extension does not force-kill Doctor: it
+waits for process close, terminal cleanup, and one schema-valid JSON result.
+Missing or invalid terminal output remains infrastructure failure rather than
+being hidden by the local cancellation request.
 
 `vba-dev doctor --scope environment --format json` explicitly skips project
 discovery and project-specific checks and reports only the Windows, Excel COM,

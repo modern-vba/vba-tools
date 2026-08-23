@@ -127,11 +127,26 @@ publish workbook, references, and CommonModules entries for each document.
 
 ### 6 - Run Doctor
 
-Run `VBA Tools: Doctor` from the Command Palette, or run `vba-dev doctor` from
-the `vba-dev` terminal. Doctor checks project paths, manifest state,
-CommonModules state, reference declarations, and machine prerequisites. Results
-are written to the VBA Tools output channel and surfaced as VS Code diagnostics
-where applicable.
+Run `VBA Tools: Doctor` from the Command Palette. It first runs `vba-dev doctor`
+for **Project automation**, then independently runs
+`vba-debug-adapter doctor --format json` for **VBE debugging**, even when the
+project diagnostic reports a failure. The project diagnostic checks project
+paths, manifest state, CommonModules state, reference declarations, and
+workbook-automation prerequisites. The VBE diagnostic uses temporary adapter-
+owned fixture state to check visible Excel/VBE startup, native breakpoint and
+break-mode commands, process ownership, and cleanup without changing persistent
+project files.
+
+Complete output from both diagnostics, including every VBE check and any
+remediation details, is written under the two labels in the VBA Tools output
+channel. VBA Tools shows at most one blocking notification and keeps the full
+details in that channel. Each stage can be cancelled independently. The two
+executables remain independent: running `vba-dev doctor` from the `vba-dev`
+terminal performs only the project diagnostic, and neither executable invokes
+the other. Cancelling the VBE stage sends its versioned cooperative request and
+waits for the adapter to finish terminal Excel and workspace cleanup before the
+result is classified. A failed cancellation delivery or invalid terminal JSON
+remains an infrastructure failure in the Output Channel.
 
 ---
 
@@ -203,7 +218,7 @@ existing bin workbook.
 
 | Command | Description |
 | --- | --- |
-| `VBA Tools: Doctor` | Check workbook project and machine prerequisites. |
+| `VBA Tools: Doctor` | Check project automation, then independently check VBE debugging prerequisites. |
 | `VBA Tools: Open vba-dev Terminal` | Open a VS Code terminal with the resolved `vba-dev` command on `PATH`. |
 | `VBA Tools: Build` | Generate the selected workbook document from template and source. |
 | `VBA Tools: Test` | Build, then run VBA unit tests for the selected workbook document. |
@@ -460,7 +475,7 @@ source.
 | --- | --- | --- |
 | `vbaLanguageServer.trace.server` | `off` | Controls LSP trace output for the VBA language server. |
 | `vbaTools.devtool.path` | empty | Overrides the bundled `vba-dev` executable with a compatible executable. |
-| `vbaTools.debugAdapter.path` | empty | Overrides the bundled `vba-debug-adapter` executable. A missing or incompatible explicit path fails debugging and never falls back to the bundled adapter. |
+| `vbaTools.debugAdapter.path` | empty | Overrides the bundled `vba-debug-adapter` executable for debugging and VBE Doctor. The adapter must advertise the required Doctor stdin-cancellation feature. A missing or incompatible explicit path fails without falling back to the bundled adapter. |
 | `vbaLanguageServer.blockSkeletonInsertion.enabled` | `true` | Inserts a proven body line and matching terminator after an eligible complete VBA block header; otherwise preserves native Enter. |
 
 ---
@@ -470,7 +485,9 @@ source.
 | Problem | Check |
 | --- | --- |
 | Language features do not start | VBA Tools currently supports Windows only. Open the VBA Tools output channel and check whether the bundled language server launched. |
-| Workbook commands fail before opening Excel | Run `VBA Tools: Doctor` and confirm that the workspace contains `vba-project.json`. |
+| Workbook commands fail before opening Excel | Run `VBA Tools: Doctor`, review the `Project automation` section, and confirm that the workspace contains `vba-project.json`. |
+| F5 cannot establish VBE debugging | Run `VBA Tools: Doctor` and review the `VBE debugging` checks and remediation in the VBA Tools output channel. |
+| VBE Doctor reports an adapter infrastructure failure | Check the executable path and compatibility details in the VBA Tools output channel. If `vbaTools.debugAdapter.path` is set, correct or clear the explicit path; invalid overrides intentionally do not fall back. |
 | Excel blocks workbook automation | Enable trusted access to the VBA project object model in Excel Trust Center settings. |
 | Tests do not appear in Test Explorer | Confirm that `vba-project.json` is in the opened workspace and reload the VS Code window after changing project layout. |
 | Format on save does not run | Set `editor.defaultFormatter` for `[vba]` to `modern-vba.vba-tools`. |

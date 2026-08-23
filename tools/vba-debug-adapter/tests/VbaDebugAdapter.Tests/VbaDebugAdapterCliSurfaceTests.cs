@@ -26,7 +26,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
 
         Assert.Equal(0, exitCode);
         Assert.Equal(
-            "{\"toolVersion\":\"0.1.0\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"1.1\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}" + Environment.NewLine,
+            "{\"toolVersion\":\"0.1.0\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"1.1\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}" + Environment.NewLine,
             ReadUtf8(standardOutput));
         Assert.Empty(ReadUtf8(standardError));
     }
@@ -188,6 +188,174 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             "Synthetic Doctor infrastructure loss",
             ReadUtf8(standardError),
             StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DoctorAcceptsAnExactStdinCancellationFrame()
+    {
+        var doctor = new AwaitingCancellationDebugEnvironmentDoctor();
+        var commandLine = VbaDebugAdapterCommandLine.Create(
+            new RecordingStdioRunner(),
+            new RecordingVbaDevCapabilitiesProbe(
+                new VbaDevCapabilitiesProbeResult(0, string.Empty, string.Empty)),
+            new RecordingSessionWorkspaceManager(),
+            doctor);
+        using var standardInput = new MemoryStream(Encoding.UTF8.GetBytes("cancel\n"));
+        using var standardOutput = new MemoryStream();
+        using var standardError = new MemoryStream();
+
+        var running = commandLine.InvokeAsync(
+            [
+                "doctor",
+                "--format",
+                "json",
+                "--cancellation-transport",
+                "stdin-v1"
+            ],
+            standardInput,
+            standardOutput,
+            standardError,
+            CancellationToken.None);
+        var completed = await Task.WhenAny(running, Task.Delay(TimeSpan.FromMilliseconds(250)));
+
+        Assert.Same(running, completed);
+        Assert.Equal(1, await running);
+        Assert.False(doctor.CancellationRequestedAtEntry);
+        Assert.True(doctor.CancellationObserved);
+        using var document = JsonDocument.Parse(ReadUtf8(standardOutput));
+        Assert.False(document.RootElement.GetProperty("complete").GetBoolean());
+    }
+
+    [Fact]
+    public async Task DoctorCompletionDoesNotWaitForOpenStdinCancellationTransport()
+    {
+        var report = new DebugEnvironmentDiagnosticReport(
+            "1.0",
+            "0.1.0",
+            DebugEnvironmentDiagnosticStatus.Pass,
+            Complete: true,
+            [new DebugEnvironmentDiagnosticCheck(
+                "platform.windows",
+                DebugEnvironmentDiagnosticStatus.Pass,
+                "Windows is available.",
+                DurationMilliseconds: 0)]);
+        var commandLine = CreateCommandLine(new RecordingDebugEnvironmentDoctor(report));
+        using var standardInput = new BlockingTailStream([]);
+        using var standardOutput = new MemoryStream();
+        using var standardError = new MemoryStream();
+
+        var invocation = commandLine.InvokeAsync(
+            [
+                "doctor",
+                "--format",
+                "json",
+                "--cancellation-transport",
+                "stdin-v1"
+            ],
+            standardInput,
+            standardOutput,
+            standardError,
+            CancellationToken.None);
+        var completed = await Task.WhenAny(
+            invocation,
+            Task.Delay(TimeSpan.FromSeconds(1)));
+
+        Assert.Same(invocation, completed);
+        Assert.Equal(0, await invocation);
+        using var document = JsonDocument.Parse(ReadUtf8(standardOutput));
+        Assert.True(document.RootElement.GetProperty("complete").GetBoolean());
+    }
+
+    [Fact]
+    public async Task DoctorDiscardsAnInvalidFrameBeforeAcceptingCancellation()
+    {
+        var doctor = new AwaitingCancellationDebugEnvironmentDoctor();
+        var commandLine = VbaDebugAdapterCommandLine.Create(
+            new RecordingStdioRunner(),
+            new RecordingVbaDevCapabilitiesProbe(
+                new VbaDevCapabilitiesProbeResult(0, string.Empty, string.Empty)),
+            new RecordingSessionWorkspaceManager(),
+            doctor);
+        using var standardInput = new MemoryStream(
+            Encoding.UTF8.GetBytes("unknown\ncancel\n"));
+        using var standardOutput = new MemoryStream();
+        using var standardError = new MemoryStream();
+
+        var running = commandLine.InvokeAsync(
+            [
+                "doctor",
+                "--format",
+                "json",
+                "--cancellation-transport",
+                "stdin-v1"
+            ],
+            standardInput,
+            standardOutput,
+            standardError,
+            CancellationToken.None);
+        var completed = await Task.WhenAny(running, Task.Delay(TimeSpan.FromMilliseconds(250)));
+
+        Assert.Same(running, completed);
+        Assert.Equal(1, await running);
+        Assert.False(doctor.CancellationRequestedAtEntry);
+        Assert.True(doctor.CancellationObserved);
+    }
+
+    public static TheoryData<string> InvalidDoctorCancellationFrames => new()
+    {
+        string.Empty,
+        "cancel\r\n",
+        "\uFEFFcancel\n",
+        "cancel",
+        "unknown\n",
+        new string('x', 4096) + "\n"
+    };
+
+    [Theory]
+    [MemberData(nameof(InvalidDoctorCancellationFrames))]
+    public async Task DoctorStdinCancellationIgnoresInvalidFrames(string frame)
+    {
+        var doctor = new DelayedCancellationInspectionDoctor();
+        var commandLine = CreateCommandLine(doctor);
+        using var standardInput = new MemoryStream(Encoding.UTF8.GetBytes(frame));
+        using var standardOutput = new MemoryStream();
+        using var standardError = new MemoryStream();
+
+        var exitCode = await commandLine.InvokeAsync(
+            [
+                "doctor",
+                "--format",
+                "json",
+                "--cancellation-transport",
+                "stdin-v1"
+            ],
+            standardInput,
+            standardOutput,
+            standardError,
+            CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        Assert.False(doctor.CancellationObserved);
+    }
+
+    [Fact]
+    public async Task OrdinaryDoctorDoesNotConsumeTheCancellationFrame()
+    {
+        var doctor = new DelayedCancellationInspectionDoctor();
+        var commandLine = CreateCommandLine(doctor);
+        using var standardInput = new MemoryStream(Encoding.UTF8.GetBytes("cancel\n"));
+        using var standardOutput = new MemoryStream();
+        using var standardError = new MemoryStream();
+
+        var exitCode = await commandLine.InvokeAsync(
+            ["doctor", "--format", "json"],
+            standardInput,
+            standardOutput,
+            standardError,
+            CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        Assert.False(doctor.CancellationObserved);
     }
 
     [Theory]
@@ -3102,6 +3270,63 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             CancellationToken cancellationToken)
             => Task.FromException<DebugEnvironmentDiagnosticReport>(error);
     }
+
+    private sealed class AwaitingCancellationDebugEnvironmentDoctor
+        : IDebugEnvironmentDoctor
+    {
+        public bool CancellationRequestedAtEntry { get; private set; }
+
+        public bool CancellationObserved { get; private set; }
+
+        public async Task<DebugEnvironmentDiagnosticReport> RunAsync(
+            CancellationToken cancellationToken)
+        {
+            CancellationRequestedAtEntry = cancellationToken.IsCancellationRequested;
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                CancellationObserved = true;
+                throw;
+            }
+
+            throw new InvalidOperationException("An infinite delay completed unexpectedly.");
+        }
+    }
+
+    private sealed class DelayedCancellationInspectionDoctor
+        : IDebugEnvironmentDoctor
+    {
+        public bool CancellationObserved { get; private set; }
+
+        public async Task<DebugEnvironmentDiagnosticReport> RunAsync(
+            CancellationToken cancellationToken)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(25));
+            CancellationObserved = cancellationToken.IsCancellationRequested;
+            return new DebugEnvironmentDiagnosticReport(
+                "1.0",
+                "0.1.0",
+                DebugEnvironmentDiagnosticStatus.Pass,
+                Complete: true,
+                [new DebugEnvironmentDiagnosticCheck(
+                    "platform.windows",
+                    DebugEnvironmentDiagnosticStatus.Pass,
+                    "Windows is available.",
+                    DurationMilliseconds: 0)]);
+        }
+    }
+
+    private static VbaDebugAdapterCommandLine CreateCommandLine(
+        IDebugEnvironmentDoctor doctor)
+        => VbaDebugAdapterCommandLine.Create(
+            new RecordingStdioRunner(),
+            new RecordingVbaDevCapabilitiesProbe(
+                new VbaDevCapabilitiesProbeResult(0, string.Empty, string.Empty)),
+            new RecordingSessionWorkspaceManager(),
+            doctor);
 
     private sealed class RecordingCapabilitiesProcess(VbaDevBuildProcessResult result)
         : IVbaDevBuildProcess

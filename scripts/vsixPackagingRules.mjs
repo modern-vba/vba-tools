@@ -499,6 +499,14 @@ export function assertBundledDebugAdapterCapabilities(
     throw new Error('Bundled vba-debug-adapter capabilities do not satisfy the required adapter contract.');
   }
 
+  for (const [featureName, featureVersion] of Object.entries(contract.featureVersions)) {
+    if (parsed.featureVersions?.[featureName] !== featureVersion) {
+      throw new Error(
+        `Bundled vba-debug-adapter capabilities must report ${featureName} feature version ${featureVersion}.`
+      );
+    }
+  }
+
   if (!equalStringRecords(
     parsed.requiredVbaDevFeatureVersions,
     contract.requiredVbaDevFeatureVersions
@@ -659,6 +667,7 @@ function isRequiredVbaDebugAdapterContract(value) {
     typeof value.sessionIdFormat === 'string' &&
     isStringArray(value.commands) &&
     isStringRecord(value.commandSchemaVersions) &&
+    isStringRecord(value.featureVersions) &&
     isStringRecord(value.requiredVbaDevFeatureVersions);
 }
 

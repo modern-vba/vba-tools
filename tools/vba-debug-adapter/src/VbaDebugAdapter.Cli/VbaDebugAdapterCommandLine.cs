@@ -134,6 +134,10 @@ public sealed class VbaDebugAdapterCommandLine
                 },
                 new Dictionary<string, string>(StringComparer.Ordinal)
                 {
+                    ["doctor.stdinCancellation"] = "1.0"
+                },
+                new Dictionary<string, string>(StringComparer.Ordinal)
+                {
                     ["build.sourceSnapshot"] = "1.0"
                 });
             await WriteLineAsync(
@@ -142,14 +146,42 @@ public sealed class VbaDebugAdapterCommandLine
             return 0;
         }
 
-        if (args.SequenceEqual(["doctor", "--format", "json"], StringComparer.Ordinal))
+        var doctorUsesStdinCancellation = args.SequenceEqual(
+            [
+                "doctor",
+                "--format",
+                "json",
+                "--cancellation-transport",
+                "stdin-v1"
+            ],
+            StringComparer.Ordinal);
+        if (
+            doctorUsesStdinCancellation ||
+            args.SequenceEqual(["doctor", "--format", "json"], StringComparer.Ordinal))
         {
+            var doctorCancellationToken = cancellationToken;
+            CancellationTokenSource? doctorCancellation = null;
+            CancellationTokenSource? monitorCancellation = null;
+            Task monitorTask = Task.CompletedTask;
+            if (doctorUsesStdinCancellation)
+            {
+                doctorCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                    cancellationToken);
+                doctorCancellationToken = doctorCancellation.Token;
+            }
             DebugEnvironmentDiagnosticReport report;
             try
             {
-                report = await debugEnvironmentDoctor
-                    .RunAsync(cancellationToken)
-                    .ConfigureAwait(false);
+                var doctorTask = debugEnvironmentDoctor.RunAsync(doctorCancellationToken);
+                if (doctorCancellation is not null)
+                {
+                    monitorCancellation = new CancellationTokenSource();
+                    monitorTask = ObserveDoctorCancellationAsync(
+                        standardInput,
+                        doctorCancellation,
+                        monitorCancellation.Token);
+                }
+                report = await doctorTask.ConfigureAwait(false);
             }
             catch (Exception exception)
             {
@@ -160,6 +192,23 @@ public sealed class VbaDebugAdapterCommandLine
                     standardError,
                     $"VBE Doctor infrastructure failure: {exception.Message}")
                     .ConfigureAwait(false);
+            }
+            finally
+            {
+                if (monitorCancellation is not null)
+                {
+                    monitorCancellation.Cancel();
+                    try
+                    {
+                        await monitorTask.ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (
+                        monitorCancellation.IsCancellationRequested)
+                    {
+                    }
+                    monitorCancellation.Dispose();
+                }
+                doctorCancellation?.Dispose();
             }
             await WriteLineAsync(
                 standardOutput,
@@ -305,6 +354,75 @@ public sealed class VbaDebugAdapterCommandLine
             Encoding.UTF8.GetBytes(value + Environment.NewLine),
             CancellationToken.None).AsTask();
 
+    private static async Task ObserveDoctorCancellationAsync(
+        Stream standardInput,
+        CancellationTokenSource doctorCancellation,
+        CancellationToken monitorCancellation)
+    {
+        ReadOnlyMemory<byte> expectedPayload = "cancel"u8.ToArray();
+        var buffer = new byte[64];
+        var matchedBytes = 0;
+        var discardingFrame = false;
+        var monitorStopped = Task.Delay(Timeout.InfiniteTimeSpan, monitorCancellation);
+        try
+        {
+            while (true)
+            {
+                var readTask = standardInput.ReadAsync(
+                    buffer,
+                    monitorCancellation).AsTask();
+                var completedTask = await Task.WhenAny(
+                    readTask,
+                    monitorStopped).ConfigureAwait(false);
+                if (completedTask != readTask)
+                {
+                    _ = readTask.ContinueWith(
+                        static completedRead => _ = completedRead.Exception,
+                        CancellationToken.None,
+                        TaskContinuationOptions.OnlyOnFaulted |
+                        TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default);
+                    return;
+                }
+                var read = await readTask.ConfigureAwait(false);
+                if (read == 0)
+                {
+                    return;
+                }
+                foreach (var value in buffer.AsSpan(0, read))
+                {
+                    if (value == (byte)'\n')
+                    {
+                        if (!discardingFrame && matchedBytes == expectedPayload.Length)
+                        {
+                            doctorCancellation.Cancel();
+                        }
+                        matchedBytes = 0;
+                        discardingFrame = false;
+                        continue;
+                    }
+
+                    if (
+                        discardingFrame ||
+                        matchedBytes >= expectedPayload.Length ||
+                        value != expectedPayload.Span[matchedBytes])
+                    {
+                        discardingFrame = true;
+                        continue;
+                    }
+                    matchedBytes++;
+                }
+            }
+        }
+        catch (OperationCanceledException) when (monitorCancellation.IsCancellationRequested)
+        {
+        }
+        catch
+        {
+            // A missing or failed stdin transport does not alter Doctor outcome authority.
+        }
+    }
+
     private static async Task<bool> TryDisposeLeaseAsync(
         IVbaDebugSessionWorkspaceLease lease,
         Stream standardError)
@@ -368,6 +486,7 @@ public sealed class VbaDebugAdapterCommandLine
         string SessionIdFormat,
         IReadOnlyList<string> Commands,
         IReadOnlyDictionary<string, string> CommandSchemaVersions,
+        IReadOnlyDictionary<string, string> FeatureVersions,
         IReadOnlyDictionary<string, string> RequiredVbaDevFeatureVersions);
 
     private sealed class PassthroughVbaDebugSessionWorkspaceManager
