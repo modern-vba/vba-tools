@@ -17,6 +17,8 @@ CLI history.
   debugging of supported public parameterless procedures and exact breakpoints.
 - Immutable debug snapshots that include dirty editor content without saving and
   run in disposable same-filename workbooks without changing persistent outputs.
+- Bound Restart Debugging with generation-scoped snapshots, owned process-tree
+  termination, session leases, crash cleanup, and next-start stale reaping.
 - Windows x64 Marketplace packaging with bundled self-contained executables, so
   a separately installed .NET runtime is not required.
 

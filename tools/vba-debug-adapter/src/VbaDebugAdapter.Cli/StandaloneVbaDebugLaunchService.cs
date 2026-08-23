@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using VbaDebugAdapter.Build;
 using VbaDebugAdapter.Debugging;
+using VbaDebugAdapter.Infrastructure;
 
 namespace VbaDebugAdapter.Cli;
 
@@ -34,6 +35,54 @@ public sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunchS
         this.compilationSettingsReader = compilationSettingsReader;
         this.compilationEnvironmentFactory = compilationEnvironmentFactory;
         this.conditionalCompilationPreflight = conditionalCompilationPreflight;
+    }
+
+    public void ValidateForLaunch(StandaloneVbaDebugLaunchRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var validatedSnapshot = snapshotValidator.Validate(request.SourceSnapshot);
+        var sourceSnapshot = new DebugSourceSnapshot(
+            validatedSnapshot.SchemaVersion,
+            validatedSnapshot.Sources
+                .Where(source => source.Text is not null)
+                .Select(source => new DebugSourceFileSnapshot(
+                    source.RelativePath,
+                    source.SourceUri!,
+                    source.Text!))
+                .ToImmutableArray(),
+            validatedSnapshot.ActiveSource is null
+                ? null
+                : new DebugSourcePosition(
+                    validatedSnapshot.ActiveSource.SourceUri,
+                    validatedSnapshot.ActiveSource.Line,
+                    validatedSnapshot.ActiveSource.Character))
+        {
+            Breakpoints = validatedSnapshot.Breakpoints
+                .Select(breakpoint => new DebugSourceBreakpoint(
+                    breakpoint.SourceUri,
+                    breakpoint.Line))
+                .ToImmutableArray()
+        };
+        var launchRequest = launchRequestResolver.Resolve(
+            sourceSnapshot,
+            request.ModuleName,
+            request.ProcedureName);
+        var mappedBreakpoints = sourceSnapshot.Breakpoints
+            .Select(breakpoint => breakpointSourceMapper.Map(sourceSnapshot, breakpoint))
+            .ToArray();
+        var requiresConditionalCompilationPreflight =
+            launchRequest.Target.ConditionalCompilationPath.Branches.Count != 0 ||
+            mappedBreakpoints.Any(breakpoint =>
+                breakpoint.ConditionalCompilationPath.Branches.Count != 0);
+        if (requiresConditionalCompilationPreflight &&
+            (compilationSettingsReader is null ||
+             compilationEnvironmentFactory is null ||
+             conditionalCompilationPreflight is null))
+        {
+            throw new DebugSetupException(
+                "Conditional-compilation debug participants require generated-workbook and " +
+                "visible Excel/VBE compiler context services.");
+        }
     }
 
     public async Task<IStandaloneVbaDebugRunningSession> LaunchAsync(
@@ -94,7 +143,10 @@ public sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunchS
                 request.ProjectRoot,
                 request.DocumentName,
                 request.WorkbookFileName,
-                request.SourceSnapshot),
+                request.SourceSnapshot)
+            {
+                Generation = request.RestartPreparation?.Generation ?? 0
+            },
             cancellationToken).ConfigureAwait(false);
         IVbeDebugSession? visibleSession = null;
         try
@@ -157,8 +209,10 @@ public sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunchS
                 .ConfigureAwait(false);
             return new StandaloneVbaDebugRunningSession(
                 visibleSession,
-                buildResult.SessionWorkspacePath,
-                mappedBreakpoints);
+                buildResult,
+                mappedBreakpoints,
+                launchRequest.Target.ModuleName,
+                launchRequest.Target.ProcedureName);
         }
         catch
         {
@@ -166,7 +220,11 @@ public sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunchS
             {
                 await TryTerminateAndDisposeAsync(visibleSession).ConfigureAwait(false);
             }
-            TryDeleteSessionWorkspace(buildResult.SessionWorkspacePath);
+            await TryDisposeBuildResultAsync(buildResult).ConfigureAwait(false);
+            if (!buildResult.HasWorkspaceOwnership)
+            {
+                TryDeleteSessionWorkspace(buildResult.SessionWorkspacePath);
+            }
             throw;
         }
     }
@@ -189,13 +247,32 @@ public sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunchS
         }
     }
 
+    private static async Task TryDisposeBuildResultAsync(
+        VbaDevSnapshotBuildResult buildResult)
+    {
+        try
+        {
+            await buildResult.DisposeAsync().ConfigureAwait(false);
+        }
+        catch
+        {
+        }
+    }
+
     internal static void TryDeleteSessionWorkspace(string workspacePath)
     {
         try
         {
-            if (Directory.Exists(workspacePath))
+            if (WindowsVbaDebugWorkspacePath.EntryExistsNoFollow(workspacePath))
             {
-                Directory.Delete(workspacePath, recursive: true);
+                var generationDirectory = new DirectoryInfo(Path.GetFullPath(workspacePath));
+                var workspacesDirectory = generationDirectory.Parent?.Parent?.Parent;
+                var workspaceRoot = workspacesDirectory?.Parent?.FullName
+                    ?? throw new InvalidOperationException(
+                        "The VBA debug generation path has no workspace root.");
+                using var cleanupScope = new WindowsVbaDebugWorkspaceTreeDeleter(
+                    workspaceRoot).OpenScope(generationDirectory.FullName);
+                cleanupScope.DeleteDirectory();
             }
         }
         catch
@@ -207,24 +284,32 @@ public sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunchS
 internal sealed class StandaloneVbaDebugRunningSession : IStandaloneVbaDebugRunningSession
 {
     private readonly IVbeDebugSession session;
-    private readonly string sessionWorkspacePath;
+    private readonly VbaDevSnapshotBuildResult buildResult;
     private readonly IReadOnlyList<VbeBreakpoint> verifiedBreakpoints;
     private int disposed;
 
     public StandaloneVbaDebugRunningSession(
         IVbeDebugSession session,
-        string sessionWorkspacePath,
-        IReadOnlyList<VbeBreakpoint> verifiedBreakpoints)
+        VbaDevSnapshotBuildResult buildResult,
+        IReadOnlyList<VbeBreakpoint> verifiedBreakpoints,
+        string targetModuleName,
+        string targetProcedureName)
     {
         this.session = session;
-        this.sessionWorkspacePath = sessionWorkspacePath;
+        this.buildResult = buildResult;
         this.verifiedBreakpoints = verifiedBreakpoints;
+        TargetModuleName = targetModuleName;
+        TargetProcedureName = targetProcedureName;
         Completion = AwaitExitCodeAsync(session.Completion);
     }
 
     public Task<int> Completion { get; }
 
     public int ProcessId => session.ProcessId;
+
+    public string TargetModuleName { get; }
+
+    public string TargetProcedureName { get; }
 
     public IReadOnlyList<VbeBreakpoint> VerifiedBreakpoints => verifiedBreakpoints;
 
@@ -242,8 +327,18 @@ internal sealed class StandaloneVbaDebugRunningSession : IStandaloneVbaDebugRunn
         }
         finally
         {
-            StandaloneVbaDebugLaunchService.TryDeleteSessionWorkspace(
-                sessionWorkspacePath);
+            try
+            {
+                await buildResult.DisposeAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                if (!buildResult.HasWorkspaceOwnership)
+                {
+                    StandaloneVbaDebugLaunchService.TryDeleteSessionWorkspace(
+                        buildResult.SessionWorkspacePath);
+                }
+            }
         }
     }
 

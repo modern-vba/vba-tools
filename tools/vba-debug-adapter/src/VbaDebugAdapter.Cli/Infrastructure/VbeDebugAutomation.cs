@@ -91,22 +91,30 @@ internal sealed class VbeDebugSessionStartCanceledException(
 /// </summary>
 public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
 {
-    private readonly IExcelDebugApplicationFactory applicationFactory;
+    private readonly IExcelDebugApplicationFactory? applicationFactory;
+    private readonly IExcelDebugOwnedApplicationStarter? ownedApplicationStarter;
     private readonly IDebugExcelProcessApi processApi;
     private readonly IDebugWindowActivator windowActivator;
     private readonly IStaComDispatcherFactory dispatcherFactory;
     private readonly IExcelDebugWorkbookOpener workbookOpener;
     private readonly IDebugModalPromptMonitor promptMonitor;
+    private readonly IDebugWorkbookLifetimeMonitor workbookLifetimeMonitor;
 
     /// <summary>
     /// Creates the production Excel/VBIDE automation adapter.
     /// </summary>
     public VbeDebugAutomation()
         : this(
-            new ExcelDebugApplicationFactory(),
+            applicationFactory: null,
+            new OwnedExcelDebugApplicationStarter(
+                new WindowsExcelDebugOwnedProcessLauncher(),
+                new WindowsExcelDebugNativeObjectModelBinder()),
             new WindowsDebugExcelProcessApi(),
             new WindowsDebugWindowActivator(),
-            new StaComDispatcherFactory())
+            new StaComDispatcherFactory(),
+            workbookOpener: null,
+            promptMonitor: null,
+            workbookLifetimeMonitor: null)
     {
     }
 
@@ -116,14 +124,59 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
         IDebugWindowActivator windowActivator,
         IStaComDispatcherFactory dispatcherFactory,
         IExcelDebugWorkbookOpener? workbookOpener = null,
-        IDebugModalPromptMonitor? promptMonitor = null)
+        IDebugModalPromptMonitor? promptMonitor = null,
+        IDebugWorkbookLifetimeMonitor? workbookLifetimeMonitor = null)
+        : this(
+            applicationFactory,
+            ownedApplicationStarter: null,
+            processApi,
+            windowActivator,
+            dispatcherFactory,
+            workbookOpener,
+            promptMonitor,
+            workbookLifetimeMonitor)
+    {
+    }
+
+    internal VbeDebugAutomation(
+        IExcelDebugOwnedApplicationStarter ownedApplicationStarter,
+        IDebugExcelProcessApi processApi,
+        IDebugWindowActivator windowActivator,
+        IStaComDispatcherFactory dispatcherFactory,
+        IExcelDebugWorkbookOpener? workbookOpener = null,
+        IDebugModalPromptMonitor? promptMonitor = null,
+        IDebugWorkbookLifetimeMonitor? workbookLifetimeMonitor = null)
+        : this(
+            applicationFactory: null,
+            ownedApplicationStarter,
+            processApi,
+            windowActivator,
+            dispatcherFactory,
+            workbookOpener,
+            promptMonitor,
+            workbookLifetimeMonitor)
+    {
+    }
+
+    private VbeDebugAutomation(
+        IExcelDebugApplicationFactory? applicationFactory,
+        IExcelDebugOwnedApplicationStarter? ownedApplicationStarter,
+        IDebugExcelProcessApi processApi,
+        IDebugWindowActivator windowActivator,
+        IStaComDispatcherFactory dispatcherFactory,
+        IExcelDebugWorkbookOpener? workbookOpener,
+        IDebugModalPromptMonitor? promptMonitor,
+        IDebugWorkbookLifetimeMonitor? workbookLifetimeMonitor)
     {
         this.applicationFactory = applicationFactory;
+        this.ownedApplicationStarter = ownedApplicationStarter;
         this.processApi = processApi;
         this.windowActivator = windowActivator;
         this.dispatcherFactory = dispatcherFactory;
         this.workbookOpener = workbookOpener ?? new ExcelComDebugWorkbookOpener();
         this.promptMonitor = promptMonitor ?? new DebugModalPromptMonitor();
+        this.workbookLifetimeMonitor = workbookLifetimeMonitor
+            ?? new DebugWorkbookLifetimeMonitor();
     }
 
     /// <inheritdoc />
@@ -136,23 +189,38 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var existingExcelProcesses = processApi.CaptureRunningExcelProcesses();
+            var existingExcelProcesses = ownedApplicationStarter is null
+                ? processApi.CaptureRunningExcelProcesses()
+                : null;
             dispatcher = dispatcherFactory.Create();
             await dispatcher.InvokeAsync(
                 () =>
                 {
-                    excelObject = applicationFactory.Create();
+                    if (ownedApplicationStarter is not null)
+                    {
+                        var ownedApplication = ownedApplicationStarter.Start(
+                            processApi,
+                            cancellationToken);
+                        excelObject = ownedApplication.Application;
+                        processOwner = ownedApplication.ProcessOwner;
+                    }
+                    else
+                    {
+                        excelObject = applicationFactory!.Create();
+                        dynamic capturedExcel = excelObject;
+                        var capturedWindowHandle = ToWindowHandle(capturedExcel.Hwnd);
+                        processOwner = DebugExcelProcessOwner.Capture(
+                            capturedWindowHandle,
+                            existingExcelProcesses!,
+                            processApi);
+                    }
                     dynamic excel = excelObject;
-                    var windowHandle = ToWindowHandle(excel.Hwnd);
-                    processOwner = DebugExcelProcessOwner.Capture(
-                        windowHandle,
-                        existingExcelProcesses,
-                        processApi);
                     ownershipCancellation = cancellationToken.UnsafeRegister(
                         static state =>
                             _ = ((DebugExcelProcessOwner)state!).TerminateAsync().AsTask(),
                         processOwner);
                     cancellationToken.ThrowIfCancellationRequested();
+                    excel.DisplayAlerts = false;
                     excel.Visible = true;
                     return true;
                 },
@@ -168,14 +236,21 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                 dispatcher,
                 windowActivator,
                 workbookOpener,
-                promptMonitor);
+                promptMonitor,
+                workbookLifetimeMonitor);
         }
         catch (Exception startException)
         {
+            var reportedStartException = startException;
             var ownershipEstablished = processOwner is not null;
             var noTemporaryProcessWasCreated = excelObject is null ||
                 startException is ExistingExcelProcessOwnershipRejectedException;
             Exception? cleanupException = null;
+            if (startException is DebugProcessOwnershipCleanupException ownershipCleanup)
+            {
+                reportedStartException = ownershipCleanup.OwnershipException;
+                cleanupException = ownershipCleanup.CleanupException;
+            }
             try
             {
                 ownershipCancellation.Dispose();
@@ -229,13 +304,13 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
 
             var cleanupVerified = cleanupException is null &&
                 (ownershipEstablished || noTemporaryProcessWasCreated);
-            throw startException is OperationCanceledException cancellation
+            throw reportedStartException is OperationCanceledException cancellation
                 ? new VbeDebugSessionStartCanceledException(
                     cancellation,
                     cleanupException,
                     cleanupVerified)
                 : new VbeDebugSessionStartException(
-                    startException,
+                    reportedStartException,
                     cleanupException,
                     cleanupVerified);
         }
@@ -264,6 +339,10 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
         private readonly IDebugWindowActivator windowActivator;
         private readonly IExcelDebugWorkbookOpener workbookOpener;
         private readonly IDebugModalPromptMonitor promptMonitor;
+        private readonly IDebugWorkbookLifetimeMonitor workbookLifetimeMonitor;
+        private readonly TaskCompletionSource<object> workbookOpenedSignal =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly Task<DebugProcessExit> completion;
         private object? workbookObject;
         private Task targetPromptObservation = Task.CompletedTask;
         private int? foregroundPermissionHResult;
@@ -276,7 +355,8 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             IStaComDispatcher dispatcher,
             IDebugWindowActivator windowActivator,
             IExcelDebugWorkbookOpener workbookOpener,
-            IDebugModalPromptMonitor promptMonitor)
+            IDebugModalPromptMonitor promptMonitor,
+            IDebugWorkbookLifetimeMonitor workbookLifetimeMonitor)
         {
             this.excelObject = excelObject;
             this.processOwner = processOwner;
@@ -284,6 +364,8 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             this.windowActivator = windowActivator;
             this.workbookOpener = workbookOpener;
             this.promptMonitor = promptMonitor;
+            this.workbookLifetimeMonitor = workbookLifetimeMonitor;
+            completion = ObserveOwnedLifetimeAsync();
         }
 
         public int ProcessId => processOwner.ProcessId;
@@ -291,7 +373,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
         public bool StrongProcessOwnershipEstablished =>
             processOwner.KillOnCloseJobAssigned;
 
-        public Task<DebugProcessExit> Completion => processOwner.Completion;
+        public Task<DebugProcessExit> Completion => completion;
 
         public async Task<DebugCompilationHostFacts> GetCompilationHostFactsAsync(
             CancellationToken cancellationToken)
@@ -338,6 +420,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                     processOwner.Completion,
                     inputWaitSink,
                     cancellationToken).ConfigureAwait(false);
+            workbookOpenedSignal.TrySetResult(workbookObject);
         }
 
         public async Task SetNativeBreakpointsAsync(
@@ -435,6 +518,29 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                 cancellationToken);
 
         public ValueTask TerminateAsync() => processOwner.TerminateAsync();
+
+        private async Task<DebugProcessExit> ObserveOwnedLifetimeAsync()
+        {
+            var processCompletion = processOwner.Completion;
+            var firstCompletion = await Task.WhenAny(
+                processCompletion,
+                workbookOpenedSignal.Task).ConfigureAwait(false);
+            if (ReferenceEquals(firstCompletion, processCompletion))
+            {
+                return await processCompletion.ConfigureAwait(false);
+            }
+
+            var openedWorkbook = await workbookOpenedSignal.Task.ConfigureAwait(false);
+            await workbookLifetimeMonitor.WaitForCloseAsync(
+                openedWorkbook,
+                dispatcher,
+                processCompletion).ConfigureAwait(false);
+            if (!processCompletion.IsCompleted)
+            {
+                await processOwner.TerminateAsync().ConfigureAwait(false);
+            }
+            return await processCompletion.ConfigureAwait(false);
+        }
 
         public async ValueTask DisposeAsync()
         {

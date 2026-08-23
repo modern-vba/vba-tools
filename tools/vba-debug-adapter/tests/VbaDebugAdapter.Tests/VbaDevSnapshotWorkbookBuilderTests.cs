@@ -1,4 +1,5 @@
 using VbaDebugAdapter.Build;
+using VbaDebugAdapter.Infrastructure;
 using Xunit;
 
 namespace VbaDebugAdapter.Tests;
@@ -29,7 +30,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
 
         try
         {
-            var result = await builder.BuildAsync(
+            await using var result = await builder.BuildAsync(
                 vbaDevPath,
                 sessionId,
                 new VbaDevSnapshotBuildRequest(
@@ -73,6 +74,352 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                 Directory.Delete(root, recursive: true);
             }
         }
+    }
+
+    [Fact]
+    public async Task BuildsUseDistinctGenerationWorkspacesWithinOneSession()
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "vba-debug-adapter-builder-tests",
+            Guid.NewGuid().ToString("N"));
+        var projectRoot = Path.Combine(root, "project");
+        var workspaceRoot = Path.Combine(root, "adapter-root");
+        Directory.CreateDirectory(projectRoot);
+        var vbaDevPath = Path.Combine(root, "tools", "vba-dev.exe");
+        Directory.CreateDirectory(Path.GetDirectoryName(vbaDevPath)!);
+        await File.WriteAllBytesAsync(vbaDevPath, []);
+        var builder = new VbaDevSnapshotWorkbookBuilder(
+            workspaceRoot,
+            new RecordingBuildProcess());
+        const string sessionId = "0123456789abcdef0123456789abcdef";
+        var snapshot = new TransportedDebugSourceSnapshot(
+            1,
+            [
+                new TransportedDebugSource(
+                    "Module1.bas",
+                    "file:///C:/persistent/Module1.bas",
+                    "utf8",
+                    Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(
+                        "Attribute VB_Name = \"Module1\"\r\n")))
+            ]);
+
+        try
+        {
+            await using var initial = await builder.BuildAsync(
+                vbaDevPath,
+                sessionId,
+                new VbaDevSnapshotBuildRequest(
+                    projectRoot,
+                    "Book1",
+                    "Book1.xlsm",
+                    snapshot)
+                {
+                    Generation = 0
+                },
+                CancellationToken.None);
+            await using var restarted = await builder.BuildAsync(
+                vbaDevPath,
+                sessionId,
+                new VbaDevSnapshotBuildRequest(
+                    projectRoot,
+                    "Book1",
+                    "Book1.xlsm",
+                    snapshot)
+                {
+                    Generation = 1
+                },
+                CancellationToken.None);
+
+            Assert.NotEqual(initial.SessionWorkspacePath, restarted.SessionWorkspacePath);
+            Assert.Contains(
+                Path.Combine("generations", "generation-0000000000"),
+                initial.SessionWorkspacePath,
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(
+                Path.Combine("generations", "generation-0000000001"),
+                restarted.SessionWorkspacePath,
+                StringComparison.OrdinalIgnoreCase);
+            await initial.DisposeAsync();
+            Assert.False(Directory.Exists(initial.SessionWorkspacePath));
+            Assert.True(File.Exists(restarted.WorkbookPath));
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task SuccessfulBuildPinsItsGenerationIdentityUntilTheResultIsDisposed()
+    {
+        using var temp = TempDirectory.Create();
+        const string sessionId = "0123456789abcdef0123456789abcdef";
+        var workspaceRoot = Path.Combine(temp.Path, "adapter-root");
+        var projectRoot = Path.Combine(temp.Path, "project");
+        var vbaDevPath = Path.Combine(temp.Path, "tools", "vba-dev.exe");
+        Directory.CreateDirectory(projectRoot);
+        Directory.CreateDirectory(Path.GetDirectoryName(vbaDevPath)!);
+        await File.WriteAllBytesAsync(vbaDevPath, []);
+        var builder = new VbaDevSnapshotWorkbookBuilder(
+            workspaceRoot,
+            new RecordingBuildProcess());
+        var result = await builder.BuildAsync(
+            vbaDevPath,
+            sessionId,
+            new VbaDevSnapshotBuildRequest(
+                projectRoot,
+                "Book1",
+                "Book1.xlsm",
+                new TransportedDebugSourceSnapshot(
+                    1,
+                    [
+                        new TransportedDebugSource(
+                            "Module1.bas",
+                            "file:///C:/persistent/Module1.bas",
+                            "utf8",
+                            Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(
+                                "Attribute VB_Name = \"Module1\"\r\n")))
+                    ])),
+            CancellationToken.None);
+        var displacedPath = result.SessionWorkspacePath + "-displaced";
+
+        try
+        {
+            Assert.Throws<IOException>(() => Directory.Move(
+                result.SessionWorkspacePath,
+                displacedPath));
+
+            await result.DisposeAsync();
+
+            Assert.False(Directory.Exists(result.SessionWorkspacePath));
+            Assert.False(Directory.Exists(displacedPath));
+        }
+        finally
+        {
+            await result.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task SessionAndBuilderShareOneCanonicalRootAcrossAliasReplacement()
+    {
+        using var temp = TempDirectory.Create();
+        const string sessionId = "0123456789abcdef0123456789abcdef";
+        var physicalRootA = Path.Combine(temp.Path, "physical-a");
+        var physicalRootB = Path.Combine(temp.Path, "physical-b");
+        var aliasedRoot = Path.Combine(temp.Path, "workspace-link");
+        var projectRoot = Path.Combine(temp.Path, "project");
+        var vbaDevPath = Path.Combine(temp.Path, "tools", "vba-dev.exe");
+        Directory.CreateDirectory(physicalRootA);
+        Directory.CreateDirectory(physicalRootB);
+        Directory.CreateDirectory(projectRoot);
+        Directory.CreateDirectory(Path.GetDirectoryName(vbaDevPath)!);
+        await File.WriteAllBytesAsync(vbaDevPath, []);
+        Directory.CreateSymbolicLink(aliasedRoot, physicalRootA);
+        var rootBinding = new VbaDebugWorkspaceRootBinding(aliasedRoot);
+        var manager = new VbaDebugSessionWorkspaceManager(
+            rootBinding,
+            cleanupOperations: null);
+        var builder = new VbaDevSnapshotWorkbookBuilder(
+            rootBinding,
+            new RecordingBuildProcess(),
+            new TransportedDebugSourceSnapshotValidator(932));
+
+        try
+        {
+            await using var lease = await manager.ClaimAsync(
+                sessionId,
+                CancellationToken.None);
+            Directory.Delete(aliasedRoot);
+            Directory.CreateSymbolicLink(aliasedRoot, physicalRootB);
+
+            await using var result = await builder.BuildAsync(
+                vbaDevPath,
+                sessionId,
+                new VbaDevSnapshotBuildRequest(
+                    projectRoot,
+                    "Book1",
+                    "Book1.xlsm",
+                    new TransportedDebugSourceSnapshot(
+                        1,
+                        [
+                            new TransportedDebugSource(
+                                "Module1.bas",
+                                "file:///C:/persistent/Module1.bas",
+                                "utf8",
+                                Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(
+                                    "Attribute VB_Name = \"Module1\"\r\n")))
+                        ])),
+                CancellationToken.None);
+
+            Assert.StartsWith(
+                Path.GetFullPath(physicalRootA),
+                result.SessionWorkspacePath,
+                StringComparison.OrdinalIgnoreCase);
+            Assert.False(Directory.Exists(Path.Combine(
+                physicalRootB,
+                "workspaces",
+                sessionId)));
+        }
+        finally
+        {
+            if (WindowsVbaDebugWorkspacePath.EntryExistsNoFollow(aliasedRoot))
+            {
+                Directory.Delete(aliasedRoot);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task BuildRejectsAGenerationsLinkWithoutWritingOutsideTheSessionTree()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        const string sessionId = "0123456789abcdef0123456789abcdef";
+        var workspaceRoot = Path.Combine(temp.Path, "adapter-root");
+        var sessionPath = Path.Combine(workspaceRoot, "workspaces", sessionId);
+        var outsidePath = Path.Combine(temp.Path, "outside");
+        var projectRoot = Path.Combine(temp.Path, "project");
+        var vbaDevPath = Path.Combine(temp.Path, "tools", "vba-dev.exe");
+        Directory.CreateDirectory(sessionPath);
+        Directory.CreateDirectory(outsidePath);
+        Directory.CreateDirectory(projectRoot);
+        Directory.CreateDirectory(Path.GetDirectoryName(vbaDevPath)!);
+        await File.WriteAllBytesAsync(vbaDevPath, []);
+        Directory.CreateSymbolicLink(
+            Path.Combine(sessionPath, "generations"),
+            outsidePath);
+        var builder = new VbaDevSnapshotWorkbookBuilder(
+            workspaceRoot,
+            new RecordingBuildProcess());
+
+        await Assert.ThrowsAnyAsync<Exception>(() => builder.BuildAsync(
+            vbaDevPath,
+            sessionId,
+            new VbaDevSnapshotBuildRequest(
+                projectRoot,
+                "Book1",
+                "Book1.xlsm",
+                new TransportedDebugSourceSnapshot(
+                    1,
+                    [
+                        new TransportedDebugSource(
+                            "Module1.bas",
+                            "file:///C:/persistent/Module1.bas",
+                            "utf8",
+                            Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(
+                                "Attribute VB_Name = \"Module1\"\r\n")))
+                    ])),
+            CancellationToken.None));
+
+        Assert.Empty(Directory.EnumerateFileSystemEntries(outsidePath));
+    }
+
+    [Fact]
+    public async Task BuildDoesNotFollowADanglingSourceLinkOutsideTheGenerationTree()
+    {
+        using var temp = TempDirectory.Create();
+        const string sessionId = "0123456789abcdef0123456789abcdef";
+        var workspaceRoot = Path.Combine(temp.Path, "adapter-root");
+        var outsideSourcePath = Path.Combine(temp.Path, "outside-Module1.bas");
+        var projectRoot = Path.Combine(temp.Path, "project");
+        var vbaDevPath = Path.Combine(temp.Path, "tools", "vba-dev.exe");
+        Directory.CreateDirectory(projectRoot);
+        Directory.CreateDirectory(Path.GetDirectoryName(vbaDevPath)!);
+        await File.WriteAllBytesAsync(vbaDevPath, []);
+        var process = new RecordingBuildProcess();
+        var builder = new VbaDevSnapshotWorkbookBuilder(
+            workspaceRoot,
+            process,
+            new TransportedDebugSourceSnapshotValidator(932),
+            beforeCreateSourceFile: sourcePath =>
+                File.CreateSymbolicLink(sourcePath, outsideSourcePath));
+
+        VbaDevSnapshotBuildResult? result = null;
+        var exception = await Record.ExceptionAsync(async () =>
+        {
+            result = await builder.BuildAsync(
+                vbaDevPath,
+                sessionId,
+                new VbaDevSnapshotBuildRequest(
+                    projectRoot,
+                    "Book1",
+                    "Book1.xlsm",
+                    new TransportedDebugSourceSnapshot(
+                        1,
+                        [
+                            new TransportedDebugSource(
+                                "Module1.bas",
+                                "file:///C:/persistent/Module1.bas",
+                                "utf8",
+                                Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(
+                                    "Attribute VB_Name = \"Module1\"\r\n")))
+                        ])),
+                CancellationToken.None);
+            await result.DisposeAsync();
+        });
+
+        if (result is not null)
+        {
+            await result.DisposeAsync();
+        }
+        Assert.NotNull(exception);
+        Assert.False(File.Exists(outsideSourcePath));
+        Assert.Empty(process.Invocations);
+    }
+
+    [Fact]
+    public async Task BuildRejectsAnExistingGenerationWithoutDeletingItsArtifacts()
+    {
+        using var temp = TempDirectory.Create();
+        const string sessionId = "0123456789abcdef0123456789abcdef";
+        var workspaceRoot = Path.Combine(temp.Path, "adapter-root");
+        var generationPath = Path.Combine(
+            workspaceRoot,
+            "workspaces",
+            sessionId,
+            "generations",
+            "generation-0000000000");
+        var sentinelPath = Path.Combine(generationPath, "retained.tmp");
+        var projectRoot = Path.Combine(temp.Path, "project");
+        var vbaDevPath = Path.Combine(temp.Path, "tools", "vba-dev.exe");
+        Directory.CreateDirectory(generationPath);
+        Directory.CreateDirectory(projectRoot);
+        Directory.CreateDirectory(Path.GetDirectoryName(vbaDevPath)!);
+        await File.WriteAllTextAsync(sentinelPath, "retained");
+        await File.WriteAllBytesAsync(vbaDevPath, []);
+        var process = new RecordingBuildProcess();
+        var builder = new VbaDevSnapshotWorkbookBuilder(workspaceRoot, process);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => builder.BuildAsync(
+            vbaDevPath,
+            sessionId,
+            new VbaDevSnapshotBuildRequest(
+                projectRoot,
+                "Book1",
+                "Book1.xlsm",
+                new TransportedDebugSourceSnapshot(
+                    1,
+                    [
+                        new TransportedDebugSource(
+                            "Module1.bas",
+                            "file:///C:/persistent/Module1.bas",
+                            "utf8",
+                            Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(
+                                "Attribute VB_Name = \"Module1\"\r\n")))
+                    ])),
+            CancellationToken.None));
+
+        Assert.True(File.Exists(sentinelPath));
+        Assert.Empty(process.Invocations);
     }
 
     [Fact]
@@ -127,7 +474,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
     }
 
     [Fact]
-    public async Task FailedBuildRetainsChildOutputAndDeletesTheSessionWorkspace()
+    public async Task FailedBuildRetainsChildOutputAndDeletesOnlyTheGenerationWorkspace()
     {
         var root = Path.Combine(
             Path.GetTempPath(),
@@ -174,7 +521,12 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
             Assert.Contains("Preparing snapshot.", exception.Message, StringComparison.Ordinal);
             Assert.Contains("Importing sources.", exception.Message, StringComparison.Ordinal);
             Assert.Contains("Synthetic build failure.", exception.Message, StringComparison.Ordinal);
-            Assert.False(Directory.Exists(Path.Combine(workspaceRoot, "workspaces", sessionId)));
+            Assert.False(Directory.Exists(Path.Combine(
+                workspaceRoot,
+                "workspaces",
+                sessionId,
+                "generations",
+                "generation-0000000000")));
         }
         finally
         {
@@ -186,7 +538,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
     }
 
     [Fact]
-    public async Task SuccessfulExitWithoutAWorkbookDeletesTheSessionWorkspace()
+    public async Task SuccessfulExitWithoutAWorkbookDeletesOnlyTheGenerationWorkspace()
     {
         var root = Path.Combine(
             Path.GetTempPath(),
@@ -226,7 +578,12 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                     CancellationToken.None));
 
             Assert.Contains("without producing", exception.Message, StringComparison.Ordinal);
-            Assert.False(Directory.Exists(Path.Combine(workspaceRoot, "workspaces", sessionId)));
+            Assert.False(Directory.Exists(Path.Combine(
+                workspaceRoot,
+                "workspaces",
+                sessionId,
+                "generations",
+                "generation-0000000000")));
         }
         finally
         {
@@ -259,7 +616,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
 
         try
         {
-            var result = await builder.BuildAsync(
+            await using var result = await builder.BuildAsync(
                 vbaDevPath,
                 "0123456789abcdef0123456789abcdef",
                 new VbaDevSnapshotBuildRequest(
@@ -297,7 +654,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
     }
 
     [Fact]
-    public async Task CancellationWaitsForTheChildBoundaryBeforeDeletingTheWorkspace()
+    public async Task CancellationWaitsForTheChildBoundaryBeforeDeletingTheGenerationWorkspace()
     {
         var root = Path.Combine(
             Path.GetTempPath(),
@@ -342,7 +699,12 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
 
             process.AllowExit.TrySetResult();
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => buildTask);
-            Assert.False(Directory.Exists(Path.Combine(workspaceRoot, "workspaces", sessionId)));
+            Assert.False(Directory.Exists(Path.Combine(
+                workspaceRoot,
+                "workspaces",
+                sessionId,
+                "generations",
+                "generation-0000000000")));
         }
         finally
         {

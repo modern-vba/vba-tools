@@ -316,6 +316,13 @@ instead of being moved. Unsupported breakpoints outside the selected target do
 not block it. Breakpoint changes made after launch take effect in a new session.
 A debug session can also run without breakpoints.
 
+Restart Debugging captures a new immutable snapshot from the project and
+document bound at launch, including unsaved editor bytes without saving them.
+Changing the active editor or supplying different restart arguments does not
+retarget the session. The adapter validates the complete fresh snapshot and
+restart identity before terminating the old owned Excel process; capture or
+identity failures fail only Restart and leave the current session active.
+
 The opened workbook is disposable session state, not the configured source
 template, bin workbook, or publish workbook. Saving it changes only the
 adapter-owned temporary copy. The source files, source template, bin output, and

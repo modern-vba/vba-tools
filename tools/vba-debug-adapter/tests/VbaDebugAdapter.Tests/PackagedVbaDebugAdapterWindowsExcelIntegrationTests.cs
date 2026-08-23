@@ -215,6 +215,8 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
             var excelWindowHandle = launchReport.ExcelWindowHandle;
             var expectedWorkbookPath = Path.Combine(
                 sessionWorkspacePath,
+                "generations",
+                "generation-0000000000",
                 "output",
                 documentPaths.WorkbookFileName);
             Assert.Equal(
@@ -291,6 +293,196 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
             await adapter.CompleteInputAndWaitForExitAsync(TimeSpan.FromSeconds(15));
             await WaitForProcessExitAsync(ownedExcelProcessId.Value, TimeSpan.FromSeconds(15));
             AssertPersistentArtifactsUnchanged(documentPaths, persistentArtifacts);
+        }
+        finally
+        {
+            if (ownedExcelProcess is not null)
+            {
+                TryTerminateOwnedExcelProcess(ownedExcelProcess);
+            }
+
+            await WaitForNoNewExcelProcessesAsync(
+                baselineExcelProcessIds,
+                TimeSpan.FromSeconds(15));
+            TryDeleteDirectory(sessionWorkspacePath);
+        }
+    }
+
+    [WindowsExcelIntegrationFact]
+    [Trait("Category", "WindowsExcelIntegration")]
+    public async Task AbruptPackagedAdapterExitKillsItsExactExcelProcessAndLeavesScopedCleanup()
+    {
+        var repositoryRoot = ResolveRepositoryRoot();
+        var assets = ResolvePackagedDebugAssets(repositoryRoot);
+        using var temp = TempDirectory.Create();
+        var projectRoot = Path.Combine(temp.Path, "DebugProject");
+        var launchMarkerPath = Path.Combine(temp.Path, "adapter-loss-started.txt");
+        var completionMarkerPath = Path.Combine(temp.Path, "adapter-loss-completed.txt");
+        var sessionId = Guid.NewGuid().ToString("N");
+        var sessionWorkspacePath = Path.Combine(
+            Path.GetTempPath(),
+            "vba-debug-adapter",
+            "workspaces",
+            sessionId);
+        var baselineExcelProcessIds = CaptureExcelProcessIds();
+        OwnedExcelProcessIdentity? ownedExcelProcess = null;
+
+        try
+        {
+            var createResult = await RunProcessAsync(
+                assets.VbaDevExecutablePath,
+                temp.Path,
+                ["new", "excel", "--name", "DebugProject", "--output", projectRoot],
+                TimeSpan.FromSeconds(60));
+            Assert.True(
+                createResult.ExitCode == 0,
+                $"The bundled vba-dev project creation failed.{Environment.NewLine}" +
+                $"stdout:{Environment.NewLine}{createResult.StandardOutput}{Environment.NewLine}" +
+                $"stderr:{Environment.NewLine}{createResult.StandardError}");
+
+            var documentPaths = ResolveProjectDocumentPaths(projectRoot, "DebugProject");
+            var sourcePath = Path.Combine(documentPaths.SourceSetPath, "DebugModule.bas");
+            File.WriteAllText(sourcePath, CreatePersistentSource(), new UTF8Encoding(false));
+            Directory.CreateDirectory(Path.GetDirectoryName(documentPaths.BinPath)!);
+            Directory.CreateDirectory(Path.GetDirectoryName(documentPaths.PublishPath)!);
+            File.Copy(documentPaths.TemplatePath, documentPaths.BinPath, overwrite: true);
+            File.Copy(documentPaths.TemplatePath, documentPaths.PublishPath, overwrite: true);
+            var persistentArtifacts = CapturePersistentArtifacts(documentPaths);
+            var sourceText = CreateDebugSource(launchMarkerPath, completionMarkerPath);
+            var sourceBytes = new UTF8Encoding(false).GetBytes(sourceText);
+            var sourceUri = new Uri(sourcePath).AbsoluteUri;
+            var breakpointLine = FindLine(
+                sourceText,
+                "    ThisWorkbook.Worksheets(1).Range(\"A1\").Value2 = \"continued\"");
+
+            await using var adapter = PackagedDebugAdapterProcess.Start(
+                assets.DebugAdapterExecutablePath,
+                assets.VbaDevExecutablePath,
+                projectRoot,
+                sessionId);
+            await adapter.SendRequestAsync(1, "initialize", new { adapterID = "vba" });
+            AssertSuccessfulResponse(
+                await adapter.WaitForResponseAsync(1, TimeSpan.FromSeconds(15)),
+                "initialize");
+            await adapter.SendRequestAsync(
+                2,
+                "setBreakpoints",
+                new
+                {
+                    source = new { path = sourcePath },
+                    breakpoints = new[] { new { line = breakpointLine + 1 } }
+                });
+            AssertSuccessfulResponse(
+                await adapter.WaitForResponseAsync(2, TimeSpan.FromSeconds(15)),
+                "setBreakpoints");
+
+            using (var foregroundAssistCancellation = new CancellationTokenSource())
+            {
+                var foregroundAssist = AssistPackagedDebugForegroundAsync(
+                    baselineExcelProcessIds,
+                    foregroundAssistCancellation.Token);
+                JsonElement launchResponse;
+                try
+                {
+                    await adapter.SendRequestAsync(
+                        3,
+                        "launch",
+                        new
+                        {
+                            project = projectRoot,
+                            document = "DebugProject",
+                            module = "DebugModule",
+                            procedure = "RunTarget",
+                            __vbaDebugWorkbookFileName = documentPaths.WorkbookFileName,
+                            sourceSnapshot = new
+                            {
+                                schemaVersion = 1,
+                                sources = new[]
+                                {
+                                    new
+                                    {
+                                        relativePath = "DebugModule.bas",
+                                        sourceUri,
+                                        encoding = "utf8",
+                                        contentBase64 = Convert.ToBase64String(sourceBytes)
+                                    }
+                                },
+                                breakpoints = new[] { new { sourceUri, line = breakpointLine } }
+                            }
+                        });
+                    await adapter.SendRequestAsync(4, "configurationDone", new { });
+                    AssertSuccessfulResponse(
+                        await adapter.WaitForResponseAsync(4, TimeSpan.FromSeconds(15)),
+                        "configurationDone");
+                    launchResponse = await adapter.WaitForResponseAsync(
+                        3,
+                        TimeSpan.FromSeconds(90));
+                }
+                finally
+                {
+                    foregroundAssistCancellation.Cancel();
+                    try
+                    {
+                        await foregroundAssist;
+                    }
+                    catch (OperationCanceledException)
+                    {
+                    }
+                }
+                AssertSuccessfulResponse(launchResponse, "launch");
+            }
+
+            _ = await adapter.WaitForEventAsync("breakpoint", TimeSpan.FromSeconds(15));
+            var launchReport = await WaitForLaunchReportAsync(
+                launchMarkerPath,
+                TimeSpan.FromSeconds(15));
+            await WaitForVbeModeAsync(
+                launchReport.ExcelWindowHandle,
+                VbeBreakMode,
+                TimeSpan.FromSeconds(15));
+            ownedExcelProcess = CaptureOwnedExcelProcess(
+                GetWindowProcessId(launchReport.ExcelWindowHandle));
+            Assert.DoesNotContain(ownedExcelProcess.ProcessId, baselineExcelProcessIds);
+            var leasePath = Path.Combine(sessionWorkspacePath, "lease.json");
+            Assert.True(File.Exists(leasePath));
+            using (var leaseStream = new FileStream(
+                       leasePath,
+                       FileMode.Open,
+                       FileAccess.Read,
+                       FileShare.ReadWrite))
+            using (var lease = JsonDocument.Parse(leaseStream))
+            {
+                Assert.Equal(
+                    adapter.ProcessId,
+                    lease.RootElement.GetProperty("processId").GetInt32());
+                Assert.Equal(
+                    adapter.ProcessStartTimeUtc,
+                    DateTimeOffset.Parse(
+                        lease.RootElement.GetProperty("processStartTimeUtc").GetString()!,
+                        System.Globalization.CultureInfo.InvariantCulture)
+                        .UtcDateTime);
+            }
+            AssertPersistentArtifactsUnchanged(documentPaths, persistentArtifacts);
+
+            await adapter.KillAbruptlyAsync(TimeSpan.FromSeconds(15));
+            await WaitForOwnedExcelProcessExitAsync(
+                ownedExcelProcess,
+                TimeSpan.FromSeconds(15));
+            Assert.True(Directory.Exists(sessionWorkspacePath));
+            Assert.True(File.Exists(leasePath));
+            AssertPersistentArtifactsUnchanged(documentPaths, persistentArtifacts);
+
+            var cleanupResult = await RunProcessAsync(
+                assets.DebugAdapterExecutablePath,
+                projectRoot,
+                ["cleanup", "--session", sessionId],
+                TimeSpan.FromSeconds(15));
+            Assert.True(
+                cleanupResult.ExitCode == 0,
+                $"Packaged stale cleanup failed.{Environment.NewLine}" +
+                $"stdout:{Environment.NewLine}{cleanupResult.StandardOutput}{Environment.NewLine}" +
+                $"stderr:{Environment.NewLine}{cleanupResult.StandardError}");
+            Assert.False(Directory.Exists(sessionWorkspacePath));
         }
         finally
         {
@@ -970,6 +1162,26 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
         }
     }
 
+    private static async Task WaitForOwnedExcelProcessExitAsync(
+        OwnedExcelProcessIdentity identity,
+        TimeSpan timeout)
+    {
+        using var cancellation = new CancellationTokenSource(timeout);
+        try
+        {
+            while (IsOwnedExcelProcessRunning(identity))
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(100), cancellation.Token);
+            }
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                $"Owned Excel process {identity.ProcessId} with start time " +
+                $"{identity.StartTime:O} did not exit within {timeout}.");
+        }
+    }
+
     private static async Task WaitForNoNewExcelProcessesAsync(
         IReadOnlySet<int> baselineProcessIds,
         TimeSpan timeout)
@@ -1000,6 +1212,24 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
         {
             using var process = Process.GetProcessById(processId);
             return process.ProcessName.Equals(processName, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    private static bool IsOwnedExcelProcessRunning(OwnedExcelProcessIdentity identity)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(identity.ProcessId);
+            return process.ProcessName.Equals("EXCEL", StringComparison.OrdinalIgnoreCase) &&
+                process.StartTime == identity.StartTime;
         }
         catch (ArgumentException)
         {
@@ -1100,10 +1330,16 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
         private PackagedDebugAdapterProcess(Process process)
         {
             this.process = process;
+            ProcessId = process.Id;
+            ProcessStartTimeUtc = process.StartTime.ToUniversalTime();
             standardError = process.StandardError.ReadToEndAsync();
         }
 
         public IReadOnlyList<JsonElement> Messages => messages;
+
+        public int ProcessId { get; }
+
+        public DateTime ProcessStartTimeUtc { get; }
 
         public static PackagedDebugAdapterProcess Start(
             string debugAdapterExecutablePath,
@@ -1173,6 +1409,14 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
             }
 
             Assert.Equal(0, process.ExitCode);
+        }
+
+        public async Task KillAbruptlyAsync(TimeSpan timeout)
+        {
+            Assert.False(process.HasExited, "The adapter exited before the abrupt-loss action.");
+            process.Kill(entireProcessTree: false);
+            await process.WaitForExitAsync().WaitAsync(timeout);
+            Assert.True(process.HasExited);
         }
 
         public async ValueTask DisposeAsync()

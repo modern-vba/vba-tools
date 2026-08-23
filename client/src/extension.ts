@@ -110,7 +110,6 @@ import {
   VscodeDebugIntegration,
   createVbaDebugConfigurationProvider,
   handleVbaDebugLifecycleRequest,
-  handleVbaDebugSessionTermination,
   stopVbaDebugSessionAfterLifecycleFailure
 } from './vscodeDebugIntegration';
 import type { VbaDebugConfiguration } from './vscodeDebugConfiguration';
@@ -119,6 +118,7 @@ import { decodeVbaSourceFileText } from './vbaSourceFileText';
 let client: LanguageClient | undefined;
 let outputChannel: OutputChannel | undefined;
 let toolDiagnosticReporter: VbaDevDiagnosticReporter | undefined;
+let activeVscodeDebugIntegration: VscodeDebugIntegration | undefined;
 
 export async function activate(context: ExtensionContext): Promise<void> {
   outputChannel = window.createOutputChannel('VBA Tools');
@@ -142,6 +142,9 @@ export async function activate(context: ExtensionContext): Promise<void> {
     getConfiguredDevToolPath,
     getConfiguredDebugAdapterPath,
     vbaDevResolver,
+    reportDebugAdapterCleanupWarning: (message) => {
+      outputChannel?.appendLine(`[vba-debug-adapter] ${message}`);
+    },
     debugConfigurationHost: {
       get workspaceRoots() {
         return workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [];
@@ -215,6 +218,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
       )
     }
   });
+  activeVscodeDebugIntegration = vscodeDebugIntegration;
   const debugConfigurationProvider = createVbaDebugConfigurationProvider(
     vscodeDebugIntegration,
     (message) => window.showErrorMessage(message)
@@ -243,7 +247,8 @@ export async function activate(context: ExtensionContext): Promise<void> {
           const executable = await vscodeDebugIntegration.createDebugAdapterExecutable({
             id: session.id,
             workspaceRoot: session.workspaceFolder?.uri.fsPath,
-            configuration: session.configuration as VbaDebugConfiguration
+            configuration: session.configuration as VbaDebugConfiguration,
+            stop: () => debug.stopDebugging(session)
           });
           if (executable === undefined) {
             return undefined;
@@ -273,15 +278,22 @@ export async function activate(context: ExtensionContext): Promise<void> {
             () => debug.stopDebugging(session),
             () => session.customRequest('disconnect', { terminateDebuggee: true })
           ));
+        },
+        onDidSendMessage: (message) => {
+          vscodeDebugIntegration.observeDebugAdapterMessage(
+            session.configuration as VbaDebugConfiguration,
+            message
+          );
+        },
+        onExit: () => {
+          void vscodeDebugIntegration.handleAdapterExit(session.id);
         }
       })
     }),
     debug.onDidTerminateDebugSession((session) => {
-      handleVbaDebugSessionTermination(vscodeDebugIntegration, {
-        id: session.id,
-        type: session.type,
-        configuration: session.configuration as VbaDebugConfiguration
-      });
+      if (session.type === 'vba') {
+        vscodeDebugIntegration.releaseSession(session.id);
+      }
     })
   );
   const nativeLineBreakRecorder = new NativeLineBreakRecorder();
@@ -573,6 +585,8 @@ const ReferenceCommands: ReadonlyArray<{
 ];
 
 export async function deactivate(): Promise<void> {
+  await activeVscodeDebugIntegration?.shutdown();
+  activeVscodeDebugIntegration = undefined;
   await client?.stop();
   client = undefined;
   outputChannel = undefined;

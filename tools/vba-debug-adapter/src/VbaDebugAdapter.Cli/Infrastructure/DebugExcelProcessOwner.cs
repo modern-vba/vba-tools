@@ -48,7 +48,9 @@ internal interface IDebugSuspendedPrimaryThread : IDisposable
 
 internal sealed record DebugSuspendedProcessLaunch(
     IDebugOwnedProcess Process,
-    IDebugSuspendedPrimaryThread PrimaryThread);
+    IDebugSuspendedPrimaryThread PrimaryThread,
+    StreamReader? StandardOutput = null,
+    StreamReader? StandardError = null);
 
 internal sealed class ExistingExcelProcessOwnershipRejectedException : DebugSetupException
 {

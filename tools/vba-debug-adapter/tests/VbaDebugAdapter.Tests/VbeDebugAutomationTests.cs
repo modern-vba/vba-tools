@@ -515,6 +515,94 @@ public sealed class VbeDebugAutomationTests
     }
 
     [Fact]
+    public async Task StartVisibleAcceptsAnAtomicallyOwnedApplicationWithoutRecapturingItsProcess()
+    {
+        var process = new FakeDebugOwnedProcess(
+            31416,
+            new DateTime(2026, 7, 21, 10, 0, 10, DateTimeKind.Local));
+        var job = new FakeDebugProcessJob(process);
+        job.Assign(process);
+        var owner = DebugExcelProcessOwner.AdoptPreassignedProcess(process, job);
+        var processApi = new FakeDebugExcelProcessApi(process.Id, process);
+        var excel = new FakeExcelApplication { Hwnd = 2469 };
+        var starter = new RecordingOwnedExcelDebugApplicationStarter(
+            () =>
+            {
+                Assert.Same(process, job.AssignedProcess);
+                return new OwnedExcelDebugApplication(excel, owner);
+            });
+        var automation = new VbeDebugAutomation(
+            starter,
+            processApi,
+            new FakeDebugWindowActivator(),
+            new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
+
+        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+
+        Assert.True(excel.Visible);
+        Assert.Equal(process.Id, session.ProcessId);
+        Assert.Equal(1, starter.StartCalls);
+        Assert.Equal(0, processApi.OpenProcessCalls);
+        Assert.Equal(0, processApi.CreateJobCalls);
+
+        process.Exit(0);
+        _ = await session.Completion;
+    }
+
+    [Fact]
+    public async Task StartVisibleDisablesAlertsForTheAtomicallyOwnedApplication()
+    {
+        var process = new FakeDebugOwnedProcess(
+            31418,
+            new DateTime(2026, 7, 21, 10, 0, 20, DateTimeKind.Local));
+        var job = new FakeDebugProcessJob(process);
+        job.Assign(process);
+        var owner = DebugExcelProcessOwner.AdoptPreassignedProcess(process, job);
+        var excel = new FakeExcelApplication { Hwnd = 2470 };
+        var automation = new VbeDebugAutomation(
+            new RecordingOwnedExcelDebugApplicationStarter(
+                () => new OwnedExcelDebugApplication(excel, owner)),
+            new FakeDebugExcelProcessApi(process.Id, process),
+            new FakeDebugWindowActivator(),
+            new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
+
+        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+
+        Assert.False(excel.DisplayAlerts);
+
+        process.Exit(0);
+        _ = await session.Completion;
+    }
+
+    [Fact]
+    public async Task ClosingTheGeneratedWorkbookTerminatesTheOwnedProcessTreeAndCompletesTheSession()
+    {
+        using var temp = TempDirectory.Create();
+        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
+        File.WriteAllText(workbookPath, "test workbook placeholder");
+        var model = FakeVbeModel.Create(workbookPath, []);
+        var process = new FakeDebugOwnedProcess(
+            31417,
+            new DateTime(2026, 7, 21, 10, 0, 15, DateTimeKind.Local));
+        var job = new FakeDebugProcessJob(process);
+        var automation = new VbeDebugAutomation(
+            new FakeExcelDebugApplicationFactory(model.Excel),
+            new FakeDebugExcelProcessApi(process.Id, process, job),
+            new FakeDebugWindowActivator(),
+            new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
+
+        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None);
+
+        model.Workbook.Close();
+        var completion = await session.Completion.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Equal(-1, completion.ExitCode);
+        Assert.Equal(1, job.TerminateCalls);
+        Assert.Equal(1, process.KillCalls);
+    }
+
+    [Fact]
     public async Task StartVisibleRejectsAnExistingExcelProcessWithoutTerminatingIt()
     {
         var started = new DateTime(2026, 7, 21, 10, 0, 30, DateTimeKind.Local);
@@ -1655,6 +1743,8 @@ public sealed class FakeExcelApplication
 
     public ManualResetEventSlim? VisibleSetRelease { get; init; }
 
+    public bool DisplayAlerts { get; set; } = true;
+
     public List<string>? Events { get; init; }
 
     public bool RecordAutomationSecurityEvents { get; init; }
@@ -1793,6 +1883,21 @@ internal sealed class RecordingDebugModalPromptMonitor(List<string> events)
     {
         events.Add($"prompt-watch:{observation.InputWait.Phase}");
         return Task.CompletedTask;
+    }
+}
+
+internal sealed class RecordingOwnedExcelDebugApplicationStarter(
+    Func<OwnedExcelDebugApplication> start) : IExcelDebugOwnedApplicationStarter
+{
+    public int StartCalls { get; private set; }
+
+    public OwnedExcelDebugApplication Start(
+        IDebugExcelProcessApi processApi,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        StartCalls++;
+        return start();
     }
 }
 
@@ -1985,6 +2090,9 @@ public sealed class FakeWorkbook(
     List<string>? events = null,
     bool recordVbProjectAccess = false)
 {
+    private readonly string fullName = fullName;
+    private int closed;
+
     public FakeWorksheets Worksheets { get; } = new();
 
     public string? CompletionMarker
@@ -1993,7 +2101,11 @@ public sealed class FakeWorkbook(
         set => Worksheets.CompletionMarker = value;
     }
 
-    public string FullName { get; } = fullName;
+    public string FullName => Volatile.Read(ref closed) == 0
+        ? fullName
+        : throw new COMException("The workbook is closed.");
+
+    public void Close() => Volatile.Write(ref closed, 1);
 
     public FakeVbProject VBProject
     {

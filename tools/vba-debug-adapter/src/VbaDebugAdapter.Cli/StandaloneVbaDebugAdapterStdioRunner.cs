@@ -11,18 +11,30 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
     private readonly IStandaloneVbaDebugLaunchService launchService;
 
     public StandaloneVbaDebugAdapterStdioRunner()
-        : this(CreateDefaultLaunchService())
+        : this(Path.Combine(Path.GetTempPath(), "vba-debug-adapter"))
     {
     }
 
-    private static IStandaloneVbaDebugLaunchService CreateDefaultLaunchService()
+    internal StandaloneVbaDebugAdapterStdioRunner(string workspaceRoot)
+        : this(new VbaDebugWorkspaceRootBinding(workspaceRoot))
+    {
+    }
+
+    internal StandaloneVbaDebugAdapterStdioRunner(
+        VbaDebugWorkspaceRootBinding workspaceRootBinding)
+        : this(CreateDefaultLaunchService(workspaceRootBinding))
+    {
+    }
+
+    private static IStandaloneVbaDebugLaunchService CreateDefaultLaunchService(
+        VbaDebugWorkspaceRootBinding workspaceRootBinding)
     {
         var validator = TransportedDebugSourceSnapshotValidator
             .CreateForCurrentWindowsSession();
         return new StandaloneVbaDebugLaunchService(
             validator,
             new VbaDevSnapshotWorkbookBuilder(
-                Path.Combine(Path.GetTempPath(), "vba-debug-adapter"),
+                workspaceRootBinding,
                 new ProcessVbaDevBuildProcess(),
                 validator),
             new VbeDebugAutomation(),
@@ -53,11 +65,16 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
         var connection = new DapConnection(standardInput, standardOutput);
         DapRequest? pendingLaunchRequest = null;
         StandaloneVbaDebugLaunchRequest? pendingLaunch = null;
+        StandaloneVbaDebugLaunchRequest? launchingRequest = null;
+        StandaloneVbaDebugLaunchRequest? activeLaunch = null;
+        PendingRestartPreparation? pendingRestart = null;
         IStandaloneVbaDebugRunningSession? runningSession = null;
         Task<IStandaloneVbaDebugRunningSession?>? launchTask = null;
         CancellationTokenSource? launchCancellation = null;
         var breakpointRegistry = new DapSourceBreakpointRegistry();
         var configurationDone = false;
+        var restartGeneration = 0;
+        var lastRestartRequestSequence = -1;
         using var requestReadCancellation = CancellationTokenSource
             .CreateLinkedTokenSource(cancellationToken);
         Task<DapRequest?>? requestReadTask = null;
@@ -92,6 +109,13 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                     try
                     {
                         runningSession = await completedLaunchTask.ConfigureAwait(false);
+                        if (runningSession is not null)
+                        {
+                            activeLaunch = launchingRequest;
+                            restartGeneration = Math.Max(
+                                restartGeneration,
+                                activeLaunch?.RestartPreparation?.Generation ?? 0);
+                        }
                     }
                     catch (OperationCanceledException)
                         when (launchCancellation?.IsCancellationRequested == true)
@@ -99,12 +123,24 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                     }
                     launchCancellation?.Dispose();
                     launchCancellation = null;
+                    launchingRequest = null;
                     continue;
                 }
 
                 if (runningSession is not null &&
-                    ReferenceEquals(completedTask, runningSession.Completion))
+                    (ReferenceEquals(completedTask, runningSession.Completion) ||
+                     runningSession.Completion.IsCompleted))
                 {
+                    if (pendingRestart is not null)
+                    {
+                        await connection.WriteResponseAsync(
+                            pendingRestart.Request,
+                            success: false,
+                            body: null,
+                            message: "The owned VBA debug session exited before restart preparation completed.",
+                            cancellationToken).ConfigureAwait(false);
+                        pendingRestart = null;
+                    }
                     requestReadCancellation.Cancel();
                     ObserveDetachedRequestRead(requestReadTask);
                     requestReadTask = null;
@@ -151,8 +187,8 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                         supportsLogPoints = false,
                         supportsFunctionBreakpoints = false,
                         supportsDataBreakpoints = false,
-                        supportsTerminateRequest = false,
-                        supportsRestartRequest = false,
+                        supportsTerminateRequest = true,
+                        supportsRestartRequest = true,
                         exceptionBreakpointFilters = Array.Empty<object>()
                     },
                     message: null,
@@ -291,6 +327,7 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                     }
                     launchCancellation = CancellationTokenSource
                         .CreateLinkedTokenSource(cancellationToken);
+                    launchingRequest = pendingLaunch;
                     launchTask = ExecuteLaunchAsync(
                         connection,
                         pendingLaunchRequest,
@@ -330,6 +367,7 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                     }
                     launchCancellation = CancellationTokenSource
                         .CreateLinkedTokenSource(cancellationToken);
+                    launchingRequest = pendingLaunch;
                     launchTask = ExecuteLaunchAsync(
                         connection,
                         pendingLaunchRequest,
@@ -345,9 +383,285 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                 continue;
             }
 
+            if (request.Command.Equals("restart", StringComparison.Ordinal))
+            {
+                if (pendingRestart is not null)
+                {
+                    await connection.WriteResponseAsync(
+                        request,
+                        success: false,
+                        body: null,
+                        message: "DebugLaunchBusy: A VBA debug restart preparation is already pending.",
+                        cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                var restartPreparation = activeLaunch?.RestartPreparation;
+                if (runningSession is null || restartPreparation is null)
+                {
+                    await connection.WriteResponseAsync(
+                        request,
+                        success: false,
+                        body: null,
+                        message: "DebugSetupError: The active VBA debug session is not bound for restart.",
+                        cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                if (request.Sequence <= lastRestartRequestSequence)
+                {
+                    await connection.WriteResponseAsync(
+                        request,
+                        success: false,
+                        body: null,
+                        message: "DebugSetupError: VBA restart request sequences must increase monotonically.",
+                        cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                if (restartGeneration == int.MaxValue)
+                {
+                    await connection.WriteResponseAsync(
+                        request,
+                        success: false,
+                        body: null,
+                        message: "DebugSetupError: The VBA restart generation is exhausted.",
+                        cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                restartGeneration++;
+                lastRestartRequestSequence = request.Sequence;
+                pendingRestart = new PendingRestartPreparation(
+                    request,
+                    restartPreparation,
+                    restartGeneration);
+                continue;
+            }
+
+            if (request.Command.Equals("vba/restartPrepared", StringComparison.Ordinal))
+            {
+                if (pendingRestart is null)
+                {
+                    await connection.WriteResponseAsync(
+                        request,
+                        success: true,
+                        body: null,
+                        message: null,
+                        cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                RestartPreparationResult preparationResult;
+                try
+                {
+                    preparationResult = ParseRestartPreparationResult(request.Arguments);
+                }
+                catch (DebugSetupException exception)
+                {
+                    var invalidRestart = pendingRestart;
+                    pendingRestart = null;
+                    await connection.WriteResponseAsync(
+                        request,
+                        success: true,
+                        body: null,
+                        message: null,
+                        cancellationToken).ConfigureAwait(false);
+                    await connection.WriteResponseAsync(
+                        invalidRestart.Request,
+                        success: false,
+                        body: null,
+                        message: exception.Message,
+                        cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                string? identityError = preparationResult.SessionId != sessionId
+                    ? "The VBA restart preparation session identity is stale."
+                    : preparationResult.RestartRequestSequence != pendingRestart.Request.Sequence
+                        ? "The VBA restart preparation request sequence is stale."
+                        : preparationResult.PreparationId != pendingRestart.Descriptor.Id
+                            ? "The VBA restart preparation identity is stale."
+                            : preparationResult.Generation != pendingRestart.Generation
+                                ? "The VBA restart preparation generation is stale."
+                                : null;
+                if (identityError is not null)
+                {
+                    var invalidRestart = pendingRestart;
+                    pendingRestart = null;
+                    await connection.WriteResponseAsync(
+                        request,
+                        success: true,
+                        body: null,
+                        message: null,
+                        cancellationToken).ConfigureAwait(false);
+                    await connection.WriteResponseAsync(
+                        invalidRestart.Request,
+                        success: false,
+                        body: null,
+                        message: identityError,
+                        cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                var preparedRestart = pendingRestart;
+                pendingRestart = null;
+                if (!preparationResult.Success)
+                {
+                    await connection.WriteResponseAsync(
+                        request,
+                        success: true,
+                        body: null,
+                        message: null,
+                        cancellationToken).ConfigureAwait(false);
+                    await connection.WriteResponseAsync(
+                        preparedRestart.Request,
+                        success: false,
+                        body: null,
+                        message: string.IsNullOrWhiteSpace(preparationResult.Message)
+                            ? "VBA debug restart preparation failed."
+                            : preparationResult.Message,
+                        cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                StandaloneVbaDebugLaunchRequest freshLaunch;
+                string? validationError = null;
+                try
+                {
+                    if (preparationResult.Launch is null)
+                    {
+                        throw new DebugSetupException(
+                            "A successful VBA restart preparation requires a fresh launch snapshot.");
+                    }
+                    freshLaunch = ParseLaunchRequest(preparationResult.Launch.Value);
+                    var freshDescriptor = freshLaunch.RestartPreparation;
+                    if (activeLaunch is null || runningSession is null)
+                    {
+                        validationError = "The owned VBA debug session already exited.";
+                    }
+                    else if (!freshLaunch.ProjectRoot.Equals(
+                                 activeLaunch.ProjectRoot,
+                                 StringComparison.OrdinalIgnoreCase) ||
+                             !freshLaunch.DocumentName.Equals(
+                                 activeLaunch.DocumentName,
+                                 StringComparison.OrdinalIgnoreCase) ||
+                             !freshLaunch.WorkbookFileName.Equals(
+                                 activeLaunch.WorkbookFileName,
+                                 StringComparison.OrdinalIgnoreCase))
+                    {
+                        validationError =
+                            "The fresh VBA restart launch does not match the bound target identity.";
+                    }
+                    else if ((freshLaunch.ModuleName is not null &&
+                              !freshLaunch.ModuleName.Equals(
+                                  runningSession.TargetModuleName,
+                                  StringComparison.OrdinalIgnoreCase)) ||
+                             (freshLaunch.ProcedureName is not null &&
+                              !freshLaunch.ProcedureName.Equals(
+                                  runningSession.TargetProcedureName,
+                                  StringComparison.OrdinalIgnoreCase)))
+                    {
+                        validationError =
+                            "The fresh VBA restart launch does not match the bound module and procedure.";
+                    }
+                    else if (freshDescriptor is null ||
+                             freshDescriptor.Id != preparedRestart.Descriptor.Id ||
+                             freshDescriptor.Generation != preparedRestart.Generation)
+                    {
+                        validationError =
+                            "The fresh VBA restart launch does not match the pending preparation identity.";
+                    }
+                    else
+                    {
+                        freshLaunch = freshLaunch with
+                        {
+                            ModuleName = runningSession.TargetModuleName,
+                            ProcedureName = runningSession.TargetProcedureName
+                        };
+                        launchService.ValidateForLaunch(freshLaunch);
+                        breakpointRegistry.ValidateForLaunch(freshLaunch.SourceSnapshot);
+                    }
+                }
+                catch (Exception exception)
+                {
+                    freshLaunch = null!;
+                    validationError = exception.Message;
+                }
+
+                if (validationError is null &&
+                    runningSession!.Completion.IsCompleted)
+                {
+                    validationError =
+                        "The owned VBA debug session exited before restart replacement committed.";
+                }
+
+                if (validationError is not null)
+                {
+                    await connection.WriteResponseAsync(
+                        request,
+                        success: true,
+                        body: null,
+                        message: null,
+                        cancellationToken).ConfigureAwait(false);
+                    await connection.WriteResponseAsync(
+                        preparedRestart.Request,
+                        success: false,
+                        body: null,
+                        message: validationError,
+                        cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                await connection.WriteResponseAsync(
+                    request,
+                    success: true,
+                    body: null,
+                    message: null,
+                    cancellationToken).ConfigureAwait(false);
+                if (runningSession!.Completion.IsCompleted)
+                {
+                    await connection.WriteResponseAsync(
+                        preparedRestart.Request,
+                        success: false,
+                        body: null,
+                        message: "The owned VBA debug session exited before restart replacement committed.",
+                        cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+                var replacedSession = runningSession!;
+                runningSession = null;
+                activeLaunch = null;
+                await StopOwnedSessionAsync(replacedSession).ConfigureAwait(false);
+                launchCancellation?.Dispose();
+                launchCancellation = CancellationTokenSource
+                    .CreateLinkedTokenSource(cancellationToken);
+                launchingRequest = freshLaunch;
+                launchTask = ExecuteLaunchAsync(
+                    connection,
+                    preparedRestart.Request,
+                    freshLaunch,
+                    vbaDevPath,
+                    sessionId,
+                    breakpointRegistry,
+                    launchCancellation.Token,
+                    cancellationToken);
+                continue;
+            }
+
             if (request.Command.Equals("disconnect", StringComparison.Ordinal) ||
                 request.Command.Equals("terminate", StringComparison.Ordinal))
             {
+                if (pendingRestart is not null)
+                {
+                    await connection.WriteResponseAsync(
+                        pendingRestart.Request,
+                        success: false,
+                        body: null,
+                        message: "VBA debug restart preparation was cancelled.",
+                        cancellationToken).ConfigureAwait(false);
+                    pendingRestart = null;
+                }
                 if (launchTask is not null)
                 {
                     launchCancellation!.Cancel();
@@ -614,7 +928,8 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                 "name",
                 "module",
                 "procedure",
-                "noDebug"
+                "noDebug",
+                "__vbaRestartPreparation"
             ]);
         if (arguments.TryGetProperty("noDebug", out var noDebug))
         {
@@ -689,6 +1004,11 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
         var breakpoints = sourceSnapshot.TryGetProperty("breakpoints", out var breakpointsValue)
             ? ParseTransportedBreakpoints(breakpointsValue)
             : [];
+        var restartPreparation = arguments.TryGetProperty(
+            "__vbaRestartPreparation",
+            out var restartPreparationValue)
+            ? ParseRestartPreparation(restartPreparationValue)
+            : null;
         return new StandaloneVbaDebugLaunchRequest(
             canonicalProjectRoot,
             documentName,
@@ -699,8 +1019,91 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
             {
                 ActiveSource = activeSource,
                 Breakpoints = breakpoints
-            });
+            })
+        {
+            RestartPreparation = restartPreparation
+        };
     }
+
+    private static RestartPreparationDescriptor ParseRestartPreparation(JsonElement preparation)
+    {
+        if (preparation.ValueKind != JsonValueKind.Object)
+        {
+            throw new DebugSetupException(
+                "The VBA launch restart preparation must be an object.");
+        }
+
+        ValidateExactObjectShape(
+            preparation,
+            "__vbaRestartPreparation",
+            requiredProperties: ["protocolVersion", "id", "generation"],
+            optionalProperties: []);
+        var protocolVersion = RequiredInt32(preparation, "protocolVersion");
+        if (protocolVersion != 1)
+        {
+            throw new DebugSetupException(
+                $"Unsupported VBA restart preparation protocol version '{protocolVersion}'.");
+        }
+
+        var id = RequiredString(preparation, "id");
+        if (!IsCanonicalHex32(id))
+        {
+            throw new DebugSetupException(
+                "The VBA restart preparation ID must contain 32 lowercase hexadecimal characters.");
+        }
+
+        var generation = RequiredInt32(preparation, "generation");
+        if (generation < 0)
+        {
+            throw new DebugSetupException(
+                "The VBA restart preparation generation must be nonnegative.");
+        }
+
+        return new RestartPreparationDescriptor(id, generation);
+    }
+
+    private static RestartPreparationResult ParseRestartPreparationResult(JsonElement arguments)
+    {
+        if (arguments.ValueKind != JsonValueKind.Object)
+        {
+            throw new DebugSetupException(
+                "The VBA restart preparation result must be an object.");
+        }
+
+        ValidateExactObjectShape(
+            arguments,
+            "vba/restartPrepared",
+            requiredProperties:
+            [
+                "sessionId",
+                "restartRequestSequence",
+                "preparationId",
+                "generation",
+                "success"
+            ],
+            optionalProperties: ["message", "launch"]);
+        if (!arguments.TryGetProperty("success", out var successValue) ||
+            successValue.ValueKind is not JsonValueKind.True and not JsonValueKind.False)
+        {
+            throw new DebugSetupException(
+                "The VBA restart preparation result requires a Boolean 'success'.");
+        }
+
+        return new RestartPreparationResult(
+            RequiredString(arguments, "sessionId"),
+            RequiredInt32(arguments, "restartRequestSequence"),
+            RequiredString(arguments, "preparationId"),
+            RequiredInt32(arguments, "generation"),
+            successValue.GetBoolean(),
+            OptionalString(arguments, "message"),
+            arguments.TryGetProperty("launch", out var launch)
+                ? launch.Clone()
+                : null);
+    }
+
+    private static bool IsCanonicalHex32(string value)
+        => value.Length == 32 && value.All(character =>
+            character is >= '0' and <= '9' or >= 'a' and <= 'f');
 
     private static IReadOnlyList<object> ParseDapSourceBreakpoints(
         JsonElement arguments,
@@ -1132,10 +1535,33 @@ public sealed record StandaloneVbaDebugLaunchRequest(
     string WorkbookFileName,
     string? ModuleName,
     string? ProcedureName,
-    TransportedDebugSourceSnapshot SourceSnapshot);
+    TransportedDebugSourceSnapshot SourceSnapshot)
+{
+    public RestartPreparationDescriptor? RestartPreparation { get; init; }
+}
+
+public sealed record RestartPreparationDescriptor(string Id, int Generation);
+
+internal sealed record PendingRestartPreparation(
+    DapRequest Request,
+    RestartPreparationDescriptor Descriptor,
+    int Generation);
+
+internal sealed record RestartPreparationResult(
+    string SessionId,
+    int RestartRequestSequence,
+    string PreparationId,
+    int Generation,
+    bool Success,
+    string? Message,
+    JsonElement? Launch);
 
 public interface IStandaloneVbaDebugLaunchService
 {
+    void ValidateForLaunch(StandaloneVbaDebugLaunchRequest request)
+    {
+    }
+
     Task<IStandaloneVbaDebugRunningSession> LaunchAsync(
         string vbaDevPath,
         string sessionId,
@@ -1149,6 +1575,10 @@ public interface IStandaloneVbaDebugRunningSession : IAsyncDisposable
     Task<int> Completion { get; }
 
     int ProcessId { get; }
+
+    string TargetModuleName { get; }
+
+    string TargetProcedureName { get; }
 
     IReadOnlyList<VbeBreakpoint> VerifiedBreakpoints { get; }
 

@@ -1,6 +1,7 @@
 using VbaDebugAdapter.Cli;
 using VbaDebugAdapter.Build;
 using VbaDebugAdapter.Debugging;
+using VbaDebugAdapter.Infrastructure;
 using System.Text;
 using System.Text.Json;
 using Xunit;
@@ -27,6 +28,68 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             "{\"toolVersion\":\"0.1.0\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"1.1\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}" + Environment.NewLine,
             ReadUtf8(standardOutput));
         Assert.Empty(ReadUtf8(standardError));
+    }
+
+    [Fact]
+    public async Task CapabilitiesAndInvalidCleanupDoNotCreateAWorkspaceRoot()
+    {
+        var parent = Path.Combine(
+            Path.GetTempPath(),
+            "vba-debug-adapter-cli-construction-tests",
+            Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            foreach (var invocation in new[]
+                     {
+                         (Args: new[] { "capabilities", "--format", "json" }, ExitCode: 0),
+                         (Args: new[] { "cleanup", "--session", "invalid" }, ExitCode: 1)
+                     })
+            {
+                var workspaceRoot = Path.Combine(parent, Guid.NewGuid().ToString("N"));
+                var commandLine = VbaDebugAdapterCommandLine.CreateForWorkspaceRoot(
+                    workspaceRoot);
+
+                var exitCode = await commandLine.InvokeAsync(
+                    invocation.Args,
+                    Stream.Null,
+                    Stream.Null,
+                    CancellationToken.None);
+
+                Assert.Equal(invocation.ExitCode, exitCode);
+                Assert.False(Directory.Exists(workspaceRoot));
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(parent))
+            {
+                Directory.Delete(parent, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ProductionCapabilitiesProbeUsesTheOwnedProcessBoundary()
+    {
+        var process = new RecordingCapabilitiesProcess(
+            new VbaDevBuildProcessResult(
+                7,
+                "capabilities-output",
+                "capabilities-error"));
+        var probe = new ProcessVbaDevCapabilitiesProbe(process);
+        var vbaDevPath = Path.GetFullPath("missing-vba-dev.exe");
+
+        var result = await probe.ProbeAsync(vbaDevPath, CancellationToken.None);
+
+        var invocation = Assert.Single(process.Invocations);
+        Assert.Equal(vbaDevPath, invocation.FileName);
+        Assert.Equal(
+            ["capabilities", "--format", "json"],
+            invocation.Arguments);
+        Assert.Equal(7, result.ExitCode);
+        Assert.Equal("capabilities-output", result.StandardOutput);
+        Assert.Equal("capabilities-error", result.StandardError);
     }
 
     [Fact]
@@ -57,6 +120,302 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         Assert.Equal([(vbaDevPath, sessionId)], runner.Invocations);
         Assert.Empty(ReadUtf8(standardOutput));
         Assert.Empty(ReadUtf8(standardError));
+    }
+
+    [Fact]
+    public async Task StdioOwnsACreateNewLeaseForItsCompleteRunnerLifetime()
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "vba-debug-adapter-cli-tests",
+            Guid.NewGuid().ToString("N"));
+        const string sessionId = "0123456789abcdef0123456789abcdef";
+        var sessionWorkspacePath = Path.Combine(root, "workspaces", sessionId);
+        var leasePath = Path.Combine(sessionWorkspacePath, "lease.json");
+        var observedLease = false;
+        var runner = new RecordingStdioRunner
+        {
+            OnRun = observedSessionId =>
+            {
+                Assert.Equal(sessionId, observedSessionId);
+                Assert.True(File.Exists(leasePath));
+                using var leaseStream = new FileStream(
+                    leasePath,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.ReadWrite);
+                using var lease = JsonDocument.Parse(leaseStream);
+                Assert.Equal(1, lease.RootElement.GetProperty("schemaVersion").GetInt32());
+                Assert.Equal(
+                    sessionId,
+                    lease.RootElement.GetProperty("sessionId").GetString());
+                Assert.True(lease.RootElement.GetProperty("processId").GetInt32() > 0);
+                Assert.Matches(
+                    "^[0-9a-f]{32}$",
+                    lease.RootElement.GetProperty("leaseId").GetString());
+                Assert.True(DateTimeOffset.TryParse(
+                    lease.RootElement.GetProperty("processStartTimeUtc").GetString(),
+                    out _));
+                Assert.Throws<IOException>(() =>
+                    File.Open(
+                        leasePath,
+                        FileMode.Open,
+                        FileAccess.Write,
+                        FileShare.None).Dispose());
+                observedLease = true;
+            }
+        };
+        var probe = new RecordingVbaDevCapabilitiesProbe(
+            new VbaDevCapabilitiesProbeResult(
+                0,
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
+                string.Empty));
+        var commandLine = VbaDebugAdapterCommandLine.Create(
+            runner,
+            probe,
+            new VbaDebugSessionWorkspaceManager(root));
+
+        try
+        {
+            var exitCode = await commandLine.InvokeAsync(
+                [
+                    "--stdio",
+                    "--vba-dev", Path.GetFullPath("vba-dev.exe"),
+                    "--session", sessionId
+                ],
+                Stream.Null,
+                Stream.Null,
+                Stream.Null,
+                CancellationToken.None);
+
+            Assert.Equal(0, exitCode);
+            Assert.True(observedLease);
+            Assert.False(Directory.Exists(sessionWorkspacePath));
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task StdioReportsTheScopedRetainedPathWhenOwnedLeaseCleanupFails()
+    {
+        const string sessionId = "0123456789abcdef0123456789abcdef";
+        var retainedPath = Path.GetFullPath(Path.Combine("retained", sessionId));
+        var commandLine = VbaDebugAdapterCommandLine.Create(
+            new RecordingStdioRunner(),
+            new RecordingVbaDevCapabilitiesProbe(
+                new VbaDevCapabilitiesProbeResult(
+                    0,
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
+                    string.Empty)),
+            new FailingDisposeSessionWorkspaceManager(retainedPath));
+        using var standardError = new MemoryStream();
+
+        var exitCode = await commandLine.InvokeAsync(
+            [
+                "--stdio",
+                "--vba-dev", Path.GetFullPath("vba-dev.exe"),
+                "--session", sessionId
+            ],
+            Stream.Null,
+            Stream.Null,
+            standardError,
+            CancellationToken.None);
+
+        Assert.Equal(1, exitCode);
+        Assert.Contains(retainedPath, ReadUtf8(standardError), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CleanupRoutesOnlyTheCanonicalSessionIdentity()
+    {
+        const string sessionId = "0123456789abcdef0123456789abcdef";
+        var workspaceManager = new RecordingSessionWorkspaceManager();
+        var commandLine = VbaDebugAdapterCommandLine.Create(
+            new RecordingStdioRunner(),
+            new RecordingVbaDevCapabilitiesProbe(
+                new VbaDevCapabilitiesProbeResult(0, string.Empty, string.Empty)),
+            workspaceManager);
+        using var standardOutput = new MemoryStream();
+        using var standardError = new MemoryStream();
+
+        var exitCode = await commandLine.InvokeAsync(
+            ["cleanup", "--session", sessionId],
+            standardOutput,
+            standardError,
+            CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal([sessionId], workspaceManager.CleanupInvocations);
+        Assert.Empty(ReadUtf8(standardOutput));
+        Assert.Empty(ReadUtf8(standardError));
+    }
+
+    [Fact]
+    public async Task CleanupRejectsPathsAndNoncanonicalSessionIdentities()
+    {
+        var workspaceManager = new RecordingSessionWorkspaceManager();
+        var commandLine = VbaDebugAdapterCommandLine.Create(
+            new RecordingStdioRunner(),
+            new RecordingVbaDevCapabilitiesProbe(
+                new VbaDevCapabilitiesProbeResult(0, string.Empty, string.Empty)),
+            workspaceManager);
+        IReadOnlyList<string>[] invalidArguments =
+        [
+            ["cleanup", "--session", Path.GetFullPath("workspace")],
+            ["cleanup", "--session", "../0123456789abcdef0123456789abcdef"],
+            ["cleanup", "--session", "0123456789ABCDEF0123456789ABCDEF"],
+            ["cleanup", "--session", "0123456789abcdef0123456789abcdef", "extra"]
+        ];
+
+        foreach (var arguments in invalidArguments)
+        {
+            using var standardError = new MemoryStream();
+            var exitCode = await commandLine.InvokeAsync(
+                arguments,
+                Stream.Null,
+                standardError,
+                CancellationToken.None);
+
+            Assert.Equal(1, exitCode);
+            Assert.Contains("Usage:", ReadUtf8(standardError), StringComparison.Ordinal);
+        }
+
+        Assert.Empty(workspaceManager.CleanupInvocations);
+    }
+
+    [Fact]
+    public async Task StdioStartupReapsOnlyProvablyStaleCanonicalWorkspaces()
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "vba-debug-adapter-cli-tests",
+            Guid.NewGuid().ToString("N"));
+        const string staleSessionId = "11111111111111111111111111111111";
+        const string newSessionId = "22222222222222222222222222222222";
+        const string retainedSessionId = "33333333333333333333333333333333";
+        var staleWorkspacePath = Path.Combine(root, "workspaces", staleSessionId);
+        var retainedWorkspacePath = Path.Combine(root, "workspaces", retainedSessionId);
+        var unrelatedWorkspacePath = Path.Combine(root, "workspaces", "retained-not-a-session");
+        var newWorkspacePath = Path.Combine(root, "workspaces", newSessionId);
+        Directory.CreateDirectory(staleWorkspacePath);
+        Directory.CreateDirectory(retainedWorkspacePath);
+        Directory.CreateDirectory(unrelatedWorkspacePath);
+        await File.WriteAllTextAsync(
+            Path.Combine(staleWorkspacePath, "lease.json"),
+            """
+            {"schemaVersion":1,"sessionId":"11111111111111111111111111111111","leaseId":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","processId":2147483647,"processStartTimeUtc":"2020-01-02T03:04:05.0000000Z"}
+            """);
+        await File.WriteAllTextAsync(
+            Path.Combine(retainedWorkspacePath, "lease.json"),
+            "unverified");
+        await File.WriteAllTextAsync(
+            Path.Combine(unrelatedWorkspacePath, "keep.txt"),
+            "unrelated");
+        var runner = new RecordingStdioRunner
+        {
+            OnRun = _ =>
+            {
+                Assert.False(Directory.Exists(staleWorkspacePath));
+                Assert.True(Directory.Exists(retainedWorkspacePath));
+                Assert.True(Directory.Exists(unrelatedWorkspacePath));
+                Assert.True(File.Exists(Path.Combine(newWorkspacePath, "lease.json")));
+            }
+        };
+        var manager = new VbaDebugSessionWorkspaceManager(root);
+        var commandLine = VbaDebugAdapterCommandLine.Create(
+            runner,
+            new RecordingVbaDevCapabilitiesProbe(
+                new VbaDevCapabilitiesProbeResult(
+                    0,
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
+                    string.Empty)),
+            manager);
+
+        try
+        {
+            var exitCode = await commandLine.InvokeAsync(
+                [
+                    "--stdio",
+                    "--vba-dev", Path.GetFullPath("vba-dev.exe"),
+                    "--session", newSessionId
+                ],
+                Stream.Null,
+                Stream.Null,
+                Stream.Null,
+                CancellationToken.None);
+
+            Assert.Equal(0, exitCode);
+            Assert.False(Directory.Exists(staleWorkspacePath));
+            Assert.True(Directory.Exists(retainedWorkspacePath));
+            Assert.True(Directory.Exists(unrelatedWorkspacePath));
+            Assert.False(Directory.Exists(newWorkspacePath));
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task StdioNeverReapsOrReusesTheRequestedExistingSessionIdentity()
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "vba-debug-adapter-cli-tests",
+            Guid.NewGuid().ToString("N"));
+        const string sessionId = "0123456789abcdef0123456789abcdef";
+        var sessionWorkspacePath = Path.Combine(root, "workspaces", sessionId);
+        Directory.CreateDirectory(sessionWorkspacePath);
+        await File.WriteAllTextAsync(
+            Path.Combine(sessionWorkspacePath, "lease.json"),
+            """
+            {"schemaVersion":1,"sessionId":"0123456789abcdef0123456789abcdef","leaseId":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","processId":2147483647,"processStartTimeUtc":"2020-01-02T03:04:05.0000000Z"}
+            """);
+        var runner = new RecordingStdioRunner();
+        var commandLine = VbaDebugAdapterCommandLine.Create(
+            runner,
+            new RecordingVbaDevCapabilitiesProbe(
+                new VbaDevCapabilitiesProbeResult(
+                    0,
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
+                    string.Empty)),
+            new VbaDebugSessionWorkspaceManager(root));
+
+        try
+        {
+            using var standardError = new MemoryStream();
+            var exitCode = await commandLine.InvokeAsync(
+                [
+                    "--stdio",
+                    "--vba-dev", Path.GetFullPath("vba-dev.exe"),
+                    "--session", sessionId
+                ],
+                Stream.Null,
+                Stream.Null,
+                standardError,
+                CancellationToken.None);
+
+            Assert.Equal(1, exitCode);
+            Assert.Empty(runner.Invocations);
+            Assert.True(Directory.Exists(sessionWorkspacePath));
+            Assert.Contains("already exists", ReadUtf8(standardError), StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
     }
 
     [Fact]
@@ -125,11 +484,11 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             messages[0].GetProperty("body")
                 .GetProperty("supportsConfigurationDoneRequest")
                 .GetBoolean());
-        Assert.False(
+        Assert.True(
             messages[0].GetProperty("body")
                 .GetProperty("supportsRestartRequest")
                 .GetBoolean());
-        Assert.False(
+        Assert.True(
             messages[0].GetProperty("body")
                 .GetProperty("supportsTerminateRequest")
                 .GetBoolean());
@@ -278,6 +637,944 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                        sequence.GetInt32() == 2);
         Assert.True(launchResponse.GetProperty("success").GetBoolean());
         Assert.Empty(ReadUtf8(standardError));
+    }
+
+    [Fact]
+    public async Task StandaloneLaunchAcceptsAStrictRestartPreparationBinding()
+    {
+        var probe = new RecordingVbaDevCapabilitiesProbe(
+            new VbaDevCapabilitiesProbeResult(
+                0,
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
+                string.Empty));
+        var launchService = new RecordingDebugLaunchService();
+        var commandLine = VbaDebugAdapterCommandLine.Create(
+            new StandaloneVbaDebugAdapterStdioRunner(launchService),
+            probe);
+        var launchArguments = CreateValidLaunchArguments();
+        launchArguments["__vbaRestartPreparation"] = new
+        {
+            protocolVersion = 1,
+            id = "fedcba9876543210fedcba9876543210",
+            generation = 0
+        };
+        using var standardInput = CreateDapInput(
+            new { seq = 1, type = "request", command = "launch", arguments = launchArguments },
+            new { seq = 2, type = "request", command = "configurationDone", arguments = new { } },
+            new { seq = 3, type = "request", command = "disconnect", arguments = new { } });
+        using var standardOutput = new MemoryStream();
+
+        var exitCode = await commandLine.InvokeAsync(
+            [
+                "--stdio",
+                "--vba-dev", Path.GetFullPath("vba-dev.exe"),
+                "--session", "0123456789abcdef0123456789abcdef"
+            ],
+            standardInput,
+            standardOutput,
+            Stream.Null,
+            CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        Assert.Single(launchService.Invocations);
+        var launchResponse = Assert.Single(
+            ReadDapMessages(standardOutput),
+            message => message.TryGetProperty("request_seq", out var sequence) &&
+                       sequence.GetInt32() == 1);
+        Assert.True(launchResponse.GetProperty("success").GetBoolean());
+    }
+
+    [Fact]
+    public async Task FailedRestartPreparationRetainsTheOwnedSession()
+    {
+        const string sessionId = "0123456789abcdef0123456789abcdef";
+        const string preparationId = "fedcba9876543210fedcba9876543210";
+        var probe = new RecordingVbaDevCapabilitiesProbe(
+            new VbaDevCapabilitiesProbeResult(
+                0,
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
+                string.Empty));
+        var runningSession = new RecordingRunningSession();
+        var launchService = new RecordingDebugLaunchService(runningSession);
+        var commandLine = VbaDebugAdapterCommandLine.Create(
+            new StandaloneVbaDebugAdapterStdioRunner(launchService),
+            probe);
+        var launchArguments = CreateValidLaunchArguments();
+        launchArguments["__vbaRestartPreparation"] = new
+        {
+            protocolVersion = 1,
+            id = preparationId,
+            generation = 0
+        };
+        using var inputPrefix = CreateDapInput(
+            new { seq = 1, type = "request", command = "launch", arguments = launchArguments },
+            new { seq = 2, type = "request", command = "configurationDone", arguments = new { } },
+            new { seq = 3, type = "request", command = "restart", arguments = new { } },
+            new
+            {
+                seq = 4,
+                type = "request",
+                command = "vba/restartPrepared",
+                arguments = new
+                {
+                    sessionId,
+                    restartRequestSequence = 3,
+                    preparationId,
+                    generation = 1,
+                    success = false,
+                    message = "Synthetic snapshot capture failure."
+                }
+            });
+        using var standardInput = new BlockingTailStream(inputPrefix.ToArray());
+        using var standardOutput = new MemoryStream();
+        var invocation = commandLine.InvokeAsync(
+            [
+                "--stdio",
+                "--vba-dev", Path.GetFullPath("vba-dev.exe"),
+                "--session", sessionId
+            ],
+            standardInput,
+            standardOutput,
+            Stream.Null,
+            CancellationToken.None);
+
+        try
+        {
+            Assert.True(SpinWait.SpinUntil(
+                () => ReadUtf8(standardOutput).Contains(
+                    "\"request_seq\":4",
+                    StringComparison.Ordinal),
+                TimeSpan.FromSeconds(2)));
+            var messages = ReadDapMessages(standardOutput);
+            var preparationResponse = Assert.Single(
+                messages,
+                message => message.TryGetProperty("request_seq", out var sequence) &&
+                           sequence.GetInt32() == 4);
+            Assert.True(preparationResponse.GetProperty("success").GetBoolean());
+            var restartResponse = Assert.Single(
+                messages,
+                message => message.TryGetProperty("request_seq", out var sequence) &&
+                           sequence.GetInt32() == 3);
+            Assert.False(restartResponse.GetProperty("success").GetBoolean());
+            Assert.Equal(
+                "Synthetic snapshot capture failure.",
+                restartResponse.GetProperty("message").GetString());
+            Assert.Equal(0, runningSession.TerminateCalls);
+            Assert.Equal(0, runningSession.DisposeCalls);
+        }
+        finally
+        {
+            standardInput.Complete();
+            _ = await invocation;
+        }
+    }
+
+    [Fact]
+    public async Task StaleRestartPreparationFailsOnlyRestartAndRetainsTheOwnedSession()
+    {
+        const string sessionId = "0123456789abcdef0123456789abcdef";
+        const string preparationId = "fedcba9876543210fedcba9876543210";
+        var runningSession = new RecordingRunningSession();
+        var commandLine = VbaDebugAdapterCommandLine.Create(
+            new StandaloneVbaDebugAdapterStdioRunner(
+                new RecordingDebugLaunchService(runningSession)),
+            new RecordingVbaDevCapabilitiesProbe(
+                new VbaDevCapabilitiesProbeResult(
+                    0,
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
+                    string.Empty)));
+        var launchArguments = CreateValidLaunchArguments();
+        launchArguments["__vbaRestartPreparation"] = new
+        {
+            protocolVersion = 1,
+            id = preparationId,
+            generation = 0
+        };
+        using var inputPrefix = CreateDapInput(
+            new { seq = 1, type = "request", command = "launch", arguments = launchArguments },
+            new { seq = 2, type = "request", command = "configurationDone", arguments = new { } },
+            new { seq = 3, type = "request", command = "restart", arguments = new { } },
+            new
+            {
+                seq = 4,
+                type = "request",
+                command = "vba/restartPrepared",
+                arguments = new
+                {
+                    sessionId,
+                    restartRequestSequence = 3,
+                    preparationId,
+                    generation = 2,
+                    success = true
+                }
+            },
+            new
+            {
+                seq = 5,
+                type = "request",
+                command = "vba/restartPrepared",
+                arguments = new
+                {
+                    sessionId,
+                    restartRequestSequence = 3,
+                    preparationId,
+                    generation = 2,
+                    success = true
+                }
+            });
+        using var standardInput = new BlockingTailStream(inputPrefix.ToArray());
+        using var standardOutput = new MemoryStream();
+        var invocation = commandLine.InvokeAsync(
+            [
+                "--stdio",
+                "--vba-dev", Path.GetFullPath("vba-dev.exe"),
+                "--session", sessionId
+            ],
+            standardInput,
+            standardOutput,
+            Stream.Null,
+            CancellationToken.None);
+
+        try
+        {
+            Assert.True(SpinWait.SpinUntil(
+                () => ReadUtf8(standardOutput).Contains(
+                    "\"request_seq\":5",
+                    StringComparison.Ordinal),
+                TimeSpan.FromSeconds(2)));
+            var messages = ReadDapMessages(standardOutput);
+            var preparationResponse = Assert.Single(
+                messages,
+                message => message.TryGetProperty("request_seq", out var sequence) &&
+                           sequence.GetInt32() == 4);
+            var restartResponse = Assert.Single(
+                messages,
+                message => message.TryGetProperty("request_seq", out var sequence) &&
+                           sequence.GetInt32() == 3);
+            Assert.True(preparationResponse.GetProperty("success").GetBoolean());
+            Assert.True(Assert.Single(
+                messages,
+                message => message.TryGetProperty("request_seq", out var sequence) &&
+                           sequence.GetInt32() == 5).GetProperty("success").GetBoolean());
+            Assert.False(restartResponse.GetProperty("success").GetBoolean());
+            Assert.Contains(
+                "generation",
+                restartResponse.GetProperty("message").GetString(),
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(0, runningSession.TerminateCalls);
+            Assert.Equal(0, runningSession.DisposeCalls);
+        }
+        finally
+        {
+            standardInput.Complete();
+            _ = await invocation;
+        }
+    }
+
+    [Fact]
+    public async Task MatchingRestartPreparationReplacesTheOwnedSessionWithTheFreshSnapshot()
+    {
+        const string sessionId = "0123456789abcdef0123456789abcdef";
+        const string preparationId = "fedcba9876543210fedcba9876543210";
+        var events = new List<string>();
+        var oldSession = new RecordingRunningSession(events: events, label: "old");
+        var freshSession = new RecordingRunningSession(events: events, label: "fresh");
+        var launchService = new SequencedDebugLaunchService(
+            [oldSession, freshSession],
+            events);
+        var commandLine = VbaDebugAdapterCommandLine.Create(
+            new StandaloneVbaDebugAdapterStdioRunner(launchService),
+            new RecordingVbaDevCapabilitiesProbe(
+                new VbaDevCapabilitiesProbeResult(
+                    0,
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
+                    string.Empty)));
+        var oldContent = Convert.ToBase64String(Encoding.UTF8.GetBytes(
+            "Attribute VB_Name = \"Module1\"\r\nPublic Sub Run()\r\nEnd Sub\r\n"));
+        var freshContent = Convert.ToBase64String(Encoding.UTF8.GetBytes(
+            "Attribute VB_Name = \"Module1\"\r\nPublic Sub Run()\r\nDebug.Print \"fresh\"\r\nEnd Sub\r\n"));
+        var initialLaunch = CreateValidLaunchArguments();
+        SetLaunchContent(initialLaunch, oldContent);
+        initialLaunch["__vbaRestartPreparation"] = new
+        {
+            protocolVersion = 1,
+            id = preparationId,
+            generation = 0
+        };
+        var freshLaunch = CreateValidLaunchArguments();
+        SetLaunchContent(freshLaunch, freshContent);
+        freshLaunch["__vbaRestartPreparation"] = new
+        {
+            protocolVersion = 1,
+            id = preparationId,
+            generation = 1
+        };
+        using var standardInput = CreateDapInput(
+            new { seq = 1, type = "request", command = "launch", arguments = initialLaunch },
+            new { seq = 2, type = "request", command = "configurationDone", arguments = new { } },
+            new { seq = 3, type = "request", command = "restart", arguments = new { } },
+            new
+            {
+                seq = 4,
+                type = "request",
+                command = "vba/restartPrepared",
+                arguments = new
+                {
+                    sessionId,
+                    restartRequestSequence = 3,
+                    preparationId,
+                    generation = 1,
+                    success = true,
+                    launch = freshLaunch
+                }
+            },
+            new { seq = 5, type = "request", command = "disconnect", arguments = new { } });
+        using var standardOutput = new MemoryStream();
+
+        var exitCode = await commandLine.InvokeAsync(
+            [
+                "--stdio",
+                "--vba-dev", Path.GetFullPath("vba-dev.exe"),
+                "--session", sessionId
+            ],
+            standardInput,
+            standardOutput,
+            Stream.Null,
+            CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(2, launchService.Invocations.Count);
+        Assert.All(launchService.Invocations, invocation =>
+            Assert.Equal(sessionId, invocation.SessionId));
+        Assert.Equal(
+            [oldContent, freshContent],
+            launchService.Invocations.Select(invocation =>
+                Assert.Single(invocation.Request.SourceSnapshot.Sources).ContentBase64));
+        Assert.Equal(
+            ["launch:1", "old:terminate", "old:dispose", "launch:2", "fresh:terminate", "fresh:dispose"],
+            events);
+        var messages = ReadDapMessages(standardOutput);
+        Assert.True(Assert.Single(
+            messages,
+            message => message.TryGetProperty("request_seq", out var sequence) &&
+                       sequence.GetInt32() == 4).GetProperty("success").GetBoolean());
+        Assert.True(Assert.Single(
+            messages,
+            message => message.TryGetProperty("request_seq", out var sequence) &&
+                       sequence.GetInt32() == 3).GetProperty("success").GetBoolean());
+    }
+
+    [Fact]
+    public async Task RestartAcceptsExplicitSelectorsWithDifferentDeclarationCasing()
+    {
+        const string sessionId = "0123456789abcdef0123456789abcdef";
+        const string preparationId = "fedcba9876543210fedcba9876543210";
+        var oldSession = new RecordingRunningSession(
+            targetModuleName: "Module1",
+            targetProcedureName: "Run");
+        var freshSession = new RecordingRunningSession(
+            targetModuleName: "Module1",
+            targetProcedureName: "Run");
+        var launchService = new SequencedDebugLaunchService(
+            [oldSession, freshSession],
+            []);
+        var commandLine = VbaDebugAdapterCommandLine.Create(
+            new StandaloneVbaDebugAdapterStdioRunner(launchService),
+            new RecordingVbaDevCapabilitiesProbe(
+                new VbaDevCapabilitiesProbeResult(
+                    0,
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
+                    string.Empty)));
+        var initialLaunch = CreateValidLaunchArguments();
+        initialLaunch["module"] = "module1";
+        initialLaunch["procedure"] = "run";
+        initialLaunch["__vbaRestartPreparation"] = new
+        {
+            protocolVersion = 1,
+            id = preparationId,
+            generation = 0
+        };
+        var freshLaunch = CreateValidLaunchArguments();
+        freshLaunch["module"] = "module1";
+        freshLaunch["procedure"] = "run";
+        freshLaunch["__vbaRestartPreparation"] = new
+        {
+            protocolVersion = 1,
+            id = preparationId,
+            generation = 1
+        };
+        using var standardInput = CreateDapInput(
+            new { seq = 1, type = "request", command = "launch", arguments = initialLaunch },
+            new { seq = 2, type = "request", command = "configurationDone", arguments = new { } },
+            new { seq = 3, type = "request", command = "restart", arguments = new { } },
+            new
+            {
+                seq = 4,
+                type = "request",
+                command = "vba/restartPrepared",
+                arguments = new
+                {
+                    sessionId,
+                    restartRequestSequence = 3,
+                    preparationId,
+                    generation = 1,
+                    success = true,
+                    launch = freshLaunch
+                }
+            },
+            new { seq = 5, type = "request", command = "disconnect", arguments = new { } });
+        using var standardOutput = new MemoryStream();
+
+        var exitCode = await commandLine.InvokeAsync(
+            [
+                "--stdio",
+                "--vba-dev", Path.GetFullPath("vba-dev.exe"),
+                "--session", sessionId
+            ],
+            standardInput,
+            standardOutput,
+            Stream.Null,
+            CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(2, launchService.Invocations.Count);
+        Assert.Equal("Module1", launchService.Invocations[1].Request.ModuleName);
+        Assert.Equal("Run", launchService.Invocations[1].Request.ProcedureName);
+        var restartResponse = Assert.Single(
+            ReadDapMessages(standardOutput),
+            message => message.TryGetProperty("request_seq", out var sequence) &&
+                       sequence.GetInt32() == 3);
+        Assert.True(restartResponse.GetProperty("success").GetBoolean());
+    }
+
+    [Fact]
+    public async Task InvalidFreshSnapshotFailsOnlyRestartAndRetainsTheOwnedSession()
+    {
+        const string sessionId = "0123456789abcdef0123456789abcdef";
+        const string preparationId = "fedcba9876543210fedcba9876543210";
+        var runningSession = new RecordingRunningSession();
+        var validator = TransportedDebugSourceSnapshotValidator
+            .CreateForCurrentWindowsSession();
+        var launchService = new SequencedDebugLaunchService(
+            [runningSession],
+            [],
+            request => validator.Validate(request.SourceSnapshot));
+        var commandLine = VbaDebugAdapterCommandLine.Create(
+            new StandaloneVbaDebugAdapterStdioRunner(launchService),
+            new RecordingVbaDevCapabilitiesProbe(
+                new VbaDevCapabilitiesProbeResult(
+                    0,
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
+                    string.Empty)));
+        var initialLaunch = CreateValidLaunchArguments();
+        initialLaunch["__vbaRestartPreparation"] = new
+        {
+            protocolVersion = 1,
+            id = preparationId,
+            generation = 0
+        };
+        var invalidFreshLaunch = CreateValidLaunchArguments();
+        SetLaunchContent(invalidFreshLaunch, "not-base64");
+        invalidFreshLaunch["__vbaRestartPreparation"] = new
+        {
+            protocolVersion = 1,
+            id = preparationId,
+            generation = 1
+        };
+        using var inputPrefix = CreateDapInput(
+            new { seq = 1, type = "request", command = "launch", arguments = initialLaunch },
+            new { seq = 2, type = "request", command = "configurationDone", arguments = new { } },
+            new { seq = 3, type = "request", command = "restart", arguments = new { } },
+            new
+            {
+                seq = 4,
+                type = "request",
+                command = "vba/restartPrepared",
+                arguments = new
+                {
+                    sessionId,
+                    restartRequestSequence = 3,
+                    preparationId,
+                    generation = 1,
+                    success = true,
+                    launch = invalidFreshLaunch
+                }
+            });
+        using var standardInput = new BlockingTailStream(inputPrefix.ToArray());
+        using var standardOutput = new MemoryStream();
+        var invocation = commandLine.InvokeAsync(
+            [
+                "--stdio",
+                "--vba-dev", Path.GetFullPath("vba-dev.exe"),
+                "--session", sessionId
+            ],
+            standardInput,
+            standardOutput,
+            Stream.Null,
+            CancellationToken.None);
+
+        try
+        {
+            Assert.True(SpinWait.SpinUntil(
+                () => ReadUtf8(standardOutput).Contains(
+                    "\"request_seq\":4",
+                    StringComparison.Ordinal),
+                TimeSpan.FromSeconds(2)));
+            var messages = ReadDapMessages(standardOutput);
+            var preparationResponse = Assert.Single(
+                messages,
+                message => message.TryGetProperty("request_seq", out var sequence) &&
+                           sequence.GetInt32() == 4);
+            Assert.True(preparationResponse.GetProperty("success").GetBoolean());
+            var restartResponse = Assert.Single(
+                messages,
+                message => message.TryGetProperty("request_seq", out var sequence) &&
+                           sequence.GetInt32() == 3);
+            Assert.False(restartResponse.GetProperty("success").GetBoolean());
+            Assert.Contains(
+                "base64",
+                restartResponse.GetProperty("message").GetString(),
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Single(launchService.Invocations);
+            Assert.Equal(0, runningSession.TerminateCalls);
+            Assert.Equal(0, runningSession.DisposeCalls);
+        }
+        finally
+        {
+            standardInput.Complete();
+            _ = await invocation;
+        }
+    }
+
+    [Fact]
+    public async Task RestartPinsTheInitiallyResolvedModuleAndProcedure()
+    {
+        const string sessionId = "0123456789abcdef0123456789abcdef";
+        const string preparationId = "fedcba9876543210fedcba9876543210";
+        var oldSession = new RecordingRunningSession(
+            targetModuleName: "Module1",
+            targetProcedureName: "Run");
+        var freshSession = new RecordingRunningSession(
+            targetModuleName: "Module1",
+            targetProcedureName: "Run");
+        var launchService = new SequencedDebugLaunchService(
+            [oldSession, freshSession],
+            []);
+        var commandLine = VbaDebugAdapterCommandLine.Create(
+            new StandaloneVbaDebugAdapterStdioRunner(launchService),
+            new RecordingVbaDevCapabilitiesProbe(
+                new VbaDevCapabilitiesProbeResult(
+                    0,
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
+                    string.Empty)));
+        var initialLaunch = CreateValidLaunchArguments();
+        initialLaunch.Remove("module");
+        initialLaunch.Remove("procedure");
+        SetLaunchActiveSource(initialLaunch, line: 1);
+        initialLaunch["__vbaRestartPreparation"] = new
+        {
+            protocolVersion = 1,
+            id = preparationId,
+            generation = 0
+        };
+        var freshLaunch = CreateValidLaunchArguments();
+        freshLaunch.Remove("module");
+        freshLaunch.Remove("procedure");
+        SetLaunchActiveSource(freshLaunch, line: 20);
+        freshLaunch["__vbaRestartPreparation"] = new
+        {
+            protocolVersion = 1,
+            id = preparationId,
+            generation = 1
+        };
+        using var standardInput = CreateDapInput(
+            new { seq = 1, type = "request", command = "launch", arguments = initialLaunch },
+            new { seq = 2, type = "request", command = "configurationDone", arguments = new { } },
+            new { seq = 3, type = "request", command = "restart", arguments = new { } },
+            new
+            {
+                seq = 4,
+                type = "request",
+                command = "vba/restartPrepared",
+                arguments = new
+                {
+                    sessionId,
+                    restartRequestSequence = 3,
+                    preparationId,
+                    generation = 1,
+                    success = true,
+                    launch = freshLaunch
+                }
+            },
+            new { seq = 5, type = "request", command = "disconnect", arguments = new { } });
+
+        _ = await commandLine.InvokeAsync(
+            [
+                "--stdio",
+                "--vba-dev", Path.GetFullPath("vba-dev.exe"),
+                "--session", sessionId
+            ],
+            standardInput,
+            new MemoryStream(),
+            Stream.Null,
+            CancellationToken.None);
+
+        Assert.Equal(2, launchService.Invocations.Count);
+        Assert.Null(launchService.Invocations[0].Request.ModuleName);
+        Assert.Null(launchService.Invocations[0].Request.ProcedureName);
+        Assert.Equal("Module1", launchService.Invocations[1].Request.ModuleName);
+        Assert.Equal("Run", launchService.Invocations[1].Request.ProcedureName);
+    }
+
+    [Fact]
+    public async Task RestartRejectsANonMonotonicDapRequestSequence()
+    {
+        const string sessionId = "0123456789abcdef0123456789abcdef";
+        const string preparationId = "fedcba9876543210fedcba9876543210";
+        var runningSession = new RecordingRunningSession();
+        var launchService = new RecordingDebugLaunchService(runningSession);
+        var commandLine = VbaDebugAdapterCommandLine.Create(
+            new StandaloneVbaDebugAdapterStdioRunner(launchService),
+            new RecordingVbaDevCapabilitiesProbe(
+                new VbaDevCapabilitiesProbeResult(
+                    0,
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
+                    string.Empty)));
+        var launchArguments = CreateValidLaunchArguments();
+        launchArguments["__vbaRestartPreparation"] = new
+        {
+            protocolVersion = 1,
+            id = preparationId,
+            generation = 0
+        };
+        using var standardInput = CreateDapInput(
+            new { seq = 1, type = "request", command = "launch", arguments = launchArguments },
+            new { seq = 2, type = "request", command = "configurationDone", arguments = new { } },
+            new { seq = 10, type = "request", command = "restart", arguments = new { } },
+            new
+            {
+                seq = 11,
+                type = "request",
+                command = "vba/restartPrepared",
+                arguments = new
+                {
+                    sessionId,
+                    restartRequestSequence = 10,
+                    preparationId,
+                    generation = 1,
+                    success = false,
+                    message = "Synthetic first preparation failure."
+                }
+            },
+            new { seq = 9, type = "request", command = "restart", arguments = new { } },
+            new { seq = 12, type = "request", command = "disconnect", arguments = new { } });
+        using var standardOutput = new MemoryStream();
+
+        _ = await commandLine.InvokeAsync(
+            [
+                "--stdio",
+                "--vba-dev", Path.GetFullPath("vba-dev.exe"),
+                "--session", sessionId
+            ],
+            standardInput,
+            standardOutput,
+            Stream.Null,
+            CancellationToken.None);
+
+        var response = Assert.Single(
+            ReadDapMessages(standardOutput),
+            message => message.TryGetProperty("request_seq", out var sequence) &&
+                       sequence.GetInt32() == 9);
+        Assert.False(response.GetProperty("success").GetBoolean());
+        Assert.Contains(
+            "sequence",
+            response.GetProperty("message").GetString(),
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Single(launchService.Invocations);
+        Assert.Equal(1, runningSession.TerminateCalls);
+    }
+
+    [Fact]
+    public async Task OwnedSessionExitFailsAPendingRestartBeforeTermination()
+    {
+        const string sessionId = "0123456789abcdef0123456789abcdef";
+        const string preparationId = "fedcba9876543210fedcba9876543210";
+        var completion = new TaskCompletionSource<int>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var runningSession = new RecordingRunningSession(
+            processId: 2718,
+            completion: completion.Task);
+        var launchService = new RecordingDebugLaunchService(runningSession);
+        var commandLine = VbaDebugAdapterCommandLine.Create(
+            new StandaloneVbaDebugAdapterStdioRunner(launchService),
+            new RecordingVbaDevCapabilitiesProbe(
+                new VbaDevCapabilitiesProbeResult(
+                    0,
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
+                    string.Empty)));
+        var launchArguments = CreateValidLaunchArguments();
+        launchArguments["__vbaRestartPreparation"] = new
+        {
+            protocolVersion = 1,
+            id = preparationId,
+            generation = 0
+        };
+        using var inputPrefix = CreateDapInput(
+            new { seq = 1, type = "request", command = "launch", arguments = launchArguments },
+            new { seq = 2, type = "request", command = "configurationDone", arguments = new { } },
+            new { seq = 3, type = "request", command = "restart", arguments = new { } });
+        using var standardInput = new BlockingTailStream(inputPrefix.ToArray());
+        using var standardOutput = new MemoryStream();
+        var invocation = commandLine.InvokeAsync(
+            [
+                "--stdio",
+                "--vba-dev", Path.GetFullPath("vba-dev.exe"),
+                "--session", sessionId
+            ],
+            standardInput,
+            standardOutput,
+            Stream.Null,
+            CancellationToken.None);
+
+        try
+        {
+            Assert.True(SpinWait.SpinUntil(
+                () => ReadUtf8(standardOutput).Contains(
+                    "\"request_seq\":1",
+                    StringComparison.Ordinal),
+                TimeSpan.FromSeconds(2)));
+            completion.TrySetResult(23);
+            Assert.Equal(0, await invocation.WaitAsync(TimeSpan.FromSeconds(2)));
+
+            var messages = ReadDapMessages(standardOutput);
+            var restartResponse = Assert.Single(
+                messages,
+                message => message.TryGetProperty("request_seq", out var sequence) &&
+                           sequence.GetInt32() == 3);
+            Assert.False(restartResponse.GetProperty("success").GetBoolean());
+            Assert.Contains(
+                "exited",
+                restartResponse.GetProperty("message").GetString(),
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(
+                ["output", "exited", "terminated"],
+                messages
+                    .Where(message => message.TryGetProperty("event", out var eventName) &&
+                                      eventName.GetString() is "output" or "exited" or "terminated")
+                    .Select(message => message.GetProperty("event").GetString()));
+            Assert.Equal(0, runningSession.TerminateCalls);
+            Assert.Equal(1, runningSession.DisposeCalls);
+        }
+        finally
+        {
+            standardInput.Complete();
+            if (!invocation.IsCompleted)
+            {
+                _ = await invocation;
+            }
+        }
+    }
+
+    [Fact]
+    public async Task OwnedSessionExitDuringFreshValidationCannotResurrectAWorkbook()
+    {
+        const string sessionId = "0123456789abcdef0123456789abcdef";
+        const string preparationId = "fedcba9876543210fedcba9876543210";
+        var completion = new TaskCompletionSource<int>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var oldSession = new RecordingRunningSession(completion: completion.Task);
+        var freshSession = new RecordingRunningSession();
+        var launchService = new SequencedDebugLaunchService(
+            [oldSession, freshSession],
+            [],
+            request =>
+            {
+                if (request.RestartPreparation?.Generation == 1)
+                {
+                    completion.TrySetResult(23);
+                }
+            });
+        var commandLine = VbaDebugAdapterCommandLine.Create(
+            new StandaloneVbaDebugAdapterStdioRunner(launchService),
+            new RecordingVbaDevCapabilitiesProbe(
+                new VbaDevCapabilitiesProbeResult(
+                    0,
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
+                    string.Empty)));
+        var initialLaunch = CreateValidLaunchArguments();
+        initialLaunch["__vbaRestartPreparation"] = new
+        {
+            protocolVersion = 1,
+            id = preparationId,
+            generation = 0
+        };
+        var freshLaunch = CreateValidLaunchArguments();
+        freshLaunch["__vbaRestartPreparation"] = new
+        {
+            protocolVersion = 1,
+            id = preparationId,
+            generation = 1
+        };
+        using var inputPrefix = CreateDapInput(
+            new { seq = 1, type = "request", command = "launch", arguments = initialLaunch },
+            new { seq = 2, type = "request", command = "configurationDone", arguments = new { } },
+            new { seq = 3, type = "request", command = "restart", arguments = new { } },
+            new
+            {
+                seq = 4,
+                type = "request",
+                command = "vba/restartPrepared",
+                arguments = new
+                {
+                    sessionId,
+                    restartRequestSequence = 3,
+                    preparationId,
+                    generation = 1,
+                    success = true,
+                    launch = freshLaunch
+                }
+            });
+        using var standardInput = new BlockingTailStream(inputPrefix.ToArray());
+        using var standardOutput = new MemoryStream();
+        var invocation = commandLine.InvokeAsync(
+            [
+                "--stdio",
+                "--vba-dev", Path.GetFullPath("vba-dev.exe"),
+                "--session", sessionId
+            ],
+            standardInput,
+            standardOutput,
+            Stream.Null,
+            CancellationToken.None);
+
+        try
+        {
+            Assert.True(SpinWait.SpinUntil(
+                () => ReadUtf8(standardOutput).Contains(
+                    "\"request_seq\":4",
+                    StringComparison.Ordinal),
+                TimeSpan.FromSeconds(2)));
+            var messages = ReadDapMessages(standardOutput);
+            Assert.True(Assert.Single(
+                messages,
+                message => message.TryGetProperty("request_seq", out var sequence) &&
+                           sequence.GetInt32() == 4).GetProperty("success").GetBoolean());
+            var restartResponse = Assert.Single(
+                messages,
+                message => message.TryGetProperty("request_seq", out var sequence) &&
+                           sequence.GetInt32() == 3);
+            Assert.False(restartResponse.GetProperty("success").GetBoolean());
+            Assert.Contains(
+                "exited",
+                restartResponse.GetProperty("message").GetString(),
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Single(launchService.Invocations);
+        }
+        finally
+        {
+            standardInput.Complete();
+            _ = await invocation;
+        }
+    }
+
+    [Fact]
+    public async Task OwnedSessionExitWhileAcknowledgingFreshPreparationCannotResurrectAWorkbook()
+    {
+        const string sessionId = "0123456789abcdef0123456789abcdef";
+        const string preparationId = "fedcba9876543210fedcba9876543210";
+        var completion = new TaskCompletionSource<int>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var oldSession = new RecordingRunningSession(completion: completion.Task);
+        var freshSession = new RecordingRunningSession();
+        var launchService = new SequencedDebugLaunchService(
+            [oldSession, freshSession],
+            []);
+        var commandLine = VbaDebugAdapterCommandLine.Create(
+            new StandaloneVbaDebugAdapterStdioRunner(launchService),
+            new RecordingVbaDevCapabilitiesProbe(
+                new VbaDevCapabilitiesProbeResult(
+                    0,
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
+                    string.Empty)));
+        var initialLaunch = CreateValidLaunchArguments();
+        initialLaunch["__vbaRestartPreparation"] = new
+        {
+            protocolVersion = 1,
+            id = preparationId,
+            generation = 0
+        };
+        var freshLaunch = CreateValidLaunchArguments();
+        freshLaunch["__vbaRestartPreparation"] = new
+        {
+            protocolVersion = 1,
+            id = preparationId,
+            generation = 1
+        };
+        using var inputPrefix = CreateDapInput(
+            new { seq = 1, type = "request", command = "launch", arguments = initialLaunch },
+            new { seq = 2, type = "request", command = "configurationDone", arguments = new { } },
+            new { seq = 3, type = "request", command = "restart", arguments = new { } },
+            new
+            {
+                seq = 4,
+                type = "request",
+                command = "vba/restartPrepared",
+                arguments = new
+                {
+                    sessionId,
+                    restartRequestSequence = 3,
+                    preparationId,
+                    generation = 1,
+                    success = true,
+                    launch = freshLaunch
+                }
+            });
+        using var standardInput = new BlockingTailStream(inputPrefix.ToArray());
+        using var standardOutput = new GatedDapResponseStream(requestSequence: 4);
+        var invocation = commandLine.InvokeAsync(
+            [
+                "--stdio",
+                "--vba-dev", Path.GetFullPath("vba-dev.exe"),
+                "--session", sessionId
+            ],
+            standardInput,
+            standardOutput,
+            Stream.Null,
+            CancellationToken.None);
+
+        try
+        {
+            await standardOutput.ResponseWriteStarted.WaitAsync(TimeSpan.FromSeconds(2));
+            completion.TrySetResult(23);
+            standardOutput.ReleaseResponseWrite();
+            Assert.True(SpinWait.SpinUntil(
+                () => ReadUtf8(standardOutput).Contains(
+                    "\"request_seq\":3",
+                    StringComparison.Ordinal),
+                TimeSpan.FromSeconds(2)));
+
+            var messages = ReadDapMessages(standardOutput);
+            Assert.True(Assert.Single(
+                messages,
+                message => message.TryGetProperty("request_seq", out var sequence) &&
+                           sequence.GetInt32() == 4).GetProperty("success").GetBoolean());
+            var restartResponse = Assert.Single(
+                messages,
+                message => message.TryGetProperty("request_seq", out var sequence) &&
+                           sequence.GetInt32() == 3);
+            Assert.False(restartResponse.GetProperty("success").GetBoolean());
+            Assert.Contains(
+                "exited",
+                restartResponse.GetProperty("message").GetString(),
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Single(launchService.Invocations);
+        }
+        finally
+        {
+            standardOutput.ReleaseResponseWrite();
+            standardInput.Complete();
+            _ = await invocation;
+        }
     }
 
     [Fact]
@@ -589,8 +1886,10 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         Assert.Equal(1, runningSession.DisposeCalls);
     }
 
-    [Fact]
-    public async Task StandaloneDisconnectTerminatesTheOwnedDebugSession()
+    [Theory]
+    [InlineData("disconnect")]
+    [InlineData("terminate")]
+    public async Task StandaloneStopRequestTerminatesTheOwnedDebugSession(string stopCommand)
     {
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
@@ -635,7 +1934,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 }
             },
             new { seq = 2, type = "request", command = "configurationDone", arguments = new { } },
-            new { seq = 3, type = "request", command = "disconnect", arguments = new { } });
+            new { seq = 3, type = "request", command = stopCommand, arguments = new { } });
         using var standardOutput = new MemoryStream();
         using var standardError = new MemoryStream();
 
@@ -653,15 +1952,17 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         Assert.Equal(0, exitCode);
         Assert.Equal(1, runningSession.TerminateCalls);
         Assert.Equal(1, runningSession.DisposeCalls);
-        var disconnectResponse = Assert.Single(
+        var stopResponse = Assert.Single(
             ReadDapMessages(standardOutput),
             message => message.TryGetProperty("request_seq", out var sequence) &&
                        sequence.GetInt32() == 3);
-        Assert.True(disconnectResponse.GetProperty("success").GetBoolean());
+        Assert.True(stopResponse.GetProperty("success").GetBoolean());
     }
 
-    [Fact]
-    public async Task DisconnectCancelsAnInFlightStandaloneLaunch()
+    [Theory]
+    [InlineData("disconnect")]
+    [InlineData("terminate")]
+    public async Task StandaloneStopRequestCancelsAnInFlightLaunch(string stopCommand)
     {
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
@@ -704,7 +2005,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 }
             },
             new { seq = 2, type = "request", command = "configurationDone", arguments = new { } },
-            new { seq = 3, type = "request", command = "disconnect", arguments = new { } });
+            new { seq = 3, type = "request", command = stopCommand, arguments = new { } });
         using var standardOutput = new MemoryStream();
         using var standardError = new MemoryStream();
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
@@ -740,11 +2041,11 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             "cancelled",
             cancellationOutput.GetProperty("body").GetProperty("output").GetString(),
             StringComparison.OrdinalIgnoreCase);
-        var disconnectResponse = Assert.Single(
+        var stopResponse = Assert.Single(
             messages,
             message => message.TryGetProperty("request_seq", out var sequence) &&
                        sequence.GetInt32() == 3);
-        Assert.True(disconnectResponse.GetProperty("success").GetBoolean());
+        Assert.True(stopResponse.GetProperty("success").GetBoolean());
     }
 
     [Fact]
@@ -1565,6 +2866,8 @@ public sealed class VbaDebugAdapterCliSurfaceTests
     {
         public List<(string VbaDevPath, string SessionId)> Invocations { get; } = [];
 
+        public Action<string>? OnRun { get; init; }
+
         public Task<int> RunAsync(
             string vbaDevPath,
             string sessionId,
@@ -1574,8 +2877,81 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             CancellationToken cancellationToken)
         {
             Invocations.Add((vbaDevPath, sessionId));
+            OnRun?.Invoke(sessionId);
             return Task.FromResult(0);
         }
+    }
+
+    private sealed class RecordingCapabilitiesProcess(VbaDevBuildProcessResult result)
+        : IVbaDevBuildProcess
+    {
+        public List<(string FileName, IReadOnlyList<string> Arguments)> Invocations { get; } = [];
+
+        public Task<VbaDevBuildProcessResult> RunAsync(
+            string fileName,
+            IReadOnlyList<string> arguments,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Invocations.Add((fileName, arguments));
+            return Task.FromResult(result);
+        }
+    }
+
+    private sealed class RecordingSessionWorkspaceManager
+        : IVbaDebugSessionWorkspaceManager
+    {
+        public List<string> CleanupInvocations { get; } = [];
+
+        public ValueTask<IVbaDebugSessionWorkspaceLease> ClaimAsync(
+            string sessionId,
+            CancellationToken cancellationToken)
+            => throw new InvalidOperationException("A cleanup test must not claim a session.");
+
+        public ValueTask<VbaDebugSessionCleanupResult> CleanupAsync(
+            string sessionId,
+            CancellationToken cancellationToken)
+        {
+            CleanupInvocations.Add(sessionId);
+            return ValueTask.FromResult(new VbaDebugSessionCleanupResult(
+                Succeeded: true,
+                RetainedPath: null,
+                Message: null));
+        }
+
+        public ValueTask<IReadOnlyList<VbaDebugSessionCleanupResult>> ReapStaleAsync(
+            string excludedSessionId,
+            CancellationToken cancellationToken)
+            => ValueTask.FromResult<IReadOnlyList<VbaDebugSessionCleanupResult>>([]);
+    }
+
+    private sealed class FailingDisposeSessionWorkspaceManager(string retainedPath)
+        : IVbaDebugSessionWorkspaceManager
+    {
+        public ValueTask<IVbaDebugSessionWorkspaceLease> ClaimAsync(
+            string sessionId,
+            CancellationToken cancellationToken)
+            => ValueTask.FromResult<IVbaDebugSessionWorkspaceLease>(
+                new FailingDisposeSessionWorkspaceLease(retainedPath));
+
+        public ValueTask<VbaDebugSessionCleanupResult> CleanupAsync(
+            string sessionId,
+            CancellationToken cancellationToken)
+            => throw new InvalidOperationException("The stdio test must not invoke cleanup.");
+
+        public ValueTask<IReadOnlyList<VbaDebugSessionCleanupResult>> ReapStaleAsync(
+            string excludedSessionId,
+            CancellationToken cancellationToken)
+            => ValueTask.FromResult<IReadOnlyList<VbaDebugSessionCleanupResult>>([]);
+    }
+
+    private sealed class FailingDisposeSessionWorkspaceLease(string retainedPath)
+        : IVbaDebugSessionWorkspaceLease
+    {
+        public string SessionWorkspacePath { get; } = retainedPath;
+
+        public ValueTask DisposeAsync()
+            => ValueTask.FromException(new IOException("Synthetic lease cleanup failure."));
     }
 
     private static string ReadUtf8(MemoryStream stream)
@@ -1651,6 +3027,30 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 }
             }
         };
+
+    private static void SetLaunchContent(
+        Dictionary<string, object?> launchArguments,
+        string contentBase64)
+    {
+        var snapshot = Assert.IsType<Dictionary<string, object?>>(
+            launchArguments["sourceSnapshot"]);
+        var sources = Assert.IsType<Dictionary<string, object?>[]>(snapshot["sources"]);
+        Assert.Single(sources)["contentBase64"] = contentBase64;
+    }
+
+    private static void SetLaunchActiveSource(
+        Dictionary<string, object?> launchArguments,
+        int line)
+    {
+        var snapshot = Assert.IsType<Dictionary<string, object?>>(
+            launchArguments["sourceSnapshot"]);
+        snapshot["activeSource"] = new
+        {
+            sourceUri = "file:///C:/persistent/Module1.bas",
+            line,
+            character = 4
+        };
+    }
 
     private static async Task AssertLaunchArgumentsRejectedAsync(
         Dictionary<string, object?> arguments,
@@ -1746,6 +3146,35 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         }
     }
 
+    private sealed class SequencedDebugLaunchService(
+        IEnumerable<IStandaloneVbaDebugRunningSession> sessions,
+        List<string> events,
+        Action<StandaloneVbaDebugLaunchRequest>? validate = null)
+        : IStandaloneVbaDebugLaunchService
+    {
+        private readonly Queue<IStandaloneVbaDebugRunningSession> sessions = new(sessions);
+
+        public List<(
+            string VbaDevPath,
+            string SessionId,
+            StandaloneVbaDebugLaunchRequest Request)> Invocations { get; } = [];
+
+        public Task<IStandaloneVbaDebugRunningSession> LaunchAsync(
+            string vbaDevPath,
+            string sessionId,
+            StandaloneVbaDebugLaunchRequest request,
+            CancellationToken cancellationToken,
+            IDebugLifecycleSink? lifecycleSink = null)
+        {
+            Invocations.Add((vbaDevPath, sessionId, request));
+            events.Add($"launch:{Invocations.Count}");
+            return Task.FromResult(sessions.Dequeue());
+        }
+
+        public void ValidateForLaunch(StandaloneVbaDebugLaunchRequest request)
+            => validate?.Invoke(request);
+    }
+
     private sealed class CancellationAwareDebugLaunchService : IStandaloneVbaDebugLaunchService
     {
         public TaskCompletionSource CancellationObserved { get; } =
@@ -1786,7 +3215,11 @@ public sealed class VbaDebugAdapterCliSurfaceTests
     private sealed class RecordingRunningSession(
         IReadOnlyList<VbeBreakpoint>? verifiedBreakpoints = null,
         int processId = 2718,
-        Task<int>? completion = null) : IStandaloneVbaDebugRunningSession
+        Task<int>? completion = null,
+        List<string>? events = null,
+        string label = "session",
+        string targetModuleName = "Module1",
+        string targetProcedureName = "Run") : IStandaloneVbaDebugRunningSession
     {
         public int ProcessId { get; } = processId;
 
@@ -1800,15 +3233,21 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         public IReadOnlyList<VbeBreakpoint> VerifiedBreakpoints { get; } =
             verifiedBreakpoints ?? [];
 
+        public string TargetModuleName { get; } = targetModuleName;
+
+        public string TargetProcedureName { get; } = targetProcedureName;
+
         public ValueTask TerminateAsync()
         {
             TerminateCalls++;
+            events?.Add($"{label}:terminate");
             return ValueTask.CompletedTask;
         }
 
         public ValueTask DisposeAsync()
         {
             DisposeCalls++;
+            events?.Add($"{label}:dispose");
             return ValueTask.CompletedTask;
         }
     }
@@ -1827,6 +3266,35 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             }
 
             return base.WriteAsync(buffer, cancellationToken);
+        }
+    }
+
+    private sealed class GatedDapResponseStream(int requestSequence) : MemoryStream
+    {
+        private readonly TaskCompletionSource responseWriteStarted = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource releaseResponseWrite = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int gated;
+
+        public Task ResponseWriteStarted => responseWriteStarted.Task;
+
+        public void ReleaseResponseWrite() => releaseResponseWrite.TrySetResult();
+
+        public override async ValueTask WriteAsync(
+            ReadOnlyMemory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            if (Encoding.UTF8.GetString(buffer.Span).Contains(
+                    $"\"request_seq\":{requestSequence}",
+                    StringComparison.Ordinal) &&
+                Interlocked.Exchange(ref gated, 1) == 0)
+            {
+                responseWriteStarted.TrySetResult();
+                await releaseResponseWrite.Task.WaitAsync(cancellationToken);
+            }
+
+            await base.WriteAsync(buffer, cancellationToken);
         }
     }
 

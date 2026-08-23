@@ -12,6 +12,8 @@ internal static class WindowsJobProcessLauncher
     private const uint CreateSuspended = 0x00000004;
     private const uint ExtendedStartupInfoPresent = 0x00080000;
     private const uint StartfUseShowWindow = 0x00000001;
+    private const uint StartfUseStdHandles = 0x00000100;
+    private const uint HandleFlagInherit = 0x00000001;
     private const ushort ShowWindowHidden = 0;
     private const uint WaitObject0 = 0x00000000;
     private const uint WaitTimeout = 0x00000102;
@@ -22,7 +24,8 @@ internal static class WindowsJobProcessLauncher
         SafeFileHandle jobHandle,
         string applicationPath,
         IReadOnlyList<string> arguments,
-        Action terminateJob)
+        Action terminateJob,
+        bool redirectOutput = false)
     {
         ArgumentNullException.ThrowIfNull(jobHandle);
         ArgumentException.ThrowIfNullOrWhiteSpace(applicationPath);
@@ -40,6 +43,14 @@ internal static class WindowsJobProcessLauncher
         var jobHandleReferenceAdded = false;
         SafeFileHandle? createdProcessHandle = null;
         SafeFileHandle? createdThreadHandle = null;
+        SafeFileHandle? standardInputRead = null;
+        SafeFileHandle? standardInputWrite = null;
+        SafeFileHandle? standardOutputRead = null;
+        SafeFileHandle? standardOutputWrite = null;
+        SafeFileHandle? standardErrorRead = null;
+        SafeFileHandle? standardErrorWrite = null;
+        StreamReader? standardOutput = null;
+        StreamReader? standardError = null;
         Process? process = null;
         var processCreated = false;
         try
@@ -50,9 +61,23 @@ internal static class WindowsJobProcessLauncher
                 throw new ArgumentException("The Job Object handle is invalid.", nameof(jobHandle));
             }
 
+            if (redirectOutput)
+            {
+                CreateRedirectedHandles(
+                    out standardInputRead,
+                    out standardInputWrite,
+                    out standardOutputRead,
+                    out standardOutputWrite,
+                    out standardErrorRead,
+                    out standardErrorWrite);
+            }
             jobHandle.DangerousAddRef(ref jobHandleReferenceAdded);
             var startupInfo = CreateStartupInfo(
                 jobHandle,
+                redirectOutput,
+                standardInputRead?.DangerousGetHandle() ?? nint.Zero,
+                standardOutputWrite?.DangerousGetHandle() ?? nint.Zero,
+                standardErrorWrite?.DangerousGetHandle() ?? nint.Zero,
                 out attributeList,
                 out jobHandleValue,
                 out attributeListInitialized);
@@ -62,7 +87,7 @@ internal static class WindowsJobProcessLauncher
                 commandLine,
                 nint.Zero,
                 nint.Zero,
-                inheritHandles: false,
+                inheritHandles: redirectOutput,
                 CreateSuspended | ExtendedStartupInfoPresent,
                 nint.Zero,
                 Path.GetDirectoryName(applicationPath),
@@ -73,6 +98,14 @@ internal static class WindowsJobProcessLauncher
             }
 
             processCreated = true;
+            standardInputRead?.Dispose();
+            standardInputRead = null;
+            standardInputWrite?.Dispose();
+            standardInputWrite = null;
+            standardOutputWrite?.Dispose();
+            standardOutputWrite = null;
+            standardErrorWrite?.Dispose();
+            standardErrorWrite = null;
             createdProcessHandle = new SafeFileHandle(
                 processInformation.ProcessHandle,
                 ownsHandle: true);
@@ -95,9 +128,23 @@ internal static class WindowsJobProcessLauncher
             process = null;
             var primaryThread = new WindowsSuspendedPrimaryThread(createdThreadHandle);
             createdThreadHandle = null;
+            if (redirectOutput)
+            {
+                standardOutput = CreateReader(standardOutputRead!);
+                standardOutputRead = null;
+                standardError = CreateReader(standardErrorRead!);
+                standardErrorRead = null;
+            }
             createdProcessHandle.Dispose();
             createdProcessHandle = null;
-            return new DebugSuspendedProcessLaunch(ownedProcess, primaryThread);
+            var result = new DebugSuspendedProcessLaunch(
+                ownedProcess,
+                primaryThread,
+                standardOutput,
+                standardError);
+            standardOutput = null;
+            standardError = null;
+            return result;
         }
         catch (Exception launchException)
         {
@@ -140,6 +187,8 @@ internal static class WindowsJobProcessLauncher
             }
 
             process?.Dispose();
+            standardOutput?.Dispose();
+            standardError?.Dispose();
             createdThreadHandle?.Dispose();
             createdProcessHandle?.Dispose();
             if (cleanupException is not null)
@@ -172,11 +221,21 @@ internal static class WindowsJobProcessLauncher
             {
                 jobHandle.DangerousRelease();
             }
+            standardInputRead?.Dispose();
+            standardInputWrite?.Dispose();
+            standardOutputRead?.Dispose();
+            standardOutputWrite?.Dispose();
+            standardErrorRead?.Dispose();
+            standardErrorWrite?.Dispose();
         }
     }
 
     private static StartupInfoEx CreateStartupInfo(
         SafeFileHandle jobHandle,
+        bool redirectOutput,
+        nint standardInput,
+        nint standardOutput,
+        nint standardError,
         out nint attributeList,
         out nint jobHandleValue,
         out bool attributeListInitialized)
@@ -226,12 +285,96 @@ internal static class WindowsJobProcessLauncher
             StartupInfo = new StartupInfo
             {
                 Size = (uint)Marshal.SizeOf<StartupInfoEx>(),
-                Flags = StartfUseShowWindow,
-                ShowWindow = ShowWindowHidden
+                Flags = StartfUseShowWindow |
+                    (redirectOutput ? StartfUseStdHandles : 0u),
+                ShowWindow = ShowWindowHidden,
+                StandardInput = standardInput,
+                StandardOutput = standardOutput,
+                StandardError = standardError
             },
             AttributeList = attributeList
         };
     }
+
+    private static void CreateRedirectedHandles(
+        out SafeFileHandle standardInputRead,
+        out SafeFileHandle standardInputWrite,
+        out SafeFileHandle standardOutputRead,
+        out SafeFileHandle standardOutputWrite,
+        out SafeFileHandle standardErrorRead,
+        out SafeFileHandle standardErrorWrite)
+    {
+        var securityAttributes = new SecurityAttributes
+        {
+            Length = (uint)Marshal.SizeOf<SecurityAttributes>(),
+            InheritHandle = true
+        };
+        CreatePipePair(
+            ref securityAttributes,
+            parentReads: false,
+            out standardInputRead,
+            out standardInputWrite);
+        try
+        {
+            CreatePipePair(
+                ref securityAttributes,
+                parentReads: true,
+                out standardOutputRead,
+                out standardOutputWrite);
+        }
+        catch
+        {
+            standardInputRead.Dispose();
+            standardInputWrite.Dispose();
+            throw;
+        }
+        try
+        {
+            CreatePipePair(
+                ref securityAttributes,
+                parentReads: true,
+                out standardErrorRead,
+                out standardErrorWrite);
+        }
+        catch
+        {
+            standardInputRead.Dispose();
+            standardInputWrite.Dispose();
+            standardOutputRead.Dispose();
+            standardOutputWrite.Dispose();
+            throw;
+        }
+    }
+
+    private static void CreatePipePair(
+        ref SecurityAttributes securityAttributes,
+        bool parentReads,
+        out SafeFileHandle readHandle,
+        out SafeFileHandle writeHandle)
+    {
+        if (!CreatePipe(
+                out readHandle,
+                out writeHandle,
+                ref securityAttributes,
+                size: 0))
+        {
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+        var parentHandle = parentReads ? readHandle : writeHandle;
+        if (!SetHandleInformation(parentHandle, HandleFlagInherit, flags: 0))
+        {
+            var error = new Win32Exception(Marshal.GetLastWin32Error());
+            readHandle.Dispose();
+            writeHandle.Dispose();
+            throw error;
+        }
+    }
+
+    private static StreamReader CreateReader(SafeFileHandle readHandle)
+        => new(
+            new FileStream(readHandle, FileAccess.Read),
+            Encoding.UTF8,
+            detectEncodingFromByteOrderMarks: true);
 
     private static string BuildCommandLine(
         string applicationPath,
@@ -354,6 +497,16 @@ internal static class WindowsJobProcessLauncher
         public uint ThreadId;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SecurityAttributes
+    {
+        public uint Length;
+        public nint SecurityDescriptor;
+
+        [MarshalAs(UnmanagedType.Bool)]
+        public bool InheritHandle;
+    }
+
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool InitializeProcThreadAttributeList(
@@ -414,4 +567,19 @@ internal static class WindowsJobProcessLauncher
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern uint ResumeThread(SafeFileHandle thread);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CreatePipe(
+        out SafeFileHandle readPipe,
+        out SafeFileHandle writePipe,
+        ref SecurityAttributes pipeAttributes,
+        uint size);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetHandleInformation(
+        SafeFileHandle handle,
+        uint mask,
+        uint flags);
 }

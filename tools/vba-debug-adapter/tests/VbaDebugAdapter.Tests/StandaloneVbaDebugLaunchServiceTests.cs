@@ -2,6 +2,7 @@ using System.Text;
 using VbaDebugAdapter.Build;
 using VbaDebugAdapter.Cli;
 using VbaDebugAdapter.Debugging;
+using VbaDebugAdapter.Infrastructure;
 using Xunit;
 
 namespace VbaDebugAdapter.Tests;
@@ -15,7 +16,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
             Path.GetTempPath(),
             "vba-debug-adapter-launch-tests",
             Guid.NewGuid().ToString("N"));
-        var sessionWorkspace = Path.Combine(root, "workspaces", "session");
+        var sessionWorkspace = CreateGenerationWorkspacePath(root);
         var workbookPath = Path.Combine(sessionWorkspace, "output", "Book1.xlsm");
         Directory.CreateDirectory(Path.GetDirectoryName(workbookPath)!);
         await File.WriteAllBytesAsync(workbookPath, [0x50, 0x4b]);
@@ -83,13 +84,80 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
     }
 
     [Fact]
+    public async Task LaunchRetainsGenerationOwnershipUntilTheRunningSessionIsDisposed()
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "vba-debug-adapter-launch-tests",
+            Guid.NewGuid().ToString("N"));
+        var generationWorkspace = CreateGenerationWorkspacePath(root);
+        var workbookPath = Path.Combine(generationWorkspace, "output", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(workbookPath)!);
+        await File.WriteAllBytesAsync(workbookPath, [0x50, 0x4b]);
+        var ownership = new RecordingWorkspaceOwnership();
+        var buildResult = new VbaDevSnapshotBuildResult(
+            Path.Combine(generationWorkspace, "source"),
+            workbookPath,
+            generationWorkspace)
+        {
+            WorkspaceOwnership = ownership
+        };
+        var events = new List<string>();
+        var service = new StandaloneVbaDebugLaunchService(
+            new TransportedDebugSourceSnapshotValidator(932),
+            new RecordingWorkbookBuilder(events, buildResult),
+            new RecordingVbeDebugSessionFactory(
+                events,
+                new RecordingVbeDebugSession(events)));
+
+        try
+        {
+            var runningSession = await service.LaunchAsync(
+                Path.GetFullPath("vba-dev.exe"),
+                "0123456789abcdef0123456789abcdef",
+                new StandaloneVbaDebugLaunchRequest(
+                    Path.GetFullPath("project"),
+                    "Book1",
+                    "Book1.xlsm",
+                    "Module1",
+                    "Run",
+                    new TransportedDebugSourceSnapshot(
+                        1,
+                        [
+                            new TransportedDebugSource(
+                                "Module1.bas",
+                                "file:///C:/persistent/Module1.bas",
+                                "utf8",
+                                Convert.ToBase64String(Encoding.UTF8.GetBytes(
+                                    "Attribute VB_Name = \"Module1\"\r\n" +
+                                    "Public Sub Run()\r\nEnd Sub\r\n")))
+                        ])),
+                CancellationToken.None);
+
+            Assert.False(ownership.Disposed);
+
+            await runningSession.DisposeAsync();
+
+            Assert.True(ownership.Disposed);
+        }
+        finally
+        {
+            await buildResult.DisposeAsync();
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public async Task LaunchAcceptsTheClientRawUtf16OrdinalPathOrder()
     {
         var root = Path.Combine(
             Path.GetTempPath(),
             "vba-debug-adapter-launch-tests",
             Guid.NewGuid().ToString("N"));
-        var sessionWorkspace = Path.Combine(root, "workspaces", "session");
+        var sessionWorkspace = CreateGenerationWorkspacePath(root);
         var workbookPath = Path.Combine(sessionWorkspace, "output", "Book1.xlsm");
         Directory.CreateDirectory(Path.GetDirectoryName(workbookPath)!);
         await File.WriteAllBytesAsync(workbookPath, [0x50, 0x4b]);
@@ -203,7 +271,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
             Path.GetTempPath(),
             "vba-debug-adapter-launch-tests",
             Guid.NewGuid().ToString("N"));
-        var sessionWorkspace = Path.Combine(root, "workspaces", "session");
+        var sessionWorkspace = CreateGenerationWorkspacePath(root);
         var workbookPath = Path.Combine(sessionWorkspace, "output", "Book1.xlsm");
         Directory.CreateDirectory(Path.GetDirectoryName(workbookPath)!);
         await File.WriteAllBytesAsync(workbookPath, [0x50, 0x4b]);
@@ -268,7 +336,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
             Path.GetTempPath(),
             "vba-debug-adapter-launch-tests",
             Guid.NewGuid().ToString("N"));
-        var sessionWorkspace = Path.Combine(root, "workspaces", "session");
+        var sessionWorkspace = CreateGenerationWorkspacePath(root);
         var workbookPath = Path.Combine(sessionWorkspace, "output", "Book1.xlsm");
         Directory.CreateDirectory(Path.GetDirectoryName(workbookPath)!);
         await File.WriteAllBytesAsync(workbookPath, [0x50, 0x4b]);
@@ -340,7 +408,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
             Path.GetTempPath(),
             "vba-debug-adapter-launch-tests",
             Guid.NewGuid().ToString("N"));
-        var sessionWorkspace = Path.Combine(root, "workspaces", "session");
+        var sessionWorkspace = CreateGenerationWorkspacePath(root);
         var workbookPath = Path.Combine(sessionWorkspace, "output", "Book1.xlsm");
         Directory.CreateDirectory(Path.GetDirectoryName(workbookPath)!);
         await File.WriteAllBytesAsync(workbookPath, [0x50, 0x4b]);
@@ -408,7 +476,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
             Path.GetTempPath(),
             "vba-debug-adapter-launch-tests",
             Guid.NewGuid().ToString("N"));
-        var sessionWorkspace = Path.Combine(root, "workspaces", "session");
+        var sessionWorkspace = CreateGenerationWorkspacePath(root);
         var workbookPath = Path.Combine(sessionWorkspace, "output", "Book1.xlsm");
         Directory.CreateDirectory(Path.GetDirectoryName(workbookPath)!);
         await File.WriteAllBytesAsync(workbookPath, [0x50, 0x4b]);
@@ -480,6 +548,14 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
         }
     }
 
+    private static string CreateGenerationWorkspacePath(string root)
+        => Path.Combine(
+            root,
+            "workspaces",
+            "0123456789abcdef0123456789abcdef",
+            "generations",
+            "generation-0000000000");
+
     private sealed class RecordingWorkbookBuilder(
         List<string> events,
         VbaDevSnapshotBuildResult result) : IVbaDebugWorkbookBuilder
@@ -493,6 +569,16 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
             events.Add($"build:{request.WorkbookFileName}");
             return Task.FromResult(result);
         }
+    }
+
+    private sealed class RecordingWorkspaceOwnership
+        : IVbaDebugOwnedWorkspaceCreationScope
+    {
+        public bool Disposed { get; private set; }
+
+        public void DeleteOwnedTree() => Disposed = true;
+
+        public void Dispose() => Disposed = true;
     }
 
     private sealed class ConstantCompilationSettingsReader(

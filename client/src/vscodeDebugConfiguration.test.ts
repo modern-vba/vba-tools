@@ -9,8 +9,11 @@ import {
 } from './vscodeDebugIntegration';
 import {
   VbaDebugCancellationError,
+  VbaDebugSelectionError,
+  type VbaDebugCancellationToken,
   type VbaDebugSourceBreakpoint
 } from './vscodeDebugConfiguration';
+import { type SnapshotSourceInventory } from './snapshotSourceInventory';
 
 test('F5 from one active exported VBA source resolves a zero-configuration source snapshot', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
@@ -508,32 +511,37 @@ test('debug launch cancellation stops waiting for a pending save and retains com
   }
 });
 
-test('debug restart preparation saves dirty sources only from the resolved project', async () => {
+test('debug restart captures unsaved bytes from the bound document after the active editor changes', async () => {
   const workspaceRoot = path.join('C:', 'work');
   const projectRoot = path.join(workspaceRoot, 'BookProject');
-  const otherProjectRoot = path.join(workspaceRoot, 'OtherProject');
   const manifestPath = path.join(projectRoot, 'vba-project.json');
-  const otherManifestPath = path.join(otherProjectRoot, 'vba-project.json');
-  const projectSource = path.join(projectRoot, 'src', 'Book1', 'DebugModule.bas');
-  const otherSource = path.join(otherProjectRoot, 'src', 'Book2', 'OtherModule.bas');
-  const saved: string[] = [];
+  const boundSource = path.join(projectRoot, 'src', 'Book1', 'DebugModule.bas');
+  const activeSource = path.join(projectRoot, 'src', 'Book2', 'OtherModule.bas');
+  const capturedSourceSets: string[] = [];
+  const unsavedBytes = Buffer.from(
+    'Attribute VB_Name = "DebugModule"\r\nPublic Sub RunTarget()\r\nEnd Sub\r\n',
+    'utf8'
+  );
   const integration = createIntegration({
-    manifests: new Map([
-      [manifestPath, manifestJson('BookProject', ['Book1'])],
-      [otherManifestPath, manifestJson('OtherProject', ['Book2'])]
-    ]),
+    getActiveEditor: () => ({ uriPath: activeSource, line: 1, character: 4 }),
+    manifests: new Map([[manifestPath, manifestJson('BookProject', ['Book1', 'Book2'])]]),
     sources: new Map([
-      [projectSource, 'Public Sub RunTarget()\r\nEnd Sub\r\n'],
-      [otherSource, 'Public Sub OtherTarget()\r\nEnd Sub\r\n']
+      [boundSource, 'Public Sub SavedTarget()\r\nEnd Sub\r\n'],
+      [activeSource, 'Public Sub OtherTarget()\r\nEnd Sub\r\n']
     ]),
-    openTextDocuments: () => [projectSource, otherSource].map((uriPath) => ({
-      uriPath,
-      isDirty: true,
-      save: async () => {
-        saved.push(uriPath);
-        return true;
-      }
-    }))
+    captureSourceInventory: async (sourceSetPath) => {
+      capturedSourceSets.push(sourceSetPath);
+      return {
+        sourceSetPath,
+        activeWindowsCodePage: 1252,
+        entries: [{
+          relativePath: 'DebugModule.bas',
+          sourceUri: pathToFileURL(boundSource).href,
+          encoding: 'utf8',
+          bytes: unsavedBytes
+        }]
+      };
+    }
   });
 
   const configuration = integration.prepareDebugConfigurationForRestart({
@@ -542,15 +550,85 @@ test('debug restart preparation saves dirty sources only from the resolved proje
     name: 'VBA: Active Procedure',
     project: projectRoot,
     document: 'Book1',
+    module: 'DebugModule',
+    procedure: 'RunTarget',
+    __vbaDebugWorkbookFileName: 'Book1.xlsm',
     sourceSnapshot: { schemaVersion: 1, sources: [] }
   }, workspaceRoot);
   const restartPreparation = configuration.__vbaRestartPreparation as {
     protocolVersion: number;
     id: string;
+    generation: number;
   };
   assert.equal(restartPreparation.protocolVersion, 1);
+  assert.match(restartPreparation.id, /^[0-9a-f]{32}$/);
+  assert.equal(restartPreparation.generation, 0);
 
+  const captured = await integration.captureBoundRestartConfiguration(configuration);
+
+  assert.deepEqual(capturedSourceSets, [path.join(projectRoot, 'src', 'Book1')]);
+  const sourceSnapshot = captured.sourceSnapshot as {
+    sources: readonly { relativePath: string; contentBase64: string }[];
+  };
+  assert.deepEqual(sourceSnapshot.sources, [{
+    relativePath: 'DebugModule.bas',
+    sourceUri: pathToFileURL(boundSource).href,
+    encoding: 'utf8',
+    contentBase64: unsavedBytes.toString('base64')
+  }]);
+  assert.equal(captured.document, 'Book1');
+  assert.equal(captured.module, 'DebugModule');
+  assert.equal(captured.procedure, 'RunTarget');
+});
+
+test('debug restart preparation notifies the bound adapter session with the next generation', async () => {
+  const workspaceRoot = path.join('C:', 'work');
+  const projectRoot = path.join(workspaceRoot, 'BookProject');
+  const manifestPath = path.join(projectRoot, 'vba-project.json');
+  const sourcePath = path.join(projectRoot, 'src', 'Book1', 'DebugModule.bas');
+  const adapterSessionId = '0123456789abcdef0123456789abcdef';
+  const bytes = Buffer.from(
+    'Attribute VB_Name = "DebugModule"\r\nPublic Sub RunTarget()\r\nEnd Sub\r\n',
+    'utf8'
+  );
+  const integration = createIntegration({
+    adapterSessionId,
+    manifests: new Map([[manifestPath, manifestJson('BookProject', ['Book1'])]]),
+    sources: new Map([[sourcePath, bytes.toString('utf8')]]),
+    captureSourceInventory: async (sourceSetPath) => ({
+      sourceSetPath,
+      activeWindowsCodePage: 1252,
+      entries: [{
+        relativePath: 'DebugModule.bas',
+        sourceUri: pathToFileURL(sourcePath).href,
+        encoding: 'utf8',
+        bytes
+      }]
+    })
+  });
+  const configuration = integration.prepareDebugConfigurationForRestart({
+    type: 'vba',
+    request: 'launch',
+    name: 'VBA: Active Procedure',
+    project: projectRoot,
+    document: 'Book1',
+    module: 'DebugModule',
+    procedure: 'RunTarget',
+    __vbaDebugWorkbookFileName: 'Book1.xlsm',
+    sourceSnapshot: { schemaVersion: 1, sources: [] }
+  });
+  const marker = configuration.__vbaRestartPreparation as {
+    protocolVersion: number;
+    id: string;
+    generation: number;
+  };
+  await integration.createDebugAdapterExecutable({
+    id: 'vscode-session-1',
+    configuration,
+    stop: () => undefined
+  });
   const notifications: Array<{ command: string; arguments: Record<string, unknown> }> = [];
+
   const preparation = handleVbaDebugLifecycleRequest(
     integration,
     configuration,
@@ -562,16 +640,42 @@ test('debug restart preparation saves dirty sources only from the resolved proje
   assert.ok(preparation);
   await preparation;
 
-  assert.deepEqual(saved, [projectSource]);
-  assert.deepEqual(notifications, [{
-    command: 'vba/restartPrepared',
-    arguments: {
-      restartRequestSequence: 41,
-      preparationId: restartPreparation.id,
-      success: true,
-      message: undefined
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0].command, 'vba/restartPrepared');
+  assert.equal(notifications[0].arguments.sessionId, adapterSessionId);
+  assert.equal(notifications[0].arguments.restartRequestSequence, 41);
+  assert.equal(notifications[0].arguments.preparationId, marker.id);
+  assert.equal(notifications[0].arguments.generation, 1);
+  assert.equal(notifications[0].arguments.success, true);
+  const launch = notifications[0].arguments.launch as Record<string, unknown>;
+  assert.equal(launch.project, projectRoot);
+  assert.equal(launch.document, 'Book1');
+  assert.equal(launch.module, 'DebugModule');
+  assert.equal(launch.procedure, 'RunTarget');
+  assert.deepEqual(launch.__vbaRestartPreparation, {
+    protocolVersion: 1,
+    id: marker.id,
+    generation: 1
+  });
+  const snapshot = launch.sourceSnapshot as {
+    sources: readonly { contentBase64: string }[];
+  };
+  assert.equal(snapshot.sources[0].contentBase64, bytes.toString('base64'));
+});
+
+test('debug restart marker rejects a generation outside the adapter Int32 contract', () => {
+  const integration = createIntegration({
+    manifests: new Map(),
+    sources: new Map()
+  });
+
+  assert.equal(integration.restartPreparationId({
+    __vbaRestartPreparation: {
+      protocolVersion: 1,
+      id: '0123456789abcdef0123456789abcdef',
+      generation: 0x80000000
     }
-  }]);
+  }), undefined);
 });
 
 test('debug restart notification failure does not leave preparation state busy', async () => {
@@ -579,9 +683,22 @@ test('debug restart notification failure does not leave preparation state busy',
   const projectRoot = path.join(workspaceRoot, 'BookProject');
   const manifestPath = path.join(projectRoot, 'vba-project.json');
   const sourcePath = path.join(projectRoot, 'src', 'Book1', 'DebugModule.bas');
+  const adapterSessionId = '0123456789abcdef0123456789abcdef';
+  const bytes = Buffer.from('Public Sub RunTarget()\r\nEnd Sub\r\n', 'utf8');
   const integration = createIntegration({
+    adapterSessionId,
     manifests: new Map([[manifestPath, manifestJson('BookProject', ['Book1'])]]),
-    sources: new Map([[sourcePath, 'Public Sub RunTarget()\r\nEnd Sub\r\n']])
+    sources: new Map([[sourcePath, bytes.toString('utf8')]]),
+    captureSourceInventory: async (sourceSetPath) => ({
+      sourceSetPath,
+      activeWindowsCodePage: 1252,
+      entries: [{
+        relativePath: 'DebugModule.bas',
+        sourceUri: pathToFileURL(sourcePath).href,
+        encoding: 'utf8',
+        bytes
+      }]
+    })
   });
   const configuration = integration.prepareDebugConfigurationForRestart({
     type: 'vba',
@@ -589,8 +706,16 @@ test('debug restart notification failure does not leave preparation state busy',
     name: 'VBA: Active Procedure',
     project: projectRoot,
     document: 'Book1',
+    module: 'DebugModule',
+    procedure: 'RunTarget',
+    __vbaDebugWorkbookFileName: 'Book1.xlsm',
     sourceSnapshot: { schemaVersion: 1, sources: [] }
   }, workspaceRoot);
+  await integration.createDebugAdapterExecutable({
+    id: 'vscode-session-1',
+    configuration,
+    stop: () => undefined
+  });
   const firstPreparation = handleVbaDebugLifecycleRequest(
     integration,
     configuration,
@@ -619,7 +744,7 @@ test('debug restart notification failure does not leave preparation state busy',
   assert.deepEqual(notifications, ['vba/restartPrepared']);
 });
 
-test('debug restart preparation follows fresh restart arguments instead of the old session project', async () => {
+test('debug restart preparation ignores fresh arguments and the active editor after session binding', async () => {
   const workspaceRoot = path.join('C:', 'work');
   const oldProjectRoot = path.join(workspaceRoot, 'OldProject');
   const freshProjectRoot = path.join(workspaceRoot, 'FreshProject');
@@ -627,24 +752,41 @@ test('debug restart preparation follows fresh restart arguments instead of the o
   const freshManifestPath = path.join(freshProjectRoot, 'vba-project.json');
   const oldSource = path.join(oldProjectRoot, 'src', 'OldBook', 'OldModule.bas');
   const freshSource = path.join(freshProjectRoot, 'src', 'FreshBook', 'FreshModule.bas');
-  const saved: string[] = [];
+  const adapterSessionId = '0123456789abcdef0123456789abcdef';
+  const oldBytes = Buffer.from(
+    'Attribute VB_Name = "OldModule"\r\nPublic Sub OldTarget()\r\nEnd Sub\r\n',
+    'utf8'
+  );
+  const freshBytes = Buffer.from(
+    'Attribute VB_Name = "FreshModule"\r\nPublic Sub FreshTarget()\r\nEnd Sub\r\n',
+    'utf8'
+  );
+  const capturedSourceSets: string[] = [];
   const integration = createIntegration({
+    adapterSessionId,
+    activeEditor: { uriPath: freshSource, line: 1, character: 5 },
     manifests: new Map([
       [oldManifestPath, manifestJson('OldProject', ['OldBook'])],
       [freshManifestPath, manifestJson('FreshProject', ['FreshBook'])]
     ]),
     sources: new Map([
-      [oldSource, 'Public Sub OldTarget()\r\nEnd Sub\r\n'],
-      [freshSource, 'Public Sub FreshTarget()\r\nEnd Sub\r\n']
+      [oldSource, oldBytes.toString('utf8')],
+      [freshSource, freshBytes.toString('utf8')]
     ]),
-    openTextDocuments: () => [oldSource, freshSource].map((uriPath) => ({
-      uriPath,
-      isDirty: true,
-      save: async () => {
-        saved.push(uriPath);
-        return true;
-      }
-    }))
+    captureSourceInventory: async (sourceSetPath) => {
+      capturedSourceSets.push(sourceSetPath);
+      const isOld = path.normalize(sourceSetPath) === path.normalize(path.dirname(oldSource));
+      return {
+        sourceSetPath,
+        activeWindowsCodePage: 1252,
+        entries: [{
+          relativePath: isOld ? 'OldModule.bas' : 'FreshModule.bas',
+          sourceUri: pathToFileURL(isOld ? oldSource : freshSource).href,
+          encoding: 'utf8',
+          bytes: isOld ? oldBytes : freshBytes
+        }]
+      };
+    }
   });
   const oldConfiguration = integration.prepareDebugConfigurationForRestart({
     type: 'vba',
@@ -652,6 +794,9 @@ test('debug restart preparation follows fresh restart arguments instead of the o
     name: 'VBA: Old Procedure',
     project: oldProjectRoot,
     document: 'OldBook',
+    module: 'OldModule',
+    procedure: 'OldTarget',
+    __vbaDebugWorkbookFileName: 'OldBook.xlsm',
     sourceSnapshot: { schemaVersion: 1, sources: [] }
   }, workspaceRoot);
   const freshConfiguration = integration.prepareDebugConfigurationForRestart({
@@ -660,15 +805,23 @@ test('debug restart preparation follows fresh restart arguments instead of the o
     name: 'VBA: Fresh Procedure',
     project: freshProjectRoot,
     document: 'FreshBook',
+    module: 'FreshModule',
+    procedure: 'FreshTarget',
+    __vbaDebugWorkbookFileName: 'FreshBook.xlsm',
     sourceSnapshot: { schemaVersion: 1, sources: [] }
   }, workspaceRoot);
-  const freshPreparationId = (
-    freshConfiguration.__vbaRestartPreparation as { id: string }
+  const oldMarker = (
+    oldConfiguration.__vbaRestartPreparation as { id: string }
   ).id;
   assert.notEqual(
-    freshPreparationId,
-    (oldConfiguration.__vbaRestartPreparation as { id: string }).id
+    oldMarker,
+    (freshConfiguration.__vbaRestartPreparation as { id: string }).id
   );
+  await integration.createDebugAdapterExecutable({
+    id: 'vscode-session-1',
+    configuration: oldConfiguration,
+    stop: () => undefined
+  });
 
   const notifications: Array<{ command: string; arguments: Record<string, unknown> }> = [];
   const preparation = handleVbaDebugLifecycleRequest(
@@ -687,22 +840,28 @@ test('debug restart preparation follows fresh restart arguments instead of the o
   assert.ok(preparation);
   await preparation;
 
-  assert.deepEqual(saved, [freshSource]);
-  assert.deepEqual(notifications, [{
-    command: 'vba/restartPrepared',
-    arguments: {
-      restartRequestSequence: 44,
-      preparationId: freshPreparationId,
-      success: true,
-      message: undefined
-    }
-  }]);
+  assert.deepEqual(capturedSourceSets, [path.dirname(oldSource)]);
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0].command, 'vba/restartPrepared');
+  assert.equal(notifications[0].arguments.sessionId, adapterSessionId);
+  assert.equal(notifications[0].arguments.restartRequestSequence, 44);
+  assert.equal(notifications[0].arguments.preparationId, oldMarker);
+  assert.equal(notifications[0].arguments.generation, 1);
+  assert.equal(notifications[0].arguments.success, true);
+  const launch = notifications[0].arguments.launch as Record<string, unknown>;
+  assert.equal(launch.project, oldProjectRoot);
+  assert.equal(launch.document, 'OldBook');
+  assert.equal(launch.module, 'OldModule');
+  assert.equal(launch.procedure, 'OldTarget');
+  const snapshot = launch.sourceSnapshot as {
+    sources: readonly { contentBase64: string }[];
+  };
+  assert.equal(snapshot.sources[0].contentBase64, oldBytes.toString('base64'));
 });
 
-test('debug restart preparation does not fall back when explicit fresh arguments omit or invalidate the marker', () => {
+test('debug restart preparation fails closed before adapter binding without saving dirty sources', async () => {
   const workspaceRoot = path.join('C:', 'work');
   const oldProjectRoot = path.join(workspaceRoot, 'OldProject');
-  const freshProjectRoot = path.join(workspaceRoot, 'FreshProject');
   const oldManifestPath = path.join(oldProjectRoot, 'vba-project.json');
   const oldSource = path.join(oldProjectRoot, 'src', 'OldBook', 'OldModule.bas');
   const saved: string[] = [];
@@ -730,39 +889,21 @@ test('debug restart preparation does not fall back when explicit fresh arguments
     document: 'OldBook',
     sourceSnapshot: { schemaVersion: 1, sources: [] }
   }, workspaceRoot);
+  const preparationId = (
+    oldConfiguration.__vbaRestartPreparation as { id: string }
+  ).id;
   const notifications: Array<{ command: string; arguments: Record<string, unknown> }> = [];
-  const freshConfiguration = {
-    type: 'vba',
-    request: 'launch',
-    name: 'VBA: Fresh Procedure',
-    project: freshProjectRoot,
-    document: 'FreshBook',
-    sourceSnapshot: { schemaVersion: 1, sources: [] }
-  };
 
-  for (const [index, explicitFreshConfiguration] of [
-    freshConfiguration,
-    {
-      ...freshConfiguration,
-      __vbaRestartPreparation: { protocolVersion: 1, id: 47 }
+  const preparation = handleVbaDebugLifecycleRequest(
+    integration,
+    oldConfiguration,
+    { seq: 47, type: 'request', command: 'restart' },
+    async (command, argumentsValue) => {
+      notifications.push({ command, arguments: argumentsValue });
     }
-  ].entries()) {
-    const preparation = handleVbaDebugLifecycleRequest(
-      integration,
-      oldConfiguration,
-      {
-        seq: 47 + index,
-        type: 'request',
-        command: 'restart',
-        arguments: { arguments: explicitFreshConfiguration }
-      },
-      async (command, argumentsValue) => {
-        notifications.push({ command, arguments: argumentsValue });
-      }
-    );
+  );
 
-    assert.equal(preparation, undefined);
-  }
+  assert.equal(preparation, undefined);
   assert.deepEqual(saved, []);
   assert.deepEqual(notifications, []);
 });
@@ -824,89 +965,80 @@ test('debug restart preparation rejects a marker borrowed from another project',
 
   const preparation = handleVbaDebugLifecycleRequest(
     integration,
-    markerConfiguration,
+    borrowedMarkerConfiguration,
     {
       seq: 49,
       type: 'request',
-      command: 'restart',
-      arguments: { arguments: borrowedMarkerConfiguration }
+      command: 'restart'
     },
     async (command, argumentsValue) => {
       notifications.push({ command, arguments: argumentsValue });
     }
   );
-  assert.ok(preparation);
-  await preparation;
-
+  assert.equal(preparation, undefined);
   assert.deepEqual(saved, []);
-  assert.equal(notifications.length, 1);
-  assert.equal(notifications[0].command, 'vba/restartPrepared');
-  assert.equal(notifications[0].arguments.restartRequestSequence, 49);
-  assert.equal(notifications[0].arguments.preparationId, marker.id);
-  assert.equal(notifications[0].arguments.success, false);
-  assert.match(String(notifications[0].arguments.message), /does not match.*project/i);
+  assert.deepEqual(notifications, []);
 });
 
-test('debug disconnect cancels fresh restart preparation selected after the session started', async () => {
+test('debug disconnect cancels the bound snapshot capture without saving sources', async () => {
   const workspaceRoot = path.join('C:', 'work');
-  const oldProjectRoot = path.join(workspaceRoot, 'OldProject');
-  const freshProjectRoot = path.join(workspaceRoot, 'FreshProject');
-  const oldManifestPath = path.join(oldProjectRoot, 'vba-project.json');
-  const freshManifestPath = path.join(freshProjectRoot, 'vba-project.json');
-  const oldSource = path.join(oldProjectRoot, 'src', 'OldBook', 'OldModule.bas');
-  const freshSource = path.join(freshProjectRoot, 'src', 'FreshBook', 'FreshModule.bas');
-  let finishFreshSave!: (saved: boolean) => void;
-  let notifyFreshSaveStarted!: () => void;
-  const freshSaveStarted = new Promise<void>((resolve) => {
-    notifyFreshSaveStarted = resolve;
+  const projectRoot = path.join(workspaceRoot, 'BookProject');
+  const manifestPath = path.join(projectRoot, 'vba-project.json');
+  const source = path.join(projectRoot, 'src', 'Book1', 'DebugModule.bas');
+  const adapterSessionId = '0123456789abcdef0123456789abcdef';
+  const saved: string[] = [];
+  let notifyCaptureStarted!: () => void;
+  const captureStarted = new Promise<void>((resolve) => {
+    notifyCaptureStarted = resolve;
   });
   const integration = createIntegration({
-    manifests: new Map([
-      [oldManifestPath, manifestJson('OldProject', ['OldBook'])],
-      [freshManifestPath, manifestJson('FreshProject', ['FreshBook'])]
-    ]),
-    sources: new Map([
-      [oldSource, 'Public Sub OldTarget()\r\nEnd Sub\r\n'],
-      [freshSource, 'Public Sub FreshTarget()\r\nEnd Sub\r\n']
-    ]),
+    adapterSessionId,
+    manifests: new Map([[manifestPath, manifestJson('BookProject', ['Book1'])]]),
+    sources: new Map([[source, 'Public Sub RunTarget()\r\nEnd Sub\r\n']]),
     openTextDocuments: () => [{
-      uriPath: freshSource,
+      uriPath: source,
       isDirty: true,
-      save: () => new Promise<boolean>((resolve) => {
-        finishFreshSave = resolve;
-        notifyFreshSaveStarted();
+      save: async () => {
+        saved.push(source);
+        return true;
+      }
+    }],
+    captureSourceInventory: (sourceSetPath, cancellationToken) => (
+      new Promise<SnapshotSourceInventory>((_resolve, reject) => {
+        assert.equal(path.normalize(sourceSetPath), path.normalize(path.dirname(source)));
+        let registration: { dispose(): void } | undefined;
+        registration = cancellationToken?.onCancellationRequested(() => {
+          registration?.dispose();
+          reject(new VbaDebugCancellationError());
+        });
+        notifyCaptureStarted();
       })
-    }]
+    )
   });
-  const oldConfiguration = integration.prepareDebugConfigurationForRestart({
+  const configuration = integration.prepareDebugConfigurationForRestart({
     type: 'vba',
     request: 'launch',
-    name: 'VBA: Old Procedure',
-    project: oldProjectRoot,
-    document: 'OldBook',
+    name: 'VBA: Active Procedure',
+    project: projectRoot,
+    document: 'Book1',
+    module: 'DebugModule',
+    procedure: 'RunTarget',
+    __vbaDebugWorkbookFileName: 'Book1.xlsm',
     sourceSnapshot: { schemaVersion: 1, sources: [] }
   }, workspaceRoot);
-  const freshConfiguration = integration.prepareDebugConfigurationForRestart({
-    type: 'vba',
-    request: 'launch',
-    name: 'VBA: Fresh Procedure',
-    project: freshProjectRoot,
-    document: 'FreshBook',
-    sourceSnapshot: { schemaVersion: 1, sources: [] }
-  }, workspaceRoot);
-  const freshPreparationId = (
-    freshConfiguration.__vbaRestartPreparation as { id: string }
+  const preparationId = (
+    configuration.__vbaRestartPreparation as { id: string }
   ).id;
+  await integration.createDebugAdapterExecutable({
+    id: 'vscode-session-1',
+    configuration,
+    stop: () => undefined
+  });
   const notifications: Array<{ command: string; arguments: Record<string, unknown> }> = [];
   const preparation = handleVbaDebugLifecycleRequest(
     integration,
-    oldConfiguration,
-    {
-      seq: 45,
-      type: 'request',
-      command: 'restart',
-      arguments: { arguments: freshConfiguration }
-    },
+    configuration,
+    { seq: 45, type: 'request', command: 'restart' },
     async (command, argumentsValue) => {
       notifications.push({ command, arguments: argumentsValue });
     }
@@ -917,65 +1049,54 @@ test('debug disconnect cancels fresh restart preparation selected after the sess
     settled = true;
   });
 
-  await freshSaveStarted;
+  await captureStarted;
   assert.equal(handleVbaDebugLifecycleRequest(
     integration,
-    oldConfiguration,
+    configuration,
     { seq: 46, type: 'request', command: 'disconnect' },
     async () => undefined
   ), undefined);
-  try {
-    await new Promise<void>((resolve) => setImmediate(resolve));
+  await preparation;
 
-    assert.equal(settled, true);
-    assert.deepEqual(notifications, [{
-      command: 'vba/restartPrepared',
-      arguments: {
-        restartRequestSequence: 45,
-        preparationId: freshPreparationId,
-        success: false,
-        message: 'VBA debug restart preparation was cancelled.'
-      }
-    }]);
-  } finally {
-    finishFreshSave(true);
-    await preparation;
-  }
+  assert.equal(settled, true);
+  assert.deepEqual(saved, []);
+  assert.deepEqual(notifications, [{
+    command: 'vba/restartPrepared',
+    arguments: {
+      sessionId: adapterSessionId,
+      generation: 1,
+      restartRequestSequence: 45,
+      preparationId,
+      success: false,
+      message: 'VBA debug restart preparation was cancelled.'
+    }
+  }]);
 });
 
-test('debug restart cancellation stops waiting and retains saves that already completed', async () => {
+test('debug concurrent restart does not send an unbound preparation result', async () => {
   const workspaceRoot = path.join('C:', 'work');
   const projectRoot = path.join(workspaceRoot, 'BookProject');
   const manifestPath = path.join(projectRoot, 'vba-project.json');
-  const completedSource = path.join(projectRoot, 'src', 'Book1', 'A.bas');
-  const pendingSource = path.join(projectRoot, 'src', 'Book1', 'B.bas');
-  const saved: string[] = [];
-  let finishPendingSave!: (saved: boolean) => void;
-  let notifyPendingSaveStarted!: () => void;
-  const pendingSaveStarted = new Promise<void>((resolve) => {
-    notifyPendingSaveStarted = resolve;
+  const source = path.join(projectRoot, 'src', 'Book1', 'DebugModule.bas');
+  const adapterSessionId = '0123456789abcdef0123456789abcdef';
+  let notifyCaptureStarted!: () => void;
+  const captureStarted = new Promise<void>((resolve) => {
+    notifyCaptureStarted = resolve;
   });
   const integration = createIntegration({
+    adapterSessionId,
     manifests: new Map([[manifestPath, manifestJson('BookProject', ['Book1'])]]),
-    sources: new Map([
-      [completedSource, 'Public Sub A()\r\nEnd Sub\r\n'],
-      [pendingSource, 'Public Sub B()\r\nEnd Sub\r\n']
-    ]),
-    openTextDocuments: () => [{
-      uriPath: completedSource,
-      isDirty: true,
-      save: async () => {
-        saved.push(completedSource);
-        return true;
-      }
-    }, {
-      uriPath: pendingSource,
-      isDirty: true,
-      save: () => new Promise<boolean>((resolve) => {
-        finishPendingSave = resolve;
-        notifyPendingSaveStarted();
+    sources: new Map([[source, 'Public Sub RunTarget()\r\nEnd Sub\r\n']]),
+    captureSourceInventory: (_sourceSetPath, cancellationToken) => (
+      new Promise<SnapshotSourceInventory>((_resolve, reject) => {
+        let registration: { dispose(): void } | undefined;
+        registration = cancellationToken?.onCancellationRequested(() => {
+          registration?.dispose();
+          reject(new VbaDebugCancellationError());
+        });
+        notifyCaptureStarted();
       })
-    }]
+    )
   });
   const configuration = integration.prepareDebugConfigurationForRestart({
     type: 'vba',
@@ -983,13 +1104,21 @@ test('debug restart cancellation stops waiting and retains saves that already co
     name: 'VBA: Active Procedure',
     project: projectRoot,
     document: 'Book1',
+    module: 'DebugModule',
+    procedure: 'RunTarget',
+    __vbaDebugWorkbookFileName: 'Book1.xlsm',
     sourceSnapshot: { schemaVersion: 1, sources: [] }
   }, workspaceRoot);
   const preparationId = (
     configuration.__vbaRestartPreparation as { id: string }
   ).id;
+  await integration.createDebugAdapterExecutable({
+    id: 'vscode-session-1',
+    configuration,
+    stop: () => undefined
+  });
   const notifications: Array<{ command: string; arguments: Record<string, unknown> }> = [];
-  const preparation = handleVbaDebugLifecycleRequest(
+  const firstPreparation = handleVbaDebugLifecycleRequest(
     integration,
     configuration,
     { seq: 42, type: 'request', command: 'restart' },
@@ -997,58 +1126,61 @@ test('debug restart cancellation stops waiting and retains saves that already co
       notifications.push({ command, arguments: argumentsValue });
     }
   );
-  assert.ok(preparation);
+  assert.ok(firstPreparation);
 
-  await pendingSaveStarted;
+  await captureStarted;
+  const concurrentPreparation = handleVbaDebugLifecycleRequest(
+    integration,
+    configuration,
+    { seq: 43, type: 'request', command: 'restart' },
+    async (command, argumentsValue) => {
+      notifications.push({ command, arguments: argumentsValue });
+    }
+  );
   assert.equal(handleVbaDebugLifecycleRequest(
     integration,
     configuration,
-    { seq: 43, type: 'request', command: 'disconnect' },
+    { seq: 44, type: 'request', command: 'disconnect' },
     async () => undefined
   ), undefined);
-  try {
-    await preparation;
-    assert.deepEqual(saved, [completedSource]);
-    assert.deepEqual(notifications, [{
-      command: 'vba/restartPrepared',
-      arguments: {
-        restartRequestSequence: 42,
-        preparationId,
-        success: false,
-        message: 'VBA debug restart preparation was cancelled.'
-      }
-    }]);
-  } finally {
-    finishPendingSave(true);
-    await preparation;
-  }
+  await firstPreparation;
+  await concurrentPreparation;
+
+  assert.equal(concurrentPreparation, undefined);
+  assert.deepEqual(notifications, [{
+    command: 'vba/restartPrepared',
+    arguments: {
+      sessionId: adapterSessionId,
+      generation: 1,
+      restartRequestSequence: 42,
+      preparationId,
+      success: false,
+      message: 'VBA debug restart preparation was cancelled.'
+    }
+  }]);
 });
 
-test('debug restart save failure retains sources that already completed saving', async () => {
+test('debug restart remains busy until the adapter restart response completes replacement', async () => {
   const workspaceRoot = path.join('C:', 'work');
   const projectRoot = path.join(workspaceRoot, 'BookProject');
   const manifestPath = path.join(projectRoot, 'vba-project.json');
-  const completedSource = path.join(projectRoot, 'src', 'Book1', 'A.bas');
-  const failedSource = path.join(projectRoot, 'src', 'Book1', 'B.bas');
-  const saved: string[] = [];
+  const sourcePath = path.join(projectRoot, 'src', 'Book1', 'DebugModule.bas');
+  const adapterSessionId = '0123456789abcdef0123456789abcdef';
+  const bytes = Buffer.from('Public Sub RunTarget()\r\nEnd Sub\r\n', 'utf8');
   const integration = createIntegration({
+    adapterSessionId,
     manifests: new Map([[manifestPath, manifestJson('BookProject', ['Book1'])]]),
-    sources: new Map([
-      [completedSource, 'Public Sub A()\r\nEnd Sub\r\n'],
-      [failedSource, 'Public Sub B()\r\nEnd Sub\r\n']
-    ]),
-    openTextDocuments: () => [{
-      uriPath: completedSource,
-      isDirty: true,
-      save: async () => {
-        saved.push(completedSource);
-        return true;
-      }
-    }, {
-      uriPath: failedSource,
-      isDirty: true,
-      save: async () => false
-    }]
+    sources: new Map([[sourcePath, bytes.toString('utf8')]]),
+    captureSourceInventory: async (sourceSetPath) => ({
+      sourceSetPath,
+      activeWindowsCodePage: 1252,
+      entries: [{
+        relativePath: 'DebugModule.bas',
+        sourceUri: pathToFileURL(sourcePath).href,
+        encoding: 'utf8',
+        bytes
+      }]
+    })
   });
   const configuration = integration.prepareDebugConfigurationForRestart({
     type: 'vba',
@@ -1056,11 +1188,104 @@ test('debug restart save failure retains sources that already completed saving',
     name: 'VBA: Active Procedure',
     project: projectRoot,
     document: 'Book1',
+    module: 'DebugModule',
+    procedure: 'RunTarget',
+    __vbaDebugWorkbookFileName: 'Book1.xlsm',
+    sourceSnapshot: { schemaVersion: 1, sources: [] }
+  }, workspaceRoot);
+  await integration.createDebugAdapterExecutable({
+    id: 'vscode-session-1',
+    configuration,
+    stop: () => undefined
+  });
+  const notifications: number[] = [];
+  const first = handleVbaDebugLifecycleRequest(
+    integration,
+    configuration,
+    { seq: 50, type: 'request', command: 'restart' },
+    async (_command, argumentsValue) => {
+      notifications.push(argumentsValue.restartRequestSequence as number);
+    }
+  );
+  assert.ok(first);
+  await first;
+
+  assert.equal(handleVbaDebugLifecycleRequest(
+    integration,
+    configuration,
+    { seq: 51, type: 'request', command: 'restart' },
+    async () => undefined
+  ), undefined);
+  integration.observeDebugAdapterMessage(configuration, {
+    seq: 500,
+    type: 'response',
+    command: 'restart',
+    request_seq: 50,
+    success: true
+  });
+  const next = handleVbaDebugLifecycleRequest(
+    integration,
+    configuration,
+    { seq: 52, type: 'request', command: 'restart' },
+    async (_command, argumentsValue) => {
+      notifications.push(argumentsValue.restartRequestSequence as number);
+    }
+  );
+  assert.ok(next);
+  await next;
+  integration.observeDebugAdapterMessage(configuration, {
+    seq: 501,
+    type: 'response',
+    command: 'restart',
+    request_seq: 52,
+    success: true
+  });
+
+  assert.deepEqual(notifications, [50, 52]);
+});
+
+test('debug restart capture failure reports only restart failure with bound session identity', async () => {
+  const workspaceRoot = path.join('C:', 'work');
+  const projectRoot = path.join(workspaceRoot, 'BookProject');
+  const manifestPath = path.join(projectRoot, 'vba-project.json');
+  const source = path.join(projectRoot, 'src', 'Book1', 'DebugModule.bas');
+  const adapterSessionId = '0123456789abcdef0123456789abcdef';
+  const saved: string[] = [];
+  const integration = createIntegration({
+    adapterSessionId,
+    manifests: new Map([[manifestPath, manifestJson('BookProject', ['Book1'])]]),
+    sources: new Map([[source, 'Public Sub RunTarget()\r\nEnd Sub\r\n']]),
+    openTextDocuments: () => [{
+      uriPath: source,
+      isDirty: true,
+      save: async () => {
+        saved.push(source);
+        return true;
+      }
+    }],
+    captureSourceInventory: async () => {
+      throw new VbaDebugSelectionError('The bound VBA debug document was removed.');
+    }
+  });
+  const configuration = integration.prepareDebugConfigurationForRestart({
+    type: 'vba',
+    request: 'launch',
+    name: 'VBA: Active Procedure',
+    project: projectRoot,
+    document: 'Book1',
+    module: 'DebugModule',
+    procedure: 'RunTarget',
+    __vbaDebugWorkbookFileName: 'Book1.xlsm',
     sourceSnapshot: { schemaVersion: 1, sources: [] }
   }, workspaceRoot);
   const preparationId = (
     configuration.__vbaRestartPreparation as { id: string }
   ).id;
+  await integration.createDebugAdapterExecutable({
+    id: 'vscode-session-1',
+    configuration,
+    stop: () => undefined
+  });
   const notifications: Array<{ command: string; arguments: Record<string, unknown> }> = [];
 
   const preparation = handleVbaDebugLifecycleRequest(
@@ -1074,14 +1299,16 @@ test('debug restart save failure retains sources that already completed saving',
   assert.ok(preparation);
   await preparation;
 
-  assert.deepEqual(saved, [completedSource]);
+  assert.deepEqual(saved, []);
   assert.deepEqual(notifications, [{
     command: 'vba/restartPrepared',
     arguments: {
+      sessionId: adapterSessionId,
+      generation: 1,
       restartRequestSequence: 47,
       preparationId,
       success: false,
-      message: `Could not save exported VBA source before the debug launch: ${failedSource}`
+      message: 'The bound VBA debug document was removed.'
     }
   }]);
 });
@@ -1565,6 +1792,7 @@ test('dynamic debug configurations expose one transient active-procedure launch 
 });
 
 function createIntegration(options: {
+  adapterSessionId?: string | undefined;
   activeEditor?: { uriPath: string; line: number; character: number } | undefined;
   getActiveEditor?: () => { uriPath: string; line: number; character: number } | undefined;
   manifests: ReadonlyMap<string, string>;
@@ -1577,10 +1805,42 @@ function createIntegration(options: {
     isDirty: boolean;
     save(): Promise<boolean>;
   }[];
+  captureSourceInventory?: (
+    sourceSetPath: string,
+    cancellationToken?: VbaDebugCancellationToken
+  ) => Promise<SnapshotSourceInventory>;
 }): VscodeDebugIntegration {
   return new VscodeDebugIntegration({
     extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
     getConfiguredDevToolPath: () => undefined,
+    ...(options.adapterSessionId === undefined
+      ? {}
+      : {
+          createDebugSessionId: () => options.adapterSessionId!,
+          vbaDevResolver: {
+            resolve: async () => ({
+              executablePath: path.join('C:', 'tools', 'vba-dev.exe'),
+              bundledPath: path.join('C:', 'tools', 'vba-dev.exe'),
+              source: 'configured' as const,
+              capabilities: { toolVersion: '0.1.0', contractVersion: '1.0', commands: {} }
+            })
+          },
+          vbaDebugAdapterResolver: {
+            resolve: async () => ({
+              executablePath: path.join('C:', 'tools', 'vba-debug-adapter.exe'),
+              capabilities: {
+                toolVersion: '0.1.0',
+                contractVersion: '1.0',
+                protocolVersion: '1.1',
+                transports: ['stdio'],
+                sessionIdFormat: 'lowercase-hex-32',
+                commands: ['cleanup', 'doctor'],
+                commandSchemaVersions: { doctor: '1.0' },
+                requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '1.0' }
+              }
+            })
+          }
+        }),
     debugConfigurationHost: {
       workspaceRoots: [path.join('C:', 'work')],
       getActiveEditor: options.getActiveEditor ?? (() => options.activeEditor),
@@ -1603,7 +1863,8 @@ function createIntegration(options: {
       }),
       findExportedSourceFiles: async (sourceSetPath) => (
         [...options.sources.keys()].filter((sourcePath) => isWithin(sourcePath, sourceSetPath))
-      )
+      ),
+      captureSourceInventory: options.captureSourceInventory
     }
   });
 }

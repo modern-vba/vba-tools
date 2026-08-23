@@ -98,7 +98,7 @@ export async function resolveCompatibleVbaDebugAdapter(
   );
   const requiredContract = options.requiredContract
     ?? loadRequiredVbaDebugAdapterContract(options.extensionRoot);
-  const runProcess = options.runProcess ?? runProcessWithExecFile;
+  const runProcess = options.runProcess ?? runDebugAdapterProcess;
 
   try {
     const result = await runProcess(executablePath, ['capabilities', '--format', 'json']);
@@ -221,7 +221,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function runProcessWithExecFile(file: string, args: readonly string[]): Promise<ProcessResult> {
+export function runDebugAdapterProcess(
+  file: string,
+  args: readonly string[]
+): Promise<ProcessResult> {
   return new Promise((resolve, reject) => {
     execFile(file, [...args], { windowsHide: true }, (error, stdout, stderr) => {
       if (error) {

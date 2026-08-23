@@ -184,6 +184,89 @@ export async function resolveVbaDebugConfiguration(
   };
 }
 
+export async function recaptureBoundVbaDebugConfiguration(
+  host: VbaDebugConfigurationHost,
+  configuration: VbaDebugConfiguration,
+  cancellationToken?: VbaDebugCancellationToken
+): Promise<VbaDebugConfiguration> {
+  throwIfDebugCancellationRequested(cancellationToken);
+  const projectRoot = optionalNonEmptyString(configuration.project);
+  const documentName = optionalNonEmptyString(configuration.document);
+  if (projectRoot === undefined || documentName === undefined) {
+    throw new VbaDebugSelectionError(
+      'A bound VBA debug restart requires its original project and document.'
+    );
+  }
+  if (host.captureSourceInventory === undefined) {
+    throw new VbaDebugSelectionError(
+      'Bound VBA debug restart snapshot capture is unavailable in this host.'
+    );
+  }
+
+  const projects = await loadProjects(host);
+  throwIfDebugCancellationRequested(cancellationToken);
+  const selection = resolveDocumentSelection(
+    projects,
+    projectRoot,
+    documentName,
+    undefined,
+    true
+  );
+  const inventory = await host.captureSourceInventory(
+    selection.sourceSetPath,
+    cancellationToken
+  );
+  throwIfDebugCancellationRequested(cancellationToken);
+  return createTransportedSnapshotConfiguration(
+    host,
+    configuration,
+    selection,
+    inventory,
+    boundActiveSource(configuration)
+  );
+}
+
+function boundActiveSource(
+  configuration: VbaDebugConfiguration
+): VbaDebugActiveEditor | undefined {
+  const snapshot = configuration.sourceSnapshot;
+  if (typeof snapshot !== 'object' || snapshot === null) {
+    return undefined;
+  }
+  const activeSource = (snapshot as { activeSource?: unknown }).activeSource;
+  if (typeof activeSource !== 'object' || activeSource === null) {
+    return undefined;
+  }
+  const value = activeSource as {
+    sourceUri?: unknown;
+    line?: unknown;
+    character?: unknown;
+  };
+  if (
+    typeof value.sourceUri !== 'string'
+    || !Number.isInteger(value.line)
+    || !Number.isInteger(value.character)
+    || (value.line as number) < 0
+    || (value.character as number) < 0
+  ) {
+    throw new VbaDebugSelectionError(
+      'The bound VBA debug restart active source identity is invalid.'
+    );
+  }
+
+  try {
+    return {
+      uriPath: fileURLToPath(value.sourceUri),
+      line: value.line as number,
+      character: value.character as number
+    };
+  } catch {
+    throw new VbaDebugSelectionError(
+      'The bound VBA debug restart active source must use a persistent file URI.'
+    );
+  }
+}
+
 function createTransportedSnapshotConfiguration(
   host: VbaDebugConfigurationHost,
   configuration: VbaDebugConfiguration,
@@ -589,26 +672,6 @@ async function saveDirtyProjectSources(
       );
     }
   }
-}
-
-export async function saveDirtyVbaDebugProjectSources(
-  host: VbaDebugConfigurationHost,
-  projectRoot: string,
-  cancellationToken?: VbaDebugCancellationToken
-): Promise<void> {
-  throwIfDebugCancellationRequested(cancellationToken);
-  const projects = await loadProjects(host);
-  throwIfDebugCancellationRequested(cancellationToken);
-  const matchingProjects = projects.filter((project) => (
-    samePath(project.projectRoot, projectRoot)
-  ));
-  if (matchingProjects.length !== 1) {
-    throw new VbaDebugSelectionError(
-      `The VBA debug restart project is unavailable: ${projectRoot}`
-    );
-  }
-
-  await saveDirtyProjectSources(host, matchingProjects[0], cancellationToken);
 }
 
 function throwIfDebugCancellationRequested(

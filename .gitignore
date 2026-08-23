@@ -7,6 +7,8 @@ dist/
 build/
 !tools/vba-dev/src/VbaDev.App/Build/
 !tools/vba-dev/src/VbaDev.App/Build/*.cs
+!tools/vba-debug-adapter/src/VbaDebugAdapter.Cli/Build/
+!tools/vba-debug-adapter/src/VbaDebugAdapter.Cli/Build/*.cs
 lib/
 **/bin/
 **/obj/

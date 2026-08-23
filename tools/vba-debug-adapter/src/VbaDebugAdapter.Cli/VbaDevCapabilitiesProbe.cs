@@ -1,9 +1,22 @@
-using System.Diagnostics;
+using VbaDebugAdapter.Build;
 
 namespace VbaDebugAdapter.Cli;
 
 public sealed class ProcessVbaDevCapabilitiesProbe : IVbaDevCapabilitiesProbe
 {
+    private readonly IVbaDevBuildProcess processRunner;
+
+    public ProcessVbaDevCapabilitiesProbe()
+        : this(new ProcessVbaDevBuildProcess())
+    {
+    }
+
+    internal ProcessVbaDevCapabilitiesProbe(IVbaDevBuildProcess processRunner)
+    {
+        this.processRunner = processRunner
+            ?? throw new ArgumentNullException(nameof(processRunner));
+    }
+
     public async Task<VbaDevCapabilitiesProbeResult> ProbeAsync(
         string vbaDevPath,
         CancellationToken cancellationToken)
@@ -16,53 +29,15 @@ public sealed class ProcessVbaDevCapabilitiesProbe : IVbaDevCapabilitiesProbe
                 nameof(vbaDevPath));
         }
 
-        using var process = new Process
-        {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = Path.GetFullPath(vbaDevPath),
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            }
-        };
-        process.StartInfo.ArgumentList.Add("capabilities");
-        process.StartInfo.ArgumentList.Add("--format");
-        process.StartInfo.ArgumentList.Add("json");
-
-        process.Start();
-        var standardOutputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        var standardErrorTask = process.StandardError.ReadToEndAsync(cancellationToken);
-        try
-        {
-            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-            await Task.WhenAll(standardOutputTask, standardErrorTask).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            TryKillProcessTree(process);
-            throw;
-        }
+        var processResult = await processRunner.RunAsync(
+            Path.GetFullPath(vbaDevPath),
+            ["capabilities", "--format", "json"],
+            cancellationToken).ConfigureAwait(false);
 
         return new VbaDevCapabilitiesProbeResult(
-            process.ExitCode,
-            await standardOutputTask.ConfigureAwait(false),
-            await standardErrorTask.ConfigureAwait(false));
-    }
-
-    private static void TryKillProcessTree(Process process)
-    {
-        try
-        {
-            if (!process.HasExited)
-            {
-                process.Kill(entireProcessTree: true);
-            }
-        }
-        catch (InvalidOperationException)
-        {
-        }
+            processResult.ExitCode,
+            processResult.StandardOutput,
+            processResult.StandardError);
     }
 }
 

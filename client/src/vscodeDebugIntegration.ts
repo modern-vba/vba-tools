@@ -1,5 +1,5 @@
 import * as path from 'node:path';
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 
 import {
   CompanionExecutableResolver,
@@ -11,7 +11,8 @@ import {
 import {
   RequiredVbaDebugAdapterContract,
   VbaDebugAdapterResolver,
-  resolveCompatibleVbaDebugAdapter
+  resolveCompatibleVbaDebugAdapter,
+  runDebugAdapterProcess
 } from './debugAdapter';
 import {
   VbaDebugCancellationError,
@@ -21,12 +22,13 @@ import {
   VbaDebugSelectionError,
   normalizeVbaDebugConfiguration,
   provideDynamicVbaDebugConfigurations,
-  resolveVbaDebugConfiguration,
-  saveDirtyVbaDebugProjectSources
+  recaptureBoundVbaDebugConfiguration,
+  resolveVbaDebugConfiguration
 } from './vscodeDebugConfiguration';
 
 export const VbaDebugRestartPreparationProperty = '__vbaRestartPreparation';
 export const VbaDebugRestartPreparationProtocolVersion = 1;
+const VbaDebugRestartGenerationMaximum = 0x7fffffff;
 
 export interface VbaDebugConfigurationProviderLike {
   provideDebugConfigurations(): readonly VbaDebugConfiguration[];
@@ -82,12 +84,18 @@ export function createVbaDebugConfigurationProvider(
           resolveWorkspaceRelativeProject(configuration, workspaceFolderPath),
           cancellationToken
         );
+        const boundConfiguration = integration.prepareDebugConfigurationForRestart === undefined
+          ? resolvedConfiguration
+          : integration.prepareDebugConfigurationForRestart(
+              resolvedConfiguration,
+              workspaceFolderPath
+            );
         if (debugConfigurationObserver !== undefined) {
-          debugConfigurationObserver(resolvedConfiguration);
+          debugConfigurationObserver(boundConfiguration);
           return undefined;
         }
 
-        return resolvedConfiguration;
+        return boundConfiguration;
       } catch (error) {
         if (error instanceof VbaDebugCancellationError) {
           return undefined;
@@ -138,6 +146,7 @@ export interface VbaDebugSessionLike {
   id: string;
   workspaceRoot?: string | undefined;
   configuration?: VbaDebugConfiguration | undefined;
+  stop: () => PromiseLike<unknown> | unknown;
 }
 
 export interface VbaDebugAdapterExecutableSpec {
@@ -159,6 +168,8 @@ export interface VscodeDebugIntegrationOptions {
   requiredContract?: RequiredVbaDevContract | undefined;
   requiredDebugAdapterContract?: RequiredVbaDebugAdapterContract | undefined;
   debugConfigurationHost?: VbaDebugConfigurationHost | undefined;
+  debugAdapterCleanupProcess?: ProcessRunner | undefined;
+  reportDebugAdapterCleanupWarning?: ((message: string) => unknown) | undefined;
 }
 
 export function handleVbaDebugLifecycleRequest(
@@ -193,33 +204,43 @@ export function handleVbaDebugLifecycleRequest(
     return undefined;
   }
 
-  const requestArguments = request.arguments;
-  const freshConfiguration = typeof requestArguments === 'object'
-    && requestArguments !== null
-    && typeof (requestArguments as { arguments?: unknown }).arguments === 'object'
-    && (requestArguments as { arguments?: unknown }).arguments !== null
-    ? (requestArguments as { arguments: VbaDebugConfiguration }).arguments
-    : undefined;
-  const restartConfiguration = freshConfiguration ?? configuration;
+  const restartConfiguration = configuration;
   const preparationId = integration.restartPreparationId(restartConfiguration);
   if (preparationId === undefined) {
     return undefined;
   }
+  if (integration.hasRunningRestartPreparation(restartConfiguration)) {
+    return undefined;
+  }
 
   const restartRequestSequence = request.seq as number;
-  return integration.runRestartPreparation(restartConfiguration).then(
-    async () => {
+  let preparation: VbaDebugRestartPreparationRun;
+  try {
+    preparation = integration.beginRestartPreparation(
+      restartConfiguration,
+      restartRequestSequence
+    );
+  } catch {
+    return undefined;
+  }
+  return preparation.completion.then(
+    async (launch) => {
       await notifyAdapter('vba/restartPrepared', {
+        sessionId: preparation.adapterSessionId,
+        generation: preparation.generation,
+        launch,
         restartRequestSequence,
-        preparationId,
+        preparationId: preparation.id,
         success: true,
         message: undefined
       });
     },
     async (error: unknown) => {
       await notifyAdapter('vba/restartPrepared', {
+        sessionId: preparation.adapterSessionId,
+        generation: preparation.generation,
         restartRequestSequence,
-        preparationId,
+        preparationId: preparation.id,
         success: false,
         message: error instanceof VbaDebugCancellationError
           ? 'VBA debug restart preparation was cancelled.'
@@ -228,7 +249,13 @@ export function handleVbaDebugLifecycleRequest(
             : String(error)
       });
     }
-  );
+  ).catch((error: unknown) => {
+    integration.failRestartPreparationNotification(
+      restartConfiguration,
+      restartRequestSequence
+    );
+    throw error;
+  });
 }
 
 export async function stopVbaDebugSessionAfterLifecycleFailure(
@@ -285,6 +312,13 @@ export interface VbaDebugSessionTerminationIntegration {
   releaseSession(sessionId: string): void;
 }
 
+export interface VbaDebugRestartPreparationRun {
+  readonly id: string;
+  readonly generation: number;
+  readonly adapterSessionId: string;
+  readonly completion: Promise<VbaDebugConfiguration>;
+}
+
 export function handleVbaDebugSessionTermination(
   integration: VbaDebugSessionTerminationIntegration,
   session: VbaDebugTerminatedSessionLike
@@ -298,8 +332,11 @@ export function handleVbaDebugSessionTermination(
 
 export class VscodeDebugIntegration {
   private activeSessionId: string | undefined;
+  private activeSessionReservation: symbol | undefined;
+  private shutdownRequested = false;
   private readonly restartPreparations = new Map<string, VbaDebugRestartPreparationState>();
   private readonly restartPreparationIdsBySession = new Map<string, Set<string>>();
+  private readonly ownedAdapterSessions = new Map<string, OwnedVbaDebugAdapterSession>();
 
   public constructor(private readonly options: VscodeDebugIntegrationOptions) {}
 
@@ -337,29 +374,28 @@ export class VscodeDebugIntegration {
       throw new Error('A resolved VBA debug configuration requires a project for restart.');
     }
 
-    const canonicalProjectRoot = canonicalVbaDebugProjectRoot(projectRoot);
-    const id = createHash('sha256')
-      .update(canonicalProjectRoot)
-      .digest('hex')
-      .slice(0, 12);
-    const existing = this.restartPreparations.get(id);
-    if (existing === undefined) {
-      this.restartPreparations.set(id, {
-        id,
-        projectRoot: path.resolve(projectRoot)
-      });
-    }
+    const id = randomBytes(16).toString('hex');
+    this.restartPreparations.set(id, {
+      id,
+      projectRoot: path.resolve(projectRoot),
+      configuration,
+      generation: 0
+    });
 
     return {
       ...configuration,
       [VbaDebugRestartPreparationProperty]: {
         protocolVersion: VbaDebugRestartPreparationProtocolVersion,
-        id
+        id,
+        generation: 0
       }
     };
   }
 
-  public async runRestartPreparation(configuration: VbaDebugConfiguration): Promise<void> {
+  public captureBoundRestartConfiguration(
+    configuration: VbaDebugConfiguration,
+    cancellationToken?: VbaDebugCancellationToken
+  ): Promise<VbaDebugConfiguration> {
     const preparationId = this.restartPreparationId(configuration);
     const preparation = preparationId === undefined
       ? undefined
@@ -380,9 +416,49 @@ export class VscodeDebugIntegration {
     if (!this.options.debugConfigurationHost) {
       throw new Error('VBA debug configuration resolution is not available in this host.');
     }
-    if (preparation.cancellation !== undefined) {
+
+    return recaptureBoundVbaDebugConfiguration(
+      this.options.debugConfigurationHost,
+      preparation.configuration,
+      cancellationToken
+    );
+  }
+
+  public beginRestartPreparation(
+    configuration: VbaDebugConfiguration,
+    restartRequestSequence?: number
+  ): VbaDebugRestartPreparationRun {
+    const preparationId = this.restartPreparationId(configuration);
+    const preparation = preparationId === undefined
+      ? undefined
+      : this.restartPreparations.get(preparationId);
+    if (preparation === undefined) {
+      throw new Error('VBA debug restart preparation is unavailable.');
+    }
+    const projectRoot = configuration.project;
+    if (
+      typeof projectRoot !== 'string'
+      || canonicalVbaDebugProjectRoot(projectRoot)
+        !== canonicalVbaDebugProjectRoot(preparation.projectRoot)
+    ) {
+      throw new Error(
+        `VBA debug restart preparation '${preparation.id}' does not match its project.`
+      );
+    }
+    if (!this.options.debugConfigurationHost) {
+      throw new Error('VBA debug configuration resolution is not available in this host.');
+    }
+    if (preparation.adapterSessionId === undefined) {
+      throw new Error('VBA debug restart preparation is not bound to an active adapter session.');
+    }
+    if (preparation.cancellation !== undefined ||
+        preparation.restartRequestSequence !== undefined) {
       throw new Error('VBA debug restart preparation is already running.');
     }
+    if (preparation.generation >= VbaDebugRestartGenerationMaximum) {
+      throw new Error('The VBA debug restart generation is exhausted.');
+    }
+    preparation.generation += 1;
 
     if (this.activeSessionId !== undefined) {
       const preparationIds = this.restartPreparationIdsBySession.get(this.activeSessionId)
@@ -393,18 +469,40 @@ export class VscodeDebugIntegration {
 
     const cancellation = new VbaDebugCancellationController();
     preparation.cancellation = cancellation;
-    try {
-      await saveDirtyVbaDebugProjectSources(
-        this.options.debugConfigurationHost,
-        preparation.projectRoot,
-        cancellation.token
-      );
-    } finally {
-      if (preparation.cancellation === cancellation) {
-        preparation.cancellation = undefined;
+    preparation.restartRequestSequence = restartRequestSequence;
+    const adapterSessionId = preparation.adapterSessionId;
+    const completion = (async (): Promise<VbaDebugConfiguration> => {
+      try {
+        const captured = await recaptureBoundVbaDebugConfiguration(
+          this.options.debugConfigurationHost!,
+          preparation.configuration,
+          cancellation.token
+        );
+        return {
+          ...captured,
+          [VbaDebugRestartPreparationProperty]: {
+            protocolVersion: VbaDebugRestartPreparationProtocolVersion,
+            id: preparation.id,
+            generation: preparation.generation
+          }
+        };
+      } finally {
+        if (preparation.cancellation === cancellation) {
+          preparation.cancellation = undefined;
+        }
+        cancellation.dispose();
       }
-      cancellation.dispose();
-    }
+    })();
+    return {
+      id: preparation.id,
+      generation: preparation.generation,
+      adapterSessionId,
+      completion
+    };
+  }
+
+  public async runRestartPreparation(configuration: VbaDebugConfiguration): Promise<void> {
+    await this.beginRestartPreparation(configuration).completion;
   }
 
   public cancelRestartPreparation(configuration: VbaDebugConfiguration): void {
@@ -420,9 +518,11 @@ export class VscodeDebugIntegration {
   public async createDebugAdapterExecutable(
     session: VbaDebugSessionLike
   ): Promise<VbaDebugAdapterExecutableSpec | undefined> {
-    this.reserveSession(session.id);
+    if (this.shutdownRequested) {
+      return undefined;
+    }
+    const reservation = this.reserveSession(session.id);
     try {
-      this.bindRestartPreparation(session);
       const devtool = this.options.vbaDevResolver === undefined
         ? await resolveCompatibleVbaDev({
             extensionRoot: this.options.extensionRoot,
@@ -431,6 +531,9 @@ export class VscodeDebugIntegration {
             requiredContract: this.options.requiredContract
           })
         : await this.options.vbaDevResolver.resolve();
+      if (!this.hasSessionReservation(session.id, reservation)) {
+        return undefined;
+      }
       const standaloneDebugAdapter = this.options.vbaDebugAdapterResolver !== undefined
         ? await this.options.vbaDebugAdapterResolver.resolve()
         : await resolveCompatibleVbaDebugAdapter({
@@ -439,6 +542,9 @@ export class VscodeDebugIntegration {
             requiredContract: this.options.requiredDebugAdapterContract,
             runProcess: this.options.capabilitiesProcess
           });
+      if (!this.hasSessionReservation(session.id, reservation)) {
+        return undefined;
+      }
       const adapterSessionId = this.options.createDebugSessionId?.()
         ?? randomBytes(16).toString('hex');
       if (!/^[0-9a-f]{32}$/.test(adapterSessionId)) {
@@ -446,6 +552,12 @@ export class VscodeDebugIntegration {
           'The generated VBA debug adapter session ID must be 32 lowercase hexadecimal characters.'
         );
       }
+      this.bindRestartPreparation(session, adapterSessionId);
+      this.ownedAdapterSessions.set(session.id, {
+        executablePath: standaloneDebugAdapter.executablePath,
+        adapterSessionId,
+        stop: session.stop
+      });
 
       return {
         command: standaloneDebugAdapter.executablePath,
@@ -461,7 +573,7 @@ export class VscodeDebugIntegration {
           : { cwd: session.workspaceRoot }
       };
     } catch (error) {
-      this.releaseSession(session.id);
+      this.releaseSessionReservation(session.id, reservation);
       if (isReportedVbaDevResolutionFailure(error)) {
         return undefined;
       }
@@ -477,6 +589,93 @@ export class VscodeDebugIntegration {
     this.restartPreparationIdsBySession.delete(sessionId);
     if (this.activeSessionId === sessionId) {
       this.activeSessionId = undefined;
+      this.activeSessionReservation = undefined;
+    }
+  }
+
+  public async handleAdapterExit(sessionId: string): Promise<void> {
+    const ownedSession = this.ownedAdapterSessions.get(sessionId);
+    this.releaseSession(sessionId);
+    if (ownedSession === undefined) {
+      return;
+    }
+
+    if (ownedSession.cleanup !== undefined) {
+      await ownedSession.cleanup;
+      if (this.ownedAdapterSessions.get(sessionId) !== ownedSession) {
+        return;
+      }
+    }
+
+    await this.cleanupOwnedAdapterSession(sessionId, ownedSession);
+  }
+
+  private async cleanupOwnedAdapterSession(
+    sessionId: string,
+    ownedSession: OwnedVbaDebugAdapterSession
+  ): Promise<void> {
+    const cleanup = this.runOwnedAdapterCleanup(sessionId, ownedSession);
+    ownedSession.cleanup = cleanup;
+    try {
+      await cleanup;
+    } finally {
+      if (
+        this.ownedAdapterSessions.get(sessionId) === ownedSession
+        && ownedSession.cleanup === cleanup
+      ) {
+        ownedSession.cleanup = undefined;
+      }
+    }
+  }
+
+  private async runOwnedAdapterCleanup(
+    sessionId: string,
+    ownedSession: OwnedVbaDebugAdapterSession
+  ): Promise<void> {
+    try {
+      const cleanupProcess = this.options.debugAdapterCleanupProcess
+        ?? runDebugAdapterProcess;
+      await cleanupProcess(
+        ownedSession.executablePath,
+        ['cleanup', '--session', ownedSession.adapterSessionId]
+      );
+      if (this.ownedAdapterSessions.get(sessionId) === ownedSession) {
+        this.ownedAdapterSessions.delete(sessionId);
+      }
+    } catch (error) {
+      this.options.reportDebugAdapterCleanupWarning?.(
+        `VBA debug adapter cleanup retained session '${ownedSession.adapterSessionId}': ` +
+        (error instanceof Error ? error.message : String(error))
+      );
+    }
+  }
+
+  public async shutdown(): Promise<void> {
+    this.shutdownRequested = true;
+    for (const preparation of this.restartPreparations.values()) {
+      preparation.cancellation?.cancel();
+    }
+    if (this.activeSessionId !== undefined) {
+      this.releaseSession(this.activeSessionId);
+    }
+    for (const [sessionId, ownedSession] of [...this.ownedAdapterSessions.entries()]) {
+      try {
+        await ownedSession.stop();
+      } catch (error) {
+        this.options.reportDebugAdapterCleanupWarning?.(
+          `VBA debug session '${ownedSession.adapterSessionId}' could not be stopped: ` +
+          (error instanceof Error ? error.message : String(error))
+        );
+      }
+      if (this.ownedAdapterSessions.get(sessionId) !== ownedSession) {
+        continue;
+      }
+      this.releaseSession(sessionId);
+      if (ownedSession.cleanup === undefined) {
+        await this.cleanupOwnedAdapterSession(sessionId, ownedSession);
+      } else {
+        await ownedSession.cleanup;
+      }
     }
   }
 
@@ -488,22 +687,102 @@ export class VscodeDebugIntegration {
       return undefined;
     }
 
-    const preparation = value as { protocolVersion?: unknown; id?: unknown };
+    const preparation = value as {
+      protocolVersion?: unknown;
+      id?: unknown;
+      generation?: unknown;
+    };
     return preparation.protocolVersion === VbaDebugRestartPreparationProtocolVersion
       && typeof preparation.id === 'string'
+      && /^[0-9a-f]{32}$/.test(preparation.id)
+      && Number.isSafeInteger(preparation.generation)
+      && (preparation.generation as number) >= 0
+      && (preparation.generation as number) <= VbaDebugRestartGenerationMaximum
       ? preparation.id
       : undefined;
   }
 
-  private reserveSession(sessionId: string): void {
+  public hasRunningRestartPreparation(
+    configuration: VbaDebugConfiguration
+  ): boolean {
+    const preparationId = this.restartPreparationId(configuration);
+    return preparationId !== undefined
+      && (() => {
+        const preparation = this.restartPreparations.get(preparationId);
+        return preparation?.cancellation !== undefined
+          || preparation?.restartRequestSequence !== undefined;
+      })();
+  }
+
+  public observeDebugAdapterMessage(
+    configuration: VbaDebugConfiguration,
+    message: unknown
+  ): void {
+    if (typeof message !== 'object' || message === null) {
+      return;
+    }
+    const response = message as {
+      type?: unknown;
+      command?: unknown;
+      request_seq?: unknown;
+    };
+    if (
+      response.type !== 'response'
+      || response.command !== 'restart'
+      || !Number.isInteger(response.request_seq)
+    ) {
+      return;
+    }
+
+    this.failRestartPreparationNotification(
+      configuration,
+      response.request_seq as number
+    );
+  }
+
+  public failRestartPreparationNotification(
+    configuration: VbaDebugConfiguration,
+    restartRequestSequence: number
+  ): void {
+    const preparationId = this.restartPreparationId(configuration);
+    const preparation = preparationId === undefined
+      ? undefined
+      : this.restartPreparations.get(preparationId);
+    if (preparation?.restartRequestSequence === restartRequestSequence) {
+      preparation.restartRequestSequence = undefined;
+    }
+  }
+
+  private reserveSession(sessionId: string): symbol {
     if (this.activeSessionId !== undefined) {
       throw new Error('A VBA debug session is already running in this VS Code window.');
     }
 
+    const reservation = Symbol(sessionId);
     this.activeSessionId = sessionId;
+    this.activeSessionReservation = reservation;
+    return reservation;
   }
 
-  private bindRestartPreparation(session: VbaDebugSessionLike): void {
+  private hasSessionReservation(sessionId: string, reservation: symbol): boolean {
+    return !this.shutdownRequested
+      && this.activeSessionId === sessionId
+      && this.activeSessionReservation === reservation;
+  }
+
+  private releaseSessionReservation(sessionId: string, reservation: symbol): void {
+    if (
+      this.activeSessionId === sessionId
+      && this.activeSessionReservation === reservation
+    ) {
+      this.releaseSession(sessionId);
+    }
+  }
+
+  private bindRestartPreparation(
+    session: VbaDebugSessionLike,
+    adapterSessionId: string
+  ): void {
     if (session.configuration === undefined) {
       return;
     }
@@ -512,9 +791,15 @@ export class VscodeDebugIntegration {
     if (preparationId === undefined) {
       return;
     }
-    if (!this.restartPreparations.has(preparationId)) {
+    const preparation = this.restartPreparations.get(preparationId);
+    if (preparation === undefined) {
       throw new Error(`VBA debug restart preparation '${preparationId}' is unavailable.`);
     }
+    if (preparation.adapterSessionId !== undefined) {
+      throw new Error(`VBA debug restart preparation '${preparationId}' is already bound.`);
+    }
+    preparation.adapterSessionId = adapterSessionId;
+    preparation.vscodeSessionId = session.id;
 
     const preparationIds = this.restartPreparationIdsBySession.get(session.id)
       ?? new Set<string>();
@@ -526,7 +811,19 @@ export class VscodeDebugIntegration {
 interface VbaDebugRestartPreparationState {
   readonly id: string;
   readonly projectRoot: string;
+  readonly configuration: VbaDebugConfiguration;
+  generation: number;
+  adapterSessionId?: string | undefined;
+  vscodeSessionId?: string | undefined;
+  restartRequestSequence?: number | undefined;
   cancellation?: VbaDebugCancellationController | undefined;
+}
+
+interface OwnedVbaDebugAdapterSession {
+  readonly executablePath: string;
+  readonly adapterSessionId: string;
+  readonly stop: () => PromiseLike<unknown> | unknown;
+  cleanup?: Promise<void> | undefined;
 }
 
 function canonicalVbaDebugProjectRoot(projectRoot: string): string {
