@@ -16,7 +16,9 @@ vba-dev --version
 `vba-dev capabilities --format json` reports the same three-part SemVer as
 `toolVersion`, independently from the VS Code extension version. Snapshot-aware
 callers can require the `build.sourceSnapshot` or `test.sourceSnapshot` feature
-version `1.0` before supplying those command inputs.
+version `1.0` before supplying those command inputs. Windows snapshot producers
+can also require `sourceSnapshot.activeWindowsCodePage` version `1.0` and read
+the accompanying positive `activeWindowsCodePage` value captured from `GetACP`.
 
 ## PowerShell completion
 

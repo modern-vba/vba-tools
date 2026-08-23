@@ -1,6 +1,10 @@
 {
   "contractVersion": "1.0",
   "debugAdapterProtocolVersion": "1.1",
+  "featureVersions": {
+    "test.sourceSnapshot": "1.0",
+    "sourceSnapshot.activeWindowsCodePage": "1.0"
+  },
   "commandSchemaVersions": {
     "build": "1.0",
     "common-module add": "1.0",

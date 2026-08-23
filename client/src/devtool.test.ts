@@ -87,6 +87,42 @@ test('VbaDev session resolution falls back from a missing override and pins the 
   }]);
 });
 
+test('VbaDev session resolver reads the active Windows code page once for each operation', async () => {
+  const extensionRoot = path.resolve(__dirname, '..', '..');
+  const bundledPath = path.join(extensionRoot, 'bin', 'vba-dev', 'win-x64', 'vba-dev.exe');
+  const reportedCodePages = [932, 1252, 65001];
+  const calls: Array<{ file: string; args: readonly string[] }> = [];
+  const resolver = new VbaDevSessionResolver({
+    extensionRoot,
+    requiredContract,
+    runProcess: async (file, args) => {
+      calls.push({ file, args });
+      const activeWindowsCodePage = reportedCodePages[calls.length - 1];
+      return {
+        stdout: JSON.stringify({
+          ...JSON.parse(compatibleCapabilities()) as object,
+          activeWindowsCodePage
+        }),
+        stderr: ''
+      };
+    }
+  });
+
+  const resolved = await resolver.resolve();
+  const firstOperationCodePage = await resolver.readActiveWindowsCodePage();
+  const secondOperationCodePage = await resolver.readActiveWindowsCodePage();
+
+  assert.equal(resolved.executablePath, bundledPath);
+  assert.equal(resolved.capabilities.activeWindowsCodePage, 932);
+  assert.equal(firstOperationCodePage, 1252);
+  assert.equal(secondOperationCodePage, 65001);
+  assert.deepEqual(calls, [
+    { file: bundledPath, args: ['capabilities', '--format', 'json'] },
+    { file: bundledPath, args: ['capabilities', '--format', 'json'] },
+    { file: bundledPath, args: ['capabilities', '--format', 'json'] }
+  ]);
+});
+
 test('VbaDev session resolution validates and pins the bundled executable when no override is configured', async () => {
   const extensionRoot = path.resolve(__dirname, '..', '..');
   const bundledPath = path.join(extensionRoot, 'bin', 'vba-dev', 'win-x64', 'vba-dev.exe');
@@ -548,6 +584,85 @@ test('VbaDev compatibility never falls back to PATH discovery', async () => {
     path.join(extensionRoot, 'bin', 'vba-dev', 'win-x64', 'vba-dev.exe')
   );
   assert.notEqual(calls[0]?.file, 'vba-dev');
+});
+
+test('VbaDev compatibility rejects a missing required source snapshot feature', async () => {
+  const executablePath = path.join('D:', 'tools', 'old-vba-dev.exe');
+  const requiredSnapshotContract = {
+    contractVersion: '1.0',
+    debugAdapterProtocolVersion: '1.0',
+    featureVersions: {
+      'test.sourceSnapshot': '1.0'
+    },
+    commandSchemaVersions: {
+      test: '1.2'
+    }
+  };
+
+  await assert.rejects(
+    () => resolveCompatibleVbaDev({
+      extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
+      configuredPath: executablePath,
+      runProcess: async () => ({
+        stdout: JSON.stringify({
+          toolVersion: '0.1.0',
+          contractVersion: '1.0',
+          featureVersions: {},
+          commands: {
+            test: { outputSchemaVersion: '1.2' }
+          },
+          debugAdapter: {
+            protocolVersion: '1.0',
+            transport: 'stdio',
+            command: 'debug-adapter'
+          }
+        }),
+        stderr: ''
+      }),
+      requiredContract: requiredSnapshotContract
+    }),
+    /does not report required feature 'test\.sourceSnapshot'/);
+});
+
+test('VbaDev compatibility rejects snapshot encoding capability without an active code page', async () => {
+  const executablePath = path.join('D:', 'tools', 'old-vba-dev.exe');
+
+  await assert.rejects(
+    () => resolveCompatibleVbaDev({
+      extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
+      configuredPath: executablePath,
+      runProcess: async () => ({
+        stdout: JSON.stringify({
+          toolVersion: '0.1.0',
+          contractVersion: '1.0',
+          featureVersions: {
+            'test.sourceSnapshot': '1.0',
+            'sourceSnapshot.activeWindowsCodePage': '1.0'
+          },
+          commands: {
+            test: { outputSchemaVersion: '1.2' }
+          },
+          debugAdapter: {
+            protocolVersion: '1.0',
+            transport: 'stdio',
+            command: 'debug-adapter'
+          }
+        }),
+        stderr: ''
+      }),
+      requiredContract: {
+        contractVersion: '1.0',
+        debugAdapterProtocolVersion: '1.0',
+        featureVersions: {
+          'test.sourceSnapshot': '1.0',
+          'sourceSnapshot.activeWindowsCodePage': '1.0'
+        },
+        commandSchemaVersions: {
+          test: '1.2'
+        }
+      }
+    }),
+    /does not report the active Windows code page/);
 });
 
 test('VbaDev compatibility rejects an incompatible contract before command use', async () => {

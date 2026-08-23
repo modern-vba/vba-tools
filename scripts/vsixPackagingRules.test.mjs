@@ -472,19 +472,37 @@ test('bundled CLI capabilities must satisfy the packaged extension contract surf
     transport: 'stdio',
     command: 'debug-adapter'
   };
-
-  assert.doesNotThrow(() => assertBundledCliCapabilities(JSON.stringify({
+  const compatibleCapabilities = {
     toolVersion: '0.1.0',
     contractVersion: contract.contractVersion,
+    featureVersions: contract.featureVersions,
+    activeWindowsCodePage: 932,
     commands,
     debugAdapter
-  })));
+  };
+
+  assert.doesNotThrow(() => assertBundledCliCapabilities(JSON.stringify(compatibleCapabilities)));
+
+  const missingActiveCodePageFeature = { ...contract.featureVersions };
+  delete missingActiveCodePageFeature['sourceSnapshot.activeWindowsCodePage'];
+  assert.throws(
+    () => assertBundledCliCapabilities(JSON.stringify({
+      ...compatibleCapabilities,
+      featureVersions: missingActiveCodePageFeature
+    })),
+    /sourceSnapshot\.activeWindowsCodePage/
+  );
+
+  const { activeWindowsCodePage: _omittedCodePage, ...withoutActiveCodePage } = compatibleCapabilities;
+  assert.throws(
+    () => assertBundledCliCapabilities(JSON.stringify(withoutActiveCodePage)),
+    /active Windows code page/
+  );
 
   assert.throws(
     () => assertBundledCliCapabilities(JSON.stringify({
-      toolVersion: '0.1.0',
-      contractVersion: contract.contractVersion,
-      commands
+      ...compatibleCapabilities,
+      debugAdapter: undefined
     })),
     /debug adapter/
   );
@@ -496,9 +514,7 @@ test('bundled CLI capabilities must satisfy the packaged extension contract surf
   ]) {
     assert.throws(
       () => assertBundledCliCapabilities(JSON.stringify({
-        toolVersion: '0.1.0',
-        contractVersion: contract.contractVersion,
-        commands,
+        ...compatibleCapabilities,
         debugAdapter: incompatibleDebugAdapter
       })),
       /debug adapter/
@@ -508,10 +524,8 @@ test('bundled CLI capabilities must satisfy the packaged extension contract surf
   delete commands.doctor;
   assert.throws(
     () => assertBundledCliCapabilities(JSON.stringify({
-      toolVersion: '0.1.0',
-      contractVersion: contract.contractVersion,
-      commands,
-      debugAdapter
+      ...compatibleCapabilities,
+      commands
     })),
     /doctor/
   );
@@ -603,6 +617,8 @@ test('packaging verification checks file contents publish settings and bundled C
       stdout: JSON.stringify({
         toolVersion: '0.1.0',
         contractVersion: contract.contractVersion,
+        featureVersions: contract.featureVersions,
+        activeWindowsCodePage: 932,
         commands,
         debugAdapter: {
           protocolVersion: contract.debugAdapterProtocolVersion,

@@ -382,11 +382,12 @@ contains a readable `vba-project.json` manifest.
 
 | Profile | Behavior |
 | --- | --- |
-| `Run Tests` | Invokes `vba-dev test --format ndjson` and keeps build-before-test behavior. |
-| `Run Tests Without Build` | Invokes `vba-dev test --no-build --format ndjson` for explicit fast reruns against existing generated output. |
+| `Run Tests` | Captures a caller-owned source snapshot, including dirty editors without saving them, then invokes `vba-dev test --source-snapshot <temporary-directory> --format ndjson`. |
+| `Run Tests Without Build` | Skips saving and snapshot capture, then invokes `vba-dev test --no-build --format ndjson` against existing generated output. |
 
 Missing or unusable generated output is reported as a test run error in the
-no-build profile.
+no-build profile. When selected source is dirty, no-build results remain
+available but source navigation is omitted because the workbook was not rebuilt.
 
 ---
 

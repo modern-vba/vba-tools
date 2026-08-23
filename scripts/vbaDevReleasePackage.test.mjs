@@ -25,7 +25,12 @@ test('standalone vba-dev archive is versioned complete and probed after clean ex
   await write(root, 'bin/vba-dev/win-x64/VbaDev.App.pdb', 'app symbols');
   await write(root, 'tools/vba-dev/README.md', '# vba-dev\n');
   await write(root, 'LICENSE', 'MIT\n');
-  await write(root, 'vba-dev-contract.json', JSON.stringify({ contractVersion: '1.0' }));
+  await write(root, 'vba-dev-contract.json', JSON.stringify({
+    contractVersion: '1.0',
+    featureVersions: {
+      'sourceSnapshot.activeWindowsCodePage': '1.0'
+    }
+  }));
 
   let archivedFiles = [];
   let archivedSource;
@@ -65,7 +70,14 @@ test('standalone vba-dev archive is versioned complete and probed after clean ex
     }
 
     return {
-      stdout: JSON.stringify({ toolVersion: '0.1.0', contractVersion: '1.0' }),
+      stdout: JSON.stringify({
+        toolVersion: '0.1.0',
+        contractVersion: '1.0',
+        featureVersions: {
+          'sourceSnapshot.activeWindowsCodePage': '1.0'
+        },
+        activeWindowsCodePage: 932
+      }),
       stderr: ''
     };
   };

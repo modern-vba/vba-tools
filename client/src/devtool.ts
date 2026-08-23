@@ -163,6 +163,26 @@ export class VbaDevSessionResolver implements CompanionExecutableResolver {
     return attempt;
   }
 
+  public async readActiveWindowsCodePage(): Promise<number> {
+    const resolution = await this.resolve();
+    const requiredContract = this.options.requiredContract
+      ?? loadRequiredVbaDevContract(this.options.extensionRoot);
+    const runProcess = this.options.runProcess ?? runProcessWithExecFile;
+    const inspected = await inspectCompatibleVbaDev(
+      resolution.executablePath,
+      requiredContract,
+      runProcess
+    );
+    const codePage = inspected.capabilities.activeWindowsCodePage;
+    if (codePage === undefined) {
+      throw new VbaDevCompatibilityError(
+        `VbaDev at '${resolution.executablePath}' did not report the active Windows code page.`
+      );
+    }
+
+    return codePage;
+  }
+
   private async resolveUncached(): Promise<CompanionExecutableResolution> {
     const configuredCandidate = this.options.configuredPathProvider?.()
       ?? this.options.configuredPath;

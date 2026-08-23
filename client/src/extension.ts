@@ -1,5 +1,6 @@
 import * as path from 'node:path';
 import { promises as fs } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 import {
   CancellationTokenSource,
@@ -51,6 +52,9 @@ import {
 import {
   createWorkbookBackedTestExplorer
 } from './testExplorer';
+import {
+  createCallerOwnedSourceSnapshotCapture
+} from './snapshotSourceInventory';
 import {
   registerWorkbookBackedTestExplorerRefresh
 } from './testExplorerRefresh';
@@ -359,6 +363,40 @@ export async function activate(context: ExtensionContext): Promise<void> {
     'VBA Workbook Tests'
   );
   context.subscriptions.push(testController);
+  const captureTestSourceSnapshot = createCallerOwnedSourceSnapshotCapture({
+    getActiveWindowsCodePage: () => vbaDevResolver.readActiveWindowsCodePage(),
+    getOpenTextDocuments: () => workspace.textDocuments.map((document) => ({
+      uriScheme: document.uri.scheme,
+      uriPath: document.uri.scheme === 'file' ? document.uri.fsPath : undefined,
+      fileName: document.fileName,
+      isDirty: document.isDirty,
+      encoding: document.encoding,
+      getText: () => document.getText()
+    })),
+    findSourceFiles: async (sourceSetPath) => (
+      await workspace.findFiles(
+        new RelativePattern(sourceSetPath, '**/*.{bas,cls,frm,frx}'),
+        null
+      )
+    ).map((uri) => uri.fsPath),
+    readFile: async (filePath) => workspace.fs.readFile(Uri.file(filePath)),
+    encodeText: async (text, encoding) => workspace.encode(text, { encoding }),
+    decodeText: async (bytes, encoding) => workspace.decode(bytes, { encoding }),
+    createTemporaryDirectory: async () => fs.mkdtemp(
+      path.join(tmpdir(), 'vba-tools-test-source-')),
+    createDirectory: async (directoryPath) => {
+      await fs.mkdir(directoryPath, { recursive: true });
+    },
+    writeFile: async (filePath, bytes) => {
+      await fs.writeFile(filePath, bytes);
+    },
+    removeDirectory: async (directoryPath) => {
+      await fs.rm(directoryPath, { recursive: true, force: true });
+    },
+    wait: async (milliseconds) => new Promise((resolve) => {
+      setTimeout(resolve, milliseconds);
+    })
+  });
   const workbookBackedTestExplorer = createWorkbookBackedTestExplorer({
     controller: createVscodeTestControllerAdapter(testController),
     extensionRoot: context.extensionPath,
@@ -370,9 +408,9 @@ export async function activate(context: ExtensionContext): Promise<void> {
       .filter((document) => document.uri.scheme === 'file')
       .map((document) => ({
         uriPath: document.uri.fsPath,
-        isDirty: document.isDirty,
-        save: () => document.save()
+        isDirty: document.isDirty
       })),
+    captureSourceSnapshot: captureTestSourceSnapshot,
     outputChannel,
     showErrorMessage: (message: string) => window.showErrorMessage(message)
   });

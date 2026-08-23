@@ -17,7 +17,6 @@ import {
 } from './devtoolRuntime';
 import { parseProjectManifest } from './projectManifest';
 import {
-  TestDiscoveryGenerationSnapshot,
   TestItemMetadata,
   TestExplorerNodeIndex,
   WorkbookBackedTestProject,
@@ -88,7 +87,8 @@ export interface WorkbookBackedTestExplorerOptions {
   workspaceRoots: readonly string[];
   findProjectManifests: (workspaceRoots: readonly string[]) => Promise<readonly string[]>;
   readTextFile: (filePath: string) => Promise<string>;
-  openTextDocuments: () => readonly SavableTextDocument[];
+  openTextDocuments: () => readonly OpenTextDocumentState[];
+  captureSourceSnapshot: CaptureSourceSnapshot;
   capabilitiesProcess?: ProcessRunner | undefined;
   startProcess?: StartVbaDevProcess | undefined;
   outputChannel: VbaToolsOutputChannel;
@@ -96,11 +96,20 @@ export interface WorkbookBackedTestExplorerOptions {
   requiredContract?: RequiredVbaDevContract | undefined;
 }
 
-export interface SavableTextDocument {
+export interface OpenTextDocumentState {
   readonly uriPath: string;
   readonly isDirty: boolean;
-  save(): PromiseLike<boolean>;
 }
+
+export interface CallerOwnedSourceSnapshot {
+  readonly directoryPath: string;
+  cleanup(): Promise<{ readonly retainedPath?: string | undefined }>;
+}
+
+export type CaptureSourceSnapshot = (
+  sourceSetPath: string,
+  cancellationToken: CommandCancellationToken
+) => Promise<CallerOwnedSourceSnapshot>;
 
 export interface WorkbookBackedTestExplorer {
   refresh(): Promise<void>;
@@ -188,6 +197,7 @@ async function loadWorkbookBackedProjects(
       projectRoot: path.dirname(manifestPath),
       manifestPath,
       projectName: manifest.projectName,
+      primaryDocument: manifest.primaryDocument,
       documents: manifest.documents
     });
   }
@@ -222,27 +232,13 @@ async function runTests(
       const metadata = nodeIndex.getMetadata(item);
       return metadata ? [{ item, metadata }] : [];
     });
-    const saveError = await saveDirtySourcesInScope(options, nodeIndex, items, token);
-    if (saveError !== undefined) {
-      const errorItem = items[0];
-      if (errorItem) {
-        run.errored(errorItem, saveError);
-      }
-      return;
-    }
-
-    const preparedSelections = selections.map((selection) => ({
-      ...selection,
-      discoveryGenerations: nodeIndex.captureDiscoveryGenerations(selection.metadata)
-    }));
-    for (const selection of preparedSelections) {
+    for (const selection of selections) {
       await runTestItem(
         options,
         nodeIndex,
         run,
         selection.item,
         selection.metadata,
-        selection.discoveryGenerations,
         token,
         runOptions);
     }
@@ -251,45 +247,17 @@ async function runTests(
   }
 }
 
-async function saveDirtySourcesInScope(
+function hasDirtyExportedSourceInScope(
   options: WorkbookBackedTestExplorerOptions,
-  nodeIndex: TestExplorerNodeIndex,
-  items: readonly TestExplorerItem[],
-  token: CommandCancellationToken
-): Promise<string | undefined> {
-  const sourceSetPaths = nodeIndex.selectedSourceSetPaths(items);
-  for (const document of options.openTextDocuments()) {
-    if (
-      !document.isDirty
-      || !isExportedVbaSource(document.uriPath)
-      || !sourceSetPaths.some((sourceSetPath) => isPathWithin(document.uriPath, sourceSetPath))
-    ) {
-      continue;
-    }
-
-    if (token.isCancellationRequested) {
-      return `Test run cancelled before saving exported VBA source: ${document.uriPath}`;
-    }
-
-    let saved: boolean;
-    try {
-      saved = await document.save();
-    } catch {
-      return token.isCancellationRequested
-        ? `Test run cancelled while saving exported VBA source: ${document.uriPath}`
-        : `Could not save exported VBA source before the test run: ${document.uriPath}`;
-    }
-
-    if (token.isCancellationRequested) {
-      return `Test run cancelled while saving exported VBA source: ${document.uriPath}`;
-    }
-
-    if (!saved) {
-      return `Could not save exported VBA source before the test run: ${document.uriPath}`;
-    }
-  }
-
-  return undefined;
+  metadata: TestItemMetadata
+): boolean {
+  return options.openTextDocuments().some((document) => (
+    document.isDirty
+    && isExportedVbaSource(document.uriPath)
+    && metadata.sourceSetPaths.some((sourceSetPath) => (
+      isPathWithin(document.uriPath, sourceSetPath)
+    ))
+  ));
 }
 
 function isExportedVbaSource(filePath: string): boolean {
@@ -315,44 +283,100 @@ async function runTestItem(
   testRun: TestRunLike,
   item: TestExplorerItem,
   metadata: TestItemMetadata,
-  discoveryGenerations: TestDiscoveryGenerationSnapshot,
   token: CommandCancellationToken,
   runOptions: TestRunOptions
 ): Promise<void> {
-  testRun.started(item);
-  const result = await runVbaDevProjectCommandInvocation({
-    ...options,
-    cancellationToken: token
-  }, {
-    projectRoot: metadata.projectRoot,
-    argsBeforeProject: ['test'],
-    argsAfterProject: createTestSelectorArgs(metadata, runOptions.noBuild)
-  });
-  if (result === undefined) {
-    testRun.errored(item, noCompatibleVbaDevMessage);
+  if (token.isCancellationRequested) {
+    testRun.cancelled(item);
     return;
   }
-  testRun.appendOutput(result.stdout);
-  testRun.appendOutput(result.stderr);
 
-  const eventState = nodeIndex.applyTestOutput(
-    options.controller,
-    testRun,
-    metadata,
-    result.stdout,
-    discoveryGenerations,
-    !result.cancelled && result.exitCode !== null);
+  const omitSourceLocations = runOptions.noBuild
+    && hasDirtyExportedSourceInScope(options, metadata);
+  if (omitSourceLocations) {
+    nodeIndex.resetDiscoveryForRun(metadata);
+  }
+  const discoveryGenerations = nodeIndex.captureDiscoveryGenerations(metadata);
 
-  if (result.cancelled) {
-    testRun.cancelled(item);
-  } else if (result.exitCode === 0) {
-    testRun.passed(item);
-  } else if (eventState.hasAssertionFailure) {
-    testRun.failed(item, 'One or more VBA tests failed.');
-  } else {
-    const errorMessage = firstNonEmptyLine(result.stderr, result.stdout) ?? 'vba-dev test failed. See the VBA Tools output for details.';
-    testRun.errored(eventState.errorItem ?? item, errorMessage);
-    await options.showErrorMessage('VBA Tools: Test failed. See the VBA Tools output for details.');
+  let sourceSnapshot: CallerOwnedSourceSnapshot | undefined;
+  try {
+    if (!runOptions.noBuild) {
+      const sourceSetPath = metadata.sourceSetPaths[0];
+      if (sourceSetPath === undefined) {
+        testRun.errored(item, 'VBA Tools could not resolve the source set for this test run.');
+        return;
+      }
+
+      try {
+        sourceSnapshot = await options.captureSourceSnapshot(sourceSetPath, token);
+      } catch (error) {
+        if (token.isCancellationRequested) {
+          testRun.cancelled(item);
+          return;
+        }
+        const message = error instanceof Error ? error.message : String(error);
+        testRun.errored(item, `Could not capture the VBA source snapshot: ${message}`);
+        return;
+      }
+    }
+
+    if (token.isCancellationRequested) {
+      testRun.cancelled(item);
+      return;
+    }
+
+    testRun.started(item);
+    const result = await runVbaDevProjectCommandInvocation({
+      ...options,
+      cancellationToken: token
+    }, {
+      projectRoot: metadata.projectRoot,
+      argsBeforeProject: ['test'],
+      argsAfterProject: createTestSelectorArgs(
+        metadata,
+        runOptions.noBuild,
+        sourceSnapshot?.directoryPath)
+    });
+    if (result === undefined) {
+      testRun.errored(item, noCompatibleVbaDevMessage);
+      return;
+    }
+    testRun.appendOutput(result.stdout);
+    testRun.appendOutput(result.stderr);
+
+    const eventState = nodeIndex.applyTestOutput(
+      options.controller,
+      testRun,
+      metadata,
+      result.stdout,
+      discoveryGenerations,
+      !result.cancelled && result.exitCode !== null,
+      { omitSourceLocations });
+
+    if (result.cancelled) {
+      testRun.cancelled(item);
+    } else if (result.exitCode === 0) {
+      testRun.passed(item);
+    } else if (eventState.hasAssertionFailure) {
+      testRun.failed(item, 'One or more VBA tests failed.');
+    } else {
+      const errorMessage = firstNonEmptyLine(result.stderr, result.stdout) ?? 'vba-dev test failed. See the VBA Tools output for details.';
+      testRun.errored(eventState.errorItem ?? item, errorMessage);
+      await options.showErrorMessage('VBA Tools: Test failed. See the VBA Tools output for details.');
+    }
+  } finally {
+    if (sourceSnapshot !== undefined) {
+      try {
+        const cleanupResult = await sourceSnapshot.cleanup();
+        if (cleanupResult.retainedPath !== undefined) {
+          testRun.appendOutput(
+            `Source snapshot cleanup warning: retained caller-owned directory ${cleanupResult.retainedPath}\n`);
+        }
+      } catch {
+        testRun.appendOutput(
+          `Source snapshot cleanup warning: retained caller-owned directory ${sourceSnapshot.directoryPath}\n`);
+      }
+    }
   }
 }
 

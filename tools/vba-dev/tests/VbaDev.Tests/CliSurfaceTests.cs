@@ -78,9 +78,42 @@ public sealed class CliSurfaceTests
             CancellationToken.None);
 
         Assert.Equal(0, exitCode);
+        using var capabilities = JsonDocument.Parse(standardOutput.ToString());
+        var activeCodePageProperty = OperatingSystem.IsWindows()
+            ? $"\"activeWindowsCodePage\":{capabilities.RootElement.GetProperty("activeWindowsCodePage").GetInt32()},"
+            : string.Empty;
         Assert.Equal(
-            "{\"toolVersion\":\"0.1.0\",\"contractVersion\":\"1.0\",\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\",\"test.sourceSnapshot\":\"1.0\"},\"commands\":{\"build\":{\"outputSchemaVersion\":\"1.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"import\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"1.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"debugAdapter\":{\"protocolVersion\":\"1.1\",\"transport\":\"stdio\",\"command\":\"debug-adapter\"}}" + Environment.NewLine,
+            "{\"toolVersion\":\"0.1.0\",\"contractVersion\":\"1.0\",\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\",\"test.sourceSnapshot\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}," +
+            activeCodePageProperty +
+            "\"commands\":{\"build\":{\"outputSchemaVersion\":\"1.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"import\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"1.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"debugAdapter\":{\"protocolVersion\":\"1.1\",\"transport\":\"stdio\",\"command\":\"debug-adapter\"}}" + Environment.NewLine,
             standardOutput.ToString());
+        Assert.Empty(standardError.ToString());
+    }
+
+    [Fact]
+    public async Task CapabilitiesReportTheActiveWindowsCodePageForSnapshotProducers()
+    {
+        using var standardOutput = new StringWriter();
+        using var standardError = new StringWriter();
+        var commandLine = VbaDevCommandLine.CreateDefault();
+
+        var exitCode = await commandLine.InvokeAsync(
+            ["capabilities", "--format", "json"],
+            standardOutput,
+            standardError,
+            CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        using var document = JsonDocument.Parse(standardOutput.ToString());
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.True(document.RootElement.TryGetProperty("activeWindowsCodePage", out var codePage));
+            Assert.True(codePage.GetInt32() > 0);
+        }
+        else
+        {
+            Assert.False(document.RootElement.TryGetProperty("activeWindowsCodePage", out _));
+        }
         Assert.Empty(standardError.ToString());
     }
 

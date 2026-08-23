@@ -57,7 +57,11 @@ test('Running a project node invokes vba-dev test ndjson with explicit project r
 
   assert.deepEqual(calls.map((call) => call.args), [
     ['capabilities', '--format', 'json'],
-    ['test', '--project', projectRoot, '--format', 'ndjson']
+    [
+      'test', '--project', projectRoot,
+      '--source-snapshot', path.join('C:', 'temp', 'test-source-snapshot'),
+      '--format', 'ndjson'
+    ]
   ]);
   assert.deepEqual(controller.runs[0].events, [
     `started:${controller.items[0].id}`,
@@ -65,6 +69,34 @@ test('Running a project node invokes vba-dev test ndjson with explicit project r
     'end'
   ]);
   assert.match(output.join(''), /"type":"runFinished"/);
+});
+
+test('a project run snapshots the manifest primary document even when it is not first', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const capturedSourceSets: string[] = [];
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([
+      [
+        path.join(projectRoot, 'vba-project.json'),
+        manifestJson('BookProject', ['Book1', 'PrimaryBook'], 'PrimaryBook')
+      ]
+    ]),
+    captureSourceSnapshot: async (sourceSetPath) => {
+      capturedSourceSets.push(sourceSetPath);
+      return {
+        directoryPath: path.join('C:', 'temp', 'primary-snapshot'),
+        cleanup: async () => ({})
+      };
+    }
+  });
+  await explorer.refresh();
+
+  await explorer.run({ include: [controller.items[0]] }, uncancelledToken());
+
+  assert.deepEqual(capturedSourceSets, [
+    path.join(projectRoot, 'src', 'PrimaryBook')
+  ]);
 });
 
 test('Running a document node invokes vba-dev test ndjson with explicit project and document', async () => {
@@ -84,16 +116,24 @@ test('Running a document node invokes vba-dev test ndjson with explicit project 
 
   assert.deepEqual(calls.map((call) => call.args), [
     ['capabilities', '--format', 'json'],
-    ['test', '--project', projectRoot, '--document', 'Book1', '--format', 'ndjson']
+    [
+      'test', '--project', projectRoot, '--document', 'Book1',
+      '--source-snapshot', path.join('C:', 'temp', 'test-source-snapshot'),
+      '--format', 'ndjson'
+    ]
   ]);
 });
 
-test('a document run saves its dirty exported VBA source before starting vba-dev', async () => {
+test('the default document run uses a caller-owned source snapshot without saving dirty editors', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const sourcePath = path.join(projectRoot, 'src', 'Book1', 'Test_Module.bas');
+  const snapshotPath = path.join('C:', 'temp', 'vba-tools-test-snapshot');
   const order: string[] = [];
+  const calls: Array<{ file: string; args: readonly string[] }> = [];
+  let saveCalls = 0;
   const controller = new FakeTestController();
   const explorer = createExplorer(controller, {
+    calls,
     manifests: new Map([
       [path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]
     ]),
@@ -102,12 +142,24 @@ test('a document run saves its dirty exported VBA source before starting vba-dev
         uriPath: sourcePath,
         isDirty: true,
         save: async () => {
-          order.push(`save:${sourcePath}`);
+          saveCalls += 1;
           return true;
         }
       }
     ],
-    startProcess: () => {
+    captureSourceSnapshot: async (sourceSetPath) => {
+      assert.equal(sourceSetPath, path.join(projectRoot, 'src', 'Book1'));
+      order.push('snapshot');
+      return {
+        directoryPath: snapshotPath,
+        cleanup: async () => {
+          order.push('cleanup');
+          return {};
+        }
+      };
+    },
+    startProcess: (file, args) => {
+      calls.push({ file, args });
       order.push('process');
       return completedProcess();
     }
@@ -117,10 +169,21 @@ test('a document run saves its dirty exported VBA source before starting vba-dev
 
   await explorer.run({ include: [documentItem] }, uncancelledToken());
 
-  assert.deepEqual(order, [`save:${sourcePath}`, 'process']);
+  assert.equal(saveCalls, 0);
+  assert.deepEqual(order, ['snapshot', 'process', 'cleanup']);
+  assert.deepEqual(calls.map((call) => call.args), [
+    ['capabilities', '--format', 'json'],
+    [
+      'test',
+      '--project', projectRoot,
+      '--document', 'Book1',
+      '--source-snapshot', snapshotPath,
+      '--format', 'ndjson'
+    ]
+  ]);
 });
 
-test('a failed required source save records a Test Run error without starting vba-dev', async () => {
+test('an unreadable inventoried source records a Test Run error before vba-dev starts', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const sourcePath = path.join(projectRoot, 'src', 'Book1', 'Test_Module.bas');
   let processStarted = false;
@@ -129,13 +192,9 @@ test('a failed required source save records a Test Run error without starting vb
     manifests: new Map([
       [path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]
     ]),
-    openTextDocuments: () => [
-      {
-        uriPath: sourcePath,
-        isDirty: true,
-        save: async () => false
-      }
-    ],
+    captureSourceSnapshot: async () => {
+      throw new Error(`Could not read inventoried source: ${sourcePath}`);
+    },
     startProcess: () => {
       processStarted = true;
       return completedProcess();
@@ -148,29 +207,31 @@ test('a failed required source save records a Test Run error without starting vb
 
   assert.equal(processStarted, false);
   assert.deepEqual(controller.runs[0].events, [
-    `errored:${documentItem.id}:Could not save exported VBA source before the test run: ${sourcePath}`,
+    `errored:${documentItem.id}:Could not capture the VBA source snapshot: Could not read inventoried source: ${sourcePath}`,
     'end'
   ]);
 });
 
-test('a throwing required source save records a Test Run error without starting vba-dev', async () => {
+test('cancellation during snapshot capture cleans the lease and does not start vba-dev', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
-  const sourcePath = path.join(projectRoot, 'src', 'Book1', 'Test_Module.bas');
+  let cancellationRequested = false;
+  let cleanupCalls = 0;
   let processStarted = false;
   const controller = new FakeTestController();
   const explorer = createExplorer(controller, {
     manifests: new Map([
       [path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]
     ]),
-    openTextDocuments: () => [
-      {
-        uriPath: sourcePath,
-        isDirty: true,
-        save: async () => {
-          throw new Error('synthetic save failure');
+    captureSourceSnapshot: async () => {
+      cancellationRequested = true;
+      return {
+        directoryPath: path.join('C:', 'temp', 'cancelled-capture'),
+        cleanup: async () => {
+          cleanupCalls += 1;
+          return {};
         }
-      }
-    ],
+      };
+    },
     startProcess: () => {
       processStarted = true;
       return completedProcess();
@@ -179,20 +240,28 @@ test('a throwing required source save records a Test Run error without starting 
   await explorer.refresh();
   const documentItem = controller.items[0].children.items[0];
 
-  await explorer.run({ include: [documentItem] }, uncancelledToken());
+  await explorer.run(
+    { include: [documentItem] },
+    {
+      get isCancellationRequested() {
+        return cancellationRequested;
+      },
+      onCancellationRequested: () => ({ dispose: () => undefined })
+    });
 
   assert.equal(processStarted, false);
+  assert.equal(cleanupCalls, 1);
   assert.deepEqual(controller.runs[0].events, [
-    `errored:${documentItem.id}:Could not save exported VBA source before the test run: ${sourcePath}`,
+    `cancelled:${documentItem.id}`,
     'end'
   ]);
 });
 
-test('cancellation during a required source save records a Test Run error without starting vba-dev', async () => {
+test('a dirty no-build run skips save and snapshot while omitting stale source navigation', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const sourcePath = path.join(projectRoot, 'src', 'Book1', 'Test_Module.bas');
-  let cancelled = false;
-  let processStarted = false;
+  let saveCalls = 0;
+  let snapshotCalls = 0;
   const controller = new FakeTestController();
   const explorer = createExplorer(controller, {
     manifests: new Map([
@@ -203,41 +272,262 @@ test('cancellation during a required source save records a Test Run error withou
         uriPath: sourcePath,
         isDirty: true,
         save: async () => {
-          cancelled = true;
+          saveCalls += 1;
           return true;
         }
       }
     ],
+    captureSourceSnapshot: async () => {
+      snapshotCalls += 1;
+      return {
+        directoryPath: path.join('C:', 'temp', 'unused-snapshot'),
+        cleanup: async () => ({})
+      };
+    },
+    stdout: ndjson(testFinishedWithLocation(
+      projectRoot,
+      'Book1',
+      'Test_Module',
+      'Test_Passes'))
+  });
+  await explorer.refresh();
+  const documentItem = controller.items[0].children.items[0];
+
+  await controller.runProfiles[1].runHandler(
+    { include: [documentItem] },
+    uncancelledToken());
+
+  assert.equal(saveCalls, 0);
+  assert.equal(snapshotCalls, 0);
+  const procedureItem = documentItem.children.items[0].children.items[0];
+  assert.equal(procedureItem.label, 'Test_Passes');
+  assert.equal(procedureItem.uriPath, undefined);
+  assert.ok(controller.runs[0].events.includes(`passed:${procedureItem.id}`));
+  assert.deepEqual(controller.runs[0].outputs, [
+    'Source navigation unavailable: dirty source was not built for this no-build test run.\n'
+  ]);
+});
+
+test('each selected no-build invocation captures its own dirty navigation state', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const secondSourcePath = path.join(projectRoot, 'src', 'Book2', 'Test_Module.bas');
+  let secondDirty = false;
+  const processes: Array<{
+    stdout?: (value: string) => void;
+    exit?: (exitCode: number | null, signal: NodeJS.Signals | null) => void;
+  }> = [];
+  let signalSecondProcessStarted: (() => void) | undefined;
+  const secondProcessStarted = new Promise<void>((resolve) => {
+    signalSecondProcessStarted = resolve;
+  });
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([
+      [path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1', 'Book2'])]
+    ]),
+    openTextDocuments: () => [{
+      uriPath: secondSourcePath,
+      get isDirty() {
+        return secondDirty;
+      }
+    }],
     startProcess: () => {
-      processStarted = true;
-      return completedProcess();
+      const process: typeof processes[number] = {};
+      processes.push(process);
+      if (processes.length === 2) {
+        signalSecondProcessStarted?.();
+      }
+      return {
+        onStdout: (listener) => {
+          process.stdout = listener;
+        },
+        onStderr: (listener) => listener(''),
+        onExit: (listener) => {
+          process.exit = listener;
+        },
+        kill: () => undefined
+      };
+    }
+  });
+  await explorer.refresh();
+  const [firstDocumentItem, secondDocumentItem] = controller.items[0].children.items;
+  const runPromise = controller.runProfiles[1].runHandler(
+    { include: [firstDocumentItem, secondDocumentItem] },
+    uncancelledToken());
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  secondDirty = true;
+  processes[0].stdout?.(ndjson(runFinished('Book1')));
+  processes[0].exit?.(0, null);
+  await secondProcessStarted;
+  processes[1].stdout?.(ndjson(testFinishedWithLocation(
+    projectRoot,
+    'Book2',
+    'Test_Module',
+    'Test_Current')));
+  processes[1].exit?.(0, null);
+  await runPromise;
+
+  const procedureItem = secondDocumentItem.children.items[0].children.items[0];
+  assert.equal(procedureItem.uriPath, undefined);
+  assert.ok(controller.runs[0].events.includes(`passed:${procedureItem.id}`));
+  assert.deepEqual(controller.runs[0].outputs, [
+    'Source navigation unavailable: dirty source was not built for this no-build test run.\n'
+  ]);
+});
+
+test('a dirty no-build run replaces previously discovered navigation with locationless identities', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const sourcePath = path.join(projectRoot, 'src', 'Book1', 'Test_Module.bas');
+  let dirty = false;
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([
+      [path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]
+    ]),
+    openTextDocuments: () => [{
+      uriPath: sourcePath,
+      get isDirty() {
+        return dirty;
+      }
+    }],
+    stdout: ndjson(testFinishedWithLocation(
+      projectRoot,
+      'Book1',
+      'Test_Module',
+      'Test_Passes'))
+  });
+  await explorer.refresh();
+  const documentItem = controller.items[0].children.items[0];
+  await explorer.run({ include: [documentItem] }, uncancelledToken());
+  const priorProcedureItem = documentItem.children.items[0].children.items[0];
+  assert.equal(priorProcedureItem.uriPath, sourcePath);
+
+  dirty = true;
+  await controller.runProfiles[1].runHandler(
+    { include: [documentItem] },
+    uncancelledToken());
+
+  const navigationlessProcedureItem = documentItem.children.items[0].children.items[0];
+  assert.notEqual(navigationlessProcedureItem, priorProcedureItem);
+  assert.equal(navigationlessProcedureItem.label, 'Test_Passes');
+  assert.equal(navigationlessProcedureItem.uriPath, undefined);
+});
+
+test('an already-cancelled dirty no-build run preserves prior discovery and navigation', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const sourcePath = path.join(projectRoot, 'src', 'Book1', 'Test_Module.bas');
+  let dirty = false;
+  let processStarts = 0;
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([
+      [path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]
+    ]),
+    openTextDocuments: () => [{
+      uriPath: sourcePath,
+      get isDirty() {
+        return dirty;
+      }
+    }],
+    stdout: ndjson(testFinishedWithLocation(
+      projectRoot,
+      'Book1',
+      'Test_Module',
+      'Test_Passes')),
+    startProcess: () => {
+      processStarts += 1;
+      const stdout = ndjson(testFinishedWithLocation(
+        projectRoot,
+        'Book1',
+        'Test_Module',
+        'Test_Passes'));
+      return {
+        onStdout: (listener) => listener(stdout),
+        onStderr: (listener) => listener(''),
+        onExit: (listener) => listener(0, null),
+        kill: () => undefined
+      };
     }
   });
   await explorer.refresh();
   const documentItem = controller.items[0].children.items[0];
-  const token: CommandCancellationToken = {
-    get isCancellationRequested() {
-      return cancelled;
-    },
-    onCancellationRequested: () => ({ dispose: () => undefined })
-  };
+  await explorer.run({ include: [documentItem] }, uncancelledToken());
+  const priorModuleItem = documentItem.children.items[0];
+  const priorProcedureItem = priorModuleItem.children.items[0];
+  assert.equal(priorProcedureItem.uriPath, sourcePath);
 
-  await explorer.run({ include: [documentItem] }, token);
+  dirty = true;
+  await controller.runProfiles[1].runHandler(
+    { include: [documentItem] },
+    {
+      isCancellationRequested: true,
+      onCancellationRequested: () => ({ dispose: () => undefined })
+    });
 
-  assert.equal(processStarted, false);
-  assert.deepEqual(controller.runs[0].events, [
-    `errored:${documentItem.id}:Test run cancelled while saving exported VBA source: ${sourcePath}`,
+  assert.equal(processStarts, 1);
+  assert.equal(documentItem.children.items[0], priorModuleItem);
+  assert.equal(documentItem.children.items[0].children.items[0], priorProcedureItem);
+  assert.equal(priorProcedureItem.uriPath, sourcePath);
+  assert.deepEqual(controller.runs[1].events, [
+    `cancelled:${documentItem.id}`,
     'end'
   ]);
 });
 
-test('a project run saves only dirty exported VBA sources in its document source sets', async () => {
+test('snapshot cleanup starts after CLI exit and retained files add only a housekeeping warning', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
-  const otherProjectRoot = path.join('C:', 'work', 'OtherProject');
+  const snapshotPath = path.join('C:', 'temp', 'retained-test-snapshot');
+  let cleanupCalls = 0;
+  let stdoutListener: ((value: string) => void) | undefined;
+  let exitListener: ((exitCode: number | null, signal: NodeJS.Signals | null) => void) | undefined;
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([
+      [path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]
+    ]),
+    captureSourceSnapshot: async () => ({
+      directoryPath: snapshotPath,
+      cleanup: async () => {
+        cleanupCalls += 1;
+        return { retainedPath: snapshotPath };
+      }
+    }),
+    startProcess: () => ({
+      onStdout: (listener) => {
+        stdoutListener = listener;
+      },
+      onStderr: (listener) => listener(''),
+      onExit: (listener) => {
+        exitListener = listener;
+      },
+      kill: () => undefined
+    })
+  });
+  await explorer.refresh();
+  const documentItem = controller.items[0].children.items[0];
+
+  const runPromise = explorer.run({ include: [documentItem] }, uncancelledToken());
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(cleanupCalls, 0);
+  stdoutListener?.(ndjson(runFinished('Book1')));
+  exitListener?.(0, null);
+  await runPromise;
+
+  assert.equal(cleanupCalls, 1);
+  assert.ok(controller.runs[0].events.includes(`passed:${documentItem.id}`));
+  assert.deepEqual(controller.runs[0].outputs, [
+    `Source snapshot cleanup warning: retained caller-owned directory ${snapshotPath}\n`
+  ]);
+});
+
+test('a project run captures one primary-document snapshot without saving any dirty editor', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
   const book1Module = path.join(projectRoot, 'src', 'Book1', 'Test_One.bas');
   const book2Class = path.join(projectRoot, 'src', 'Book2', 'Nested', 'Test_Two.cls');
-  const book2Form = path.join(projectRoot, 'src', 'Book2', 'Test_Form.frm');
   const saved: string[] = [];
+  const capturedSourceSets: string[] = [];
   const document = (uriPath: string, isDirty = true) => ({
     uriPath,
     isDirty,
@@ -254,25 +544,30 @@ test('a project run saves only dirty exported VBA sources in its document source
     openTextDocuments: () => [
       document(book1Module),
       document(book2Class),
-      document(book2Form),
-      document(path.join(projectRoot, 'src', 'Book1', 'Test_One.frx')),
-      document(path.join(projectRoot, 'src', 'Book1', 'notes.txt')),
-      document(path.join(projectRoot, 'src', 'Book1', 'Clean.bas'), false),
-      document(path.join(otherProjectRoot, 'src', 'Book1', 'Outside.bas'))
-    ]
+      document(path.join(projectRoot, 'src', 'Book1', 'Clean.bas'), false)
+    ],
+    captureSourceSnapshot: async (sourceSetPath) => {
+      capturedSourceSets.push(sourceSetPath);
+      return {
+        directoryPath: path.join('C:', 'temp', 'primary-project-snapshot'),
+        cleanup: async () => ({})
+      };
+    }
   });
   await explorer.refresh();
 
   await explorer.run({ include: [controller.items[0]] }, uncancelledToken());
 
-  assert.deepEqual(saved, [book1Module, book2Class, book2Form]);
+  assert.deepEqual(saved, []);
+  assert.deepEqual(capturedSourceSets, [path.join(projectRoot, 'src', 'Book1')]);
 });
 
-test('document module and procedure selections save only the owning document source set', async () => {
+test('document module and procedure selections each capture only the owning source set', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const book1Source = path.join(projectRoot, 'src', 'Book1', 'Test_Module.bas');
   const book2Source = path.join(projectRoot, 'src', 'Book2', 'Test_Other.bas');
   const saved: string[] = [];
+  const capturedSourceSets: string[] = [];
   const controller = new FakeTestController();
   const explorer = createExplorer(controller, {
     manifests: new Map([
@@ -286,6 +581,13 @@ test('document module and procedure selections save only the owning document sou
         return true;
       }
     })),
+    captureSourceSnapshot: async (sourceSetPath) => {
+      capturedSourceSets.push(sourceSetPath);
+      return {
+        directoryPath: path.join('C:', 'temp', 'selection-snapshot'),
+        cleanup: async () => ({})
+      };
+    },
     stdout: ndjson({
       type: 'testFinished',
       document: 'Book1',
@@ -299,23 +601,33 @@ test('document module and procedure selections save only the owning document sou
   const documentItem = controller.items[0].children.items[0];
 
   await explorer.run({ include: [documentItem] }, uncancelledToken());
-  assert.deepEqual(saved, [book1Source]);
+  assert.deepEqual(saved, []);
+  assert.deepEqual(capturedSourceSets, [path.join(projectRoot, 'src', 'Book1')]);
   const moduleItem = documentItem.children.items[0];
   const procedureItem = moduleItem.children.items[0];
 
-  saved.splice(0, saved.length);
   await explorer.run({ include: [moduleItem] }, uncancelledToken());
-  assert.deepEqual(saved, [book1Source]);
+  assert.deepEqual(saved, []);
+  assert.deepEqual(capturedSourceSets, [
+    path.join(projectRoot, 'src', 'Book1'),
+    path.join(projectRoot, 'src', 'Book1')
+  ]);
 
-  saved.splice(0, saved.length);
   await explorer.run({ include: [procedureItem] }, uncancelledToken());
-  assert.deepEqual(saved, [book1Source]);
+  assert.deepEqual(saved, []);
+  assert.deepEqual(capturedSourceSets, [
+    path.join(projectRoot, 'src', 'Book1'),
+    path.join(projectRoot, 'src', 'Book1'),
+    path.join(projectRoot, 'src', 'Book1')
+  ]);
 });
 
-test('a dirty procedure run keeps its selector when saving invalidates the old leaf', async () => {
+test('a later dirty edit does not restart a procedure snapshot run or mutate its selector', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const sourcePath = path.join(projectRoot, 'src', 'Book1', 'Test_Module.bas');
   const calls: Array<{ file: string; args: readonly string[] }> = [];
+  let saveCalls = 0;
+  let snapshotCalls = 0;
   const controller = new FakeTestController();
   let explorer!: WorkbookBackedTestExplorer;
   explorer = createExplorer(controller, {
@@ -327,10 +639,20 @@ test('a dirty procedure run keeps its selector when saving invalidates the old l
       uriPath: sourcePath,
       isDirty: true,
       save: async () => {
-        explorer.invalidateSourcePath(sourcePath);
+        saveCalls += 1;
         return true;
       }
     }],
+    captureSourceSnapshot: async () => {
+      snapshotCalls += 1;
+      if (snapshotCalls === 2) {
+        explorer.invalidateSourcePath(sourcePath);
+      }
+      return {
+        directoryPath: path.join('C:', 'temp', `procedure-snapshot-${snapshotCalls}`),
+        cleanup: async () => ({})
+      };
+    },
     stdout: ndjson(testFinishedWithLocation(
       projectRoot,
       'Book1',
@@ -345,6 +667,8 @@ test('a dirty procedure run keeps its selector when saving invalidates the old l
 
   await explorer.run({ include: [procedureItem] }, uncancelledToken());
 
+  assert.equal(saveCalls, 0);
+  assert.equal(snapshotCalls, 2);
   assert.deepEqual(calls.map((call) => call.args), [
     ['capabilities', '--format', 'json'],
     [
@@ -353,6 +677,7 @@ test('a dirty procedure run keeps its selector when saving invalidates the old l
       '--document', 'Book1',
       '--module', 'Test_Module',
       '--procedure', 'Test_Passes',
+      '--source-snapshot', path.join('C:', 'temp', 'procedure-snapshot-2'),
       '--format', 'ndjson'
     ]
   ]);
@@ -814,7 +1139,7 @@ test('an invalidated snapshot stays absent until a completed run repopulates its
   assert.deepEqual(newProcedureItem.range, range);
 });
 
-test('a delayed watcher change from the scoped save does not suppress completed discovery', async () => {
+test('a watcher event for an open snapshot source does not invalidate the immutable run', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const sourcePath = path.join(projectRoot, 'src', 'Book1', 'Test_Module.bas');
   let dirty = false;
@@ -830,12 +1155,12 @@ test('a delayed watcher change from the scoped save does not suppress completed 
       uriPath: sourcePath,
       get isDirty() {
         return dirty;
-      },
-      save: async () => {
-        dirty = false;
-        return true;
       }
     }],
+    captureSourceSnapshot: async () => ({
+      directoryPath: path.join('C:', 'temp', `watcher-snapshot-${processCount + 1}`),
+      cleanup: async () => ({})
+    }),
     startProcess: () => {
       processCount += 1;
       if (processCount === 1) {
@@ -885,7 +1210,7 @@ test('a delayed watcher change from the scoped save does not suppress completed 
   assert.equal(documentItem.children.items[0].children.items[0].label, 'Test_Current');
 });
 
-test('a run started before source invalidation cannot restore its stale document snapshot', async () => {
+test('a later source edit retains the document outcome but omits stale discovery with a warning', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const sourcePath = path.join(projectRoot, 'src', 'Book1', 'Test_Module.bas');
   let stdoutListener: ((value: string) => void) | undefined;
@@ -928,9 +1253,54 @@ test('a run started before source invalidation cannot restore its stale document
 
   assert.equal(documentItem.children.items.length, 0);
   assert.ok(controller.runs[0].events.includes(`passed:${documentItem.id}`));
+  assert.deepEqual(controller.runs[0].outputs, [
+    'Source navigation unavailable: source or project changed during this test run.\n'
+  ]);
 });
 
-test('in-flight invalidation suppresses only the affected document projection', async () => {
+test('an in-flight project revision retains outcomes but omits stale discovery with a warning', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const manifestPath = path.join(projectRoot, 'vba-project.json');
+  let stdoutListener: ((value: string) => void) | undefined;
+  let exitListener: ((exitCode: number | null, signal: NodeJS.Signals | null) => void) | undefined;
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([
+      [manifestPath, manifestJson('BookProject', ['Book1'])]
+    ]),
+    startProcess: () => ({
+      onStdout: (listener) => {
+        stdoutListener = listener;
+      },
+      onStderr: (listener) => listener(''),
+      onExit: (listener) => {
+        exitListener = listener;
+      },
+      kill: () => undefined
+    })
+  });
+  await explorer.refresh();
+  const documentItem = controller.items[0].children.items[0];
+  const runPromise = explorer.run({ include: [documentItem] }, uncancelledToken());
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  await explorer.refreshProjectDefinition(manifestPath);
+  stdoutListener?.(ndjson(testFinishedWithLocation(
+    projectRoot,
+    'Book1',
+    'Test_Module',
+    'Test_Passes')));
+  exitListener?.(0, null);
+  await runPromise;
+
+  assert.equal(documentItem.children.items.length, 0);
+  assert.ok(controller.runs[0].events.includes(`passed:${documentItem.id}`));
+  assert.deepEqual(controller.runs[0].outputs, [
+    'Source navigation unavailable: source or project changed during this test run.\n'
+  ]);
+});
+
+test('a project run suppresses stale primary discovery and ignores non-primary output', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const sourcePath = path.join(projectRoot, 'src', 'Book1', 'Test_Module.bas');
   let stdoutListener: ((value: string) => void) | undefined;
@@ -965,11 +1335,13 @@ test('in-flight invalidation suppresses only the affected document projection', 
   await runPromise;
 
   assert.equal(firstDocumentItem.children.items.length, 0);
-  assert.equal(secondDocumentItem.children.items.length, 1);
-  assert.equal(secondDocumentItem.children.items[0].children.items[0].label, 'Test_Current');
+  assert.equal(secondDocumentItem.children.items.length, 0);
+  assert.deepEqual(controller.runs[0].outputs, [
+    'Source navigation unavailable: source or project changed during this test run.\n'
+  ]);
 });
 
-test('editing a later selected document during an earlier run cannot restore stale output', async () => {
+test('editing a later selected document before capture publishes its new snapshot discovery', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const secondSourcePath = path.join(projectRoot, 'src', 'Book2', 'Test_Module.bas');
   const processes: Array<{
@@ -1019,12 +1391,14 @@ test('editing a later selected document during an earlier run cannot restore sta
   processes[0].exit?.(0, null);
   await secondProcessStarted;
   processes[1].stdout?.(ndjson(
-    testFinishedWithLocation(projectRoot, 'Book2', 'Test_Module', 'Test_Stale')));
+    testFinishedWithLocation(projectRoot, 'Book2', 'Test_Module', 'Test_Current')));
   processes[1].stderr?.('');
   processes[1].exit?.(0, null);
   await runPromise;
 
-  assert.equal(secondDocumentItem.children.items.length, 0);
+  assert.equal(secondDocumentItem.children.items.length, 1);
+  assert.equal(secondDocumentItem.children.items[0].children.items[0].label, 'Test_Current');
+  assert.deepEqual(controller.runs[0].outputs, []);
 });
 
 test('an incomplete run cannot repopulate an invalidated document snapshot', async () => {
@@ -1201,7 +1575,11 @@ test('Running a discovered module node invokes vba-dev test with module selector
 
   assert.deepEqual(calls.map((call) => call.args), [
     ['capabilities', '--format', 'json'],
-    ['test', '--project', projectRoot, '--document', 'Book1', '--module', 'Test_Module', '--format', 'ndjson']
+    [
+      'test', '--project', projectRoot, '--document', 'Book1', '--module', 'Test_Module',
+      '--source-snapshot', path.join('C:', 'temp', 'test-source-snapshot'),
+      '--format', 'ndjson'
+    ]
   ]);
 });
 
@@ -1235,7 +1613,12 @@ test('Running a discovered procedure node invokes vba-dev test with module and p
 
   assert.deepEqual(calls.map((call) => call.args), [
     ['capabilities', '--format', 'json'],
-    ['test', '--project', projectRoot, '--document', 'Book1', '--module', 'Test_Module', '--procedure', 'Test_Passes', '--format', 'ndjson']
+    [
+      'test', '--project', projectRoot, '--document', 'Book1',
+      '--module', 'Test_Module', '--procedure', 'Test_Passes',
+      '--source-snapshot', path.join('C:', 'temp', 'test-source-snapshot'),
+      '--format', 'ndjson'
+    ]
   ]);
 });
 
@@ -1498,19 +1881,33 @@ test('Cancelled no-build Test Explorer runs terminate the spawned CLI process', 
   ]);
 });
 
-test('Cancelled VS Code test runs terminate the spawned CLI process', async () => {
+test('Cancelled snapshot test runs terminate the CLI before caller snapshot cleanup', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const controller = new FakeTestController();
   let killed = false;
+  let processExited = false;
+  let cleanupCalls = 0;
+  let cleanupStartedBeforeExit = false;
   let cancelListener: (() => void) | undefined;
   const explorer = createExplorer(controller, {
     manifests: new Map([
       [path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]
     ]),
+    captureSourceSnapshot: async () => ({
+      directoryPath: path.join('C:', 'temp', 'cancelled-snapshot'),
+      cleanup: async () => {
+        cleanupCalls += 1;
+        cleanupStartedBeforeExit ||= !processExited;
+        return {};
+      }
+    }),
     startProcess: () => ({
       onStdout: () => undefined,
       onStderr: () => undefined,
-      onExit: (listener) => setTimeout(() => listener(null, 'SIGTERM'), 10),
+      onExit: (listener) => setTimeout(() => {
+        processExited = true;
+        listener(null, 'SIGTERM');
+      }, 10),
       kill: () => {
         killed = true;
       }
@@ -1533,6 +1930,8 @@ test('Cancelled VS Code test runs terminate the spawned CLI process', async () =
   await runPromise;
 
   assert.equal(killed, true);
+  assert.equal(cleanupCalls, 1);
+  assert.equal(cleanupStartedBeforeExit, false);
   assert.deepEqual(controller.runs[0].events, [
     `started:${controller.items[0].id}`,
     `cancelled:${controller.items[0].id}`,
@@ -1586,15 +1985,17 @@ function createExplorer(
     openTextDocuments?: () => readonly {
       uriPath: string;
       isDirty: boolean;
-      save(): Promise<boolean>;
     }[];
+    captureSourceSnapshot?: TestCaptureSourceSnapshot;
     errorMessages?: string[];
     vbaDevResolver?: Parameters<typeof createWorkbookBackedTestExplorer>[0]['vbaDevResolver'];
   }
 ) {
   const calls = options.calls ?? [];
   const output = options.output ?? [];
-  return createWorkbookBackedTestExplorer({
+  const explorerOptions: Parameters<typeof createWorkbookBackedTestExplorer>[0] & {
+    captureSourceSnapshot?: TestCaptureSourceSnapshot;
+  } = {
     controller,
     extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
     configuredDevToolPath: path.join('D:', 'tools', 'vba-dev.exe'),
@@ -1615,6 +2016,10 @@ function createExplorer(
         stdout: JSON.stringify({
           toolVersion: '0.1.0',
           contractVersion: '1.0',
+          featureVersions: {
+            'test.sourceSnapshot': '1.0'
+          },
+          activeWindowsCodePage: 932,
           commands: {
             test: { outputSchemaVersion: '1.2' }
           },
@@ -1630,6 +2035,9 @@ function createExplorer(
     requiredContract: {
       contractVersion: '1.0',
       debugAdapterProtocolVersion: '1.0',
+      featureVersions: {
+        'test.sourceSnapshot': '1.0'
+      },
       commandSchemaVersions: {
         test: '1.2'
       }
@@ -1649,10 +2057,15 @@ function createExplorer(
       show: () => undefined
     },
     openTextDocuments: options.openTextDocuments ?? (() => []),
+    captureSourceSnapshot: options.captureSourceSnapshot ?? (async () => ({
+      directoryPath: path.join('C:', 'temp', 'test-source-snapshot'),
+      cleanup: async () => ({})
+    })),
     showErrorMessage: async (message) => {
       options.errorMessages?.push(message);
     }
-  });
+  };
+  return createWorkbookBackedTestExplorer(explorerOptions);
 }
 
 function completedProcess() {
@@ -1731,11 +2144,15 @@ function runFinished(document: string): Record<string, unknown> {
   };
 }
 
-function manifestJson(projectName: string, documentNames: readonly string[]): string {
+function manifestJson(
+  projectName: string,
+  documentNames: readonly string[],
+  primaryDocument = documentNames[0]
+): string {
   return JSON.stringify({
     schemaVersion: 1,
     projectName,
-    primaryDocument: documentNames[0],
+    primaryDocument,
     documents: Object.fromEntries(documentNames.map((documentName) => [
       documentName,
       {
@@ -1752,6 +2169,10 @@ function manifestJson(projectName: string, documentNames: readonly string[]): st
 }
 
 type TestControllerStartProcess = Parameters<typeof createWorkbookBackedTestExplorer>[0]['startProcess'];
+type TestCaptureSourceSnapshot = (sourceSetPath: string) => Promise<{
+  readonly directoryPath: string;
+  cleanup(): Promise<{ readonly retainedPath?: string | undefined }>;
+}>;
 
 class FakeTestController implements TestControllerAdapter {
   public readonly items: FakeTestItem[] = [];
@@ -1864,7 +2285,11 @@ class FakeTestRun {
   }
 
   public appendOutput(output: string): void {
-    if (output.startsWith('Source location unavailable:')) {
+    if (
+      output.startsWith('Source location unavailable:')
+      || output.startsWith('Source navigation unavailable:')
+      || output.startsWith('Source snapshot cleanup warning:')
+    ) {
       this.outputs.push(output);
     }
   }

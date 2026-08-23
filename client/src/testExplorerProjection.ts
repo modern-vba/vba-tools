@@ -26,6 +26,7 @@ export interface WorkbookBackedTestProject {
   projectRoot: string;
   manifestPath: string;
   projectName: string;
+  primaryDocument: string;
   documents: readonly WorkbookBackedTestDocument[];
 }
 
@@ -37,6 +38,10 @@ export interface WorkbookBackedTestDocument {
 export interface VbaTestRunProjectionResult {
   hasAssertionFailure: boolean;
   errorItem?: TestExplorerItem | undefined;
+}
+
+export interface TestOutputProjectionPolicy {
+  readonly omitSourceLocations: boolean;
 }
 
 export type TestDiscoveryGenerationSnapshot = ReadonlyMap<string, number>;
@@ -64,17 +69,6 @@ export class TestExplorerNodeIndex {
       .filter((item) => !excluded.has(item.id));
   }
 
-  public selectedSourceSetPaths(items: readonly TestExplorerItem[]): string[] {
-    const sourceSetPaths = new Map<string, string>();
-    for (const item of items) {
-      for (const sourceSetPath of this.metadataById.get(item.id)?.sourceSetPaths ?? []) {
-        sourceSetPaths.set(path.normalize(sourceSetPath).toLowerCase(), sourceSetPath);
-      }
-    }
-
-    return [...sourceSetPaths.values()];
-  }
-
   public captureDiscoveryGenerations(
     runMetadata: TestItemMetadata
   ): TestDiscoveryGenerationSnapshot {
@@ -100,6 +94,20 @@ export class TestExplorerNodeIndex {
     return generations;
   }
 
+  public resetDiscoveryForRun(runMetadata: TestItemMetadata): void {
+    const documentIds = [...this.metadataById.entries()]
+      .filter(([, metadata]) => (
+        metadata.kind === 'document'
+        && samePath(metadata.projectRoot, runMetadata.projectRoot)
+        && (
+          runMetadata.documentName === undefined
+          || metadata.documentName === runMetadata.documentName
+        )
+      ))
+      .map(([itemId]) => itemId);
+    documentIds.forEach((documentId) => this.clearDocumentSnapshot(documentId));
+  }
+
   public invalidateSourcePath(sourcePath: string): void {
     const affectedDocumentIds = [...this.metadataById.entries()]
       .filter(([, metadata]) => (
@@ -122,13 +130,15 @@ export class TestExplorerNodeIndex {
       const projectItem = this.itemsById.get(projectId)
         ?? controller.createTestItem(projectId, project.projectName, project.manifestPath);
       projectItem.label = project.projectName;
+      const primaryDocument = project.documents.find((document) => (
+        document.name.toLowerCase() === project.primaryDocument.toLowerCase()
+      ))!;
       this.setItem(projectItem, {
         kind: 'project',
         projectRoot: project.projectRoot,
-        sourceSetPaths: project.documents.map((document) => (
-          path.resolve(project.projectRoot, document.sourcePath)
-        )),
-        manifestPath: project.manifestPath
+        sourceSetPaths: [path.resolve(project.projectRoot, primaryDocument.sourcePath)],
+        manifestPath: project.manifestPath,
+        documentName: primaryDocument.name
       });
 
       const existingDocumentIds = new Set(
@@ -208,7 +218,8 @@ export class TestExplorerNodeIndex {
     runMetadata: TestItemMetadata,
     stdout: string,
     discoveryGenerations: TestDiscoveryGenerationSnapshot,
-    processCompleted: boolean
+    processCompleted: boolean,
+    policy: TestOutputProjectionPolicy = { omitSourceLocations: false }
   ): VbaTestRunProjectionResult {
     let hasAssertionFailure = false;
     let errorItem: TestExplorerItem | undefined;
@@ -220,7 +231,24 @@ export class TestExplorerNodeIndex {
           const documentId = this.eventDocumentId(runMetadata, event);
           return documentId ? [documentId] : [];
         }));
+    if (policy.omitSourceLocations && processCompleted) {
+      testRun.appendOutput(
+        'Source navigation unavailable: dirty source was not built for this no-build test run.\n');
+    }
+    if (
+      processCompleted
+      && [...completedDocumentIds].some((documentId) => (
+        discoveryGenerations.has(documentId)
+        && discoveryGenerations.get(documentId) !== this.generationByDocumentId.get(documentId)
+      ))
+    ) {
+      testRun.appendOutput(
+        'Source navigation unavailable: source or project changed during this test run.\n');
+    }
     for (const event of events) {
+      const projectedEvent = policy.omitSourceLocations && event.location !== undefined
+        ? { ...event, location: undefined }
+        : event;
       if (event.type === 'testStarted') {
         if (!this.canProjectEvent(
           runMetadata,
@@ -231,7 +259,7 @@ export class TestExplorerNodeIndex {
           continue;
         }
 
-        const item = this.resolveEventItem(controller, runMetadata, event, false);
+        const item = this.resolveEventItem(controller, runMetadata, projectedEvent, false);
         if (item) {
           testRun.started(item);
         }
@@ -256,7 +284,7 @@ export class TestExplorerNodeIndex {
           continue;
         }
 
-        const item = this.resolveEventItem(controller, runMetadata, event, true);
+        const item = this.resolveEventItem(controller, runMetadata, projectedEvent, true);
         if (!item) {
           continue;
         }
@@ -272,12 +300,12 @@ export class TestExplorerNodeIndex {
           testRun.failed(
             item,
             event.message ?? 'VBA test failed.',
-            toTestMessageLocation(event.location));
+            toTestMessageLocation(projectedEvent.location));
         } else if (outcome === 'error') {
           testRun.failed(
             item,
             event.message ?? 'VBA test errored.',
-            toTestMessageLocation(event.location));
+            toTestMessageLocation(projectedEvent.location));
         }
         continue;
       }
@@ -500,9 +528,13 @@ export class TestExplorerNodeIndex {
   }
 }
 
-export function createTestSelectorArgs(metadata: TestItemMetadata, noBuild: boolean): readonly string[] {
+export function createTestSelectorArgs(
+  metadata: TestItemMetadata,
+  noBuild: boolean,
+  sourceSnapshotPath?: string | undefined
+): readonly string[] {
   return [
-    ...(metadata.documentName
+    ...(metadata.kind !== 'project' && metadata.documentName
       ? ['--document', metadata.documentName]
       : []),
     ...(metadata.moduleName
@@ -513,6 +545,9 @@ export function createTestSelectorArgs(metadata: TestItemMetadata, noBuild: bool
       : []),
     ...(noBuild
       ? ['--no-build']
+      : []),
+    ...(sourceSnapshotPath
+      ? ['--source-snapshot', sourceSnapshotPath]
       : []),
     '--format',
     'ndjson'

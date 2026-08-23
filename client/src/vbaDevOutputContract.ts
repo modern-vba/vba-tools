@@ -14,6 +14,8 @@ export interface VbaDevDebugAdapterCapability {
 export interface VbaDevCapabilities {
   toolVersion: string;
   contractVersion: string;
+  featureVersions?: Record<string, string> | undefined;
+  activeWindowsCodePage?: number | undefined;
   commands: Record<string, VbaDevCommandCapability>;
   debugAdapter?: VbaDevDebugAdapterCapability | undefined;
 }
@@ -21,8 +23,11 @@ export interface VbaDevCapabilities {
 export interface RequiredVbaDevContract {
   contractVersion: string;
   debugAdapterProtocolVersion: string;
+  featureVersions?: Record<string, string> | undefined;
   commandSchemaVersions: Record<string, string>;
 }
+
+const activeWindowsCodePageFeatureName = 'sourceSnapshot.activeWindowsCodePage';
 
 export interface CommonModulesList {
   document: string;
@@ -153,6 +158,30 @@ export function validateVbaDevCapabilities(
   if (debugAdapter.transport !== 'stdio') {
     throw new VbaDevOutputContractError(
       `VbaDev at '${executablePath}' reports debug adapter transport ${debugAdapter.transport}, but this extension requires stdio.`
+    );
+  }
+
+  for (const [featureName, requiredVersion] of Object.entries(
+    requiredContract.featureVersions ?? {})) {
+    const actualVersion = capabilities.featureVersions?.[featureName];
+    if (actualVersion === undefined) {
+      throw new VbaDevOutputContractError(
+        `VbaDev at '${executablePath}' does not report required feature '${featureName}'.`
+      );
+    }
+    if (actualVersion !== requiredVersion) {
+      throw new VbaDevOutputContractError(
+        `VbaDev at '${executablePath}' reports feature ${featureName} version ${actualVersion}, but this extension requires ${requiredVersion}.`
+      );
+    }
+  }
+
+  if (
+    requiredContract.featureVersions?.[activeWindowsCodePageFeatureName] !== undefined
+    && capabilities.activeWindowsCodePage === undefined
+  ) {
+    throw new VbaDevOutputContractError(
+      `VbaDev at '${executablePath}' does not report the active Windows code page required by feature '${activeWindowsCodePageFeatureName}'.`
     );
   }
 
@@ -408,6 +437,15 @@ function isCapabilities(value: unknown): value is VbaDevCapabilities {
   return (
     typeof value.toolVersion === 'string' &&
     typeof value.contractVersion === 'string' &&
+    (value.featureVersions === undefined || isStringRecord(value.featureVersions)) &&
+    (
+      value.activeWindowsCodePage === undefined
+      || (
+        typeof value.activeWindowsCodePage === 'number'
+        && Number.isSafeInteger(value.activeWindowsCodePage)
+        && value.activeWindowsCodePage > 0
+      )
+    ) &&
     isCommandCapabilities(value.commands) &&
     (value.debugAdapter === undefined || isDebugAdapterCapability(value.debugAdapter))
   );
@@ -444,7 +482,15 @@ function isRequiredVbaDevContract(value: unknown): value is RequiredVbaDevContra
     return false;
   }
 
-  return Object.values(value.commandSchemaVersions).every((schemaVersion) => typeof schemaVersion === 'string');
+  return (
+    (value.featureVersions === undefined || isStringRecord(value.featureVersions))
+    && Object.values(value.commandSchemaVersions).every((schemaVersion) => typeof schemaVersion === 'string')
+  );
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return isRecord(value)
+    && Object.values(value).every((entry) => typeof entry === 'string');
 }
 
 function isCommonModulesList(value: unknown): value is CommonModulesList {

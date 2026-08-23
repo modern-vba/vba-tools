@@ -28,6 +28,7 @@ export const requiredBundledCliPath = defaultDistributionManifest.runtimes.vbaDe
 export const requiredBundledLanguageServerPath = defaultDistributionManifest.runtimes.vbaLanguageServer.executablePath;
 export const requiredVbaDevContractPath = defaultDistributionManifest.runtimes.vbaDev.contractPath;
 export const bundledLanguageServerVersionPrefix = defaultDistributionManifest.runtimes.vbaLanguageServer.versionOutputPrefix;
+const activeWindowsCodePageFeatureName = 'sourceSnapshot.activeWindowsCodePage';
 
 export async function verifyVsixPackaging(options = {}) {
   const root = options.root ?? process.cwd();
@@ -384,6 +385,22 @@ export function assertBundledCliCapabilities(stdout, requiredContract = undefine
     }
   }
 
+  for (const [featureName, featureVersion] of Object.entries(contract.featureVersions ?? {})) {
+    if (parsed.featureVersions?.[featureName] !== featureVersion) {
+      throw new Error(`Bundled vba-dev capabilities must report ${featureName} feature version ${featureVersion}.`);
+    }
+  }
+
+  if (
+    contract.featureVersions?.[activeWindowsCodePageFeatureName] !== undefined
+    && (
+      !Number.isSafeInteger(parsed.activeWindowsCodePage)
+      || parsed.activeWindowsCodePage <= 0
+    )
+  ) {
+    throw new Error('Bundled vba-dev capabilities must report a positive active Windows code page.');
+  }
+
   return parsed;
 }
 
@@ -519,8 +536,13 @@ function isRequiredVbaDevContract(value) {
   return isRecord(value) &&
     typeof value.contractVersion === 'string' &&
     typeof value.debugAdapterProtocolVersion === 'string' &&
+    (value.featureVersions === undefined || isStringRecord(value.featureVersions)) &&
     isRecord(value.commandSchemaVersions) &&
     Object.values(value.commandSchemaVersions).every((schemaVersion) => typeof schemaVersion === 'string');
+}
+
+function isStringRecord(value) {
+  return isRecord(value) && Object.values(value).every((item) => typeof item === 'string');
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {

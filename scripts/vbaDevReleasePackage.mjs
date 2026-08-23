@@ -11,6 +11,7 @@ const defaultPublishPath = 'bin/vba-dev/win-x64';
 const cliReadmePath = 'tools/vba-dev/README.md';
 const licensePath = 'LICENSE';
 const contractPath = 'vba-dev-contract.json';
+const activeWindowsCodePageFeatureName = 'sourceSnapshot.activeWindowsCodePage';
 
 export async function createStandaloneVbaDevArchive({
   root = defaultRoot,
@@ -152,6 +153,22 @@ function assertReleaseContract(capabilities, contract, version) {
     if (capabilities.commands?.[commandName]?.outputSchemaVersion !== schemaVersion) {
       throw new Error(`Standalone vba-dev capabilities disagree with ${commandName} outputSchemaVersion ${schemaVersion}.`);
     }
+  }
+
+  for (const [featureName, featureVersion] of Object.entries(contract.featureVersions ?? {})) {
+    if (capabilities.featureVersions?.[featureName] !== featureVersion) {
+      throw new Error(`Standalone vba-dev capabilities disagree with ${featureName} feature version ${featureVersion}.`);
+    }
+  }
+
+  if (
+    contract.featureVersions?.[activeWindowsCodePageFeatureName] !== undefined
+    && (
+      !Number.isSafeInteger(capabilities.activeWindowsCodePage)
+      || capabilities.activeWindowsCodePage <= 0
+    )
+  ) {
+    throw new Error('Standalone vba-dev capabilities must report a positive active Windows code page.');
   }
 
   if (contract.debugAdapterProtocolVersion !== undefined &&

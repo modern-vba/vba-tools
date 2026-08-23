@@ -3,6 +3,7 @@ using System.CommandLine.Completions;
 using System.CommandLine.Help;
 using System.CommandLine.Invocation;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using VbaDev.App.Cli;
@@ -478,8 +479,10 @@ public sealed class VbaDevCommandLine
                 new Dictionary<string, string>(StringComparer.Ordinal)
                 {
                     ["build.sourceSnapshot"] = "1.0",
-                    ["test.sourceSnapshot"] = "1.0"
+                    ["test.sourceSnapshot"] = "1.0",
+                    ["sourceSnapshot.activeWindowsCodePage"] = "1.0"
                 },
+                GetActiveWindowsCodePage(),
                 capabilityCommands
                     .OrderBy(registration => registration.Name, StringComparer.OrdinalIgnoreCase)
                     .ToDictionary(
@@ -976,6 +979,7 @@ public sealed class VbaDevCommandLine
         string ToolVersion,
         string ContractVersion,
         IReadOnlyDictionary<string, string> FeatureVersions,
+        int? ActiveWindowsCodePage,
         IReadOnlyDictionary<string, CommandCapability> Commands,
         DebugAdapterCapability DebugAdapter);
 
@@ -991,4 +995,12 @@ public sealed class VbaDevCommandLine
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
+
+    private static int? GetActiveWindowsCodePage()
+        => OperatingSystem.IsWindows()
+            ? checked((int)GetACP())
+            : null;
+
+    [DllImport("kernel32.dll")]
+    private static extern uint GetACP();
 }
