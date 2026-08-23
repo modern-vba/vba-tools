@@ -9,6 +9,19 @@ namespace VbaDev.App.Testing;
 /// </summary>
 public sealed class TestProcedureSourceLocator
 {
+    private readonly Func<int> getActiveCodePage;
+
+    public TestProcedureSourceLocator()
+        : this(ActiveWindowsAnsiCodePage.Get)
+    {
+    }
+
+    internal TestProcedureSourceLocator(Func<int> getActiveCodePage)
+    {
+        this.getActiveCodePage = getActiveCodePage
+            ?? throw new ArgumentNullException(nameof(getActiveCodePage));
+    }
+
     /// <summary>
     /// Adds a source location to each result whose module and procedure resolve uniquely.
     /// </summary>
@@ -18,11 +31,51 @@ public sealed class TestProcedureSourceLocator
     public IReadOnlyList<TestResultRecord> Locate(
         string sourceSetPath,
         IReadOnlyList<TestResultRecord> results)
+        => Locate(sourceSetPath, sourceSetPath, results);
+
+    /// <summary>
+    /// Parses one invocation-fixed source set while emitting locations rooted at a persistent source set.
+    /// </summary>
+    /// <param name="parsedSourceSetPath">The source set whose bytes determine declaration ranges.</param>
+    /// <param name="locationSourceSetPath">The persistent source set used only to derive emitted URIs.</param>
+    /// <param name="results">The completed workbook test results.</param>
+    /// <returns>The results enriched with optional declaration locations.</returns>
+    public IReadOnlyList<TestResultRecord> Locate(
+        string parsedSourceSetPath,
+        string locationSourceSetPath,
+        IReadOnlyList<TestResultRecord> results)
+        => LocateCore(
+            parsedSourceSetPath,
+            locationSourceSetPath,
+            results,
+            static (_, bytes) => VbaSourceFileTextReader.Decode(bytes));
+
+    internal IReadOnlyList<TestResultRecord> LocateSnapshot(
+        string parsedSourceSetPath,
+        string locationSourceSetPath,
+        IReadOnlyList<TestResultRecord> results)
+    {
+        var activeCodePage = getActiveCodePage();
+        return LocateCore(
+            parsedSourceSetPath,
+            locationSourceSetPath,
+            results,
+            (sourcePath, bytes) => VbeImportSourceSet.DecodeSourceText(
+                bytes,
+                activeCodePage,
+                sourcePath));
+    }
+
+    private static IReadOnlyList<TestResultRecord> LocateCore(
+        string parsedSourceSetPath,
+        string locationSourceSetPath,
+        IReadOnlyList<TestResultRecord> results,
+        Func<string, byte[], string> decodeSource)
     {
         IReadOnlyList<string> sourcePaths;
         try
         {
-            sourcePaths = DocumentSourceSetLayout.EnumerateVbaSourcePaths(sourceSetPath);
+            sourcePaths = DocumentSourceSetLayout.EnumerateVbaSourcePaths(parsedSourceSetPath);
         }
         catch (IOException)
         {
@@ -38,7 +91,13 @@ public sealed class TestProcedureSourceLocator
         {
             try
             {
-                modules.Add(ParseModule(sourcePath));
+                modules.Add(ParseModule(
+                    sourcePath,
+                    TryMapPersistentUri(
+                        parsedSourceSetPath,
+                        locationSourceSetPath,
+                        sourcePath),
+                    decodeSource));
             }
             catch (IOException)
             {
@@ -55,6 +114,11 @@ public sealed class TestProcedureSourceLocator
                 // Source navigation is optional metadata and must not replace a completed outcome.
                 return results;
             }
+            catch (InvalidOperationException)
+            {
+                // Snapshot decoding is strict, but location metadata must remain non-failing.
+                return results;
+            }
         }
 
         return results
@@ -65,13 +129,49 @@ public sealed class TestProcedureSourceLocator
             .ToArray();
     }
 
-    private static ParsedTestModule ParseModule(string sourcePath)
+    private static ParsedTestModule ParseModule(
+        string sourcePath,
+        string? locationUri,
+        Func<string, byte[], string> decodeSource)
     {
-        var uri = new Uri(Path.GetFullPath(sourcePath)).AbsoluteUri;
-        var source = VbaSourceFileTextReader.Decode(File.ReadAllBytes(sourcePath));
-        var tree = VbaSyntaxTree.ParseModule(uri, source);
-        return new ParsedTestModule(uri, tree);
+        var parseUri = new Uri(Path.GetFullPath(sourcePath)).AbsoluteUri;
+        var source = decodeSource(sourcePath, File.ReadAllBytes(sourcePath));
+        var tree = VbaSyntaxTree.ParseModule(parseUri, source);
+        return new ParsedTestModule(locationUri, tree);
     }
+
+    private static string? TryMapPersistentUri(
+        string parsedSourceSetPath,
+        string locationSourceSetPath,
+        string sourcePath)
+    {
+        try
+        {
+            var parsedRoot = Path.GetFullPath(parsedSourceSetPath);
+            var relativePath = Path.GetRelativePath(parsedRoot, Path.GetFullPath(sourcePath));
+            if (!IsSafeRelativePath(relativePath))
+            {
+                return null;
+            }
+
+            var locationRoot = Path.GetFullPath(locationSourceSetPath);
+            var locationPath = Path.GetFullPath(Path.Combine(locationRoot, relativePath));
+            var locationRelativePath = Path.GetRelativePath(locationRoot, locationPath);
+            return IsSafeRelativePath(locationRelativePath)
+                ? new Uri(locationPath).AbsoluteUri
+                : null;
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return null;
+        }
+    }
+
+    private static bool IsSafeRelativePath(string relativePath)
+        => !Path.IsPathRooted(relativePath)
+            && !relativePath.Equals("..", StringComparison.Ordinal)
+            && !relativePath.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+            && !relativePath.StartsWith($"..{Path.AltDirectorySeparatorChar}", StringComparison.Ordinal);
 
     private static TestProcedureSourceLocation? Resolve(
         IReadOnlyList<ParsedTestModule> modules,
@@ -100,15 +200,21 @@ public sealed class TestProcedureSourceLocator
             return null;
         }
 
+        var locationUri = moduleMatches[0].Uri;
+        if (locationUri is null)
+        {
+            return null;
+        }
+
         var range = procedureMatches[0].Range;
         return new TestProcedureSourceLocation(
-            moduleMatches[0].Uri,
+            locationUri,
             new TestProcedureSourceRange(
                 new TestProcedureSourcePosition(range.Start.Line, range.Start.Character),
                 new TestProcedureSourcePosition(range.End.Line, range.End.Character)));
     }
 
-    private sealed record ParsedTestModule(string Uri, VbaSyntaxTree Tree);
+    private sealed record ParsedTestModule(string? Uri, VbaSyntaxTree Tree);
 }
 
 /// <summary>

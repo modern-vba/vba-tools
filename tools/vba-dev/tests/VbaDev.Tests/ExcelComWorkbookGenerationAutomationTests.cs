@@ -1,4 +1,5 @@
 using System.Text;
+using VbaDev.App.Testing;
 using VbaDev.App.Workbooks;
 using VbaDev.Domain;
 using VbaDev.Infrastructure.Debugging;
@@ -10,6 +11,90 @@ namespace VbaDev.Tests;
 
 public sealed class ExcelComWorkbookGenerationAutomationTests
 {
+    [Fact]
+    public async Task WorkbookTestsRunInsideTheOwnedSessionBeforeCleanupReturns()
+    {
+        var events = new List<string>();
+        var dispatcher = new RecordingGenerationDispatcher(events);
+        var lifecycle = new FakeWorkbookGenerationLifecycle(events);
+        var automation = new ExcelComWorkbookBuildAutomation(
+            new RecordingGenerationDispatcherFactory(dispatcher),
+            lifecycle);
+        var runner = new ExcelComWorkbookTestRunner(automation);
+
+        var rows = await runner.RunTestsAsync(
+            "staged.xlsm",
+            new WorkbookTestSelector("Test_Module", "Test_Passes"),
+            TimeSpan.FromSeconds(42),
+            WorkbookAutomationTimeouts.Default,
+            CancellationToken.None);
+
+        Assert.Equal(
+            [new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", "")],
+            rows);
+        Assert.Equal(
+            [
+                "start",
+                "open:staged.xlsm",
+                "test:Test_Module.Test_Passes",
+                "cleanup-session:00:00:05",
+                "dispatcher-dispose"
+            ],
+            events);
+        Assert.True(lifecycle.EnableAutomationSecurityLow);
+        Assert.True(lifecycle.Owner.HasExited);
+    }
+
+    [Fact]
+    public void ConcreteLegacyWorkbookTestRunnerMethodUsesStrongOwnedAutomation()
+    {
+        var events = new List<string>();
+        var lifecycle = new FakeWorkbookGenerationLifecycle(events);
+        var runner = new ExcelComWorkbookTestRunner(
+            new ExcelComWorkbookBuildAutomation(
+                new RecordingGenerationDispatcherFactory(
+                    new RecordingGenerationDispatcher(events)),
+                lifecycle));
+
+        var rows = runner.RunTests(
+            "staged.xlsm",
+            new WorkbookTestSelector("Test_Module", "Test_Passes"));
+
+        Assert.Single(rows);
+        Assert.Contains("test:Test_Module.Test_Passes", events);
+        Assert.True(lifecycle.Owner.HasExited);
+    }
+
+    [Fact]
+    public async Task WorkbookTestExecutionTimeoutIdentifiesTheMacroStageAndReleasesTheOwner()
+    {
+        var events = new List<string>();
+        var lifecycle = new FakeWorkbookGenerationLifecycle(events)
+        {
+            BlockTestUntilTermination = true
+        };
+        var runner = new ExcelComWorkbookTestRunner(
+            new ExcelComWorkbookBuildAutomation(
+                new RecordingGenerationDispatcherFactory(
+                    new AsynchronousCleanupGenerationDispatcher()),
+                lifecycle));
+
+        var error = await Assert.ThrowsAsync<WorkbookAutomationTimeoutException>(() =>
+            runner.RunTestsAsync(
+                "staged.xlsm",
+                new WorkbookTestSelector(),
+                TimeSpan.FromMilliseconds(20),
+                WorkbookAutomationTimeouts.Default with
+                {
+                    ProcessCleanup = TimeSpan.Zero
+                },
+                CancellationToken.None));
+
+        Assert.Equal(WorkbookAutomationStageKind.TestExecution, error.Stage.Kind);
+        Assert.True(lifecycle.Owner.HasExited);
+        Assert.Equal(1, lifecycle.Owner.TerminationCalls);
+    }
+
     [Fact]
     public void ApplicationCompositionPrefersNativeGenerationAndRetainsLegacyBuildPort()
     {
@@ -101,6 +186,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
             ],
             events);
         Assert.Equal(11, dispatcher.InvokeCalls);
+        Assert.False(lifecycle.EnableAutomationSecurityLow);
         Assert.True(lifecycle.Owner.HasExited);
         Assert.Equal(0, lifecycle.Owner.TerminationCalls);
     }
@@ -141,7 +227,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
     }
 
     [Fact]
-    public async Task CleanupProofFailureBecomesPrimaryWhilePreservingTheStageFailure()
+    public async Task CleanupFailureBecomesPrimaryWhilePreservingTheStageFailure()
     {
         var events = new List<string>();
         var dispatcher = new RecordingGenerationDispatcher(events);
@@ -160,7 +246,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
             ProcessCleanup = TimeSpan.Zero
         };
 
-        var error = await Assert.ThrowsAsync<WorkbookAutomationCleanupException>(() => automation.RunAsync(
+        var error = await Assert.ThrowsAsync<WorkbookAutomationReleasedProcessCleanupException>(() => automation.RunAsync(
             "staged.xlsm",
             timeouts,
             async (session, cancellationToken) =>
@@ -171,10 +257,15 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
             CancellationToken.None));
 
         Assert.Contains("workbook save 'staged.xlsm'", error.Message);
+        Assert.Contains("automation cleanup also failed", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            "could not be verified as released",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
         var aggregate = Assert.IsType<AggregateException>(error.InnerException);
         Assert.Contains(aggregate.InnerExceptions, item => item is WorkbookAutomationTimeoutException timeout &&
             timeout.Stage.Kind == WorkbookAutomationStageKind.WorkbookSave);
-        Assert.Contains(aggregate.InnerExceptions, item => item is WorkbookAutomationCleanupException cleanup &&
+        Assert.Contains(aggregate.InnerExceptions, item => item is WorkbookAutomationReleasedProcessCleanupException cleanup &&
             ReferenceEquals(cleanup.InnerException, cleanupError));
     }
 
@@ -574,6 +665,8 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
 
         public bool BlockSaveUntilTermination { get; init; }
 
+        public bool BlockTestUntilTermination { get; init; }
+
         public Exception? StartError { get; init; }
 
         public Exception? OpenError { get; init; }
@@ -590,13 +683,17 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
 
         public OwnedExcelTerminationController? CapturedController { get; private set; }
 
+        public bool EnableAutomationSecurityLow { get; private set; }
+
         public object Start(
             OwnedExcelTerminationController terminationController,
+            bool enableAutomationSecurityLow,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
             events.Add("start");
             CapturedController = terminationController;
+            EnableAutomationSecurityLow = enableAutomationSecurityLow;
             if (StartError is not null)
             {
                 if (AttachOwnerBeforeStartError || ExitOwnedProcessBeforeStartError)
@@ -624,7 +721,11 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
                 throw OpenError;
             }
 
-            return new FakeWorkbookBuildSession(events, Owner, BlockSaveUntilTermination);
+            return new FakeWorkbookBuildSession(
+                events,
+                Owner,
+                BlockSaveUntilTermination,
+                BlockTestUntilTermination);
         }
 
         public void DisposeHost(object host, TimeSpan cleanupGrace)
@@ -667,7 +768,10 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
     private sealed class FakeWorkbookBuildSession(
         List<string> events,
         FakeOwnedExcelProcessControl owner,
-        bool blockSaveUntilTermination) : IWorkbookBuildSession
+        bool blockSaveUntilTermination,
+        bool blockTestUntilTermination) :
+        IWorkbookBuildSession,
+        IExcelComWorkbookTestSession
     {
         public IReadOnlyList<WorkbookModule> GetModules()
         {
@@ -707,6 +811,17 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
             }
 
             events.Add("save");
+        }
+
+        public IReadOnlyList<WorkbookTestResultRow> RunTests(WorkbookTestSelector selector)
+        {
+            if (blockTestUntilTermination && !owner.Terminated.Wait(TimeSpan.FromSeconds(5)))
+            {
+                throw new TimeoutException("The test owner was not terminated.");
+            }
+
+            events.Add($"test:{selector.ModuleName}.{selector.ProcedureName}");
+            return [new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", "")];
         }
 
         public void Dispose()

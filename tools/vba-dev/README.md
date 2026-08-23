@@ -14,7 +14,9 @@ vba-dev --version
 ```
 
 `vba-dev capabilities --format json` reports the same three-part SemVer as
-`toolVersion`, independently from the VS Code extension version.
+`toolVersion`, independently from the VS Code extension version. Snapshot-aware
+callers can require the `build.sourceSnapshot` or `test.sourceSnapshot` feature
+version `1.0` before supplying those command inputs.
 
 ## PowerShell completion
 
@@ -256,11 +258,19 @@ Options:
   --document <name>, -d <name>   Document name from the project manifest.
   --format <text|ndjson>, -f <text|ndjson> Test output format.
   --no-build                     Skip building before running tests.
+  --source-snapshot <dir>        Complete caller-owned source snapshot directory.
+  --timeout-seconds <seconds>    Test macro execution timeout in positive whole seconds.
   --module <name>                Run tests from one test module.
   --procedure <name>             Run one test procedure. Requires --module.
 ```
 
 `test` builds before running tests by default. The default output format is `text`. Use `--no-build` to run against the existing bin workbook, and use `--format ndjson` for machine-readable newline-delimited JSON.
+
+Supplying `--source-snapshot` builds and tests a same-filename workbook inside a unique command-owned workspace without reading persistent source or touching the manifest bin workbook. It cannot be combined with `--no-build`, and `test` does not accept `--output`. Snapshot declaration ranges come from the fixed snapshot bytes while emitted locations use the corresponding persistent source URIs. The command releases its owned Excel processes before removing the workspace; a post-release deletion failure is warning-only and reports the retained absolute path without changing test outcomes, exit status, or the complete NDJSON 1.2 batch.
+
+The snapshot supplies only the complete VBA source inventory. The selected project and document, template, references, test selector, and output format still come from the project manifest and the ordinary `test` options.
+
+`--timeout-seconds` changes only the test macro execution deadline. When omitted, `test` uses `commandDefaults.test.executionTimeoutSeconds`, then a built-in 600-second default. Every value must be positive whole seconds; workbook open/save and cleanup retain their independent deadlines.
 
 ### publish
 
@@ -418,6 +428,7 @@ Example:
 | `documents.<document>.references[].name` | Human-visible `Reference.Description`-style reference name. |
 | `commonModulesRepository` | CommonModules repository path, or `null` when no repository is discovered. |
 | `commandDefaults.test.format` | Default test output format. The generated value is `text`. |
+| `commandDefaults.test.executionTimeoutSeconds` | Optional test macro execution timeout in positive whole seconds. The built-in default is `600`. |
 | `commandDefaults.excelAutomation.workbookOpenTimeoutSeconds` | Optional workbook-open timeout in positive whole seconds. The built-in default is `300`. |
 | `commandDefaults.excelAutomation.workbookSaveTimeoutSeconds` | Optional workbook-save timeout in positive whole seconds. The built-in default is `300`. |
 

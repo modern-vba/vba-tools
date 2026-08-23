@@ -138,6 +138,10 @@
                 "text",
                 "ndjson"
               ]
+            },
+            "executionTimeoutSeconds": {
+              "type": "integer",
+              "minimum": 1
             }
           }
         },

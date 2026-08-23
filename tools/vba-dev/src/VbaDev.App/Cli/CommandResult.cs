@@ -1,5 +1,11 @@
 namespace VbaDev.App.Cli;
 
+internal enum OwnedProcessReleaseProof
+{
+    ProvenOrNotStarted,
+    Unproven
+}
+
 /// <summary>
 /// Contains the process exit code and streams produced by a tooling command.
 /// </summary>
@@ -8,6 +14,12 @@ namespace VbaDev.App.Cli;
 /// <param name="StandardError">The text to write to standard error.</param>
 public sealed record CommandResult(int ExitCode, string StandardOutput, string StandardError)
 {
+    internal OwnedProcessReleaseProof OwnedProcessReleaseProof { get; init; } =
+        OwnedProcessReleaseProof.ProvenOrNotStarted;
+
+    internal CommandResult MarkOwnedProcessReleaseUnproven()
+        => this with { OwnedProcessReleaseProof = OwnedProcessReleaseProof.Unproven };
+
     /// <summary>
     /// Creates a successful command result.
     /// </summary>

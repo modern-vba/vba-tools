@@ -18,6 +18,14 @@ public sealed class WorkbookAutomationTimeoutTests
         Assert.Equal(TimeSpan.FromSeconds(5), timeouts.ProcessCleanup);
     }
 
+    [Fact]
+    public void ExistingPublicStageValuesRemainStableWhenTestExecutionIsAdded()
+    {
+        Assert.Equal(8, (int)WorkbookAutomationStageKind.ProcessCleanup);
+        Assert.Equal(9, (int)WorkbookAutomationStageKind.OutputCommit);
+        Assert.Equal(10, (int)WorkbookAutomationStageKind.TestExecution);
+    }
+
     [Theory]
     [InlineData(WorkbookAutomationStageKind.ExcelStartup, null, "Excel startup")]
     [InlineData(WorkbookAutomationStageKind.WorkbookOpen, "Book1.xlsm", "workbook open 'Book1.xlsm'")]

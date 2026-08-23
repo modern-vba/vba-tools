@@ -15,8 +15,26 @@ public sealed record CommandDefaults(
 /// Stores default option values for the workbook-backed test command.
 /// </summary>
 /// <param name="Format">The default test result output format.</param>
+/// <param name="ExecutionTimeoutSeconds">The default macro execution timeout in positive whole seconds.</param>
+[method: JsonConstructor]
 public sealed record TestCommandDefaults(
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Format = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Format = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? ExecutionTimeoutSeconds = null)
+{
+    /// <summary>
+    /// Creates test command defaults through the original one-argument public contract.
+    /// </summary>
+    public TestCommandDefaults(string? format)
+        : this(format, null)
+    {
+    }
+
+    /// <summary>
+    /// Deconstructs the original format-only public contract.
+    /// </summary>
+    public void Deconstruct(out string? format)
+        => format = Format;
+}
 
 /// <summary>
 /// Stores default timeout values for Excel automation stages.

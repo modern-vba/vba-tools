@@ -1,5 +1,7 @@
 namespace VbaDev.App.Testing;
 
+using VbaDev.App.Workbooks;
+
 /// <summary>
 /// Selects the VBA tests to run inside a workbook.
 /// </summary>
@@ -13,10 +15,28 @@ public sealed record WorkbookTestSelector(string? ModuleName = null, string? Pro
 public interface IWorkbookTestRunner
 {
     /// <summary>
-    /// Runs tests in a workbook using an optional module/procedure selector.
+    /// Runs tests through the original synchronous extension contract.
     /// </summary>
-    /// <param name="workbookPath">The workbook containing the test runner and test modules.</param>
-    /// <param name="selector">The optional test selection.</param>
-    /// <returns>The raw workbook result rows.</returns>
-    IReadOnlyList<WorkbookTestResultRow> RunTests(string workbookPath, WorkbookTestSelector selector);
+    IReadOnlyList<WorkbookTestResultRow> RunTests(
+        string workbookPath,
+        WorkbookTestSelector selector)
+        => RunTestsAsync(
+                workbookPath,
+                selector,
+                TimeSpan.FromSeconds(600),
+                WorkbookAutomationTimeouts.Default,
+                CancellationToken.None)
+            .GetAwaiter()
+            .GetResult();
+
+    /// <summary>
+    /// Runs tests through bounded, strongly owned workbook automation.
+    /// </summary>
+    Task<IReadOnlyList<WorkbookTestResultRow>> RunTestsAsync(
+        string workbookPath,
+        WorkbookTestSelector selector,
+        TimeSpan executionTimeout,
+        WorkbookAutomationTimeouts automationTimeouts,
+        CancellationToken cancellationToken)
+        => Task.FromResult(RunTests(workbookPath, selector));
 }

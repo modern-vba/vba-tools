@@ -14,7 +14,8 @@
   "commonModulesRepository": "../common_modules_repo",
   "commandDefaults": {
     "test": {
-      "format": "text"
+      "format": "text",
+      "executionTimeoutSeconds": 240
     },
     "excelAutomation": {
       "workbookOpenTimeoutSeconds": 120,

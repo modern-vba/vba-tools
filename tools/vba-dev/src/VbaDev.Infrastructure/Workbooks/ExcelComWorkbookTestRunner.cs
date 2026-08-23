@@ -1,7 +1,13 @@
 using System.Runtime.InteropServices;
 using VbaDev.App.Testing;
+using VbaDev.App.Workbooks;
 
 namespace VbaDev.Infrastructure.Workbooks;
+
+internal interface IExcelComWorkbookTestSession
+{
+    IReadOnlyList<WorkbookTestResultRow> RunTests(WorkbookTestSelector selector);
+}
 
 /// <summary>
 /// Runs VBA unit tests inside Excel through COM automation.
@@ -11,6 +17,32 @@ public sealed class ExcelComWorkbookTestRunner : IWorkbookTestRunner
     private const int XlUp = -4162;
     private const string UnitTestEntryPoint = "UnitTestMain";
     private const string UnitTestSheetName = "UNIT_TEST_SHEET";
+    private readonly ExcelComWorkbookBuildAutomation automation;
+
+    public ExcelComWorkbookTestRunner()
+        : this(new ExcelComWorkbookBuildAutomation())
+    {
+    }
+
+    internal ExcelComWorkbookTestRunner(ExcelComWorkbookBuildAutomation automation)
+    {
+        this.automation = automation;
+    }
+
+    /// <summary>
+    /// Runs the UnitTestMain macro and reads result rows from the unit-test worksheet.
+    /// </summary>
+    public IReadOnlyList<WorkbookTestResultRow> RunTests(
+        string workbookPath,
+        WorkbookTestSelector selector)
+        => RunTestsAsync(
+                workbookPath,
+                selector,
+                TimeSpan.FromSeconds(600),
+                WorkbookAutomationTimeouts.Default,
+                CancellationToken.None)
+            .GetAwaiter()
+            .GetResult();
 
     /// <summary>
     /// Runs the UnitTestMain macro and reads result rows from the unit-test worksheet.
@@ -18,15 +50,27 @@ public sealed class ExcelComWorkbookTestRunner : IWorkbookTestRunner
     /// <param name="workbookPath">The workbook path containing tests.</param>
     /// <param name="selector">The optional module or procedure selector passed to UnitTestMain.</param>
     /// <returns>The raw workbook test result rows.</returns>
-    public IReadOnlyList<WorkbookTestResultRow> RunTests(string workbookPath, WorkbookTestSelector selector)
+    public Task<IReadOnlyList<WorkbookTestResultRow>> RunTestsAsync(
+        string workbookPath,
+        WorkbookTestSelector selector,
+        TimeSpan executionTimeout,
+        WorkbookAutomationTimeouts automationTimeouts,
+        CancellationToken cancellationToken)
+        => automation.RunWorkbookTestsAsync(
+            workbookPath,
+            automationTimeouts,
+            executionTimeout,
+            selector,
+            cancellationToken);
+
+    internal static IReadOnlyList<WorkbookTestResultRow> RunTests(
+        ExcelComWorkbookSession session,
+        WorkbookTestSelector selector)
     {
-        ExcelComWorkbookSession? session = null;
         object? worksheetsObject = null;
         object? sheetObject = null;
-
         try
         {
-            session = ExcelComWorkbookSession.Open(workbookPath, enableAutomationSecurityLow: true);
             dynamic excel = session.ExcelObject;
             dynamic workbook = session.WorkbookObject;
             var entryPoint = $"'{workbook.Name}'!{UnitTestEntryPoint}";
@@ -56,7 +100,6 @@ public sealed class ExcelComWorkbookTestRunner : IWorkbookTestRunner
         {
             ComObjectReleaser.Release(sheetObject);
             ComObjectReleaser.Release(worksheetsObject);
-            session?.Dispose();
         }
     }
 

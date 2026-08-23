@@ -350,6 +350,15 @@ public sealed class VbaDevCommandLine
         {
             Description = "Skip building before running tests."
         };
+        var testSourceSnapshotOption = CreateStringOption(
+            "--source-snapshot",
+            "Complete caller-owned source snapshot directory.",
+            "dir");
+        var testTimeoutOption = new Option<int?>("--timeout-seconds")
+        {
+            Description = "Test macro execution timeout in positive whole seconds.",
+            HelpName = "seconds"
+        };
         var testModuleOption = CreateStringOption("--module", "Run tests from one test module.", "name");
         var testProcedureOption = CreateStringOption(
             "--procedure",
@@ -357,17 +366,26 @@ public sealed class VbaDevCommandLine
             "name");
         testCommand.Add(testFormatOption);
         testCommand.Add(testNoBuildOption);
+        testCommand.Add(testSourceSnapshotOption);
+        testCommand.Add(testTimeoutOption);
         testCommand.Add(testModuleOption);
         testCommand.Add(testProcedureOption);
         var testOptions = new TestCommandOptions(
             testProjectOptions,
             testFormatOption,
             testNoBuildOption,
+            testSourceSnapshotOption,
+            testTimeoutOption,
             testModuleOption,
             testProcedureOption);
-        testCommand.SetAction(parseResult => WriteCommandResult(
+        testCommand.SetAction(async (parseResult, cancellationToken) => WriteCommandResult(
             parseResult,
-            RunTestCommand(parseResult, composition, testOptions)));
+            await RunTestCommandAsync(
+                    parseResult,
+                    composition,
+                    testOptions,
+                    cancellationToken)
+                .ConfigureAwait(false)));
         var publishCommand = AddCapabilityCommand(
             rootCommand,
             "publish",
@@ -459,7 +477,8 @@ public sealed class VbaDevCommandLine
                 "1.0",
                 new Dictionary<string, string>(StringComparer.Ordinal)
                 {
-                    ["build.sourceSnapshot"] = "1.0"
+                    ["build.sourceSnapshot"] = "1.0",
+                    ["test.sourceSnapshot"] = "1.0"
                 },
                 capabilityCommands
                     .OrderBy(registration => registration.Name, StringComparer.OrdinalIgnoreCase)
@@ -804,43 +823,70 @@ public sealed class VbaDevCommandLine
         }
     }
 
-    private static CommandResult RunTestCommand(
+    private static Task<CommandResult> RunTestCommandAsync(
         ParseResult parseResult,
         ToolingApplicationComposition composition,
-        TestCommandOptions options)
+        TestCommandOptions options,
+        CancellationToken cancellationToken)
     {
         var moduleName = parseResult.GetValue(options.Module);
         var procedureName = parseResult.GetValue(options.Procedure);
         if (!string.IsNullOrWhiteSpace(procedureName) && string.IsNullOrWhiteSpace(moduleName))
         {
-            return CommandResult.UsageError("--procedure requires --module.");
+            return Task.FromResult(CommandResult.UsageError("--procedure requires --module."));
         }
 
-        return ResolveDocumentContext(
+        var hasSourceSnapshot = parseResult.GetResult(options.SourceSnapshot) is not null;
+        var sourceSnapshotValue = parseResult.GetValue(options.SourceSnapshot);
+        if (hasSourceSnapshot && string.IsNullOrWhiteSpace(sourceSnapshotValue))
+        {
+            return Task.FromResult(CommandResult.UsageError(
+                "--source-snapshot requires a non-empty directory path."));
+        }
+
+        if (hasSourceSnapshot && parseResult.GetValue(options.NoBuild))
+        {
+            return Task.FromResult(CommandResult.UsageError(
+                "--source-snapshot cannot be used with --no-build."));
+        }
+
+        return ResolveDocumentContextAsync(
             parseResult,
             composition,
             options.Project,
-            context =>
+            async (context, operationCancellationToken) =>
             {
                 try
                 {
                     var format = CommandDefaultResolver.ResolveTestFormat(
                         context.Manifest,
                         parseResult.GetValue(options.Format));
-                    return composition.TestCommand.Run(
-                        context,
-                        new TestCommandRequest(
+                    var executionTimeout = CommandDefaultResolver.ResolveTestExecutionTimeout(
+                        context.Manifest,
+                        parseResult.GetValue(options.TimeoutSeconds));
+                    return await composition.TestCommand.RunAsync(
+                            context,
+                            new TestCommandRequest(
                             format,
                             !parseResult.GetValue(options.NoBuild),
                             new WorkbookTestSelector(
                                 string.IsNullOrWhiteSpace(moduleName) ? null : moduleName,
-                                string.IsNullOrWhiteSpace(procedureName) ? null : procedureName)));
+                                string.IsNullOrWhiteSpace(procedureName) ? null : procedureName),
+                            executionTimeout,
+                            !hasSourceSnapshot
+                                ? null
+                                : Path.GetFullPath(
+                                    sourceSnapshotValue!,
+                                    composition.WorkingDirectory)),
+                            operationCancellationToken)
+                        .ConfigureAwait(false);
                 }
                 catch (InvalidOperationException ex)
                 {
                     return CommandResult.UsageError(ex.Message);
                 }
-            });
+            },
+            cancellationToken);
     }
 
     private static CommandResult RunExportCommand(
@@ -916,6 +962,8 @@ public sealed class VbaDevCommandLine
         ProjectDocumentOptions Project,
         Option<string> Format,
         Option<bool> NoBuild,
+        Option<string> SourceSnapshot,
+        Option<int?> TimeoutSeconds,
         Option<string> Module,
         Option<string> Procedure);
 

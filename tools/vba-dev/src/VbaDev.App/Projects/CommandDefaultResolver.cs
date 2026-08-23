@@ -9,6 +9,7 @@ public static class CommandDefaultResolver
 {
     private static readonly TimeSpan DefaultWorkbookOpenTimeout = TimeSpan.FromSeconds(300);
     private static readonly TimeSpan DefaultWorkbookSaveTimeout = TimeSpan.FromSeconds(300);
+    private static readonly TimeSpan DefaultTestExecutionTimeout = TimeSpan.FromSeconds(600);
 
     private static readonly HashSet<string> SupportedTestFormats = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -39,6 +40,29 @@ public static class CommandDefaultResolver
         }
 
         return format;
+    }
+
+    /// <summary>
+    /// Resolves the test macro execution timeout from an explicit option, manifest default, or built-in default.
+    /// </summary>
+    public static TimeSpan ResolveTestExecutionTimeout(
+        ProjectManifest manifest,
+        int? optionSeconds)
+    {
+        var seconds = optionSeconds
+            ?? manifest.CommandDefaults?.Test?.ExecutionTimeoutSeconds;
+        if (seconds is null)
+        {
+            return DefaultTestExecutionTimeout;
+        }
+
+        if (seconds <= 0)
+        {
+            throw new InvalidOperationException(
+                "Test execution timeout must be positive whole seconds.");
+        }
+
+        return TimeSpan.FromSeconds(seconds.Value);
     }
 
     /// <summary>

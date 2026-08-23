@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Runtime.InteropServices;
+using VbaDev.App.Build;
 using VbaDev.App.Testing;
 using VbaDev.App.Workbooks;
 using VbaDev.Cli;
@@ -45,6 +46,44 @@ public sealed class TestCommandTests
             "{\"type\":\"runFinished\",\"project\":\"Project\",\"document\":\"Book1\",\"outcome\":\"failed\",\"total\":3,\"passed\":1,\"failed\":1,\"errors\":1}\n",
             result.StandardOutput);
         Assert.Equal(string.Empty, result.StandardError);
+    }
+
+    [Fact]
+    public void LegacySynchronousWorkbookTestRunnerStillRunsThroughTestCommand()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(
+            root,
+            ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        var binPath = Path.Combine(root, "bin", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
+        File.WriteAllText(binPath, "bin", Encoding.UTF8);
+        var runner = new LegacySynchronousWorkbookTestRunner();
+        var application = CommandLineTestFactory.Create(
+            root,
+            workbookTestRunner: runner);
+
+        var result = application.Run(["test", "--no-build"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal([binPath], runner.Workbooks);
+        Assert.Contains("1 passed", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LegacyTestCommandRequestConstructionAndDeconstructionRemainAvailable()
+    {
+        var selector = new WorkbookTestSelector("Test_Module", "Test_Passes");
+
+        var request = new TestCommandRequest("text", BuildFirst: true, selector);
+        var (format, buildFirst, deconstructedSelector) = request;
+
+        Assert.Equal("text", format);
+        Assert.True(buildFirst);
+        Assert.Same(selector, deconstructedSelector);
+        Assert.Equal(TimeSpan.FromSeconds(600), request.ExecutionTimeout);
+        Assert.Null(request.SourceSnapshotPath);
     }
 
     [Fact]
@@ -114,6 +153,37 @@ public sealed class TestCommandTests
         Assert.Equal(11, range.GetProperty("start").GetProperty("character").GetInt32());
         Assert.Equal(2, range.GetProperty("end").GetProperty("line").GetInt32());
         Assert.Equal(19, range.GetProperty("end").GetProperty("character").GetInt32());
+    }
+
+    [Fact]
+    public void SnapshotSourceLocationUsesTheOperationFixedActiveCodePage()
+    {
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+        using var temp = TempDirectory.Create();
+        var snapshotPath = temp.CreateDirectory("snapshot");
+        var persistentPath = temp.CreateDirectory("persistent");
+        var sourcePath = Path.Combine(snapshotPath, "Encoded.bas");
+        var source = "Attribute VB_Name = \"Test_Café\"\r\nPublic Sub Test_Passes()\r\nEnd Sub\r\n";
+        File.WriteAllBytes(sourcePath, Encoding.GetEncoding(1252).GetBytes(source));
+        var locator = new TestProcedureSourceLocator(() => 1252);
+        var result = new TestResultRecord(
+            "Book1",
+            "Test_Café",
+            "Test_Passes",
+            TestOutcome.Passed,
+            "");
+
+        var located = Assert.Single(locator.LocateSnapshot(
+            snapshotPath,
+            persistentPath,
+            [result]));
+
+        var location = Assert.IsType<TestProcedureSourceLocation>(located.Location);
+        Assert.Equal(
+            new Uri(Path.Combine(persistentPath, "Encoded.bas")).AbsoluteUri,
+            location.Uri);
+        Assert.Equal(new TestProcedureSourcePosition(1, 11), location.Range.Start);
+        Assert.Equal(new TestProcedureSourcePosition(1, 22), location.Range.End);
     }
 
     [Fact]
@@ -528,6 +598,1102 @@ public sealed class TestCommandTests
     }
 
     [Fact]
+    public void SnapshotTestBuildsAndRunsSameFilenameWorkbookWithoutTouchingManifestBin()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var persistentSourcePath = Path.Combine(root, "missing-source", "Book1");
+        var templatePath = Path.Combine(root, "templates", "Book1.xlsm");
+        var binPath = Path.Combine(root, "bin", "Book1.xlsm");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        manifest.Documents["Book1"] = manifest.Documents["Book1"] with
+        {
+            SourcePath = Path.GetRelativePath(root, persistentSourcePath),
+            TemplatePath = Path.GetRelativePath(root, templatePath),
+            BinPath = Path.GetRelativePath(root, binPath)
+        };
+        new JsonProjectManifestStore().Save(root, manifest);
+        Directory.CreateDirectory(Path.GetDirectoryName(templatePath)!);
+        File.WriteAllText(templatePath, "snapshot-test-template", Encoding.UTF8);
+        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
+        var manifestBinBytes = Encoding.UTF8.GetBytes("persistent-bin");
+        File.WriteAllBytes(binPath, manifestBinBytes);
+        var snapshotPath = temp.CreateDirectory("caller-snapshot");
+        var snapshotSourcePath = Path.Combine(snapshotPath, "nested", "Test_Module.bas");
+        Directory.CreateDirectory(Path.GetDirectoryName(snapshotSourcePath)!);
+        var snapshotBytes = Encoding.UTF8.GetBytes(
+            "Attribute VB_Name = \"Test_Module\"\nPublic Sub Test_Passes()\nEnd Sub\n");
+        File.WriteAllBytes(snapshotSourcePath, snapshotBytes);
+        var buildAutomation = new FakeWorkbookBuildAutomation();
+        var runner = new FakeWorkbookTestRunner(
+            new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
+        var application = CommandLineTestFactory.Create(
+            root,
+            workbookBuildAutomation: buildAutomation,
+            workbookTestRunner: runner);
+
+        var result = application.Run(
+        [
+            "test",
+            "--source-snapshot",
+            snapshotPath,
+            "--format",
+            "ndjson"
+        ]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.StandardError);
+        var testWorkbookPath = Assert.Single(runner.Workbooks);
+        Assert.Equal("Book1.xlsm", Path.GetFileName(testWorkbookPath));
+        Assert.NotEqual(binPath, testWorkbookPath);
+        Assert.False(File.Exists(testWorkbookPath));
+        Assert.Equal(manifestBinBytes, File.ReadAllBytes(binPath));
+        Assert.False(Directory.Exists(persistentSourcePath));
+        Assert.Equal(snapshotBytes, File.ReadAllBytes(snapshotSourcePath));
+        Assert.Contains("import:Test_Module.bas", buildAutomation.Events);
+        Assert.Contains("\"type\":\"runFinished\"", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SnapshotTestRejectsNoBuildBeforeCreatingOrRunningAnything()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(
+            root,
+            ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        var snapshotPath = temp.CreateDirectory("caller-snapshot");
+        var buildAutomation = new FakeWorkbookBuildAutomation();
+        var runner = new FakeWorkbookTestRunner();
+        var application = CommandLineTestFactory.Create(
+            root,
+            workbookBuildAutomation: buildAutomation,
+            workbookTestRunner: runner);
+
+        var result = application.Run(
+        [
+            "test",
+            "--source-snapshot",
+            snapshotPath,
+            "--no-build"
+        ]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("--source-snapshot", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("--no-build", result.StandardError, StringComparison.Ordinal);
+        Assert.Empty(buildAutomation.OpenedWorkbooks);
+        Assert.Empty(runner.Workbooks);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void SnapshotTestRejectsAnExplicitBlankSnapshotBeforeBuild(string snapshotPath)
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(
+            root,
+            ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        var templatePath = Path.Combine(root, "src", "Book1", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(templatePath)!);
+        File.WriteAllText(templatePath, "snapshot-test-template", Encoding.UTF8);
+        var buildAutomation = new FakeWorkbookBuildAutomation();
+        var runner = new FakeWorkbookTestRunner();
+        var application = CommandLineTestFactory.Create(
+            root,
+            workbookBuildAutomation: buildAutomation,
+            workbookTestRunner: runner);
+
+        var result = application.Run(
+        [
+            "test",
+            "--source-snapshot",
+            snapshotPath
+        ]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("--source-snapshot", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("non-empty", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(buildAutomation.OpenedWorkbooks);
+        Assert.Empty(runner.Workbooks);
+        Assert.False(File.Exists(Path.Combine(root, "bin", "Book1.xlsm")));
+    }
+
+    [Fact]
+    public void SnapshotTestDoesNotAcceptAnOutputOption()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(
+            root,
+            ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        var snapshotPath = temp.CreateDirectory("caller-snapshot");
+        var runner = new FakeWorkbookTestRunner();
+        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
+
+        var result = application.Run(
+        [
+            "test",
+            "--source-snapshot",
+            snapshotPath,
+            "--output",
+            Path.Combine(temp.Path, "caller-output.xlsm")
+        ]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("--output", result.StandardError, StringComparison.Ordinal);
+        Assert.Empty(runner.Workbooks);
+    }
+
+    [Fact]
+    public void SnapshotWorkspaceOverlapWithCallerSnapshotFailsBeforeWorkspaceCreation()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(
+            root,
+            ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        var templatePath = Path.Combine(root, "src", "Book1", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(templatePath)!);
+        File.WriteAllText(templatePath, "snapshot-test-template", Encoding.UTF8);
+        var snapshotPath = temp.CreateDirectory("caller-snapshot");
+        var callerSourcePath = Path.Combine(snapshotPath, "Test_Module.bas");
+        File.WriteAllText(
+            callerSourcePath,
+            "Attribute VB_Name = \"Test_Module\"",
+            Encoding.UTF8);
+        var scratchRoot = Path.Combine(snapshotPath, "vba-dev-snapshot-test");
+        var runner = new FakeWorkbookTestRunner();
+        var composition = ToolingCompositionRoot.CreateApplicationComposition(
+            root,
+            workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+            workbookTestRunner: runner);
+        var testCommand = new TestCommand(
+            composition.BuildCommand,
+            runner,
+            new TestResultOutputFormatter(),
+            new TestProcedureSourceLocator(),
+            new SnapshotTestExecutionWorkspaceFactory(scratchRoot));
+        var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
+
+        var result = application.Run(
+        [
+            "test",
+            "--source-snapshot",
+            snapshotPath,
+            "--format",
+            "ndjson"
+        ]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("outside the caller-owned source snapshot", result.StandardError, StringComparison.Ordinal);
+        Assert.DoesNotContain(scratchRoot, result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(result.StandardOutput);
+        Assert.Empty(runner.Workbooks);
+        Assert.False(Directory.Exists(scratchRoot));
+        Assert.Equal(
+            "Attribute VB_Name = \"Test_Module\"",
+            File.ReadAllText(callerSourcePath, Encoding.UTF8));
+    }
+
+    [Fact]
+    public void SnapshotTestUsesFrozenRangesWithPersistentSourceUris()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var persistentSourcePath = Path.Combine(root, "persistent-source", "Book1");
+        var templatePath = Path.Combine(root, "templates", "Book1.xlsm");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        manifest.Documents["Book1"] = manifest.Documents["Book1"] with
+        {
+            SourcePath = Path.GetRelativePath(root, persistentSourcePath),
+            TemplatePath = Path.GetRelativePath(root, templatePath)
+        };
+        new JsonProjectManifestStore().Save(root, manifest);
+        Directory.CreateDirectory(Path.GetDirectoryName(templatePath)!);
+        File.WriteAllText(templatePath, "snapshot-test-template", Encoding.UTF8);
+        var snapshotPath = temp.CreateDirectory("caller-snapshot");
+        var snapshotSourcePath = Path.Combine(snapshotPath, "nested", "Test_Module.bas");
+        Directory.CreateDirectory(Path.GetDirectoryName(snapshotSourcePath)!);
+        File.WriteAllText(
+            snapshotSourcePath,
+            "Attribute VB_Name = \"Test_Module\"\n' frozen line one\n' frozen line two\nPublic Sub Test_Passes()\nEnd Sub\n",
+            Encoding.UTF8);
+        var runner = new FakeWorkbookTestRunner(
+            new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
+        var buildAutomation = new FakeWorkbookBuildAutomation
+        {
+            OnImport = () => File.WriteAllText(
+                snapshotSourcePath,
+                "Attribute VB_Name = \"Test_Module\"\nPublic Sub Test_Passes()\nEnd Sub\n",
+                Encoding.UTF8)
+        };
+        var application = CommandLineTestFactory.Create(
+            root,
+            workbookBuildAutomation: buildAutomation,
+            workbookTestRunner: runner);
+
+        var result = application.Run(
+        [
+            "test",
+            "--source-snapshot",
+            snapshotPath,
+            "--format",
+            "ndjson"
+        ]);
+
+        Assert.Equal(0, result.ExitCode);
+        var finishedLine = result.StandardOutput
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Single(line => line.Contains("\"type\":\"testFinished\"", StringComparison.Ordinal));
+        using var finished = JsonDocument.Parse(finishedLine);
+        var location = finished.RootElement.GetProperty("location");
+        Assert.Equal(
+            new Uri(Path.Combine(persistentSourcePath, "nested", "Test_Module.bas")).AbsoluteUri,
+            location.GetProperty("uri").GetString());
+        var range = location.GetProperty("range");
+        Assert.Equal(3, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(11, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.DoesNotContain(snapshotPath, result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(
+            "Attribute VB_Name = \"Test_Module\"\nPublic Sub Test_Passes()\nEnd Sub\n",
+            File.ReadAllText(snapshotSourcePath, Encoding.UTF8));
+        Assert.False(Directory.Exists(persistentSourcePath));
+        Assert.False(File.Exists(Path.Combine(root, "bin", "Book1.xlsm")));
+    }
+
+    [Fact]
+    public void SnapshotTestPreservesPersistentUrisThatResemblePrivateStagingPaths()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var persistentSourcePath = Path.Combine(
+            Path.GetTempPath(),
+            "vba-dev-vbe-import",
+            Guid.NewGuid().ToString("N"));
+        var templatePath = Path.Combine(root, "templates", "Book1.xlsm");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        manifest.Documents["Book1"] = manifest.Documents["Book1"] with
+        {
+            SourcePath = persistentSourcePath,
+            TemplatePath = Path.GetRelativePath(root, templatePath)
+        };
+        new JsonProjectManifestStore().Save(root, manifest);
+        Directory.CreateDirectory(Path.GetDirectoryName(templatePath)!);
+        File.WriteAllText(templatePath, "snapshot-test-template", Encoding.UTF8);
+        var snapshotPath = temp.CreateDirectory("caller-snapshot");
+        File.WriteAllText(
+            Path.Combine(snapshotPath, "Test_Module.bas"),
+            "Attribute VB_Name = \"Test_Module\"\nPublic Sub Test_Passes()\nEnd Sub\n",
+            Encoding.UTF8);
+        var runner = new FakeWorkbookTestRunner(
+            new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
+        var application = CommandLineTestFactory.Create(
+            root,
+            workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+            workbookTestRunner: runner);
+
+        var result = application.Run(
+        [
+            "test",
+            "--source-snapshot",
+            snapshotPath,
+            "--format",
+            "ndjson"
+        ]);
+
+        Assert.Equal(0, result.ExitCode);
+        var finishedLine = result.StandardOutput
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Single(line => line.Contains("\"type\":\"testFinished\"", StringComparison.Ordinal));
+        using var finished = JsonDocument.Parse(finishedLine);
+        Assert.Equal(
+            new Uri(Path.Combine(persistentSourcePath, "Test_Module.bas")).AbsoluteUri,
+            finished.RootElement.GetProperty("location").GetProperty("uri").GetString());
+    }
+
+    [Fact]
+    public void AmbiguousSnapshotLocationRemainsACompletedNonFailingOutcome()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(
+            root,
+            ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        var templatePath = Path.Combine(root, "src", "Book1", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(templatePath)!);
+        File.WriteAllText(templatePath, "snapshot-test-template", Encoding.UTF8);
+        var snapshotPath = temp.CreateDirectory("caller-snapshot");
+        File.WriteAllText(
+            Path.Combine(snapshotPath, "Test_Module.bas"),
+            "Attribute VB_Name = \"Test_Module\"\nPublic Sub Test_Passes()\nEnd Sub\nPublic Sub Test_Passes()\nEnd Sub\n",
+            Encoding.UTF8);
+        var runner = new FakeWorkbookTestRunner(
+            new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
+        var application = CommandLineTestFactory.Create(
+            root,
+            workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+            workbookTestRunner: runner);
+
+        var result = application.Run(
+        [
+            "test",
+            "--source-snapshot",
+            snapshotPath,
+            "--format",
+            "ndjson"
+        ]);
+
+        Assert.Equal(0, result.ExitCode);
+        var finishedLine = result.StandardOutput
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Single(line => line.Contains("\"type\":\"testFinished\"", StringComparison.Ordinal));
+        using var finished = JsonDocument.Parse(finishedLine);
+        Assert.Equal("passed", finished.RootElement.GetProperty("outcome").GetString());
+        Assert.False(finished.RootElement.TryGetProperty("location", out _));
+        Assert.Contains("\"type\":\"runFinished\"", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("Warning:", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("Test_Module.Test_Passes", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("safely or unambiguously", result.StandardError, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("OK", 0)]
+    [InlineData("NG", 1)]
+    public void SnapshotCleanupFailurePreservesCompleteNdjsonAndReportsRetainedWorkspace(
+        string workbookOutcome,
+        int expectedExitCode)
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        new JsonProjectManifestStore().Save(root, manifest);
+        var templatePath = Path.Combine(root, "src", "Book1", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(templatePath)!);
+        File.WriteAllText(templatePath, "snapshot-test-template", Encoding.UTF8);
+        var snapshotPath = temp.CreateDirectory("caller-snapshot");
+        File.WriteAllText(
+            Path.Combine(snapshotPath, "Test_Module.bas"),
+            "Attribute VB_Name = \"Test_Module\"\nPublic Sub Test_Passes()\nEnd Sub\n",
+            Encoding.UTF8);
+        var runner = new FakeWorkbookTestRunner(
+            new WorkbookTestResultRow(
+                "Test_Module",
+                "Test_Passes",
+                workbookOutcome,
+                workbookOutcome == "OK" ? "" : "synthetic assertion failure"));
+        var composition = ToolingCompositionRoot.CreateApplicationComposition(
+            root,
+            workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+            workbookTestRunner: runner);
+        var fileSystem = new AlwaysFailingSnapshotWorkspaceFileSystem();
+        var testCommand = new TestCommand(
+            composition.BuildCommand,
+            runner,
+            new TestResultOutputFormatter(),
+            new TestProcedureSourceLocator(),
+            new SnapshotTestExecutionWorkspaceFactory(
+                temp.CreateDirectory("snapshot-test-scratch"),
+                fileSystem,
+                cleanupAttempts: 3,
+                retryDelay: TimeSpan.Zero));
+        var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
+
+        var result = application.Run(
+        [
+            "test",
+            "--source-snapshot",
+            snapshotPath,
+            "--format",
+            "ndjson"
+        ]);
+
+        Assert.Equal(expectedExitCode, result.ExitCode);
+        Assert.Contains("\"type\":\"runFinished\"", result.StandardOutput, StringComparison.Ordinal);
+        var retainedPath = Assert.Single(fileSystem.DeletePaths.Distinct(StringComparer.OrdinalIgnoreCase));
+        Assert.Equal(3, fileSystem.DeletePaths.Count);
+        Assert.True(Path.IsPathFullyQualified(retainedPath));
+        Assert.Contains("retained", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(retainedPath, result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.True(Directory.Exists(retainedPath));
+    }
+
+    [Fact]
+    public async Task SnapshotCaptureCancellationPreserves130AndReportsFailedRollback()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        new JsonProjectManifestStore().Save(root, manifest);
+        var templatePath = Path.Combine(root, "src", "Book1", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(templatePath)!);
+        File.WriteAllText(templatePath, "snapshot-test-template", Encoding.UTF8);
+        var snapshotPath = temp.CreateDirectory("caller-snapshot");
+        File.WriteAllText(
+            Path.Combine(snapshotPath, "Test_Module.bas"),
+            "Attribute VB_Name = \"Test_Module\"",
+            Encoding.UTF8);
+        var scratchRoot = temp.CreateDirectory("snapshot-test-scratch");
+        var runner = new FakeWorkbookTestRunner();
+        var composition = ToolingCompositionRoot.CreateApplicationComposition(
+            root,
+            workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+            workbookTestRunner: runner);
+        var fileSystem = new AlwaysFailingSnapshotWorkspaceFileSystem();
+        var testCommand = new TestCommand(
+            composition.BuildCommand,
+            runner,
+            new TestResultOutputFormatter(),
+            new TestProcedureSourceLocator(),
+            new SnapshotTestExecutionWorkspaceFactory(
+                scratchRoot,
+                fileSystem,
+                cleanupAttempts: 3,
+                retryDelay: TimeSpan.Zero));
+        var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        var result = await application.RunAsync(
+        [
+            "test",
+            "--source-snapshot",
+            snapshotPath,
+            "--format",
+            "ndjson"
+        ], cancellation.Token);
+
+        Assert.Equal(130, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        var retainedPath = Assert.Single(fileSystem.DeletePaths.Distinct(StringComparer.OrdinalIgnoreCase));
+        Assert.Equal(3, fileSystem.DeletePaths.Count);
+        Assert.Contains("retained", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(retainedPath, result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.True(Directory.Exists(retainedPath));
+        Assert.Empty(runner.Workbooks);
+    }
+
+    [Fact]
+    public async Task NestedSnapshotCaptureCancellationPreserves130AfterSuccessfulRollback()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        new JsonProjectManifestStore().Save(root, manifest);
+        var templatePath = Path.Combine(root, "src", "Book1", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(templatePath)!);
+        File.WriteAllText(templatePath, "snapshot-test-template", Encoding.UTF8);
+        var snapshotPath = temp.CreateDirectory("caller-snapshot");
+        File.WriteAllText(
+            Path.Combine(snapshotPath, "Test_Module.bas"),
+            "Attribute VB_Name = \"Test_Module\"",
+            Encoding.UTF8);
+        var scratchRoot = temp.CreateDirectory("snapshot-test-scratch");
+        var runner = new FakeWorkbookTestRunner();
+        var composition = ToolingCompositionRoot.CreateApplicationComposition(
+            root,
+            workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+            workbookTestRunner: runner);
+        var testCommand = new TestCommand(
+            composition.BuildCommand,
+            runner,
+            new TestResultOutputFormatter(),
+            new TestProcedureSourceLocator(),
+            new SnapshotTestExecutionWorkspaceFactory(
+                scratchRoot,
+                new SnapshotTestWorkspaceFileSystem(),
+                cleanupAttempts: 3,
+                retryDelay: TimeSpan.Zero,
+                sourceCaptureFactory: new NestedCancellationSnapshotSourceCaptureFactory()));
+        var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        var result = await application.RunAsync(
+        [
+            "test",
+            "--source-snapshot",
+            snapshotPath,
+            "--format",
+            "ndjson"
+        ], cancellation.Token);
+
+        Assert.Equal(130, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Contains("cancelled", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("retained", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(Directory.EnumerateDirectories(scratchRoot));
+        Assert.Empty(runner.Workbooks);
+    }
+
+    [Fact]
+    public void SnapshotCapturePreparationFailureDoesNotExposePrivateWorkspacePaths()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        new JsonProjectManifestStore().Save(root, manifest);
+        var templatePath = Path.Combine(root, "src", "Book1", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(templatePath)!);
+        File.WriteAllText(templatePath, "snapshot-test-template", Encoding.UTF8);
+        var snapshotPath = temp.CreateDirectory("caller-snapshot");
+        File.WriteAllText(
+            Path.Combine(snapshotPath, "Test_Module.bas"),
+            "Attribute VB_Name = \"Test_Module\"",
+            Encoding.UTF8);
+        var scratchRoot = temp.CreateDirectory("snapshot-test-scratch");
+        var runner = new FakeWorkbookTestRunner();
+        var captureFactory = new PathReportingFailingSnapshotSourceCaptureFactory();
+        var composition = ToolingCompositionRoot.CreateApplicationComposition(
+            root,
+            workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+            workbookTestRunner: runner);
+        var testCommand = new TestCommand(
+            composition.BuildCommand,
+            runner,
+            new TestResultOutputFormatter(),
+            new TestProcedureSourceLocator(),
+            new SnapshotTestExecutionWorkspaceFactory(
+                scratchRoot,
+                new SnapshotTestWorkspaceFileSystem(),
+                cleanupAttempts: 3,
+                retryDelay: TimeSpan.Zero,
+                sourceCaptureFactory: captureFactory));
+        var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
+
+        var result = application.Run(
+        [
+            "test",
+            "--source-snapshot",
+            snapshotPath,
+            "--format",
+            "ndjson"
+        ]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Contains("synthetic snapshot capture failure", result.StandardError, StringComparison.Ordinal);
+        Assert.NotNull(captureFactory.CaptureScratchRoot);
+        Assert.DoesNotContain(
+            captureFactory.CaptureScratchRoot,
+            result.StandardError,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            new Uri(captureFactory.CaptureScratchRoot).AbsoluteUri,
+            result.StandardError,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(scratchRoot, result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("retained", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(Directory.EnumerateDirectories(scratchRoot));
+        Assert.Empty(runner.Workbooks);
+    }
+
+    [Fact]
+    public void SnapshotBuildReleaseProofFailureRetainsWorkspaceAndEmitsNoNdjson()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        new JsonProjectManifestStore().Save(root, manifest);
+        var templatePath = Path.Combine(root, "src", "Book1", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(templatePath)!);
+        File.WriteAllText(templatePath, "snapshot-test-template", Encoding.UTF8);
+        var snapshotPath = temp.CreateDirectory("caller-snapshot");
+        File.WriteAllText(
+            Path.Combine(snapshotPath, "Test_Module.bas"),
+            "Attribute VB_Name = \"Test_Module\"",
+            Encoding.UTF8);
+        var scratchRoot = temp.CreateDirectory("snapshot-test-scratch");
+        var runner = new FakeWorkbookTestRunner(
+            new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
+        var composition = ToolingCompositionRoot.CreateApplicationComposition(
+            root,
+            workbookBuildAutomation: new CleanupFailingWorkbookGenerationAutomation(),
+            workbookTestRunner: runner);
+        var testCommand = new TestCommand(
+            composition.BuildCommand,
+            runner,
+            new TestResultOutputFormatter(),
+            new TestProcedureSourceLocator(),
+            new SnapshotTestExecutionWorkspaceFactory(scratchRoot));
+        var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
+
+        var result = application.Run(
+        [
+            "test",
+            "--source-snapshot",
+            snapshotPath,
+            "--format",
+            "ndjson"
+        ]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.DoesNotContain("runFinished", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Empty(runner.Workbooks);
+        var retainedPath = Assert.Single(Directory.EnumerateDirectories(scratchRoot));
+        Assert.Contains("could not be verified as released", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains(retainedPath, result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.True(Directory.Exists(retainedPath));
+    }
+
+    [Fact]
+    public void SnapshotBuildValidationFailureUsesCallerProvenanceWithoutInternalPaths()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        new JsonProjectManifestStore().Save(root, manifest);
+        var templatePath = Path.Combine(root, "src", "Book1", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(templatePath)!);
+        File.WriteAllText(templatePath, "snapshot-test-template", Encoding.UTF8);
+        var snapshotPath = temp.CreateDirectory("caller-snapshot");
+        var brokenSourcePath = Path.Combine(snapshotPath, "nested", "Broken.bas");
+        Directory.CreateDirectory(Path.GetDirectoryName(brokenSourcePath)!);
+        File.WriteAllBytes(brokenSourcePath, [0xff, 0xfe, 0x00, 0x00]);
+        var scratchRoot = temp.CreateDirectory("snapshot-test-scratch");
+        var runner = new FakeWorkbookTestRunner();
+        var composition = ToolingCompositionRoot.CreateApplicationComposition(
+            root,
+            workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+            workbookTestRunner: runner);
+        var testCommand = new TestCommand(
+            composition.BuildCommand,
+            runner,
+            new TestResultOutputFormatter(),
+            new TestProcedureSourceLocator(),
+            new SnapshotTestExecutionWorkspaceFactory(scratchRoot));
+        var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
+
+        var result = application.Run(
+        [
+            "test",
+            "--source-snapshot",
+            snapshotPath,
+            "--format",
+            "ndjson"
+        ]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Contains(brokenSourcePath, result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(scratchRoot, result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            "vba-dev-build-source-snapshot",
+            result.StandardError,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(Directory.EnumerateDirectories(scratchRoot));
+        Assert.Empty(runner.Workbooks);
+    }
+
+    [Fact]
+    public void SnapshotBuildAutomationFailureDoesNotExposePrivateWorkbookOrStagingPaths()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        new JsonProjectManifestStore().Save(root, manifest);
+        var templatePath = Path.Combine(root, "src", "Book1", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(templatePath)!);
+        File.WriteAllText(templatePath, "snapshot-test-template", Encoding.UTF8);
+        var snapshotPath = temp.CreateDirectory("caller-snapshot");
+        File.WriteAllText(
+            Path.Combine(snapshotPath, "Test_Module.bas"),
+            "Attribute VB_Name = \"Test_Module\"",
+            Encoding.UTF8);
+        var scratchRoot = temp.CreateDirectory("snapshot-test-scratch");
+        var runner = new FakeWorkbookTestRunner();
+        var privateVbePath = Path.Combine(
+            Path.GetTempPath(),
+            "vba-dev-vbe-import",
+            Guid.NewGuid().ToString("N"));
+        var composition = ToolingCompositionRoot.CreateApplicationComposition(
+            root,
+            workbookBuildAutomation: new PathReportingFailingWorkbookBuildAutomation(
+                privateVbePath),
+            workbookTestRunner: runner);
+        var testCommand = new TestCommand(
+            composition.BuildCommand,
+            runner,
+            new TestResultOutputFormatter(),
+            new TestProcedureSourceLocator(),
+            new SnapshotTestExecutionWorkspaceFactory(scratchRoot));
+        var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
+
+        var result = application.Run(
+        [
+            "test",
+            "--source-snapshot",
+            snapshotPath,
+            "--format",
+            "ndjson"
+        ]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Contains("synthetic workbook automation failure", result.StandardError, StringComparison.Ordinal);
+        Assert.DoesNotContain(scratchRoot, result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(privateVbePath, result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            new Uri(privateVbePath).AbsoluteUri,
+            result.StandardError,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("vba-dev-vbe-import", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(Directory.EnumerateDirectories(scratchRoot));
+        Assert.Empty(runner.Workbooks);
+    }
+
+    [Fact]
+    public void WrappedTestReleaseProofFailureRetainsWorkspaceAndEmitsNoNdjson()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        new JsonProjectManifestStore().Save(root, manifest);
+        var templatePath = Path.Combine(root, "src", "Book1", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(templatePath)!);
+        File.WriteAllText(templatePath, "snapshot-test-template", Encoding.UTF8);
+        var snapshotPath = temp.CreateDirectory("caller-snapshot");
+        File.WriteAllText(
+            Path.Combine(snapshotPath, "Test_Module.bas"),
+            "Attribute VB_Name = \"Test_Module\"",
+            Encoding.UTF8);
+        var scratchRoot = temp.CreateDirectory("snapshot-test-scratch");
+        var runner = new FakeWorkbookTestRunner
+        {
+            Error = new InvalidOperationException(
+                "The test runner failed after cleanup.",
+                new WorkbookAutomationCleanupException(
+                    "The owned Excel process could not be verified as released."))
+        };
+        var composition = ToolingCompositionRoot.CreateApplicationComposition(
+            root,
+            workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+            workbookTestRunner: runner);
+        var testCommand = new TestCommand(
+            composition.BuildCommand,
+            runner,
+            new TestResultOutputFormatter(),
+            new TestProcedureSourceLocator(),
+            new SnapshotTestExecutionWorkspaceFactory(scratchRoot));
+        var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
+
+        var result = application.Run(
+        [
+            "test",
+            "--source-snapshot",
+            snapshotPath,
+            "--format",
+            "ndjson"
+        ]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.DoesNotContain("runFinished", result.StandardOutput, StringComparison.Ordinal);
+        var retainedPath = Assert.Single(Directory.EnumerateDirectories(scratchRoot));
+        Assert.Contains("test runner failed after cleanup", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(retainedPath, result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.True(Directory.Exists(retainedPath));
+    }
+
+    [Fact]
+    public void LegacyCleanupExceptionFromSnapshotRunnerRetainsWorkspaceAndEmitsNoNdjson()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        new JsonProjectManifestStore().Save(root, manifest);
+        var templatePath = Path.Combine(root, "src", "Book1", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(templatePath)!);
+        File.WriteAllText(templatePath, "snapshot-test-template", Encoding.UTF8);
+        var snapshotPath = temp.CreateDirectory("caller-snapshot");
+        File.WriteAllText(
+            Path.Combine(snapshotPath, "Test_Module.bas"),
+            "Attribute VB_Name = \"Test_Module\"",
+            Encoding.UTF8);
+        var scratchRoot = temp.CreateDirectory("snapshot-test-scratch");
+        var runner = new FakeWorkbookTestRunner
+        {
+            Error = new WorkbookAutomationCleanupException(
+                "The owned Excel process could not be verified as released.")
+        };
+        var composition = ToolingCompositionRoot.CreateApplicationComposition(
+            root,
+            workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+            workbookTestRunner: runner);
+        var testCommand = new TestCommand(
+            composition.BuildCommand,
+            runner,
+            new TestResultOutputFormatter(),
+            new TestProcedureSourceLocator(),
+            new SnapshotTestExecutionWorkspaceFactory(scratchRoot));
+        var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
+
+        var result = application.Run(
+        [
+            "test",
+            "--source-snapshot",
+            snapshotPath,
+            "--format",
+            "ndjson"
+        ]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        var retainedPath = Assert.Single(Directory.EnumerateDirectories(scratchRoot));
+        Assert.Contains("could not be verified as released", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains(retainedPath, result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.True(Directory.Exists(retainedPath));
+    }
+
+    [Fact]
+    public void UnexpectedSnapshotRunnerFailureRemovesWorkspaceAndEmitsNoNdjson()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        new JsonProjectManifestStore().Save(root, manifest);
+        var templatePath = Path.Combine(root, "src", "Book1", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(templatePath)!);
+        File.WriteAllText(templatePath, "snapshot-test-template", Encoding.UTF8);
+        var snapshotPath = temp.CreateDirectory("caller-snapshot");
+        File.WriteAllText(
+            Path.Combine(snapshotPath, "Test_Module.bas"),
+            "Attribute VB_Name = \"Test_Module\"",
+            Encoding.UTF8);
+        var scratchRoot = temp.CreateDirectory("snapshot-test-scratch");
+        var runner = new FakeWorkbookTestRunner
+        {
+            Error = new Exception("synthetic unexpected runner failure")
+        };
+        var composition = ToolingCompositionRoot.CreateApplicationComposition(
+            root,
+            workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+            workbookTestRunner: runner);
+        var testCommand = new TestCommand(
+            composition.BuildCommand,
+            runner,
+            new TestResultOutputFormatter(),
+            new TestProcedureSourceLocator(),
+            new SnapshotTestExecutionWorkspaceFactory(scratchRoot));
+        var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
+
+        var result = application.Run(
+        [
+            "test",
+            "--source-snapshot",
+            snapshotPath,
+            "--format",
+            "ndjson"
+        ]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Contains("synthetic unexpected runner failure", result.StandardError, StringComparison.Ordinal);
+        Assert.Empty(Directory.EnumerateDirectories(scratchRoot));
+    }
+
+    [Fact]
+    public void SnapshotRunnerFailureDoesNotExposeItsPrivateWorkbookPath()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        new JsonProjectManifestStore().Save(root, manifest);
+        var templatePath = Path.Combine(root, "src", "Book1", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(templatePath)!);
+        File.WriteAllText(templatePath, "snapshot-test-template", Encoding.UTF8);
+        var snapshotPath = temp.CreateDirectory("caller-snapshot");
+        File.WriteAllText(
+            Path.Combine(snapshotPath, "Test_Module.bas"),
+            "Attribute VB_Name = \"Test_Module\"",
+            Encoding.UTF8);
+        var scratchRoot = temp.CreateDirectory("snapshot-test-scratch");
+        var runner = new PathReportingFailingWorkbookTestRunner();
+        var composition = ToolingCompositionRoot.CreateApplicationComposition(
+            root,
+            workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+            workbookTestRunner: runner);
+        var testCommand = new TestCommand(
+            composition.BuildCommand,
+            runner,
+            new TestResultOutputFormatter(),
+            new TestProcedureSourceLocator(),
+            new SnapshotTestExecutionWorkspaceFactory(scratchRoot));
+        var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
+
+        var result = application.Run(
+        [
+            "test",
+            "--source-snapshot",
+            snapshotPath,
+            "--format",
+            "ndjson"
+        ]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Contains("synthetic test runner failure", result.StandardError, StringComparison.Ordinal);
+        Assert.NotNull(runner.WorkbookPath);
+        Assert.DoesNotContain(runner.WorkbookPath, result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            new Uri(runner.WorkbookPath).AbsoluteUri,
+            result.StandardError,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(scratchRoot, result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(Directory.EnumerateDirectories(scratchRoot));
+    }
+
+    [Fact]
+    public void SnapshotResultMessageDoesNotExposeItsPrivateWorkbookPathInNdjson()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        new JsonProjectManifestStore().Save(root, manifest);
+        var templatePath = Path.Combine(root, "src", "Book1", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(templatePath)!);
+        File.WriteAllText(templatePath, "snapshot-test-template", Encoding.UTF8);
+        var snapshotPath = temp.CreateDirectory("caller-snapshot");
+        File.WriteAllText(
+            Path.Combine(snapshotPath, "Test_Module.bas"),
+            "Attribute VB_Name = \"Test_Module\"\nPublic Sub Test_Fails()\nEnd Sub\n",
+            Encoding.UTF8);
+        var scratchRoot = temp.CreateDirectory("snapshot-test-scratch");
+        var runner = new PathMessageWorkbookTestRunner();
+        var composition = ToolingCompositionRoot.CreateApplicationComposition(
+            root,
+            workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+            workbookTestRunner: runner);
+        var testCommand = new TestCommand(
+            composition.BuildCommand,
+            runner,
+            new TestResultOutputFormatter(),
+            new TestProcedureSourceLocator(),
+            new SnapshotTestExecutionWorkspaceFactory(scratchRoot));
+        var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
+
+        var result = application.Run(
+        [
+            "test",
+            "--source-snapshot",
+            snapshotPath,
+            "--format",
+            "ndjson"
+        ]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.NotNull(runner.WorkbookPath);
+        Assert.DoesNotContain(runner.WorkbookPath, result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            runner.WorkbookPath.Replace("\\", "\\\\", StringComparison.Ordinal),
+            result.StandardOutput,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            new Uri(runner.WorkbookPath).AbsoluteUri,
+            result.StandardOutput,
+            StringComparison.OrdinalIgnoreCase);
+        foreach (var line in result.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            using var _ = JsonDocument.Parse(line);
+        }
+
+        var finishedLine = result.StandardOutput
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Single(line => line.Contains("\"type\":\"testFinished\"", StringComparison.Ordinal));
+        using var finished = JsonDocument.Parse(finishedLine);
+        Assert.Contains(
+            "<snapshot-test-workspace>",
+            finished.RootElement.GetProperty("message").GetString(),
+            StringComparison.Ordinal);
+        Assert.Empty(Directory.EnumerateDirectories(scratchRoot));
+    }
+
+    [Fact]
+    public void TestTimeoutOptionOverridesManifestDefaultForMacroExecution()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null) with
+        {
+            CommandDefaults = new CommandDefaults(
+                Test: new TestCommandDefaults(
+                    Format: "text",
+                    ExecutionTimeoutSeconds: 77))
+        };
+        new JsonProjectManifestStore().Save(root, manifest);
+        var binPath = Path.Combine(root, "bin", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
+        File.WriteAllText(binPath, "bin", Encoding.UTF8);
+        var runner = new FakeWorkbookTestRunner(
+            new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
+        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
+
+        var result = application.Run(
+        [
+            "test",
+            "--no-build",
+            "--timeout-seconds",
+            "42"
+        ]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal([TimeSpan.FromSeconds(42)], runner.ExecutionTimeouts);
+    }
+
+    [Fact]
+    public void TestKeepsWorkbookOpenTimeoutIndependentFromMacroExecutionTimeout()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null) with
+        {
+            CommandDefaults = new CommandDefaults(
+                Test: new TestCommandDefaults(ExecutionTimeoutSeconds: 77),
+                ExcelAutomation: new ExcelAutomationCommandDefaults(
+                    WorkbookOpenTimeoutSeconds: 41))
+        };
+        new JsonProjectManifestStore().Save(root, manifest);
+        var binPath = Path.Combine(root, "bin", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
+        File.WriteAllText(binPath, "bin", Encoding.UTF8);
+        var runner = new FakeWorkbookTestRunner(
+            new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
+        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
+
+        var result = application.Run(["test", "--no-build"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal([TimeSpan.FromSeconds(77)], runner.ExecutionTimeouts);
+        Assert.Equal(
+            TimeSpan.FromSeconds(41),
+            Assert.Single(runner.AutomationTimeouts).WorkbookOpen);
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("-1")]
+    [InlineData("1.5")]
+    [InlineData("Infinity")]
+    public void TestRejectsInvalidMacroExecutionTimeout(string value)
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(
+            root,
+            ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        var runner = new FakeWorkbookTestRunner();
+        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
+
+        var result = application.Run(["test", "--timeout-seconds", value]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(runner.Workbooks);
+        Assert.Contains("timeout", result.StandardError, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void TestNormalizesSuccessFailureAndErrorOutcomesAndReturnsFailureExitCode()
     {
         using var temp = TempDirectory.Create();
@@ -664,10 +1830,20 @@ internal sealed class FakeWorkbookTestRunner : IWorkbookTestRunner
 
     public List<string> Workbooks { get; } = [];
     public List<WorkbookTestSelector> Selectors { get; } = [];
+    public List<TimeSpan> ExecutionTimeouts { get; } = [];
+    public List<WorkbookAutomationTimeouts> AutomationTimeouts { get; } = [];
     public Exception? Error { get; init; }
 
-    public IReadOnlyList<WorkbookTestResultRow> RunTests(string workbookPath, WorkbookTestSelector selector)
+    public Task<IReadOnlyList<WorkbookTestResultRow>> RunTestsAsync(
+        string workbookPath,
+        WorkbookTestSelector selector,
+        TimeSpan executionTimeout,
+        WorkbookAutomationTimeouts automationTimeouts,
+        CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        ExecutionTimeouts.Add(executionTimeout);
+        AutomationTimeouts.Add(automationTimeouts);
         if (Error is not null)
         {
             throw Error;
@@ -675,6 +1851,137 @@ internal sealed class FakeWorkbookTestRunner : IWorkbookTestRunner
 
         Workbooks.Add(workbookPath);
         Selectors.Add(selector);
-        return results;
+        return Task.FromResult(results);
+    }
+}
+
+internal sealed class LegacySynchronousWorkbookTestRunner : IWorkbookTestRunner
+{
+    public List<string> Workbooks { get; } = [];
+
+    public IReadOnlyList<WorkbookTestResultRow> RunTests(
+        string workbookPath,
+        WorkbookTestSelector selector)
+    {
+        Workbooks.Add(workbookPath);
+        return [new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", "")];
+    }
+}
+
+internal sealed class PathReportingFailingWorkbookTestRunner : IWorkbookTestRunner
+{
+    public string? WorkbookPath { get; private set; }
+
+    public Task<IReadOnlyList<WorkbookTestResultRow>> RunTestsAsync(
+        string workbookPath,
+        WorkbookTestSelector selector,
+        TimeSpan executionTimeout,
+        WorkbookAutomationTimeouts automationTimeouts,
+        CancellationToken cancellationToken)
+    {
+        WorkbookPath = workbookPath;
+        var workbookUri = new Uri(workbookPath).AbsoluteUri;
+        return Task.FromException<IReadOnlyList<WorkbookTestResultRow>>(
+            new InvalidOperationException(
+                $"synthetic test runner failure for '{workbookPath}' ({workbookUri})."));
+    }
+}
+
+internal sealed class PathMessageWorkbookTestRunner : IWorkbookTestRunner
+{
+    public string? WorkbookPath { get; private set; }
+
+    public Task<IReadOnlyList<WorkbookTestResultRow>> RunTestsAsync(
+        string workbookPath,
+        WorkbookTestSelector selector,
+        TimeSpan executionTimeout,
+        WorkbookAutomationTimeouts automationTimeouts,
+        CancellationToken cancellationToken)
+    {
+        WorkbookPath = workbookPath;
+        var workbookUri = new Uri(workbookPath).AbsoluteUri;
+        IReadOnlyList<WorkbookTestResultRow> results =
+        [
+            new WorkbookTestResultRow(
+                "Test_Module",
+                "Test_Fails",
+                "NG",
+                $"synthetic failure in '{workbookPath}' ({workbookUri})")
+        ];
+        return Task.FromResult(results);
+    }
+}
+
+internal sealed class AlwaysFailingSnapshotWorkspaceFileSystem
+    : ISnapshotTestWorkspaceFileSystem
+{
+    public List<string> DeletePaths { get; } = [];
+
+    public void DeleteDirectory(string path)
+    {
+        DeletePaths.Add(path);
+        throw new IOException("synthetic retained workspace");
+    }
+
+    public void Delay(TimeSpan delay)
+    {
+    }
+}
+
+internal sealed class NestedCancellationSnapshotSourceCaptureFactory
+    : ISnapshotSourceCaptureFactory
+{
+    public BuildSourceSnapshotCapture Create(
+        string scratchRoot,
+        string sourceSnapshotPath,
+        CancellationToken cancellationToken)
+        => throw new InvalidOperationException(
+            "The nested snapshot capture rollback failed.",
+            new OperationCanceledException(cancellationToken));
+}
+
+internal sealed class PathReportingFailingSnapshotSourceCaptureFactory
+    : ISnapshotSourceCaptureFactory
+{
+    public string? CaptureScratchRoot { get; private set; }
+
+    public BuildSourceSnapshotCapture Create(
+        string scratchRoot,
+        string sourceSnapshotPath,
+        CancellationToken cancellationToken)
+    {
+        CaptureScratchRoot = scratchRoot;
+        var scratchRootUri = new Uri(scratchRoot).AbsoluteUri;
+        throw new InvalidOperationException(
+            $"synthetic snapshot capture failure in '{scratchRoot}' ({scratchRootUri}).");
+    }
+}
+
+internal sealed class CleanupFailingWorkbookGenerationAutomation :
+    IWorkbookBuildAutomation,
+    IWorkbookGenerationAutomation
+{
+    public IWorkbookBuildSession OpenWorkbook(string workbookPath)
+        => throw new InvalidOperationException("The native generation path must be used.");
+
+    public Task<TResult> RunAsync<TResult>(
+        string workbookPath,
+        WorkbookAutomationTimeouts timeouts,
+        Func<IWorkbookGenerationSession, CancellationToken, Task<TResult>> operation,
+        CancellationToken cancellationToken)
+        => Task.FromException<TResult>(new WorkbookAutomationCleanupException(
+            "The owned Excel process could not be verified as released."));
+}
+
+internal sealed class PathReportingFailingWorkbookBuildAutomation(string privateVbePath)
+    : IWorkbookBuildAutomation
+{
+    public IWorkbookBuildSession OpenWorkbook(string workbookPath)
+    {
+        var workbookUri = new Uri(workbookPath).AbsoluteUri;
+        var privateVbeUri = new Uri(privateVbePath).AbsoluteUri;
+        throw new InvalidOperationException(
+            $"synthetic workbook automation failure for '{workbookPath}' ({workbookUri}) "
+            + $"after staging '{privateVbePath}' ({privateVbeUri}).");
     }
 }

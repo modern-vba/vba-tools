@@ -104,12 +104,19 @@ public sealed class VbeImportSourceSet : IDisposable
             var stagedSources = new List<VbeImportSourceFile>(sourceFiles.Count);
             foreach (var sourceFile in sourceFiles)
             {
+                var diagnosticSourcePath = sourceFile.DiagnosticSourcePath
+                    ?? sourceFile.SourcePath;
                 var originalBytes = File.ReadAllBytes(sourceFile.SourcePath);
-                var decoded = DecodeStrictly(originalBytes, activeEncoding, activeCodePage, sourceFile.SourcePath);
+                var decoded = DecodeStrictly(
+                    originalBytes,
+                    activeEncoding,
+                    activeCodePage,
+                    diagnosticSourcePath);
                 if (sourceFile.ExpectedUnicodeText is not null &&
                     !decoded.Text.Equals(sourceFile.ExpectedUnicodeText, StringComparison.Ordinal))
                 {
-                    var diagnosticPath = sourceFile.ExpectedUnicodeTextSourcePath ?? sourceFile.SourcePath;
+                    var diagnosticPath = sourceFile.ExpectedUnicodeTextSourcePath
+                        ?? diagnosticSourcePath;
                     throw new InvalidOperationException(
                         $"Debug source snapshot content does not match build source '{diagnosticPath}'.");
                 }
@@ -118,7 +125,7 @@ public sealed class VbeImportSourceSet : IDisposable
                     decoded.Text,
                     activeEncoding,
                     activeCodePage,
-                    sourceFile.SourcePath);
+                    diagnosticSourcePath);
                 var stagedSourcePath = Path.Combine(stagingPath, sourceFile.FileName);
                 File.WriteAllBytes(stagedSourcePath, importBytes);
                 var stagedBinaryPath = StageBinarySidecar(sourceFile, stagingPath);
@@ -130,7 +137,7 @@ public sealed class VbeImportSourceSet : IDisposable
                 if (projectedKind != sourceFile.Kind)
                 {
                     throw new InvalidOperationException(
-                        $"VBA source '{sourceFile.SourcePath}' declares component kind '{projectedKind}' instead of expected '{sourceFile.Kind}'.");
+                        $"VBA source '{diagnosticSourcePath}' declares component kind '{projectedKind}' instead of expected '{sourceFile.Kind}'.");
                 }
 
                 stagedSources.Add(new VbeImportSourceFile(
@@ -165,6 +172,16 @@ public sealed class VbeImportSourceSet : IDisposable
             throw;
         }
     }
+
+    internal static string DecodeSourceText(
+        byte[] bytes,
+        int activeCodePage,
+        string sourcePath)
+        => DecodeStrictly(
+            bytes,
+            CreateStrictActiveEncoding(activeCodePage),
+            activeCodePage,
+            sourcePath).Text;
 
     /// <inheritdoc />
     public void Dispose() => DeleteStagingDirectory(StagingPath);

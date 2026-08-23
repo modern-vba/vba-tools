@@ -97,4 +97,23 @@ public sealed class BuildCommand
             () => ResolveValidatedPaths().OutputPath,
             cancellationToken);
     }
+
+    internal Task<CommandResult> RunCapturedSnapshotAsync(
+        ResolvedProjectContext context,
+        string sourceSnapshotPath,
+        IReadOnlyList<VbaSourceFile> sourceFiles,
+        string outputPath,
+        CancellationToken cancellationToken)
+    {
+        var validatedPaths = snapshotOutputSafetyValidator.Validate(
+            context,
+            sourceSnapshotPath,
+            outputPath);
+        return outputCommand.RunWithOwnedSourceAsync(
+            context,
+            WorkbookOutputProfile.Build,
+            () => new BorrowedWorkbookGenerationSourceInput(sourceFiles),
+            () => validatedPaths.OutputPath,
+            cancellationToken);
+    }
 }

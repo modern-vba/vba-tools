@@ -11,6 +11,23 @@ namespace VbaDev.Tests;
 public sealed class ProjectManifestTests
 {
     [Fact]
+    public void LegacyTestCommandDefaultsConstructorAndDeconstructRemainAvailable()
+    {
+        var constructor = typeof(TestCommandDefaults).GetConstructor([typeof(string)]);
+        var deconstruct = typeof(TestCommandDefaults).GetMethod(
+            nameof(TestCommandDefaults.Deconstruct),
+            [typeof(string).MakeByRefType()]);
+
+        Assert.NotNull(constructor);
+        Assert.NotNull(deconstruct);
+        var defaults = Assert.IsType<TestCommandDefaults>(constructor.Invoke(["ndjson"]));
+        object?[] values = [null];
+        deconstruct.Invoke(defaults, values);
+        Assert.Equal("ndjson", values[0]);
+        Assert.Null(defaults.ExecutionTimeoutSeconds);
+    }
+
+    [Fact]
     public void SaveWritesUtf16LeBomAndRelativeCommonModulesRepository()
     {
         using var temp = TempDirectory.Create();
@@ -267,6 +284,30 @@ public sealed class ProjectManifestTests
     }
 
     [Fact]
+    public void TestExecutionTimeoutResolutionUsesCliThenManifestThenBuiltInDefault()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null) with
+        {
+            CommandDefaults = new CommandDefaults(
+                Test: new TestCommandDefaults(ExecutionTimeoutSeconds: 77))
+        };
+
+        Assert.Equal(
+            TimeSpan.FromSeconds(42),
+            CommandDefaultResolver.ResolveTestExecutionTimeout(manifest, 42));
+        Assert.Equal(
+            TimeSpan.FromSeconds(77),
+            CommandDefaultResolver.ResolveTestExecutionTimeout(manifest, null));
+        Assert.Equal(
+            TimeSpan.FromSeconds(600),
+            CommandDefaultResolver.ResolveTestExecutionTimeout(
+                ProjectManifest.CreateDefault("Project", "Book1", root, null),
+                null));
+    }
+
+    [Fact]
     public void WorkbookSaveTimeoutResolutionUsesManifestThenBuiltInDefault()
     {
         using var temp = TempDirectory.Create();
@@ -296,6 +337,23 @@ public sealed class ProjectManifestTests
 
         Assert.Contains("workbookOpenTimeoutSeconds", ex.Message, StringComparison.Ordinal);
         Assert.Contains("positive whole seconds", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("-1")]
+    [InlineData("1.5")]
+    public void ProjectManifestRejectsInvalidTestExecutionTimeout(string value)
+    {
+        var json = ProjectManifestTestData.ValidJson("Project").Replace(
+            "\"format\": \"ndjson\"",
+            $"\"format\": \"ndjson\", \"executionTimeoutSeconds\": {value}",
+            StringComparison.Ordinal);
+
+        var ex = Assert.Throws<VbaProjectManifestException>(
+            () => ProjectManifestReader.Parse(json, "vba-project.json"));
+
+        Assert.Contains("executionTimeoutSeconds", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -388,6 +446,7 @@ public sealed class ProjectManifestTests
     {
         var manifest = new JsonProjectManifestStore().Load(ProjectManifestFixturePath("primary-document.json"));
 
+        Assert.Equal(TimeSpan.FromSeconds(240), CommandDefaultResolver.ResolveTestExecutionTimeout(manifest, null));
         Assert.Equal(TimeSpan.FromSeconds(120), CommandDefaultResolver.ResolveWorkbookOpenTimeout(manifest));
         Assert.Equal(TimeSpan.FromSeconds(180), CommandDefaultResolver.ResolveWorkbookSaveTimeout(manifest));
         Assert.Equal(ProjectManifest.CurrentSchemaVersion, manifest.SchemaVersion);

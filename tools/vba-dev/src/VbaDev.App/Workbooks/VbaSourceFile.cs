@@ -22,6 +22,11 @@ public sealed record VbaSourceFile(
     internal string? ExpectedUnicodeTextSourcePath { get; init; }
 
     /// <summary>
+    /// Gets caller-facing source provenance for diagnostics when the active bytes live in private staging.
+    /// </summary>
+    internal string? DiagnosticSourcePath { get; init; }
+
+    /// <summary>
     /// Gets the source file name used as flat source identity inside a document source set.
     /// </summary>
     public string FileName => Path.GetFileName(SourcePath);

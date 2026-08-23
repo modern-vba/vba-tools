@@ -1,5 +1,6 @@
 using System.Text;
 using VbaDev.App.Build;
+using VbaDev.App.Cli;
 using VbaDev.App.Diagnostics;
 using VbaDev.App.Projects;
 using VbaDev.App.References;
@@ -12,6 +13,48 @@ namespace VbaDev.Tests;
 
 public sealed class WorkbookOutputFailureTests
 {
+    [Fact]
+    public async Task CleanupProofFailureIsClassifiedForDependentWorkspaceRetention()
+    {
+        using var temp = TempDirectory.Create();
+        var project = CreateProject(temp);
+        var automation = new FailingWorkbookGenerationAutomation(
+            _ => new WorkbookAutomationCleanupException(
+                "The owned Excel process could not be verified as released."));
+        var command = CreateCommand(project.Context, automation);
+
+        var result = await RunAsync(
+            "build",
+            command,
+            project.Context,
+            CancellationToken.None);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Equal(OwnedProcessReleaseProof.Unproven, result.OwnedProcessReleaseProof);
+    }
+
+    [Fact]
+    public async Task CleanupFailureAfterReleaseDoesNotClaimReleaseProofFailure()
+    {
+        using var temp = TempDirectory.Create();
+        var project = CreateProject(temp);
+        var automation = new FailingWorkbookGenerationAutomation(
+            _ => new WorkbookAutomationReleasedProcessCleanupException(
+                "The Excel STA dispatcher could not be disposed cleanly."));
+        var command = CreateCommand(project.Context, automation);
+
+        var result = await RunAsync(
+            "build",
+            command,
+            project.Context,
+            CancellationToken.None);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Equal(
+            OwnedProcessReleaseProof.ProvenOrNotStarted,
+            result.OwnedProcessReleaseProof);
+    }
+
     [Theory]
     [InlineData("build")]
     [InlineData("publish")]

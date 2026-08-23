@@ -126,49 +126,69 @@ public sealed class WorkbookOutputCommand
         }
         catch (WorkbookAutomationCanceledException ex)
         {
-            return CommandResult.Cancelled(ex.Message);
+            return PreserveReleaseProof(ex, CommandResult.Cancelled(ex.Message));
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
         {
-            return CommandResult.Cancelled("Workbook automation was cancelled during the active generation stage.");
+            return PreserveReleaseProof(
+                ex,
+                CommandResult.Cancelled(
+                    "Workbook automation was cancelled during the active generation stage."));
         }
         catch (WorkbookAutomationTimeoutException ex)
         {
-            return CommandResult.UsageError(ex.Message);
+            return CreateFailureResult(ex);
         }
         catch (WorkbookAutomationProcessLostException ex)
         {
-            return CommandResult.UsageError(ex.Message);
+            return CreateFailureResult(ex);
         }
         catch (WorkbookAutomationCleanupException ex)
         {
-            return CommandResult.UsageError(ex.Message);
+            return CreateFailureResult(ex);
+        }
+        catch (WorkbookAutomationReleasedProcessCleanupException ex)
+        {
+            return CreateFailureResult(ex);
         }
         catch (BuildCommandException ex)
         {
-            return CommandResult.UsageError(ex.Message);
+            return CreateFailureResult(ex);
         }
         catch (CommonModulesManifestException ex)
         {
-            return CommandResult.UsageError(ex.Message);
+            return CreateFailureResult(ex);
         }
         catch (InvalidOperationException ex)
         {
-            return CommandResult.UsageError(ex.Message);
+            return CreateFailureResult(ex);
         }
         catch (IOException ex)
         {
-            return CommandResult.UsageError(ex.Message);
+            return CreateFailureResult(ex);
         }
         catch (UnauthorizedAccessException ex)
         {
-            return CommandResult.UsageError(ex.Message);
+            return CreateFailureResult(ex);
         }
         catch (COMException ex)
         {
-            return CommandResult.UsageError(CommandErrorMessages.ExcelComAutomationFailed(profile.OperationName, ex));
+            return CreateFailureResult(
+                ex,
+                CommandErrorMessages.ExcelComAutomationFailed(profile.OperationName, ex));
         }
     }
+
+    private static CommandResult CreateFailureResult(Exception error, string? message = null)
+    {
+        var result = CommandResult.UsageError(message ?? error.Message);
+        return PreserveReleaseProof(error, result);
+    }
+
+    private static CommandResult PreserveReleaseProof(Exception error, CommandResult result)
+        => WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error)
+            ? result.MarkOwnedProcessReleaseUnproven()
+            : result;
 
     private static string RenderOutput(
         WorkbookOutputProfile profile,

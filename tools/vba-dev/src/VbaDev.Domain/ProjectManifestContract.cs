@@ -113,6 +113,13 @@ public static class ProjectManifestValidator
 
     private static void ValidateCommandDefaults(CommandDefaults? commandDefaults, string manifestName)
     {
+        if (commandDefaults?.Test?.ExecutionTimeoutSeconds is int testExecutionTimeoutSeconds
+            && testExecutionTimeoutSeconds <= 0)
+        {
+            throw new VbaProjectManifestException(
+                $"commandDefaults.test.executionTimeoutSeconds must be positive whole seconds: {manifestName}");
+        }
+
         if (commandDefaults?.ExcelAutomation?.WorkbookOpenTimeoutSeconds is int workbookOpenTimeoutSeconds
             && workbookOpenTimeoutSeconds <= 0)
         {

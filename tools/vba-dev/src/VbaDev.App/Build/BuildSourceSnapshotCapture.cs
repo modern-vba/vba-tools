@@ -78,7 +78,13 @@ internal sealed class BuildSourceSnapshotCaptureFactory
                 capturedSources.Add(new VbaSourceFile(
                     capturedSourcePath,
                     entry.Source.Kind,
-                    capturedBinaryPath));
+                    capturedBinaryPath)
+                {
+                    ExpectedUnicodeText = entry.Source.ExpectedUnicodeText,
+                    ExpectedUnicodeTextSourcePath = entry.Source.ExpectedUnicodeTextSourcePath,
+                    DiagnosticSourcePath = entry.Source.DiagnosticSourcePath
+                        ?? entry.Source.SourcePath
+                });
             }
 
             return new BuildSourceSnapshotCapture(

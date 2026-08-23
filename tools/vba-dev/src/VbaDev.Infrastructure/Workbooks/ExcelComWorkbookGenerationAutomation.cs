@@ -1,5 +1,6 @@
 using System.Runtime.ExceptionServices;
 using VbaDev.App.Workbooks;
+using VbaDev.App.Testing;
 using VbaDev.Infrastructure.Debugging;
 
 namespace VbaDev.Infrastructure.Workbooks;
@@ -8,6 +9,7 @@ internal interface IExcelComWorkbookGenerationLifecycle
 {
     object Start(
         OwnedExcelTerminationController terminationController,
+        bool enableAutomationSecurityLow,
         CancellationToken cancellationToken);
 
     IWorkbookBuildSession Open(object host, string workbookPath);
@@ -45,10 +47,23 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookGeneratio
     }
 
     /// <inheritdoc />
-    public async Task<TResult> RunAsync<TResult>(
+    public Task<TResult> RunAsync<TResult>(
         string workbookPath,
         WorkbookAutomationTimeouts timeouts,
         Func<IWorkbookGenerationSession, CancellationToken, Task<TResult>> operation,
+        CancellationToken cancellationToken)
+        => RunCoreAsync(
+            workbookPath,
+            timeouts,
+            operation,
+            enableAutomationSecurityLow: false,
+            cancellationToken);
+
+    private async Task<TResult> RunCoreAsync<TResult>(
+        string workbookPath,
+        WorkbookAutomationTimeouts timeouts,
+        Func<IWorkbookGenerationSession, CancellationToken, Task<TResult>> operation,
+        bool enableAutomationSecurityLow,
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workbookPath);
@@ -84,6 +99,7 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookGeneratio
                     {
                         host = generationLifecycle.Start(
                             terminationController,
+                            enableAutomationSecurityLow,
                             stageCancellation);
                         return true;
                     },
@@ -146,9 +162,13 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookGeneratio
         {
             cleanupError = cleanupError is null
                 ? dispatcherError
-                : new WorkbookAutomationCleanupException(
-                    "Workbook automation cleanup and STA dispatcher disposal both failed.",
-                    new AggregateException(cleanupError, dispatcherError));
+                : ContainsReleaseProofFailure(cleanupError)
+                    ? new WorkbookAutomationCleanupException(
+                        "Workbook automation cleanup and STA dispatcher disposal both failed, and owned Excel process release could not be proved.",
+                        new AggregateException(cleanupError, dispatcherError))
+                    : new WorkbookAutomationReleasedProcessCleanupException(
+                        "Workbook automation cleanup and STA dispatcher disposal both failed after owned Excel process release was verified.",
+                        new AggregateException(cleanupError, dispatcherError));
         }
 
         if (cleanupError is null &&
@@ -168,9 +188,17 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookGeneratio
                 ExceptionDispatchInfo.Capture(cleanupError).Throw();
             }
 
-            throw new WorkbookAutomationCleanupException(
-                $"{operationError!.Message} The owned Excel process could not be verified as released during process cleanup.",
-                new AggregateException(operationError, cleanupError));
+            var cleanupMessage = ContainsReleaseProofFailure(cleanupError)
+                ? $"{operationError!.Message} The owned Excel process could not be verified as released during process cleanup."
+                : $"{operationError!.Message} Workbook automation cleanup also failed after owned Excel process release was verified.";
+            Exception combinedError = ContainsReleaseProofFailure(cleanupError)
+                ? new WorkbookAutomationCleanupException(
+                    cleanupMessage,
+                    new AggregateException(operationError, cleanupError))
+                : new WorkbookAutomationReleasedProcessCleanupException(
+                    cleanupMessage,
+                    new AggregateException(operationError, cleanupError));
+            ExceptionDispatchInfo.Capture(combinedError).Throw();
         }
 
         if (operationError is not null)
@@ -180,6 +208,23 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookGeneratio
 
         return result!;
     }
+
+    internal Task<IReadOnlyList<WorkbookTestResultRow>> RunWorkbookTestsAsync(
+        string workbookPath,
+        WorkbookAutomationTimeouts timeouts,
+        TimeSpan executionTimeout,
+        WorkbookTestSelector selector,
+        CancellationToken cancellationToken)
+        => RunCoreAsync(
+            workbookPath,
+            timeouts,
+            (session, operationCancellationToken) =>
+                ((BoundedWorkbookGenerationSession)session).RunTestsAsync(
+                    selector,
+                    executionTimeout,
+                    operationCancellationToken),
+            enableAutomationSecurityLow: true,
+            cancellationToken);
 
     private async Task<Exception?> CleanupAsync(
         IStaComDispatcher dispatcher,
@@ -243,11 +288,9 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookGeneratio
         }
         catch (Exception ex)
         {
-            cooperativeCleanupError = ex is WorkbookAutomationCleanupException
-                ? ex
-                : new WorkbookAutomationCleanupException(
-                    "Cooperative workbook automation cleanup failed.",
-                    ex);
+            cooperativeCleanupError = new WorkbookAutomationReleasedProcessCleanupException(
+                "Cooperative workbook automation cleanup failed.",
+                ex);
         }
 
         var ownershipCleanupError = await CleanupOwnedProcessOnlyAsync(
@@ -326,7 +369,7 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookGeneratio
         }
         catch (Exception ex)
         {
-            return new WorkbookAutomationCleanupException(
+            return new WorkbookAutomationReleasedProcessCleanupException(
                 "The Excel STA dispatcher could not be disposed cleanly.",
                 ex);
         }
@@ -353,7 +396,8 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookGeneratio
         if (error is WorkbookAutomationTimeoutException or
             WorkbookAutomationCanceledException or
             WorkbookAutomationProcessLostException or
-            WorkbookAutomationCleanupException)
+            WorkbookAutomationCleanupException or
+            WorkbookAutomationReleasedProcessCleanupException)
         {
             return error;
         }
@@ -366,6 +410,23 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookGeneratio
         return new InvalidOperationException(
             $"Workbook automation failed during {stage.Description}: {error.Message}",
             error);
+    }
+
+    private static bool ContainsReleaseProofFailure(Exception error)
+    {
+        if (error is WorkbookAutomationCleanupException)
+        {
+            return true;
+        }
+
+        if (error is AggregateException aggregate
+            && aggregate.InnerExceptions.Any(ContainsReleaseProofFailure))
+        {
+            return true;
+        }
+
+        return error.InnerException is not null
+            && ContainsReleaseProofFailure(error.InnerException);
     }
 
     private static IOwnedExcelSessionStartFailure? FindOwnedSessionStartFailure(
@@ -478,6 +539,16 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookGeneratio
                 cancellationToken,
                 session.Save);
 
+        public Task<IReadOnlyList<WorkbookTestResultRow>> RunTestsAsync(
+            WorkbookTestSelector selector,
+            TimeSpan executionTimeout,
+            CancellationToken cancellationToken)
+            => ExecuteAsync(
+                new WorkbookAutomationStage(WorkbookAutomationStageKind.TestExecution),
+                executionTimeout,
+                cancellationToken,
+                () => ((IExcelComWorkbookTestSession)session).RunTests(selector));
+
         private Task<T> ExecuteAsync<T>(
             WorkbookAutomationStage stage,
             TimeSpan timeout,
@@ -516,9 +587,11 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookGeneratio
     {
         public object Start(
             OwnedExcelTerminationController terminationController,
+            bool enableAutomationSecurityLow,
             CancellationToken cancellationToken)
             => ExcelComWorkbookSession.StartOwnedForGeneration(
                 terminationController,
+                enableAutomationSecurityLow,
                 cancellationToken);
 
         public IWorkbookBuildSession Open(object host, string workbookPath)

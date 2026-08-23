@@ -116,8 +116,17 @@ internal sealed class ExcelComWorkbookSession : IDisposable
     internal static ExcelComHostObjects StartOwnedForGeneration(
         OwnedExcelTerminationController terminationController,
         CancellationToken cancellationToken)
-        => StartHiddenExcel(
+        => StartOwnedForGeneration(
+            terminationController,
             enableAutomationSecurityLow: false,
+            cancellationToken);
+
+    internal static ExcelComHostObjects StartOwnedForGeneration(
+        OwnedExcelTerminationController terminationController,
+        bool enableAutomationSecurityLow,
+        CancellationToken cancellationToken)
+        => StartHiddenExcel(
+            enableAutomationSecurityLow,
             requireStrongOwnership: true,
             cancellationToken,
             terminationController);

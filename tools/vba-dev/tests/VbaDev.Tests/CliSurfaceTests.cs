@@ -79,7 +79,7 @@ public sealed class CliSurfaceTests
 
         Assert.Equal(0, exitCode);
         Assert.Equal(
-            "{\"toolVersion\":\"0.1.0\",\"contractVersion\":\"1.0\",\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"},\"commands\":{\"build\":{\"outputSchemaVersion\":\"1.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"import\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"1.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"debugAdapter\":{\"protocolVersion\":\"1.1\",\"transport\":\"stdio\",\"command\":\"debug-adapter\"}}" + Environment.NewLine,
+            "{\"toolVersion\":\"0.1.0\",\"contractVersion\":\"1.0\",\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\",\"test.sourceSnapshot\":\"1.0\"},\"commands\":{\"build\":{\"outputSchemaVersion\":\"1.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"import\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"1.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"debugAdapter\":{\"protocolVersion\":\"1.1\",\"transport\":\"stdio\",\"command\":\"debug-adapter\"}}" + Environment.NewLine,
             standardOutput.ToString());
         Assert.Empty(standardError.ToString());
     }
@@ -104,6 +104,8 @@ public sealed class CliSurfaceTests
         Assert.Contains("--format <text|ndjson>", standardOutput.ToString(), StringComparison.Ordinal);
         Assert.Contains("-f", standardOutput.ToString(), StringComparison.Ordinal);
         Assert.Contains("--no-build", standardOutput.ToString(), StringComparison.Ordinal);
+        Assert.Contains("--source-snapshot <dir>", standardOutput.ToString(), StringComparison.Ordinal);
+        Assert.Contains("--timeout-seconds <seconds>", standardOutput.ToString(), StringComparison.Ordinal);
         Assert.Contains("--module <name>", standardOutput.ToString(), StringComparison.Ordinal);
         Assert.Contains("--procedure <name>", standardOutput.ToString(), StringComparison.Ordinal);
         Assert.DoesNotContain("--build", standardOutput.ToString(), StringComparison.Ordinal);
@@ -131,7 +133,15 @@ public sealed class CliSurfaceTests
                 "--source-snapshot <dir>",
                 "--output <workbook>"
             ],
-            ["test"] = ["--project <path>", "--document <name>", "--format <text|ndjson>", "--no-build"],
+            ["test"] =
+            [
+                "--project <path>",
+                "--document <name>",
+                "--format <text|ndjson>",
+                "--no-build",
+                "--source-snapshot <dir>",
+                "--timeout-seconds <seconds>"
+            ],
             ["publish"] = ["--project <path>", "--document <name>", "-d"],
             ["export"] = ["--project <path>", "--document <name>", "--from <path>", "--to <dir>"],
             ["import"] = ["--from <dir>", "--to <path>"],
@@ -320,6 +330,22 @@ public sealed class CliSurfaceTests
             capabilities.RootElement
                 .GetProperty("featureVersions")
                 .GetProperty("build.sourceSnapshot")
+                .GetString());
+        Assert.Empty(result.StandardError);
+    }
+
+    [Fact]
+    public void CapabilitiesAdvertiseSnapshotTestFeatureVersion()
+    {
+        var result = application.Run(["capabilities", "--format", "json"]);
+
+        Assert.Equal(0, result.ExitCode);
+        using var capabilities = JsonDocument.Parse(result.StandardOutput);
+        Assert.Equal(
+            "1.0",
+            capabilities.RootElement
+                .GetProperty("featureVersions")
+                .GetProperty("test.sourceSnapshot")
                 .GetString());
         Assert.Empty(result.StandardError);
     }

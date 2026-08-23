@@ -1,5 +1,6 @@
 using VbaDev.App.Workbooks;
 using VbaDev.App.Diagnostics;
+using VbaDev.App.Testing;
 
 namespace VbaDev.Infrastructure.Workbooks;
 
@@ -106,7 +107,9 @@ public sealed partial class ExcelComWorkbookBuildAutomation :
         }
     }
 
-    private sealed class ExcelComWorkbookBuildSession : IWorkbookBuildSession
+    private sealed class ExcelComWorkbookBuildSession :
+        IWorkbookBuildSession,
+        IExcelComWorkbookTestSession
     {
         private readonly ExcelComWorkbookSession session;
         private readonly List<(VbeImportVerification Expected, string ImportedComponentName)>
@@ -414,6 +417,9 @@ public sealed partial class ExcelComWorkbookBuildAutomation :
             dynamic workbook = session.WorkbookObject;
             workbook.Save();
         }
+
+        public IReadOnlyList<WorkbookTestResultRow> RunTests(WorkbookTestSelector selector)
+            => ExcelComWorkbookTestRunner.RunTests(session, selector);
 
         /// <summary>
         /// Closes the workbook, quits Excel, and releases collected COM references.

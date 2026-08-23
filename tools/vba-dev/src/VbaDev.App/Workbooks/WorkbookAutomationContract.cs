@@ -28,16 +28,17 @@ public sealed record WorkbookAutomationTimeouts(
 /// </summary>
 public enum WorkbookAutomationStageKind
 {
-    ExcelStartup,
-    WorkbookOpen,
-    ReferenceAttempt,
-    ReferenceIdentityInspection,
-    ModuleRemoval,
-    ModuleImport,
-    Verification,
-    WorkbookSave,
-    ProcessCleanup,
-    OutputCommit
+    ExcelStartup = 0,
+    WorkbookOpen = 1,
+    ReferenceAttempt = 2,
+    ReferenceIdentityInspection = 3,
+    ModuleRemoval = 4,
+    ModuleImport = 5,
+    Verification = 6,
+    WorkbookSave = 7,
+    ProcessCleanup = 8,
+    OutputCommit = 9,
+    TestExecution = 10
 }
 
 /// <summary>
@@ -64,6 +65,7 @@ public sealed record WorkbookAutomationStage(
                 WorkbookAutomationStageKind.ModuleImport => "module import",
                 WorkbookAutomationStageKind.Verification => "workbook verification",
                 WorkbookAutomationStageKind.WorkbookSave => "workbook save",
+                WorkbookAutomationStageKind.TestExecution => "test macro execution",
                 WorkbookAutomationStageKind.ProcessCleanup => "process cleanup",
                 WorkbookAutomationStageKind.OutputCommit => "output commit",
                 _ => throw new ArgumentOutOfRangeException(nameof(Kind), Kind, null)
@@ -144,5 +146,39 @@ public sealed class WorkbookAutomationCleanupException : Exception
     public WorkbookAutomationCleanupException(string message, Exception? innerException = null)
         : base(message, innerException)
     {
+    }
+}
+
+/// <summary>
+/// Reports secondary automation cleanup failure after exact owned-process release was proved.
+/// </summary>
+public sealed class WorkbookAutomationReleasedProcessCleanupException : Exception
+{
+    public WorkbookAutomationReleasedProcessCleanupException(
+        string message,
+        Exception? innerException = null)
+        : base(message, innerException)
+    {
+    }
+}
+
+internal static class WorkbookAutomationFailureClassifier
+{
+    public static bool ContainsCleanupProofFailure(Exception error)
+    {
+        ArgumentNullException.ThrowIfNull(error);
+        if (error is WorkbookAutomationCleanupException)
+        {
+            return true;
+        }
+
+        if (error is AggregateException aggregate
+            && aggregate.InnerExceptions.Any(ContainsCleanupProofFailure))
+        {
+            return true;
+        }
+
+        return error.InnerException is not null
+            && ContainsCleanupProofFailure(error.InnerException);
     }
 }

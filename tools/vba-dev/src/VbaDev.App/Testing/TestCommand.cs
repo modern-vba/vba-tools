@@ -1,7 +1,9 @@
 using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
 using VbaDev.App.Build;
 using VbaDev.App.Cli;
 using VbaDev.App.Projects;
+using VbaDev.App.Workbooks;
 
 namespace VbaDev.App.Testing;
 
@@ -14,6 +16,7 @@ public sealed class TestCommand
     private readonly IWorkbookTestRunner workbookTestRunner;
     private readonly TestResultOutputFormatter outputFormatter;
     private readonly TestProcedureSourceLocator sourceLocator;
+    private readonly SnapshotTestExecutionWorkspaceFactory snapshotWorkspaceFactory;
 
     /// <summary>
     /// Creates the test command.
@@ -27,11 +30,27 @@ public sealed class TestCommand
         IWorkbookTestRunner workbookTestRunner,
         TestResultOutputFormatter outputFormatter,
         TestProcedureSourceLocator sourceLocator)
+        : this(
+            buildCommand,
+            workbookTestRunner,
+            outputFormatter,
+            sourceLocator,
+            new SnapshotTestExecutionWorkspaceFactory())
+    {
+    }
+
+    internal TestCommand(
+        BuildCommand buildCommand,
+        IWorkbookTestRunner workbookTestRunner,
+        TestResultOutputFormatter outputFormatter,
+        TestProcedureSourceLocator sourceLocator,
+        SnapshotTestExecutionWorkspaceFactory snapshotWorkspaceFactory)
     {
         this.buildCommand = buildCommand;
         this.workbookTestRunner = workbookTestRunner;
         this.outputFormatter = outputFormatter;
         this.sourceLocator = sourceLocator;
+        this.snapshotWorkspaceFactory = snapshotWorkspaceFactory;
     }
 
     /// <summary>
@@ -41,52 +60,370 @@ public sealed class TestCommand
     /// <param name="request">The test command input.</param>
     /// <returns>A successful result when all tests pass, otherwise a failing command result with test output.</returns>
     public CommandResult Run(ResolvedProjectContext context, TestCommandRequest request)
+        => RunAsync(context, request, CancellationToken.None).GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Optionally builds the selected document, runs workbook tests, and formats the results.
+    /// </summary>
+    public async Task<CommandResult> RunAsync(
+        ResolvedProjectContext context,
+        TestCommandRequest request,
+        CancellationToken cancellationToken)
     {
+        SnapshotTestExecutionWorkspace? snapshotWorkspace = null;
+        var hasCompletedTestRunOutput = false;
+        CommandResult result;
         try
         {
-            if (request.BuildFirst)
+            result = await RunCoreAsync().ConfigureAwait(false);
+        }
+        catch (SnapshotTestWorkspacePreparationException ex)
+        {
+            var preparationResult = CreatePreparationFailureResult(
+                ex.PreparationError,
+                cancellationToken);
+            var sanitizedResult = SanitizeSnapshotOperationResult(
+                preparationResult,
+                ex.WorkspacePath,
+                redactKnownTemporaryRoots: true);
+            result = sanitizedResult with
             {
-                var buildResult = buildCommand.Run(context);
+                StandardError = sanitizedResult.StandardError + ex.CleanupWarning
+            };
+        }
+        catch (WorkbookAutomationCanceledException ex)
+        {
+            result = PreserveReleaseProof(ex, CommandResult.Cancelled(ex.Message));
+        }
+        catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
+        {
+            result = PreserveReleaseProof(
+                ex,
+                CommandResult.Cancelled(
+                    "Workbook automation was cancelled during the active test stage."));
+        }
+        catch (WorkbookAutomationTimeoutException ex)
+        {
+            result = PreserveReleaseProof(ex, CommandResult.UsageError(ex.Message));
+        }
+        catch (WorkbookAutomationProcessLostException ex)
+        {
+            result = PreserveReleaseProof(ex, CommandResult.UsageError(ex.Message));
+        }
+        catch (WorkbookAutomationCleanupException ex)
+        {
+            result = PreserveReleaseProof(ex, CommandResult.UsageError(ex.Message));
+        }
+        catch (InvalidOperationException ex)
+        {
+            result = PreserveReleaseProof(ex, CommandResult.UsageError(ex.Message));
+        }
+        catch (IOException ex)
+        {
+            result = PreserveReleaseProof(ex, CommandResult.UsageError(ex.Message));
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            result = PreserveReleaseProof(ex, CommandResult.UsageError(ex.Message));
+        }
+        catch (COMException ex)
+        {
+            result = PreserveReleaseProof(
+                ex,
+                CommandResult.UsageError(
+                    CommandErrorMessages.ExcelComAutomationFailed("test", ex)));
+        }
+        catch (Exception ex)
+        {
+            result = PreserveReleaseProof(ex, CommandResult.UsageError(ex.Message));
+        }
+
+        if (snapshotWorkspace is null)
+        {
+            return result;
+        }
+
+        result = SanitizeSnapshotOperationResult(
+            result,
+            snapshotWorkspace,
+            redactKnownTemporaryRoots: !hasCompletedTestRunOutput);
+        if (result.OwnedProcessReleaseProof == OwnedProcessReleaseProof.Unproven)
+        {
+            return result with
+            {
+                StandardError = result.StandardError +
+                    $"The snapshot test workspace was retained because owned Excel process release could not be proved: {snapshotWorkspace.WorkspacePath}{Environment.NewLine}"
+            };
+        }
+
+        var cleanup = snapshotWorkspace.Cleanup();
+        return cleanup.Warning is null
+            ? result
+            : result with { StandardError = result.StandardError + cleanup.Warning };
+
+        async Task<CommandResult> RunCoreAsync()
+        {
+            var workbookPath = context.BinDocumentPath;
+            var sourceLocationPath = context.DocumentSourceSetPath;
+            if (request.SourceSnapshotPath is not null)
+            {
+                snapshotWorkspace = snapshotWorkspaceFactory.Create(
+                    context,
+                    request.SourceSnapshotPath,
+                    Path.GetFileName(context.BinDocumentPath),
+                    cancellationToken);
+                var buildResult = await buildCommand.RunCapturedSnapshotAsync(
+                        context,
+                        snapshotWorkspace.SourceSnapshotPath,
+                        snapshotWorkspace.SourceFiles,
+                        snapshotWorkspace.WorkbookPath,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                if (buildResult.ExitCode != 0)
+                {
+                    return buildResult;
+                }
+
+                workbookPath = snapshotWorkspace.WorkbookPath;
+                sourceLocationPath = snapshotWorkspace.SourceSnapshotPath;
+            }
+            else if (request.BuildFirst)
+            {
+                var buildResult = await buildCommand.RunAsync(context, cancellationToken)
+                    .ConfigureAwait(false);
                 if (buildResult.ExitCode != 0)
                 {
                     return buildResult;
                 }
             }
 
-            if (!File.Exists(context.BinDocumentPath))
+            if (!File.Exists(workbookPath))
             {
-                return CommandResult.UsageError($"Bin workbook was not found: {context.BinDocumentPath}");
+                return CommandResult.UsageError($"Bin workbook was not found: {workbookPath}");
             }
 
-            var results = workbookTestRunner
-                .RunTests(context.BinDocumentPath, request.Selector)
+            var resultRows = await workbookTestRunner.RunTestsAsync(
+                    workbookPath,
+                    request.Selector,
+                    request.ExecutionTimeout,
+                    WorkbookAutomationTimeouts.Default with
+                    {
+                        WorkbookOpen = CommandDefaultResolver.ResolveWorkbookOpenTimeout(
+                            context.Manifest),
+                        WorkbookSave = CommandDefaultResolver.ResolveWorkbookSaveTimeout(
+                            context.Manifest)
+                    },
+                    cancellationToken)
+                .ConfigureAwait(false);
+            var results = resultRows
                 .Select(row => TestResultRecord.FromWorkbookRow(context.DocumentName, row))
+                .Select(result => snapshotWorkspace is null
+                    ? result
+                    : SanitizeSnapshotTestResult(result, snapshotWorkspace))
                 .ToArray();
+            var locatedResults = request.SourceSnapshotPath is null
+                ? sourceLocator.Locate(
+                    sourceLocationPath,
+                    context.DocumentSourceSetPath,
+                    results)
+                : sourceLocator.LocateSnapshot(
+                    sourceLocationPath,
+                    context.DocumentSourceSetPath,
+                    results);
             var testRun = TestRun.FromResults(
                 context.Manifest.ProjectName,
                 context.DocumentName,
-                sourceLocator.Locate(context.DocumentSourceSetPath, results));
+                locatedResults);
             var output = outputFormatter.Format(request.Format, testRun);
+            var locationWarnings = request.SourceSnapshotPath is null
+                ? string.Empty
+                : RenderSourceLocationWarnings(locatedResults);
 
-            return testRun.HasFailures
+            var commandResult = testRun.HasFailures
                 ? CommandResult.Failure(output)
                 : CommandResult.Success(output);
+            hasCompletedTestRunOutput = true;
+            return commandResult with { StandardError = locationWarnings };
         }
-        catch (InvalidOperationException ex)
+    }
+
+    private static CommandResult PreserveReleaseProof(Exception error, CommandResult result)
+        => WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error)
+            ? result.MarkOwnedProcessReleaseUnproven()
+            : result;
+
+    private static CommandResult CreatePreparationFailureResult(
+        Exception error,
+        CancellationToken cancellationToken)
+    {
+        CommandResult result;
+        if (cancellationToken.IsCancellationRequested
+            && ContainsCancellation(error))
         {
-            return CommandResult.UsageError(ex.Message);
+            result = CommandResult.Cancelled(
+                "Workbook automation was cancelled during snapshot test preparation.");
         }
-        catch (IOException ex)
+        else
         {
-            return CommandResult.UsageError(ex.Message);
+            result = error switch
+            {
+                COMException comError => CommandResult.UsageError(
+                    CommandErrorMessages.ExcelComAutomationFailed("test", comError)),
+                _ => CommandResult.UsageError(error.Message)
+            };
         }
-        catch (UnauthorizedAccessException ex)
+
+        return PreserveReleaseProof(error, result);
+    }
+
+    private static bool ContainsCancellation(Exception error)
+    {
+        if (error is OperationCanceledException)
         {
-            return CommandResult.UsageError(ex.Message);
+            return true;
         }
-        catch (COMException ex)
+
+        if (error is AggregateException aggregate
+            && aggregate.InnerExceptions.Any(ContainsCancellation))
         {
-            return CommandResult.UsageError(CommandErrorMessages.ExcelComAutomationFailed("test", ex));
+            return true;
         }
+
+        return error.InnerException is not null
+            && ContainsCancellation(error.InnerException);
+    }
+
+    private static string RenderSourceLocationWarnings(
+        IReadOnlyList<TestResultRecord> results)
+        => string.Concat(
+            results
+                .Where(result => result.Location is null)
+                .Select(result => $"{result.Category}.{result.TestName}")
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Select(identity =>
+                    $"Warning: Source location for '{identity}' was omitted because it could not be mapped safely or unambiguously from the invocation snapshot to the persistent source set.{Environment.NewLine}"));
+
+    private static TestResultRecord SanitizeSnapshotTestResult(
+        TestResultRecord result,
+        SnapshotTestExecutionWorkspace workspace)
+        => result with
+        {
+            Category = SanitizeSnapshotOperationText(
+                result.Category,
+                workspace.WorkspacePath,
+                redactKnownTemporaryRoots: false),
+            TestName = SanitizeSnapshotOperationText(
+                result.TestName,
+                workspace.WorkspacePath,
+                redactKnownTemporaryRoots: false),
+            Message = SanitizeSnapshotOperationText(
+                result.Message,
+                workspace.WorkspacePath,
+                redactKnownTemporaryRoots: false)
+        };
+
+    private static CommandResult SanitizeSnapshotOperationResult(
+        CommandResult result,
+        SnapshotTestExecutionWorkspace workspace,
+        bool redactKnownTemporaryRoots)
+        => SanitizeSnapshotOperationResult(
+            result,
+            workspace.WorkspacePath,
+            redactKnownTemporaryRoots);
+
+    private static CommandResult SanitizeSnapshotOperationResult(
+        CommandResult result,
+        string workspacePath,
+        bool redactKnownTemporaryRoots)
+        => result with
+        {
+            StandardOutput = SanitizeSnapshotOperationText(
+                result.StandardOutput,
+                workspacePath,
+                redactKnownTemporaryRoots),
+            StandardError = SanitizeSnapshotOperationText(
+                result.StandardError,
+                workspacePath,
+                redactKnownTemporaryRoots)
+        };
+
+    private static string SanitizeSnapshotOperationText(
+        string text,
+        string workspacePath,
+        bool redactKnownTemporaryRoots)
+    {
+        var normalizedWorkspacePath = Path.GetFullPath(workspacePath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var sanitized = ReplacePrivatePathForms(
+            text,
+            normalizedWorkspacePath,
+            "<snapshot-test-workspace>");
+        if (!redactKnownTemporaryRoots)
+        {
+            return sanitized;
+        }
+
+        sanitized = ReplacePrivateGuidRoot(
+            sanitized,
+            Path.Combine(Path.GetTempPath(), "vba-dev-build-source-snapshot"),
+            "<build-source-snapshot>");
+        return ReplacePrivateGuidRoot(
+            sanitized,
+            Path.Combine(Path.GetTempPath(), "vba-dev-vbe-import"),
+            "<vbe-import-staging>");
+    }
+
+    private static string ReplacePrivatePathForms(
+        string text,
+        string normalizedPath,
+        string replacement)
+    {
+        var sanitized = text.Replace(
+            normalizedPath,
+            replacement,
+            OperatingSystem.IsWindows()
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal);
+        return sanitized.Replace(
+            new Uri(normalizedPath).AbsoluteUri.TrimEnd('/'),
+            replacement,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string ReplacePrivateGuidRoot(
+        string text,
+        string privateRoot,
+        string replacement)
+    {
+        var normalizedRoot = Path.GetFullPath(privateRoot)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var sanitized = ReplacePrivateGuidRootForm(
+            text,
+            normalizedRoot,
+            $"[{Regex.Escape(string.Concat(
+                Path.DirectorySeparatorChar,
+                Path.AltDirectorySeparatorChar))}]",
+            replacement);
+        return ReplacePrivateGuidRootForm(
+            sanitized,
+            new Uri(normalizedRoot).AbsoluteUri.TrimEnd('/'),
+            "/",
+            replacement);
+    }
+
+    private static string ReplacePrivateGuidRootForm(
+        string text,
+        string privateRoot,
+        string separatorPattern,
+        string replacement)
+    {
+        var pattern = Regex.Escape(privateRoot)
+            + separatorPattern
+            + "[0-9a-f]{32}";
+        return Regex.Replace(
+            text,
+            pattern,
+            replacement,
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     }
 }
