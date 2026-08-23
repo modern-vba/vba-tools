@@ -15,6 +15,9 @@ CLI history.
 - Test Explorer integration for workbook-backed VBA test projects.
 - A separately bundled self-contained `vba-debug-adapter.exe` for native VBE
   debugging of supported public parameterless procedures and exact breakpoints.
+- An independent `vba-debug-adapter doctor --format json` diagnostic that proves
+  native breakpoint, Continue, process ownership, and cleanup readiness without
+  project input or persistent project changes.
 - Immutable debug snapshots that include dirty editor content without saving and
   run in disposable same-filename workbooks without changing persistent outputs.
 - Bound Restart Debugging with generation-scoped snapshots, owned process-tree

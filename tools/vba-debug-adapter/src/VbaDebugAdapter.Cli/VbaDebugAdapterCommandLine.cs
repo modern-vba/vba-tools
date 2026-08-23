@@ -1,29 +1,36 @@
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using VbaDebugAdapter.Diagnostics;
 using VbaDebugAdapter.Infrastructure;
 
 namespace VbaDebugAdapter.Cli;
 
 public sealed class VbaDebugAdapterCommandLine
 {
-    private static readonly JsonSerializerOptions CapabilitiesJsonOptions = new()
+    private static readonly JsonSerializerOptions JsonOptions = new()
     {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }
     };
 
     private readonly IVbaDebugAdapterStdioRunner stdioRunner;
     private readonly IVbaDevCapabilitiesProbe vbaDevCapabilitiesProbe;
     private readonly IVbaDebugSessionWorkspaceManager sessionWorkspaceManager;
+    private readonly IDebugEnvironmentDoctor debugEnvironmentDoctor;
 
     private VbaDebugAdapterCommandLine(
         IVbaDebugAdapterStdioRunner stdioRunner,
         IVbaDevCapabilitiesProbe vbaDevCapabilitiesProbe,
-        IVbaDebugSessionWorkspaceManager sessionWorkspaceManager)
+        IVbaDebugSessionWorkspaceManager sessionWorkspaceManager,
+        IDebugEnvironmentDoctor debugEnvironmentDoctor)
     {
         this.stdioRunner = stdioRunner;
         this.vbaDevCapabilitiesProbe = vbaDevCapabilitiesProbe;
         this.sessionWorkspaceManager = sessionWorkspaceManager;
+        this.debugEnvironmentDoctor = debugEnvironmentDoctor;
     }
 
     public static VbaDebugAdapterCommandLine Create()
@@ -34,19 +41,28 @@ public sealed class VbaDebugAdapterCommandLine
         string workspaceRoot)
     {
         var workspaceRootBinding = new VbaDebugWorkspaceRootBinding(workspaceRoot);
+        var sessionWorkspaceManager = new VbaDebugSessionWorkspaceManager(
+            workspaceRootBinding,
+            cleanupOperations: null);
         return new VbaDebugAdapterCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(workspaceRootBinding),
             new ProcessVbaDevCapabilitiesProbe(),
-            new VbaDebugSessionWorkspaceManager(
-                workspaceRootBinding,
-                cleanupOperations: null));
+            sessionWorkspaceManager,
+            new DebugEnvironmentDoctor(
+                ToolVersion,
+                OperatingSystem.IsWindows,
+                new VbeDebugEnvironmentProbeFactory(
+                    sessionWorkspaceManager,
+                    new VbeDebugAutomation()),
+                DebugEnvironmentDoctorDeadlines.Default));
     }
 
     public static VbaDebugAdapterCommandLine Create(IVbaDebugAdapterStdioRunner stdioRunner)
         => new(
             stdioRunner ?? throw new ArgumentNullException(nameof(stdioRunner)),
             new ProcessVbaDevCapabilitiesProbe(),
-            PassthroughVbaDebugSessionWorkspaceManager.Instance);
+            PassthroughVbaDebugSessionWorkspaceManager.Instance,
+            new DebugEnvironmentDoctor());
 
     public static VbaDebugAdapterCommandLine Create(
         IVbaDebugAdapterStdioRunner stdioRunner,
@@ -54,7 +70,8 @@ public sealed class VbaDebugAdapterCommandLine
         => new(
             stdioRunner ?? throw new ArgumentNullException(nameof(stdioRunner)),
             vbaDevCapabilitiesProbe ?? throw new ArgumentNullException(nameof(vbaDevCapabilitiesProbe)),
-            PassthroughVbaDebugSessionWorkspaceManager.Instance);
+            PassthroughVbaDebugSessionWorkspaceManager.Instance,
+            new DebugEnvironmentDoctor());
 
     public static VbaDebugAdapterCommandLine Create(
         IVbaDebugAdapterStdioRunner stdioRunner,
@@ -63,7 +80,19 @@ public sealed class VbaDebugAdapterCommandLine
         => new(
             stdioRunner ?? throw new ArgumentNullException(nameof(stdioRunner)),
             vbaDevCapabilitiesProbe ?? throw new ArgumentNullException(nameof(vbaDevCapabilitiesProbe)),
-            sessionWorkspaceManager ?? throw new ArgumentNullException(nameof(sessionWorkspaceManager)));
+            sessionWorkspaceManager ?? throw new ArgumentNullException(nameof(sessionWorkspaceManager)),
+            new DebugEnvironmentDoctor());
+
+    public static VbaDebugAdapterCommandLine Create(
+        IVbaDebugAdapterStdioRunner stdioRunner,
+        IVbaDevCapabilitiesProbe vbaDevCapabilitiesProbe,
+        IVbaDebugSessionWorkspaceManager sessionWorkspaceManager,
+        IDebugEnvironmentDoctor debugEnvironmentDoctor)
+        => new(
+            stdioRunner ?? throw new ArgumentNullException(nameof(stdioRunner)),
+            vbaDevCapabilitiesProbe ?? throw new ArgumentNullException(nameof(vbaDevCapabilitiesProbe)),
+            sessionWorkspaceManager ?? throw new ArgumentNullException(nameof(sessionWorkspaceManager)),
+            debugEnvironmentDoctor ?? throw new ArgumentNullException(nameof(debugEnvironmentDoctor)));
 
     public Task<int> InvokeAsync(
         IReadOnlyList<string> args,
@@ -109,8 +138,37 @@ public sealed class VbaDebugAdapterCommandLine
                 });
             await WriteLineAsync(
                 standardOutput,
-                JsonSerializer.Serialize(capabilities, CapabilitiesJsonOptions)).ConfigureAwait(false);
+                JsonSerializer.Serialize(capabilities, JsonOptions)).ConfigureAwait(false);
             return 0;
+        }
+
+        if (args.SequenceEqual(["doctor", "--format", "json"], StringComparer.Ordinal))
+        {
+            DebugEnvironmentDiagnosticReport report;
+            try
+            {
+                report = await debugEnvironmentDoctor
+                    .RunAsync(cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                report = DebugEnvironmentDoctor.InfrastructureFailure(
+                    ToolVersion,
+                    exception);
+                await WriteLineAsync(
+                    standardError,
+                    $"VBE Doctor infrastructure failure: {exception.Message}")
+                    .ConfigureAwait(false);
+            }
+            await WriteLineAsync(
+                standardOutput,
+                JsonSerializer.Serialize(report, JsonOptions)).ConfigureAwait(false);
+            return report.Complete && report.Status is
+                DebugEnvironmentDiagnosticStatus.Pass or
+                DebugEnvironmentDiagnosticStatus.Warning
+                ? 0
+                : 1;
         }
 
         if (
@@ -236,6 +294,7 @@ public sealed class VbaDebugAdapterCommandLine
         await WriteLineAsync(
             standardError,
             "Usage: vba-debug-adapter capabilities --format json | " +
+            "vba-debug-adapter doctor --format json | " +
             "vba-debug-adapter cleanup --session <lowercase-hex-32> | " +
             "vba-debug-adapter --stdio --vba-dev <absolute-path> --session <lowercase-hex-32>").ConfigureAwait(false);
         return 1;

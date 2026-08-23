@@ -50,6 +50,108 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
 
     [WindowsExcelIntegrationFact]
     [Trait("Category", "WindowsExcelIntegration")]
+    public async Task PackagedDoctorProvesVbeReadinessWithoutProjectInputAndCleansOwnedState()
+    {
+        var repositoryRoot = ResolveRepositoryRoot();
+        var assets = ResolvePackagedDebugAssets(repositoryRoot);
+        using var temp = TempDirectory.Create();
+        var poisonProjectPath = Path.Combine(temp.Path, "vba-project.json");
+        var sentinelSourcePath = Path.Combine(temp.Path, "PersistentSentinel.bas");
+        var poisonBytes = Encoding.UTF8.GetBytes("{ this is deliberately invalid project json");
+        var sentinelBytes = Encoding.UTF8.GetBytes(
+            "Attribute VB_Name = \"PersistentSentinel\"\r\n" +
+            "Option Explicit\r\n");
+        File.WriteAllBytes(poisonProjectPath, poisonBytes);
+        File.WriteAllBytes(sentinelSourcePath, sentinelBytes);
+        var baselineExcelProcessIds = CaptureExcelProcessIds();
+        var workspaceRoot = Path.Combine(
+            Path.GetTempPath(),
+            "vba-debug-adapter",
+            "workspaces");
+        var baselineWorkspaceEntries = CaptureWorkspaceEntries(workspaceRoot);
+
+        ProcessResult result;
+        using (var foregroundAssistCancellation = new CancellationTokenSource())
+        {
+            var foregroundAssist = AssistPackagedDebugForegroundAsync(
+                baselineExcelProcessIds,
+                foregroundAssistCancellation.Token);
+            try
+            {
+                result = await RunProcessAsync(
+                    assets.DebugAdapterExecutablePath,
+                    temp.Path,
+                    ["doctor", "--format", "json"],
+                    TimeSpan.FromMinutes(3));
+            }
+            finally
+            {
+                foregroundAssistCancellation.Cancel();
+                try
+                {
+                    await foregroundAssist;
+                }
+                catch (OperationCanceledException)
+                {
+                }
+            }
+        }
+
+        Assert.True(
+            result.ExitCode == 0,
+            $"Packaged Doctor failed.{Environment.NewLine}" +
+            $"stdout:{Environment.NewLine}{result.StandardOutput}{Environment.NewLine}" +
+            $"stderr:{Environment.NewLine}{result.StandardError}");
+        using var report = JsonDocument.Parse(result.StandardOutput);
+        var root = report.RootElement;
+        Assert.Equal("1.0", root.GetProperty("schemaVersion").GetString());
+        Assert.False(string.IsNullOrWhiteSpace(root.GetProperty("toolVersion").GetString()));
+        Assert.Equal("pass", root.GetProperty("status").GetString());
+        Assert.True(root.GetProperty("complete").GetBoolean());
+        string[] expectedCheckIds =
+        [
+            "platform.windows",
+            "workspace.session",
+            "excel.startup",
+            "excel.processOwnership",
+            "workbook.fixtureCreation",
+            "workbook.open",
+            "vbide.access",
+            "vbe.commandContext",
+            "vbe.breakpoint",
+            "vbe.breakMode",
+            "vbe.continue",
+            "vbe.procedureCompletion",
+            "vbe.breakpointCleanup",
+            "excel.processClose",
+            "workspace.deletion"
+        ];
+        var checks = root.GetProperty("checks").EnumerateArray().ToArray();
+        Assert.Equal(
+            expectedCheckIds,
+            checks.Select(check => check.GetProperty("id").GetString()));
+        Assert.All(checks, check =>
+        {
+            Assert.Equal("pass", check.GetProperty("status").GetString());
+            Assert.True(check.GetProperty("durationMilliseconds").GetInt64() >= 0);
+        });
+        var processId = checks.Single(check =>
+                check.GetProperty("id").GetString() == "excel.processOwnership")
+            .GetProperty("details")
+            .GetProperty("processId")
+            .GetInt32();
+        Assert.DoesNotContain(processId, baselineExcelProcessIds);
+        Assert.False(IsProcessRunning(processId, "EXCEL"));
+        Assert.True(File.ReadAllBytes(poisonProjectPath).AsSpan().SequenceEqual(poisonBytes));
+        Assert.True(File.ReadAllBytes(sentinelSourcePath).AsSpan().SequenceEqual(sentinelBytes));
+        Assert.Equal(baselineWorkspaceEntries, CaptureWorkspaceEntries(workspaceRoot));
+        await WaitForNoNewExcelProcessesAsync(
+            baselineExcelProcessIds,
+            TimeSpan.FromSeconds(15));
+    }
+
+    [WindowsExcelIntegrationFact]
+    [Trait("Category", "WindowsExcelIntegration")]
     public async Task PackagedVsCodeAssetsCompleteTheNativeBreakpointWorkflowAndReportTerminalLifecycle()
     {
         var repositoryRoot = ResolveRepositoryRoot();
@@ -1144,6 +1246,16 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
 
         return result;
     }
+
+    private static IReadOnlyList<string> CaptureWorkspaceEntries(string workspaceRoot)
+        => Directory.Exists(workspaceRoot)
+            ? Directory.EnumerateFileSystemEntries(workspaceRoot)
+                .Select(Path.GetFileName)
+                .Where(name => name is not null)
+                .Select(name => name!)
+                .Order(StringComparer.Ordinal)
+                .ToArray()
+            : [];
 
     private static async Task WaitForProcessExitAsync(int processId, TimeSpan timeout)
     {

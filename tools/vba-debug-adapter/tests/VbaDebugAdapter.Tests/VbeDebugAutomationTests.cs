@@ -10,6 +10,159 @@ namespace VbaDebugAdapter.Tests;
 public sealed class VbeDebugAutomationTests
 {
     [Fact]
+    public async Task DoctorFixtureCreationUsesTheExactOwnedExcelSession()
+    {
+        using var temp = TempDirectory.Create();
+        var workbookPath = Path.Combine(temp.Path, "VbaToolsDoctorProbe.xlsm");
+        var events = new List<string>();
+        var model = FakeVbeModel.Create(workbookPath, events);
+        var process = new FakeDebugOwnedProcess(
+            22362,
+            new DateTime(2026, 8, 23, 8, 0, 0, DateTimeKind.Local));
+        var automation = new VbeDebugAutomation(
+            new FakeExcelDebugApplicationFactory(model.Excel),
+            new FakeDebugExcelProcessApi(22362, process),
+            new FakeDebugWindowActivator(events),
+            new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
+
+        await using var session = await automation.StartVisibleAsync(
+            CancellationToken.None);
+        var control = Assert.IsAssignableFrom<IVbeDebugDoctorControl>(session);
+        await control.CreateFixtureWorkbookAsync(
+            workbookPath,
+            CancellationToken.None);
+
+        Assert.True(File.Exists(workbookPath));
+        Assert.Contains("workbooks-add", events);
+        Assert.Contains($"save-as:{Path.GetFullPath(workbookPath)}:52", events);
+        Assert.Contains("close:False", events);
+    }
+
+    [Fact]
+    public async Task DoctorSeparatesExactWorkbookOpenFromVbideImportAndVerification()
+    {
+        using var temp = TempDirectory.Create();
+        var workbookPath = Path.Combine(temp.Path, "VbaToolsDoctorProbe.xlsm");
+        var sourcePath = Path.Combine(temp.Path, "VbaToolsDoctorProbe.bas");
+        string[] codeLines =
+        [
+            "Option Explicit",
+            "Option Private Module",
+            "",
+            "Public Sub RunDoctorProbe()",
+            "    ThisWorkbook.Worksheets(1).Range(\"A1\").Value2 = \"vba-tools-doctor-complete\"",
+            "End Sub"
+        ];
+        await File.WriteAllTextAsync(
+            sourcePath,
+            "Attribute VB_Name = \"VbaToolsDoctorProbe\"\r\n" +
+            string.Join("\r\n", codeLines) +
+            "\r\n");
+        var events = new List<string>();
+        var model = FakeVbeModel.Create(
+            workbookPath,
+            events,
+            componentName: "VbaToolsDoctorProbe",
+            componentLookupName: "VbaToolsDoctorProbe",
+            codeLines: codeLines,
+            recordVbProjectAccess: true);
+        var process = new FakeDebugOwnedProcess(
+            22361,
+            new DateTime(2026, 8, 23, 8, 1, 0, DateTimeKind.Local));
+        var automation = new VbeDebugAutomation(
+            new FakeExcelDebugApplicationFactory(model.Excel),
+            new FakeDebugExcelProcessApi(22361, process),
+            new FakeDebugWindowActivator(events),
+            new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
+        var sourceMap = new VbeCodeModuleSourceMap(
+            "VbaToolsDoctorProbe",
+            VbaModuleKind.StandardModule,
+            codeLines.ToImmutableArray());
+
+        await using var session = await automation.StartVisibleAsync(
+            CancellationToken.None);
+        var control = Assert.IsAssignableFrom<IVbeDebugDoctorControl>(session);
+        await control.CreateFixtureWorkbookAsync(workbookPath, CancellationToken.None);
+        events.Clear();
+        await control.OpenFixtureWorkbookAsync(workbookPath, CancellationToken.None);
+
+        Assert.DoesNotContain("vb-project", events);
+
+        await control.ImportFixtureModuleAsync(
+            sourcePath,
+            sourceMap,
+            CancellationToken.None);
+
+        Assert.Contains("vb-project", events);
+        Assert.Contains($"component-import:{Path.GetFullPath(sourcePath)}", events);
+        Assert.Contains("component:VbaToolsDoctorProbe", events);
+    }
+
+    [Fact]
+    public async Task DoctorCooperativeCloseDiscardsWorkbookChangesBeforeExcelQuit()
+    {
+        using var temp = TempDirectory.Create();
+        var workbookPath = Path.Combine(temp.Path, "VbaToolsDoctorProbe.xlsm");
+        var events = new List<string>();
+        var model = FakeVbeModel.Create(workbookPath, events);
+        var process = new FakeDebugOwnedProcess(
+            22360,
+            new DateTime(2026, 8, 23, 8, 2, 0, DateTimeKind.Local),
+            events: events);
+        model.Excel.QuitAction = () => process.Exit(0);
+        var automation = new VbeDebugAutomation(
+            new FakeExcelDebugApplicationFactory(model.Excel),
+            new FakeDebugExcelProcessApi(22360, process),
+            new FakeDebugWindowActivator(events),
+            new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
+
+        await using var session = await automation.StartVisibleAsync(
+            CancellationToken.None);
+        var control = Assert.IsAssignableFrom<IVbeDebugDoctorControl>(session);
+        await control.CreateFixtureWorkbookAsync(workbookPath, CancellationToken.None);
+        await control.OpenFixtureWorkbookAsync(workbookPath, CancellationToken.None);
+        events.Clear();
+
+        await control.CloseOwnedProcessCooperativelyAsync(CancellationToken.None);
+
+        Assert.True(model.Workbook.Saved);
+        Assert.Equal(["close:False", "excel-quit", "process-exit"], events);
+        Assert.Equal(0, process.KillCalls);
+    }
+
+    [Fact]
+    public async Task DoctorBreakModeDeadlineCancellationTerminatesTheExactOwnedProcess()
+    {
+        using var temp = TempDirectory.Create();
+        var workbookPath = Path.Combine(temp.Path, "VbaToolsDoctorProbe.xlsm");
+        File.WriteAllText(workbookPath, "test workbook placeholder");
+        var events = new List<string>();
+        var model = FakeVbeModel.Create(workbookPath, events);
+        var process = new FakeDebugOwnedProcess(
+            22359,
+            new DateTime(2026, 8, 23, 8, 3, 0, DateTimeKind.Local));
+        var automation = new VbeDebugAutomation(
+            new FakeExcelDebugApplicationFactory(model.Excel),
+            new FakeDebugExcelProcessApi(22359, process),
+            new FakeDebugWindowActivator(events),
+            new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
+
+        await using var session = await automation.StartVisibleAsync(
+            CancellationToken.None);
+        await session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None);
+        var control = Assert.IsAssignableFrom<IVbeDebugDoctorControl>(session);
+        using var cancellation = new CancellationTokenSource();
+        var waiting = control.WaitForBreakModeAsync(cancellation.Token);
+
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting);
+        Assert.True(SpinWait.SpinUntil(
+            () => process.KillCalls == 1,
+            TimeSpan.FromSeconds(1)));
+    }
+
+    [Fact]
     public async Task SetNativeBreakpointsFailsBeforeToggleWhenAnyNonTargetModuleLineIsStale()
     {
         using var temp = TempDirectory.Create();
@@ -1790,6 +1943,14 @@ public sealed class FakeExcelApplication
     public FakeWorkbooks? Workbooks { get; init; }
 
     public FakeVbe? VBE { get; init; }
+
+    public Action? QuitAction { get; set; }
+
+    public void Quit()
+    {
+        Events?.Add("excel-quit");
+        QuitAction?.Invoke();
+    }
 }
 
 internal sealed class FakeExcelDebugApplicationFactory(object application) : IExcelDebugApplicationFactory
@@ -1950,15 +2111,18 @@ internal sealed record FakeVbeModel(
         bool breakpointCommandMissing = false,
         bool breakpointCommandEnabled = true,
         Exception? breakpointCommandException = null,
+        Action? breakpointCommandExecuteAction = null,
         bool selectionMatches = true,
         bool activeCodePaneMatches = true,
         string codeLine = "    Debug.Print \"break here\"",
         bool runCommandMissing = false,
         bool runCommandEnabled = true,
         Exception? runCommandException = null,
+        Action? runCommandExecuteAction = null,
         IReadOnlyList<string>? codeLines = null,
         int componentType = 1,
         string componentName = "DebugModule",
+        string? componentLookupName = null,
         string? secondaryComponentName = null,
         IReadOnlyList<string>? secondaryCodeLines = null,
         int secondaryComponentType = 1,
@@ -1986,7 +2150,7 @@ internal sealed record FakeVbeModel(
         var componentsByName = new Dictionary<string, FakeVbComponent>(
             StringComparer.OrdinalIgnoreCase)
         {
-            ["DebugModule"] = component
+            [componentLookupName ?? "DebugModule"] = component
         };
         if (secondaryComponentName is not null)
         {
@@ -2030,14 +2194,16 @@ internal sealed record FakeVbeModel(
             : new FakeCommandBarControl(51, events)
             {
                 Enabled = breakpointCommandEnabled,
-                ExecuteException = breakpointCommandException
+                ExecuteException = breakpointCommandException,
+                ExecuteAction = breakpointCommandExecuteAction
             };
         var runControl = runCommandMissing
             ? null
             : new FakeCommandBarControl(186, events)
             {
                 Enabled = runCommandEnabled,
-                ExecuteException = runCommandException
+                ExecuteException = runCommandException,
+                ExecuteAction = runCommandExecuteAction
             };
         var commandBars = new FakeCommandBars(breakpointControl, runControl, events);
         var vbe = new FakeVbe(
@@ -2079,6 +2245,13 @@ public sealed class FakeWorkbooks(FakeWorkbook workbook, List<string> events)
             throw OpenException;
         }
 
+        workbook.Reopen();
+        return workbook;
+    }
+
+    public object Add()
+    {
+        events.Add("workbooks-add");
         return workbook;
     }
 }
@@ -2090,7 +2263,7 @@ public sealed class FakeWorkbook(
     List<string>? events = null,
     bool recordVbProjectAccess = false)
 {
-    private readonly string fullName = fullName;
+    private string fullName = fullName;
     private int closed;
 
     public FakeWorksheets Worksheets { get; } = new();
@@ -2105,7 +2278,27 @@ public sealed class FakeWorkbook(
         ? fullName
         : throw new COMException("The workbook is closed.");
 
+    public bool Saved { get; set; }
+
     public void Close() => Volatile.Write(ref closed, 1);
+
+    public void Close(bool saveChanges)
+    {
+        events?.Add($"close:{saveChanges}");
+        Volatile.Write(ref closed, 1);
+    }
+
+    public void SaveAs(string workbookPath, int fileFormat)
+    {
+        fullName = Path.GetFullPath(workbookPath);
+        File.WriteAllText(fullName, "test workbook placeholder");
+        events?.Add($"save-as:{fullName}:{fileFormat}");
+    }
+
+    public void Reopen()
+    {
+        Volatile.Write(ref closed, 0);
+    }
 
     public FakeVbProject VBProject
     {
@@ -2162,6 +2355,13 @@ public sealed class FakeVbComponents(
     {
         events.Add($"component:{moduleName}");
         return componentsByName[moduleName];
+    }
+
+    public object Import(string sourcePath)
+    {
+        var fullPath = Path.GetFullPath(sourcePath);
+        events.Add($"component-import:{fullPath}");
+        return componentsByName[Path.GetFileNameWithoutExtension(fullPath)];
     }
 }
 
@@ -2353,6 +2553,8 @@ public sealed class FakeCommandBarControl(int id, List<string> events)
 
     public Exception? ExecuteException { get; init; }
 
+    public Action? ExecuteAction { get; init; }
+
     public void Execute()
     {
         events.Add($"execute:{Id}");
@@ -2360,6 +2562,7 @@ public sealed class FakeCommandBarControl(int id, List<string> events)
         {
             throw ExecuteException;
         }
+        ExecuteAction?.Invoke();
     }
 }
 

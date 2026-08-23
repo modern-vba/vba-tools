@@ -328,7 +328,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
         }
     }
 
-    private sealed class VbeDebugSession : IVbeDebugSession, IVbeDebugProbeControl
+    private sealed class VbeDebugSession : IVbeDebugSession, IVbeDebugDoctorControl
     {
         private const int VbeBreakMode = 1;
         private const int VbeDesignMode = 2;
@@ -375,6 +375,54 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
 
         public Task<DebugProcessExit> Completion => completion;
 
+        public async Task CreateFixtureWorkbookAsync(
+            string workbookPath,
+            CancellationToken cancellationToken)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(workbookPath);
+            var expectedWorkbookPath = Path.GetFullPath(workbookPath);
+            if (!Path.GetExtension(expectedWorkbookPath).Equals(
+                    ".xlsm",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                throw new DebugSetupException(
+                    "The Doctor fixture workbook must use the .xlsm extension.");
+            }
+
+            _ = await InvokeSetupAsync(
+                () =>
+                {
+                    object? workbooksObject = null;
+                    object? fixtureWorkbookObject = null;
+                    try
+                    {
+                        dynamic excel = excelObject;
+                        workbooksObject = excel.Workbooks;
+                        dynamic workbooks = workbooksObject;
+                        fixtureWorkbookObject = workbooks.Add();
+                        dynamic fixtureWorkbook = fixtureWorkbookObject;
+                        fixtureWorkbook.SaveAs(expectedWorkbookPath, 52);
+                        var actualPath = Path.GetFullPath(
+                            Convert.ToString(fixtureWorkbook.FullName)!);
+                        if (!actualPath.Equals(
+                                expectedWorkbookPath,
+                                StringComparison.OrdinalIgnoreCase))
+                        {
+                            throw new DebugSetupException(
+                                "Excel saved the Doctor fixture to an unexpected path.");
+                        }
+                        fixtureWorkbook.Close(false);
+                        return true;
+                    }
+                    finally
+                    {
+                        ComObjectReleaser.Release(fixtureWorkbookObject);
+                        ComObjectReleaser.Release(workbooksObject);
+                    }
+                },
+                cancellationToken).ConfigureAwait(false);
+        }
+
         public async Task<DebugCompilationHostFacts> GetCompilationHostFactsAsync(
             CancellationToken cancellationToken)
         {
@@ -384,9 +432,20 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                 cancellationToken).ConfigureAwait(false);
         }
 
-        public async Task OpenGeneratedWorkbookAsync(
+        public Task OpenGeneratedWorkbookAsync(
             string workbookPath,
             IDebugInputWaitSink? inputWaitSink,
+            CancellationToken cancellationToken)
+            => OpenWorkbookAsync(
+                workbookPath,
+                inputWaitSink,
+                verifyVbideAccess: true,
+                cancellationToken);
+
+        private async Task OpenWorkbookAsync(
+            string workbookPath,
+            IDebugInputWaitSink? inputWaitSink,
+            bool verifyVbideAccess,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -410,7 +469,9 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                 ? null
                 : promptMonitor.Capture(inputWait);
             var operation = InvokeSetupAsync(
-                () => workbookOpener.OpenVerified(excelObject, expectedWorkbookPath),
+                () => verifyVbideAccess
+                    ? workbookOpener.OpenVerified(excelObject, expectedWorkbookPath)
+                    : workbookOpener.OpenPathVerified(excelObject, expectedWorkbookPath),
                 cancellationToken);
             workbookObject = inputWaitSink is null
                 ? await operation.ConfigureAwait(false)
@@ -421,6 +482,63 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                     inputWaitSink,
                     cancellationToken).ConfigureAwait(false);
             workbookOpenedSignal.TrySetResult(workbookObject);
+        }
+
+        public Task OpenFixtureWorkbookAsync(
+            string workbookPath,
+            CancellationToken cancellationToken)
+            => OpenWorkbookAsync(
+                workbookPath,
+                inputWaitSink: null,
+                verifyVbideAccess: false,
+                cancellationToken);
+
+        public async Task ImportFixtureModuleAsync(
+            string sourcePath,
+            VbeCodeModuleSourceMap sourceMap,
+            CancellationToken cancellationToken)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(sourcePath);
+            ArgumentNullException.ThrowIfNull(sourceMap);
+            var expectedSourcePath = Path.GetFullPath(sourcePath);
+            if (!File.Exists(expectedSourcePath))
+            {
+                throw new DebugSetupException(
+                    $"The Doctor standard-module source does not exist: {expectedSourcePath}");
+            }
+
+            _ = await InvokeSetupAsync(
+                () =>
+                {
+                    object? projectObject = null;
+                    object? componentsObject = null;
+                    object? importedComponentObject = null;
+                    VerifiedCodeModule? verifiedModule = null;
+                    try
+                    {
+                        dynamic workbook = GetOpenedWorkbook();
+                        projectObject = workbook.VBProject;
+                        dynamic project = projectObject;
+                        EnsureDesignMode(project);
+                        componentsObject = project.VBComponents;
+                        dynamic components = componentsObject;
+                        importedComponentObject = components.Import(expectedSourcePath);
+                        verifiedModule = VerifyCodeModule(components, sourceMap);
+                        return true;
+                    }
+                    finally
+                    {
+                        if (verifiedModule is not null)
+                        {
+                            ComObjectReleaser.Release(verifiedModule.CodeModule);
+                            ComObjectReleaser.Release(verifiedModule.Component);
+                        }
+                        ComObjectReleaser.Release(importedComponentObject);
+                        ComObjectReleaser.Release(componentsObject);
+                        ComObjectReleaser.Release(projectObject);
+                    }
+                },
+                cancellationToken).ConfigureAwait(false);
         }
 
         public async Task SetNativeBreakpointsAsync(
@@ -435,6 +553,68 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                     return true;
                 },
                 cancellationToken).ConfigureAwait(false);
+        }
+
+        public async Task VerifyCommandContextAsync(
+            VbeBreakpoint breakpoint,
+            DebugTargetProcedure target,
+            CancellationToken cancellationToken)
+        {
+            ArgumentNullException.ThrowIfNull(breakpoint);
+            ArgumentNullException.ThrowIfNull(target);
+            _ = await InvokeSetupAsync(
+                () =>
+                {
+                    SetNativeBreakpoints([breakpoint], execute: false);
+                    ExecuteTargetCommand(
+                        target,
+                        VbeDesignMode,
+                        "target code",
+                        beforeExecute: null,
+                        execute: false);
+                    return true;
+                },
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        public Task ClearNativeBreakpointAsync(
+            VbeBreakpoint breakpoint,
+            CancellationToken cancellationToken)
+        {
+            ArgumentNullException.ThrowIfNull(breakpoint);
+            return SetNativeBreakpointsAsync(
+                [breakpoint],
+                cancellationToken);
+        }
+
+        public async Task CloseOwnedProcessCooperativelyAsync(
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                _ = await InvokeSetupAsync(
+                    () =>
+                    {
+                        if (workbookObject is not null)
+                        {
+                            dynamic workbook = workbookObject;
+                            workbook.Saved = true;
+                            workbook.Close(false);
+                        }
+                        dynamic excel = excelObject;
+                        excel.Quit();
+                        return true;
+                    },
+                    cancellationToken).ConfigureAwait(false);
+                _ = await processOwner.Completion.WaitAsync(
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (
+                cancellationToken.IsCancellationRequested)
+            {
+                RequestCancellationTermination();
+                throw;
+            }
         }
 
         public async Task RunTargetAsync(
@@ -478,10 +658,15 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
         public Task WaitForBreakModeAsync(
             TimeSpan timeout,
             CancellationToken cancellationToken)
-            => WaitForProbeStateAsync(
+            => WaitForProbeStateWithTimeoutAsync(
                 state => state.ProjectMode == VbeBreakMode,
                 "The VBA project did not enter native break mode",
                 timeout,
+                cancellationToken);
+
+        public Task WaitForBreakModeAsync(CancellationToken cancellationToken)
+            => WaitForProbeStateUntilCanceledAsync(
+                state => state.ProjectMode == VbeBreakMode,
                 cancellationToken);
 
         public async Task ContinueTargetAsync(
@@ -506,7 +691,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             string expectedMarker,
             TimeSpan timeout,
             CancellationToken cancellationToken)
-            => WaitForProbeStateAsync(
+            => WaitForProbeStateWithTimeoutAsync(
                 state =>
                     state.ProjectMode == VbeDesignMode &&
                     string.Equals(
@@ -515,6 +700,18 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                         StringComparison.Ordinal),
                 "The VBA project did not return to design mode with the expected completion marker",
                 timeout,
+                cancellationToken);
+
+        public Task WaitForCompletionAsync(
+            string expectedMarker,
+            CancellationToken cancellationToken)
+            => WaitForProbeStateUntilCanceledAsync(
+                state =>
+                    state.ProjectMode == VbeDesignMode &&
+                    string.Equals(
+                        expectedMarker,
+                        state.CompletionMarker,
+                        StringComparison.Ordinal),
                 cancellationToken);
 
         public ValueTask TerminateAsync() => processOwner.TerminateAsync();
@@ -846,7 +1043,9 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             Bit64
         }
 
-        private void SetNativeBreakpoints(IReadOnlyList<VbeBreakpoint> breakpoints)
+        private void SetNativeBreakpoints(
+            IReadOnlyList<VbeBreakpoint> breakpoints,
+            bool execute = true)
         {
             if (breakpoints.Count == 0)
             {
@@ -884,7 +1083,8 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                         VbeNativeCommandContract.ToggleBreakpointCommandId,
                         "Toggle Breakpoint",
                         "breakpoint",
-                        CreateDisabledBreakpointMessage(breakpoint));
+                        CreateDisabledBreakpointMessage(breakpoint),
+                        execute: execute);
                 }
             }
             finally
@@ -1040,7 +1240,8 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             DebugTargetProcedure target,
             int expectedProjectMode,
             string contextName,
-            Action? beforeExecute)
+            Action? beforeExecute,
+            bool execute = true)
         {
             object? projectObject = null;
             object? componentsObject = null;
@@ -1079,7 +1280,8 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                     VbeNativeCommandContract.RunOrContinueCommandId,
                     "Run Sub/UserForm",
                     contextName,
-                    beforeExecute: beforeExecute);
+                    beforeExecute: beforeExecute,
+                    execute: execute);
             }
             finally
             {
@@ -1090,7 +1292,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             }
         }
 
-        private async Task WaitForProbeStateAsync(
+        private async Task WaitForProbeStateWithTimeoutAsync(
             Func<DebugProbeState, bool> predicate,
             string timeoutMessage,
             TimeSpan timeout,
@@ -1101,20 +1303,9 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             timeoutSource.CancelAfter(timeout);
             try
             {
-                while (true)
-                {
-                    var state = await InvokeSetupAsync(
-                        ReadDebugProbeState,
-                        timeoutSource.Token).ConfigureAwait(false);
-                    if (predicate(state))
-                    {
-                        return;
-                    }
-
-                    await Task.Delay(
-                        TimeSpan.FromMilliseconds(100),
-                        timeoutSource.Token).ConfigureAwait(false);
-                }
+                await WaitForProbeStateUntilCanceledAsync(
+                    predicate,
+                    timeoutSource.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException ex) when (
                 !cancellationToken.IsCancellationRequested &&
@@ -1123,6 +1314,35 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                 throw new DebugSetupException(
                     $"{timeoutMessage} within {timeout.TotalSeconds:0.###} seconds.",
                     ex);
+            }
+        }
+
+        private async Task WaitForProbeStateUntilCanceledAsync(
+            Func<DebugProbeState, bool> predicate,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                while (true)
+                {
+                    var state = await InvokeSetupAsync(
+                        ReadDebugProbeState,
+                        cancellationToken).ConfigureAwait(false);
+                    if (predicate(state))
+                    {
+                        return;
+                    }
+
+                    await Task.Delay(
+                        TimeSpan.FromMilliseconds(100),
+                        cancellationToken).ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException) when (
+                cancellationToken.IsCancellationRequested)
+            {
+                RequestCancellationTermination();
+                throw;
             }
         }
 
@@ -1164,7 +1384,8 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             string commandName,
             string contextName,
             string? disabledMessage = null,
-            Action? beforeExecute = null)
+            Action? beforeExecute = null,
+            bool execute = true)
         {
             object? codePaneObject = null;
             object? activeCodePaneObject = null;
@@ -1250,6 +1471,11 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                     throw new DebugSetupException(
                         disabledMessage
                             ?? $"The native VBE {commandName} command (ID {commandId}) is disabled in the {contextName} context.");
+                }
+
+                if (!execute)
+                {
+                    return;
                 }
 
                 beforeExecute?.Invoke();

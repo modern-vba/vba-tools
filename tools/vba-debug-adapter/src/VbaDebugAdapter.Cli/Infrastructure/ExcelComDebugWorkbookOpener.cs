@@ -8,6 +8,10 @@ namespace VbaDebugAdapter.Infrastructure;
 
 internal interface IExcelDebugWorkbookOpener
 {
+    object OpenPathVerified(object excelApplication, string expectedWorkbookPath);
+
+    void VerifyVbideAccess(object workbookObject);
+
     object OpenVerified(object excelApplication, string expectedWorkbookPath);
 }
 
@@ -20,10 +24,30 @@ internal sealed class ExcelComDebugWorkbookOpener : IExcelDebugWorkbookOpener
 
     public object OpenVerified(object excelApplication, string expectedWorkbookPath)
     {
+        object? workbookObject = null;
+        var succeeded = false;
+        try
+        {
+            workbookObject = OpenPathVerified(excelApplication, expectedWorkbookPath);
+            VerifyVbideAccess(workbookObject);
+            succeeded = true;
+            return workbookObject;
+        }
+        finally
+        {
+            if (!succeeded)
+            {
+                ComObjectReleaser.Release(workbookObject);
+            }
+        }
+    }
+
+    public object OpenPathVerified(
+        object excelApplication,
+        string expectedWorkbookPath)
+    {
         object? workbooksObject = null;
         object? workbookObject = null;
-        object? projectObject = null;
-        object? componentsObject = null;
         var succeeded = false;
 
         try
@@ -48,6 +72,27 @@ internal sealed class ExcelComDebugWorkbookOpener : IExcelDebugWorkbookOpener
                     "Excel opened a workbook other than the exact generated debug workbook.");
             }
 
+            succeeded = true;
+            return workbookObject;
+        }
+        finally
+        {
+            if (!succeeded)
+            {
+                ComObjectReleaser.Release(workbookObject);
+            }
+            ComObjectReleaser.Release(workbooksObject);
+        }
+    }
+
+    public void VerifyVbideAccess(object workbookObject)
+    {
+        object? projectObject = null;
+        object? componentsObject = null;
+
+        try
+        {
+            dynamic workbook = workbookObject;
             int projectMode;
             try
             {
@@ -85,20 +130,11 @@ internal sealed class ExcelComDebugWorkbookOpener : IExcelDebugWorkbookOpener
                 throw new DebugSetupException(
                     "The generated workbook VBA project is not in design mode.");
             }
-
-            succeeded = true;
-            return workbookObject;
         }
         finally
         {
             ComObjectReleaser.Release(componentsObject);
             ComObjectReleaser.Release(projectObject);
-            if (!succeeded)
-            {
-                ComObjectReleaser.Release(workbookObject);
-            }
-
-            ComObjectReleaser.Release(workbooksObject);
         }
     }
 

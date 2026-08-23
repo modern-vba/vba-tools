@@ -1,6 +1,7 @@
 using VbaDebugAdapter.Cli;
 using VbaDebugAdapter.Build;
 using VbaDebugAdapter.Debugging;
+using VbaDebugAdapter.Diagnostics;
 using VbaDebugAdapter.Infrastructure;
 using System.Text;
 using System.Text.Json;
@@ -28,6 +29,204 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             "{\"toolVersion\":\"0.1.0\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"1.1\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}" + Environment.NewLine,
             ReadUtf8(standardOutput));
         Assert.Empty(ReadUtf8(standardError));
+    }
+
+    [Fact]
+    public async Task DoctorWritesTheClosedSchemaAndStableOrderedChecks()
+    {
+        string[] checkIds =
+        [
+            "platform.windows",
+            "workspace.session",
+            "excel.startup",
+            "excel.processOwnership",
+            "workbook.fixtureCreation",
+            "workbook.open",
+            "vbide.access",
+            "vbe.commandContext",
+            "vbe.breakpoint",
+            "vbe.breakMode",
+            "vbe.continue",
+            "vbe.procedureCompletion",
+            "vbe.breakpointCleanup",
+            "excel.processClose",
+            "workspace.deletion"
+        ];
+        var report = new DebugEnvironmentDiagnosticReport(
+            "1.0",
+            "0.1.0",
+            DebugEnvironmentDiagnosticStatus.Pass,
+            Complete: true,
+            checkIds.Select(id => new DebugEnvironmentDiagnosticCheck(
+                id,
+                DebugEnvironmentDiagnosticStatus.Pass,
+                $"{id} passed.",
+                DurationMilliseconds: 0)).ToArray());
+        var doctor = new RecordingDebugEnvironmentDoctor(report);
+        var commandLine = VbaDebugAdapterCommandLine.Create(
+            new RecordingStdioRunner(),
+            new RecordingVbaDevCapabilitiesProbe(
+                new VbaDevCapabilitiesProbeResult(0, string.Empty, string.Empty)),
+            new RecordingSessionWorkspaceManager(),
+            doctor);
+        using var standardOutput = new MemoryStream();
+        using var standardError = new MemoryStream();
+
+        var exitCode = await commandLine.InvokeAsync(
+            ["doctor", "--format", "json"],
+            standardOutput,
+            standardError,
+            CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(1, doctor.Invocations);
+        Assert.Empty(ReadUtf8(standardError));
+        using var document = JsonDocument.Parse(ReadUtf8(standardOutput));
+        var root = document.RootElement;
+        Assert.Equal(
+            ["schemaVersion", "toolVersion", "status", "complete", "checks"],
+            root.EnumerateObject().Select(property => property.Name));
+        Assert.Equal("1.0", root.GetProperty("schemaVersion").GetString());
+        Assert.Equal("0.1.0", root.GetProperty("toolVersion").GetString());
+        Assert.Equal("pass", root.GetProperty("status").GetString());
+        Assert.True(root.GetProperty("complete").GetBoolean());
+        var checks = root.GetProperty("checks").EnumerateArray().ToArray();
+        Assert.Equal(checkIds, checks.Select(check => check.GetProperty("id").GetString()));
+        Assert.All(checks, check =>
+        {
+            Assert.Equal(
+                ["id", "status", "message", "durationMilliseconds"],
+                check.EnumerateObject().Select(property => property.Name));
+            Assert.Equal("pass", check.GetProperty("status").GetString());
+            Assert.False(string.IsNullOrWhiteSpace(check.GetProperty("message").GetString()));
+            Assert.True(check.GetProperty("durationMilliseconds").GetInt64() >= 0);
+        });
+    }
+
+    [Theory]
+    [InlineData(DebugEnvironmentDiagnosticStatus.Pass, true, 0)]
+    [InlineData(DebugEnvironmentDiagnosticStatus.Warning, true, 0)]
+    [InlineData(DebugEnvironmentDiagnosticStatus.Fail, true, 1)]
+    [InlineData(DebugEnvironmentDiagnosticStatus.Unverified, true, 1)]
+    [InlineData(DebugEnvironmentDiagnosticStatus.Pass, false, 1)]
+    public async Task DoctorExitCodeReflectsOverallStatusAndCompleteness(
+        DebugEnvironmentDiagnosticStatus status,
+        bool complete,
+        int expectedExitCode)
+    {
+        var report = new DebugEnvironmentDiagnosticReport(
+            "1.0",
+            "0.1.0",
+            status,
+            complete,
+            [new DebugEnvironmentDiagnosticCheck(
+                "platform.windows",
+                status,
+                "Synthetic Doctor result.",
+                DurationMilliseconds: 0)]);
+        var commandLine = VbaDebugAdapterCommandLine.Create(
+            new RecordingStdioRunner(),
+            new RecordingVbaDevCapabilitiesProbe(
+                new VbaDevCapabilitiesProbeResult(0, string.Empty, string.Empty)),
+            new RecordingSessionWorkspaceManager(),
+            new RecordingDebugEnvironmentDoctor(report));
+        using var standardOutput = new MemoryStream();
+        using var standardError = new MemoryStream();
+
+        var exitCode = await commandLine.InvokeAsync(
+            ["doctor", "--format", "json"],
+            standardOutput,
+            standardError,
+            CancellationToken.None);
+
+        Assert.Equal(expectedExitCode, exitCode);
+        using var document = JsonDocument.Parse(ReadUtf8(standardOutput));
+        Assert.Equal(
+            status.ToString().ToLowerInvariant(),
+            document.RootElement.GetProperty("status").GetString());
+        Assert.Equal(
+            complete,
+            document.RootElement.GetProperty("complete").GetBoolean());
+    }
+
+    [Fact]
+    public async Task DoctorInfrastructureLossStillWritesOneIncompleteJsonReport()
+    {
+        var commandLine = VbaDebugAdapterCommandLine.Create(
+            new RecordingStdioRunner(),
+            new RecordingVbaDevCapabilitiesProbe(
+                new VbaDevCapabilitiesProbeResult(0, string.Empty, string.Empty)),
+            new RecordingSessionWorkspaceManager(),
+            new ThrowingDebugEnvironmentDoctor(
+                new InvalidOperationException("Synthetic Doctor infrastructure loss.")));
+        using var standardOutput = new MemoryStream();
+        using var standardError = new MemoryStream();
+
+        var exitCode = await commandLine.InvokeAsync(
+            ["doctor", "--format", "json"],
+            standardOutput,
+            standardError,
+            CancellationToken.None);
+
+        Assert.Equal(1, exitCode);
+        using var document = JsonDocument.Parse(ReadUtf8(standardOutput));
+        var root = document.RootElement;
+        Assert.Equal("1.0", root.GetProperty("schemaVersion").GetString());
+        Assert.Equal("unverified", root.GetProperty("status").GetString());
+        Assert.False(root.GetProperty("complete").GetBoolean());
+        var checks = root.GetProperty("checks").EnumerateArray().ToArray();
+        Assert.Equal("platform.windows", checks[0].GetProperty("id").GetString());
+        Assert.Equal("unverified", checks[0].GetProperty("status").GetString());
+        Assert.Contains(
+            "Synthetic Doctor infrastructure loss",
+            checks[0].GetProperty("message").GetString(),
+            StringComparison.Ordinal);
+        Assert.All(checks[1..], check => Assert.Equal(
+            "skipped",
+            check.GetProperty("status").GetString()));
+        Assert.Contains(
+            "Synthetic Doctor infrastructure loss",
+            ReadUtf8(standardError),
+            StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("doctor", "--format", "json", "--project", "Example")]
+    [InlineData("doctor", "--format", "json", "--document", "Book1")]
+    [InlineData("doctor", "--format", "json", "--timeout", "1")]
+    public async Task DoctorRejectsProjectDocumentAndTimeoutInputs(
+        params string[] args)
+    {
+        var doctor = new RecordingDebugEnvironmentDoctor(
+            DebugEnvironmentDoctor.InfrastructureFailure(
+                "0.1.0",
+                new InvalidOperationException("Must not run.")));
+        var stdio = new RecordingStdioRunner();
+        var capabilitiesProbe = new RecordingVbaDevCapabilitiesProbe(
+            new VbaDevCapabilitiesProbeResult(0, string.Empty, string.Empty));
+        var commandLine = VbaDebugAdapterCommandLine.Create(
+            stdio,
+            capabilitiesProbe,
+            new RecordingSessionWorkspaceManager(),
+            doctor);
+        using var standardOutput = new MemoryStream();
+        using var standardError = new MemoryStream();
+
+        var exitCode = await commandLine.InvokeAsync(
+            args,
+            standardOutput,
+            standardError,
+            CancellationToken.None);
+
+        Assert.Equal(1, exitCode);
+        Assert.Equal(0, doctor.Invocations);
+        Assert.Empty(stdio.Invocations);
+        Assert.Empty(capabilitiesProbe.Invocations);
+        Assert.Empty(ReadUtf8(standardOutput));
+        Assert.Contains(
+            "Usage: vba-debug-adapter",
+            ReadUtf8(standardError),
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -2880,6 +3079,28 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             OnRun?.Invoke(sessionId);
             return Task.FromResult(0);
         }
+    }
+
+    private sealed class RecordingDebugEnvironmentDoctor(
+        DebugEnvironmentDiagnosticReport report) : IDebugEnvironmentDoctor
+    {
+        public int Invocations { get; private set; }
+
+        public Task<DebugEnvironmentDiagnosticReport> RunAsync(
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Invocations++;
+            return Task.FromResult(report);
+        }
+    }
+
+    private sealed class ThrowingDebugEnvironmentDoctor(Exception error)
+        : IDebugEnvironmentDoctor
+    {
+        public Task<DebugEnvironmentDiagnosticReport> RunAsync(
+            CancellationToken cancellationToken)
+            => Task.FromException<DebugEnvironmentDiagnosticReport>(error);
     }
 
     private sealed class RecordingCapabilitiesProcess(VbaDevBuildProcessResult result)

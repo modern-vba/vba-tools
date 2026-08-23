@@ -12,6 +12,26 @@ only when inspecting its machine-readable compatibility contract:
 vba-debug-adapter capabilities --format json
 ```
 
+To diagnose native VBE debugging readiness independently of any VBA project,
+run:
+
+```text
+vba-debug-adapter doctor --format json
+```
+
+Doctor creates one dedicated temporary Excel/VBE session and proves trusted
+VBIDE access, the native breakpoint and Run/Continue command contexts, an
+actual breakpoint stop, harmless procedure completion, exact process ownership,
+and terminal cleanup. It accepts no project, document, or timeout input, does
+not call `vba-dev doctor`, and does not change persistent project state.
+
+Once command handling begins, stdout contains exactly one schema `1.0` JSON
+object with ordered stable checks; diagnostic logs use stderr. A complete
+overall `pass` or `warning` exits zero. A `fail`, `unverified`, or incomplete
+result exits nonzero while preserving the valid JSON report. Each operation has
+its own bounded deadline, and terminal cleanup still runs after a failed,
+timed-out, or cancelled stage.
+
 Each stdio session uses a random 32-character lowercase hexadecimal ID and a
 create-new lease beneath the adapter-owned temporary root. Restart keeps that
 session ID, validates a fresh snapshot for the originally bound target, and

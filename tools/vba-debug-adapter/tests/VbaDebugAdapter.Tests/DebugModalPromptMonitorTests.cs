@@ -21,7 +21,14 @@ public sealed class DebugModalPromptMonitorTests
             TaskCreationOptions.RunContinuationsAsynchronously);
         var processCompletion = new TaskCompletionSource<DebugProcessExit>(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        var sink = new RecordingDebugInputWaitSink();
+        var inputWaits = new List<DebugInputWait>();
+        var inputReported = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var sink = new CallbackDebugInputWaitSink(wait =>
+        {
+            inputWaits.Add(wait);
+            inputReported.TrySetResult();
+        });
 
         var observed = monitor.ObserveAsync(
             observation,
@@ -30,7 +37,8 @@ public sealed class DebugModalPromptMonitorTests
             sink,
             CancellationToken.None);
 
-        Assert.Equal([inputWait], sink.InputWaits);
+        await inputReported.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal([inputWait], inputWaits);
         Assert.False(observed.IsCompleted);
         Assert.All(windowApi.ProcessIds, processId => Assert.Equal(31415, processId));
 
