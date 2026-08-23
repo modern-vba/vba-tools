@@ -34,6 +34,13 @@ public interface IWorkbookGenerationSession
 
     Task ImportModuleAsync(VbeImportSourceFile sourceFile, CancellationToken cancellationToken);
 
+    Task ExportModuleAsync(
+        string moduleName,
+        string destinationPath,
+        CancellationToken cancellationToken)
+        => Task.FromException(new NotSupportedException(
+            "This workbook generation session does not support module export."));
+
     /// <summary>
     /// Verifies every imported component's exact identity, kind, and projected code before save.
     /// </summary>
@@ -87,6 +94,12 @@ internal sealed class SynchronousWorkbookGenerationAutomation(
 
         public Task ImportModuleAsync(VbeImportSourceFile sourceFile, CancellationToken cancellationToken)
             => RunAsync(() => session.ImportModule(sourceFile), cancellationToken);
+
+        public Task ExportModuleAsync(
+            string moduleName,
+            string destinationPath,
+            CancellationToken cancellationToken)
+            => RunAsync(() => session.ExportModule(moduleName, destinationPath), cancellationToken);
 
         public Task VerifyAsync(CancellationToken cancellationToken)
             => RunAsync(session.VerifyImportedModules, cancellationToken);

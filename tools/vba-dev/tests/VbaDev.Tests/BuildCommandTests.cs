@@ -1223,6 +1223,9 @@ internal sealed class FakeWorkbookBuildAutomation : IWorkbookBuildAutomation
             owner.OnImport?.Invoke();
         }
 
+        public void ExportModule(string moduleName, string destinationPath)
+            => throw new NotSupportedException();
+
         public void VerifyImportedModules()
         {
             owner.VerifyCalls++;

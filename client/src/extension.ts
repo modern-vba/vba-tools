@@ -43,6 +43,7 @@ import {
   WorkbookBackedProjectToolCommand,
   runWorkbookBackedProjectCommand
 } from './projectCommand';
+import { ExportCommandRequest, runExportCommand } from './exportCommand';
 import {
   ReferenceToolCommand,
   runReferenceAddCommand,
@@ -452,6 +453,9 @@ export async function activate(context: ExtensionContext): Promise<void> {
   context.subscriptions.push(commands.registerCommand('vbaTools.openVbaDevTerminal', async () => {
     await openVbaDevTerminalCommand(context, vbaDevResolver);
   }));
+  context.subscriptions.push(commands.registerCommand('vbaTools.export', async (request?: ExportCommandRequest) => {
+    await runExportCommandWithConsent(context, vbaDevResolver, request);
+  }));
   context.subscriptions.push(commands.registerCommand(
     'vbaTools.blockSkeletonInsertion.afterNativeEnter',
     () => {
@@ -519,8 +523,7 @@ const WorkbookBackedProjectCommands: ReadonlyArray<{
 }> = [
   { commandId: 'vbaTools.build', toolCommandName: 'build', title: 'VBA Tools: Build' },
   { commandId: 'vbaTools.test', toolCommandName: 'test', title: 'VBA Tools: Test' },
-  { commandId: 'vbaTools.publish', toolCommandName: 'publish', title: 'VBA Tools: Publish' },
-  { commandId: 'vbaTools.export', toolCommandName: 'export', title: 'VBA Tools: Export' }
+  { commandId: 'vbaTools.publish', toolCommandName: 'publish', title: 'VBA Tools: Publish' }
 ];
 
 const CommonModulesCommands: ReadonlyArray<{
@@ -652,6 +655,39 @@ async function runWorkbookBackedProjectCommandWithProgress(
       });
     }
   );
+}
+
+async function runExportCommandWithConsent(
+  context: ExtensionContext,
+  vbaDevResolver: CompanionExecutableResolver,
+  request?: ExportCommandRequest
+): Promise<void> {
+  const channel = outputChannel ?? window.createOutputChannel('VBA Tools');
+  outputChannel = channel;
+
+  await runExportCommand({
+    extensionRoot: context.extensionPath,
+    vbaDevResolver,
+    activeFilePath: getActiveFilePath(),
+    workspaceRoots: workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [],
+    fileExists,
+    findProjectManifests,
+    chooseProject,
+    readTextFile,
+    showWarningMessage: (message, options, ...items) =>
+      window.showWarningMessage(message, options, ...items),
+    runWithProgress: (task) => window.withProgress(
+      {
+        location: ProgressLocation.Notification,
+        title: 'VBA Tools: Export',
+        cancellable: true
+      },
+      async (_progress, token) => task(token)
+    ),
+    outputChannel: channel,
+    diagnosticReporter: toolDiagnosticReporter,
+    showErrorMessage: (message) => window.showErrorMessage(message)
+  }, request);
 }
 
 async function runCommonModulesCommandWithProgress(

@@ -1,4 +1,5 @@
 using VbaDev.App.Export;
+using VbaDev.App.Workbooks;
 
 namespace VbaDev.Infrastructure.Workbooks;
 
@@ -7,9 +8,23 @@ namespace VbaDev.Infrastructure.Workbooks;
 /// </summary>
 public sealed class ExcelComWorkbookModuleExporter : IWorkbookModuleExporter
 {
-    private const int VbextComponentTypeStandardModule = 1;
-    private const int VbextComponentTypeClassModule = 2;
-    private const int VbextComponentTypeForm = 3;
+    private readonly IWorkbookGenerationAutomation generationAutomation;
+
+    /// <summary>
+    /// Creates an exporter backed by the strongly owned Excel generation lifecycle.
+    /// </summary>
+    public ExcelComWorkbookModuleExporter()
+        : this(new ExcelComWorkbookBuildAutomation())
+    {
+    }
+
+    /// <summary>
+    /// Creates an exporter with an explicit owned workbook automation adapter.
+    /// </summary>
+    public ExcelComWorkbookModuleExporter(IWorkbookGenerationAutomation generationAutomation)
+    {
+        this.generationAutomation = generationAutomation;
+    }
 
     /// <summary>
     /// Exports standard modules, class modules, and forms from an Excel workbook.
@@ -17,56 +32,68 @@ public sealed class ExcelComWorkbookModuleExporter : IWorkbookModuleExporter
     /// <param name="workbookPath">The workbook path to export from.</param>
     /// <param name="destinationDirectory">The destination directory for exported sources.</param>
     public void ExportModules(string workbookPath, string destinationDirectory)
-    {
-        using var session = ExcelComWorkbookSession.Open(workbookPath);
-        ExportImportableComponents(session.WorkbookObject, destinationDirectory);
-    }
+        => ExportModulesAsync(workbookPath, destinationDirectory, CancellationToken.None)
+            .GetAwaiter()
+            .GetResult();
 
-    private static void ExportImportableComponents(object workbookObject, string destinationDirectory)
+    /// <summary>
+    /// Exports standard modules, class modules, and forms from an Excel workbook.
+    /// </summary>
+    /// <param name="workbookPath">The workbook path to export from.</param>
+    /// <param name="destinationDirectory">The destination directory for exported sources.</param>
+    /// <param name="cancellationToken">Cancels bounded workbook automation.</param>
+    public async Task ExportModulesAsync(
+        string workbookPath,
+        string destinationDirectory,
+        CancellationToken cancellationToken)
+        => await ExportModulesAsync(
+                workbookPath,
+                destinationDirectory,
+                WorkbookAutomationTimeouts.Default,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+    /// <summary>
+    /// Exports modules with caller-resolved bounded workbook automation timeouts.
+    /// </summary>
+    public async Task ExportModulesAsync(
+        string workbookPath,
+        string destinationDirectory,
+        WorkbookAutomationTimeouts automationTimeouts,
+        CancellationToken cancellationToken)
     {
-        dynamic workbook = workbookObject;
-        object? vbProjectObject = null;
-        object? componentsObject = null;
-        try
-        {
-            vbProjectObject = workbook.VBProject;
-            dynamic vbProject = vbProjectObject;
-            componentsObject = vbProject.VBComponents;
-            dynamic components = componentsObject;
-            var componentCount = (int)components.Count;
-            for (var index = 1; index <= componentCount; index++)
-            {
-                object? componentObject = null;
-                try
+        await generationAutomation.RunAsync(
+                workbookPath,
+                automationTimeouts,
+                async (session, operationCancellationToken) =>
                 {
-                    componentObject = components.Item(index);
-                    dynamic component = componentObject;
-                    var exportPath = GetExportPath(destinationDirectory, (string)component.Name, (int)component.Type);
-                    if (exportPath is not null)
+                    var modules = await session.GetModulesAsync(operationCancellationToken)
+                        .ConfigureAwait(false);
+                    foreach (var module in modules
+                                 .Where(module => module.Kind.IsImportable())
+                                 .OrderBy(module => module.Name, StringComparer.OrdinalIgnoreCase))
                     {
-                        component.Export(exportPath);
+                        var destinationPath = Path.Combine(
+                            destinationDirectory,
+                            module.Name + GetSourceExtension(module.Kind));
+                        await session.ExportModuleAsync(
+                                module.Name,
+                                destinationPath,
+                                operationCancellationToken)
+                            .ConfigureAwait(false);
                     }
-                }
-                finally
-                {
-                    ComObjectReleaser.Release(componentObject);
-                }
-            }
-        }
-        finally
-        {
-            ComObjectReleaser.Release(componentsObject);
-            ComObjectReleaser.Release(vbProjectObject);
-        }
+                    return true;
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
     }
 
-    private static string? GetExportPath(string destinationDirectory, string componentName, int componentType)
-        => componentType switch
+    private static string GetSourceExtension(WorkbookModuleKind kind)
+        => kind switch
         {
-            VbextComponentTypeStandardModule => Path.Combine(destinationDirectory, componentName + ".bas"),
-            VbextComponentTypeClassModule => Path.Combine(destinationDirectory, componentName + ".cls"),
-            VbextComponentTypeForm => Path.Combine(destinationDirectory, componentName + ".frm"),
-            _ => null
+            WorkbookModuleKind.StandardModule => ".bas",
+            WorkbookModuleKind.ClassModule => ".cls",
+            WorkbookModuleKind.Form => ".frm",
+            _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null)
         };
-
 }

@@ -38,7 +38,9 @@ public enum WorkbookAutomationStageKind
     WorkbookSave = 7,
     ProcessCleanup = 8,
     OutputCommit = 9,
-    TestExecution = 10
+    TestExecution = 10,
+    ModuleExport = 11,
+    ModuleInspection = 12
 }
 
 /// <summary>
@@ -63,6 +65,8 @@ public sealed record WorkbookAutomationStage(
                 WorkbookAutomationStageKind.ReferenceIdentityInspection => "reference identity inspection",
                 WorkbookAutomationStageKind.ModuleRemoval => "module removal",
                 WorkbookAutomationStageKind.ModuleImport => "module import",
+                WorkbookAutomationStageKind.ModuleExport => "module export",
+                WorkbookAutomationStageKind.ModuleInspection => "module inspection",
                 WorkbookAutomationStageKind.Verification => "workbook verification",
                 WorkbookAutomationStageKind.WorkbookSave => "workbook save",
                 WorkbookAutomationStageKind.TestExecution => "test macro execution",

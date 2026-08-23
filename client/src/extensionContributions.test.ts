@@ -246,6 +246,18 @@ test('extension contributes daily WorkbookBackedProject commands only', () => {
   assert.equal(commands.some((command) => command.command === 'vbaTools.testNoBuild'), false);
 });
 
+test('extension forwards export command request arguments to dedicated orchestration', () => {
+  const extensionSource = fs.readFileSync(
+    path.join(process.cwd(), 'client', 'src', 'extension.ts'),
+    'utf8'
+  );
+
+  assert.match(
+    extensionSource,
+    /commands\.registerCommand\('vbaTools\.export', async \(request\?: ExportCommandRequest\) => \{\s*await runExportCommandWithConsent\(context, vbaDevResolver, request\);/
+  );
+});
+
 test('extension contributes CommonModules commands', () => {
   const packageJson = readPackageJson<{
     activationEvents?: string[];

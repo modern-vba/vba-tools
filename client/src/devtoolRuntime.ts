@@ -64,6 +64,14 @@ export interface VbaDevProjectCommandRunResult {
   cancelled: boolean;
 }
 
+export interface VbaDevCommandRunResult {
+  executablePath: string;
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+  cancelled: boolean;
+}
+
 export async function resolveVbaDevProjectCommandContext(
   options: VbaDevCommandRuntimeOptions
 ): Promise<VbaDevProjectCommandContext | undefined> {
@@ -120,6 +128,32 @@ export async function runVbaDevProjectCommandInvocation(
   }
 
   return runResolvedVbaDevProjectCommandInvocation(options, devtool.executablePath, invocation);
+}
+
+export async function runVbaDevCommandInvocation(
+  options: VbaDevInvocationRuntimeOptions,
+  args: readonly string[]
+): Promise<VbaDevCommandRunResult | undefined> {
+  const devtool = await resolveInvocationVbaDev(options);
+  if (devtool === undefined) {
+    return undefined;
+  }
+
+  const result = await runVbaDevCommand({
+    executablePath: devtool.executablePath,
+    args,
+    outputChannel: options.outputChannel,
+    cancellationToken: options.cancellationToken,
+    startProcess: options.startProcess
+  });
+
+  return {
+    executablePath: devtool.executablePath,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    exitCode: result.exitCode,
+    cancelled: result.cancelled
+  };
 }
 
 export async function runResolvedVbaDevProjectCommandInvocation(

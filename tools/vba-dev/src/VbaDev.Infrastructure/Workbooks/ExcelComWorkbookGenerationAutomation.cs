@@ -459,14 +459,15 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookGeneratio
         WorkbookAutomationStageExecutor stageExecutor,
         IWorkbookBuildSession session,
         string workbookName,
-        WorkbookAutomationTimeouts timeouts) : IWorkbookGenerationSession
+        WorkbookAutomationTimeouts timeouts) :
+        IWorkbookGenerationSession
     {
         public WorkbookAutomationStage? LastStage { get; private set; }
 
         public Task<IReadOnlyList<WorkbookModule>> GetModulesAsync(
             CancellationToken cancellationToken)
             => ExecuteAsync(
-                new WorkbookAutomationStage(WorkbookAutomationStageKind.ModuleRemoval),
+                new WorkbookAutomationStage(WorkbookAutomationStageKind.ModuleInspection),
                 timeouts.ModuleImport,
                 cancellationToken,
                 session.GetModules);
@@ -522,6 +523,18 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookGeneratio
                 timeouts.ModuleImport,
                 cancellationToken,
                 () => session.ImportModule(sourceFile));
+
+        public Task ExportModuleAsync(
+            string moduleName,
+            string destinationPath,
+            CancellationToken cancellationToken)
+            => ExecuteAsync(
+                new WorkbookAutomationStage(
+                    WorkbookAutomationStageKind.ModuleExport,
+                    moduleName),
+                timeouts.ModuleImport,
+                cancellationToken,
+                () => session.ExportModule(moduleName, destinationPath));
 
         public Task VerifyAsync(CancellationToken cancellationToken)
             => ExecuteAsync(

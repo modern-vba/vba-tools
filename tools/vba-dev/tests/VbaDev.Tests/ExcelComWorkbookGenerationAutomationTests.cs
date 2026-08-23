@@ -160,6 +160,10 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
                             [],
                             "utf8")),
                     cancellationToken);
+                await session.ExportModuleAsync(
+                    "Feature",
+                    "Feature.bas",
+                    cancellationToken);
                 await session.VerifyAsync(cancellationToken);
                 await session.SaveAsync(cancellationToken);
                 events.Add("callback-complete");
@@ -178,6 +182,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
                 "get-modules",
                 "remove-module:LegacyModule",
                 "import:Feature.bas",
+                "export:Feature",
                 "verify",
                 "save",
                 "callback-complete",
@@ -185,7 +190,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
                 "dispatcher-dispose"
             ],
             events);
-        Assert.Equal(11, dispatcher.InvokeCalls);
+        Assert.Equal(12, dispatcher.InvokeCalls);
         Assert.False(lifecycle.EnableAutomationSecurityLow);
         Assert.True(lifecycle.Owner.HasExited);
         Assert.Equal(0, lifecycle.Owner.TerminationCalls);
@@ -224,6 +229,39 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
         Assert.Equal(1, lifecycle.Owner.TerminationCalls);
         Assert.Contains("cleanup-session:00:00:00", events);
         Assert.DoesNotContain("cleanup-host:00:00:00", events);
+    }
+
+    [Fact]
+    public async Task ModuleEnumerationTimeoutIdentifiesInspectionInsteadOfRemoval()
+    {
+        var events = new List<string>();
+        var lifecycle = new FakeWorkbookGenerationLifecycle(events)
+        {
+            BlockGetModulesUntilTermination = true
+        };
+        var automation = new ExcelComWorkbookBuildAutomation(
+            new RecordingGenerationDispatcherFactory(
+                new AsynchronousCleanupGenerationDispatcher()),
+            lifecycle);
+        var timeouts = WorkbookAutomationTimeouts.Default with
+        {
+            ModuleImport = TimeSpan.FromMilliseconds(20),
+            ProcessCleanup = TimeSpan.Zero
+        };
+
+        var error = await Assert.ThrowsAsync<WorkbookAutomationTimeoutException>(() => automation.RunAsync(
+            "staged.xlsm",
+            timeouts,
+            async (session, cancellationToken) =>
+            {
+                await session.GetModulesAsync(cancellationToken);
+                return true;
+            },
+            CancellationToken.None));
+
+        Assert.Equal("module inspection", error.Stage.Description);
+        Assert.NotEqual(WorkbookAutomationStageKind.ModuleRemoval, error.Stage.Kind);
+        Assert.Equal(1, lifecycle.Owner.TerminationCalls);
     }
 
     [Fact]
@@ -665,6 +703,8 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
 
         public bool BlockSaveUntilTermination { get; init; }
 
+        public bool BlockGetModulesUntilTermination { get; init; }
+
         public bool BlockTestUntilTermination { get; init; }
 
         public Exception? StartError { get; init; }
@@ -725,6 +765,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
                 events,
                 Owner,
                 BlockSaveUntilTermination,
+                BlockGetModulesUntilTermination,
                 BlockTestUntilTermination);
         }
 
@@ -769,12 +810,18 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
         List<string> events,
         FakeOwnedExcelProcessControl owner,
         bool blockSaveUntilTermination,
+        bool blockGetModulesUntilTermination,
         bool blockTestUntilTermination) :
         IWorkbookBuildSession,
         IExcelComWorkbookTestSession
     {
         public IReadOnlyList<WorkbookModule> GetModules()
         {
+            if (blockGetModulesUntilTermination && !owner.Terminated.Wait(TimeSpan.FromSeconds(5)))
+            {
+                throw new TimeoutException("The test owner was not terminated.");
+            }
+
             events.Add("get-modules");
             return [];
         }
@@ -799,6 +846,9 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
 
         public void ImportModule(VbeImportSourceFile sourceFile)
             => events.Add($"import:{sourceFile.FileName}");
+
+        public void ExportModule(string moduleName, string destinationPath)
+            => events.Add($"export:{moduleName}");
 
         public void VerifyImportedModules()
             => events.Add("verify");
@@ -924,6 +974,12 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
             events.Add($"import:{sourceFile.FileName}");
             return Task.CompletedTask;
         }
+
+        public Task ExportModuleAsync(
+            string moduleName,
+            string destinationPath,
+            CancellationToken cancellationToken)
+            => Task.CompletedTask;
 
         public Task VerifyAsync(CancellationToken cancellationToken)
             => Task.CompletedTask;

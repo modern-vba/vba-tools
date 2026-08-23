@@ -95,6 +95,7 @@ public static class ToolingCompositionRoot
     /// <param name="vbaProjectReferenceResolver">The optional VBA project reference resolver adapter.</param>
     /// <param name="projectManifestStore">The optional project manifest persistence adapter.</param>
     /// <param name="debugEnvironmentProbeFactory">The optional native VBE Doctor probe factory.</param>
+    /// <param name="exportDestinationFileOperations">The optional recoverable export filesystem adapter.</param>
     /// <returns>The composed services consumed by a command-line host.</returns>
     public static ToolingApplicationComposition CreateApplicationComposition(
         string workingDirectory,
@@ -106,7 +107,8 @@ public static class ToolingCompositionRoot
         IVbaProjectReferenceResolver? vbaProjectReferenceResolver = null,
         IProjectManifestStore? projectManifestStore = null,
         IDebugEnvironmentProbeFactory? debugEnvironmentProbeFactory = null,
-        IVbaProjectReferenceAmbiguityProbe? vbaProjectReferenceAmbiguityProbe = null)
+        IVbaProjectReferenceAmbiguityProbe? vbaProjectReferenceAmbiguityProbe = null,
+        IExportDestinationFileOperations? exportDestinationFileOperations = null)
     {
         var manifestStore = projectManifestStore ?? new JsonProjectManifestStore();
         var manifestEditor = new ProjectManifestEditor(manifestStore);
@@ -160,7 +162,8 @@ public static class ToolingCompositionRoot
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator());
         var exportCommand = new ExportCommand(
-            workbookModuleExporter ?? new ExcelComWorkbookModuleExporter());
+            workbookModuleExporter ?? new ExcelComWorkbookModuleExporter(),
+            exportDestinationFileOperations ?? new ExportDestinationFileOperations());
         var importCommand = new ImportCommand(buildAutomation);
         return new ToolingApplicationComposition(
             doctorCommand,

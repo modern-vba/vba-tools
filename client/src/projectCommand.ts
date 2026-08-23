@@ -3,7 +3,7 @@ import {
   runVbaDevProjectCommand
 } from './devtoolRuntime';
 
-export type WorkbookBackedProjectToolCommand = 'build' | 'test' | 'publish' | 'export';
+export type WorkbookBackedProjectToolCommand = 'build' | 'test' | 'publish';
 
 export interface WorkbookBackedProjectCommandOptions extends VbaDevCommandRuntimeOptions {
   toolCommandName: WorkbookBackedProjectToolCommand;

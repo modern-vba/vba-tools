@@ -5,7 +5,7 @@ import * as path from 'node:path';
 import { VbaDevCompatibilityError, VbaDevSessionResolver } from './devtool';
 import { runWorkbookBackedProjectCommand } from './projectCommand';
 
-for (const commandName of ['build', 'test', 'publish', 'export'] as const) {
+for (const commandName of ['build', 'test', 'publish'] as const) {
   test(`WorkbookBackedProject command invokes ${commandName} with explicit project root`, async () => {
     const projectRoot = path.join('C:', 'work', 'BookProject');
     const calls: Array<{ file: string; args: readonly string[] }> = [];

@@ -19,11 +19,12 @@ public sealed class WorkbookAutomationTimeoutTests
     }
 
     [Fact]
-    public void ExistingPublicStageValuesRemainStableWhenTestExecutionIsAdded()
+    public void ExistingPublicStageValuesRemainStableWhenModuleExportIsAdded()
     {
         Assert.Equal(8, (int)WorkbookAutomationStageKind.ProcessCleanup);
         Assert.Equal(9, (int)WorkbookAutomationStageKind.OutputCommit);
         Assert.Equal(10, (int)WorkbookAutomationStageKind.TestExecution);
+        Assert.Equal(11, (int)WorkbookAutomationStageKind.ModuleExport);
     }
 
     [Theory]
@@ -31,6 +32,7 @@ public sealed class WorkbookAutomationTimeoutTests
     [InlineData(WorkbookAutomationStageKind.WorkbookOpen, "Book1.xlsm", "workbook open 'Book1.xlsm'")]
     [InlineData(WorkbookAutomationStageKind.ReferenceAttempt, "Scripting", "reference attempt 'Scripting'")]
     [InlineData(WorkbookAutomationStageKind.ModuleImport, "Feature.bas", "module import 'Feature.bas'")]
+    [InlineData(WorkbookAutomationStageKind.ModuleExport, "Feature", "module export 'Feature'")]
     [InlineData(WorkbookAutomationStageKind.WorkbookSave, "Book1.xlsm", "workbook save 'Book1.xlsm'")]
     [InlineData(WorkbookAutomationStageKind.ProcessCleanup, null, "process cleanup")]
     public void StageDescriptionsIdentifyTheActiveOperation(

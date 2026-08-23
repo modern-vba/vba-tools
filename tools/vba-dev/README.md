@@ -312,7 +312,7 @@ Without `--from`, `export` is project-aware: it reads the selected document's ma
 
 Cleanup is enabled when the destination is manifest-owned or when `--to` is supplied. Cleanup-enabled export records existing `.bas`, `.cls`, and `.frm` relative paths, exports the workbook to a temporary directory first, and leaves the destination untouched if workbook export fails. After a successful temporary export, it recursively deletes existing `.bas`, `.cls`, `.frm`, and `.frx` files only; empty directories and unrelated files remain. Exported file names that match previous source files are restored to those previous relative paths, new exported file names are placed at the destination root, and exported form `.frx` files are written beside their `.frm`.
 
-When cleanup is not enabled, export writes directly to the destination. It overwrites file paths it writes, but it does not delete unrelated files or displaced `.frx` files elsewhere in the destination.
+When cleanup is not enabled, export still stages the complete workbook export before applying a recoverable overlay. It overwrites file paths it writes, but it does not delete unrelated files or displaced `.frx` files elsewhere in the destination.
 
 ### import
 

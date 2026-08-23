@@ -489,6 +489,12 @@ public sealed class WorkbookGenerationPipelineTests
             return Task.CompletedTask;
         }
 
+        public Task ExportModuleAsync(
+            string moduleName,
+            string destinationPath,
+            CancellationToken cancellationToken)
+            => Task.CompletedTask;
+
         public Task VerifyAsync(CancellationToken cancellationToken)
         {
             events.Add("verify");

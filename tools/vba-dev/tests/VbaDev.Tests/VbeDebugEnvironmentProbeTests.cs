@@ -350,6 +350,9 @@ public sealed class VbeDebugEnvironmentProbeTests
                 }
             }
 
+            public void ExportModule(string moduleName, string destinationPath)
+                => throw new NotSupportedException();
+
             public void VerifyImportedModules() => events.Add("verify-imported");
 
             public void Save() => events.Add("save-workbook");

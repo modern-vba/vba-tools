@@ -43,6 +43,15 @@ public interface IWorkbookBuildSession : IDisposable
     void ImportModule(VbeImportSourceFile sourceFile);
 
     /// <summary>
+    /// Exports one VBA component to an explicit source path.
+    /// </summary>
+    /// <param name="moduleName">The component name to export.</param>
+    /// <param name="destinationPath">The complete destination source path.</param>
+    void ExportModule(string moduleName, string destinationPath)
+        => throw new NotSupportedException(
+            "This workbook session does not support module export.");
+
+    /// <summary>
     /// Verifies every component imported during this session before the workbook is saved.
     /// </summary>
     void VerifyImportedModules();

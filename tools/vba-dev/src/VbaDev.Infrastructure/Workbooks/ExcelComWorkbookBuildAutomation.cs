@@ -166,6 +166,33 @@ public sealed partial class ExcelComWorkbookBuildAutomation :
         }
 
         /// <summary>
+        /// Exports one VBA component from the open workbook.
+        /// </summary>
+        public void ExportModule(string moduleName, string destinationPath)
+        {
+            dynamic workbook = session.WorkbookObject;
+            object? vbProjectObject = null;
+            object? componentsObject = null;
+            object? componentObject = null;
+            try
+            {
+                vbProjectObject = workbook.VBProject;
+                dynamic vbProject = vbProjectObject;
+                componentsObject = vbProject.VBComponents;
+                dynamic components = componentsObject;
+                componentObject = components.Item(moduleName);
+                dynamic component = componentObject;
+                component.Export(destinationPath);
+            }
+            finally
+            {
+                ComObjectReleaser.Release(componentObject);
+                ComObjectReleaser.Release(componentsObject);
+                ComObjectReleaser.Release(vbProjectObject);
+            }
+        }
+
+        /// <summary>
         /// Reads the workbook's VBA project references.
         /// </summary>
         /// <returns>The reference names and whether each reference can be removed.</returns>

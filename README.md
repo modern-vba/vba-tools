@@ -365,7 +365,27 @@ consult the current CommonModules repository.
 ### Export
 
 `VBA Tools: Export` pulls modules from the selected workbook into the configured
-source folder. It is an explicit command, not a live save-time sync.
+source folder. It is an explicit command, not a live save-time sync. Before a
+cleanup-enabled export, VS Code shows the resolved absolute destination and
+warns that existing source may be overwritten and stale `.bas`, `.cls`, `.frm`,
+and `.frx` files will be deleted. Canceling that confirmation does not invoke
+the export process. Proceeding uses the ordinary VBA Tools Output, progress
+cancellation, workbook-lock reporting, and owned Excel lifecycle.
+
+The `vba-dev export` CLI remains non-interactive for automation. Invoking a
+project export, or supplying an explicit `--to` destination, is consent to its
+documented overwrite and cleanup behavior. The command exports the complete
+workbook source to staging, validates the full placement and stale-file deletion
+plan, and protects affected destination files in a recovery area on the same
+file system before changing the destination. Success adds or replaces current
+modules and removes stale VBA sources and form sidecars without changing the
+source template or unrelated files.
+
+If apply fails, `vba-dev` restores the previous destination. If that rollback
+cannot be completed, it retains the recovery area and reports its absolute path
+and manual recovery steps. An explicit `export --from <workbook>` without
+`--to` instead writes to the current directory without stale-file cleanup and
+does not require confirmation.
 
 ### CommonModules and References
 

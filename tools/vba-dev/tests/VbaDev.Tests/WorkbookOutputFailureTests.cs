@@ -344,6 +344,12 @@ public sealed class WorkbookOutputFailureTests
         public Task ImportModuleAsync(VbeImportSourceFile sourceFile, CancellationToken cancellationToken)
             => Task.CompletedTask;
 
+        public Task ExportModuleAsync(
+            string moduleName,
+            string destinationPath,
+            CancellationToken cancellationToken)
+            => Task.CompletedTask;
+
         public Task VerifyAsync(CancellationToken cancellationToken)
             => Task.CompletedTask;
 

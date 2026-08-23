@@ -424,9 +424,14 @@ public sealed class VbaDevCommandLine
             exportProjectOptions,
             exportFromOption,
             exportToOption);
-        exportCommand.SetAction(parseResult => WriteCommandResult(
+        exportCommand.SetAction(async (parseResult, cancellationToken) => WriteCommandResult(
             parseResult,
-            RunExportCommand(parseResult, composition, exportOptions)));
+            await RunExportCommandAsync(
+                    parseResult,
+                    composition,
+                    exportOptions,
+                    cancellationToken)
+                .ConfigureAwait(false)));
         var importCommand = AddCapabilityCommand(
             rootCommand,
             "import",
@@ -892,10 +897,11 @@ public sealed class VbaDevCommandLine
             cancellationToken);
     }
 
-    private static CommandResult RunExportCommand(
+    private static Task<CommandResult> RunExportCommandAsync(
         ParseResult parseResult,
         ToolingApplicationComposition composition,
-        ExportCommandOptions options)
+        ExportCommandOptions options,
+        CancellationToken cancellationToken)
     {
         var request = new ExportCommandRequest(
             parseResult.GetValue(options.From),
@@ -905,22 +911,26 @@ public sealed class VbaDevCommandLine
         {
             if (parseResult.GetResult(options.Project.Project) is not null)
             {
-                return CommandResult.UsageError("--project cannot be used with --from.");
+                return Task.FromResult(CommandResult.UsageError("--project cannot be used with --from."));
             }
 
             if (parseResult.GetResult(options.Project.Document) is not null)
             {
-                return CommandResult.UsageError("--document cannot be used with --from.");
+                return Task.FromResult(CommandResult.UsageError("--document cannot be used with --from."));
             }
 
-            return composition.ExportCommand.RunExplicit(request);
+            return composition.ExportCommand.RunExplicitAsync(request, cancellationToken);
         }
 
-        return ResolveDocumentContext(
+        return ResolveDocumentContextAsync(
             parseResult,
             composition,
             options.Project,
-            context => composition.ExportCommand.Run(context, request));
+            (context, operationCancellationToken) => composition.ExportCommand.RunAsync(
+                context,
+                request,
+                operationCancellationToken),
+            cancellationToken);
     }
 
     private sealed class CanonicalVersionAction(string version) : SynchronousCommandLineAction
