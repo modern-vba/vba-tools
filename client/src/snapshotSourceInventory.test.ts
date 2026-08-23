@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import {
   CallerOwnedSourceSnapshotHost,
@@ -69,6 +70,36 @@ test('snapshot inventory overlays capture-start dirty source including a file ab
     [dirtyPath, 1],
     [addedPath, 1]
   ]);
+});
+
+test('dirty UTF-8 snapshot source carries persistent transport identity without saving', async () => {
+  const sourceSetPath = path.join('C:', 'work', 'BookProject', 'src', 'Book1');
+  const sourcePath = path.join(sourceSetPath, 'Dirty.bas');
+  const bytes = new TextEncoder().encode('Public Sub Dirty()\r\nEnd Sub\r\n');
+  const inventory = await captureSnapshotSourceInventory(sourceSetPath, {
+    getActiveWindowsCodePage: () => 65001,
+    getOpenTextDocuments: () => [{
+      uriScheme: 'file',
+      uriPath: sourcePath,
+      fileName: sourcePath,
+      isDirty: true,
+      encoding: 'utf8',
+      getText: () => 'Public Sub Dirty()\r\nEnd Sub\r\n'
+    }],
+    findSourceFiles: async () => [],
+    readFile: async () => {
+      throw new Error('Dirty source must not be read from disk.');
+    },
+    encodeText: async () => bytes,
+    decodeText: async () => 'Public Sub Dirty()\r\nEnd Sub\r\n'
+  });
+
+  assert.deepEqual(inventory.entries, [{
+    relativePath: 'Dirty.bas',
+    sourceUri: pathToFileURL(sourcePath).href,
+    encoding: 'utf8',
+    bytes
+  }]);
 });
 
 test('capture fixes disk inventory and editor values once without a closing retry', async () => {
@@ -394,6 +425,33 @@ test('clean text source strictly round-trips exact bytes while frx sidecars rema
       sourceSetPath,
       host(new Map([[malformedPath, Uint8Array.from([0xef, 0xbb, 0xbf, 0xff])]]))),
     /could not round-trip.*Malformed\.bas/);
+});
+
+test('clean UTF-8 BOM source carries its exact transport encoding and persistent URI', async () => {
+  const sourceSetPath = path.join('C:', 'work', 'BookProject', 'src', 'Book1');
+  const sourcePath = path.join(sourceSetPath, 'Clean.cls');
+  const bytes = Uint8Array.from([0xef, 0xbb, 0xbf, 0x41]);
+  const inventory = await captureSnapshotSourceInventory(sourceSetPath, {
+    getActiveWindowsCodePage: () => 932,
+    getOpenTextDocuments: () => [],
+    findSourceFiles: async () => [sourcePath],
+    readFile: async () => bytes,
+    encodeText: async (_text, encoding) => {
+      assert.equal(encoding, 'utf8bom');
+      return bytes;
+    },
+    decodeText: async (_bytes, encoding) => {
+      assert.equal(encoding, 'utf8bom');
+      return 'A';
+    }
+  });
+
+  assert.deepEqual(inventory.entries, [{
+    relativePath: 'Clean.cls',
+    sourceUri: pathToFileURL(sourcePath).href,
+    encoding: 'utf8bom',
+    bytes
+  }]);
 });
 
 test('clean UTF-32 source is rejected before a permissive UTF-16 round trip can accept it', async () => {

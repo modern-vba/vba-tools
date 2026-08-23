@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import {
   VscodeDebugIntegration,
@@ -44,6 +45,138 @@ test('F5 from one active exported VBA source resolves a zero-configuration sourc
       breakpoints: []
     }
   });
+});
+
+test('F5 transports an unsaved captured source as persistent base64 bytes', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const manifestPath = path.join(projectRoot, 'vba-project.json');
+  const sourceSetPath = path.join(projectRoot, 'src', 'Book1');
+  const sourcePath = path.join(sourceSetPath, 'DebugModule.bas');
+  const sourceUri = pathToFileURL(sourcePath).href;
+  const bytes = new TextEncoder().encode('Public Sub RunTarget()\r\nEnd Sub\r\n');
+  let saveCalls = 0;
+  const integration = new VscodeDebugIntegration({
+    extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
+    getConfiguredDevToolPath: () => undefined,
+    debugConfigurationHost: {
+      workspaceRoots: [path.join('C:', 'work')],
+      getActiveEditor: () => ({ uriPath: sourcePath, line: 0, character: 11 }),
+      getOpenTextDocuments: () => [{
+        uriPath: sourcePath,
+        isDirty: true,
+        save: async () => {
+          saveCalls += 1;
+          return true;
+        }
+      }],
+      getSourceBreakpoints: () => [],
+      findProjectManifests: async () => [manifestPath],
+      readTextFile: async () => manifestJson('BookProject', ['Book1']),
+      readSourceText: async () => {
+        throw new Error('Transported snapshot must not re-read source text.');
+      },
+      findExportedSourceFiles: async () => {
+        throw new Error('Transported snapshot must use its capture-start inventory.');
+      },
+      captureSourceInventory: async () => ({
+        sourceSetPath,
+        activeWindowsCodePage: 65001,
+        entries: [{
+          relativePath: 'DebugModule.bas',
+          sourceUri,
+          encoding: 'utf8',
+          bytes
+        }]
+      })
+    }
+  });
+
+  const configuration = await integration.resolveDebugConfiguration({});
+
+  assert.equal(saveCalls, 0);
+  assert.deepEqual(configuration, {
+    type: 'vba',
+    request: 'launch',
+    name: 'VBA: Active Procedure',
+    project: projectRoot,
+    document: 'Book1',
+    __vbaDebugWorkbookFileName: 'Book1.xlsm',
+    sourceSnapshot: {
+      schemaVersion: 1,
+      sources: [{
+        relativePath: 'DebugModule.bas',
+        sourceUri,
+        encoding: 'utf8',
+        contentBase64: Buffer.from(bytes).toString('base64')
+      }],
+      activeSource: { sourceUri, line: 0, character: 11 },
+      breakpoints: []
+    }
+  });
+});
+
+test('transported snapshot paths use portable raw UTF-16 ordinal order', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const manifestPath = path.join(projectRoot, 'vba-project.json');
+  const sourceSetPath = path.join(projectRoot, 'src', 'Book1');
+  const digitSourcePath = path.join(sourceSetPath, 'a0.bas');
+  const nestedSourcePath = path.join(sourceSetPath, 'a', 'b.bas');
+  const dottedISourcePath = path.join(sourceSetPath, 'İ.bas');
+  const jSourcePath = path.join(sourceSetPath, 'j.bas');
+  const integration = new VscodeDebugIntegration({
+    extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
+    getConfiguredDevToolPath: () => undefined,
+    debugConfigurationHost: {
+      workspaceRoots: [path.join('C:', 'work')],
+      getActiveEditor: () => ({ uriPath: digitSourcePath, line: 0, character: 0 }),
+      getOpenTextDocuments: () => [],
+      getSourceBreakpoints: () => [],
+      findProjectManifests: async () => [manifestPath],
+      readTextFile: async () => manifestJson('BookProject', ['Book1']),
+      readSourceText: async () => '',
+      findExportedSourceFiles: async () => [],
+      captureSourceInventory: async () => ({
+        sourceSetPath,
+        activeWindowsCodePage: 65001,
+        entries: [
+          {
+            relativePath: 'a0.bas',
+            sourceUri: pathToFileURL(digitSourcePath).href,
+            encoding: 'utf8',
+            bytes: new TextEncoder().encode('Option Explicit\r\n')
+          },
+          {
+            relativePath: 'a\\b.bas',
+            sourceUri: pathToFileURL(nestedSourcePath).href,
+            encoding: 'utf8',
+            bytes: new TextEncoder().encode('Option Explicit\r\n')
+          },
+          {
+            relativePath: 'İ.bas',
+            sourceUri: pathToFileURL(dottedISourcePath).href,
+            encoding: 'utf8',
+            bytes: new TextEncoder().encode('Option Explicit\r\n')
+          },
+          {
+            relativePath: 'j.bas',
+            sourceUri: pathToFileURL(jSourcePath).href,
+            encoding: 'utf8',
+            bytes: new TextEncoder().encode('Option Explicit\r\n')
+          }
+        ]
+      })
+    }
+  });
+
+  const configuration = await integration.resolveDebugConfiguration({});
+  const snapshot = configuration.sourceSnapshot as {
+    sources: readonly { readonly relativePath: string }[];
+  };
+
+  assert.deepEqual(
+    snapshot.sources.map((source) => source.relativePath),
+    ['a/b.bas', 'a0.bas', 'j.bas', 'İ.bas']
+  );
 });
 
 test('source snapshots use UTF-16 ordinal canonical path order across punctuation and case', async () => {

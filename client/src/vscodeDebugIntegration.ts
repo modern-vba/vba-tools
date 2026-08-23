@@ -1,14 +1,18 @@
 import * as path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 
 import {
   CompanionExecutableResolver,
   ProcessRunner,
   RequiredVbaDevContract,
-  VbaDevCompatibilityError,
   isReportedVbaDevResolutionFailure,
   resolveCompatibleVbaDev
 } from './devtool';
+import {
+  RequiredVbaDebugAdapterContract,
+  VbaDebugAdapterResolver,
+  resolveCompatibleVbaDebugAdapter
+} from './debugAdapter';
 import {
   VbaDebugCancellationError,
   VbaDebugCancellationToken,
@@ -78,16 +82,12 @@ export function createVbaDebugConfigurationProvider(
           resolveWorkspaceRelativeProject(configuration, workspaceFolderPath),
           cancellationToken
         );
-        const preparedConfiguration = integration.prepareDebugConfigurationForRestart?.(
-          resolvedConfiguration,
-          workspaceFolderPath
-        ) ?? resolvedConfiguration;
         if (debugConfigurationObserver !== undefined) {
-          debugConfigurationObserver(preparedConfiguration);
+          debugConfigurationObserver(resolvedConfiguration);
           return undefined;
         }
 
-        return preparedConfiguration;
+        return resolvedConfiguration;
       } catch (error) {
         if (error instanceof VbaDebugCancellationError) {
           return undefined;
@@ -151,9 +151,13 @@ export interface VbaDebugAdapterExecutableSpec {
 export interface VscodeDebugIntegrationOptions {
   extensionRoot: string;
   getConfiguredDevToolPath: () => string | undefined;
+  getConfiguredDebugAdapterPath?: (() => string | undefined) | undefined;
   vbaDevResolver?: CompanionExecutableResolver | undefined;
+  vbaDebugAdapterResolver?: VbaDebugAdapterResolver | undefined;
+  createDebugSessionId?: (() => string) | undefined;
   capabilitiesProcess?: ProcessRunner | undefined;
   requiredContract?: RequiredVbaDevContract | undefined;
+  requiredDebugAdapterContract?: RequiredVbaDebugAdapterContract | undefined;
   debugConfigurationHost?: VbaDebugConfigurationHost | undefined;
 }
 
@@ -427,16 +431,31 @@ export class VscodeDebugIntegration {
             requiredContract: this.options.requiredContract
           })
         : await this.options.vbaDevResolver.resolve();
-      const debugAdapter = devtool.capabilities.debugAdapter;
-      if (!debugAdapter) {
-        throw new VbaDevCompatibilityError(
-          `VbaDev at '${devtool.executablePath}' does not report the required debug adapter capability.`
+      const standaloneDebugAdapter = this.options.vbaDebugAdapterResolver !== undefined
+        ? await this.options.vbaDebugAdapterResolver.resolve()
+        : await resolveCompatibleVbaDebugAdapter({
+            extensionRoot: this.options.extensionRoot,
+            configuredPath: this.options.getConfiguredDebugAdapterPath?.(),
+            requiredContract: this.options.requiredDebugAdapterContract,
+            runProcess: this.options.capabilitiesProcess
+          });
+      const adapterSessionId = this.options.createDebugSessionId?.()
+        ?? randomBytes(16).toString('hex');
+      if (!/^[0-9a-f]{32}$/.test(adapterSessionId)) {
+        throw new Error(
+          'The generated VBA debug adapter session ID must be 32 lowercase hexadecimal characters.'
         );
       }
 
       return {
-        command: devtool.executablePath,
-        args: [debugAdapter.command, '--stdio'],
+        command: standaloneDebugAdapter.executablePath,
+        args: [
+          '--stdio',
+          '--vba-dev',
+          devtool.executablePath,
+          '--session',
+          adapterSessionId
+        ],
         options: session.workspaceRoot === undefined
           ? undefined
           : { cwd: session.workspaceRoot }

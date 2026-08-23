@@ -5,9 +5,37 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
+  assertReleaseContract,
   createStandaloneVbaDevArchive,
   writeReleaseChecksums
 } from './vbaDevReleasePackage.mjs';
+
+test('standalone vba-dev release contract rejects a legacy debug adapter surface', () => {
+  const contract = {
+    contractVersion: '1.0',
+    featureVersions: {},
+    commandSchemaVersions: {}
+  };
+  assert.throws(
+    () => assertReleaseContract({
+      toolVersion: '0.1.0',
+      contractVersion: '1.0',
+      featureVersions: {},
+      commands: {},
+      debugAdapter: { protocolVersion: '1.1' }
+    }, contract, '0.1.0'),
+    /must not report a debug adapter/i
+  );
+  assert.throws(
+    () => assertReleaseContract({
+      toolVersion: '0.1.0',
+      contractVersion: '1.0',
+      featureVersions: {},
+      commands: {}
+    }, { ...contract, debugAdapterProtocolVersion: '1.1' }, '0.1.0'),
+    /contract must not reference a debug adapter/i
+  );
+});
 
 test('standalone vba-dev archive is versioned complete and probed after clean extraction', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-dev-release-package-'));

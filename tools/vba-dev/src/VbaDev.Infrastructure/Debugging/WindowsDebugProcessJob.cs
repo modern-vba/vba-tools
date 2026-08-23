@@ -1,7 +1,6 @@
 using Microsoft.Win32.SafeHandles;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
-using VbaDev.App.Debugging;
 
 namespace VbaDev.Infrastructure.Debugging;
 

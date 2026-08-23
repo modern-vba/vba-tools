@@ -228,7 +228,6 @@ function createOptions(
     },
     requiredContract: {
       contractVersion: '1.0',
-      debugAdapterProtocolVersion: '1.0',
       commandSchemaVersions: {
         'reference add': '1.0',
         'reference list': '1.0',

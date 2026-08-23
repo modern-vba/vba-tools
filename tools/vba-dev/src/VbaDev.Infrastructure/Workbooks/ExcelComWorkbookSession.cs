@@ -1,6 +1,5 @@
 using System.Runtime.InteropServices;
 using System.Runtime.ExceptionServices;
-using VbaDev.App.Debugging;
 using VbaDev.App.Workbooks;
 using VbaDev.Infrastructure.Debugging;
 
@@ -99,9 +98,9 @@ internal sealed class ExcelComWorkbookSession : IDisposable
             CancellationToken.None);
 
     /// <summary>
-    /// Opens a workbook in a strictly identified, kill-on-close Excel process for a debug build.
+    /// Opens a workbook in a strictly identified, kill-on-close Excel process for a build.
     /// </summary>
-    internal static ExcelComWorkbookSession OpenOwnedForDebugBuild(
+    internal static ExcelComWorkbookSession OpenOwnedForBuild(
         string workbookPath,
         CancellationToken cancellationToken)
         => OpenCore(
@@ -263,79 +262,6 @@ internal sealed class ExcelComWorkbookSession : IDisposable
             DisposeStrongOwner(host.StrongExcelProcess);
             ComObjectReleaser.CollectReleasedComObjects();
             throw;
-        }
-        finally
-        {
-            ComObjectReleaser.Release(host.WorkbooksObject);
-        }
-    }
-
-    /// <summary>
-    /// Creates a new workbook in a strictly identified, kill-on-close Excel process for a debug probe.
-    /// </summary>
-    internal static ExcelComWorkbookSession CreateOwnedForDebugBuild(
-        CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        var host = StartHiddenExcel(
-            enableAutomationSecurityLow: false,
-            requireStrongOwnership: true,
-            cancellationToken);
-        object? workbookObject = null;
-        try
-        {
-            dynamic workbooks = host.WorkbooksObject;
-            workbookObject = workbooks.Add();
-            cancellationToken.ThrowIfCancellationRequested();
-            return new ExcelComWorkbookSession(
-                host.ExcelObject,
-                workbookObject,
-                host.ExcelProcess,
-                host.StrongExcelProcess,
-                host.TerminationController,
-                host.CancellationRegistration);
-        }
-        catch (Exception startException)
-        {
-            Exception? cleanupException = null;
-            try
-            {
-                host.CancellationRegistration.Dispose();
-            }
-            catch (Exception ex)
-            {
-                cleanupException = ex;
-            }
-
-            ComObjectReleaser.Release(workbookObject);
-            try
-            {
-                QuitExcel(host.ExcelObject);
-            }
-            catch (Exception ex)
-            {
-                cleanupException ??= ex;
-            }
-            finally
-            {
-                try
-                {
-                    DisposeStrongOwner(host.StrongExcelProcess);
-                }
-                catch (Exception ex)
-                {
-                    cleanupException ??= ex;
-                }
-                finally
-                {
-                    ComObjectReleaser.CollectReleasedComObjects();
-                }
-            }
-
-            throw CreateOwnedSessionStartFailure(
-                startException,
-                cleanupException,
-                cleanupVerified: cleanupException is null && host.StrongExcelProcess is not null);
         }
         finally
         {

@@ -85,9 +85,26 @@ public sealed class CliSurfaceTests
         Assert.Equal(
             "{\"toolVersion\":\"0.1.0\",\"contractVersion\":\"1.0\",\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\",\"test.sourceSnapshot\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}," +
             activeCodePageProperty +
-            "\"commands\":{\"build\":{\"outputSchemaVersion\":\"1.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"import\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"1.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"debugAdapter\":{\"protocolVersion\":\"1.1\",\"transport\":\"stdio\",\"command\":\"debug-adapter\"}}" + Environment.NewLine,
+            "\"commands\":{\"build\":{\"outputSchemaVersion\":\"1.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"import\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"1.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}}}" + Environment.NewLine,
             standardOutput.ToString());
         Assert.Empty(standardError.ToString());
+    }
+
+    [Fact]
+    public async Task RemovedDebugAdapterCommandIsRejectedThroughPublicCommandLineBoundary()
+    {
+        using var standardOutput = new StringWriter();
+        using var standardError = new StringWriter();
+        var commandLine = VbaDevCommandLine.CreateDefault();
+
+        var exitCode = await commandLine.InvokeAsync(
+            ["debug-adapter", "--stdio"],
+            standardOutput,
+            standardError,
+            CancellationToken.None);
+
+        Assert.NotEqual(0, exitCode);
+        Assert.Contains("debug-adapter", standardError.ToString(), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -344,10 +361,7 @@ public sealed class CliSurfaceTests
         Assert.Contains("\"commands\"", result.StandardOutput, StringComparison.Ordinal);
         Assert.Contains("\"build\"", result.StandardOutput, StringComparison.Ordinal);
         Assert.Contains("\"test\":{\"outputSchemaVersion\":\"1.2\"}", result.StandardOutput, StringComparison.Ordinal);
-        Assert.Contains(
-            "\"debugAdapter\":{\"protocolVersion\":\"1.1\",\"transport\":\"stdio\",\"command\":\"debug-adapter\"}",
-            result.StandardOutput,
-            StringComparison.Ordinal);
+        Assert.DoesNotContain("\"debugAdapter\"", result.StandardOutput, StringComparison.Ordinal);
         Assert.Empty(result.StandardError);
     }
 

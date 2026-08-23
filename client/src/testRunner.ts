@@ -1,4 +1,5 @@
 import './devtool.test';
+import './debugAdapter.test';
 import './distributionManifest.test';
 import './languageServer.test';
 import './documentFormatting.test';
@@ -8,6 +9,7 @@ import './projectDiscovery.test';
 import './devtoolCommand.test';
 import './vbaDevTerminalCommand.test';
 import './vbaSourceFileText.test';
+import './snapshotSourceInventory.test';
 import './vscodeDebugConfiguration.test';
 import './vscodeDebugIntegration.test';
 import './testExplorerRefresh.test';

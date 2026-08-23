@@ -63,7 +63,6 @@ for (const commandName of ['build', 'test', 'publish'] as const) {
       showErrorMessage: async () => undefined,
       requiredContract: {
         contractVersion: '1.0',
-        debugAdapterProtocolVersion: '1.0',
         commandSchemaVersions: {
           [commandName]: '1.0'
         }
@@ -133,7 +132,6 @@ test('WorkbookBackedProject command failure is surfaced to the user', async () =
     },
     requiredContract: {
       contractVersion: '1.0',
-      debugAdapterProtocolVersion: '1.0',
       commandSchemaVersions: {
         build: '1.0'
       }
@@ -150,7 +148,6 @@ test('WorkbookBackedProject commands reuse one session-pinned vba-dev executable
   const commandCalls: string[] = [];
   const requiredContract = {
     contractVersion: '1.0',
-    debugAdapterProtocolVersion: '1.0',
     commandSchemaVersions: {
       build: '1.0'
     }

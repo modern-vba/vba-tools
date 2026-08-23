@@ -2034,7 +2034,6 @@ function createExplorer(
     },
     requiredContract: {
       contractVersion: '1.0',
-      debugAdapterProtocolVersion: '1.0',
       featureVersions: {
         'test.sourceSnapshot': '1.0'
       },

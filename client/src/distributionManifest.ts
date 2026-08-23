@@ -7,6 +7,7 @@ export interface DistributionManifest {
   manifestVersion: 1;
   runtimes: {
     vbaDev: DistributionRuntimeManifest;
+    vbaDebugAdapter: DistributionRuntimeManifest;
     vbaLanguageServer: DistributionRuntimeManifest;
   };
   vsix: {
@@ -71,6 +72,7 @@ function isDistributionManifest(value: unknown): value is DistributionManifest {
   }
 
   return isRuntimeManifest(value.runtimes.vbaDev) &&
+    isRuntimeManifest(value.runtimes.vbaDebugAdapter) &&
     isRuntimeManifest(value.runtimes.vbaLanguageServer) &&
     isStringArray(value.vsix.requiredFiles) &&
     isStringArray(value.vsix.excludedSourcePrefixes) &&

@@ -3,7 +3,6 @@ using System.Runtime.InteropServices;
 using System.Text;
 using Microsoft.CSharp.RuntimeBinder;
 using Microsoft.Win32;
-using VbaDev.App.Debugging;
 using VbaDev.Infrastructure.Debugging;
 
 namespace VbaDev.Infrastructure.Workbooks;

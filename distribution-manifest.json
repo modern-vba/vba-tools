@@ -16,6 +16,21 @@
       ],
       "contractPath": "vba-dev-contract.json"
     },
+    "vbaDebugAdapter": {
+      "label": "vba-debug-adapter",
+      "executablePath": "bin/vba-debug-adapter/win-x64/vba-debug-adapter.exe",
+      "projectPath": "tools/vba-debug-adapter/src/VbaDebugAdapter.Cli/VbaDebugAdapter.Cli.csproj",
+      "assemblyName": "vba-debug-adapter",
+      "runtimeIdentifier": "win-x64",
+      "selfContained": true,
+      "publishSingleFile": true,
+      "smokeCommand": [
+        "capabilities",
+        "--format",
+        "json"
+      ],
+      "contractPath": "vba-debug-adapter-contract.json"
+    },
     "vbaLanguageServer": {
       "label": "VbaLanguageServer",
       "executablePath": "bin/vba-language-server/win-x64/vba-language-server.exe",
@@ -43,6 +58,7 @@
     ],
     "excludedSourcePrefixes": [
       "tools/vba-dev/",
+      "tools/vba-debug-adapter/",
       "tools/vba-language-server/",
       "client/src/",
       "client/out/extensionHost/",

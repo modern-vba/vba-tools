@@ -133,11 +133,6 @@ CommonModules state, reference declarations, and machine prerequisites. Results
 are written to the VBA Tools output channel and surfaced as VS Code diagnostics
 where applicable.
 
-Doctor also opens a temporary Excel/VBE session to verify that native VBA
-debugging is ready. It does not change project files and removes its temporary
-state when finished, but Excel or the VBE may appear briefly while the check
-runs.
-
 ---
 
 ## Write Unit Tests
@@ -272,9 +267,10 @@ can replace the generated output.
 ### Debug in the VBE
 
 With the cursor in a parameterless public `Sub` in a standard module, press F5
-and select `VBA: Active Procedure`. VBA Tools saves the selected project's
-exported sources, rebuilds the selected document, opens its generated workbook
-in a dedicated visible Excel/VBE session, transfers breakpoints, and runs the
+and select `VBA: Active Procedure`. VBA Tools captures an immutable snapshot of
+the selected project's clean files and dirty editor content without saving,
+builds a same-filename workbook in an adapter-owned temporary directory, opens
+it in a dedicated visible Excel/VBE session, transfers breakpoints, and runs the
 procedure. `Option Private Module` is supported. Desktop Excel and trusted
 access to the VBA project object model are required.
 
@@ -315,14 +311,17 @@ handling settings, watches, and `Stop` statements can also pause execution.
 VBA Tools transfers enabled ordinary line breakpoints from the selected `.bas`,
 `.cls`, and `.frm` source set. Conditional breakpoints, hit-count breakpoints,
 logpoints, and breakpoints on non-executable or inactive conditional-compilation
-lines are not supported and stop the launch instead of being moved. Breakpoint
-changes made after launch take effect on the next restart or new session. A
-debug session can also run without breakpoints.
+lines are not supported for the selected snapshot target and stop the launch
+instead of being moved. Unsupported breakpoints outside the selected target do
+not block it. Breakpoint changes made after launch take effect in a new session.
+A debug session can also run without breakpoints.
 
-The opened workbook is generated output. Saving it does not update exported VBA
-source or the source template, and the next F5 rebuild overwrites it. Make
-persistent VBA changes in exported source and persistent workbook-content
-changes in the source template.
+The opened workbook is disposable session state, not the configured source
+template, bin workbook, or publish workbook. Saving it changes only the
+adapter-owned temporary copy. The source files, source template, bin output, and
+publish output remain unchanged, and all debug-workbook changes are discarded
+when the session ends. Make persistent changes in the exported source or source
+template instead.
 
 Open-time events such as `Workbook_Open` do not run automatically. Use an
 eligible wrapper `Sub` to debug startup logic. Excel and VBE prompts remain
@@ -333,11 +332,9 @@ existing Excel process is not supported. Normal procedure completion leaves the
 session active for further VBE interaction. Close the debug Excel process to end
 the session.
 
-Stop and Restart can force-close the dedicated Excel process without a save
-prompt, including while a prompt is visible. All unsaved changes in every
-workbook opened in that process can be lost, so do not open unrelated workbooks
-there. Restart then saves current sources, rebuilds, and starts a new Excel/VBE
-session.
+Stopping the debug session closes its dedicated Excel process without saving
+the temporary workbook. Do not open unrelated workbooks in that process because
+their unsaved changes would also be discarded.
 
 ### Test
 
@@ -456,6 +453,7 @@ source.
 | --- | --- | --- |
 | `vbaLanguageServer.trace.server` | `off` | Controls LSP trace output for the VBA language server. |
 | `vbaTools.devtool.path` | empty | Overrides the bundled `vba-dev` executable with a compatible executable. |
+| `vbaTools.debugAdapter.path` | empty | Overrides the bundled `vba-debug-adapter` executable. A missing or incompatible explicit path fails debugging and never falls back to the bundled adapter. |
 | `vbaLanguageServer.blockSkeletonInsertion.enabled` | `true` | Inserts a proven body line and matching terminator after an eligible complete VBA block header; otherwise preserves native Enter. |
 
 ---
@@ -470,6 +468,7 @@ source.
 | Tests do not appear in Test Explorer | Confirm that `vba-project.json` is in the opened workspace and reload the VS Code window after changing project layout. |
 | Format on save does not run | Set `editor.defaultFormatter` for `[vba]` to `modern-vba.vba-tools`. |
 | You need to test a custom CLI build | Set `vbaTools.devtool.path` to the full path of the replacement `vba-dev.exe`. |
+| You need to test a custom debug adapter | Set `vbaTools.debugAdapter.path` to the full path of a compatible `vba-debug-adapter.exe`; invalid overrides intentionally do not fall back. |
 
 ---
 
@@ -494,6 +493,8 @@ Marketplace README:
 
 - [`vba-dev`](https://github.com/modern-vba/vba-tools/blob/main/tools/vba-dev/README.md)
   - workbook-backed project CLI.
+- [`vba-debug-adapter`](https://github.com/modern-vba/vba-tools/blob/main/tools/vba-debug-adapter/README.md)
+  - standalone native VBE debug companion managed by the extension.
 - [`vba-language-server`](https://github.com/modern-vba/vba-tools/blob/main/tools/vba-language-server/README.md)
   - C# LSP server used by the extension.
 

@@ -141,12 +141,21 @@ export async function writeReleaseChecksums(outputDirectory, assetPaths) {
   return checksumPath;
 }
 
-function assertReleaseContract(capabilities, contract, version) {
+export function assertReleaseContract(capabilities, contract, version) {
   if (capabilities?.toolVersion !== version) {
     throw new Error(`Standalone vba-dev capabilities toolVersion must be ${version}.`);
   }
   if (typeof contract?.contractVersion !== 'string' || capabilities.contractVersion !== contract.contractVersion) {
     throw new Error('Standalone vba-dev capabilities contractVersion disagrees with vba-dev-contract.json.');
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(contract, 'debugAdapterProtocolVersion') ||
+    Object.prototype.hasOwnProperty.call(contract, 'debugAdapter')
+  ) {
+    throw new Error('Standalone vba-dev contract must not reference a debug adapter.');
+  }
+  if (Object.prototype.hasOwnProperty.call(capabilities, 'debugAdapter')) {
+    throw new Error('Standalone vba-dev capabilities must not report a debug adapter.');
   }
 
   for (const [commandName, schemaVersion] of Object.entries(contract.commandSchemaVersions ?? {})) {
@@ -171,10 +180,6 @@ function assertReleaseContract(capabilities, contract, version) {
     throw new Error('Standalone vba-dev capabilities must report a positive active Windows code page.');
   }
 
-  if (contract.debugAdapterProtocolVersion !== undefined &&
-      capabilities.debugAdapter?.protocolVersion !== contract.debugAdapterProtocolVersion) {
-    throw new Error(`Standalone vba-dev capabilities disagree with debug adapter protocolVersion ${contract.debugAdapterProtocolVersion}.`);
-  }
 }
 
 async function compressDirectory(sourceDirectory, archivePath) {

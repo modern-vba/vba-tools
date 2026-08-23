@@ -25,8 +25,12 @@ const requiredExtensionCommandIds = [
 ];
 
 export const requiredBundledCliPath = defaultDistributionManifest.runtimes.vbaDev.executablePath;
+export const requiredBundledDebugAdapterPath =
+  defaultDistributionManifest.runtimes.vbaDebugAdapter.executablePath;
 export const requiredBundledLanguageServerPath = defaultDistributionManifest.runtimes.vbaLanguageServer.executablePath;
 export const requiredVbaDevContractPath = defaultDistributionManifest.runtimes.vbaDev.contractPath;
+export const requiredVbaDebugAdapterContractPath =
+  defaultDistributionManifest.runtimes.vbaDebugAdapter.contractPath;
 export const bundledLanguageServerVersionPrefix = defaultDistributionManifest.runtimes.vbaLanguageServer.versionOutputPrefix;
 const activeWindowsCodePageFeatureName = 'sourceSnapshot.activeWindowsCodePage';
 
@@ -36,8 +40,13 @@ export async function verifyVsixPackaging(options = {}) {
   const inspectPackage = options.inspectPackage ?? inspectVsixPackage;
   const manifest = readDistributionManifest(root);
   const bundledCliPath = path.join(root, manifest.runtimes.vbaDev.executablePath);
+  const bundledDebugAdapterPath = path.join(
+    root,
+    manifest.runtimes.vbaDebugAdapter.executablePath
+  );
   const bundledLanguageServerPath = path.join(root, manifest.runtimes.vbaLanguageServer.executablePath);
   const requiredContract = readRequiredVbaDevContract(root, manifest);
+  const requiredDebugAdapterContract = readRequiredVbaDebugAdapterContract(root, manifest);
   const extensionPackageJson = JSON.parse(
     await fs.readFile(path.join(root, 'package.json'), 'utf8')
   );
@@ -45,10 +54,14 @@ export async function verifyVsixPackaging(options = {}) {
   assertExtensionDebugPackage(extensionPackageJson);
 
   await fs.access(bundledCliPath);
+  await fs.access(bundledDebugAdapterPath);
   await fs.access(bundledLanguageServerPath);
   assertRuntimePublishSettings(
     await fs.readFile(path.join(root, manifest.runtimes.vbaDev.projectPath), 'utf8'),
     manifest.runtimes.vbaDev);
+  assertRuntimePublishSettings(
+    await fs.readFile(path.join(root, manifest.runtimes.vbaDebugAdapter.projectPath), 'utf8'),
+    manifest.runtimes.vbaDebugAdapter);
   assertRuntimePublishSettings(
     await fs.readFile(path.join(root, manifest.runtimes.vbaLanguageServer.projectPath), 'utf8'),
     manifest.runtimes.vbaLanguageServer);
@@ -83,12 +96,25 @@ export async function verifyVsixPackaging(options = {}) {
     bundledCliPath,
     manifest.runtimes.vbaDev.smokeCommand,
     root);
-  const cliCapabilities = assertBundledCliCapabilities(
+  assertBundledCliCapabilities(
     capabilitiesResult.stdout,
     requiredContract);
+  const debugAdapterCapabilitiesResult = await runCommand(
+    bundledDebugAdapterPath,
+    manifest.runtimes.vbaDebugAdapter.smokeCommand,
+    root);
+  assertBundledDebugAdapterCapabilities(
+    debugAdapterCapabilitiesResult.stdout,
+    requiredDebugAdapterContract);
   await runCommand(
-    bundledCliPath,
-    [cliCapabilities.debugAdapter.command, '--stdio'],
+    bundledDebugAdapterPath,
+    [
+      '--stdio',
+      '--vba-dev',
+      bundledCliPath,
+      '--session',
+      '0123456789abcdef0123456789abcdef'
+    ],
     root);
   const languageServerVersionResult = await runCommand(
     bundledLanguageServerPath,
@@ -125,7 +151,33 @@ export function readRequiredVbaDevContract(root = process.cwd(), distributionMan
   }
 
   if (!isRequiredVbaDevContract(parsed)) {
-    throw new Error(`Required vba-dev contract must include contractVersion, debugAdapterProtocolVersion, and commandSchemaVersions in ${distributionManifest.runtimes.vbaDev.contractPath}.`);
+    throw new Error(`Required vba-dev contract must include contractVersion and commandSchemaVersions in ${distributionManifest.runtimes.vbaDev.contractPath}.`);
+  }
+
+  return parsed;
+}
+
+export function readRequiredVbaDebugAdapterContract(
+  root = process.cwd(),
+  distributionManifest = readDistributionManifest(root)
+) {
+  const contractPath = path.join(
+    root,
+    distributionManifest.runtimes.vbaDebugAdapter.contractPath
+  );
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(contractPath, 'utf8'));
+  } catch (error) {
+    throw new Error(
+      `Required vba-debug-adapter contract must be readable from ${distributionManifest.runtimes.vbaDebugAdapter.contractPath}: ${String(error)}`
+    );
+  }
+
+  if (!isRequiredVbaDebugAdapterContract(parsed)) {
+    throw new Error(
+      `Required vba-debug-adapter contract must declare its adapter and vba-dev compatibility surface in ${distributionManifest.runtimes.vbaDebugAdapter.contractPath}.`
+    );
   }
 
   return parsed;
@@ -315,8 +367,10 @@ export function assertVsixContents(files, distributionManifest = defaultDistribu
   const normalized = files.map((file) => file.replaceAll('\\', '/').replace(/^\.\//, ''));
   const requiredPaths = [
     distributionManifest.runtimes.vbaDev.executablePath,
+    distributionManifest.runtimes.vbaDebugAdapter.executablePath,
     distributionManifest.runtimes.vbaLanguageServer.executablePath,
     distributionManifest.runtimes.vbaDev.contractPath,
+    distributionManifest.runtimes.vbaDebugAdapter.contractPath,
     ...distributionManifest.vsix.requiredFiles
   ];
   for (const requiredPath of requiredPaths) {
@@ -325,6 +379,11 @@ export function assertVsixContents(files, distributionManifest = defaultDistribu
     }
   }
   assertBundledRuntimeShape(normalized, distributionManifest.runtimes.vbaDev, distributionManifest);
+  assertBundledRuntimeShape(
+    normalized,
+    distributionManifest.runtimes.vbaDebugAdapter,
+    distributionManifest
+  );
   assertBundledRuntimeShape(normalized, distributionManifest.runtimes.vbaLanguageServer, distributionManifest);
 
   const sourceFiles = normalized.filter((file) => distributionManifest.vsix.excludedSourcePrefixes.some((prefix) => (
@@ -357,6 +416,14 @@ export function assertRuntimePublishSettings(csprojText, runtime) {
 
 export function assertBundledCliCapabilities(stdout, requiredContract = undefined) {
   const contract = requiredContract ?? readRequiredVbaDevContract();
+  if (
+    Object.prototype.hasOwnProperty.call(contract, 'debugAdapterProtocolVersion') ||
+    Object.prototype.hasOwnProperty.call(contract, 'debugAdapter')
+  ) {
+    throw new Error(
+      'The vba-dev contract must not reference a debug adapter; the standalone vba-debug-adapter owns that contract.'
+    );
+  }
   let parsed;
   try {
     parsed = JSON.parse(stdout);
@@ -368,14 +435,8 @@ export function assertBundledCliCapabilities(stdout, requiredContract = undefine
     throw new Error(`Bundled vba-dev capabilities must report contractVersion ${contract.contractVersion} and commands.`);
   }
 
-  const debugAdapter = parsed.debugAdapter;
-  if (
-    !isRecord(debugAdapter) ||
-    debugAdapter.protocolVersion !== contract.debugAdapterProtocolVersion ||
-    debugAdapter.transport !== 'stdio' ||
-    debugAdapter.command !== 'debug-adapter'
-  ) {
-    throw new Error(`Bundled vba-dev capabilities must report debug adapter protocolVersion ${contract.debugAdapterProtocolVersion}, stdio transport, and debug-adapter command.`);
+  if (Object.prototype.hasOwnProperty.call(parsed, 'debugAdapter')) {
+    throw new Error('Bundled vba-dev capabilities must not report a debug adapter; the standalone vba-debug-adapter owns that contract.');
   }
 
   for (const [commandName, schemaVersion] of Object.entries(contract.commandSchemaVersions)) {
@@ -399,6 +460,55 @@ export function assertBundledCliCapabilities(stdout, requiredContract = undefine
     )
   ) {
     throw new Error('Bundled vba-dev capabilities must report a positive active Windows code page.');
+  }
+
+  return parsed;
+}
+
+export function assertBundledDebugAdapterCapabilities(
+  stdout,
+  requiredContract = undefined
+) {
+  const contract = requiredContract ?? readRequiredVbaDebugAdapterContract();
+  if (!equalStringRecords(
+    contract.requiredVbaDevFeatureVersions,
+    { 'build.sourceSnapshot': '1.0' }
+  )) {
+    throw new Error(
+      'Bundled vba-debug-adapter contract must require only build.sourceSnapshot 1.0.'
+    );
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch (error) {
+    throw new Error(`Bundled vba-debug-adapter capabilities output must be JSON: ${String(error)}`);
+  }
+
+  if (
+    !isRecord(parsed) ||
+    typeof parsed.toolVersion !== 'string' ||
+    parsed.toolVersion.length === 0 ||
+    parsed.contractVersion !== contract.contractVersion ||
+    parsed.protocolVersion !== contract.protocolVersion ||
+    parsed.sessionIdFormat !== contract.sessionIdFormat ||
+    !equalStringArrays(parsed.transports, contract.transports) ||
+    !equalStringArrays(parsed.commands, contract.commands) ||
+    !equalStringRecords(parsed.commandSchemaVersions, contract.commandSchemaVersions)
+  ) {
+    throw new Error('Bundled vba-debug-adapter capabilities do not satisfy the required adapter contract.');
+  }
+
+  if (!equalStringRecords(
+    parsed.requiredVbaDevFeatureVersions,
+    contract.requiredVbaDevFeatureVersions
+  )) {
+    const requiredFeatures = Object.entries(contract.requiredVbaDevFeatureVersions)
+      .map(([name, version]) => `${name} ${version}`)
+      .join(', ');
+    throw new Error(
+      `Bundled vba-debug-adapter capabilities must require only ${requiredFeatures}.`
+    );
   }
 
   return parsed;
@@ -501,6 +611,7 @@ function isDistributionManifest(value) {
     value.manifestVersion === 1 &&
     isRecord(value.runtimes) &&
     isRuntime(value.runtimes.vbaDev) &&
+    isRuntime(value.runtimes.vbaDebugAdapter) &&
     isRuntime(value.runtimes.vbaLanguageServer) &&
     isRecord(value.vsix) &&
     isStringArray(value.vsix.requiredFiles) &&
@@ -535,10 +646,37 @@ function isRecord(value) {
 function isRequiredVbaDevContract(value) {
   return isRecord(value) &&
     typeof value.contractVersion === 'string' &&
-    typeof value.debugAdapterProtocolVersion === 'string' &&
     (value.featureVersions === undefined || isStringRecord(value.featureVersions)) &&
     isRecord(value.commandSchemaVersions) &&
     Object.values(value.commandSchemaVersions).every((schemaVersion) => typeof schemaVersion === 'string');
+}
+
+function isRequiredVbaDebugAdapterContract(value) {
+  return isRecord(value) &&
+    typeof value.contractVersion === 'string' &&
+    typeof value.protocolVersion === 'string' &&
+    isStringArray(value.transports) &&
+    typeof value.sessionIdFormat === 'string' &&
+    isStringArray(value.commands) &&
+    isStringRecord(value.commandSchemaVersions) &&
+    isStringRecord(value.requiredVbaDevFeatureVersions);
+}
+
+function equalStringArrays(actual, expected) {
+  return isStringArray(actual) &&
+    actual.length === expected.length &&
+    actual.every((value, index) => value === expected[index]);
+}
+
+function equalStringRecords(actual, expected) {
+  if (!isStringRecord(actual)) {
+    return false;
+  }
+
+  const actualEntries = Object.entries(actual);
+  const expectedEntries = Object.entries(expected);
+  return actualEntries.length === expectedEntries.length &&
+    expectedEntries.every(([name, version]) => actual[name] === version);
 }
 
 function isStringRecord(value) {

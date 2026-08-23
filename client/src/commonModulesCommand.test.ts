@@ -222,7 +222,6 @@ function createOptions(
     showErrorMessage: async () => undefined,
     requiredContract: {
       contractVersion: '1.0',
-      debugAdapterProtocolVersion: '1.0',
       commandSchemaVersions: {
         'common-module add': '1.0',
         'common-module list': '1.0',

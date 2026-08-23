@@ -17,6 +17,7 @@ coverage/**
 test-results/**
 playwright-report/**
 tools/vba-dev/**
+tools/vba-debug-adapter/**
 tools/vba-language-server/**
 .tmp/**
 temp/**

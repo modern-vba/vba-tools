@@ -14,11 +14,6 @@
         "resolved": "2.0.5",
         "contentHash": "2XtWAPk1G6arpe3OCFNrYYuf6iIboznxs2elJSGgd8e0euou7LfGYFon6hBEfDWNtOLr0M3+oUVgy1a5EGa41A=="
       },
-      "OpenMcdf": {
-        "type": "Transitive",
-        "resolved": "3.1.4",
-        "contentHash": "ncchtCh9YKqutHTlUCrr1llXA65ijGOCjXBM0mL1+WaGouApWDEACWbBHGzuYcAvB+rgW6IgO4AKgmZ2v1moNA=="
-      },
       "vbadev.app": {
         "type": "Project",
         "dependencies": {
@@ -41,7 +36,6 @@
       "vbadev.infrastructure": {
         "type": "Project",
         "dependencies": {
-          "OpenMcdf": "[3.1.4, )",
           "VbaDev.App": "[0.1.0, )",
           "VbaDev.Domain": "[0.1.0, )",
           "VbaTools.TypeLibRegistry": "[0.1.0, )"

@@ -1,6 +1,8 @@
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { parseProjectManifest } from './projectManifest';
+import { SnapshotSourceInventory } from './snapshotSourceInventory';
 
 export interface VbaDebugActiveEditor {
   readonly uriPath: string;
@@ -37,6 +39,10 @@ export interface VbaDebugConfigurationHost {
   readTextFile(filePath: string): Promise<string>;
   readSourceText(filePath: string): Promise<string>;
   findExportedSourceFiles(sourceSetPath: string): Promise<readonly string[]>;
+  captureSourceInventory?(
+    sourceSetPath: string,
+    cancellationToken?: VbaDebugCancellationToken
+  ): Promise<SnapshotSourceInventory>;
 }
 
 export type VbaDebugConfiguration = Record<string, unknown>;
@@ -113,6 +119,20 @@ export async function resolveVbaDebugConfiguration(
     explicitDocument,
     activeEditor,
     hasExplicitTarget);
+  if (host.captureSourceInventory !== undefined) {
+    const inventory = await host.captureSourceInventory(
+      selection.sourceSetPath,
+      cancellationToken
+    );
+    throwIfDebugCancellationRequested(cancellationToken);
+    return createTransportedSnapshotConfiguration(
+      host,
+      normalizedConfiguration,
+      selection,
+      inventory,
+      hasExplicitTarget ? undefined : activeEditor
+    );
+  }
   await saveDirtyProjectSources(host, selection.project, cancellationToken);
   throwIfDebugCancellationRequested(cancellationToken);
   const postSaveActiveEditor = hasExplicitTarget ? undefined : host.getActiveEditor();
@@ -162,6 +182,169 @@ export async function resolveVbaDebugConfiguration(
       breakpoints
     }
   };
+}
+
+function createTransportedSnapshotConfiguration(
+  host: VbaDebugConfigurationHost,
+  configuration: VbaDebugConfiguration,
+  selection: ProjectDocumentSelection,
+  inventory: SnapshotSourceInventory,
+  activeEditor: VbaDebugActiveEditor | undefined
+): VbaDebugConfiguration {
+  if (!samePath(inventory.sourceSetPath, selection.sourceSetPath)) {
+    throw new VbaDebugSelectionError(
+      'The captured VBA source inventory does not match the selected document source set.'
+    );
+  }
+
+  const sourceUrisByPath = new Map<string, string>();
+  const seenRelativePaths = new Set<string>();
+  const sources = inventory.entries.map((entry) => {
+    const relativePath = safeTransportRelativePath(entry.relativePath);
+    const relativeKey = relativePath.toLowerCase();
+    if (seenRelativePaths.has(relativeKey)) {
+      throw new VbaDebugSelectionError(
+        `The captured VBA source inventory contains a duplicate relative path: ${relativePath}`
+      );
+    }
+    seenRelativePaths.add(relativeKey);
+
+    const extension = path.posix.extname(relativePath).toLowerCase();
+    const contentBase64 = Buffer.from(entry.bytes).toString('base64');
+    if (extension === '.frx') {
+      if (entry.sourceUri !== undefined || entry.encoding !== undefined) {
+        throw new VbaDebugSelectionError(
+          `Binary VBA sidecar '${relativePath}' must not declare a source URI or text encoding.`
+        );
+      }
+      return { relativePath, contentBase64 };
+    }
+
+    if (!isExportedVbaSource(relativePath)) {
+      throw new VbaDebugSelectionError(
+        `The captured VBA source inventory contains an unsupported file: ${relativePath}`
+      );
+    }
+    if (entry.sourceUri === undefined || entry.encoding === undefined) {
+      throw new VbaDebugSelectionError(
+        `Text VBA source '${relativePath}' requires a persistent source URI and encoding.`
+      );
+    }
+
+    let persistentPath: string;
+    try {
+      persistentPath = fileURLToPath(entry.sourceUri);
+    } catch {
+      throw new VbaDebugSelectionError(
+        `Text VBA source '${relativePath}' requires a persistent file URI.`
+      );
+    }
+    sourceUrisByPath.set(canonicalPath(persistentPath), entry.sourceUri);
+    return {
+      relativePath,
+      sourceUri: entry.sourceUri,
+      encoding: entry.encoding,
+      contentBase64
+    };
+  });
+  sources.sort((left, right) => compareOrdinal(
+    left.relativePath,
+    right.relativePath
+  ));
+
+  const activeSourceUri = activeEditor === undefined
+    ? undefined
+    : sourceUrisByPath.get(canonicalPath(activeEditor.uriPath));
+  if (activeEditor !== undefined && activeSourceUri === undefined) {
+    throw new VbaDebugSelectionError(
+      `The active exported VBA source is missing from the captured inventory: ${activeEditor.uriPath}`
+    );
+  }
+
+  const binPath = selection.document.binPath;
+  if (binPath === undefined || path.basename(binPath).length === 0) {
+    throw new VbaDebugSelectionError(
+      `The selected VBA document '${selection.document.name}' requires a binPath for debugging.`
+    );
+  }
+
+  return {
+    ...configuration,
+    project: selection.project.projectRoot,
+    document: selection.document.name,
+    __vbaDebugWorkbookFileName: path.basename(binPath),
+    sourceSnapshot: {
+      schemaVersion: 1,
+      sources,
+      ...(activeEditor === undefined
+        ? {}
+        : {
+            activeSource: {
+              sourceUri: activeSourceUri!,
+              line: activeEditor.line,
+              character: activeEditor.character
+            }
+          }),
+      breakpoints: captureTransportedSourceBreakpoints(host, sourceUrisByPath)
+    }
+  };
+}
+
+function captureTransportedSourceBreakpoints(
+  host: VbaDebugConfigurationHost,
+  sourceUrisByPath: ReadonlyMap<string, string>
+): readonly { readonly sourceUri: string; readonly line: number }[] {
+  const breakpoints = host.getSourceBreakpoints()
+    .filter((breakpoint) => breakpoint.enabled)
+    .flatMap((breakpoint) => {
+      const sourceUri = sourceUrisByPath.get(canonicalPath(breakpoint.uriPath));
+      if (sourceUri === undefined) {
+        return [];
+      }
+      if (
+        breakpoint.condition !== undefined ||
+        breakpoint.hitCondition !== undefined ||
+        breakpoint.logMessage !== undefined
+      ) {
+        throw new VbaDebugSelectionError(
+          `Only ordinary VBA line breakpoints are supported: ${breakpoint.uriPath}:${breakpoint.line + 1}`
+        );
+      }
+      return [{ sourceUri, line: breakpoint.line }];
+    });
+  breakpoints.sort((left, right) => (
+    compareOrdinal(left.sourceUri.toLowerCase(), right.sourceUri.toLowerCase()) ||
+    left.line - right.line
+  ));
+  for (let index = 1; index < breakpoints.length; index += 1) {
+    const previous = breakpoints[index - 1];
+    const current = breakpoints[index];
+    if (
+      previous.sourceUri.toLowerCase() === current.sourceUri.toLowerCase() &&
+      previous.line === current.line
+    ) {
+      throw new VbaDebugSelectionError(
+        `Duplicate enabled VBA breakpoint at ${current.sourceUri}:${current.line + 1}.`
+      );
+    }
+  }
+  return breakpoints;
+}
+
+function safeTransportRelativePath(relativePath: string): string {
+  const portablePath = relativePath.replaceAll('\\', '/');
+  const segments = portablePath.split('/');
+  if (
+    portablePath.length === 0 ||
+    portablePath.startsWith('/') ||
+    /^[a-z]:/i.test(portablePath) ||
+    segments.some((segment) => segment.length === 0 || segment === '.' || segment === '..')
+  ) {
+    throw new VbaDebugSelectionError(
+      `Captured VBA source path must be a safe relative descendant: ${relativePath}`
+    );
+  }
+  return portablePath;
 }
 
 function captureEnabledOrdinarySourceBreakpoints(

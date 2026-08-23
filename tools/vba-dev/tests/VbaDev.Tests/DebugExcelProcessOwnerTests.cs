@@ -1,4 +1,3 @@
-using VbaDev.App.Debugging;
 using VbaDev.Infrastructure.Debugging;
 using Xunit;
 

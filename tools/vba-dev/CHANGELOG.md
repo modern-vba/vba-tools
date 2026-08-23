@@ -12,4 +12,6 @@ are recorded here. Extension changes remain in the repository root changelog.
 - Canonical `--version` and capabilities metadata from one independent release
   version source.
 - Workbook-backed build, test, publish, import, export, dependency, reference,
-  doctor, and native VBE debug adapter command surfaces.
+  and doctor command surfaces.
+- Caller-owned `build.sourceSnapshot` 1.0 snapshot build input with paired
+  caller-selected output for independently hosted tooling.

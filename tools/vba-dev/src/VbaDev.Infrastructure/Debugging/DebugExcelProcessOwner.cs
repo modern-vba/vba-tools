@@ -1,6 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.ExceptionServices;
-using VbaDev.App.Debugging;
 
 namespace VbaDev.Infrastructure.Debugging;
 
@@ -72,7 +71,7 @@ internal sealed class DebugProcessOwnershipCleanupException(
 }
 
 /// <summary>
-/// Owns one exactly identified visible Excel process for a debug session.
+/// Owns one exactly identified Excel process for isolated automation.
 /// </summary>
 internal sealed class DebugExcelProcessOwner : IAsyncDisposable
 {

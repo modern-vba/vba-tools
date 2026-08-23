@@ -14,7 +14,8 @@ test('ProjectManifest adapter reads canonical manifest fixture for Test Explorer
     documents: [
       {
         name: 'Book1',
-        sourcePath: 'src/Book1'
+        sourcePath: 'src/Book1',
+        binPath: 'bin/Book1.xlsm'
       }
     ]
   });

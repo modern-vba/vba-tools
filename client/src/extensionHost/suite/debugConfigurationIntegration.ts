@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
+import { readFile } from 'node:fs/promises';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   Location,
   Position,
@@ -24,6 +27,9 @@ export async function runDebugConfigurationIntegrationTests(): Promise<void> {
   const sourcePath = path.join(fixtureRoot, 'src', 'Book1', 'DebugModule.bas');
   const encodedSourcePath = path.join(fixtureRoot, 'src', 'Book1', 'EncodedModule.bas');
   const outsidePath = path.join(fixtureRoot, 'outside', 'Outside.bas');
+  const savedSourceBytes = await readFile(sourcePath);
+  const savedEncodedSourceBytes = await readFile(encodedSourcePath);
+  const savedOutsideBytes = await readFile(outsidePath);
   const outsideDocument = await workspace.openTextDocument(Uri.file(outsidePath));
   const outsideEdit = new WorkspaceEdit();
   outsideEdit.insert(
@@ -40,7 +46,7 @@ export async function runDebugConfigurationIntegrationTests(): Promise<void> {
   sourceEdit.insert(
     sourceDocument.uri,
     sourceDocument.positionAt(sourceDocument.getText().length),
-    "' captured after save\r\n"
+    "' captured without saving\r\n"
   );
   assert.equal(await workspace.applyEdit(sourceEdit), true);
   const activePosition = new Position(4, 4);
@@ -71,51 +77,70 @@ export async function runDebugConfigurationIntegrationTests(): Promise<void> {
     ]);
     const snapshot = configuration.sourceSnapshot as {
       readonly schemaVersion: number;
-      readonly sources: readonly { readonly path: string; readonly text: string }[];
+      readonly sources: readonly {
+        readonly relativePath: string;
+        readonly sourceUri?: string;
+        readonly encoding?: string;
+        readonly contentBase64: string;
+      }[];
       readonly activeSource: {
-        readonly path: string;
+        readonly sourceUri: string;
         readonly line: number;
         readonly character: number;
       };
       readonly breakpoints: readonly {
-        readonly path: string;
+        readonly sourceUri: string;
         readonly line: number;
       }[];
     };
 
     assert.equal(String(configuration.project).toLowerCase(), fixtureRoot.toLowerCase());
     assert.equal(configuration.document, 'Book1');
+    assert.equal(configuration.__vbaDebugWorkbookFileName, 'Book1.xlsm');
     assert.equal(snapshot.schemaVersion, 1);
     assert.equal(snapshot.sources.length, 2);
-    const sourcesByPath = new Map(snapshot.sources.map((source) => [
-      source.path.toLowerCase(),
-      source.text
+    const sourcesByRelativePath = new Map(snapshot.sources.map((source) => [
+      source.relativePath.toLowerCase(),
+      source
     ]));
-    assert.equal(sourcesByPath.get(sourcePath.toLowerCase()), sourceDocument.getText());
-    assert.equal(sourcesByPath.get(encodedSourcePath.toLowerCase()), [
-      'Attribute VB_Name = "EncodedModule"',
-      'Option Explicit',
-      '',
-      'Public Sub EncodedTarget()',
-      '    Debug.Print "日本語"',
-      'End Sub',
-      ''
-    ].join('\r\n'));
-    assert.equal(snapshot.activeSource.path.toLowerCase(), sourcePath.toLowerCase());
+    const dirtySource = sourcesByRelativePath.get('debugmodule.bas');
+    assert.ok(dirtySource);
+    assert.equal(fileURLToPath(dirtySource.sourceUri!).toLowerCase(), sourcePath.toLowerCase());
+    assert.equal(dirtySource.encoding, 'utf8');
+    assert.deepEqual(
+      Buffer.from(dirtySource.contentBase64, 'base64'),
+      Buffer.from(sourceDocument.getText(), 'utf8')
+    );
+    assert.match(sourceDocument.getText(), /captured without saving/);
+    const encodedSource = sourcesByRelativePath.get('encodedmodule.bas');
+    assert.ok(encodedSource);
+    assert.equal(
+      fileURLToPath(encodedSource.sourceUri!).toLowerCase(),
+      encodedSourcePath.toLowerCase()
+    );
+    assert.equal(encodedSource.encoding, 'windows-932');
+    assert.deepEqual(
+      Buffer.from(encodedSource.contentBase64, 'base64'),
+      savedEncodedSourceBytes
+    );
+    assert.equal(
+      fileURLToPath(snapshot.activeSource.sourceUri).toLowerCase(),
+      sourcePath.toLowerCase()
+    );
     assert.equal(snapshot.activeSource.line, activePosition.line);
     assert.equal(snapshot.activeSource.character, activePosition.character);
     assert.equal(snapshot.breakpoints.length, 1);
-    assert.equal(snapshot.breakpoints[0].path.toLowerCase(), sourcePath.toLowerCase());
+    assert.equal(
+      fileURLToPath(snapshot.breakpoints[0].sourceUri).toLowerCase(),
+      sourcePath.toLowerCase()
+    );
     assert.equal(snapshot.breakpoints[0].line, 4);
-    assert.equal(sourceDocument.isDirty, false);
+    assert.equal(sourceDocument.isDirty, true);
     assert.equal(outsideDocument.isDirty, true);
-    const restartPreparation = configuration.__vbaRestartPreparation as {
-      readonly protocolVersion: number;
-      readonly id: string;
-    };
-    assert.equal(restartPreparation.protocolVersion, 1);
-    assert.ok(restartPreparation.id.length > 0);
-    console.log('PASS F5 resolves and saves only the active workbook-backed VBA project');
+    assert.deepEqual(await readFile(sourcePath), savedSourceBytes);
+    assert.deepEqual(await readFile(encodedSourcePath), savedEncodedSourceBytes);
+    assert.deepEqual(await readFile(outsidePath), savedOutsideBytes);
+    console.log('PASS F5 captures the active workbook-backed VBA project without saving');
   } finally {
     observer.dispose();
     debug.removeBreakpoints([sourceBreakpoint]);

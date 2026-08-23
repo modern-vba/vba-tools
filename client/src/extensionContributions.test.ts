@@ -180,6 +180,63 @@ test('extension contributes VbaDev path override configuration', () => {
   });
 });
 
+test('extension contributes the strict debug adapter path override configuration', () => {
+  const packageJson = readPackageJson<{
+    contributes?: {
+      configuration?: {
+        properties?: Record<string, {
+          scope?: string;
+          type?: string;
+          default?: string;
+          description?: string;
+        }>;
+      };
+    };
+  }>();
+
+  assert.deepEqual(
+    packageJson.contributes?.configuration?.properties?.['vbaTools.debugAdapter.path'],
+    {
+      scope: 'machine-overridable',
+      type: 'string',
+      default: '',
+      description: 'Overrides the bundled vba-debug-adapter executable path. An invalid override prevents VBA debugging.'
+    }
+  );
+});
+
+test('extension activation wires the strict debug adapter path into VBA F5 startup', () => {
+  const extensionSource = fs.readFileSync(
+    path.resolve(__dirname, '..', 'src', 'extension.ts'),
+    'utf8'
+  );
+
+  assert.match(
+    extensionSource,
+    /new VscodeDebugIntegration\(\{[\s\S]*?getConfiguredDebugAdapterPath,[\s\S]*?\}\)/
+  );
+  assert.match(
+    extensionSource,
+    /getConfiguration\('vbaTools'\)\.get<string>\('debugAdapter\.path'\)/
+  );
+});
+
+test('extension activation captures unsaved debug bytes including FRX sidecars', () => {
+  const extensionSource = fs.readFileSync(
+    path.resolve(__dirname, '..', 'src', 'extension.ts'),
+    'utf8'
+  );
+
+  assert.match(
+    extensionSource,
+    /captureSourceInventory:\s*\(sourceSetPath, cancellationToken\)\s*=>\s*captureSnapshotSourceInventory\(/
+  );
+  assert.match(
+    extensionSource,
+    /new RelativePattern\(sourceSetPath, '\*\*\/\*\.\{bas,cls,frm,frx\}'\)/
+  );
+});
+
 test('extension contributes the Doctor command', () => {
   const packageJson = readPackageJson<{
     activationEvents?: string[];

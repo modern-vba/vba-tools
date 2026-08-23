@@ -244,8 +244,8 @@ After generation:
 
 ## Local Verification
 
-Run the normal client, C# devtool, language-server, syntax-core, and packaging
-suite during development:
+Run the normal client, C# devtool, debug-adapter, language-server, syntax-core,
+and packaging suite during development:
 
 ```powershell
 npm test
@@ -258,7 +258,7 @@ npm run verify:release
 ```
 
 This runs the client, Extension Host, C# unit, language-server, explicit syntax
-core, packaging, and compatibility suites, then republishes both bundled
+core, packaging, and compatibility suites, then republishes all three bundled
 executables and verifies the planned VSIX. It intentionally does not opt in to
 real Excel automation.
 
@@ -285,29 +285,35 @@ Run package verification:
 npm run package:verify
 ```
 
-`package:verify` publishes the Windows x64 CLI and language server into the
-extension bundle layout, compiles the extension, checks the VSIX file list, and
-runs bundled executable probes:
+`package:verify` publishes the Windows x64 CLI, debug adapter, and language
+server into the extension bundle layout, compiles the extension, checks the
+VSIX file list, and runs bundled executable probes:
 
 - `bin/vba-dev/win-x64/vba-dev.exe` must be present.
+- `bin/vba-debug-adapter/win-x64/vba-debug-adapter.exe` must be present and
+  distinct from `vba-dev.exe`.
 - `bin/vba-language-server/win-x64/vba-language-server.exe` must be present.
 - `tools/vba-dev/**` must be absent from the VSIX file list.
-- `tools/vba-language-server/**`, `server/**`, and `client/src/**` must be
-  absent from the VSIX file list.
+- `tools/vba-debug-adapter/**`, `tools/vba-language-server/**`, `server/**`, and
+  `client/src/**` must be absent from the VSIX file list.
 - bundled runtime sidecars such as `.dll`, `.deps.json`, `.runtimeconfig.json`,
   and `.pdb` files must be absent from `bin/**`.
-- `package.json`, `client/out/extension.js`, and `vba-dev-contract.json` must be
-  present.
+- `package.json`, `client/out/extension.js`, `vba-dev-contract.json`, and
+  `vba-debug-adapter-contract.json` must be present.
 - packaged metadata must point `main` at the compiled extension, activate
   dynamic VBA debug resolution, contribute the supported launch schema and user
   commands, and keep `module` and `procedure` atomic.
 - the bundled `vba-dev.exe` must answer `capabilities --format json` with the
-  command contract required by the extension.
-- the advertised `debug-adapter --stdio` entry point must start successfully and
-  match the required adapter protocol version.
+  command and source-snapshot contract required by the extension, without a DAP
+  or debug-adapter surface.
+- the bundled `vba-debug-adapter.exe` must answer `capabilities --format json`
+  with its independent contract, accept its pinned `vba-dev.exe` path, and start
+  its stdio transport with a canonical session ID.
 - the bundled C# language server must run directly and answer `--version`.
 - `VbaDev.Cli.csproj` must publish a Windows x64 self-contained single-file
   executable.
+- `VbaDebugAdapter.Cli.csproj` must publish a separate Windows x64
+  self-contained single-file executable.
 - `VbaLanguageServer.Cli.csproj` must publish a Windows x64 self-contained
   single-file executable.
 
@@ -325,6 +331,7 @@ Probe bundled executables directly:
 bin/vba-dev/win-x64/vba-dev.exe --help
 bin/vba-dev/win-x64/vba-dev.exe --version
 bin/vba-dev/win-x64/vba-dev.exe capabilities --format json
+bin/vba-debug-adapter/win-x64/vba-debug-adapter.exe capabilities --format json
 bin/vba-language-server/win-x64/vba-language-server.exe --version
 ```
 
@@ -356,16 +363,19 @@ Excel installed and without a separately installed .NET runtime.
     marker.
 14. Set an enabled ordinary line breakpoint on an executable statement in that
     procedure.
-15. Press F5 without a saved launch configuration. Confirm the packaged dynamic
-    configuration builds the sample, opens a dedicated visible Excel/VBE
+15. Make an unsaved edit in the target source, then press F5 without a saved
+    launch configuration. Confirm the packaged dynamic configuration captures
+    the dirty editor content without saving, opens a same-filename workbook from
+    the adapter-owned temporary directory in a dedicated visible Excel/VBE
     process, transfers the breakpoint, and stops in native VBE Break mode.
 16. Continue from the VBE. Confirm the completion marker is recorded and VS Code
     keeps the debug session active after procedure completion.
 17. Exit the owned Excel process. Confirm VS Code displays the final process-exit
     termination message and no owned Excel process remains.
-18. Repeat with a saved `launch.json` target. Confirm Restart performs a fresh
-    save/build/open/transfer/run and Stop can terminate the session while an
-    interactive prompt is visible without leaving an orphan.
+18. Exit without saving and confirm the project source, source template, bin,
+    and publish outputs are unchanged. Repeat with a saved `launch.json` target
+    after another dirty edit and confirm a new F5 captures the fresh editor
+    content without saving it.
 19. Run the bundled language-server executable directly:
 
     ```powershell
@@ -501,6 +511,10 @@ Recommended assets:
 version remains listed in release notes so a published VSIX can be reproduced
 and diagnosed.
 
+`vba-debug-adapter` is also an internal VSIX companion rather than a standalone
+release asset. Record its independently defined version and capability contract
+in the release notes, but do not publish a separate adapter ZIP or tag.
+
 Standalone `vba-dev` artifact:
 
 ```powershell
@@ -530,6 +544,8 @@ Release notes should use this structure:
 
 - vba-dev:
 - vba-dev contract:
+- vba-debug-adapter:
+- vba-debug-adapter contract:
 - vba-language-server:
 
 ## Artifacts

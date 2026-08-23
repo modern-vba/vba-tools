@@ -1,0 +1,12 @@
+<Project>
+  <PropertyGroup>
+    <VbaDebugAdapterReleaseVersion>0.1.0</VbaDebugAdapterReleaseVersion>
+    <Version>$(VbaDebugAdapterReleaseVersion)</Version>
+    <VersionPrefix>$(VbaDebugAdapterReleaseVersion)</VersionPrefix>
+    <PackageVersion>$(VbaDebugAdapterReleaseVersion)</PackageVersion>
+    <InformationalVersion>$(VbaDebugAdapterReleaseVersion)</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <RestoreLockedMode>true</RestoreLockedMode>
+  </PropertyGroup>
+</Project>

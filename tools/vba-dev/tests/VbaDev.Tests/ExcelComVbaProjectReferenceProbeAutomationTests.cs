@@ -562,6 +562,12 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomationTests
         public IStaComDispatcher Create() => new ImmediateDispatcher();
     }
 
+    private sealed class FakeStaComDispatcherFactory(IStaComDispatcher dispatcher)
+        : IStaComDispatcherFactory
+    {
+        public IStaComDispatcher Create() => dispatcher;
+    }
+
     private sealed class ThrowingDispatcherFactory : IStaComDispatcherFactory
     {
         public IStaComDispatcher Create()

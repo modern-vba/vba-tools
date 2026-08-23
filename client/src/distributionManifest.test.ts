@@ -14,6 +14,10 @@ test('Distribution manifest provides bundled runtime paths for client launchers'
 
   assert.equal(manifest.runtimes.vbaDev.executablePath, 'bin/vba-dev/win-x64/vba-dev.exe');
   assert.equal(
+    resolveBundledRuntimePath(extensionRoot, 'vbaDebugAdapter'),
+    path.join(extensionRoot, 'bin/vba-debug-adapter/win-x64/vba-debug-adapter.exe')
+  );
+  assert.equal(
     resolveBundledRuntimePath(extensionRoot, 'vbaLanguageServer'),
     path.join(extensionRoot, 'bin/vba-language-server/win-x64/vba-language-server.exe')
   );

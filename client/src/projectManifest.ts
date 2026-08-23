@@ -7,6 +7,7 @@ export interface ProjectManifestProjection {
 export interface WorkbookBackedProjectDocument {
   name: string;
   sourcePath: string;
+  binPath?: string | undefined;
 }
 
 export function parseProjectManifestProjection(json: string): ProjectManifestProjection | undefined {
@@ -37,7 +38,11 @@ export function parseProjectManifestProjection(json: string): ProjectManifestPro
       return undefined;
     }
 
-    documents.push({ name, sourcePath: document.sourcePath });
+    documents.push({
+      name,
+      sourcePath: document.sourcePath,
+      ...(typeof document.binPath === 'string' ? { binPath: document.binPath } : {})
+    });
   }
 
   if (!documents.some((document) => document.name.toLowerCase() === primaryDocument.toLowerCase())) {

@@ -1,5 +1,4 @@
 using VbaDev.App.Cli;
-using VbaDev.App.Debugging;
 using VbaDev.App.Diagnostics;
 using VbaDev.App.Export;
 using VbaDev.App.Projects;
@@ -51,7 +50,6 @@ internal static class CommandLineTestFactory
         IWorkbookModuleExporter? workbookModuleExporter = null,
         IVbaProjectReferenceResolver? vbaProjectReferenceResolver = null,
         IProjectManifestStore? projectManifestStore = null,
-        IDebugEnvironmentProbeFactory? debugEnvironmentProbeFactory = null,
         IVbaProjectReferenceAmbiguityProbe? vbaProjectReferenceAmbiguityProbe = null,
         string? generatingExecutablePath = null,
         IExportDestinationFileOperations? exportDestinationFileOperations = null)
@@ -65,7 +63,6 @@ internal static class CommandLineTestFactory
             workbookModuleExporter,
             vbaProjectReferenceResolver,
             projectManifestStore,
-            debugEnvironmentProbeFactory,
             vbaProjectReferenceAmbiguityProbe,
             exportDestinationFileOperations);
         return generatingExecutablePath is null

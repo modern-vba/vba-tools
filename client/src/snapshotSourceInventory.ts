@@ -1,4 +1,5 @@
 import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 export interface SnapshotSourceTextDocument {
   readonly uriScheme: string;
@@ -20,6 +21,8 @@ export interface SnapshotSourceInventoryHost {
 
 export interface SnapshotSourceInventoryEntry {
   readonly relativePath: string;
+  readonly sourceUri?: string | undefined;
+  readonly encoding?: string | undefined;
   readonly bytes: Uint8Array;
 }
 
@@ -64,6 +67,11 @@ interface CapturedDirtySource {
   readonly encoding: string;
 }
 
+interface CapturedCleanSource {
+  readonly bytes: Uint8Array;
+  readonly encoding?: string | undefined;
+}
+
 export async function captureSnapshotSourceInventory(
   sourceSetPath: string,
   host: SnapshotSourceInventoryHost,
@@ -95,11 +103,29 @@ export async function captureSnapshotSourceInventory(
     }
 
     const dirtySource = dirtySourcesByPath.get(key);
-    const bytes = dirtySource === undefined
+    const cleanSource = dirtySource === undefined
       ? await readCleanSource(host, filePath, activeWindowsCodePage)
+      : undefined;
+    const bytes = dirtySource === undefined
+      ? cleanSource!.bytes
       : await encodeDirtySource(host, dirtySource, activeWindowsCodePage);
     throwIfSnapshotCaptureCancelled(cancellationToken);
-    entriesByPath.set(key, freezeEntry(relativePath, bytes));
+    entriesByPath.set(
+      key,
+      dirtySource === undefined
+        ? freezeEntry(
+            relativePath,
+            bytes,
+            cleanSource!.encoding === undefined ? undefined : pathToFileURL(filePath).href,
+            cleanSource!.encoding
+          )
+        : freezeEntry(
+            relativePath,
+            bytes,
+            pathToFileURL(dirtySource.filePath).href,
+            canonicalTransportEncoding(dirtySource.encoding, activeWindowsCodePage)
+          )
+    );
     dirtySourcesByPath.delete(key);
   }
 
@@ -110,7 +136,12 @@ export async function captureSnapshotSourceInventory(
     throwIfSnapshotCaptureCancelled(cancellationToken);
     entriesByPath.set(
       canonicalPath(dirtySource.filePath),
-      freezeEntry(relativePath, bytes));
+      freezeEntry(
+        relativePath,
+        bytes,
+        pathToFileURL(dirtySource.filePath).href,
+        canonicalTransportEncoding(dirtySource.encoding, activeWindowsCodePage)
+      ));
   }
 
   const entries = [...entriesByPath.values()]
@@ -241,10 +272,10 @@ async function readCleanSource(
   host: SnapshotSourceInventoryHost,
   filePath: string,
   activeWindowsCodePage: number
-): Promise<Uint8Array> {
+): Promise<CapturedCleanSource> {
   const bytes = Uint8Array.from(await host.readFile(filePath));
   if (path.extname(filePath).toLowerCase() === '.frx') {
-    return bytes;
+    return { bytes };
   }
 
   const bom = detectBom(bytes);
@@ -254,13 +285,13 @@ async function readCleanSource(
   if (bom !== undefined) {
     const encoding = bom === 'utf8' ? 'utf8bom' : bom;
     if (await hasExactRoundTrip(host, bytes, encoding)) {
-      return bytes;
+      return { bytes, encoding };
     }
     throw new Error(`Clean VBA source could not round-trip its recognized ${encoding} bytes: ${filePath}`);
   }
 
   if (await hasExactRoundTrip(host, bytes, 'utf8')) {
-    return bytes;
+    return { bytes, encoding: 'utf8' };
   }
 
   const activeEncoding = activeCodePageEditorEncoding(activeWindowsCodePage);
@@ -269,7 +300,7 @@ async function readCleanSource(
     && activeEncoding !== 'utf8'
     && await hasExactRoundTrip(host, bytes, activeEncoding)
   ) {
-    return bytes;
+    return { bytes, encoding: `windows-${activeWindowsCodePage}` };
   }
 
   throw new Error(`Clean VBA source could not round-trip its original bytes: ${filePath}`);
@@ -445,12 +476,39 @@ const legacyEditorCodePages = new Map<string, number>([
 
 function freezeEntry(
   relativePath: string,
-  bytes: Uint8Array
+  bytes: Uint8Array,
+  sourceUri?: string,
+  encoding?: string
 ): SnapshotSourceInventoryEntry {
   return Object.freeze({
     relativePath,
+    ...(sourceUri === undefined ? {} : { sourceUri }),
+    ...(encoding === undefined ? {} : { encoding }),
     bytes: Uint8Array.from(bytes)
   });
+}
+
+function canonicalTransportEncoding(
+  editorEncoding: string,
+  activeWindowsCodePage: number
+): string {
+  const encoding = editorEncoding.toLowerCase();
+  if (
+    encoding === 'utf8' ||
+    encoding === 'utf8bom' ||
+    encoding === 'utf16le' ||
+    encoding === 'utf16be'
+  ) {
+    return encoding;
+  }
+
+  const codePage = legacyEditorCodePages.get(encoding);
+  if (codePage === undefined || codePage !== activeWindowsCodePage) {
+    throw new Error(
+      `Dirty VBA source editor encoding '${editorEncoding}' cannot be transported for active Windows code page ${activeWindowsCodePage}.`
+    );
+  }
+  return `windows-${codePage}`;
 }
 
 function sourceRelativePath(sourceSetPath: string, filePath: string): string {

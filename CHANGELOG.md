@@ -13,8 +13,10 @@ CLI history.
 - Workbook-backed build, test, publish, export, CommonModules, and reference
   workflows through the bundled self-contained `vba-dev` CLI.
 - Test Explorer integration for workbook-backed VBA test projects.
-- Native VBE debugging for supported public parameterless procedures and exact
-  exported-source breakpoints.
+- A separately bundled self-contained `vba-debug-adapter.exe` for native VBE
+  debugging of supported public parameterless procedures and exact breakpoints.
+- Immutable debug snapshots that include dirty editor content without saving and
+  run in disposable same-filename workbooks without changing persistent outputs.
 - Windows x64 Marketplace packaging with bundled self-contained executables, so
   a separately installed .NET runtime is not required.
 

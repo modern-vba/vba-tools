@@ -44,7 +44,6 @@ test('Open vba-dev Terminal prepends the resolved CLI directory to PATH and uses
     },
     requiredContract: {
       contractVersion: '1.0',
-      debugAdapterProtocolVersion: '1.0',
       commandSchemaVersions: {}
     },
     chooseWorkspaceRoot: async () => {
@@ -143,7 +142,6 @@ test('Open vba-dev Terminal reports incompatible CLI resolution without creating
     }),
     requiredContract: {
       contractVersion: '1.0',
-      debugAdapterProtocolVersion: '1.0',
       commandSchemaVersions: {}
     },
     chooseWorkspaceRoot: async () => undefined,
@@ -184,7 +182,6 @@ test('Open vba-dev Terminal reuses the session-pinned executable', async () => {
     configuredPath: executablePath,
     requiredContract: {
       contractVersion: '1.0',
-      debugAdapterProtocolVersion: '1.0',
       commandSchemaVersions: {}
     },
     runProcess: async () => {
@@ -237,7 +234,6 @@ test('Open vba-dev Terminal does not duplicate a reported total resolution failu
     configuredPath: path.join('D:', 'missing', 'vba-dev.exe'),
     requiredContract: {
       contractVersion: '1.0',
-      debugAdapterProtocolVersion: '1.0',
       commandSchemaVersions: {}
     },
     runProcess: async () => {

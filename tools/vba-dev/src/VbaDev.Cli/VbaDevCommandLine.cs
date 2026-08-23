@@ -7,13 +7,11 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using VbaDev.App.Cli;
-using VbaDev.App.Debugging;
 using VbaDev.App.Diagnostics;
 using VbaDev.App.Export;
 using VbaDev.App.Import;
 using VbaDev.App.Projects;
 using VbaDev.App.Testing;
-using VbaDev.Cli.Debugging;
 using VbaDev.Composition;
 
 namespace VbaDev.Cli;
@@ -35,43 +33,22 @@ public sealed class VbaDevCommandLine
     /// </summary>
     /// <returns>The command line used by the standalone executable.</returns>
     public static VbaDevCommandLine CreateDefault()
-    {
-        return Create(
-            ToolingCompositionRoot.CreateApplicationComposition(),
-            async cancellationToken =>
-            {
-                var debugComposition = ToolingCompositionRoot.CreateDebugAdapterComposition();
-                var adapter = new VbaDebugAdapter(
-                    debugComposition.ProjectContextResolver,
-                    debugComposition.LaunchCoordinator,
-                    () => debugComposition.WorkingDirectory);
-                await adapter.RunAsync(
-                    Console.OpenStandardInput(),
-                    Console.OpenStandardOutput(),
-                    cancellationToken);
-                return 0;
-            });
-    }
+        => Create(ToolingCompositionRoot.CreateApplicationComposition());
 
     /// <summary>
     /// Creates a command graph over shell-neutral composed application services.
     /// </summary>
     /// <param name="composition">The services and working directory used by command handlers.</param>
-    /// <param name="debugAdapterRunner">The optional stdio debug-adapter transport runner.</param>
     /// <returns>A command line using the supplied application services.</returns>
-    public static VbaDevCommandLine Create(
-        ToolingApplicationComposition composition,
-        Func<CancellationToken, Task<int>>? debugAdapterRunner = null)
+    public static VbaDevCommandLine Create(ToolingApplicationComposition composition)
         => Create(
             composition,
             Environment.ProcessPath
-            ?? throw new InvalidOperationException("The generating vba-dev executable path is unavailable."),
-            debugAdapterRunner);
+            ?? throw new InvalidOperationException("The generating vba-dev executable path is unavailable."));
 
     internal static VbaDevCommandLine Create(
         ToolingApplicationComposition composition,
-        string generatingExecutablePath,
-        Func<CancellationToken, Task<int>>? debugAdapterRunner = null)
+        string generatingExecutablePath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(generatingExecutablePath);
         var rootCommand = new RootCommand("VBA development tooling.");
@@ -493,55 +470,12 @@ public sealed class VbaDevCommandLine
                     .ToDictionary(
                         registration => registration.Name,
                         registration => new CommandCapability(registration.OutputSchemaVersion),
-                        StringComparer.OrdinalIgnoreCase),
-                new DebugAdapterCapability(
-                    VbaDebugCapabilityContract.ProtocolVersion,
-                    VbaDebugCapabilityContract.Transport,
-                    VbaDebugCapabilityContract.AdapterCommand));
+                        StringComparer.OrdinalIgnoreCase));
             parseResult.InvocationConfiguration.Output.Write(
                 JsonSerializer.Serialize(capabilities, CapabilitiesJsonOptions) + Environment.NewLine);
             return 0;
         });
         rootCommand.Add(capabilitiesCommand);
-
-        var debugAdapterCommand = new Command(
-            VbaDebugCapabilityContract.AdapterCommand,
-            "Run the internal stdio debug adapter.")
-        {
-            Hidden = true
-        };
-        var debugAdapterStdioOption = new Option<bool>("--stdio")
-        {
-            Description = "Use the Debug Adapter Protocol over standard input and output.",
-            Required = true
-        };
-        debugAdapterCommand.Add(debugAdapterStdioOption);
-        debugAdapterCommand.Validators.Add(commandResult =>
-        {
-            var stdioResult = commandResult.GetResult(debugAdapterStdioOption);
-            if (stdioResult is null || stdioResult.Implicit || stdioResult.Tokens.Count > 0)
-            {
-                commandResult.AddError(
-                    $"Usage: vba-dev {VbaDebugCapabilityContract.AdapterCommand} --stdio");
-            }
-        });
-        debugAdapterCommand.SetAction(async (_, cancellationToken) =>
-        {
-            if (debugAdapterRunner is null)
-            {
-                return 1;
-            }
-
-            try
-            {
-                return await debugAdapterRunner(cancellationToken);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                return 130;
-            }
-        });
-        rootCommand.Add(debugAdapterCommand);
 
         return new VbaDevCommandLine(rootCommand);
     }
@@ -990,15 +924,9 @@ public sealed class VbaDevCommandLine
         string ContractVersion,
         IReadOnlyDictionary<string, string> FeatureVersions,
         int? ActiveWindowsCodePage,
-        IReadOnlyDictionary<string, CommandCapability> Commands,
-        DebugAdapterCapability DebugAdapter);
+        IReadOnlyDictionary<string, CommandCapability> Commands);
 
     private sealed record CommandCapability(string OutputSchemaVersion);
-
-    private sealed record DebugAdapterCapability(
-        string ProtocolVersion,
-        string Transport,
-        string Command);
 
     private static readonly JsonSerializerOptions CapabilitiesJsonOptions = new()
     {

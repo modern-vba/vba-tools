@@ -54,6 +54,7 @@ import {
   createWorkbookBackedTestExplorer
 } from './testExplorer';
 import {
+  captureSnapshotSourceInventory,
   createCallerOwnedSourceSnapshotCapture
 } from './snapshotSourceInventory';
 import {
@@ -139,6 +140,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
   const vscodeDebugIntegration = new VscodeDebugIntegration({
     extensionRoot: context.extensionPath,
     getConfiguredDevToolPath,
+    getConfiguredDebugAdapterPath,
     vbaDevResolver,
     debugConfigurationHost: {
       get workspaceRoots() {
@@ -186,7 +188,31 @@ export async function activate(context: ExtensionContext): Promise<void> {
           new RelativePattern(sourceSetPath, '**/*.{bas,cls,frm}'),
           null
         )
-      ).map((uri) => uri.fsPath)
+      ).map((uri) => uri.fsPath),
+      captureSourceInventory: (sourceSetPath, cancellationToken) => captureSnapshotSourceInventory(
+        sourceSetPath,
+        {
+          getActiveWindowsCodePage: () => vbaDevResolver.readActiveWindowsCodePage(),
+          getOpenTextDocuments: () => workspace.textDocuments.map((document) => ({
+            uriScheme: document.uri.scheme,
+            uriPath: document.uri.scheme === 'file' ? document.uri.fsPath : undefined,
+            fileName: document.fileName,
+            isDirty: document.isDirty,
+            encoding: document.encoding,
+            getText: () => document.getText()
+          })),
+          findSourceFiles: async (sourceSetPath) => (
+            await workspace.findFiles(
+              new RelativePattern(sourceSetPath, '**/*.{bas,cls,frm,frx}'),
+              null
+            )
+          ).map((uri) => uri.fsPath),
+          readFile: async (filePath) => workspace.fs.readFile(Uri.file(filePath)),
+          encodeText: async (text, encoding) => workspace.encode(text, { encoding }),
+          decodeText: async (bytes, encoding) => workspace.decode(bytes, { encoding })
+        },
+        cancellationToken
+      )
     }
   });
   const debugConfigurationProvider = createVbaDebugConfigurationProvider(
@@ -857,6 +883,11 @@ function reportUnreportedVbaDevResolutionFailure(
 
 function getConfiguredDevToolPath(): string | undefined {
   const configured = workspace.getConfiguration('vbaTools').get<string>('devtool.path');
+  return configured && configured.trim().length > 0 ? configured : undefined;
+}
+
+function getConfiguredDebugAdapterPath(): string | undefined {
+  const configured = workspace.getConfiguration('vbaTools').get<string>('debugAdapter.path');
   return configured && configured.trim().length > 0 ? configured : undefined;
 }
 

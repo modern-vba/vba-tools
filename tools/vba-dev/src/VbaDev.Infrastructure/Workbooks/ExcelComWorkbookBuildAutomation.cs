@@ -1,5 +1,4 @@
 using VbaDev.App.Workbooks;
-using VbaDev.App.Diagnostics;
 using VbaDev.App.Testing;
 
 namespace VbaDev.Infrastructure.Workbooks;
@@ -7,11 +6,8 @@ namespace VbaDev.Infrastructure.Workbooks;
 /// <summary>
 /// Implements workbook build automation through Excel COM and VBIDE.
 /// </summary>
-public sealed partial class ExcelComWorkbookBuildAutomation :
-    IWorkbookBuildAutomation,
-    IDebugProbeWorkbookAutomation
+public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookBuildAutomation
 {
-    private const int XlOpenXmlWorkbookMacroEnabled = 52;
     private const int VbextComponentTypeStandardModule = 1;
     private const int VbextComponentTypeClassModule = 2;
     private const int VbextComponentTypeForm = 3;
@@ -26,86 +22,14 @@ public sealed partial class ExcelComWorkbookBuildAutomation :
         => new ExcelComWorkbookBuildSession(ExcelComWorkbookSession.Open(workbookPath));
 
     /// <summary>
-    /// Opens an Excel workbook in a strongly owned, cancellable debug-build process.
+    /// Opens an Excel workbook in a strongly owned, cancellable build process.
     /// </summary>
     public IWorkbookBuildSession OpenWorkbook(
         string workbookPath,
         CancellationToken cancellationToken)
-        => new ExcelComWorkbookBuildSession(ExcelComWorkbookSession.OpenOwnedForDebugBuild(
+        => new ExcelComWorkbookBuildSession(ExcelComWorkbookSession.OpenOwnedForBuild(
             workbookPath,
             cancellationToken));
-
-    /// <inheritdoc />
-    public IWorkbookBuildSession CreateMacroEnabledWorkbook(
-        string workbookPath,
-        CancellationToken cancellationToken)
-    {
-        ExcelComWorkbookSession session;
-        try
-        {
-            session = ExcelComWorkbookSession.CreateOwnedForDebugBuild(cancellationToken);
-        }
-        catch (Exception ex) when (ex is IOwnedExcelSessionStartFailure)
-        {
-            var startFailure = (IOwnedExcelSessionStartFailure)ex;
-            throw new DebugEnvironmentProbeStartException(
-                "Excel COM availability",
-                "Microsoft Excel could not create the strongly owned hidden debug-probe workbook.",
-                startFailure.StartException,
-                startFailure.CleanupException,
-                cleanupVerified: startFailure.CleanupVerified);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            throw new DebugEnvironmentProbeStartException(
-                "Excel COM availability",
-                "Microsoft Excel could not create the strongly owned hidden debug-probe workbook.",
-                ex,
-                cleanupVerified: true);
-        }
-
-        try
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(workbookPath)!);
-            dynamic workbook = session.WorkbookObject;
-            workbook.SaveAs(workbookPath, XlOpenXmlWorkbookMacroEnabled);
-            cancellationToken.ThrowIfCancellationRequested();
-            return new ExcelComWorkbookBuildSession(session);
-        }
-        catch (Exception ex)
-        {
-            Exception? cleanupError = null;
-            try
-            {
-                session.Dispose();
-            }
-            catch (Exception cleanupException)
-            {
-                cleanupError = cleanupException;
-            }
-
-            if (ex is OperationCanceledException)
-            {
-                if (cleanupError is not null)
-                {
-                    throw new DebugEnvironmentProbeStartException(
-                        "Temporary debug probe cleanup",
-                        "The canceled hidden Excel build could not release its owned Excel process.",
-                        ex,
-                        cleanupError);
-                }
-
-                throw;
-            }
-
-            throw new DebugEnvironmentProbeStartException(
-                "Temporary macro workbook",
-                "The strongly owned hidden Excel process could not create the temporary macro-enabled workbook.",
-                ex,
-                cleanupError,
-                cleanupVerified: cleanupError is null);
-        }
-    }
 
     private sealed class ExcelComWorkbookBuildSession :
         IWorkbookBuildSession,

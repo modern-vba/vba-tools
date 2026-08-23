@@ -7,6 +7,7 @@ import yazl from 'yazl';
 
 import {
   assertBundledLanguageServerVersion,
+  assertBundledDebugAdapterCapabilities,
   assertBundledCliCapabilities,
   assertCliPublishSettings,
   assertExtensionDebugPackage,
@@ -18,9 +19,12 @@ import {
   distributionManifestPath,
   inspectVsixPackage,
   readDistributionManifest,
+  readRequiredVbaDebugAdapterContract,
   readRequiredVbaDevContract,
   requiredBundledCliPath,
+  requiredBundledDebugAdapterPath,
   requiredBundledLanguageServerPath,
+  requiredVbaDebugAdapterContractPath,
   requiredVbaDevContractPath,
   verifyVsixPackaging
 } from './vsixPackagingRules.mjs';
@@ -31,6 +35,10 @@ const marketplaceDocumentPaths = [
   'changelog.md',
   'LICENSE.txt',
   'SUPPORT.md'
+];
+const standaloneDebugAdapterPaths = [
+  requiredBundledDebugAdapterPath,
+  requiredVbaDebugAdapterContractPath
 ];
 
 test('extension package declares the complete free Marketplace listing metadata', async () => {
@@ -108,6 +116,26 @@ test('distribution manifest requires every Marketplace-facing document and icon'
   ]) {
     assert.ok(manifest.vsix.requiredFiles.includes(requiredPath), requiredPath);
   }
+});
+
+test('distribution manifest declares the standalone VBA debug adapter runtime', () => {
+  const manifest = readDistributionManifest();
+
+  assert.equal(
+    manifest.runtimes.vbaDebugAdapter.executablePath,
+    'bin/vba-debug-adapter/win-x64/vba-debug-adapter.exe'
+  );
+  assert.equal(
+    manifest.runtimes.vbaDebugAdapter.contractPath,
+    'vba-debug-adapter-contract.json'
+  );
+  assert.notEqual(
+    manifest.runtimes.vbaDebugAdapter.executablePath,
+    manifest.runtimes.vbaDev.executablePath
+  );
+  assert.ok(
+    manifest.vsix.excludedSourcePrefixes.includes('tools/vba-debug-adapter/')
+  );
 });
 
 test('VSIX inspection reads the generated archive metadata documents and file list', async (t) => {
@@ -244,6 +272,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
     requiredBundledCliPath,
     requiredBundledLanguageServerPath,
     requiredVbaDevContractPath,
+    ...standaloneDebugAdapterPaths,
     'client/out/extension.js'
   ]));
 
@@ -261,6 +290,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
         requiredBundledCliPath,
         requiredBundledLanguageServerPath,
         requiredVbaDevContractPath,
+        ...standaloneDebugAdapterPaths,
         'client/out/extension.js'
       ].filter((file) => file !== requiredExtensionFile)),
       new RegExp(requiredExtensionFile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
@@ -277,9 +307,26 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
       'tools/vba-dev/src/VbaDev.Cli/Program.cs',
       requiredBundledCliPath,
       requiredBundledLanguageServerPath,
-      requiredVbaDevContractPath
+      requiredVbaDevContractPath,
+      ...standaloneDebugAdapterPaths
     ]),
     /tools\/vba-dev/
+  );
+
+  assert.throws(
+    () => assertVsixContents([
+      ...marketplaceDocumentPaths,
+      'package.json',
+      'client/out/extension.js',
+      distributionManifestPath,
+      marketplaceIconPath,
+      'tools/vba-debug-adapter/src/VbaDebugAdapter.Cli/Program.cs',
+      requiredBundledCliPath,
+      requiredBundledLanguageServerPath,
+      requiredVbaDevContractPath,
+      ...standaloneDebugAdapterPaths
+    ]),
+    /tools\/vba-debug-adapter/
   );
 
   assert.throws(
@@ -292,7 +339,8 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
       'tools/vba-language-server/src/VbaLanguageServer.Cli/Program.cs',
       requiredBundledCliPath,
       requiredBundledLanguageServerPath,
-      requiredVbaDevContractPath
+      requiredVbaDevContractPath,
+      ...standaloneDebugAdapterPaths
     ]),
     /tools\/vba-language-server/
   );
@@ -304,6 +352,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
       distributionManifestPath,
       marketplaceIconPath,
       requiredBundledCliPath,
+      ...standaloneDebugAdapterPaths,
       'client/out/extension.js'
     ]),
     /bin\/vba-language-server\/win-x64\/vba-language-server\.exe/
@@ -319,6 +368,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
       requiredBundledCliPath,
       requiredBundledLanguageServerPath,
       requiredVbaDevContractPath,
+      ...standaloneDebugAdapterPaths,
       'bin/vba-language-server/win-x64/vba-language-server.dll'
     ]),
     /self-contained single executable/
@@ -334,6 +384,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
       requiredBundledCliPath,
       requiredBundledLanguageServerPath,
       requiredVbaDevContractPath,
+      ...standaloneDebugAdapterPaths,
       'bin/vba-language-server/win-x64/vba-language-server.runtimeconfig.json'
     ]),
     /runtimeconfig/
@@ -349,6 +400,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
       requiredBundledCliPath,
       requiredBundledLanguageServerPath,
       requiredVbaDevContractPath,
+      ...standaloneDebugAdapterPaths,
       'bin/vba-language-server/win-x64/vba-language-server.pdb'
     ]),
     /vba-language-server\.pdb/
@@ -364,6 +416,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
       requiredBundledCliPath,
       requiredBundledLanguageServerPath,
       requiredVbaDevContractPath,
+      ...standaloneDebugAdapterPaths,
       'server/out/server.js'
     ]),
     /server\/out\/server\.js/
@@ -379,6 +432,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
       requiredBundledCliPath,
       requiredBundledLanguageServerPath,
       requiredVbaDevContractPath,
+      ...standaloneDebugAdapterPaths,
       'client/out/extensionHost/runTests.js'
     ]),
     /client\/out\/extensionHost/
@@ -401,11 +455,29 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
         requiredBundledCliPath,
         requiredBundledLanguageServerPath,
         requiredVbaDevContractPath,
+        ...standaloneDebugAdapterPaths,
         excludedFile
       ]),
       new RegExp(excludedFile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
     );
   }
+});
+
+test('VSIX content rules require the standalone VBA debug adapter executable', () => {
+  assert.throws(
+    () => assertVsixContents([
+      ...marketplaceDocumentPaths,
+      'package.json',
+      distributionManifestPath,
+      marketplaceIconPath,
+      requiredBundledCliPath,
+      requiredBundledLanguageServerPath,
+      requiredVbaDevContractPath,
+      'vba-debug-adapter-contract.json',
+      'client/out/extension.js'
+    ]),
+    /bin\/vba-debug-adapter\/win-x64\/vba-debug-adapter\.exe/
+  );
 });
 
 test('CLI publish settings require a Windows x64 self-contained single-file executable', () => {
@@ -467,18 +539,12 @@ test('bundled CLI capabilities must satisfy the packaged extension contract surf
     Object.entries(contract.commandSchemaVersions)
       .map(([commandName, schemaVersion]) => [commandName, { outputSchemaVersion: schemaVersion }])
   );
-  const debugAdapter = {
-    protocolVersion: contract.debugAdapterProtocolVersion,
-    transport: 'stdio',
-    command: 'debug-adapter'
-  };
   const compatibleCapabilities = {
     toolVersion: '0.1.0',
     contractVersion: contract.contractVersion,
     featureVersions: contract.featureVersions,
     activeWindowsCodePage: 932,
-    commands,
-    debugAdapter
+    commands
   };
 
   assert.doesNotThrow(() => assertBundledCliCapabilities(JSON.stringify(compatibleCapabilities)));
@@ -502,24 +568,22 @@ test('bundled CLI capabilities must satisfy the packaged extension contract surf
   assert.throws(
     () => assertBundledCliCapabilities(JSON.stringify({
       ...compatibleCapabilities,
-      debugAdapter: undefined
+      debugAdapter: {
+        protocolVersion: '1.1',
+        transport: 'stdio',
+        command: 'debug-adapter'
+      }
     })),
-    /debug adapter/
+    /must not report a debug adapter/i
   );
 
-  for (const incompatibleDebugAdapter of [
-    { ...debugAdapter, protocolVersion: '0.9' },
-    { ...debugAdapter, transport: 'socket' },
-    { ...debugAdapter, command: 'other-adapter' }
-  ]) {
-    assert.throws(
-      () => assertBundledCliCapabilities(JSON.stringify({
-        ...compatibleCapabilities,
-        debugAdapter: incompatibleDebugAdapter
-      })),
-      /debug adapter/
-    );
-  }
+  assert.throws(
+    () => assertBundledCliCapabilities(
+      JSON.stringify(compatibleCapabilities),
+      { ...contract, debugAdapterProtocolVersion: '1.1' }
+    ),
+    /vba-dev contract must not reference a debug adapter/i
+  );
 
   delete commands.doctor;
   assert.throws(
@@ -528,6 +592,49 @@ test('bundled CLI capabilities must satisfy the packaged extension contract surf
       commands
     })),
     /doctor/
+  );
+});
+
+test('bundled debug adapter capabilities require the snapshot build feature contract', () => {
+  const contract = readRequiredVbaDebugAdapterContract();
+  assert.deepEqual(contract, {
+    contractVersion: '1.0',
+    protocolVersion: '1.1',
+    transports: ['stdio'],
+    sessionIdFormat: 'lowercase-hex-32',
+    commands: ['cleanup', 'doctor'],
+    commandSchemaVersions: { doctor: '1.0' },
+    requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '1.0' }
+  });
+  const compatibleCapabilities = {
+    toolVersion: '0.1.0',
+    ...contract
+  };
+
+  assert.doesNotThrow(() => assertBundledDebugAdapterCapabilities(
+    JSON.stringify(compatibleCapabilities),
+    contract
+  ));
+  assert.throws(
+    () => assertBundledDebugAdapterCapabilities(JSON.stringify({
+      ...compatibleCapabilities,
+      requiredVbaDevFeatureVersions: {}
+    }), contract),
+    /build\.sourceSnapshot/
+  );
+  const contractWithExtraFeature = {
+    ...contract,
+    requiredVbaDevFeatureVersions: {
+      ...contract.requiredVbaDevFeatureVersions,
+      'test.sourceSnapshot': '1.0'
+    }
+  };
+  assert.throws(
+    () => assertBundledDebugAdapterCapabilities(JSON.stringify({
+      toolVersion: '0.1.0',
+      ...contractWithExtraFeature
+    }), contractWithExtraFeature),
+    /only build\.sourceSnapshot 1\.0/i
   );
 });
 
@@ -548,11 +655,17 @@ test('packaging verification checks file contents publish settings and bundled C
   );
   await fs.mkdir(path.join(root, 'bin', 'vba-dev', 'win-x64'), { recursive: true });
   await fs.writeFile(path.join(root, requiredBundledCliPath), '');
+  await fs.mkdir(path.join(root, 'bin', 'vba-debug-adapter', 'win-x64'), { recursive: true });
+  await fs.writeFile(path.join(root, requiredBundledDebugAdapterPath), '');
   await fs.mkdir(path.join(root, 'bin', 'vba-language-server', 'win-x64'), { recursive: true });
   await fs.writeFile(path.join(root, requiredBundledLanguageServerPath), '');
   await fs.writeFile(
     path.join(root, requiredVbaDevContractPath),
     JSON.stringify(readRequiredVbaDevContract(), null, 2)
+  );
+  await fs.writeFile(
+    path.join(root, requiredVbaDebugAdapterContractPath),
+    JSON.stringify(readRequiredVbaDebugAdapterContract(), null, 2)
   );
   const extensionPackageJson = JSON.parse(
     await fs.readFile(new URL('../package.json', import.meta.url), 'utf8')
@@ -568,6 +681,30 @@ test('packaging verification checks file contents publish settings and bundled C
 <Project>
   <PropertyGroup>
     <AssemblyName>vba-dev</AssemblyName>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+  </PropertyGroup>
+</Project>
+`
+  );
+  await fs.mkdir(
+    path.join(root, 'tools', 'vba-debug-adapter', 'src', 'VbaDebugAdapter.Cli'),
+    { recursive: true }
+  );
+  await fs.writeFile(
+    path.join(
+      root,
+      'tools',
+      'vba-debug-adapter',
+      'src',
+      'VbaDebugAdapter.Cli',
+      'VbaDebugAdapter.Cli.csproj'
+    ),
+    `
+<Project>
+  <PropertyGroup>
+    <AssemblyName>vba-debug-adapter</AssemblyName>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
@@ -591,6 +728,7 @@ test('packaging verification checks file contents publish settings and bundled C
   );
 
   const contract = readRequiredVbaDevContract();
+  const adapterContract = readRequiredVbaDebugAdapterContract();
   const commands = Object.fromEntries(
     Object.entries(contract.commandSchemaVersions)
       .map(([commandName, schemaVersion]) => [commandName, { outputSchemaVersion: schemaVersion }])
@@ -609,8 +747,14 @@ test('packaging verification checks file contents publish settings and bundled C
       };
     }
 
-    if (args[0] === 'debug-adapter') {
-      return { stdout: '', stderr: '' };
+    if (
+      path.basename(file) === path.basename(requiredBundledDebugAdapterPath) &&
+      args[0] === 'capabilities'
+    ) {
+      return {
+        stdout: JSON.stringify({ toolVersion: '0.1.0', ...adapterContract }),
+        stderr: ''
+      };
     }
 
     return {
@@ -619,12 +763,7 @@ test('packaging verification checks file contents publish settings and bundled C
         contractVersion: contract.contractVersion,
         featureVersions: contract.featureVersions,
         activeWindowsCodePage: 932,
-        commands,
-        debugAdapter: {
-          protocolVersion: contract.debugAdapterProtocolVersion,
-          transport: 'stdio',
-          command: 'debug-adapter'
-        }
+        commands
       }),
       stderr: ''
     };
@@ -637,8 +776,10 @@ test('packaging verification checks file contents publish settings and bundled C
     [distributionManifestPath, null],
     [marketplaceIconPath, null],
     [requiredBundledCliPath, null],
+    [requiredBundledDebugAdapterPath, null],
     [requiredBundledLanguageServerPath, null],
     [requiredVbaDevContractPath, null],
+    [requiredVbaDebugAdapterContractPath, null],
     ['package.json', JSON.stringify(extensionPackageJson)],
     ['client/out/extension.js', null]
   ]);
@@ -653,7 +794,14 @@ test('packaging verification checks file contents publish settings and bundled C
   assert.deepEqual(calls.map((call) => call.args.includes('package') ? call.args.slice(1, 5) : call.args), [
     ['package', '--no-dependencies', '--target', 'win32-x64'],
     ['capabilities', '--format', 'json'],
-    ['debug-adapter', '--stdio'],
+    ['capabilities', '--format', 'json'],
+    [
+      '--stdio',
+      '--vba-dev',
+      path.join(root, requiredBundledCliPath),
+      '--session',
+      '0123456789abcdef0123456789abcdef'
+    ],
     ['--version']
   ]);
 
@@ -674,23 +822,51 @@ test('package scripts publish the bundled CLI and verify VSIX contents before pa
 
   assert.match(packageJson.scripts['publish:devtool'], /dotnet publish/);
   assert.match(packageJson.scripts['publish:devtool'], /-o bin\/vba-dev\/win-x64/);
+  assert.match(packageJson.scripts['publish:debug-adapter'], /dotnet publish/);
+  assert.match(
+    packageJson.scripts['publish:debug-adapter'],
+    /-o bin\/vba-debug-adapter\/win-x64/
+  );
   assert.match(packageJson.scripts['publish:language-server'], /dotnet publish/);
   assert.match(packageJson.scripts['publish:language-server'], /-o bin\/vba-language-server\/win-x64/);
   assert.equal(packageJson.scripts['verify:vsix'], 'node scripts/vsixPackagingRules.mjs');
   assert.match(packageJson.scripts['package:verify'], /publish:devtool/);
+  assert.match(packageJson.scripts['package:verify'], /publish:debug-adapter/);
   assert.match(packageJson.scripts['package:verify'], /publish:language-server/);
   assert.match(packageJson.scripts['package:verify'], /verify:vsix/);
+  assert.match(packageJson.scripts['test:extension-host'], /publish:devtool/);
+  assert.match(packageJson.scripts['test:extension-host'], /publish:debug-adapter/);
+  assert.match(packageJson.scripts['test:extension-host'], /publish:language-server/);
   assert.equal(
     packageJson.scripts['verify:guarded-enter'],
     'npm run test:extension && npm run test:extension-host && npm run test:packaging'
   );
   assert.match(packageJson.scripts.package, /package:verify/);
+  assert.match(packageJson.scripts['test:debug-adapter'], /VbaDebugAdapter\.Tests/);
+  assert.match(packageJson.scripts.test, /test:debug-adapter/);
   assert.match(packageJson.scripts.test, /test:packaging/);
   assert.match(packageJson.scripts['test:packaging'], /--test-isolation=none/);
   assert.deepEqual(packageJson.repository, {
     type: 'git',
     url: 'https://github.com/modern-vba/vba-tools.git'
   });
+});
+
+test('standalone debug adapter restores from committed lock files', async () => {
+  const props = await fs.readFile(
+    new URL('../tools/vba-debug-adapter/Directory.Build.props', import.meta.url),
+    'utf8'
+  );
+  assert.match(props, /<RestorePackagesWithLockFile>true<\/RestorePackagesWithLockFile>/);
+  assert.match(props, /<RestoreLockedMode>true<\/RestoreLockedMode>/);
+
+  for (const lockPath of [
+    '../tools/vba-debug-adapter/src/VbaDebugAdapter.Cli/packages.lock.json',
+    '../tools/vba-debug-adapter/tests/VbaDebugAdapter.Tests/packages.lock.json'
+  ]) {
+    const lock = JSON.parse(await fs.readFile(new URL(lockPath, import.meta.url), 'utf8'));
+    assert.equal(lock.version, 1);
+  }
 });
 
 test('release verification scripts expose every suite and keep Excel integration explicitly opt-in', async () => {
@@ -701,8 +877,10 @@ test('release verification scripts expose every suite and keep Excel integration
 
   assert.match(scripts['test:syntax-core'], /VbaLanguageServer\.Syntax\.Tests/);
   assert.match(scripts['test:compatibility'], /devtool\.test\.js/);
+  assert.match(scripts['test:compatibility'], /debugAdapter\.test\.js/);
   assert.match(scripts['test:compatibility'], /vscodeDebugIntegration\.test\.js/);
   assert.match(scripts['test:windows-excel-integration'], /WindowsExcelIntegration/);
+  assert.match(scripts['test:windows-excel-integration'], /VbaDebugAdapter\.Tests/);
   assert.match(
     scripts['test:windows-excel-integration'],
     /VBA_TOOLS_RUN_EXCEL_INTEGRATION_TESTS=1/
@@ -712,6 +890,7 @@ test('release verification scripts expose every suite and keep Excel integration
     'test:extension',
     'test:extension-host',
     'test:devtool',
+    'test:debug-adapter',
     'test:language-server',
     'test:syntax-core',
     'test:packaging',

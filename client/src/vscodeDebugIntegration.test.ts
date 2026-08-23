@@ -110,7 +110,7 @@ test('VBA debug provider forwards cancellation and does not report it as a setup
   assert.deepEqual(messages, []);
 });
 
-test('VBA debug provider prepares the resolved configuration for the restart handshake', async () => {
+test('VBA debug provider forwards the resolved standalone-adapter launch without restart fields', async () => {
   const workspaceFolder = path.join('C:', 'work');
   const resolvedConfiguration = {
     type: 'vba',
@@ -123,19 +123,13 @@ test('VBA debug provider prepares the resolved configuration for the restart han
       sources: []
     }
   };
-  let preparedWorkspaceFolder: string | undefined;
+  let restartPreparationCalled = false;
   const provider = createVbaDebugConfigurationProvider({
     provideDynamicDebugConfigurations: () => [],
     resolveDebugConfiguration: async () => resolvedConfiguration,
-    prepareDebugConfigurationForRestart: (configuration, workspaceFolderPath) => {
-      preparedWorkspaceFolder = workspaceFolderPath;
-      return {
-        ...configuration,
-        __vbaRestartPreparation: {
-          protocolVersion: 1,
-          id: 'restart-preparation'
-        }
-      };
+    prepareDebugConfigurationForRestart: () => {
+      restartPreparationCalled = true;
+      throw new Error('Restart preparation must not decorate an initial launch.');
     }
   }, () => undefined);
 
@@ -144,11 +138,8 @@ test('VBA debug provider prepares the resolved configuration for the restart han
     workspaceFolder
   );
 
-  assert.equal(preparedWorkspaceFolder, workspaceFolder);
-  assert.deepEqual(configuration?.__vbaRestartPreparation, {
-    protocolVersion: 1,
-    id: 'restart-preparation'
-  });
+  assert.equal(restartPreparationCalled, false);
+  assert.deepEqual(configuration, resolvedConfiguration);
 });
 
 test('VBA debug lifecycle notification failure reports the error and stops the session', async () => {
@@ -317,43 +308,154 @@ test('VBA debug provider rejects a relative project selector without workspace-f
   ]);
 });
 
-test('VBA debug startup resolves the bundled compatible adapter over stdio', async () => {
+test('VBA debug startup pins independent adapter and CLI paths with a canonical session ID', async () => {
   const extensionRoot = path.resolve(__dirname, '..', '..');
   const workspaceRoot = path.join('C:', 'work', 'BookProject');
-  const capabilityCalls: Array<{ file: string; args: readonly string[] }> = [];
+  const cliPath = path.join('D:', 'tools', 'vba-dev.exe');
+  const adapterPath = path.join('D:', 'tools', 'vba-debug-adapter.exe');
+  let cliResolutions = 0;
+  let adapterResolutions = 0;
   const integration = new VscodeDebugIntegration({
     extensionRoot,
     getConfiguredDevToolPath: () => undefined,
-    capabilitiesProcess: async (file, args) => {
-      capabilityCalls.push({ file, args });
-      return {
-        stdout: JSON.stringify(compatibleCapabilities()),
-        stderr: ''
-      };
+    vbaDevResolver: {
+      resolve: async () => {
+        cliResolutions += 1;
+        return {
+          executablePath: cliPath,
+          bundledPath: cliPath,
+          source: 'configured',
+          capabilities: compatibleCapabilities()
+        };
+      }
     },
-    requiredContract: requiredContract()
+    vbaDebugAdapterResolver: {
+      resolve: async () => {
+        adapterResolutions += 1;
+        return {
+          executablePath: adapterPath,
+          capabilities: compatibleDebugAdapterCapabilities()
+        };
+      }
+    },
+    createDebugSessionId: () => '0123456789abcdef0123456789abcdef'
   });
 
   const descriptor = await integration.createDebugAdapterExecutable({
     id: 'session-1',
     workspaceRoot
   });
-  const expectedExecutable = path.join(
+  assert.equal(cliResolutions, 1);
+  assert.equal(adapterResolutions, 1);
+  assert.deepEqual(descriptor, {
+    command: adapterPath,
+    args: [
+      '--stdio',
+      '--vba-dev',
+      cliPath,
+      '--session',
+      '0123456789abcdef0123456789abcdef'
+    ],
+    options: { cwd: workspaceRoot }
+  });
+});
+
+test('VBA debug startup strictly resolves the configured standalone adapter', async () => {
+  const extensionRoot = path.resolve(__dirname, '..', '..');
+  const cliPath = path.join('D:', 'tools', 'vba-dev.exe');
+  const adapterPath = path.join('D:', 'tools', 'vba-debug-adapter.exe');
+  const capabilityCalls: Array<{ file: string; args: readonly string[] }> = [];
+  const integration = new VscodeDebugIntegration({
     extensionRoot,
-    'bin',
-    'vba-dev',
-    'win-x64',
-    'vba-dev.exe'
-  );
+    getConfiguredDevToolPath: () => undefined,
+    getConfiguredDebugAdapterPath: () => adapterPath,
+    vbaDevResolver: {
+      resolve: async () => ({
+        executablePath: cliPath,
+        bundledPath: cliPath,
+        source: 'configured',
+        capabilities: compatibleCapabilities()
+      })
+    },
+    capabilitiesProcess: async (file, args) => {
+      capabilityCalls.push({ file, args });
+      return {
+        stdout: JSON.stringify(compatibleDebugAdapterCapabilities()),
+        stderr: ''
+      };
+    },
+    requiredDebugAdapterContract: requiredDebugAdapterContract(),
+    createDebugSessionId: () => 'fedcba9876543210fedcba9876543210'
+  });
+
+  const descriptor = await integration.createDebugAdapterExecutable({ id: 'session-1' });
 
   assert.deepEqual(capabilityCalls, [{
-    file: expectedExecutable,
+    file: adapterPath,
     args: ['capabilities', '--format', 'json']
   }]);
   assert.deepEqual(descriptor, {
-    command: expectedExecutable,
-    args: ['debug-adapter', '--stdio'],
-    options: { cwd: workspaceRoot }
+    command: adapterPath,
+    args: [
+      '--stdio',
+      '--vba-dev',
+      cliPath,
+      '--session',
+      'fedcba9876543210fedcba9876543210'
+    ],
+    options: undefined
+  });
+});
+
+test('VBA debug startup always resolves the bundled standalone adapter instead of falling back to vba-dev', async () => {
+  const extensionRoot = path.resolve(__dirname, '..', '..');
+  const cliPath = path.join('D:', 'tools', 'vba-dev.exe');
+  const bundledAdapterPath = path.join(
+    extensionRoot,
+    'bin',
+    'vba-debug-adapter',
+    'win-x64',
+    'vba-debug-adapter.exe'
+  );
+  const capabilityCalls: Array<{ file: string; args: readonly string[] }> = [];
+  const integration = new VscodeDebugIntegration({
+    extensionRoot,
+    getConfiguredDevToolPath: () => undefined,
+    vbaDevResolver: {
+      resolve: async () => ({
+        executablePath: cliPath,
+        bundledPath: cliPath,
+        source: 'configured',
+        capabilities: compatibleCapabilities()
+      })
+    },
+    capabilitiesProcess: async (file, args) => {
+      capabilityCalls.push({ file, args });
+      return {
+        stdout: JSON.stringify(compatibleDebugAdapterCapabilities()),
+        stderr: ''
+      };
+    },
+    requiredDebugAdapterContract: requiredDebugAdapterContract(),
+    createDebugSessionId: () => '0123456789abcdef0123456789abcdef'
+  });
+
+  const descriptor = await integration.createDebugAdapterExecutable({ id: 'session-1' });
+
+  assert.deepEqual(capabilityCalls, [{
+    file: bundledAdapterPath,
+    args: ['capabilities', '--format', 'json']
+  }]);
+  assert.deepEqual(descriptor, {
+    command: bundledAdapterPath,
+    args: [
+      '--stdio',
+      '--vba-dev',
+      cliPath,
+      '--session',
+      '0123456789abcdef0123456789abcdef'
+    ],
+    options: undefined
   });
 });
 
@@ -362,6 +464,12 @@ test('VBA debug startup rejects a second session until the active session termin
   const integration = new VscodeDebugIntegration({
     extensionRoot: path.resolve(__dirname, '..', '..'),
     getConfiguredDevToolPath: () => path.join('D:', 'tools', 'vba-dev.exe'),
+    vbaDebugAdapterResolver: {
+      resolve: async () => ({
+        executablePath: path.join('D:', 'tools', 'vba-debug-adapter.exe'),
+        capabilities: compatibleDebugAdapterCapabilities()
+      })
+    },
     capabilitiesProcess: async () => {
       capabilityCallCount += 1;
       return {
@@ -411,6 +519,12 @@ test('only the owning VBA debug session release cancels its pending restart prep
   const integration = new VscodeDebugIntegration({
     extensionRoot: path.resolve(__dirname, '..', '..'),
     getConfiguredDevToolPath: () => path.join('D:', 'tools', 'vba-dev.exe'),
+    vbaDebugAdapterResolver: {
+      resolve: async () => ({
+        executablePath: path.join('D:', 'tools', 'vba-debug-adapter.exe'),
+        capabilities: compatibleDebugAdapterCapabilities()
+      })
+    },
     capabilitiesProcess: async () => ({
       stdout: JSON.stringify(compatibleCapabilities()),
       stderr: ''
@@ -477,15 +591,16 @@ test('only the owning VBA debug session release cancels its pending restart prep
   }
 });
 
-test('VBA debug startup reuses the session-pinned executable and advertised command', async () => {
+test('VBA debug startup reuses the session-pinned CLI with the standalone adapter', async () => {
   const configuredPath = path.join('D:', 'tools', 'vba-dev.exe');
+  const adapterPath = path.join('D:', 'tools', 'vba-debug-adapter.exe');
   const capabilityCalls: Array<{ file: string; args: readonly string[] }> = [];
   const capabilities = compatibleCapabilities();
-  capabilities.debugAdapter = {
-    protocolVersion: '1.0',
-    transport: 'stdio',
-    command: 'vba-debug-adapter'
-  };
+  let adapterResolutions = 0;
+  const adapterSessionIds = [
+    '0123456789abcdef0123456789abcdef',
+    'fedcba9876543210fedcba9876543210'
+  ];
   const vbaDevResolver = new VbaDevSessionResolver({
     extensionRoot: path.resolve(__dirname, '..', '..'),
     configuredPath,
@@ -499,10 +614,17 @@ test('VBA debug startup reuses the session-pinned executable and advertised comm
     extensionRoot: path.resolve(__dirname, '..', '..'),
     getConfiguredDevToolPath: () => undefined,
     vbaDevResolver,
-    capabilitiesProcess: async () => {
-      throw new Error('debug integration must not resolve vba-dev independently');
+    vbaDebugAdapterResolver: {
+      resolve: async () => {
+        adapterResolutions += 1;
+        return {
+          executablePath: adapterPath,
+          capabilities: compatibleDebugAdapterCapabilities()
+        };
+      }
     },
-    requiredContract: requiredContract()
+    requiredContract: requiredContract(),
+    createDebugSessionId: () => adapterSessionIds[adapterResolutions - 1]!
   });
 
   const descriptor = await integration.createDebugAdapterExecutable({ id: 'session-1' });
@@ -513,16 +635,34 @@ test('VBA debug startup reuses the session-pinned executable and advertised comm
     file: configuredPath,
     args: ['capabilities', '--format', 'json']
   }]);
+  assert.equal(adapterResolutions, 2);
   assert.deepEqual(descriptor, {
-    command: configuredPath,
-    args: ['vba-debug-adapter', '--stdio'],
+    command: adapterPath,
+    args: [
+      '--stdio',
+      '--vba-dev',
+      configuredPath,
+      '--session',
+      adapterSessionIds[0]
+    ],
     options: undefined
   });
-  assert.deepEqual(secondDescriptor, descriptor);
+  assert.deepEqual(secondDescriptor, {
+    command: adapterPath,
+    args: [
+      '--stdio',
+      '--vba-dev',
+      configuredPath,
+      '--session',
+      adapterSessionIds[1]
+    ],
+    options: undefined
+  });
 });
 
 test('VBA debug startup suppresses an already reported resolution failure and releases the session', async () => {
   const executablePath = path.join('D:', 'tools', 'vba-dev.exe');
+  const adapterPath = path.join('D:', 'tools', 'vba-debug-adapter.exe');
   let attempts = 0;
   const integration = new VscodeDebugIntegration({
     extensionRoot: path.resolve(__dirname, '..', '..'),
@@ -541,7 +681,14 @@ test('VBA debug startup suppresses an already reported resolution failure and re
           capabilities: compatibleCapabilities()
         };
       }
-    }
+    },
+    vbaDebugAdapterResolver: {
+      resolve: async () => ({
+        executablePath: adapterPath,
+        capabilities: compatibleDebugAdapterCapabilities()
+      })
+    },
+    createDebugSessionId: () => '0123456789abcdef0123456789abcdef'
   });
 
   const suppressed = await integration.createDebugAdapterExecutable({ id: 'session-1' });
@@ -549,31 +696,44 @@ test('VBA debug startup suppresses an already reported resolution failure and re
 
   assert.equal(suppressed, undefined);
   assert.deepEqual(recovered, {
-    command: executablePath,
-    args: ['debug-adapter', '--stdio'],
+    command: adapterPath,
+    args: [
+      '--stdio',
+      '--vba-dev',
+      executablePath,
+      '--session',
+      '0123456789abcdef0123456789abcdef'
+    ],
     options: undefined
   });
 });
 
-test('VBA debug startup releases its session reservation after compatibility failure', async () => {
+test('VBA debug startup releases its session reservation after standalone adapter compatibility failure', async () => {
   let compatible = false;
+  const executablePath = path.join('D:', 'tools', 'vba-dev.exe');
+  const adapterPath = path.join('D:', 'tools', 'vba-debug-adapter.exe');
   const integration = new VscodeDebugIntegration({
     extensionRoot: path.resolve(__dirname, '..', '..'),
-    getConfiguredDevToolPath: () => path.join('D:', 'tools', 'vba-dev.exe'),
-    capabilitiesProcess: async () => ({
-      stdout: JSON.stringify(compatible
-        ? compatibleCapabilities()
-        : {
-            ...compatibleCapabilities(),
-            debugAdapter: {
-              protocolVersion: '0.9',
-              transport: 'stdio',
-              command: 'debug-adapter'
-            }
-          }),
-      stderr: ''
-    }),
-    requiredContract: requiredContract()
+    getConfiguredDevToolPath: () => undefined,
+    vbaDevResolver: {
+      resolve: async () => ({
+        executablePath,
+        bundledPath: executablePath,
+        source: 'configured',
+        capabilities: compatibleCapabilities()
+      })
+    },
+    vbaDebugAdapterResolver: {
+      resolve: async () => {
+        if (!compatible) {
+          throw new Error('debug adapter protocolVersion 0.9');
+        }
+        return {
+          executablePath: adapterPath,
+          capabilities: compatibleDebugAdapterCapabilities()
+        };
+      }
+    }
   });
 
   await assert.rejects(
@@ -589,19 +749,31 @@ function compatibleCapabilities(): VbaDevCapabilities {
   return {
     toolVersion: '0.1.0',
     contractVersion: '1.0',
-    commands: {},
-    debugAdapter: {
-      protocolVersion: '1.0',
-      transport: 'stdio',
-      command: 'debug-adapter'
-    }
+    commands: {}
   };
+}
+
+function compatibleDebugAdapterCapabilities() {
+  return {
+    toolVersion: '0.1.0',
+    contractVersion: '1.0',
+    protocolVersion: '1.1',
+    transports: ['stdio'],
+    sessionIdFormat: 'lowercase-hex-32',
+    commands: ['cleanup', 'doctor'],
+    commandSchemaVersions: { doctor: '1.0' },
+    requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '1.0' }
+  };
+}
+
+function requiredDebugAdapterContract() {
+  const { toolVersion: _toolVersion, ...contract } = compatibleDebugAdapterCapabilities();
+  return contract;
 }
 
 function requiredContract() {
   return {
     contractVersion: '1.0',
-    debugAdapterProtocolVersion: '1.0',
     commandSchemaVersions: {}
   };
 }

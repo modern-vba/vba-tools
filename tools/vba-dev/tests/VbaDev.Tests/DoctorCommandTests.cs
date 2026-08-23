@@ -127,30 +127,19 @@ public sealed class DoctorCommandTests
     }
 
     [Fact]
-    public void DefaultDoctorRunsTheActiveDebugEnvironmentProbe()
+    public void DefaultDoctorDoesNotRunVisibleDebugEnvironmentProbes()
     {
         using var temp = TempDirectory.Create();
-        var application = CommandLineTestFactory.Create(
-            temp.Path,
-            debugEnvironmentProbeFactory: new PassingDebugEnvironmentProbeFactory());
+        var application = CommandLineTestFactory.Create(temp.Path);
 
         var result = application.Run(["doctor"]);
 
-        Assert.Contains("[PASS] VBA debug capability contract", result.StandardOutput, StringComparison.Ordinal);
-        if (OperatingSystem.IsWindows())
-        {
-            Assert.Equal(0, result.ExitCode);
-            Assert.Contains("[PASS] Owned Excel process", result.StandardOutput, StringComparison.Ordinal);
-            Assert.Contains("8086", result.StandardOutput, StringComparison.Ordinal);
-            Assert.Contains("[PASS] Native VBE readiness", result.StandardOutput, StringComparison.Ordinal);
-            Assert.DoesNotContain("[SKIP] Excel", result.StandardOutput, StringComparison.Ordinal);
-            Assert.DoesNotContain("[SKIP] VBIDE", result.StandardOutput, StringComparison.Ordinal);
-        }
-        else
-        {
-            Assert.Equal(1, result.ExitCode);
-            Assert.Contains("[FAIL] Windows VBE debugging", result.StandardOutput, StringComparison.Ordinal);
-        }
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("[SKIP] Excel COM startup", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("[SKIP] Macro-enabled workbook creation", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("[SKIP] VBIDE project access", result.StandardOutput, StringComparison.Ordinal);
+        Assert.DoesNotContain("VBA debug capability", result.StandardOutput, StringComparison.Ordinal);
+        Assert.DoesNotContain("Native VBE readiness", result.StandardOutput, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -694,31 +683,4 @@ internal sealed class FakeEnvironmentDiagnosticPort : IEnvironmentDiagnosticPort
     }
 
     public IReadOnlyList<DiagnosticResult> RunEnvironmentDiagnostics() => results;
-}
-
-internal sealed class PassingDebugEnvironmentProbeFactory : IDebugEnvironmentProbeFactory
-{
-    public Task<IDebugEnvironmentProbeSession> StartAsync(CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        return Task.FromResult<IDebugEnvironmentProbeSession>(
-            new PassingDebugEnvironmentProbeSession());
-    }
-
-    private sealed class PassingDebugEnvironmentProbeSession : IDebugEnvironmentProbeSession
-    {
-        public int ProcessId => 8086;
-
-        public bool StrongProcessOwnershipEstablished => true;
-
-        public Task<IReadOnlyList<DiagnosticResult>> RunAsync(
-            CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            return Task.FromResult<IReadOnlyList<DiagnosticResult>>(
-                [DiagnosticResult.Pass("Native VBE readiness", "The fake native probe completed.")]);
-        }
-
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-    }
 }

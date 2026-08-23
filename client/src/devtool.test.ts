@@ -16,7 +16,6 @@ import {
 
 const requiredContract = {
   contractVersion: '1.0',
-  debugAdapterProtocolVersion: '1.0',
   commandSchemaVersions: {}
 };
 
@@ -24,12 +23,7 @@ function compatibleCapabilities(): string {
   return JSON.stringify({
     toolVersion: '0.1.0',
     contractVersion: '1.0',
-    commands: {},
-    debugAdapter: {
-      protocolVersion: '1.0',
-      transport: 'stdio',
-      command: 'debug-adapter'
-    }
+    commands: {}
   });
 }
 
@@ -438,7 +432,7 @@ test('VbaDev resolution log exposes configured and effective paths with the requ
     `  Configured failure: contractVersion 0.9 is incompatible`,
     `  Bundled candidate: ${bundledPath}`,
     `  Effective executable: ${bundledPath}`,
-    '  Required contract: {"contractVersion":"1.0","debugAdapterProtocolVersion":"1.0","commandSchemaVersions":{}}'
+    '  Required contract: {"contractVersion":"1.0","commandSchemaVersions":{}}'
   ]);
 });
 
@@ -474,7 +468,6 @@ test('VbaDev compatibility rejects a relative configured path before starting a 
       },
       requiredContract: {
         contractVersion: '1.0',
-        debugAdapterProtocolVersion: '1.0',
         commandSchemaVersions: {}
       }
     }),
@@ -488,13 +481,15 @@ test('VbaDev compatibility rejects a relative configured path before starting a 
   assert.equal(processStarted, false);
 });
 
-test('Packaged VbaDev contract requires the debug adapter protocol', () => {
+test('Packaged VbaDev contract requires snapshot build and omits the adapter protocol', () => {
   const extensionRoot = path.resolve(__dirname, '..', '..');
+  const contract = loadRequiredVbaDevContract(extensionRoot);
 
   assert.equal(
-    loadRequiredVbaDevContract(extensionRoot).debugAdapterProtocolVersion,
-    '1.1'
+    contract.featureVersions?.['build.sourceSnapshot'],
+    '1.0'
   );
+  assert.equal('debugAdapterProtocolVersion' in contract, false);
 });
 
 test('VbaDev compatibility invokes capabilities JSON and returns parsed versions', async () => {
@@ -513,11 +508,6 @@ test('VbaDev compatibility invokes capabilities JSON and returns parsed versions
           commands: {
             build: { outputSchemaVersion: '1.0' },
             test: { outputSchemaVersion: '1.0' }
-          },
-          debugAdapter: {
-            protocolVersion: '1.0',
-            transport: 'stdio',
-            command: 'debug-adapter'
           }
         }),
         stderr: ''
@@ -525,7 +515,6 @@ test('VbaDev compatibility invokes capabilities JSON and returns parsed versions
     },
     requiredContract: {
       contractVersion: '1.0',
-      debugAdapterProtocolVersion: '1.0',
       commandSchemaVersions: {
         build: '1.0',
         test: '1.0'
@@ -543,7 +532,6 @@ test('VbaDev compatibility invokes capabilities JSON and returns parsed versions
   assert.equal(resolved.capabilities.toolVersion, '0.1.0');
   assert.equal(resolved.capabilities.contractVersion, '1.0');
   assert.equal(resolved.capabilities.commands.build.outputSchemaVersion, '1.0');
-  assert.equal(resolved.capabilities.debugAdapter?.protocolVersion, '1.0');
 });
 
 test('VbaDev compatibility never falls back to PATH discovery', async () => {
@@ -560,11 +548,6 @@ test('VbaDev compatibility never falls back to PATH discovery', async () => {
           contractVersion: '1.0',
           commands: {
             doctor: { outputSchemaVersion: '1.0' }
-          },
-          debugAdapter: {
-            protocolVersion: '1.0',
-            transport: 'stdio',
-            command: 'debug-adapter'
           }
         }),
         stderr: ''
@@ -572,7 +555,6 @@ test('VbaDev compatibility never falls back to PATH discovery', async () => {
     },
     requiredContract: {
       contractVersion: '1.0',
-      debugAdapterProtocolVersion: '1.0',
       commandSchemaVersions: {
         doctor: '1.0'
       }
@@ -590,7 +572,6 @@ test('VbaDev compatibility rejects a missing required source snapshot feature', 
   const executablePath = path.join('D:', 'tools', 'old-vba-dev.exe');
   const requiredSnapshotContract = {
     contractVersion: '1.0',
-    debugAdapterProtocolVersion: '1.0',
     featureVersions: {
       'test.sourceSnapshot': '1.0'
     },
@@ -610,11 +591,6 @@ test('VbaDev compatibility rejects a missing required source snapshot feature', 
           featureVersions: {},
           commands: {
             test: { outputSchemaVersion: '1.2' }
-          },
-          debugAdapter: {
-            protocolVersion: '1.0',
-            transport: 'stdio',
-            command: 'debug-adapter'
           }
         }),
         stderr: ''
@@ -641,18 +617,12 @@ test('VbaDev compatibility rejects snapshot encoding capability without an activ
           },
           commands: {
             test: { outputSchemaVersion: '1.2' }
-          },
-          debugAdapter: {
-            protocolVersion: '1.0',
-            transport: 'stdio',
-            command: 'debug-adapter'
           }
         }),
         stderr: ''
       }),
       requiredContract: {
         contractVersion: '1.0',
-        debugAdapterProtocolVersion: '1.0',
         featureVersions: {
           'test.sourceSnapshot': '1.0',
           'sourceSnapshot.activeWindowsCodePage': '1.0'
@@ -685,7 +655,6 @@ test('VbaDev compatibility rejects an incompatible contract before command use',
         }),
         requiredContract: {
           contractVersion: '1.0',
-          debugAdapterProtocolVersion: '1.0',
           commandSchemaVersions: {
             build: '1.0'
           }
@@ -699,86 +668,4 @@ test('VbaDev compatibility rejects an incompatible contract before command use',
       return true;
     }
   );
-});
-
-test('VbaDev compatibility rejects an incompatible debug adapter protocol before adapter use', async () => {
-  const executablePath = path.join('D:', 'tools', 'old-vba-dev.exe');
-  const requiredContract = {
-    contractVersion: '1.0',
-    debugAdapterProtocolVersion: '1.0',
-    commandSchemaVersions: {}
-  };
-
-  await assert.rejects(
-    () => resolveCompatibleVbaDev({
-      extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
-      configuredPath: executablePath,
-      runProcess: async () => ({
-        stdout: JSON.stringify({
-          toolVersion: '0.1.0',
-          contractVersion: '1.0',
-          commands: {},
-          debugAdapter: {
-            protocolVersion: '0.9',
-            transport: 'stdio',
-            command: 'debug-adapter'
-          }
-        }),
-        stderr: ''
-      }),
-      requiredContract
-    }),
-    (error) => {
-      assert.ok(error instanceof VbaDevCompatibilityError);
-      assert.match(error.message, /old-vba-dev\.exe/);
-      assert.match(error.message, /debug adapter protocolVersion 0\.9/);
-      assert.match(error.message, /requires 1\.0/);
-      return true;
-    }
-  );
-});
-
-test('VbaDev compatibility requires a stdio debug adapter capability', async () => {
-  const executablePath = path.join('D:', 'tools', 'vba-dev.exe');
-  const requiredContract = {
-    contractVersion: '1.0',
-    debugAdapterProtocolVersion: '1.0',
-    commandSchemaVersions: {}
-  };
-  const cases: Array<{
-    debugAdapter?: Record<string, unknown> | undefined;
-    expectedMessage: RegExp;
-  }> = [
-    {
-      expectedMessage: /does not report the required debug adapter capability/
-    },
-    {
-      debugAdapter: {
-        protocolVersion: '1.0',
-        transport: 'socket',
-        command: 'debug-adapter'
-      },
-      expectedMessage: /transport socket.*requires stdio/
-    }
-  ];
-
-  for (const testCase of cases) {
-    await assert.rejects(
-      () => resolveCompatibleVbaDev({
-        extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
-        configuredPath: executablePath,
-        runProcess: async () => ({
-          stdout: JSON.stringify({
-            toolVersion: '0.1.0',
-            contractVersion: '1.0',
-            commands: {},
-            debugAdapter: testCase.debugAdapter
-          }),
-          stderr: ''
-        }),
-        requiredContract
-      }),
-      testCase.expectedMessage
-    );
-  }
 });

@@ -132,7 +132,10 @@ test('repository pins the release toolchain commands dependency updates and cura
     'tools/vba-dev/src/VbaDev.Composition/VbaDev.Composition.csproj',
     'tools/vba-dev/src/VbaDev.Domain/VbaDev.Domain.csproj',
     'tools/vba-dev/src/VbaDev.Infrastructure/VbaDev.Infrastructure.csproj',
+    'tools/vba-dev/src/VbaTools.TypeLibRegistry/VbaTools.TypeLibRegistry.csproj',
     'tools/vba-dev/tests/VbaDev.Tests/VbaDev.Tests.csproj',
+    'tools/vba-debug-adapter/src/VbaDebugAdapter.Cli/VbaDebugAdapter.Cli.csproj',
+    'tools/vba-debug-adapter/tests/VbaDebugAdapter.Tests/VbaDebugAdapter.Tests.csproj',
     'tools/vba-language-server/src/VbaLanguageServer.Cli/VbaLanguageServer.Cli.csproj',
     'tools/vba-language-server/src/VbaLanguageServer.Syntax/VbaLanguageServer.Syntax.csproj',
     'tools/vba-language-server/tests/VbaLanguageServer.Syntax.Tests/VbaLanguageServer.Syntax.Tests.csproj',
@@ -146,12 +149,25 @@ test('repository pins the release toolchain commands dependency updates and cura
   }
   for (const propsPath of [
     'tools/vba-dev/Directory.Build.props',
+    'tools/vba-debug-adapter/Directory.Build.props',
     'tools/vba-language-server/Directory.Build.props'
   ]) {
     const props = await fs.readFile(path.join(repositoryRoot, propsPath), 'utf8');
     assert.match(props, /<RestorePackagesWithLockFile>true<\/RestorePackagesWithLockFile>/);
     assert.match(props, /<RestoreLockedMode>true<\/RestoreLockedMode>/);
   }
+  const adapterProps = await fs.readFile(
+    path.join(repositoryRoot, 'tools/vba-debug-adapter/Directory.Build.props'),
+    'utf8'
+  );
+  assert.match(adapterProps, /<VbaDebugAdapterReleaseVersion>0\.1\.0<\/VbaDebugAdapterReleaseVersion>/);
+  for (const propertyName of ['Version', 'VersionPrefix', 'PackageVersion', 'InformationalVersion']) {
+    assert.match(
+      adapterProps,
+      new RegExp(`<${propertyName}>\\$\\(VbaDebugAdapterReleaseVersion\\)<\\/${propertyName}>`)
+    );
+  }
+  assert.match(adapterProps, /<IncludeSourceRevisionInInformationalVersion>false<\/IncludeSourceRevisionInInformationalVersion>/);
   const dependabot = await fs.readFile(
     path.join(repositoryRoot, '.github/dependabot.yml'),
     'utf8'
@@ -162,10 +178,27 @@ test('repository pins the release toolchain commands dependency updates and cura
     path.join(repositoryRoot, 'tools/vba-dev/CHANGELOG.md'),
     'utf8'
   );
+  const extensionChangelog = await fs.readFile(
+    path.join(repositoryRoot, 'CHANGELOG.md'),
+    'utf8'
+  );
+  const readme = await fs.readFile(path.join(repositoryRoot, 'README.md'), 'utf8');
+  const adapterReadme = await fs.readFile(
+    path.join(repositoryRoot, 'tools/vba-debug-adapter/README.md'),
+    'utf8'
+  );
   assert.match(cliChangelog, /^## \[0\.1\.0\] - Unreleased/m);
   assert.match(cliChangelog, /standalone Windows x64/i);
   assert.match(cliChangelog, /capabilities/i);
-  assert.match(cliChangelog, /debug adapter/i);
+  assert.match(cliChangelog, /snapshot build/i);
+  assert.doesNotMatch(cliChangelog, /debug adapter/i);
+  assert.match(extensionChangelog, /separately bundled[\s\S]*`vba-debug-adapter\.exe`/i);
+  assert.match(extensionChangelog, /dirty editor.*without saving/i);
+  assert.match(
+    readme,
+    /## Bundled Tools[\s\S]*\[`vba-debug-adapter`\]\([^\r\n]*tools\/vba-debug-adapter\/README\.md\)/
+  );
+  assert.match(adapterReadme, /\.\.\/\.\.\/README\.md#debug-in-the-vbe/);
 });
 
 test('release preparation starts clean and updates extension metadata without coupling the CLI version', async (t) => {
