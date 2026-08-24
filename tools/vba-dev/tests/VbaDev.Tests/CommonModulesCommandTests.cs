@@ -933,7 +933,10 @@ public sealed class CommonModulesCommandTests
             Path.Combine(projectRoot, "publish", "Book1.xlsm"),
             commonRepo);
         var manifestStore = new RecordingProjectManifestStore { ThrowOnSave = true };
-        var transaction = new CommonModulesInstallationTransaction(new CommonModulesManifestReader(), manifestStore);
+        var transaction = new CommonModulesInstallationTransaction(
+            new CommonModulesManifestReader(),
+            manifestStore,
+            new ProjectManifestAtomicWriter());
 
         var error = Assert.Throws<CommonModulesTransactionException>(() => transaction.Add(context, ["Feature"], force: false));
 

@@ -53,7 +53,8 @@ internal static class CommandLineTestFactory
         IVbaProjectReferenceAmbiguityProbe? vbaProjectReferenceAmbiguityProbe = null,
         string? generatingExecutablePath = null,
         IExportDestinationFileOperations? exportDestinationFileOperations = null,
-        IProjectMaterializationDiagnosticPort? projectMaterializationDiagnosticPort = null)
+        IProjectMaterializationDiagnosticPort? projectMaterializationDiagnosticPort = null,
+        IProjectManifestMutationCoordinator? projectManifestMutationCoordinator = null)
     {
         var composition = ToolingCompositionRoot.CreateApplicationComposition(
             workingDirectory,
@@ -66,7 +67,8 @@ internal static class CommandLineTestFactory
             projectManifestStore,
             vbaProjectReferenceAmbiguityProbe,
             exportDestinationFileOperations,
-            projectMaterializationDiagnosticPort);
+            projectMaterializationDiagnosticPort,
+            projectManifestMutationCoordinator);
         return generatingExecutablePath is null
             ? VbaDevCommandLine.Create(composition)
             : VbaDevCommandLine.Create(composition, generatingExecutablePath);

@@ -325,6 +325,7 @@ public static class ProjectManifestValidator
             }
         }
 
+        var referenceNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var reference in document.References)
         {
             if (reference is null)
@@ -337,6 +338,26 @@ public static class ProjectManifestValidator
             {
                 throw new VbaProjectManifestException($"Document '{name}' contains an empty VBA project reference name: {manifestName}");
             }
+
+            if (!reference.Name.Equals(reference.Name.Trim(), StringComparison.Ordinal))
+            {
+                throw new VbaProjectManifestException(
+                    $"Document '{name}' contains VBA project reference name '{reference.Name}' with leading or trailing whitespace: {manifestName}");
+            }
+
+            if (VbaProjectReferenceName.IsStandardLibrary(reference.Name))
+            {
+                throw new VbaProjectManifestException(
+                    $"Document '{name}' contains the always active standard library '{reference.Name}', which cannot be selected in a project manifest: {manifestName}");
+            }
+
+            if (referenceNames.TryGetValue(reference.Name, out var conflictingName))
+            {
+                throw new VbaProjectManifestException(
+                    $"Document '{name}' contains duplicate VBA project reference names '{conflictingName}' and '{reference.Name}': {manifestName}");
+            }
+
+            referenceNames.Add(reference.Name, reference.Name);
         }
     }
 

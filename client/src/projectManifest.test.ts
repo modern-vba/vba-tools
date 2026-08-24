@@ -21,6 +21,13 @@ test('ProjectManifest adapter reads canonical manifest fixture for Test Explorer
   });
 });
 
+test('ProjectManifest adapter accepts direct-intent state on reference selections', () => {
+  const manifest = parseProjectManifest(
+    readProjectManifestFixture('references.json'));
+
+  assert.equal(manifest?.projectName, 'ReferencesProject');
+});
+
 test('ProjectManifest adapter rejects fixtures that violate required project identity', () => {
   assert.equal(parseProjectManifest(readProjectManifestFixture('invalid-missing-primary-document.json')), undefined);
   assert.equal(parseProjectManifest(readProjectManifestFixture('invalid-primary-document-not-defined.json')), undefined);
@@ -108,6 +115,30 @@ test('ProjectManifest adapter rejects a null reference entry', () => {
 
 test('ProjectManifest adapter rejects an invalid reference entry', () => {
   assert.equal(parseProjectManifest(readProjectManifestFixture('invalid-empty-reference-name.json')), undefined);
+});
+
+test('ProjectManifest adapter rejects a reference missing direct-intent state', () => {
+  assert.equal(
+    parseProjectManifest(readProjectManifestFixture('invalid-missing-reference-requested.json')),
+    undefined);
+});
+
+test('ProjectManifest adapter rejects the always-active standard library selection', () => {
+  assert.equal(
+    parseProjectManifest(readProjectManifestFixture('invalid-standard-library-reference.json')),
+    undefined);
+});
+
+test('ProjectManifest adapter rejects a reference name with leading or trailing whitespace', () => {
+  assert.equal(
+    parseProjectManifest(readProjectManifestFixture('invalid-untrimmed-reference-name.json')),
+    undefined);
+});
+
+test('ProjectManifest adapter rejects case-insensitive duplicate reference names', () => {
+  assert.equal(
+    parseProjectManifest(readProjectManifestFixture('invalid-duplicate-reference-name.json')),
+    undefined);
 });
 
 test('ProjectManifest adapter rejects an invalid CommonModules entry', () => {

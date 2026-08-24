@@ -41,6 +41,7 @@ public static class ToolingCompositionRoot
     /// <param name="vbaProjectReferenceResolver">The optional VBA project reference resolver adapter.</param>
     /// <param name="projectManifestStore">The optional project manifest persistence adapter.</param>
     /// <param name="exportDestinationFileOperations">The optional recoverable export filesystem adapter.</param>
+    /// <param name="projectManifestMutationCoordinator">The optional rebased manifest mutation boundary.</param>
     /// <returns>The composed services consumed by a command-line host.</returns>
     public static ToolingApplicationComposition CreateApplicationComposition(
         string workingDirectory,
@@ -53,10 +54,19 @@ public static class ToolingCompositionRoot
         IProjectManifestStore? projectManifestStore = null,
         IVbaProjectReferenceAmbiguityProbe? vbaProjectReferenceAmbiguityProbe = null,
         IExportDestinationFileOperations? exportDestinationFileOperations = null,
-        IProjectMaterializationDiagnosticPort? projectMaterializationDiagnosticPort = null)
+        IProjectMaterializationDiagnosticPort? projectMaterializationDiagnosticPort = null,
+        IProjectManifestMutationCoordinator? projectManifestMutationCoordinator = null)
     {
-        var manifestStore = projectManifestStore ?? new JsonProjectManifestStore();
-        var manifestEditor = new ProjectManifestEditor(manifestStore);
+        var atomicManifestWriter = new ProjectManifestAtomicWriter();
+        var manifestStore = projectManifestStore
+                            ?? new JsonProjectManifestStore(atomicManifestWriter);
+        var manifestEditor = new ProjectManifestEditor(
+            manifestStore,
+            atomicManifestWriter);
+        var mutationCoordinator = projectManifestMutationCoordinator
+                                  ?? new ProjectManifestMutationCoordinator(
+                                      atomicManifestWriter,
+                                      new ProjectManifestMutationLeaseProvider());
         var commonModulesManifestReader = new CommonModulesManifestReader();
         var commonModulesInstallationTransaction = new CommonModulesInstallationTransaction(commonModulesManifestReader, manifestEditor);
         var commonModulesService = new CommonModulesService(commonModulesInstallationTransaction);
@@ -69,7 +79,9 @@ public static class ToolingCompositionRoot
         var referencePlanner = new VbaProjectReferencePlanner(
             referenceResolver,
             ambiguityProbe);
-        var referenceService = new VbaProjectReferenceService(manifestEditor, referencePlanner);
+        var referenceService = new VbaProjectReferenceService(
+            referencePlanner,
+            mutationCoordinator);
         var projectContextResolver = new ProjectContextResolver(manifestStore);
         var referenceCompletionService = new VbaProjectReferenceCompletionService(
             projectContextResolver,

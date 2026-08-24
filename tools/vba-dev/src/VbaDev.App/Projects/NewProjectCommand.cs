@@ -268,6 +268,7 @@ public sealed class NewProjectCommand
         => referenceNames
             .Select(referenceName => referenceName.Trim())
             .Where(referenceName => !string.IsNullOrWhiteSpace(referenceName))
+            .Where(referenceName => !VbaProjectReferenceName.IsStandardLibrary(referenceName))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Select(referenceName => new VbaProjectReference(referenceName))
             .ToArray();

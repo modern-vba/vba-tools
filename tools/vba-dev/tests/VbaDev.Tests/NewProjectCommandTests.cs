@@ -425,7 +425,6 @@ public sealed class NewProjectCommandTests
         Assert.Equal("publish/SampleProject.xlsm", manifest.Documents["SampleProject"].PublishPath);
         Assert.Equal(
             [
-                "Visual Basic For Applications",
                 "Microsoft Excel 16.0 Object Library",
                 "Microsoft Scripting Runtime",
                 "Microsoft VBScript Regular Expressions 5.5"
@@ -452,7 +451,6 @@ public sealed class NewProjectCommandTests
         var manifest = new JsonProjectManifestStore().Load(manifestPath);
         Assert.Equal(
             [
-                "Visual Basic For Applications",
                 "Microsoft Scripting Runtime",
                 "Microsoft VBScript Regular Expressions 5.5"
             ],

@@ -21,7 +21,8 @@
       "commonModules": [],
       "references": [
         {
-          "name": "Microsoft Scripting Runtime"
+          "name": "Microsoft Scripting Runtime",
+          "requested": true
         }
       ]
     }

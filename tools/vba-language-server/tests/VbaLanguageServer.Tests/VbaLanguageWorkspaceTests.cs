@@ -1123,7 +1123,7 @@ public sealed class VbaLanguageWorkspaceTests
         Directory.CreateDirectory(Path.Combine(projectRoot, "src", "Book1"));
         Directory.CreateDirectory(Path.Combine(projectRoot, "src", "SecondBook"));
         IReadOnlyList<string> references =
-            book1References ?? ["Visual Basic For Applications", "Microsoft Excel 16.0 Object Library"];
+            book1References ?? ["Microsoft Excel 16.0 Object Library"];
         var manifest = new
         {
             schemaVersion = 1,
@@ -1139,7 +1139,10 @@ public sealed class VbaLanguageWorkspaceTests
                     binPath = "bin/Book1/Book1.xlsm",
                     publishPath = "publish/Book1/Book1.xlsm",
                     commonModules = Array.Empty<object>(),
-                    references = references.Select(reference => new { name = reference }).ToArray()
+                    references = references
+                        .Where(reference => !VbaProjectReferenceName.IsStandardLibrary(reference))
+                        .Select(reference => new { name = reference, requested = true })
+                        .ToArray()
                 },
                 ["SecondBook"] = new
                 {
@@ -1149,10 +1152,7 @@ public sealed class VbaLanguageWorkspaceTests
                     binPath = "bin/SecondBook/SecondBook.xlsm",
                     publishPath = "publish/SecondBook/SecondBook.xlsm",
                     commonModules = Array.Empty<object>(),
-                    references = new[]
-                    {
-                        new { name = "Visual Basic For Applications" }
-                    }
+                    references = Array.Empty<object>()
                 }
             }
         };

@@ -214,6 +214,13 @@ public sealed class VbaDevCommandLine
                 .Select(name => new CompletionItem(name));
         });
         referenceAddCommand.Add(referenceAddArguments);
+        var referenceAddFormatOption = CreateStringOption(
+            "--format",
+            "Reference mutation output format.",
+            "text|json",
+            ["text", "json"],
+            "-f");
+        referenceAddCommand.Add(referenceAddFormatOption);
         referenceAddCommand.SetAction(async (parseResult, cancellationToken) => WriteCommandResult(
             parseResult,
             await ResolveDocumentContextAsync(
@@ -223,6 +230,7 @@ public sealed class VbaDevCommandLine
                     (context, operationCancellationToken) => composition.ReferenceService.AddAsync(
                         context,
                         parseResult.GetValue(referenceAddArguments) ?? [],
+                        parseResult.GetValue(referenceAddFormatOption) ?? "text",
                         operationCancellationToken),
                     cancellationToken)
                 .ConfigureAwait(false)));
@@ -286,15 +294,26 @@ public sealed class VbaDevCommandLine
                 .Select(name => new CompletionItem(name));
         });
         referenceRemoveCommand.Add(referenceRemoveArguments);
-        referenceRemoveCommand.SetAction(parseResult => WriteCommandResult(
+        var referenceRemoveFormatOption = CreateStringOption(
+            "--format",
+            "Reference mutation output format.",
+            "text|json",
+            ["text", "json"],
+            "-f");
+        referenceRemoveCommand.Add(referenceRemoveFormatOption);
+        referenceRemoveCommand.SetAction(async (parseResult, cancellationToken) => WriteCommandResult(
             parseResult,
-            ResolveDocumentContext(
-                parseResult,
-                composition,
-                referenceRemoveOptions,
-                context => composition.ReferenceService.Remove(
-                    context,
-                    parseResult.GetValue(referenceRemoveArguments) ?? []))));
+            await ResolveDocumentContextAsync(
+                    parseResult,
+                    composition,
+                    referenceRemoveOptions,
+                    (context, operationCancellationToken) => composition.ReferenceService.RemoveAsync(
+                        context,
+                        parseResult.GetValue(referenceRemoveArguments) ?? [],
+                        parseResult.GetValue(referenceRemoveFormatOption) ?? "text",
+                        operationCancellationToken),
+                    cancellationToken)
+                .ConfigureAwait(false)));
 
         var buildCommand = AddCapabilityCommand(
             rootCommand,

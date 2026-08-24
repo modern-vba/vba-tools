@@ -3658,10 +3658,12 @@ public sealed class LanguageServerProcessTests
                       "commonModules": [],
                       "references": [
                         {
-                          "name": "Microsoft Excel 16.0 Object Library"
+                          "name": "Microsoft Excel 16.0 Object Library",
+                          "requested": true
                         },
                         {
-                          "name": "Microsoft Scripting Runtime"
+                          "name": "Microsoft Scripting Runtime",
+                          "requested": true
                         }
                       ]
                     },
@@ -3674,7 +3676,8 @@ public sealed class LanguageServerProcessTests
                       "commonModules": [],
                       "references": [
                         {
-                          "name": "Microsoft Scripting Runtime"
+                          "name": "Microsoft Scripting Runtime",
+                          "requested": true
                         }
                       ]
                     }
@@ -4756,7 +4759,11 @@ public sealed class LanguageServerProcessTests
                     commonModules = Array.Empty<object>(),
                     references = new[]
                     {
-                        new { name = "Microsoft Excel 16.0 Object Library" }
+                        new
+                        {
+                            name = "Microsoft Excel 16.0 Object Library",
+                            requested = true
+                        }
                     }
                 }
             }
@@ -4813,7 +4820,7 @@ public sealed class LanguageServerProcessTests
     {
         Directory.CreateDirectory(Path.Combine(projectRoot, "src", "Book1"));
         var references = referenceNames
-            .Select(referenceName => new { name = referenceName })
+            .Select(referenceName => new { name = referenceName, requested = true })
             .ToArray();
         var manifest = new
         {

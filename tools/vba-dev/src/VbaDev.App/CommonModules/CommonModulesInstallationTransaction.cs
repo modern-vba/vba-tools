@@ -22,8 +22,11 @@ public sealed class CommonModulesInstallationTransaction
     /// <param name="manifestStore">The project manifest store used to persist installed entries.</param>
     public CommonModulesInstallationTransaction(
         CommonModulesManifestReader manifestReader,
-        IProjectManifestStore manifestStore)
-        : this(manifestReader, new ProjectManifestEditor(manifestStore))
+        IProjectManifestStore manifestStore,
+        IProjectManifestAtomicWriter atomicWriter)
+        : this(
+            manifestReader,
+            new ProjectManifestEditor(manifestStore, atomicWriter))
     {
     }
 

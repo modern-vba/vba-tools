@@ -33,6 +33,7 @@ public sealed class ProjectManifestFixtureTests
 
     [Theory]
     [InlineData("invalid-missing-primary-document.json", "primaryDocument")]
+    [InlineData("invalid-missing-reference-requested.json", "requested")]
     [InlineData("invalid-primary-document-not-defined.json", "primaryDocument")]
     [InlineData("invalid-empty-reference-name.json", "reference name")]
     [InlineData("invalid-empty-common-modules-repository.json", "commonModulesRepository")]
@@ -61,6 +62,9 @@ public sealed class ProjectManifestFixtureTests
     [InlineData("invalid-null-document.json", "Book1")]
     [InlineData("invalid-null-reference.json", "null")]
     [InlineData("invalid-schema-version.json", "schemaVersion")]
+    [InlineData("invalid-standard-library-reference.json", "always active")]
+    [InlineData("invalid-untrimmed-reference-name.json", "leading or trailing")]
+    [InlineData("invalid-duplicate-reference-name.json", "duplicate")]
     [InlineData("invalid-equal-source-roots.json", "Book1")]
     [InlineData("invalid-nested-source-roots.json", "Book2")]
     public void SharedInvalidFixturesFailLanguageServerManifestValidation(

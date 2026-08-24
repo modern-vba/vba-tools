@@ -185,9 +185,10 @@ Usage:
 Options:
   --project <path>               Project root containing vba-project.json.
   --document <name>, -d <name>   Document name from the project manifest.
+  --format <text|json>, -f <text|json> Reference mutation output format.
 ```
 
-Reference names are human-visible `Reference.Description`-style names. The command edits `vba-project.json` only.
+Reference names are human-visible `Reference.Description`-style names. The command edits `vba-project.json` only. `Visual Basic For Applications` is always active and cannot be selected explicitly.
 
 ### reference list
 
@@ -226,9 +227,12 @@ Usage:
 Options:
   --project <path>               Project root containing vba-project.json.
   --document <name>, -d <name>   Document name from the project manifest.
+  --format <text|json>, -f <text|json> Reference mutation output format.
 ```
 
 Removing an absent reference succeeds and leaves the manifest unchanged.
+
+Add and remove trim and case-insensitively deduplicate names, then apply one rebased crash-atomic manifest mutation. JSON output uses schema version `1.0` and returns one ordered result per normalized request. Add statuses are `added`, `promoted`, and `alreadyPresent`; remove statuses are `removed` and `alreadyAbsent`.
 
 ### build
 
@@ -465,10 +469,8 @@ Example:
       ],
       "references": [
         {
-          "name": "Visual Basic For Applications"
-        },
-        {
-          "name": "Microsoft Excel 16.0 Object Library"
+          "name": "Microsoft Excel 16.0 Object Library",
+          "requested": true
         }
       ]
     }
@@ -504,11 +506,14 @@ Example:
 | `documents.<document>.commonModules[].testOnly` | `true` when publish excludes the source; build still imports it normally. |
 | `documents.<document>.references[]` | Desired VBA project references for the document. |
 | `documents.<document>.references[].name` | Human-visible `Reference.Description`-style reference name. |
+| `documents.<document>.references[].requested` | `true` when selected directly; `false` when retained only as a CommonModules dependency. |
 | `commonModulesRepository` | CommonModules repository path, or `null` when no repository is discovered. |
 | `commandDefaults.test.format` | Default test output format. The generated value is `text`. |
 | `commandDefaults.test.executionTimeoutSeconds` | Optional test macro execution timeout in positive whole seconds. The built-in default is `600`. |
 | `commandDefaults.excelAutomation.workbookOpenTimeoutSeconds` | Optional workbook-open timeout in positive whole seconds. The built-in default is `300`. |
 | `commandDefaults.excelAutomation.workbookSaveTimeoutSeconds` | Optional workbook-save timeout in positive whole seconds. The built-in default is `300`. |
+
+Manifest mutation commands transiently own the sibling marker `vba-project.json.vba-dev.lock`. `vba-dev` never edits ignore files, but repository owners may optionally add that exact entry to `.gitignore`.
 
 Workbook open and save timeouts are project-level manifest defaults. `vba-dev`
 does not expose per-invocation command-line options for these two values.

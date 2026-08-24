@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "projectName": "ReferencesProject",
+  "projectName": "MissingReferenceRequested",
   "primaryDocument": "Book1",
   "documents": {
     "Book1": {
@@ -12,12 +12,7 @@
       "commonModules": [],
       "references": [
         {
-          "name": "Microsoft Scripting Runtime",
-          "requested": true
-        },
-        {
-          "name": "OLE Automation",
-          "requested": false
+          "name": "OLE Automation"
         }
       ]
     }

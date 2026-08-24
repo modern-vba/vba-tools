@@ -133,7 +133,7 @@ public sealed class ProjectManifestTests
         var projectRoot = temp.CreateDirectory("CanonicalProject");
         var manifestPath = Path.Combine(projectRoot, ProjectManifest.ManifestFileName);
         var nonCanonicalJson = """
-        {"commandDefaults":{"excelAutomation":{"workbookSaveTimeoutSeconds":180,"workbookOpenTimeoutSeconds":120},"test":{"executionTimeoutSeconds":240,"format":"ndjson"}},"commonModulesRepository":"../common_modules_repo","documents":{"Book1":{"references":[{"name":"Microsoft Scripting Runtime"}],"commonModules":[{"testOnly":false,"requested":true,"moduleFile":"Runtime.bas","name":"Runtime"}],"publishPath":"publish/Book1.xlsm","binPath":"bin/Book1.xlsm","templatePath":"src/Book1/Book1.xlsm","sourcePath":"src/Book1","kind":"excel"}},"primaryDocument":"Book1","projectName":"CanonicalProject","schemaVersion":1}
+        {"commandDefaults":{"excelAutomation":{"workbookSaveTimeoutSeconds":180,"workbookOpenTimeoutSeconds":120},"test":{"executionTimeoutSeconds":240,"format":"ndjson"}},"commonModulesRepository":"../common_modules_repo","documents":{"Book1":{"references":[{"requested":true,"name":"Microsoft Scripting Runtime"}],"commonModules":[{"testOnly":false,"requested":true,"moduleFile":"Runtime.bas","name":"Runtime"}],"publishPath":"publish/Book1.xlsm","binPath":"bin/Book1.xlsm","templatePath":"src/Book1/Book1.xlsm","sourcePath":"src/Book1","kind":"excel"}},"primaryDocument":"Book1","projectName":"CanonicalProject","schemaVersion":1}
         """;
         File.WriteAllText(manifestPath, nonCanonicalJson, new UTF8Encoding(false));
         var store = new JsonProjectManifestStore();
@@ -147,6 +147,68 @@ public sealed class ProjectManifestTests
 
         Assert.Equal(ProjectManifestTestData.ExpectedFullCanonicalBytes(), firstCanonicalBytes);
         Assert.Equal(firstCanonicalBytes, secondCanonicalBytes);
+    }
+
+    [Fact]
+    public void SaveAtomicallyReplacesTheManifestWithoutOpeningTheDestinationForWrite()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = temp.CreateDirectory("AtomicProject");
+        var store = new JsonProjectManifestStore();
+        var initial = ProjectManifest.CreateDefault(
+            "Initial Project",
+            "Book1",
+            projectRoot,
+            null);
+        store.Save(projectRoot, initial);
+        var manifestPath = Path.Combine(projectRoot, ProjectManifest.ManifestFileName);
+        var initialBytes = File.ReadAllBytes(manifestPath);
+        using var oldVersionReader = new FileStream(
+            manifestPath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read | FileShare.Delete);
+
+        store.Save(projectRoot, initial with { ProjectName = "Updated Project" });
+
+        var bytesVisibleThroughOldHandle = new byte[initialBytes.Length];
+        oldVersionReader.ReadExactly(bytesVisibleThroughOldHandle);
+        Assert.Equal(initialBytes, bytesVisibleThroughOldHandle);
+        Assert.Equal("Updated Project", store.Load(manifestPath).ProjectName);
+    }
+
+    [Fact]
+    public void TemporaryWriteFailurePreservesThePriorManifestAndRemovesPartialStaging()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = temp.CreateDirectory("AtomicWriteFailure");
+        var manifestPath = Path.Combine(projectRoot, ProjectManifest.ManifestFileName);
+        var initial = ProjectManifest.CreateDefault(
+            "Initial Project",
+            "Book1",
+            projectRoot,
+            null);
+        new JsonProjectManifestStore().Save(projectRoot, initial);
+        var priorBytes = File.ReadAllBytes(manifestPath);
+        var failingWriter = new ProjectManifestAtomicWriter(
+            TimeProvider.System,
+            (stream, bytes) =>
+            {
+                stream.Write(bytes.Span[..1]);
+                stream.Flush();
+                throw new IOException("simulated stable-write failure");
+            });
+        var store = new JsonProjectManifestStore(failingWriter);
+
+        var error = Assert.Throws<IOException>(() => store.Save(
+            projectRoot,
+            initial with { ProjectName = "Updated Project" }));
+
+        Assert.Contains("simulated stable-write failure", error.Message, StringComparison.Ordinal);
+        Assert.Equal(priorBytes, File.ReadAllBytes(manifestPath));
+        Assert.Empty(Directory.EnumerateFiles(
+            projectRoot,
+            ProjectManifest.ManifestFileName + ".vba-dev.*.tmp"));
     }
 
     [Fact]
@@ -289,18 +351,48 @@ public sealed class ProjectManifestTests
         using var temp = TempDirectory.Create();
         var root = temp.CreateDirectory("Project");
         var manifest = ProjectManifestTestData.FullManifest(root);
-        var editor = new ProjectManifestEditor(new FailingProjectManifestStore());
+        var editor = new ProjectManifestEditor(
+            new FailingProjectManifestStore(),
+            new ProjectManifestAtomicWriter());
 
         var error = Assert.Throws<ProjectManifestEditException>(() => editor.SaveWithRecovery(root, manifest));
 
         var recoveryFile = Assert.Single(Directory.EnumerateFiles(root, "vba-project.failed-*.json"));
         Assert.Equal(recoveryFile, error.Message);
+        Assert.Matches(
+            @"^vba-project\.failed-\d{8}T\d{6}\.\d{3}Z-[0-9a-f]{32}\.json$",
+            Path.GetFileName(recoveryFile));
         var recoveryBytes = File.ReadAllBytes(recoveryFile);
         Assert.Equal(0xff, recoveryBytes[0]);
         Assert.Equal(0xfe, recoveryBytes[1]);
         Assert.Equal(
             ProjectManifestTestData.ExpectedFullCanonicalBytes(),
             recoveryBytes);
+    }
+
+    [Fact]
+    public void ProjectManifestEditorReportsOriginalAndRecoveryValidationFailures()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var manifest = ProjectManifestTestData.FullManifest(root);
+        manifest.Documents["Book1"].References.Add(
+            new VbaProjectReference(VbaProjectReferenceName.StandardLibrary));
+        var editor = new ProjectManifestEditor(
+            new FailingProjectManifestStore(),
+            new ProjectManifestAtomicWriter());
+
+        var error = Assert.Throws<ProjectManifestEditException>(
+            () => editor.SaveWithRecovery(root, manifest));
+
+        Assert.IsType<IOException>(error.InnerException);
+        Assert.Contains("manifest save failed", error.Message, StringComparison.Ordinal);
+        Assert.Contains("recovery file could not be written", error.Message, StringComparison.Ordinal);
+        Assert.Contains(
+            VbaProjectReferenceName.StandardLibrary,
+            error.Message,
+            StringComparison.Ordinal);
+        Assert.Empty(Directory.EnumerateFiles(root, "vba-project.failed-*.json"));
     }
 
     [Fact]
@@ -583,6 +675,7 @@ public sealed class ProjectManifestTests
 
     [Theory]
     [InlineData("invalid-missing-primary-document.json", "primaryDocument")]
+    [InlineData("invalid-missing-reference-requested.json", "requested")]
     [InlineData("invalid-primary-document-not-defined.json", "primaryDocument")]
     [InlineData("invalid-empty-reference-name.json", "reference name")]
     [InlineData("invalid-empty-common-modules-repository.json", "commonModulesRepository")]
@@ -611,6 +704,9 @@ public sealed class ProjectManifestTests
     [InlineData("invalid-null-document.json", "Book1")]
     [InlineData("invalid-null-reference.json", "null")]
     [InlineData("invalid-schema-version.json", "schemaVersion")]
+    [InlineData("invalid-standard-library-reference.json", "always active")]
+    [InlineData("invalid-untrimmed-reference-name.json", "leading or trailing")]
+    [InlineData("invalid-duplicate-reference-name.json", "duplicate")]
     [InlineData("invalid-equal-source-roots.json", "Book1")]
     [InlineData("invalid-nested-source-roots.json", "Book2")]
     public void SharedInvalidFixturesFailVbaDevManifestValidation(string fixtureName, string expectedMessage)
@@ -619,6 +715,17 @@ public sealed class ProjectManifestTests
             () => new JsonProjectManifestStore().Load(ProjectManifestFixturePath(fixtureName)));
 
         Assert.Contains(expectedMessage, ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void DuplicateReferenceDiagnosticRetainsBothConflictingSpellings()
+    {
+        var ex = Assert.Throws<ProjectManifestException>(
+            () => new JsonProjectManifestStore().Load(
+                ProjectManifestFixturePath("invalid-duplicate-reference-name.json")));
+
+        Assert.Contains("Alpha Library", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("aLPHA Library", ex.Message, StringComparison.Ordinal);
     }
 
     private static string ProjectManifestFixturePath(string fixtureName)
@@ -680,7 +787,8 @@ internal static class ProjectManifestTestData
               ],
               "references": [
                 {
-                  "name": "Microsoft Scripting Runtime"
+                  "name": "Microsoft Scripting Runtime",
+                  "requested": true
                 }
               ]
             }

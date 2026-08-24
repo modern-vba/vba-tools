@@ -1747,17 +1747,30 @@ public sealed class DoctorCommandTests
     }
 
     [Fact]
-    public async Task DoctorProjectScopeJsonUsesUniqueIdsForDuplicateReferenceNames()
+    public async Task DoctorProjectScopeJsonUsesUniqueIdsForSameReferenceNameAcrossDocuments()
     {
         using var temp = TempDirectory.Create();
         var root = CreateDoctorProjectWithoutRepository(temp);
         var store = new JsonProjectManifestStore();
         var manifest = store.Load(
             Path.Combine(root, ProjectManifest.ManifestFileName));
+        Directory.CreateDirectory(Path.Combine(root, "src", "SecondBook"));
+        File.WriteAllText(
+            Path.Combine(root, "src", "SecondBook", "SecondBook.xlsm"),
+            string.Empty);
         manifest.Documents["Book1"].References.Add(
             new VbaProjectReference("Unique Library"));
-        manifest.Documents["Book1"].References.Add(
-            new VbaProjectReference("Unique Library"));
+        manifest.Documents["SecondBook"] = manifest.Documents["Book1"] with
+        {
+            TemplatePath = "src/SecondBook/SecondBook.xlsm",
+            SourcePath = "src/SecondBook",
+            BinPath = "bin/SecondBook.xlsm",
+            PublishPath = "publish/SecondBook.xlsm",
+            References =
+            [
+                new VbaProjectReference("Unique Library")
+            ]
+        };
         store.Save(root, manifest);
         var resolver = new FakeVbaProjectReferenceResolver(
             new ResolvedVbaProjectReference(

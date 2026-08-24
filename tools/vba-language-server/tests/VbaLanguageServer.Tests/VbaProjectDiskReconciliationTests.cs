@@ -4292,10 +4292,7 @@ public sealed class VbaProjectDiskReconciliationTests
             Assert.Equal(
                 Path.GetFullPath(outerManifestPath),
                 outer.Resolution.ManifestPath);
-            Assert.Equal(
-                "Visual Basic For Applications",
-                Assert.Single(
-                    outer.Resolution.ReferenceEntries).Name);
+            Assert.Empty(outer.Resolution.ReferenceEntries);
             Assert.True(
                 workspace.ManifestWorkspace
                     .GetReconciliationBaseline(outerManifestUri)
@@ -4390,10 +4387,7 @@ public sealed class VbaProjectDiskReconciliationTests
             Assert.Equal(
                 Path.GetFullPath(outerManifestPath),
                 outer.Resolution.ManifestPath);
-            Assert.Equal(
-                "Visual Basic For Applications",
-                Assert.Single(
-                    outer.Resolution.ReferenceEntries).Name);
+            Assert.Empty(outer.Resolution.ReferenceEntries);
             Assert.True(
                 workspace.ManifestWorkspace
                     .GetReconciliationBaseline(outerManifestUri)
@@ -4916,10 +4910,7 @@ public sealed class VbaProjectDiskReconciliationTests
             Assert.Equal(
                 Path.GetFullPath(outerManifestPath),
                 outer.Resolution.ManifestPath);
-            Assert.Equal(
-                "Visual Basic For Applications",
-                Assert.Single(
-                    outer.Resolution.ReferenceEntries).Name);
+            Assert.Empty(outer.Resolution.ReferenceEntries);
         }
         finally
         {
@@ -5368,10 +5359,7 @@ public sealed class VbaProjectDiskReconciliationTests
                     projectRoot,
                     "vba-project.json")),
                 outer.Resolution.ManifestPath);
-            Assert.Equal(
-                "Visual Basic For Applications",
-                Assert.Single(
-                    outer.Resolution.ReferenceEntries).Name);
+            Assert.Empty(outer.Resolution.ReferenceEntries);
         }
         finally
         {
@@ -6540,10 +6528,7 @@ public sealed class VbaProjectDiskReconciliationTests
                 workspace.ManifestWorkspace.ReloadManifest(manifestUri));
             var recovered = workspace.CreateProjectSnapshot(callerUri);
 
-            Assert.Contains(
-                recovered.Resolution.ReferenceEntries,
-                reference => reference.Name
-                    == "Visual Basic For Applications");
+            Assert.Empty(recovered.Resolution.ReferenceEntries);
         }
         finally
         {
@@ -7145,7 +7130,8 @@ public sealed class VbaProjectDiskReconciliationTests
                     publishPath = "publish/Book1/Book1.xlsm",
                     commonModules = Array.Empty<object>(),
                     references = references
-                        .Select(reference => new { name = reference })
+                        .Where(reference => !VbaProjectReferenceName.IsStandardLibrary(reference))
+                        .Select(reference => new { name = reference, requested = true })
                         .ToArray()
                 }
             }
@@ -7186,7 +7172,8 @@ public sealed class VbaProjectDiskReconciliationTests
             publishPath = $"publish/{documentName}/{documentName}.xlsm",
             commonModules = Array.Empty<object>(),
             references = references
-                .Select(reference => new { name = reference })
+                .Where(reference => !VbaProjectReferenceName.IsStandardLibrary(reference))
+                .Select(reference => new { name = reference, requested = true })
                 .ToArray()
         };
 

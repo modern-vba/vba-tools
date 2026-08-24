@@ -48,6 +48,354 @@ public sealed class ReferenceCommandTests
     }
 
     [Fact]
+    public void AddJsonReturnsOneExhaustiveResultPerNormalizedRequest()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        var application = CommandLineTestFactory.Create(
+            root,
+            vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
+                new ResolvedVbaProjectReference(
+                    "WIDGET LIBRARY",
+                    "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                    1,
+                    0)));
+
+        var result = application.Run([
+            "reference",
+            "add",
+            " widget library ",
+            "WIDGET LIBRARY",
+            "--format",
+            "json"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.StandardError);
+        using var parsed = JsonDocument.Parse(result.StandardOutput);
+        var output = parsed.RootElement;
+        AssertJsonPropertyNames(
+            output,
+            "schemaVersion",
+            "scope",
+            "project",
+            "document",
+            "operation",
+            "complete",
+            "warnings",
+            "results");
+        Assert.Equal("1.0", output.GetProperty("schemaVersion").GetString());
+        Assert.Equal("project", output.GetProperty("scope").GetString());
+        Assert.Equal(Path.GetFullPath(root), output.GetProperty("project").GetString());
+        Assert.Equal("Book1", output.GetProperty("document").GetString());
+        Assert.Equal("add", output.GetProperty("operation").GetString());
+        Assert.True(output.GetProperty("complete").GetBoolean());
+        Assert.Empty(output.GetProperty("warnings").EnumerateArray());
+        var mutation = Assert.Single(output.GetProperty("results").EnumerateArray());
+        AssertJsonPropertyNames(mutation, "requestedName", "storedName", "status");
+        Assert.Equal("widget library", mutation.GetProperty("requestedName").GetString());
+        Assert.Equal("WIDGET LIBRARY", mutation.GetProperty("storedName").GetString());
+        Assert.Equal("added", mutation.GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public void AddJsonReportsAlreadyPresentWithoutResolutionOrManifestRewrite()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp, new VbaProjectReference("MiXeD Library"));
+        var manifestPath = Path.Combine(root, ProjectManifest.ManifestFileName);
+        var initialBytes = File.ReadAllBytes(manifestPath);
+        var resolver = new FakeVbaProjectReferenceResolver
+        {
+            ThrowOnResolve = true
+        };
+        var application = CommandLineTestFactory.Create(
+            root,
+            vbaProjectReferenceResolver: resolver);
+
+        var result = application.Run([
+            "reference",
+            "add",
+            " mixed library ",
+            "--format",
+            "json"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.StandardError);
+        using var parsed = JsonDocument.Parse(result.StandardOutput);
+        var mutation = Assert.Single(
+            parsed.RootElement.GetProperty("results").EnumerateArray());
+        Assert.Equal("mixed library", mutation.GetProperty("requestedName").GetString());
+        Assert.Equal("MiXeD Library", mutation.GetProperty("storedName").GetString());
+        Assert.Equal("alreadyPresent", mutation.GetProperty("status").GetString());
+        Assert.Empty(resolver.RequestedNames);
+        Assert.Equal(initialBytes, File.ReadAllBytes(manifestPath));
+    }
+
+    [Fact]
+    public void AddJsonPromotesCommonModulesOnlyReferenceWithoutResolution()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(
+            temp,
+            new VbaProjectReference("MiXeD Library", requested: false));
+        var resolver = new FakeVbaProjectReferenceResolver
+        {
+            ThrowOnResolve = true
+        };
+        var application = CommandLineTestFactory.Create(
+            root,
+            vbaProjectReferenceResolver: resolver);
+
+        var result = application.Run([
+            "reference",
+            "add",
+            " mixed library ",
+            "--format",
+            "json"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.StandardError);
+        using var parsed = JsonDocument.Parse(result.StandardOutput);
+        var mutation = Assert.Single(
+            parsed.RootElement.GetProperty("results").EnumerateArray());
+        Assert.Equal("mixed library", mutation.GetProperty("requestedName").GetString());
+        Assert.Equal("MiXeD Library", mutation.GetProperty("storedName").GetString());
+        Assert.Equal("promoted", mutation.GetProperty("status").GetString());
+        Assert.Empty(resolver.RequestedNames);
+        var storedReference = Assert.Single(
+            new JsonProjectManifestStore()
+                .Load(Path.Combine(root, ProjectManifest.ManifestFileName))
+                .Documents["Book1"]
+                .References);
+        Assert.Equal("MiXeD Library", storedReference.Name);
+        Assert.True(storedReference.Requested);
+    }
+
+    [Fact]
+    public void AddJsonReportsMixedOutcomesInNormalizedRequestOrder()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(
+            temp,
+            new VbaProjectReference("Already Selected"),
+            new VbaProjectReference("CommonModules Only", requested: false));
+        var application = CommandLineTestFactory.Create(
+            root,
+            vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
+                new ResolvedVbaProjectReference(
+                    "New Library",
+                    "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                    1,
+                    0)));
+
+        var result = application.Run([
+            "reference",
+            "add",
+            " already selected ",
+            " commonmodules only ",
+            " new library ",
+            "--format",
+            "json"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.StandardError);
+        using var parsed = JsonDocument.Parse(result.StandardOutput);
+        var mutations = parsed.RootElement.GetProperty("results").EnumerateArray().ToArray();
+        Assert.Equal(3, mutations.Length);
+        Assert.Equal(
+            ["already selected", "commonmodules only", "new library"],
+            mutations.Select(entry => entry.GetProperty("requestedName").GetString()));
+        Assert.Equal(
+            ["Already Selected", "CommonModules Only", "New Library"],
+            mutations.Select(entry => entry.GetProperty("storedName").GetString()));
+        Assert.Equal(
+            ["alreadyPresent", "promoted", "added"],
+            mutations.Select(entry => entry.GetProperty("status").GetString()));
+    }
+
+    [Fact]
+    public void AddTextRendersEveryOutcomeAndSeparateChangedAndUnchangedCounts()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(
+            temp,
+            new VbaProjectReference("Already Selected"),
+            new VbaProjectReference("CommonModules Only", requested: false));
+        var application = CommandLineTestFactory.Create(
+            root,
+            vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
+                new ResolvedVbaProjectReference(
+                    "New Library",
+                    "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                    1,
+                    0)));
+
+        var result = application.Run([
+            "reference",
+            "add",
+            "already selected",
+            "commonmodules only",
+            "new library"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.StandardError);
+        Assert.Equal(
+            "Reference add (Book1):" + Environment.NewLine +
+            "  Already present: Already Selected (requested as already selected)" + Environment.NewLine +
+            "  Marked as directly requested: CommonModules Only (requested as commonmodules only)" + Environment.NewLine +
+            "  Added: New Library (requested as new library)" + Environment.NewLine +
+            "Added: 1" + Environment.NewLine +
+            "Promoted: 1" + Environment.NewLine +
+            "Unchanged: 1" + Environment.NewLine,
+            result.StandardOutput);
+    }
+
+    [Fact]
+    public void AddRebasesResolvedNamesOntoTheLatestManifestAndPreservesUnrelatedChanges()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        var store = new MutateAfterFirstLoadManifestStore(root, latest =>
+        {
+            latest.Documents["Book1"].References.Add(
+                new VbaProjectReference("Concurrent Addition"));
+        });
+        var application = CommandLineTestFactory.Create(
+            root,
+            vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
+                new ResolvedVbaProjectReference(
+                    "New Library",
+                    "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                    1,
+                    0)),
+            projectManifestStore: store);
+
+        var result = application.Run([
+            "reference",
+            "add",
+            "new library",
+            "--format",
+            "json"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.StandardError);
+        var manifest = new JsonProjectManifestStore().Load(
+            Path.Combine(root, ProjectManifest.ManifestFileName));
+        Assert.Equal(
+            ["Concurrent Addition", "New Library"],
+            manifest.Documents["Book1"].References.Select(reference => reference.Name));
+    }
+
+    [Fact]
+    public void AddFailsCompletelyWhenAnInvocationStartSelectionWasRemoved()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(
+            temp,
+            new VbaProjectReference("Selected Library"));
+        var store = new MutateAfterFirstLoadManifestStore(root, latest =>
+        {
+            latest.Documents["Book1"].References.Clear();
+        });
+        var resolver = new FakeVbaProjectReferenceResolver
+        {
+            ThrowOnResolve = true
+        };
+        var application = CommandLineTestFactory.Create(
+            root,
+            vbaProjectReferenceResolver: resolver,
+            projectManifestStore: store);
+
+        var result = application.Run([
+            "reference",
+            "add",
+            " selected library ",
+            "--format",
+            "json"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(
+            "[referenceSelectionChanged] Reference 'selected library' was removed after reference add began." + Environment.NewLine,
+            result.StandardError);
+        Assert.Empty(resolver.RequestedNames);
+        var manifest = new JsonProjectManifestStore().Load(
+            Path.Combine(root, ProjectManifest.ManifestFileName));
+        Assert.Empty(manifest.Documents["Book1"].References);
+    }
+
+    [Fact]
+    public void AddFailsWhenAResolvedAppendWouldUseAChangedSourceTemplate()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        var otherTemplate = Path.Combine(root, "src", "Book1", "Other.xlsm");
+        File.WriteAllText(otherTemplate, "other template", new UTF8Encoding(false));
+        var store = new MutateAfterFirstLoadManifestStore(root, latest =>
+        {
+            latest.Documents["Book1"] = latest.Documents["Book1"] with
+            {
+                TemplatePath = "src/Book1/Other.xlsm"
+            };
+        });
+        var application = CommandLineTestFactory.Create(
+            root,
+            vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
+                new ResolvedVbaProjectReference(
+                    "New Library",
+                    "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                    1,
+                    0)),
+            projectManifestStore: store);
+
+        var result = application.Run([
+            "reference",
+            "add",
+            "new library",
+            "--format",
+            "json"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Contains("[referenceSourceTemplateChanged]", result.StandardError, StringComparison.Ordinal);
+        var manifest = new JsonProjectManifestStore().Load(
+            Path.Combine(root, ProjectManifest.ManifestFileName));
+        Assert.Equal("src/Book1/Other.xlsm", manifest.Documents["Book1"].TemplatePath);
+        Assert.Empty(manifest.Documents["Book1"].References);
+    }
+
+    [Fact]
+    public void AddRejectsTheAlwaysActiveStandardLibraryBeforeResolutionOrMutation()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        var manifestPath = Path.Combine(root, ProjectManifest.ManifestFileName);
+        var initialBytes = File.ReadAllBytes(manifestPath);
+        var resolver = new FakeVbaProjectReferenceResolver
+        {
+            ThrowOnResolve = true
+        };
+        var application = CommandLineTestFactory.Create(
+            root,
+            vbaProjectReferenceResolver: resolver);
+
+        var result = application.Run([
+            "reference",
+            "add",
+            " visual basic for applications ",
+            "--format",
+            "json"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(
+            "Visual Basic For Applications is always active and cannot be added to or removed from project reference selection." + Environment.NewLine,
+            result.StandardError);
+        Assert.Empty(resolver.RequestedNames);
+        Assert.Equal(initialBytes, File.ReadAllBytes(manifestPath));
+    }
+
+    [Fact]
     public void AddPlansEveryMissingNameBeforeMutationAndStoresTheRepresentativeRegistrySpelling()
     {
         using var temp = TempDirectory.Create();
@@ -167,6 +515,37 @@ public sealed class ReferenceCommandTests
             $"stdout: {result.StandardOutput}{Environment.NewLine}stderr: {result.StandardError}");
         Assert.Contains("Available Library", suggestions);
         Assert.DoesNotContain("Existing Library", suggestions);
+        Assert.Empty(result.StandardError);
+    }
+
+    [Fact]
+    public void AddJsonReportsCleanupWarningsOnlyInsideTheSuccessObject()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp, new VbaProjectReference("Alpha Library"));
+        var resolver = new FakeVbaProjectReferenceResolver
+        {
+            ThrowOnResolve = true
+        };
+        var application = CommandLineTestFactory.Create(
+            root,
+            vbaProjectReferenceResolver: resolver,
+            projectManifestMutationCoordinator: new WarningMutationCoordinator());
+
+        var result = application.Run([
+            "reference",
+            "add",
+            "Alpha Library",
+            "--format",
+            "json"]);
+
+        Assert.Equal(0, result.ExitCode);
+        using var parsed = JsonDocument.Parse(result.StandardOutput);
+        var warning = Assert.Single(
+            parsed.RootElement.GetProperty("warnings").EnumerateArray());
+        AssertJsonPropertyNames(warning, "code", "message");
+        Assert.Equal("leaseMarkerCleanupFailed", warning.GetProperty("code").GetString());
+        Assert.Equal("cleanup warning", warning.GetProperty("message").GetString());
         Assert.Empty(result.StandardError);
     }
 
@@ -472,14 +851,168 @@ public sealed class ReferenceCommandTests
     }
 
     [Fact]
+    public void RemoveJsonReportsRemovedAndAlreadyAbsentResultsInRequestOrder()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp, new VbaProjectReference("MiXeD Library"));
+        var resolver = new FakeVbaProjectReferenceResolver
+        {
+            ThrowOnResolve = true
+        };
+        var application = CommandLineTestFactory.Create(
+            root,
+            vbaProjectReferenceResolver: resolver);
+
+        var result = application.Run([
+            "reference",
+            "remove",
+            " mixed library ",
+            "Already Absent",
+            "MIXED LIBRARY",
+            "--format",
+            "json"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.StandardError);
+        using var parsed = JsonDocument.Parse(result.StandardOutput);
+        var output = parsed.RootElement;
+        Assert.Equal("remove", output.GetProperty("operation").GetString());
+        var mutations = output.GetProperty("results").EnumerateArray().ToArray();
+        Assert.Equal(2, mutations.Length);
+        Assert.Equal("mixed library", mutations[0].GetProperty("requestedName").GetString());
+        Assert.Equal("MiXeD Library", mutations[0].GetProperty("storedName").GetString());
+        Assert.Equal("removed", mutations[0].GetProperty("status").GetString());
+        Assert.Equal("Already Absent", mutations[1].GetProperty("requestedName").GetString());
+        Assert.Equal(JsonValueKind.Null, mutations[1].GetProperty("storedName").ValueKind);
+        Assert.Equal("alreadyAbsent", mutations[1].GetProperty("status").GetString());
+        Assert.Empty(resolver.RequestedNames);
+        var manifest = new JsonProjectManifestStore().Load(
+            Path.Combine(root, ProjectManifest.ManifestFileName));
+        Assert.Empty(manifest.Documents["Book1"].References);
+    }
+
+    [Fact]
+    public void RemoveTextRendersEveryOutcomeAndSeparateChangedAndUnchangedCounts()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp, new VbaProjectReference("MiXeD Library"));
+        var application = CommandLineTestFactory.Create(root);
+
+        var result = application.Run([
+            "reference",
+            "remove",
+            "mixed library",
+            "Already Absent"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.StandardError);
+        Assert.Equal(
+            "Reference remove (Book1):" + Environment.NewLine +
+            "  Removed: MiXeD Library (requested as mixed library)" + Environment.NewLine +
+            "  Already absent: Already Absent" + Environment.NewLine +
+            "Removed: 1" + Environment.NewLine +
+            "Unchanged: 1" + Environment.NewLine,
+            result.StandardOutput);
+    }
+
+    [Fact]
+    public void RemoveAllNoOpJsonEstablishesAnExactBytePreservingSuccess()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp, new VbaProjectReference("Keep Me"));
+        var manifestPath = Path.Combine(root, ProjectManifest.ManifestFileName);
+        var initialBytes = File.ReadAllBytes(manifestPath);
+        var resolver = new FakeVbaProjectReferenceResolver
+        {
+            ThrowOnResolve = true
+        };
+        var application = CommandLineTestFactory.Create(
+            root,
+            vbaProjectReferenceResolver: resolver);
+
+        var result = application.Run([
+            "reference",
+            "remove",
+            " Missing Library ",
+            "--format",
+            "json"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.StandardError);
+        using var parsed = JsonDocument.Parse(result.StandardOutput);
+        var mutation = Assert.Single(
+            parsed.RootElement.GetProperty("results").EnumerateArray());
+        Assert.Equal("Missing Library", mutation.GetProperty("requestedName").GetString());
+        Assert.Equal(JsonValueKind.Null, mutation.GetProperty("storedName").ValueKind);
+        Assert.Equal("alreadyAbsent", mutation.GetProperty("status").GetString());
+        Assert.Equal(initialBytes, File.ReadAllBytes(manifestPath));
+    }
+
+    [Fact]
+    public void RemoveRebasesOntoTheLatestManifestAndPreservesUnrelatedChanges()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(
+            temp,
+            new VbaProjectReference("Remove Me"),
+            new VbaProjectReference("Keep Me"));
+        var store = new MutateAfterFirstLoadManifestStore(root, latest =>
+        {
+            latest.Documents["Book1"].References.Add(
+                new VbaProjectReference("Concurrent Addition"));
+        });
+        var application = CommandLineTestFactory.Create(
+            root,
+            projectManifestStore: store);
+
+        var result = application.Run([
+            "reference",
+            "remove",
+            "remove me",
+            "--format",
+            "json"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.StandardError);
+        var manifest = new JsonProjectManifestStore().Load(
+            Path.Combine(root, ProjectManifest.ManifestFileName));
+        Assert.Equal(
+            ["Keep Me", "Concurrent Addition"],
+            manifest.Documents["Book1"].References.Select(reference => reference.Name));
+    }
+
+    [Fact]
+    public void RemoveRejectsTheAlwaysActiveStandardLibraryBeforeMutation()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp, new VbaProjectReference("MiXeD Library"));
+        var manifestPath = Path.Combine(root, ProjectManifest.ManifestFileName);
+        var initialBytes = File.ReadAllBytes(manifestPath);
+        var application = CommandLineTestFactory.Create(root);
+
+        var result = application.Run([
+            "reference",
+            "remove",
+            "VISUAL BASIC FOR APPLICATIONS",
+            "--format",
+            "json"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(
+            VbaProjectReferenceName.StandardLibrarySelectionError + Environment.NewLine,
+            result.StandardError);
+        Assert.Equal(initialBytes, File.ReadAllBytes(manifestPath));
+    }
+
+    [Fact]
     public void RemoveCompletionOffersOnlyManifestNamesNotAlreadySupplied()
     {
         using var temp = TempDirectory.Create();
         var root = CreateProject(
             temp,
             new VbaProjectReference("Alpha"),
-            new VbaProjectReference("Beta"),
-            new VbaProjectReference("Visual Basic For Applications"));
+            new VbaProjectReference("Beta"));
         var resolver = new FakeVbaProjectReferenceResolver
         {
             ThrowOnResolve = true
@@ -2020,5 +2553,58 @@ public sealed class ReferenceCommandTests
         public VbaProjectReferenceResolutionBatch Resolve(IReadOnlyList<string> referenceNames)
             => throw new InvalidOperationException(
                 "Configured reference resolution was not expected.");
+    }
+
+    private sealed class MutateAfterFirstLoadManifestStore(
+        string projectRoot,
+        Action<ProjectManifest> mutateLatest)
+        : IProjectManifestStore
+    {
+        private readonly JsonProjectManifestStore inner = new();
+        private int loadCount;
+
+        public ProjectManifest Load(string manifestPath)
+        {
+            var invocationStart = inner.Load(manifestPath);
+            if (Interlocked.Increment(ref loadCount) == 1)
+            {
+                var latest = ProjectManifestEditor.Clone(invocationStart);
+                mutateLatest(latest);
+                inner.Save(projectRoot, latest);
+            }
+
+            return invocationStart;
+        }
+
+        public void Save(string root, ProjectManifest manifest)
+            => inner.Save(root, manifest);
+    }
+
+    private sealed class WarningMutationCoordinator : IProjectManifestMutationCoordinator
+    {
+        private readonly ProjectManifestMutationCoordinator inner = new();
+
+        public async Task<ProjectManifestMutationOutcome<TResult>> ExecuteAsync<TResult>(
+            string projectRoot,
+            ProjectManifestMutationCommand command,
+            Func<ProjectManifestMutationSnapshot, ProjectManifestMutationPlan<TResult>> rebase,
+            CancellationToken cancellationToken)
+        {
+            var outcome = await inner.ExecuteAsync(
+                projectRoot,
+                command,
+                rebase,
+                cancellationToken);
+            return outcome with
+            {
+                Warnings =
+                [
+                    .. outcome.Warnings,
+                    new ProjectManifestMutationWarning(
+                        "leaseMarkerCleanupFailed",
+                        "cleanup warning")
+                ]
+            };
+        }
     }
 }

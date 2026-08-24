@@ -9,6 +9,24 @@ namespace VbaDev.Infrastructure.Projects;
 /// </summary>
 public sealed class JsonProjectManifestStore : IProjectManifestStore
 {
+    private readonly IProjectManifestAtomicWriter atomicWriter;
+
+    /// <summary>
+    /// Creates a manifest store with the production crash-atomic writer.
+    /// </summary>
+    public JsonProjectManifestStore()
+        : this(new ProjectManifestAtomicWriter())
+    {
+    }
+
+    /// <summary>
+    /// Creates a manifest store with an explicit crash-atomic writer.
+    /// </summary>
+    public JsonProjectManifestStore(IProjectManifestAtomicWriter atomicWriter)
+    {
+        this.atomicWriter = atomicWriter;
+    }
+
     /// <summary>
     /// Loads and validates a project manifest JSON file.
     /// </summary>
@@ -50,22 +68,7 @@ public sealed class JsonProjectManifestStore : IProjectManifestStore
     public void Save(string projectRoot, ProjectManifest manifest)
     {
         var manifestPath = Path.Combine(projectRoot, ProjectManifest.ManifestFileName);
-        try
-        {
-            ProjectManifestValidator.Validate(manifest, ProjectManifest.ManifestFileName);
-            _ = DocumentSourceSetIsolationValidator.ResolveAndValidate(
-                manifest,
-                manifestPath,
-                ProjectManifest.ManifestFileName);
-        }
-        catch (VbaProjectManifestException ex)
-        {
-            throw new ProjectManifestException(ex.Message, ex);
-        }
-        Directory.CreateDirectory(projectRoot);
-        File.WriteAllBytes(
-            manifestPath,
-            ProjectManifestCanonicalSerializer.SerializeToUtf16LeBytes(manifest));
+        atomicWriter.Save(manifestPath, manifest);
     }
 
 }

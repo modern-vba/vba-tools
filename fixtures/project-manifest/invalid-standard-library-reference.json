@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "projectName": "ReferencesProject",
+  "projectName": "StandardLibrarySelection",
   "primaryDocument": "Book1",
   "documents": {
     "Book1": {
@@ -12,12 +12,8 @@
       "commonModules": [],
       "references": [
         {
-          "name": "Microsoft Scripting Runtime",
+          "name": "visual basic for applications",
           "requested": true
-        },
-        {
-          "name": "OLE Automation",
-          "requested": false
         }
       ]
     }

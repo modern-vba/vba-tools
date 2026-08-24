@@ -112,8 +112,7 @@ export function parseProjectManifestProjection(json: string): ProjectManifestPro
         !isNonemptyString(document.publishPath) ||
         !Array.isArray(document.commonModules) ||
         !document.commonModules.every(isInstalledCommonModule) ||
-        !Array.isArray(document.references) ||
-        !document.references.every(isVbaProjectReference)) {
+        !isVbaProjectReferenceSelection(document.references)) {
       return undefined;
     }
 
@@ -159,9 +158,30 @@ function hasOnlyProperties(
 
 function isVbaProjectReference(value: unknown): boolean {
   return isRecord(value) &&
-    hasOnlyProperties(value, ['name']) &&
+    hasOnlyProperties(value, ['name', 'requested']) &&
     typeof value.name === 'string' &&
-    value.name.trim().length > 0;
+    value.name.trim().length > 0 &&
+    value.name === value.name.trim() &&
+    value.name.toLowerCase() !== 'visual basic for applications' &&
+    typeof value.requested === 'boolean';
+}
+
+function isVbaProjectReferenceSelection(value: unknown): boolean {
+  if (!Array.isArray(value) || !value.every(isVbaProjectReference)) {
+    return false;
+  }
+
+  const names = new Set<string>();
+  for (const reference of value) {
+    const normalizedName = reference.name.toLowerCase();
+    if (names.has(normalizedName)) {
+      return false;
+    }
+
+    names.add(normalizedName);
+  }
+
+  return true;
 }
 
 function isInstalledCommonModule(value: unknown): boolean {

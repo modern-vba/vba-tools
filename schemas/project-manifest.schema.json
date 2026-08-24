@@ -120,13 +120,21 @@
     "reference": {
       "type": "object",
       "required": [
-        "name"
+        "name",
+        "requested"
       ],
       "additionalProperties": false,
       "properties": {
         "name": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "pattern": "^(?:\\S|\\S[\\s\\S]*\\S)$",
+          "not": {
+            "pattern": "^[Vv][Ii][Ss][Uu][Aa][Ll] [Bb][Aa][Ss][Ii][Cc] [Ff][Oo][Rr] [Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss]$"
+          }
+        },
+        "requested": {
+          "type": "boolean"
         }
       }
     },

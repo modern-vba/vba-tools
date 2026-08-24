@@ -8,14 +8,18 @@ namespace VbaDev.App.Projects;
 public sealed class ProjectManifestEditor
 {
     private readonly IProjectManifestStore manifestStore;
+    private readonly IProjectManifestAtomicWriter atomicWriter;
 
     /// <summary>
     /// Creates a project manifest editor.
     /// </summary>
     /// <param name="manifestStore">The manifest store used to persist changes.</param>
-    public ProjectManifestEditor(IProjectManifestStore manifestStore)
+    public ProjectManifestEditor(
+        IProjectManifestStore manifestStore,
+        IProjectManifestAtomicWriter atomicWriter)
     {
         this.manifestStore = manifestStore;
+        this.atomicWriter = atomicWriter;
     }
 
     /// <summary>
@@ -101,25 +105,24 @@ public sealed class ProjectManifestEditor
         }
     }
 
-    private static string WriteManifestRecovery(
+    private string WriteManifestRecovery(
         string projectRoot,
         ProjectManifest manifest,
         Exception manifestSaveException)
     {
         try
         {
-            Directory.CreateDirectory(projectRoot);
-            var recoveryPath = Path.Combine(projectRoot, $"vba-project.failed-{DateTime.Now:yyyyMMdd-HHmmss-fff}.json");
-            File.WriteAllBytes(
-                recoveryPath,
-                ProjectManifestCanonicalSerializer.SerializeToUtf16LeBytes(manifest));
-            return recoveryPath;
+            return atomicWriter.CreateRecovery(projectRoot, manifest);
         }
         catch (IOException ex)
         {
             return RecoveryFailureMessage(manifestSaveException, ex);
         }
         catch (UnauthorizedAccessException ex)
+        {
+            return RecoveryFailureMessage(manifestSaveException, ex);
+        }
+        catch (ProjectManifestException ex)
         {
             return RecoveryFailureMessage(manifestSaveException, ex);
         }

@@ -2408,7 +2408,7 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
                     publishPath = "publish/Book1/Book1.xlsm",
                     commonModules = Array.Empty<object>(),
                     references = referenceNames
-                        .Select(referenceName => new { name = referenceName })
+                        .Select(referenceName => new { name = referenceName, requested = true })
                         .ToArray()
                 }
             }
@@ -2475,7 +2475,7 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
             publishPath = $"publish/{Path.GetFileName(sourcePath)}/Book.xlsm",
             commonModules = Array.Empty<object>(),
             references = referenceNames
-                .Select(referenceName => new { name = referenceName })
+                .Select(referenceName => new { name = referenceName, requested = true })
                 .ToArray()
         };
 

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "projectName": "ReferencesProject",
+  "projectName": "DuplicateReferenceName",
   "primaryDocument": "Book1",
   "documents": {
     "Book1": {
@@ -12,11 +12,11 @@
       "commonModules": [],
       "references": [
         {
-          "name": "Microsoft Scripting Runtime",
+          "name": "Alpha Library",
           "requested": true
         },
         {
-          "name": "OLE Automation",
+          "name": "aLPHA Library",
           "requested": false
         }
       ]

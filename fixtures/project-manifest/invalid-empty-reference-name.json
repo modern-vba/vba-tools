@@ -12,7 +12,8 @@
       "commonModules": [],
       "references": [
         {
-          "name": ""
+          "name": "",
+          "requested": true
         }
       ]
     }
