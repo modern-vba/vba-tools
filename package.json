@@ -35,6 +35,16 @@
   "categories": [
     "Programming Languages"
   ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Language assistance remains available, but managed VBA tooling requires a trusted workspace.",
+      "restrictedConfigurations": [
+        "vbaTools.devtool.path",
+        "vbaTools.debugAdapter.path"
+      ]
+    }
+  },
   "activationEvents": [
     "onLanguage:vba",
     "workspaceContains:**/vba-project.json",
@@ -42,6 +52,7 @@
     "onDebugResolve:vba",
     "onCommand:vbaTools.doctor",
     "onCommand:vbaTools.openVbaDevTerminal",
+    "onCommand:vbaTools.newExcel",
     "onCommand:vbaTools.build",
     "onCommand:vbaTools.test",
     "onCommand:vbaTools.publish",
@@ -177,6 +188,10 @@
       {
         "command": "vbaTools.openVbaDevTerminal",
         "title": "VBA Tools: Open vba-dev Terminal"
+      },
+      {
+        "command": "vbaTools.newExcel",
+        "title": "VBA Tools: Create Excel VBA Project"
       },
       {
         "command": "vbaTools.build",

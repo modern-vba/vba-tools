@@ -51,8 +51,9 @@ will invoke.
 
 Companion executable resolution is itself gated by VS Code Workspace Trust. The
 extension declares limited Restricted Mode support and lists
-`vbaTools.devtool.path` as a restricted configuration, allowing safe language
-assistance to remain available without reading an untrusted workspace override.
+`vbaTools.devtool.path` and `vbaTools.debugAdapter.path` as restricted
+configurations, allowing safe language assistance to remain available without
+reading untrusted workspace executable overrides.
 No managed CLI, Excel/VBIDE, Doctor, debug-adapter, or vba-dev-terminal process
 is resolved or launched while the current window is untrusted. Detecting that
 state at command entry discards the window's prior resolution and any guided

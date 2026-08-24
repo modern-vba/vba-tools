@@ -492,13 +492,33 @@ source.
 
 ---
 
+## Restricted Mode
+
+VBA Tools keeps source viewing and language assistance available in Restricted
+Mode, but blocks managed `vba-dev`, Microsoft Excel/VBIDE, Doctor,
+`vba-debug-adapter`, Test Explorer, debugging, and vba-dev terminal launches.
+A blocked invocation starts no managed process, changes no project, and adds no
+command entry to VBA Tools Output.
+
+`VBA Tools: Create Excel VBA Project` remains visible and offers **Manage
+Workspace Trust** and **Open Empty Window**. Other blocked commands offer
+**Manage Workspace Trust**. These actions only open the corresponding VS Code
+UI; they do not grant trust, start tooling, or resume the command. After granting
+trust, invoke the command again.
+
+While the window is untrusted, VBA Tools does not read
+`vbaTools.devtool.path` or `vbaTools.debugAdapter.path`, so workspace values
+cannot influence executable selection.
+
+---
+
 ## Settings
 
 | Setting | Default | Description |
 | --- | --- | --- |
 | `vbaLanguageServer.trace.server` | `off` | Controls LSP trace output for the VBA language server. |
-| `vbaTools.devtool.path` | empty | Overrides the bundled `vba-dev` executable with a compatible executable. |
-| `vbaTools.debugAdapter.path` | empty | Overrides the bundled `vba-debug-adapter` executable for debugging and VBE Doctor. The adapter must advertise the required Doctor stdin-cancellation feature. A missing or incompatible explicit path fails without falling back to the bundled adapter. |
+| `vbaTools.devtool.path` | empty | Overrides the bundled `vba-dev` executable with a compatible executable. VBA Tools does not read this setting while the window is untrusted. |
+| `vbaTools.debugAdapter.path` | empty | Overrides the bundled `vba-debug-adapter` executable for debugging and VBE Doctor. The adapter must advertise the required Doctor stdin-cancellation feature. A missing or incompatible explicit path fails without falling back to the bundled adapter. VBA Tools does not read this setting while the window is untrusted. |
 | `vbaLanguageServer.blockSkeletonInsertion.enabled` | `true` | Inserts a proven body line and matching terminator after an eligible complete VBA block header; otherwise preserves native Enter. |
 
 ---

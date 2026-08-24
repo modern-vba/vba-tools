@@ -11,6 +11,7 @@ import {
   assertBundledCliCapabilities,
   assertCliPublishSettings,
   assertExtensionDebugPackage,
+  assertExtensionWorkspaceTrustPackage,
   assertLanguageServerPublishSettings,
   assertMarketplacePackageMetadata,
   assertPackagedMarkdownLinks,
@@ -204,6 +205,93 @@ test('extension package metadata activates the packaged VBA debug entry point dy
   }
 });
 
+test('extension package metadata declares limited Restricted Mode support', async () => {
+  const packageJson = JSON.parse(
+    await fs.readFile(new URL('../package.json', import.meta.url), 'utf8')
+  );
+  const unsupportedPackage = structuredClone(packageJson);
+  unsupportedPackage.capabilities.untrustedWorkspaces.supported = true;
+
+  assert.doesNotThrow(() => assertExtensionWorkspaceTrustPackage(packageJson));
+  assert.throws(
+    () => assertExtensionWorkspaceTrustPackage(unsupportedPackage),
+    /limited Restricted Mode support/i
+  );
+});
+
+test('extension package metadata describes the safe Restricted Mode language surface', async () => {
+  const packageJson = JSON.parse(
+    await fs.readFile(new URL('../package.json', import.meta.url), 'utf8')
+  );
+
+  for (const description of ['', 'Managed tooling requires trust.']) {
+    const undescribedPackage = structuredClone(packageJson);
+    undescribedPackage.capabilities.untrustedWorkspaces.description = description;
+
+    assert.throws(
+      () => assertExtensionWorkspaceTrustPackage(undescribedPackage),
+      /language assistance.*Restricted Mode/i
+    );
+  }
+});
+
+test('extension package metadata restricts every managed executable override', async () => {
+  const packageJson = JSON.parse(
+    await fs.readFile(new URL('../package.json', import.meta.url), 'utf8')
+  );
+
+  for (const executableSetting of [
+    'vbaTools.devtool.path',
+    'vbaTools.debugAdapter.path'
+  ]) {
+    const unrestrictedPackage = structuredClone(packageJson);
+    unrestrictedPackage.capabilities.untrustedWorkspaces.restrictedConfigurations =
+      unrestrictedPackage.capabilities.untrustedWorkspaces.restrictedConfigurations.filter(
+        (setting) => setting !== executableSetting
+      );
+
+    assert.throws(
+      () => assertExtensionWorkspaceTrustPackage(unrestrictedPackage),
+      /restricted executable configurations/i
+    );
+  }
+});
+
+test('extension package keeps Create Excel VBA Project discoverable in Restricted Mode', async () => {
+  const packageJson = JSON.parse(
+    await fs.readFile(new URL('../package.json', import.meta.url), 'utf8')
+  );
+  const missingActivation = structuredClone(packageJson);
+  missingActivation.activationEvents = missingActivation.activationEvents.filter(
+    (event) => event !== 'onCommand:vbaTools.newExcel'
+  );
+  const wrongTitle = structuredClone(packageJson);
+  wrongTitle.contributes.commands.find(
+    (command) => command.command === 'vbaTools.newExcel'
+  ).title = 'Create project';
+  const disabledCommand = structuredClone(packageJson);
+  disabledCommand.contributes.commands.find(
+    (command) => command.command === 'vbaTools.newExcel'
+  ).enablement = 'isWorkspaceTrusted';
+  const hiddenCommand = structuredClone(packageJson);
+  hiddenCommand.contributes.menus = {
+    commandPalette: [{ command: 'vbaTools.newExcel', when: 'isWorkspaceTrusted' }]
+  };
+
+  assert.doesNotThrow(() => assertExtensionWorkspaceTrustPackage(packageJson));
+  for (const undiscoverablePackage of [
+    missingActivation,
+    wrongTitle,
+    disabledCommand,
+    hiddenCommand
+  ]) {
+    assert.throws(
+      () => assertExtensionWorkspaceTrustPackage(undiscoverablePackage),
+      /discoverable.*Restricted Mode/i
+    );
+  }
+});
+
 test('extension package metadata exposes the complete VBA launch selector schema', async () => {
   const packageJson = JSON.parse(
     await fs.readFile(new URL('../package.json', import.meta.url), 'utf8')
@@ -252,15 +340,18 @@ test('extension package metadata includes the complete user command surface', as
   const packageJson = JSON.parse(
     await fs.readFile(new URL('../package.json', import.meta.url), 'utf8')
   );
-  const missingDoctorCommand = structuredClone(packageJson);
-  missingDoctorCommand.contributes.commands = missingDoctorCommand.contributes.commands.filter(
-    (command) => command.command !== 'vbaTools.doctor'
-  );
 
-  assert.throws(
-    () => assertExtensionDebugPackage(missingDoctorCommand),
-    /required extension command.*vbaTools\.doctor/i
-  );
+  for (const commandId of ['vbaTools.doctor', 'vbaTools.newExcel']) {
+    const missingCommand = structuredClone(packageJson);
+    missingCommand.contributes.commands = missingCommand.contributes.commands.filter(
+      (command) => command.command !== commandId
+    );
+
+    assert.throws(
+      () => assertExtensionDebugPackage(missingCommand),
+      new RegExp(`required extension command.*${commandId.replaceAll('.', '\\.')}`, 'i')
+    );
+  }
 });
 
 test('VSIX content rules require the bundled CLI artifact and exclude source tree files', () => {
@@ -791,9 +882,10 @@ test('packaging verification checks file contents publish settings and bundled C
     ['package.json', JSON.stringify(extensionPackageJson)],
     ['client/out/extension.js', null]
   ]);
+  let inspectedPackageJson = extensionPackageJson;
   const inspectPackage = async () => ({
     files: packagedFiles,
-    packageJson: extensionPackageJson,
+    packageJson: inspectedPackageJson,
     vsixManifest: `<Identity Publisher="modern-vba" Version="${extensionPackageJson.version}" TargetPlatform="win32-x64" />`
   });
 
@@ -812,6 +904,14 @@ test('packaging verification checks file contents publish settings and bundled C
     ],
     ['--version']
   ]);
+
+  inspectedPackageJson = structuredClone(extensionPackageJson);
+  delete inspectedPackageJson.capabilities;
+  await assert.rejects(
+    () => verifyVsixPackaging({ root, runCommand, inspectPackage }),
+    /limited Restricted Mode support/i
+  );
+  inspectedPackageJson = extensionPackageJson;
 
   await fs.writeFile(
     path.join(root, 'package.json'),

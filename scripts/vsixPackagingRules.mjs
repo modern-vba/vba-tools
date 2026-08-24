@@ -12,6 +12,7 @@ const defaultDistributionManifest = readDistributionManifest();
 const requiredExtensionCommandIds = [
   'vbaTools.doctor',
   'vbaTools.openVbaDevTerminal',
+  'vbaTools.newExcel',
   'vbaTools.build',
   'vbaTools.test',
   'vbaTools.publish',
@@ -52,6 +53,7 @@ export async function verifyVsixPackaging(options = {}) {
   );
   assertMarketplacePackageMetadata(extensionPackageJson);
   assertExtensionDebugPackage(extensionPackageJson);
+  assertExtensionWorkspaceTrustPackage(extensionPackageJson);
 
   await fs.access(bundledCliPath);
   await fs.access(bundledDebugAdapterPath);
@@ -86,6 +88,7 @@ export async function verifyVsixPackaging(options = {}) {
     assertVsixContents([...packaged.files.keys()], manifest);
     assertMarketplacePackageMetadata(packaged.packageJson);
     assertExtensionDebugPackage(packaged.packageJson);
+    assertExtensionWorkspaceTrustPackage(packaged.packageJson);
     assertPackagedVsixMetadata(packaged.vsixManifest, packaged.packageJson, targetPlatform);
     assertPackagedMarkdownLinks(packaged.files);
   } finally {
@@ -289,6 +292,59 @@ export function assertExtensionDebugPackage(packageJson) {
     ) {
       throw new Error(`Extension package metadata must include required extension command ${commandId}.`);
     }
+  }
+}
+
+export function assertExtensionWorkspaceTrustPackage(packageJson) {
+  const untrustedWorkspaces = packageJson?.capabilities?.untrustedWorkspaces;
+  if (untrustedWorkspaces?.supported !== 'limited') {
+    throw new Error(
+      'Extension package metadata must declare limited Restricted Mode support.'
+    );
+  }
+  if (
+    typeof untrustedWorkspaces.description !== 'string' ||
+    !/language assistance/i.test(untrustedWorkspaces.description)
+  ) {
+    throw new Error(
+      'Extension package metadata must describe language assistance as the safe Restricted Mode surface.'
+    );
+  }
+  const restrictedConfigurations = untrustedWorkspaces.restrictedConfigurations;
+  if (
+    !isStringArray(restrictedConfigurations) ||
+    !['vbaTools.devtool.path', 'vbaTools.debugAdapter.path'].every(
+      (setting) => restrictedConfigurations.includes(setting)
+    )
+  ) {
+    throw new Error(
+      'Extension package metadata must list both managed executable configurations as restricted executable configurations.'
+    );
+  }
+
+  const commands = packageJson.contributes?.commands;
+  const createCommand = Array.isArray(commands)
+    ? commands.find(
+        (command) => isRecord(command) && command.command === 'vbaTools.newExcel'
+      )
+    : undefined;
+  const commandPalette = packageJson.contributes?.menus?.commandPalette;
+  const hasContextCondition = Array.isArray(commandPalette) && commandPalette.some(
+    (entry) => isRecord(entry)
+      && entry.command === 'vbaTools.newExcel'
+      && Object.hasOwn(entry, 'when')
+  );
+  if (
+    !isStringArray(packageJson.activationEvents) ||
+    !packageJson.activationEvents.includes('onCommand:vbaTools.newExcel') ||
+    !isRecord(createCommand) ||
+    createCommand.title !== 'VBA Tools: Create Excel VBA Project' ||
+    Object.hasOwn(createCommand, 'enablement') ||
+    hasContextCondition
+  ) {
+    throw new Error(
+      'Extension package metadata must keep Create Excel VBA Project discoverable in Restricted Mode.'
+    );
   }
 }
 

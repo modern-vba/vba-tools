@@ -91,6 +91,7 @@ export interface WorkbookBackedTestExplorerOptions {
   captureSourceSnapshot: CaptureSourceSnapshot;
   capabilitiesProcess?: ProcessRunner | undefined;
   startProcess?: StartVbaDevProcess | undefined;
+  requireTrustedWorkspace?: (() => Promise<boolean>) | undefined;
   outputChannel: VbaToolsOutputChannel;
   showErrorMessage: (message: string) => Thenable<unknown> | Promise<unknown>;
   requiredContract?: RequiredVbaDevContract | undefined;
@@ -212,6 +213,11 @@ async function runTests(
   token: CommandCancellationToken,
   runOptions: TestRunOptions
 ): Promise<void> {
+  if (options.requireTrustedWorkspace !== undefined
+      && !await options.requireTrustedWorkspace()) {
+    return;
+  }
+
   const run = options.controller.createTestRun(request);
   try {
     const items = nodeIndex.selectedRunnableItems(request);

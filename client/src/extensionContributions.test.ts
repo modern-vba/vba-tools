@@ -92,6 +92,73 @@ test('extension activates for workspaces containing a VBA project manifest', () 
   assert.equal(packageJson.activationEvents?.includes('onLanguage:json'), false);
 });
 
+test('extension declares limited Restricted Mode support and restricts executable overrides', () => {
+  const packageJson = readPackageJson<{
+    capabilities?: {
+      untrustedWorkspaces?: {
+        supported?: boolean | 'limited';
+        description?: string;
+        restrictedConfigurations?: string[];
+      };
+    };
+  }>();
+
+  assert.equal(packageJson.capabilities?.untrustedWorkspaces?.supported, 'limited');
+  assert.match(
+    packageJson.capabilities?.untrustedWorkspaces?.description ?? '',
+    /language assistance/i
+  );
+  const restrictedConfigurations =
+    packageJson.capabilities?.untrustedWorkspaces?.restrictedConfigurations ?? [];
+  assert.ok(restrictedConfigurations.includes('vbaTools.devtool.path'));
+  assert.ok(restrictedConfigurations.includes('vbaTools.debugAdapter.path'));
+});
+
+test('restricted activation keeps language assistance safe without eager managed tooling or Output', () => {
+  const extensionSource = fs.readFileSync(
+    path.join(process.cwd(), 'client', 'src', 'extension.ts'),
+    'utf8'
+  );
+
+  assert.match(extensionSource, /outputChannel = createLazyOutputChannel\(/);
+  assert.match(
+    extensionSource,
+    /resolveCompanionExecutableForLanguageActivation\(\s*workspace\.isTrusted,\s*\(\) => vbaDevResolver\.resolve\(\)/
+  );
+  assert.match(
+    extensionSource,
+    /createVbaLanguageServerOptions\(\{[\s\S]*?vbaDevExecutablePath: initialVbaDevResolution\?\.executablePath/
+  );
+});
+
+test('extension wires Workspace Trust into every non-palette managed launch surface', () => {
+  const extensionSource = fs.readFileSync(
+    path.join(process.cwd(), 'client', 'src', 'extension.ts'),
+    'utf8'
+  );
+
+  assert.match(
+    extensionSource,
+    /invalidateManagedToolingState: \(\) => vbaDevResolver\.invalidate\(\)/
+  );
+  assert.match(
+    extensionSource,
+    /new VscodeDebugIntegration\(\{[\s\S]*?requireTrustedWorkspace: \(\) => \(\s*workspaceTrustGate\.requireTrusted\('managed-tooling'\)/
+  );
+  assert.match(
+    extensionSource,
+    /createVbaDebugConfigurationProvider\([\s\S]*?\(\) => workspaceTrustGate\.requireTrusted\('managed-tooling'\)/
+  );
+  assert.match(
+    extensionSource,
+    /createWorkbookBackedTestExplorer\(\{[\s\S]*?requireTrustedWorkspace: \(\) => \(\s*workspaceTrustGate\.requireTrusted\('managed-tooling'\)/
+  );
+  assert.match(
+    extensionSource,
+    /promptForActiveWorkbookBackedProject\([\s\S]*?command\.commandId === 'vbaTools\.doctor'[\s\S]*?\?\.handler/
+  );
+});
+
 test('extension contributes optional VBA debug selectors with an atomic procedure pair', () => {
   const packageJson = readPackageJson<{
     activationEvents?: string[];
@@ -285,6 +352,39 @@ test('extension contributes the vba-dev Terminal command', () => {
   assert.ok(packageJson.activationEvents?.includes('onCommand:vbaTools.openVbaDevTerminal'));
 });
 
+test('extension keeps Create Excel VBA Project discoverable without a context condition', () => {
+  const packageJson = readPackageJson<{
+    activationEvents?: string[];
+    contributes?: {
+      commands?: Array<{
+        command?: string;
+        title?: string;
+        enablement?: string;
+      }>;
+      menus?: {
+        commandPalette?: Array<{ command?: string; when?: string }>;
+      };
+    };
+  }>();
+
+  assert.deepEqual(
+    packageJson.contributes?.commands?.find(
+      (command) => command.command === 'vbaTools.newExcel'
+    ),
+    {
+      command: 'vbaTools.newExcel',
+      title: 'VBA Tools: Create Excel VBA Project'
+    }
+  );
+  assert.ok(packageJson.activationEvents?.includes('onCommand:vbaTools.newExcel'));
+  assert.equal(
+    packageJson.contributes?.menus?.commandPalette?.some(
+      (item) => item.command === 'vbaTools.newExcel' && item.when !== undefined
+    ) ?? false,
+    false
+  );
+});
+
 test('extension contributes daily WorkbookBackedProject commands only', () => {
   const packageJson = readPackageJson<{
     activationEvents?: string[];
@@ -310,7 +410,6 @@ test('extension contributes daily WorkbookBackedProject commands only', () => {
     assert.ok(packageJson.activationEvents?.includes(`onCommand:${expected[0]}`));
   }
 
-  assert.equal(commands.some((command) => command.command === 'vbaTools.newExcel'), false);
   assert.equal(commands.some((command) => command.command === 'vbaTools.capabilities'), false);
   assert.equal(commands.some((command) => command.command === 'vbaTools.testNoBuild'), false);
 });
@@ -323,7 +422,11 @@ test('extension forwards export command request arguments to dedicated orchestra
 
   assert.match(
     extensionSource,
-    /commands\.registerCommand\('vbaTools\.export', async \(request\?: ExportCommandRequest\) => \{\s*await runExportCommandWithConsent\(context, vbaDevResolver, request\);/
+    /'vbaTools\.export': async \(request\?: unknown\) => \{\s*await runExportCommandWithConsent\(\s*context,\s*vbaDevResolver,\s*request as ExportCommandRequest \| undefined/
+  );
+  assert.match(
+    extensionSource,
+    /createManagedToolingCommandHandlers\(\s*workspaceTrustGate,\s*managedToolingOperations\s*\)/
   );
 });
 

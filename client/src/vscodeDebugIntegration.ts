@@ -62,7 +62,8 @@ let debugConfigurationObserver: VbaDebugConfigurationObserver | undefined;
 
 export function createVbaDebugConfigurationProvider(
   integration: VbaDebugConfigurationResolver,
-  reportError: (message: string) => unknown
+  reportError: (message: string) => unknown,
+  requireTrustedWorkspace?: (() => Promise<boolean>) | undefined
 ): VbaDebugConfigurationProviderLike {
   return {
     provideDebugConfigurations: () => integration.provideDynamicDebugConfigurations(),
@@ -79,6 +80,11 @@ export function createVbaDebugConfigurationProvider(
       workspaceFolderPath,
       cancellationToken
     ) => {
+      if (requireTrustedWorkspace !== undefined
+          && !await requireTrustedWorkspace()) {
+        return undefined;
+      }
+
       try {
         const resolvedConfiguration = await integration.resolveDebugConfiguration(
           resolveWorkspaceRelativeProject(configuration, workspaceFolderPath),
@@ -170,6 +176,7 @@ export interface VscodeDebugIntegrationOptions {
   debugConfigurationHost?: VbaDebugConfigurationHost | undefined;
   debugAdapterCleanupProcess?: ProcessRunner | undefined;
   reportDebugAdapterCleanupWarning?: ((message: string) => unknown) | undefined;
+  requireTrustedWorkspace?: (() => Promise<boolean>) | undefined;
 }
 
 export function handleVbaDebugLifecycleRequest(
@@ -518,6 +525,11 @@ export class VscodeDebugIntegration {
   public async createDebugAdapterExecutable(
     session: VbaDebugSessionLike
   ): Promise<VbaDebugAdapterExecutableSpec | undefined> {
+    if (this.options.requireTrustedWorkspace !== undefined
+        && !await this.options.requireTrustedWorkspace()) {
+      return undefined;
+    }
+
     if (this.shutdownRequested) {
       return undefined;
     }

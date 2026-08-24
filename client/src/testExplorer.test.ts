@@ -1998,6 +1998,54 @@ test('Test Explorer stops before process startup without duplicating a reported 
   ]);
 });
 
+test('Test Explorer run profiles check Workspace Trust before creating output or resolving tooling', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const controller = new FakeTestController();
+  const output: string[] = [];
+  let resolverCalls = 0;
+  let snapshotCaptures = 0;
+  let processStarts = 0;
+  let trustChecks = 0;
+  const explorer = createExplorer(controller, {
+    manifests: new Map([
+      [path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]
+    ]),
+    output,
+    requireTrustedWorkspace: async () => {
+      trustChecks += 1;
+      return false;
+    },
+    vbaDevResolver: {
+      resolve: async () => {
+        resolverCalls += 1;
+        throw new Error('Workspace Trust must be checked first');
+      }
+    },
+    captureSourceSnapshot: async () => {
+      snapshotCaptures += 1;
+      throw new Error('Workspace Trust must be checked first');
+    },
+    startProcess: () => {
+      processStarts += 1;
+      throw new Error('Workspace Trust must be checked first');
+    }
+  });
+  await explorer.refresh();
+
+  await explorer.run({ include: [controller.items[0]] }, uncancelledToken());
+  await controller.runProfiles[1].runHandler(
+    { include: [controller.items[0]] },
+    uncancelledToken()
+  );
+
+  assert.equal(trustChecks, 2);
+  assert.equal(resolverCalls, 0);
+  assert.equal(snapshotCaptures, 0);
+  assert.equal(processStarts, 0);
+  assert.deepEqual(output, []);
+  assert.equal(controller.runs.length, 0);
+});
+
 function createExplorer(
   controller: FakeTestController,
   options: {
@@ -2016,6 +2064,7 @@ function createExplorer(
     captureSourceSnapshot?: TestCaptureSourceSnapshot;
     errorMessages?: string[];
     vbaDevResolver?: Parameters<typeof createWorkbookBackedTestExplorer>[0]['vbaDevResolver'];
+    requireTrustedWorkspace?: () => Promise<boolean>;
   }
 ) {
   const calls = options.calls ?? [];
@@ -2027,6 +2076,7 @@ function createExplorer(
     extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
     configuredDevToolPath: path.join('D:', 'tools', 'vba-dev.exe'),
     vbaDevResolver: options.vbaDevResolver,
+    requireTrustedWorkspace: options.requireTrustedWorkspace,
     workspaceRoots: [path.join('C:', 'work')],
     findProjectManifests: async () => [...options.manifests.keys()],
     readTextFile: options.readTextFile ?? (async (filePath) => {

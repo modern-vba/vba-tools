@@ -134,6 +134,8 @@ export function isReportedVbaDevResolutionFailure(
 export class VbaDevSessionResolver implements CompanionExecutableResolver {
   private resolved: CompanionExecutableResolution | undefined;
   private inFlight: Promise<CompanionExecutableResolution> | undefined;
+  private configuredFallbackNoticeReported = false;
+  private resolutionGeneration = 0;
 
   public constructor(private readonly options: VbaDevSessionResolverOptions) {}
 
@@ -145,12 +147,13 @@ export class VbaDevSessionResolver implements CompanionExecutableResolver {
       return this.inFlight;
     }
 
-    const attempt = this.resolveUncached();
+    const generation = this.resolutionGeneration;
+    const attempt = this.resolveUncached(generation);
     this.inFlight = attempt;
     void attempt.then(
       (resolution) => {
-        this.resolved = resolution;
         if (this.inFlight === attempt) {
+          this.resolved = resolution;
           this.inFlight = undefined;
         }
       },
@@ -161,6 +164,12 @@ export class VbaDevSessionResolver implements CompanionExecutableResolver {
       }
     );
     return attempt;
+  }
+
+  public invalidate(): void {
+    this.resolutionGeneration += 1;
+    this.resolved = undefined;
+    this.inFlight = undefined;
   }
 
   public async readActiveWindowsCodePage(): Promise<number> {
@@ -183,7 +192,7 @@ export class VbaDevSessionResolver implements CompanionExecutableResolver {
     return codePage;
   }
 
-  private async resolveUncached(): Promise<CompanionExecutableResolution> {
+  private async resolveUncached(generation: number): Promise<CompanionExecutableResolution> {
     const configuredCandidate = this.options.configuredPathProvider?.()
       ?? this.options.configuredPath;
     const configuredPath = configuredCandidate?.trim().length
@@ -210,7 +219,7 @@ export class VbaDevSessionResolver implements CompanionExecutableResolver {
           bundledPath,
           source: 'configured'
         });
-        this.reportLog({
+        this.reportLogForGeneration(generation, {
           outcome: 'resolved',
           configuredPath,
           bundledPath,
@@ -243,7 +252,7 @@ export class VbaDevSessionResolver implements CompanionExecutableResolver {
         source: 'bundled',
         configuredFailure
       });
-      this.reportLog({
+      this.reportLogForGeneration(generation, {
         outcome: 'resolved',
         configuredPath,
         bundledPath,
@@ -252,8 +261,8 @@ export class VbaDevSessionResolver implements CompanionExecutableResolver {
         requiredContract,
         failures: [...failures]
       });
-      if (configuredPath !== undefined) {
-        this.reportNotice({
+      if (configuredPath !== undefined && !this.configuredFallbackNoticeReported) {
+        this.configuredFallbackNoticeReported = this.reportNoticeForGeneration(generation, {
           severity: 'warning',
           message: configuredVbaDevFallbackMessage,
           actions: [
@@ -269,14 +278,14 @@ export class VbaDevSessionResolver implements CompanionExecutableResolver {
         executablePath: bundledPath,
         message: errorMessage(error)
       });
-      this.reportLog({
+      this.reportLogForGeneration(generation, {
         outcome: 'failed',
         configuredPath,
         bundledPath,
         requiredContract,
         failures: [...failures]
       });
-      const resolutionNoticeReported = this.reportNotice({
+      const resolutionNoticeReported = this.reportNoticeForGeneration(generation, {
         severity: 'error',
         message: noCompatibleVbaDevMessage,
         actions: [
@@ -301,6 +310,12 @@ export class VbaDevSessionResolver implements CompanionExecutableResolver {
     }
   }
 
+  private reportLogForGeneration(generation: number, log: VbaDevResolutionLog): void {
+    if (generation === this.resolutionGeneration) {
+      this.reportLog(log);
+    }
+  }
+
   private reportNotice(notice: VbaDevResolutionNotice): boolean {
     if (this.options.reportNotice === undefined) {
       return false;
@@ -311,6 +326,15 @@ export class VbaDevSessionResolver implements CompanionExecutableResolver {
     } catch {
       return false;
     }
+  }
+
+  private reportNoticeForGeneration(
+    generation: number,
+    notice: VbaDevResolutionNotice
+  ): boolean {
+    return generation === this.resolutionGeneration
+      ? this.reportNotice(notice)
+      : false;
   }
 }
 

@@ -114,6 +114,13 @@ import {
 } from './vscodeDebugIntegration';
 import type { VbaDebugConfiguration } from './vscodeDebugConfiguration';
 import { decodeVbaSourceFileText } from './vbaSourceFileText';
+import { createLazyOutputChannel } from './lazyOutputChannel';
+import {
+  ManagedToolingCommandOperations,
+  ManagedToolingWorkspaceTrustGate,
+  createManagedToolingCommandHandlers,
+  resolveCompanionExecutableForLanguageActivation
+} from './workspaceTrust';
 
 let client: LanguageClient | undefined;
 let outputChannel: OutputChannel | undefined;
@@ -121,7 +128,10 @@ let toolDiagnosticReporter: VbaDevDiagnosticReporter | undefined;
 let activeVscodeDebugIntegration: VscodeDebugIntegration | undefined;
 
 export async function activate(context: ExtensionContext): Promise<void> {
-  outputChannel = window.createOutputChannel('VBA Tools');
+  outputChannel = createLazyOutputChannel(
+    'VBA Tools',
+    () => window.createOutputChannel('VBA Tools')
+  );
   context.subscriptions.push(outputChannel);
   const vbaDevResolver = new VbaDevSessionResolver({
     extensionRoot: context.extensionPath,
@@ -129,9 +139,20 @@ export async function activate(context: ExtensionContext): Promise<void> {
     reportLog: (log) => appendVbaDevResolutionLog(outputChannel, log),
     reportNotice: (notice) => reportVbaDevResolutionNotice(outputChannel, notice)
   });
+  const workspaceTrustGate = new ManagedToolingWorkspaceTrustGate({
+    isTrusted: () => workspace.isTrusted,
+    invalidateManagedToolingState: () => vbaDevResolver.invalidate(),
+    showWarningMessage: (message, ...actions) => (
+      window.showWarningMessage(message, ...actions)
+    ),
+    executeCommand: (command) => commands.executeCommand(command)
+  });
   let initialVbaDevResolution: CompanionExecutableResolution | undefined;
   try {
-    initialVbaDevResolution = await vbaDevResolver.resolve();
+    initialVbaDevResolution = await resolveCompanionExecutableForLanguageActivation(
+      workspace.isTrusted,
+      () => vbaDevResolver.resolve()
+    );
   } catch (error) {
     if (!isReportedVbaDevResolutionFailure(error)) {
       reportUnreportedVbaDevResolutionFailure(outputChannel, error);
@@ -142,6 +163,9 @@ export async function activate(context: ExtensionContext): Promise<void> {
     getConfiguredDevToolPath,
     getConfiguredDebugAdapterPath,
     vbaDevResolver,
+    requireTrustedWorkspace: () => (
+      workspaceTrustGate.requireTrusted('managed-tooling')
+    ),
     reportDebugAdapterCleanupWarning: (message) => {
       outputChannel?.appendLine(`[vba-debug-adapter] ${message}`);
     },
@@ -221,7 +245,8 @@ export async function activate(context: ExtensionContext): Promise<void> {
   activeVscodeDebugIntegration = vscodeDebugIntegration;
   const debugConfigurationProvider = createVbaDebugConfigurationProvider(
     vscodeDebugIntegration,
-    (message) => window.showErrorMessage(message)
+    (message) => window.showErrorMessage(message),
+    () => workspaceTrustGate.requireTrusted('managed-tooling')
   );
   context.subscriptions.push(
     debug.registerDebugConfigurationProvider('vba', {
@@ -450,6 +475,9 @@ export async function activate(context: ExtensionContext): Promise<void> {
         isDirty: document.isDirty
       })),
     captureSourceSnapshot: captureTestSourceSnapshot,
+    requireTrustedWorkspace: () => (
+      workspaceTrustGate.requireTrusted('managed-tooling')
+    ),
     outputChannel,
     showErrorMessage: (message: string) => window.showErrorMessage(message)
   });
@@ -485,15 +513,104 @@ export async function activate(context: ExtensionContext): Promise<void> {
     explorer: workbookBackedTestExplorer,
     showErrorMessage: (message) => window.showErrorMessage(message)
   });
-  context.subscriptions.push(commands.registerCommand('vbaTools.doctor', async () => {
-    await runDoctorWithProgress(context, vbaDevResolver);
-  }));
-  context.subscriptions.push(commands.registerCommand('vbaTools.openVbaDevTerminal', async () => {
-    await openVbaDevTerminalCommand(context, vbaDevResolver);
-  }));
-  context.subscriptions.push(commands.registerCommand('vbaTools.export', async (request?: ExportCommandRequest) => {
-    await runExportCommandWithConsent(context, vbaDevResolver, request);
-  }));
+  const managedToolingOperations = {
+    'vbaTools.doctor': async () => {
+      await runDoctorWithProgress(context, vbaDevResolver);
+    },
+    'vbaTools.openVbaDevTerminal': async () => {
+      await openVbaDevTerminalCommand(context, vbaDevResolver);
+    },
+    'vbaTools.newExcel': () => undefined,
+    'vbaTools.export': async (request?: unknown) => {
+      await runExportCommandWithConsent(
+        context,
+        vbaDevResolver,
+        request as ExportCommandRequest | undefined
+      );
+    },
+    'vbaTools.build': async () => {
+      await runWorkbookBackedProjectCommandWithProgress(
+        context,
+        vbaDevResolver,
+        'build',
+        'VBA Tools: Build'
+      );
+    },
+    'vbaTools.test': async () => {
+      await runWorkbookBackedProjectCommandWithProgress(
+        context,
+        vbaDevResolver,
+        'test',
+        'VBA Tools: Test'
+      );
+    },
+    'vbaTools.publish': async () => {
+      await runWorkbookBackedProjectCommandWithProgress(
+        context,
+        vbaDevResolver,
+        'publish',
+        'VBA Tools: Publish'
+      );
+    },
+    'vbaTools.commonModules.add': async () => {
+      await runCommonModulesCommandWithProgress(
+        context,
+        vbaDevResolver,
+        'add',
+        'VBA Tools: Add Common Module'
+      );
+    },
+    'vbaTools.commonModules.list': async () => {
+      await runCommonModulesCommandWithProgress(
+        context,
+        vbaDevResolver,
+        'list',
+        'VBA Tools: List Common Modules'
+      );
+    },
+    'vbaTools.commonModules.update': async () => {
+      await runCommonModulesCommandWithProgress(
+        context,
+        vbaDevResolver,
+        'update',
+        'VBA Tools: Update Common Modules'
+      );
+    },
+    'vbaTools.references.list': async () => {
+      await runReferenceCommandWithProgress(
+        context,
+        vbaDevResolver,
+        'list',
+        'VBA Tools: List References'
+      );
+    },
+    'vbaTools.references.add': async () => {
+      await runReferenceCommandWithProgress(
+        context,
+        vbaDevResolver,
+        'add',
+        'VBA Tools: Add Reference'
+      );
+    },
+    'vbaTools.references.remove': async () => {
+      await runReferenceCommandWithProgress(
+        context,
+        vbaDevResolver,
+        'remove',
+        'VBA Tools: Remove Reference'
+      );
+    }
+  } satisfies ManagedToolingCommandOperations;
+  const managedToolingCommands = createManagedToolingCommandHandlers(
+    workspaceTrustGate,
+    managedToolingOperations
+  );
+  for (const command of managedToolingCommands) {
+    context.subscriptions.push(commands.registerCommand(
+      command.commandId,
+      command.handler
+    ));
+  }
   context.subscriptions.push(commands.registerCommand(
     'vbaTools.blockSkeletonInsertion.afterNativeEnter',
     () => {
@@ -517,72 +634,16 @@ export async function activate(context: ExtensionContext): Promise<void> {
       }).catch(() => undefined);
     }
   ));
-  for (const command of WorkbookBackedProjectCommands) {
-    context.subscriptions.push(commands.registerCommand(command.commandId, async () => {
-      await runWorkbookBackedProjectCommandWithProgress(
-        context,
-        vbaDevResolver,
-        command.toolCommandName,
-        command.title
-      );
-    }));
-  }
-  for (const command of CommonModulesCommands) {
-    context.subscriptions.push(commands.registerCommand(command.commandId, async () => {
-      await runCommonModulesCommandWithProgress(
-        context,
-        vbaDevResolver,
-        command.toolCommandName,
-        command.title
-      );
-    }));
-  }
-  for (const command of ReferenceCommands) {
-    context.subscriptions.push(commands.registerCommand(command.commandId, async () => {
-      await runReferenceCommandWithProgress(
-        context,
-        vbaDevResolver,
-        command.toolCommandName,
-        command.title
-      );
-    }));
-  }
-
   await client?.start();
   await projectManifestLanguageServerSync?.flush();
   await workbookBackedTestExplorer.refresh();
-  await promptForActiveWorkbookBackedProject(context, vbaDevResolver);
+  await promptForActiveWorkbookBackedProject(
+    context,
+    managedToolingCommands.find(
+      (command) => command.commandId === 'vbaTools.doctor'
+    )?.handler
+  );
 }
-
-const WorkbookBackedProjectCommands: ReadonlyArray<{
-  commandId: string;
-  toolCommandName: WorkbookBackedProjectToolCommand;
-  title: string;
-}> = [
-  { commandId: 'vbaTools.build', toolCommandName: 'build', title: 'VBA Tools: Build' },
-  { commandId: 'vbaTools.test', toolCommandName: 'test', title: 'VBA Tools: Test' },
-  { commandId: 'vbaTools.publish', toolCommandName: 'publish', title: 'VBA Tools: Publish' }
-];
-
-const CommonModulesCommands: ReadonlyArray<{
-  commandId: string;
-  toolCommandName: CommonModulesToolCommand;
-  title: string;
-}> = [
-  { commandId: 'vbaTools.commonModules.add', toolCommandName: 'add', title: 'VBA Tools: Add Common Module' },
-  { commandId: 'vbaTools.commonModules.list', toolCommandName: 'list', title: 'VBA Tools: List Common Modules' },
-  { commandId: 'vbaTools.commonModules.update', toolCommandName: 'update', title: 'VBA Tools: Update Common Modules' }
-];
-
-const ReferenceCommands: ReadonlyArray<{
-  commandId: string;
-  toolCommandName: ReferenceToolCommand;
-  title: string;
-}> = [
-  { commandId: 'vbaTools.references.list', toolCommandName: 'list', title: 'VBA Tools: List References' },
-  { commandId: 'vbaTools.references.add', toolCommandName: 'add', title: 'VBA Tools: Add Reference' },
-  { commandId: 'vbaTools.references.remove', toolCommandName: 'remove', title: 'VBA Tools: Remove Reference' }
-];
 
 export async function deactivate(): Promise<void> {
   await activeVscodeDebugIntegration?.shutdown();
@@ -595,8 +656,12 @@ export async function deactivate(): Promise<void> {
 
 async function promptForActiveWorkbookBackedProject(
   context: ExtensionContext,
-  vbaDevResolver: CompanionExecutableResolver
+  runDoctor: ((request?: unknown) => PromiseLike<unknown> | unknown) | undefined
 ): Promise<void> {
+  if (!workspace.isTrusted || runDoctor === undefined) {
+    return;
+  }
+
   const activeFilePath = getActiveFilePath();
   if (!activeFilePath) {
     return;
@@ -611,7 +676,7 @@ async function promptForActiveWorkbookBackedProject(
     workspaceState: context.workspaceState,
     showInformationMessage: (message, ...items) => window.showInformationMessage(message, ...items),
     runDoctor: async () => {
-      await runDoctorWithProgress(context, vbaDevResolver);
+      await runDoctor();
     }
   });
 }

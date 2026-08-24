@@ -48,6 +48,26 @@ test('VBA debug provider normalizes an empty F5 configuration before variable su
   assert.equal(hostWasTouched, false);
 });
 
+test('VBA debug provider checks Workspace Trust before resolving substituted configuration', async () => {
+  let configurationResolutions = 0;
+  const provider = createVbaDebugConfigurationProvider({
+    provideDynamicDebugConfigurations: () => [],
+    resolveDebugConfiguration: async () => {
+      configurationResolutions += 1;
+      throw new Error('Workspace Trust must be checked first');
+    }
+  }, () => undefined, async () => false);
+
+  const configuration = await provider.resolveDebugConfigurationWithSubstitutedVariables({
+    type: 'vba',
+    request: 'launch',
+    name: 'VBA: Active Procedure'
+  });
+
+  assert.equal(configuration, undefined);
+  assert.equal(configurationResolutions, 0);
+});
+
 test('VBA debug provider exposes the post-substitution result to tests and aborts before adapter startup', async () => {
   const resolvedConfiguration = {
     type: 'vba',
@@ -382,6 +402,37 @@ test('VBA debug startup pins independent adapter and CLI paths with a canonical 
     ],
     options: { cwd: workspaceRoot }
   });
+});
+
+test('VBA debug adapter startup checks Workspace Trust before resolving either executable', async () => {
+  let cliResolutions = 0;
+  let adapterResolutions = 0;
+  const integration = new VscodeDebugIntegration({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    getConfiguredDevToolPath: () => undefined,
+    requireTrustedWorkspace: async () => false,
+    vbaDevResolver: {
+      resolve: async () => {
+        cliResolutions += 1;
+        throw new Error('Workspace Trust must be checked first');
+      }
+    },
+    vbaDebugAdapterResolver: {
+      resolve: async () => {
+        adapterResolutions += 1;
+        throw new Error('Workspace Trust must be checked first');
+      }
+    }
+  });
+
+  const descriptor = await integration.createDebugAdapterExecutable({
+    id: 'session-1',
+    stop: () => undefined
+  });
+
+  assert.equal(descriptor, undefined);
+  assert.equal(cliResolutions, 0);
+  assert.equal(adapterResolutions, 0);
 });
 
 test('VBA debug startup strictly resolves the configured standalone adapter', async () => {
