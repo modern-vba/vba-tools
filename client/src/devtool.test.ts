@@ -492,6 +492,16 @@ test('Packaged VbaDev contract requires snapshot build and omits the adapter pro
   assert.equal('debugAdapterProtocolVersion' in contract, false);
 });
 
+test('Packaged VbaDev contract requires stdin cancellation 1.0', () => {
+  const extensionRoot = path.resolve(__dirname, '..', '..');
+  const contract = loadRequiredVbaDevContract(extensionRoot);
+
+  assert.equal(
+    contract.featureVersions?.['invocation.stdinCancellation'],
+    '1.0'
+  );
+});
+
 test('VbaDev compatibility invokes capabilities JSON and returns parsed versions', async () => {
   const calls: Array<{ file: string; args: readonly string[] }> = [];
   const executablePath = path.join('D:', 'tools', 'vba-dev.exe');

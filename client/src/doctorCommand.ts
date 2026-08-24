@@ -158,7 +158,8 @@ export async function runDoctorCommand(options: DoctorCommandOptions): Promise<D
           adapter.capabilities.commandSchemaVersions.doctor,
           adapter.capabilities.toolVersion,
           adapterResult.exitCode,
-          adapterResult.cancelled && adapterResult.cancellationRequestDelivered === true
+          adapterResult.cancellationRequested &&
+            adapterResult.cancellationRequestDelivered === true
         );
         for (const line of renderVbaDebugAdapterDoctorReport(report)) {
           options.outputChannel.appendLine(line);
@@ -166,7 +167,10 @@ export async function runDoctorCommand(options: DoctorCommandOptions): Promise<D
         if (adapterResult.cancellationRequestDelivered === false) {
           throw new Error('VBE debugging cancellation request could not be delivered.');
         }
-        adapterCancelled = adapterResult.cancelled && !report.complete;
+        adapterCancelled = adapterResult.cancellationRequested && !report.complete;
+        if (adapterCancelled) {
+          options.outputChannel.appendLine('VBE debugging command cancelled.');
+        }
         adapterBlocking = adapterCancelled
           ? report.checks.some((check) =>
             (

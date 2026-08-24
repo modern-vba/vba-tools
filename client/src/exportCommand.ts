@@ -21,7 +21,10 @@ export interface ExportCommandOptions extends VbaDevCommandRuntimeOptions {
     ...items: string[]
   ) => PromiseLike<string | undefined>;
   runWithProgress: <T>(
-    task: (token: CommandCancellationToken) => Promise<T>
+    task: (
+      token: CommandCancellationToken,
+      reportCancellationProgress?: (message: string) => void
+    ) => Promise<T>
   ) => PromiseLike<T>;
 }
 
@@ -49,9 +52,12 @@ export async function runExportCommand(
       args.push('--to', destinationPath);
     }
 
-    const result = await options.runWithProgress((cancellationToken) =>
+    const result = await options.runWithProgress((
+      cancellationToken,
+      reportCancellationProgress
+    ) =>
       runVbaDevCommandInvocation(
-        { ...options, cancellationToken },
+        { ...options, cancellationToken, reportCancellationProgress },
         args
       )
     );
@@ -102,9 +108,12 @@ export async function runExportCommand(
     return undefined;
   }
 
-  const result = await options.runWithProgress((cancellationToken) =>
+  const result = await options.runWithProgress((
+    cancellationToken,
+    reportCancellationProgress
+  ) =>
     runVbaDevProjectCommandInvocation(
-      { ...options, cancellationToken },
+      { ...options, cancellationToken, reportCancellationProgress },
       {
         projectRoot: project.projectRoot,
         argsBeforeProject: ['export'],

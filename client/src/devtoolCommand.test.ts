@@ -194,6 +194,38 @@ test('a companion command waits for close before returning trailing output', asy
   assert.equal(result.stdout, '{"complete":true}\n');
 });
 
+test('a companion command drains trailing stderr between exit and close', async () => {
+  let stderrListener: ((value: string) => void) | undefined;
+  const result = await runVbaDevCommand({
+    executablePath: 'vba-dev.exe',
+    args: ['build'],
+    outputChannel: {
+      append: () => undefined,
+      appendLine: () => undefined,
+      show: () => undefined
+    },
+    startProcess: () => ({
+      onStdout: () => undefined,
+      onStderr: (listener) => {
+        stderrListener = listener;
+      },
+      onExit: (listener) => {
+        setTimeout(() => listener(1, null), 0);
+      },
+      onClose: (listener) => {
+        setTimeout(() => {
+          stderrListener?.('cleanup failed\n');
+          listener(1, null);
+        }, 1);
+      },
+      kill: () => undefined
+    })
+  });
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.stderr, 'cleanup failed\n');
+});
+
 test('an already-cancelled companion command does not start its executable', async () => {
   let starts = 0;
   const result = await runVbaDevCommand({
@@ -260,7 +292,8 @@ test('a cancellation delivered during subscription cannot outrun close registrat
 
   assert.equal(outcome.kind, 'result');
   if (outcome.kind === 'result') {
-    assert.equal(outcome.result.cancelled, true);
+    assert.equal(outcome.result.cancelled, false);
+    assert.equal(outcome.result.cancellationRequested, true);
   }
 });
 
@@ -307,8 +340,198 @@ test('stdin-v1 cancellation requests cooperation without killing the process', a
   assert.equal(kills, 0);
   closeListener?.(1, null);
   const result = await running;
-  assert.equal(result.cancelled, true);
+  assert.equal(result.cancelled, false);
+  assert.equal(result.cancellationRequested, true);
   assert.equal(result.cancellationRequestDelivered, true);
+});
+
+test('repeated local cancellation sends the stdin-v1 request only once', async () => {
+  let cancelListener: (() => void) | undefined;
+  let closeListener: ((exitCode: number | null, signal: string | null) => void) | undefined;
+  let cancellationRequests = 0;
+  const running = runVbaDevCommand({
+    executablePath: 'vba-dev.exe',
+    args: ['build', '--cancellation-transport', 'stdin-v1'],
+    outputChannel: {
+      append: () => undefined,
+      appendLine: () => undefined,
+      show: () => undefined
+    },
+    cancellationTransport: 'stdin-v1',
+    cancellationToken: {
+      isCancellationRequested: false,
+      onCancellationRequested: (listener) => {
+        cancelListener = listener;
+        return { dispose: () => undefined };
+      }
+    },
+    startProcess: () => ({
+      onStdout: () => undefined,
+      onStderr: () => undefined,
+      onExit: () => undefined,
+      onClose: (listener) => {
+        closeListener = listener;
+      },
+      requestCancellation: async () => {
+        cancellationRequests += 1;
+      },
+      kill: () => undefined
+    })
+  });
+
+  cancelListener?.();
+  cancelListener?.();
+
+  assert.equal(cancellationRequests, 1);
+  closeListener?.(130, null);
+  await running;
+});
+
+test('stdin-v1 cancellation reports that the extension is waiting for vba-dev', async () => {
+  const progress: string[] = [];
+  let cancelListener: (() => void) | undefined;
+  let closeListener: ((exitCode: number | null, signal: string | null) => void) | undefined;
+  const running = runVbaDevCommand({
+    executablePath: 'vba-dev.exe',
+    args: ['build', '--cancellation-transport', 'stdin-v1'],
+    outputChannel: {
+      append: () => undefined,
+      appendLine: () => undefined,
+      show: () => undefined
+    },
+    cancellationTransport: 'stdin-v1',
+    reportCancellationProgress: (message) => progress.push(message),
+    cancellationToken: {
+      isCancellationRequested: false,
+      onCancellationRequested: (listener) => {
+        cancelListener = listener;
+        return { dispose: () => undefined };
+      }
+    },
+    startProcess: () => ({
+      onStdout: () => undefined,
+      onStderr: () => undefined,
+      onExit: () => undefined,
+      onClose: (listener) => {
+        closeListener = listener;
+      },
+      requestCancellation: async () => undefined,
+      kill: () => undefined
+    })
+  });
+
+  cancelListener?.();
+
+  assert.deepEqual(progress, [
+    'Cancellation requested; waiting for vba-dev to finish.'
+  ]);
+  closeListener?.(130, null);
+  await running;
+});
+
+test('a successful terminal outcome remains authoritative after a stdin cancellation request', async () => {
+  let cancelListener: (() => void) | undefined;
+  let closeListener: ((exitCode: number | null, signal: string | null) => void) | undefined;
+  const running = runVbaDevCommand({
+    executablePath: 'vba-dev.exe',
+    args: ['build', '--cancellation-transport', 'stdin-v1'],
+    outputChannel: {
+      append: () => undefined,
+      appendLine: () => undefined,
+      show: () => undefined
+    },
+    cancellationTransport: 'stdin-v1',
+    cancellationToken: {
+      isCancellationRequested: false,
+      onCancellationRequested: (listener) => {
+        cancelListener = listener;
+        return { dispose: () => undefined };
+      }
+    },
+    startProcess: () => ({
+      onStdout: () => undefined,
+      onStderr: () => undefined,
+      onExit: () => undefined,
+      onClose: (listener) => {
+        closeListener = listener;
+      },
+      requestCancellation: async () => undefined,
+      kill: () => undefined
+    })
+  });
+
+  cancelListener?.();
+  closeListener?.(0, null);
+  const result = await running;
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.cancelled, false);
+});
+
+test('exit 130 is authoritative cancellation without a local request', async () => {
+  const result = await runVbaDevCommand({
+    executablePath: 'vba-dev.exe',
+    args: ['build', '--cancellation-transport', 'stdin-v1'],
+    outputChannel: {
+      append: () => undefined,
+      appendLine: () => undefined,
+      show: () => undefined
+    },
+    cancellationTransport: 'stdin-v1',
+    startProcess: () => ({
+      onStdout: () => undefined,
+      onStderr: () => undefined,
+      onExit: () => undefined,
+      onClose: (listener) => listener(130, null),
+      requestCancellation: async () => undefined,
+      kill: () => undefined
+    })
+  });
+
+  assert.equal(result.exitCode, 130);
+  assert.equal(result.cancelled, true);
+  assert.equal(result.cancellationRequested, false);
+  assert.equal(result.cancellationRequestDelivered, undefined);
+});
+
+test('abnormal close remains an authoritative failure after a stdin cancellation request', async () => {
+  let cancelListener: (() => void) | undefined;
+  let closeListener: ((exitCode: number | null, signal: string | null) => void) | undefined;
+  const running = runVbaDevCommand({
+    executablePath: 'vba-dev.exe',
+    args: ['build', '--cancellation-transport', 'stdin-v1'],
+    outputChannel: {
+      append: () => undefined,
+      appendLine: () => undefined,
+      show: () => undefined
+    },
+    cancellationTransport: 'stdin-v1',
+    cancellationToken: {
+      isCancellationRequested: false,
+      onCancellationRequested: (listener) => {
+        cancelListener = listener;
+        return { dispose: () => undefined };
+      }
+    },
+    startProcess: () => ({
+      onStdout: () => undefined,
+      onStderr: () => undefined,
+      onExit: () => undefined,
+      onClose: (listener) => {
+        closeListener = listener;
+      },
+      requestCancellation: async () => undefined,
+      kill: () => undefined
+    })
+  });
+
+  cancelListener?.();
+  closeListener?.(null, 'SIGABRT');
+  const result = await running;
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.cancelled, false);
+  assert.equal(result.cancellationRequested, true);
 });
 
 test('the Node process bridge writes the exact stdin-v1 cancellation frame', async () => {
@@ -349,7 +572,8 @@ test('the Node process bridge writes the exact stdin-v1 cancellation frame', asy
   cancelListener?.();
   const result = await running;
 
-  assert.equal(result.cancelled, true);
+  assert.equal(result.cancelled, false);
+  assert.equal(result.cancellationRequested, true);
   assert.match(result.stdout, /ready\r?\n63616e63656c0a$/);
 });
 
@@ -420,6 +644,204 @@ test('a failed stdin-v1 write is reported while the process remains authoritativ
   assert.equal(settled, false);
   closeListener?.(1, null);
   const result = await running;
-  assert.equal(result.cancelled, true);
+  assert.equal(result.cancelled, false);
+  assert.equal(result.cancellationRequested, true);
   assert.equal(result.cancellationRequestDelivered, false);
+});
+
+test('EPIPE detail updates progress while terminal success remains authoritative', async () => {
+  const output: string[] = [];
+  const progress: string[] = [];
+  let cancelListener: (() => void) | undefined;
+  let closeListener: ((exitCode: number | null, signal: string | null) => void) | undefined;
+  const running = runVbaDevCommand({
+    executablePath: 'vba-dev.exe',
+    args: ['build', '--cancellation-transport', 'stdin-v1'],
+    outputChannel: {
+      append: (value) => output.push(value),
+      appendLine: (value) => output.push(`${value}\n`),
+      show: () => undefined
+    },
+    cancellationTransport: 'stdin-v1',
+    reportCancellationProgress: (message) => progress.push(message),
+    cancellationToken: {
+      isCancellationRequested: false,
+      onCancellationRequested: (listener) => {
+        cancelListener = listener;
+        return { dispose: () => undefined };
+      }
+    },
+    startProcess: () => ({
+      onStdout: () => undefined,
+      onStderr: () => undefined,
+      onExit: () => undefined,
+      onClose: (listener) => {
+        closeListener = listener;
+      },
+      requestCancellation: async () => {
+        throw new Error('write EPIPE');
+      },
+      kill: () => undefined
+    })
+  });
+
+  cancelListener?.();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.match(output.join(''), /write EPIPE/);
+  assert.deepEqual(progress, [
+    'Cancellation requested; waiting for vba-dev to finish.',
+    'Cancellation request could not be delivered; waiting for vba-dev to finish.'
+  ]);
+
+  closeListener?.(0, null);
+  const result = await running;
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.cancelled, false);
+  assert.equal(result.cancellationRequestDelivered, false);
+  assert.equal(result.cancellationRequestError, 'write EPIPE');
+});
+
+test('child close remains authoritative when stdin cancellation delivery never settles', async () => {
+  let cancelListener: (() => void) | undefined;
+  let closeListener: ((exitCode: number | null, signal: string | null) => void) | undefined;
+  const running = runVbaDevCommand({
+    executablePath: 'vba-dev.exe',
+    args: ['build', '--cancellation-transport', 'stdin-v1'],
+    outputChannel: {
+      append: () => undefined,
+      appendLine: () => undefined,
+      show: () => undefined
+    },
+    cancellationTransport: 'stdin-v1',
+    cancellationToken: {
+      isCancellationRequested: false,
+      onCancellationRequested: (listener) => {
+        cancelListener = listener;
+        return { dispose: () => undefined };
+      }
+    },
+    startProcess: () => ({
+      onStdout: () => undefined,
+      onStderr: () => undefined,
+      onExit: () => undefined,
+      onClose: (listener) => {
+        closeListener = listener;
+      },
+      requestCancellation: () => new Promise<void>(() => undefined),
+      kill: () => undefined
+    })
+  });
+
+  cancelListener?.();
+  closeListener?.(0, null);
+  const outcome = await Promise.race([
+    running.then((result) => ({ kind: 'result' as const, result })),
+    new Promise<{ kind: 'timeout' }>((resolve) => {
+      setTimeout(() => resolve({ kind: 'timeout' }), 25);
+    })
+  ]);
+
+  assert.equal(outcome.kind, 'result');
+  if (outcome.kind === 'result') {
+    assert.equal(outcome.result.exitCode, 0);
+    assert.equal(outcome.result.cancelled, false);
+    assert.equal(outcome.result.cancellationRequestDelivered, false);
+  }
+});
+
+test('an ordinary stdin-v1 command escalates only after its cooperative grace period', async () => {
+  let cancelListener: (() => void) | undefined;
+  let closeListener: ((exitCode: number | null, signal: string | null) => void) | undefined;
+  let kills = 0;
+  let settled = false;
+  const running = runVbaDevCommand({
+    executablePath: 'vba-dev.exe',
+    args: ['build', '--cancellation-transport', 'stdin-v1'],
+    outputChannel: {
+      append: () => undefined,
+      appendLine: () => undefined,
+      show: () => undefined
+    },
+    cancellationTransport: 'stdin-v1',
+    forceKillAfterCancellationMilliseconds: 0,
+    cancellationToken: {
+      isCancellationRequested: false,
+      onCancellationRequested: (listener) => {
+        cancelListener = listener;
+        return { dispose: () => undefined };
+      }
+    },
+    startProcess: () => ({
+      onStdout: () => undefined,
+      onStderr: () => undefined,
+      onExit: () => undefined,
+      onClose: (listener) => {
+        closeListener = listener;
+      },
+      requestCancellation: async () => undefined,
+      kill: () => {
+        kills += 1;
+      }
+    })
+  });
+  void running.then(() => {
+    settled = true;
+  });
+
+  cancelListener?.();
+  assert.equal(kills, 0);
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  assert.equal(kills, 1);
+  assert.equal(settled, false);
+
+  closeListener?.(null, 'SIGTERM');
+  const result = await running;
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.cancelled, false);
+  assert.equal(result.cancellationRequested, true);
+});
+
+test('authoritative close cancels the cooperative grace escalation timer', async () => {
+  let cancelListener: (() => void) | undefined;
+  let closeListener: ((exitCode: number | null, signal: string | null) => void) | undefined;
+  let kills = 0;
+  const running = runVbaDevCommand({
+    executablePath: 'vba-dev.exe',
+    args: ['build', '--cancellation-transport', 'stdin-v1'],
+    outputChannel: {
+      append: () => undefined,
+      appendLine: () => undefined,
+      show: () => undefined
+    },
+    cancellationTransport: 'stdin-v1',
+    forceKillAfterCancellationMilliseconds: 10,
+    cancellationToken: {
+      isCancellationRequested: false,
+      onCancellationRequested: (listener) => {
+        cancelListener = listener;
+        return { dispose: () => undefined };
+      }
+    },
+    startProcess: () => ({
+      onStdout: () => undefined,
+      onStderr: () => undefined,
+      onExit: () => undefined,
+      onClose: (listener) => {
+        closeListener = listener;
+      },
+      requestCancellation: async () => undefined,
+      kill: () => {
+        kills += 1;
+      }
+    })
+  });
+
+  cancelListener?.();
+  closeListener?.(0, null);
+  const result = await running;
+  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.cancelled, false);
+  assert.equal(kills, 0);
 });

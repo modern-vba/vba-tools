@@ -22,10 +22,14 @@ namespace VbaDev.Cli;
 public sealed class VbaDevCommandLine
 {
     private readonly RootCommand rootCommand;
+    private readonly Option<string> cancellationTransportOption;
 
-    private VbaDevCommandLine(RootCommand rootCommand)
+    private VbaDevCommandLine(
+        RootCommand rootCommand,
+        Option<string> cancellationTransportOption)
     {
         this.rootCommand = rootCommand;
+        this.cancellationTransportOption = cancellationTransportOption;
     }
 
     /// <summary>
@@ -58,6 +62,14 @@ public sealed class VbaDevCommandLine
             ?? throw new InvalidOperationException("System.CommandLine root help action is missing."));
         var versionOption = rootCommand.Options.OfType<VersionOption>().Single();
         versionOption.Action = new CanonicalVersionAction(ReleaseVersion);
+        var cancellationTransportOption = CreateStringOption(
+            "--cancellation-transport",
+            "Caller-owned cooperative cancellation transport.",
+            "transport",
+            ["stdin-v1"]);
+        cancellationTransportOption.Hidden = true;
+        cancellationTransportOption.Recursive = true;
+        rootCommand.Add(cancellationTransportOption);
         var capabilityCommands = new List<CommandCapabilityRegistration>();
 
         var newCommand = AddCommand(rootCommand, "new", "Create a VBA project.");
@@ -425,12 +437,15 @@ public sealed class VbaDevCommandLine
             "path");
         importCommand.Add(importFromOption);
         importCommand.Add(importToOption);
-        importCommand.SetAction(parseResult => WriteCommandResult(
+        importCommand.SetAction(async (parseResult, cancellationToken) => WriteCommandResult(
             parseResult,
-            composition.ImportCommand.Run(new ImportCommandRequest(
-                parseResult.GetValue(importFromOption),
-                parseResult.GetValue(importToOption),
-                composition.WorkingDirectory))));
+            await composition.ImportCommand.RunAsync(
+                    new ImportCommandRequest(
+                        parseResult.GetValue(importFromOption),
+                        parseResult.GetValue(importToOption),
+                        composition.WorkingDirectory),
+                    cancellationToken)
+                .ConfigureAwait(false)));
         var checkCommand = AddCommand(
             rootCommand,
             "check",
@@ -506,6 +521,7 @@ public sealed class VbaDevCommandLine
                 {
                     ["build.sourceSnapshot"] = "1.0",
                     ["test.sourceSnapshot"] = "1.0",
+                    ["invocation.stdinCancellation"] = "1.0",
                     ["sourceSnapshot.activeWindowsCodePage"] = "1.0"
                 },
                 GetActiveWindowsCodePage(),
@@ -521,7 +537,7 @@ public sealed class VbaDevCommandLine
         });
         rootCommand.Add(capabilitiesCommand);
 
-        return new VbaDevCommandLine(rootCommand);
+        return new VbaDevCommandLine(rootCommand, cancellationTransportOption);
     }
 
     /// <summary>
@@ -537,6 +553,28 @@ public sealed class VbaDevCommandLine
         TextWriter standardOutput,
         TextWriter standardError,
         CancellationToken cancellationToken)
+        => InvokeAsync(
+            args,
+            Stream.Null,
+            standardOutput,
+            standardError,
+            cancellationToken);
+
+    /// <summary>
+    /// Parses and invokes the command line against explicit process streams.
+    /// </summary>
+    /// <param name="args">The arguments after the executable name.</param>
+    /// <param name="standardInput">The raw standard input byte stream.</param>
+    /// <param name="standardOutput">The standard output writer.</param>
+    /// <param name="standardError">The standard error writer.</param>
+    /// <param name="cancellationToken">The cooperative invocation cancellation token.</param>
+    /// <returns>The process exit code.</returns>
+    public async Task<int> InvokeAsync(
+        IReadOnlyList<string> args,
+        Stream standardInput,
+        TextWriter standardOutput,
+        TextWriter standardError,
+        CancellationToken cancellationToken)
     {
         var configuration = new InvocationConfiguration
         {
@@ -544,8 +582,120 @@ public sealed class VbaDevCommandLine
             Error = standardError,
             ProcessTerminationTimeout = Timeout.InfiniteTimeSpan
         };
+        var parseResult = rootCommand.Parse(args);
+        if (parseResult.Errors.Count > 0 ||
+            !string.Equals(
+                parseResult.GetValue(cancellationTransportOption),
+                "stdin-v1",
+                StringComparison.Ordinal))
+        {
+            return await parseResult
+                .InvokeAsync(configuration, cancellationToken)
+                .ConfigureAwait(false);
+        }
 
-        return rootCommand.Parse(args).InvokeAsync(configuration, cancellationToken);
+        using var invocationCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken);
+        using var monitorCancellation = new CancellationTokenSource();
+        var monitor = ObserveStdinCancellationAsync(
+            standardInput,
+            invocationCancellation,
+            monitorCancellation.Token);
+        try
+        {
+            return await parseResult
+                .InvokeAsync(configuration, invocationCancellation.Token)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            try
+            {
+                monitorCancellation.Cancel();
+            }
+            catch
+            {
+                // Transport-reader cancellation cannot replace command outcome authority.
+            }
+            await monitor.ConfigureAwait(false);
+        }
+    }
+
+    private static async Task ObserveStdinCancellationAsync(
+        Stream standardInput,
+        CancellationTokenSource invocationCancellation,
+        CancellationToken monitorCancellation)
+    {
+        ReadOnlyMemory<byte> expectedPayload = "cancel"u8.ToArray();
+        var buffer = new byte[64];
+        var matchedBytes = 0;
+        var discardingFrame = false;
+        var monitorStopped = Task.Delay(Timeout.InfiniteTimeSpan, monitorCancellation);
+        try
+        {
+            while (true)
+            {
+                if (monitorCancellation.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                var readTask = standardInput.ReadAsync(buffer, monitorCancellation).AsTask();
+                var completedTask = await Task.WhenAny(readTask, monitorStopped)
+                    .ConfigureAwait(false);
+                if (completedTask != readTask)
+                {
+                    _ = readTask.ContinueWith(
+                        static completedRead => _ = completedRead.Exception,
+                        CancellationToken.None,
+                        TaskContinuationOptions.OnlyOnFaulted |
+                        TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default);
+                    return;
+                }
+
+                var read = await readTask.ConfigureAwait(false);
+                if (read == 0)
+                {
+                    return;
+                }
+
+                foreach (var value in buffer.AsSpan(0, read))
+                {
+                    if (value == (byte)'\n')
+                    {
+                        if (!discardingFrame && matchedBytes == expectedPayload.Length)
+                        {
+                            invocationCancellation.Cancel();
+                        }
+
+                        matchedBytes = 0;
+                        discardingFrame = false;
+                        continue;
+                    }
+
+                    if (
+                        discardingFrame ||
+                        matchedBytes >= expectedPayload.Length ||
+                        value != expectedPayload.Span[matchedBytes])
+                    {
+                        discardingFrame = true;
+                        continue;
+                    }
+
+                    matchedBytes++;
+                }
+
+                await Task.Yield();
+            }
+        }
+        catch (OperationCanceledException) when (monitorCancellation.IsCancellationRequested)
+        {
+        }
+        catch
+        {
+            // Invalid or unavailable transport input does not replace command outcome authority.
+        }
     }
 
     private static string ReleaseVersion

@@ -83,10 +83,273 @@ public sealed class CliSurfaceTests
             ? $"\"activeWindowsCodePage\":{capabilities.RootElement.GetProperty("activeWindowsCodePage").GetInt32()},"
             : string.Empty;
         Assert.Equal(
-            "{\"toolVersion\":\"0.1.0\",\"contractVersion\":\"1.0\",\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\",\"test.sourceSnapshot\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}," +
+            "{\"toolVersion\":\"0.1.0\",\"contractVersion\":\"1.0\",\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\",\"test.sourceSnapshot\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}," +
             activeCodePageProperty +
             "\"commands\":{\"build\":{\"outputSchemaVersion\":\"1.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"import\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"1.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}}}" + Environment.NewLine,
             standardOutput.ToString());
+        Assert.Empty(standardError.ToString());
+    }
+
+    [Fact]
+    public async Task ExactStdinFrameCancelsOptedInInvocation()
+    {
+        var environmentDiagnostics = new AwaitingCancellationEnvironmentDiagnosticPort();
+        var commandLine = CommandLineTestFactory.Create(
+            Directory.GetCurrentDirectory(),
+            environmentDiagnosticPort: environmentDiagnostics);
+        using var standardInput = new MemoryStream("cancel\n"u8.ToArray());
+        using var standardOutput = new StringWriter();
+        using var standardError = new StringWriter();
+
+        var invocation = commandLine.InvokeAsync(
+            [
+                "doctor",
+                "--scope",
+                "environment",
+                "--format",
+                "json",
+                "--cancellation-transport",
+                "stdin-v1"
+            ],
+            standardInput,
+            standardOutput,
+            standardError,
+            CancellationToken.None);
+        var completed = await Task.WhenAny(invocation, Task.Delay(TimeSpan.FromSeconds(1)));
+
+        Assert.Same(invocation, completed);
+        Assert.Equal(130, await invocation);
+        Assert.True(environmentDiagnostics.CancellationRequestedAtEntry);
+        Assert.True(environmentDiagnostics.CancellationObserved);
+        Assert.Empty(standardError.ToString());
+    }
+
+    [Fact]
+    public async Task StdinMonitorStartsBeforeSynchronousCommandPreflight()
+    {
+        var environmentDiagnostics = new SynchronouslyAwaitingCancellationEnvironmentDiagnosticPort();
+        var commandLine = CommandLineTestFactory.Create(
+            Directory.GetCurrentDirectory(),
+            environmentDiagnosticPort: environmentDiagnostics);
+        using var standardInput = new MemoryStream("cancel\n"u8.ToArray());
+        using var standardOutput = new StringWriter();
+        using var standardError = new StringWriter();
+
+        var exitCode = await commandLine.InvokeAsync(
+            [
+                "doctor",
+                "--scope",
+                "environment",
+                "--format",
+                "json",
+                "--cancellation-transport",
+                "stdin-v1"
+            ],
+            standardInput,
+            standardOutput,
+            standardError,
+            CancellationToken.None);
+
+        Assert.Equal(130, exitCode);
+        Assert.True(environmentDiagnostics.CancellationObserved);
+        Assert.Empty(standardError.ToString());
+    }
+
+    [Fact]
+    public async Task ExactStdinCancellationFrameCanArriveAcrossReads()
+    {
+        using var standardInput = new ChunkedReadStream(
+            "can"u8.ToArray(),
+            "cel"u8.ToArray(),
+            "\n"u8.ToArray());
+
+        await AssertStdinFrameCancelsAsync(standardInput);
+    }
+
+    [Fact]
+    public async Task CompletedInvocationStopsAnAlwaysReadyCancellationTransport()
+    {
+        using var standardInput = new ImmediateCancellationThenJunkStream(1_000_000);
+
+        await AssertStdinFrameCancelsAsync(standardInput);
+
+        Assert.True(standardInput.JunkReads < standardInput.MaximumJunkReads);
+    }
+
+    [Fact]
+    public async Task StdinCancellationEofDoesNotCancelTheInvocation()
+        => await AssertStdinFrameDoesNotCancelAsync([]);
+
+    [Fact]
+    public async Task PartialStdinCancellationFrameDoesNotCancelTheInvocation()
+        => await AssertStdinFrameDoesNotCancelAsync("cancel"u8.ToArray());
+
+    [Fact]
+    public async Task CrLfStdinCancellationFrameDoesNotCancelTheInvocation()
+        => await AssertStdinFrameDoesNotCancelAsync("cancel\r\n"u8.ToArray());
+
+    [Fact]
+    public async Task BomPrefixedStdinCancellationFrameDoesNotCancelTheInvocation()
+        => await AssertStdinFrameDoesNotCancelAsync(
+            [0xef, 0xbb, 0xbf, .. "cancel\n"u8.ToArray()]);
+
+    [Fact]
+    public async Task UnknownStdinCancellationFrameDoesNotCancelTheInvocation()
+        => await AssertStdinFrameDoesNotCancelAsync("stop\n"u8.ToArray());
+
+    [Fact]
+    public async Task MalformedUtf8StdinCancellationFrameDoesNotCancelTheInvocation()
+        => await AssertStdinFrameDoesNotCancelAsync([0xc3, 0x28, (byte)'\n']);
+
+    [Fact]
+    public async Task OversizeStdinCancellationFrameIsDiscardedWithoutCancellingTheInvocation()
+    {
+        var frame = Enumerable.Repeat((byte)'c', 4_096).Append((byte)'\n').ToArray();
+
+        await AssertStdinFrameDoesNotCancelAsync(frame);
+    }
+
+    [Fact]
+    public async Task StdinCancellationResynchronizesAfterAnOversizeFrame()
+    {
+        var frame = Enumerable.Repeat((byte)'c', 4_096)
+            .Append((byte)'\n')
+            .Concat("cancel\n"u8.ToArray())
+            .ToArray();
+
+        await AssertStdinFrameCancelsAsync(frame);
+    }
+
+    [Fact]
+    public async Task RepeatedExactStdinCancellationFramesRemainIdempotent()
+        => await AssertStdinFrameCancelsAsync("cancel\ncancel\n"u8.ToArray());
+
+    [Fact]
+    public async Task InvocationWithoutCancellationTransportDoesNotReadStandardInput()
+    {
+        var commandLine = VbaDevCommandLine.CreateDefault();
+        using var standardInput = new ThrowingReadStream();
+        using var standardOutput = new StringWriter();
+        using var standardError = new StringWriter();
+
+        var exitCode = await commandLine.InvokeAsync(
+            ["capabilities", "--format", "json"],
+            standardInput,
+            standardOutput,
+            standardError,
+            CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        Assert.False(standardInput.ReadAttempted);
+        Assert.Empty(standardError.ToString());
+    }
+
+    [Fact]
+    public async Task UnknownCancellationTransportIsRejectedWithoutReadingStandardInput()
+    {
+        var commandLine = VbaDevCommandLine.CreateDefault();
+        using var standardInput = new ThrowingReadStream();
+        using var standardOutput = new StringWriter();
+        using var standardError = new StringWriter();
+
+        var exitCode = await commandLine.InvokeAsync(
+            [
+                "capabilities",
+                "--format",
+                "json",
+                "--cancellation-transport",
+                "stdin-v2"
+            ],
+            standardInput,
+            standardOutput,
+            standardError,
+            CancellationToken.None);
+
+        Assert.NotEqual(0, exitCode);
+        Assert.False(standardInput.ReadAttempted);
+        Assert.Contains("stdin-v2", standardError.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CancellationTransportRemainsHiddenFromHelpAndCompletion()
+    {
+        var rootHelp = application.Run(["--help"]);
+        var buildHelp = application.Run(["build", "--help"]);
+        const string completionLine = "build --c";
+        var completion = application.Run(
+            [$"[suggest:{completionLine.Length}]", completionLine]);
+
+        Assert.Equal(0, rootHelp.ExitCode);
+        Assert.Equal(0, buildHelp.ExitCode);
+        Assert.Equal(0, completion.ExitCode);
+        Assert.DoesNotContain(
+            "--cancellation-transport",
+            rootHelp.StandardOutput,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "--cancellation-transport",
+            buildHelp.StandardOutput,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "--cancellation-transport",
+            completion.StandardOutput,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task OpenCancellationTransportDoesNotDelayCompletedInvocation()
+    {
+        var commandLine = VbaDevCommandLine.CreateDefault();
+        using var standardInput = new NeverCompletingReadStream();
+        using var standardOutput = new StringWriter();
+        using var standardError = new StringWriter();
+
+        var invocation = commandLine.InvokeAsync(
+            [
+                "capabilities",
+                "--format",
+                "json",
+                "--cancellation-transport",
+                "stdin-v1"
+            ],
+            standardInput,
+            standardOutput,
+            standardError,
+            CancellationToken.None);
+        var completed = await Task.WhenAny(invocation, Task.Delay(TimeSpan.FromSeconds(1)));
+
+        Assert.Same(invocation, completed);
+        Assert.Equal(0, await invocation);
+        Assert.Empty(standardError.ToString());
+    }
+
+    [Fact]
+    public async Task CancellationTransportReadFailureDoesNotReplaceInvocationOutcome()
+    {
+        var commandLine = CommandLineTestFactory.Create(
+            Directory.GetCurrentDirectory(),
+            environmentDiagnosticPort: new DelayedCancellationInspectionEnvironmentDiagnosticPort());
+        using var standardInput = new ThrowingReadStream();
+        using var standardOutput = new StringWriter();
+        using var standardError = new StringWriter();
+
+        var exitCode = await commandLine.InvokeAsync(
+            [
+                "doctor",
+                "--scope",
+                "environment",
+                "--format",
+                "json",
+                "--cancellation-transport",
+                "stdin-v1"
+            ],
+            standardInput,
+            standardOutput,
+            standardError,
+            CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        Assert.True(standardInput.ReadAttempted);
         Assert.Empty(standardError.ToString());
     }
 
@@ -399,6 +662,22 @@ public sealed class CliSurfaceTests
     }
 
     [Fact]
+    public void CapabilitiesAdvertiseStdinCancellationTransport()
+    {
+        var result = application.Run(["capabilities", "--format", "json"]);
+
+        Assert.Equal(0, result.ExitCode);
+        using var capabilities = JsonDocument.Parse(result.StandardOutput);
+        Assert.Equal(
+            "1.0",
+            capabilities.RootElement
+                .GetProperty("featureVersions")
+                .GetProperty("invocation.stdinCancellation")
+                .GetString());
+        Assert.Empty(result.StandardError);
+    }
+
+    [Fact]
     public void VersionOptionReturnsCanonicalCliVersion()
     {
         var result = application.Run(["--version"]);
@@ -704,5 +983,339 @@ public sealed class CliSurfaceTests
         public Task<EnvironmentDiagnosticRun> RunEnvironmentDiagnosticsAsync(
             CancellationToken cancellationToken)
             => throw new InvalidOperationException("Help must not access Excel or VBIDE diagnostics.");
+    }
+
+    private sealed class AwaitingCancellationEnvironmentDiagnosticPort
+        : IEnvironmentDiagnosticPort
+    {
+        public bool CancellationRequestedAtEntry { get; private set; }
+
+        public bool CancellationObserved { get; private set; }
+
+        public async Task<EnvironmentDiagnosticRun> RunEnvironmentDiagnosticsAsync(
+            CancellationToken cancellationToken)
+        {
+            CancellationRequestedAtEntry = cancellationToken.IsCancellationRequested;
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                CancellationObserved = true;
+            }
+
+            return new EnvironmentDiagnosticRun(
+            [
+                DiagnosticResult.Pass("platform.windows", "Windows passed."),
+                DiagnosticResult.Pass("excel.comStartup", "COM startup passed."),
+                DiagnosticResult.Pass("excel.processOwnership", "Ownership passed."),
+                DiagnosticResult.Unverified(
+                    "excel.vbideProjectAccess",
+                    "VBE access was interrupted."),
+                DiagnosticResult.Pass("excel.processCleanup", "Cleanup passed.")
+            ],
+            Complete: false,
+            Canceled: true);
+        }
+    }
+
+    private sealed class SynchronouslyAwaitingCancellationEnvironmentDiagnosticPort
+        : IEnvironmentDiagnosticPort
+    {
+        public bool CancellationObserved { get; private set; }
+
+        public Task<EnvironmentDiagnosticRun> RunEnvironmentDiagnosticsAsync(
+            CancellationToken cancellationToken)
+        {
+            if (!cancellationToken.WaitHandle.WaitOne(TimeSpan.FromMilliseconds(250)))
+            {
+                throw new InvalidOperationException(
+                    "The stdin cancellation monitor did not start before synchronous preflight.");
+            }
+
+            CancellationObserved = true;
+            return Task.FromResult(new EnvironmentDiagnosticRun(
+            [
+                DiagnosticResult.Pass("platform.windows", "Windows passed."),
+                DiagnosticResult.Pass("excel.comStartup", "COM startup passed."),
+                DiagnosticResult.Pass("excel.processOwnership", "Ownership passed."),
+                DiagnosticResult.Unverified(
+                    "excel.vbideProjectAccess",
+                    "VBE access was interrupted."),
+                DiagnosticResult.Pass("excel.processCleanup", "Cleanup passed.")
+            ],
+            Complete: false,
+            Canceled: true));
+        }
+    }
+
+    private static async Task AssertStdinFrameDoesNotCancelAsync(byte[] frame)
+    {
+        var environmentDiagnostics = new DelayedCancellationInspectionEnvironmentDiagnosticPort();
+        var commandLine = CommandLineTestFactory.Create(
+            Directory.GetCurrentDirectory(),
+            environmentDiagnosticPort: environmentDiagnostics);
+        using var standardInput = new MemoryStream(frame);
+        using var standardOutput = new StringWriter();
+        using var standardError = new StringWriter();
+
+        var exitCode = await commandLine.InvokeAsync(
+            [
+                "doctor",
+                "--scope",
+                "environment",
+                "--format",
+                "json",
+                "--cancellation-transport",
+                "stdin-v1"
+            ],
+            standardInput,
+            standardOutput,
+            standardError,
+            CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        Assert.False(environmentDiagnostics.CancellationObserved);
+        Assert.Empty(standardError.ToString());
+    }
+
+    private static async Task AssertStdinFrameCancelsAsync(byte[] frame)
+    {
+        using var standardInput = new MemoryStream(frame);
+        await AssertStdinFrameCancelsAsync(standardInput);
+    }
+
+    private static async Task AssertStdinFrameCancelsAsync(Stream standardInput)
+    {
+        var environmentDiagnostics = new AwaitingCancellationEnvironmentDiagnosticPort();
+        var commandLine = CommandLineTestFactory.Create(
+            Directory.GetCurrentDirectory(),
+            environmentDiagnosticPort: environmentDiagnostics);
+        using var standardOutput = new StringWriter();
+        using var standardError = new StringWriter();
+
+        var invocation = commandLine.InvokeAsync(
+            [
+                "doctor",
+                "--scope",
+                "environment",
+                "--format",
+                "json",
+                "--cancellation-transport",
+                "stdin-v1"
+            ],
+            standardInput,
+            standardOutput,
+            standardError,
+            CancellationToken.None);
+        var completed = await Task.WhenAny(invocation, Task.Delay(TimeSpan.FromSeconds(1)));
+
+        Assert.Same(invocation, completed);
+        Assert.Equal(130, await invocation);
+        Assert.True(environmentDiagnostics.CancellationObserved);
+        Assert.Empty(standardError.ToString());
+    }
+
+    private sealed class DelayedCancellationInspectionEnvironmentDiagnosticPort
+        : IEnvironmentDiagnosticPort
+    {
+        public bool CancellationObserved { get; private set; }
+
+        public async Task<EnvironmentDiagnosticRun> RunEnvironmentDiagnosticsAsync(
+            CancellationToken cancellationToken)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(25));
+            CancellationObserved = cancellationToken.IsCancellationRequested;
+            return new EnvironmentDiagnosticRun(
+            [
+                DiagnosticResult.Pass("platform.windows", "Windows passed."),
+                DiagnosticResult.Pass("excel.comStartup", "COM startup passed."),
+                DiagnosticResult.Pass("excel.processOwnership", "Ownership passed."),
+                DiagnosticResult.Pass("excel.vbideProjectAccess", "VBE access passed."),
+                DiagnosticResult.Pass("excel.processCleanup", "Cleanup passed.")
+            ],
+            Complete: true);
+        }
+    }
+
+    private sealed class ThrowingReadStream : Stream
+    {
+        public bool ReadAttempted { get; private set; }
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+            => throw CreateReadException();
+
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+            => ValueTask.FromException<int>(CreateReadException());
+
+        public override long Seek(long offset, SeekOrigin origin)
+            => throw new NotSupportedException();
+
+        public override void SetLength(long value)
+            => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count)
+            => throw new NotSupportedException();
+
+        private IOException CreateReadException()
+        {
+            ReadAttempted = true;
+            return new IOException("Standard input must not be read.");
+        }
+    }
+
+    private sealed class NeverCompletingReadStream : Stream
+    {
+        private readonly TaskCompletionSource<int> readCompletion = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+            => throw new NotSupportedException();
+
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+            => new(readCompletion.Task);
+
+        public override long Seek(long offset, SeekOrigin origin)
+            => throw new NotSupportedException();
+
+        public override void SetLength(long value)
+            => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count)
+            => throw new NotSupportedException();
+    }
+
+    private sealed class ChunkedReadStream(params byte[][] chunks) : Stream
+    {
+        private int nextChunk;
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+            => throw new NotSupportedException();
+
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            if (nextChunk >= chunks.Length)
+            {
+                return ValueTask.FromResult(0);
+            }
+
+            var chunk = chunks[nextChunk++];
+            chunk.CopyTo(buffer);
+            return ValueTask.FromResult(chunk.Length);
+        }
+
+        public override long Seek(long offset, SeekOrigin origin)
+            => throw new NotSupportedException();
+
+        public override void SetLength(long value)
+            => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count)
+            => throw new NotSupportedException();
+    }
+
+    private sealed class ImmediateCancellationThenJunkStream(int maximumJunkReads) : Stream
+    {
+        private bool cancellationFrameRead;
+
+        public int JunkReads { get; private set; }
+        public int MaximumJunkReads { get; } = maximumJunkReads;
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+            => throw new NotSupportedException();
+
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            if (!cancellationFrameRead)
+            {
+                cancellationFrameRead = true;
+                var frame = "cancel\n"u8;
+                frame.CopyTo(buffer.Span);
+                return ValueTask.FromResult(frame.Length);
+            }
+
+            if (JunkReads >= MaximumJunkReads)
+            {
+                return ValueTask.FromResult(0);
+            }
+
+            JunkReads++;
+            buffer.Span[0] = (byte)'x';
+            return ValueTask.FromResult(1);
+        }
+
+        public override long Seek(long offset, SeekOrigin origin)
+            => throw new NotSupportedException();
+
+        public override void SetLength(long value)
+            => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count)
+            => throw new NotSupportedException();
     }
 }

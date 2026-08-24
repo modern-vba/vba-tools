@@ -9,7 +9,7 @@ namespace VbaDev.App.Import;
 /// </summary>
 public sealed class ImportCommand
 {
-    private readonly IWorkbookBuildAutomation workbookBuildAutomation;
+    private readonly IWorkbookGenerationAutomation workbookGenerationAutomation;
     private readonly VbeImportSourceSetFactory importSourceSetFactory;
 
     /// <summary>
@@ -25,7 +25,9 @@ public sealed class ImportCommand
         IWorkbookBuildAutomation workbookBuildAutomation,
         VbeImportSourceSetFactory importSourceSetFactory)
     {
-        this.workbookBuildAutomation = workbookBuildAutomation;
+        workbookGenerationAutomation = workbookBuildAutomation is IWorkbookGenerationAutomation nativeAutomation
+            ? nativeAutomation
+            : new SynchronousWorkbookGenerationAutomation(workbookBuildAutomation);
         this.importSourceSetFactory = importSourceSetFactory;
     }
 
@@ -35,6 +37,22 @@ public sealed class ImportCommand
     /// <param name="request">The import command input containing required --from and --to paths.</param>
     /// <returns>The command result describing the import operation or validation error.</returns>
     public CommandResult Run(ImportCommandRequest request)
+        => RunAsync(request, CancellationToken.None).GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Replaces importable modules while observing cooperative cancellation of owned Excel.
+    /// </summary>
+    /// <param name="request">The import command input containing required --from and --to paths.</param>
+    /// <param name="cancellationToken">Cancels the owned workbook automation session.</param>
+    /// <returns>The command result describing the import operation or validation error.</returns>
+    public Task<CommandResult> RunAsync(
+        ImportCommandRequest request,
+        CancellationToken cancellationToken)
+        => RunCoreAsync(request, cancellationToken);
+
+    private async Task<CommandResult> RunCoreAsync(
+        ImportCommandRequest request,
+        CancellationToken cancellationToken)
     {
         try
         {
@@ -64,25 +82,65 @@ public sealed class ImportCommand
             ValidateTargetWorkbook(targetWorkbookPath);
             using var importSourceSet = importSourceSetFactory.Create(sourceFiles);
 
-            using (var session = workbookBuildAutomation.OpenWorkbook(targetWorkbookPath))
-            {
-                foreach (var component in session.GetModules().Where(component => component.Kind.IsImportable()))
+            await workbookGenerationAutomation.RunAsync(
+                targetWorkbookPath,
+                WorkbookAutomationTimeouts.Default,
+                async (session, operationCancellationToken) =>
                 {
-                    session.RemoveModule(component.Name);
-                }
+                    var modules = await session
+                        .GetModulesAsync(operationCancellationToken)
+                        .ConfigureAwait(false);
+                    foreach (var component in modules.Where(component => component.Kind.IsImportable()))
+                    {
+                        operationCancellationToken.ThrowIfCancellationRequested();
+                        await session
+                            .RemoveModuleAsync(component.Name, operationCancellationToken)
+                            .ConfigureAwait(false);
+                    }
 
-                foreach (var sourceFile in importSourceSet.SourceFiles)
-                {
-                    session.ImportModule(sourceFile);
-                }
+                    foreach (var sourceFile in importSourceSet.SourceFiles)
+                    {
+                        operationCancellationToken.ThrowIfCancellationRequested();
+                        await session
+                            .ImportModuleAsync(sourceFile, operationCancellationToken)
+                            .ConfigureAwait(false);
+                    }
 
-                importSourceSet.Dispose();
-                session.VerifyImportedModules();
-                session.Save();
-            }
+                    importSourceSet.Dispose();
+                    operationCancellationToken.ThrowIfCancellationRequested();
+                    await session.VerifyAsync(operationCancellationToken).ConfigureAwait(false);
+                    operationCancellationToken.ThrowIfCancellationRequested();
+                    await session.SaveAsync(operationCancellationToken).ConfigureAwait(false);
+                    return true;
+                },
+                cancellationToken).ConfigureAwait(false);
 
             var label = sourceFiles.Count == 1 ? "source file" : "source files";
             return CommandResult.Success($"Imported {sourceFiles.Count} {label} from {sourceDirectory} to {targetWorkbookPath}{Environment.NewLine}");
+        }
+        catch (WorkbookAutomationCanceledException ex)
+        {
+            return CreateCancellationResult(ex, ex.Message);
+        }
+        catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
+        {
+            return CreateCancellationResult(ex, "Workbook import was cancelled.");
+        }
+        catch (WorkbookAutomationTimeoutException ex)
+        {
+            return PreserveReleaseProof(ex, CommandResult.UsageError(ex.Message));
+        }
+        catch (WorkbookAutomationProcessLostException ex)
+        {
+            return PreserveReleaseProof(ex, CommandResult.UsageError(ex.Message));
+        }
+        catch (WorkbookAutomationCleanupException ex)
+        {
+            return PreserveReleaseProof(ex, CommandResult.UsageError(ex.Message));
+        }
+        catch (WorkbookAutomationReleasedProcessCleanupException ex)
+        {
+            return PreserveReleaseProof(ex, CommandResult.UsageError(ex.Message));
         }
         catch (InvalidOperationException ex)
         {
@@ -101,6 +159,19 @@ public sealed class ImportCommand
             return CommandResult.UsageError(CommandErrorMessages.ExcelComAutomationFailed("import", ex));
         }
     }
+
+    private static CommandResult PreserveReleaseProof(Exception error, CommandResult result)
+        => WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error)
+            ? result.MarkOwnedProcessReleaseUnproven()
+            : result;
+
+    private static CommandResult CreateCancellationResult(Exception error, string message)
+        => WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error)
+            ? PreserveReleaseProof(
+                error,
+                CommandResult.UsageError(
+                    $"{message} The owned Excel process release could not be verified."))
+            : CommandResult.Cancelled(message);
 
     private static IReadOnlyList<VbaSourceFile> ResolveSourceFiles(string sourceDirectory)
     {

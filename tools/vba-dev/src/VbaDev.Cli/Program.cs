@@ -3,9 +3,15 @@ using VbaDev.Cli;
 
 try
 {
+    using var standardInput = Console.OpenStandardInput();
     return await VbaDevCommandLine
         .CreateDefault()
-        .InvokeAsync(args, Console.Out, Console.Error, CancellationToken.None);
+        .InvokeAsync(
+            args,
+            standardInput,
+            Console.Out,
+            Console.Error,
+            CancellationToken.None);
 }
 catch (Exception ex)
 {

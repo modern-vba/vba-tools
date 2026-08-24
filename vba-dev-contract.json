@@ -3,6 +3,7 @@
   "featureVersions": {
     "build.sourceSnapshot": "1.0",
     "test.sourceSnapshot": "1.0",
+    "invocation.stdinCancellation": "1.0",
     "sourceSnapshot.activeWindowsCodePage": "1.0"
   },
   "commandSchemaVersions": {

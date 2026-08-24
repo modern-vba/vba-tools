@@ -629,7 +629,7 @@ async function runDoctorWithProgress(
       title: 'VBA Tools: Doctor',
       cancellable: true
     },
-    async (_progress, token) => {
+    async (progress, token) => {
       await runDoctorCommand({
         extensionRoot: context.extensionPath,
         vbaDevResolver,
@@ -642,6 +642,7 @@ async function runDoctorWithProgress(
         outputChannel: channel,
         diagnosticReporter: toolDiagnosticReporter,
         showErrorMessage: (message) => window.showErrorMessage(message),
+        reportCancellationProgress: (message) => progress.report({ message }),
         cancellationToken: token
       });
     }
@@ -678,7 +679,7 @@ async function runWorkbookBackedProjectCommandWithProgress(
       title,
       cancellable: true
     },
-    async (_progress, token) => {
+    async (progress, token) => {
       await runWorkbookBackedProjectCommand({
         toolCommandName,
         title,
@@ -691,7 +692,10 @@ async function runWorkbookBackedProjectCommandWithProgress(
         chooseProject,
         outputChannel: channel,
         diagnosticReporter: toolDiagnosticReporter,
+        showWarningMessage: (message, ...items) =>
+          window.showWarningMessage(message, ...items),
         showErrorMessage: (message) => window.showErrorMessage(message),
+        reportCancellationProgress: (message) => progress.report({ message }),
         cancellationToken: token
       });
     }
@@ -723,7 +727,10 @@ async function runExportCommandWithConsent(
         title: 'VBA Tools: Export',
         cancellable: true
       },
-      async (_progress, token) => task(token)
+      async (progress, token) => task(
+        token,
+        (message) => progress.report({ message })
+      )
     ),
     outputChannel: channel,
     diagnosticReporter: toolDiagnosticReporter,
@@ -752,7 +759,7 @@ async function runCommonModulesCommandWithProgress(
       title,
       cancellable: true
     },
-    async (_progress, token) => {
+    async (progress, token) => {
       const options = {
         extensionRoot: context.extensionPath,
         vbaDevResolver,
@@ -764,6 +771,7 @@ async function runCommonModulesCommandWithProgress(
         outputChannel: channel,
         diagnosticReporter: toolDiagnosticReporter,
         showErrorMessage: (message: string) => window.showErrorMessage(message),
+        reportCancellationProgress: (message: string) => progress.report({ message }),
         cancellationToken: token
       };
 
@@ -816,7 +824,7 @@ async function runReferenceCommandWithProgress(
       title,
       cancellable: true
     },
-    async (_progress, token) => {
+    async (progress, token) => {
       const options = {
         extensionRoot: context.extensionPath,
         vbaDevResolver,
@@ -828,6 +836,7 @@ async function runReferenceCommandWithProgress(
         outputChannel: channel,
         diagnosticReporter: toolDiagnosticReporter,
         showErrorMessage: (message: string) => window.showErrorMessage(message),
+        reportCancellationProgress: (message: string) => progress.report({ message }),
         cancellationToken: token
       };
 

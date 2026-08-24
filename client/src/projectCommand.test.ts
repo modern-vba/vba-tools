@@ -60,6 +60,7 @@ for (const commandName of ['build', 'test', 'publish'] as const) {
           return [];
         }
       },
+      showWarningMessage: async () => undefined,
       showErrorMessage: async () => undefined,
       requiredContract: {
         contractVersion: '1.0',
@@ -85,6 +86,257 @@ for (const commandName of ['build', 'test', 'publish'] as const) {
     ]);
   });
 }
+
+test('managed build opts into the verified stdin cancellation transport', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const executablePath = path.join('D:', 'tools', 'vba-dev.exe');
+  const processArguments: Array<readonly string[]> = [];
+
+  const result = await runWorkbookBackedProjectCommand({
+    toolCommandName: 'build',
+    title: 'VBA Tools: Build',
+    extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
+    vbaDevResolver: {
+      resolve: async () => ({
+        executablePath,
+        capabilities: {
+          toolVersion: '0.1.0',
+          contractVersion: '1.0',
+          featureVersions: {
+            'invocation.stdinCancellation': '1.0'
+          },
+          commands: {
+            build: { outputSchemaVersion: '1.0' }
+          }
+        },
+        bundledPath: executablePath,
+        source: 'bundled'
+      })
+    },
+    activeFilePath: path.join(projectRoot, 'vba-project.json'),
+    workspaceRoots: [path.dirname(projectRoot)],
+    fileExists: async (candidate) => candidate === path.join(projectRoot, 'vba-project.json'),
+    findProjectManifests: async () => [],
+    chooseProject: async () => undefined,
+    startProcess: (_file, args) => {
+      processArguments.push(args);
+      return {
+        onStdout: () => undefined,
+        onStderr: () => undefined,
+        onExit: (listener) => listener(0, null),
+        kill: () => undefined
+      };
+    },
+    outputChannel: {
+      append: () => undefined,
+      appendLine: () => undefined,
+      show: () => undefined
+    },
+    showWarningMessage: async () => undefined,
+    showErrorMessage: async () => undefined
+  });
+
+  assert.ok(result);
+  assert.deepEqual(processArguments, [[
+    'build',
+    '--project',
+    projectRoot,
+    '--cancellation-transport',
+    'stdin-v1'
+  ]]);
+});
+
+test('trusted successful build reports one cancellation delivery warning', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const executablePath = path.join('D:', 'tools', 'vba-dev.exe');
+  let cancelListener: (() => void) | undefined;
+  let closeListener: ((exitCode: number | null, signal: string | null) => void) | undefined;
+  let signalStarted: (() => void) | undefined;
+  const started = new Promise<void>((resolve) => {
+    signalStarted = resolve;
+  });
+  let resolveWarningSelection: ((action: string | undefined) => void) | undefined;
+  const warningSelection = new Promise<string | undefined>((resolve) => {
+    resolveWarningSelection = resolve;
+  });
+  const warnings: Array<{ message: string; items: readonly string[] }> = [];
+  const outputShows: Array<boolean | undefined> = [];
+  const running = runWorkbookBackedProjectCommand({
+    toolCommandName: 'build',
+    title: 'VBA Tools: Build',
+    extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
+    vbaDevResolver: {
+      resolve: async () => ({
+        executablePath,
+        capabilities: {
+          toolVersion: '0.1.0',
+          contractVersion: '1.0',
+          featureVersions: {
+            'invocation.stdinCancellation': '1.0'
+          },
+          commands: {
+            build: { outputSchemaVersion: '1.0' }
+          }
+        },
+        bundledPath: executablePath,
+        source: 'bundled'
+      })
+    },
+    activeFilePath: path.join(projectRoot, 'vba-project.json'),
+    workspaceRoots: [path.dirname(projectRoot)],
+    fileExists: async (candidate) => candidate === path.join(projectRoot, 'vba-project.json'),
+    findProjectManifests: async () => [],
+    chooseProject: async () => undefined,
+    cancellationToken: {
+      isCancellationRequested: false,
+      onCancellationRequested: (listener) => {
+        cancelListener = listener;
+        return { dispose: () => undefined };
+      }
+    },
+    startProcess: () => {
+      signalStarted?.();
+      return {
+        onStdout: () => undefined,
+        onStderr: () => undefined,
+        onExit: () => undefined,
+        onClose: (listener) => {
+          closeListener = listener;
+        },
+        requestCancellation: async () => {
+          throw new Error('write EPIPE');
+        },
+        kill: () => undefined
+      };
+    },
+    outputChannel: {
+      append: () => undefined,
+      appendLine: () => undefined,
+      show: (preserveFocus) => outputShows.push(preserveFocus)
+    },
+    showWarningMessage: (message, ...items) => {
+      warnings.push({ message, items });
+      return warningSelection;
+    },
+    showErrorMessage: async () => undefined
+  });
+
+  await started;
+  cancelListener?.();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  closeListener?.(0, null);
+  let commandSettled = false;
+  void running.then(() => {
+    commandSettled = true;
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const settledBeforeWarningSelection = commandSettled;
+  resolveWarningSelection?.('Show Output');
+  const result = await running;
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.ok(result);
+  assert.equal(settledBeforeWarningSelection, true);
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.cancelled, false);
+  assert.equal(result.cancellationRequestDelivered, false);
+  assert.deepEqual(warnings, [{
+    message: 'Build completed. Cancellation request could not be delivered.',
+    items: ['Show Output']
+  }]);
+  assert.deepEqual(outputShows, [true, undefined]);
+});
+
+test('managed build escalates after its cooperative cancellation grace period', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const executablePath = path.join('D:', 'tools', 'vba-dev.exe');
+  let cancelListener: (() => void) | undefined;
+  let closeListener: ((exitCode: number | null, signal: string | null) => void) | undefined;
+  let signalStarted: (() => void) | undefined;
+  const started = new Promise<void>((resolve) => {
+    signalStarted = resolve;
+  });
+  let cancellationRequests = 0;
+  let kills = 0;
+  const errors: string[] = [];
+  const running = runWorkbookBackedProjectCommand({
+    toolCommandName: 'build',
+    title: 'VBA Tools: Build',
+    extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
+    vbaDevResolver: {
+      resolve: async () => ({
+        executablePath,
+        capabilities: {
+          toolVersion: '0.1.0',
+          contractVersion: '1.0',
+          featureVersions: {
+            'invocation.stdinCancellation': '1.0'
+          },
+          commands: {
+            build: { outputSchemaVersion: '1.0' }
+          }
+        },
+        bundledPath: executablePath,
+        source: 'bundled'
+      })
+    },
+    activeFilePath: path.join(projectRoot, 'vba-project.json'),
+    workspaceRoots: [path.dirname(projectRoot)],
+    fileExists: async (candidate) => candidate === path.join(projectRoot, 'vba-project.json'),
+    findProjectManifests: async () => [],
+    chooseProject: async () => undefined,
+    forceKillAfterCancellationMilliseconds: 0,
+    cancellationToken: {
+      isCancellationRequested: false,
+      onCancellationRequested: (listener) => {
+        cancelListener = listener;
+        return { dispose: () => undefined };
+      }
+    },
+    startProcess: () => {
+      signalStarted?.();
+      return {
+        onStdout: () => undefined,
+        onStderr: () => undefined,
+        onExit: () => undefined,
+        onClose: (listener) => {
+          closeListener = listener;
+        },
+        requestCancellation: async () => {
+          cancellationRequests += 1;
+        },
+        kill: () => {
+          kills += 1;
+        }
+      };
+    },
+    outputChannel: {
+      append: () => undefined,
+      appendLine: () => undefined,
+      show: () => undefined
+    },
+    showWarningMessage: async () => undefined,
+    showErrorMessage: async (message) => {
+      errors.push(message);
+    }
+  });
+
+  await started;
+  cancelListener?.();
+  assert.equal(cancellationRequests, 1);
+  assert.equal(kills, 0);
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  assert.equal(kills, 1);
+
+  closeListener?.(null, 'SIGTERM');
+  const result = await running;
+  assert.ok(result);
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.cancelled, false);
+  assert.deepEqual(errors, [
+    'Build failed. See the VBA Tools output for details.'
+  ]);
+});
 
 test('WorkbookBackedProject command failure is surfaced to the user', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
@@ -126,6 +378,7 @@ test('WorkbookBackedProject command failure is surfaced to the user', async () =
       appendLine: () => undefined,
       show: () => undefined
     },
+    showWarningMessage: async () => undefined,
     showErrorMessage: async (message) => {
       errors.push(message);
       return undefined;
@@ -199,6 +452,7 @@ test('WorkbookBackedProject commands reuse one session-pinned vba-dev executable
       appendLine: () => undefined,
       show: () => undefined
     },
+    showWarningMessage: async () => undefined,
     showErrorMessage: async () => undefined,
     requiredContract
   };
@@ -238,6 +492,7 @@ test('WorkbookBackedProject command stops without another notification after a r
       appendLine: () => undefined,
       show: () => undefined
     },
+    showWarningMessage: async () => undefined,
     showErrorMessage: async (message) => {
       notifications.push(message);
       return undefined;

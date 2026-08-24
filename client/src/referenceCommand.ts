@@ -88,12 +88,28 @@ async function runReferenceMutatingCommand(
     ['reference', commandName, normalizedReferenceName]
   );
 
-  if (!result.cancelled && result.exitCode !== 0) {
+  if (result.cancelled) {
+    return {
+      projectRoot: result.projectRoot,
+      exitCode: result.exitCode,
+      cancelled: true
+    };
+  }
+
+  if (result.exitCode !== 0) {
     await options.showErrorMessage('Reference command failed. See the VBA Tools output for details.');
     return {
       projectRoot: result.projectRoot,
       exitCode: result.exitCode,
       cancelled: result.cancelled
+    };
+  }
+
+  if (result.cancellationRequested) {
+    return {
+      projectRoot: result.projectRoot,
+      exitCode: result.exitCode,
+      cancelled: false
     };
   }
 

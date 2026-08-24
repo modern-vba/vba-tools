@@ -1125,6 +1125,8 @@ public sealed class BuildCommandTests
 internal sealed class FakeWorkbookBuildAutomation : IWorkbookBuildAutomation
 {
     private readonly IReadOnlyList<WorkbookModule> modules;
+    private readonly TaskCompletionSource cancelableOpenStarted = new(
+        TaskCreationOptions.RunContinuationsAsynchronously);
 
     public FakeWorkbookBuildAutomation(params WorkbookModule[] modules)
     {
@@ -1136,6 +1138,14 @@ internal sealed class FakeWorkbookBuildAutomation : IWorkbookBuildAutomation
     public bool ThrowOnRemove { get; init; }
 
     public bool ThrowOnVerify { get; init; }
+
+    public bool WaitForCancellationOnOpen { get; init; }
+
+    public bool CancellationRequestedAtOpen { get; private set; }
+
+    public bool CancellationObserved { get; private set; }
+
+    public Task CancelableOpenStarted => cancelableOpenStarted.Task;
 
     public Action? OnImport { get; set; }
 
@@ -1157,6 +1167,28 @@ internal sealed class FakeWorkbookBuildAutomation : IWorkbookBuildAutomation
     {
         OpenedWorkbooks.Add(workbookPath);
         return new FakeWorkbookBuildSession(this, modules);
+    }
+
+    public IWorkbookBuildSession OpenWorkbook(
+        string workbookPath,
+        CancellationToken cancellationToken)
+    {
+        CancellationRequestedAtOpen = cancellationToken.IsCancellationRequested;
+        if (WaitForCancellationOnOpen)
+        {
+            cancelableOpenStarted.TrySetResult();
+            if (!cancellationToken.WaitHandle.WaitOne(TimeSpan.FromSeconds(1)))
+            {
+                throw new InvalidOperationException("Import did not observe cancellation.");
+            }
+
+            CancellationObserved = true;
+            throw new WorkbookAutomationCanceledException(
+                new WorkbookAutomationStage(WorkbookAutomationStageKind.WorkbookOpen),
+                cancellationToken);
+        }
+
+        return OpenWorkbook(workbookPath);
     }
 
     private sealed class FakeWorkbookBuildSession : IWorkbookBuildSession

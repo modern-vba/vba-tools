@@ -7,6 +7,7 @@ import './extensionContributions.test';
 import './projectManifest.test';
 import './projectDiscovery.test';
 import './devtoolCommand.test';
+import './devtoolRuntime.test';
 import './vbaDevTerminalCommand.test';
 import './vbaSourceFileText.test';
 import './snapshotSourceInventory.test';

@@ -22,6 +22,8 @@ import {
   projectDiagnosticScope
 } from './toolDiagnostics';
 
+export const VbaDevCooperativeCancellationGraceMilliseconds = 10_000;
+
 export interface VbaDevInvocationRuntimeOptions {
   extensionRoot: string;
   configuredDevToolPath?: string | undefined;
@@ -31,6 +33,8 @@ export interface VbaDevInvocationRuntimeOptions {
   outputChannel: VbaToolsOutputChannel;
   diagnosticReporter?: VbaDevDiagnosticReporterLike | undefined;
   cancellationToken?: CommandCancellationToken | undefined;
+  forceKillAfterCancellationMilliseconds?: number | undefined;
+  reportCancellationProgress?: ((message: string) => void) | undefined;
   requiredContract?: RequiredVbaDevContract | undefined;
 }
 
@@ -65,6 +69,9 @@ export interface VbaDevProjectCommandRunResult {
   stderr: string;
   exitCode: number;
   cancelled: boolean;
+  cancellationRequested: boolean;
+  cancellationRequestDelivered: boolean | undefined;
+  cancellationRequestError: string | undefined;
 }
 
 export interface VbaDevCommandRunResult {
@@ -73,6 +80,9 @@ export interface VbaDevCommandRunResult {
   stderr: string;
   exitCode: number;
   cancelled: boolean;
+  cancellationRequested: boolean;
+  cancellationRequestDelivered: boolean | undefined;
+  cancellationRequestError: string | undefined;
 }
 
 export async function resolveVbaDevProjectCommandContext(
@@ -116,12 +126,17 @@ export async function runResolvedVbaDevProjectCommand(
   argsAfterProject: readonly string[] = [],
   refreshDiagnostics = true
 ): Promise<VbaDevProjectCommandRunResult> {
-  return runResolvedVbaDevProjectCommandInvocation(options, context.executablePath, {
-    projectRoot: context.project.projectRoot,
-    argsBeforeProject,
-    argsAfterProject,
-    refreshDiagnostics
-  });
+  return runResolvedVbaDevProjectCommandInvocation(
+    options,
+    context.executablePath,
+    {
+      projectRoot: context.project.projectRoot,
+      argsBeforeProject,
+      argsAfterProject,
+      refreshDiagnostics
+    },
+    context.capabilities
+  );
 }
 
 export async function runVbaDevProjectCommandInvocation(
@@ -133,7 +148,12 @@ export async function runVbaDevProjectCommandInvocation(
     return undefined;
   }
 
-  return runResolvedVbaDevProjectCommandInvocation(options, devtool.executablePath, invocation);
+  return runResolvedVbaDevProjectCommandInvocation(
+    options,
+    devtool.executablePath,
+    invocation,
+    devtool.capabilities
+  );
 }
 
 export async function runVbaDevCommandInvocation(
@@ -147,10 +167,19 @@ export async function runVbaDevCommandInvocation(
 
   const result = await runVbaDevCommand({
     executablePath: devtool.executablePath,
-    args,
+    args: withStdinCancellationTransport(args, devtool.capabilities),
     outputChannel: options.outputChannel,
+    reportCancellationProgress: options.reportCancellationProgress,
     cancellationToken: options.cancellationToken,
-    startProcess: options.startProcess
+    startProcess: options.startProcess,
+    cancellationTransport: supportsStdinCancellation(devtool.capabilities)
+      ? 'stdin-v1'
+      : undefined,
+    forceKillAfterCancellationMilliseconds: forceKillDelayForManagedCommand(
+      args,
+      devtool.capabilities,
+      options.forceKillAfterCancellationMilliseconds
+    )
   });
 
   return {
@@ -158,26 +187,40 @@ export async function runVbaDevCommandInvocation(
     stdout: result.stdout,
     stderr: result.stderr,
     exitCode: result.exitCode,
-    cancelled: result.cancelled
+    cancelled: result.cancelled,
+    cancellationRequested: result.cancellationRequested,
+    cancellationRequestDelivered: result.cancellationRequestDelivered,
+    cancellationRequestError: result.cancellationRequestError
   };
 }
 
 export async function runResolvedVbaDevProjectCommandInvocation(
   options: VbaDevInvocationRuntimeOptions,
   executablePath: string,
-  invocation: VbaDevProjectCommandInvocation
+  invocation: VbaDevProjectCommandInvocation,
+  capabilities: VbaDevCapabilities
 ): Promise<VbaDevProjectCommandRunResult> {
+  const args = [
+    ...invocation.argsBeforeProject,
+    '--project',
+    invocation.projectRoot,
+    ...(invocation.argsAfterProject ?? [])
+  ];
   const result = await runVbaDevCommand({
     executablePath,
-    args: [
-      ...invocation.argsBeforeProject,
-      '--project',
-      invocation.projectRoot,
-      ...(invocation.argsAfterProject ?? [])
-    ],
+    args: withStdinCancellationTransport(args, capabilities),
     outputChannel: options.outputChannel,
+    reportCancellationProgress: options.reportCancellationProgress,
     cancellationToken: options.cancellationToken,
-    startProcess: options.startProcess
+    startProcess: options.startProcess,
+    cancellationTransport: supportsStdinCancellation(capabilities)
+      ? 'stdin-v1'
+      : undefined,
+    forceKillAfterCancellationMilliseconds: forceKillDelayForManagedCommand(
+      args,
+      capabilities,
+      options.forceKillAfterCancellationMilliseconds
+    )
   });
 
   if (invocation.refreshDiagnostics !== false) {
@@ -193,8 +236,43 @@ export async function runResolvedVbaDevProjectCommandInvocation(
     stdout: result.stdout,
     stderr: result.stderr,
     exitCode: result.exitCode,
-    cancelled: result.cancelled
+    cancelled: result.cancelled,
+    cancellationRequested: result.cancellationRequested,
+    cancellationRequestDelivered: result.cancellationRequestDelivered,
+    cancellationRequestError: result.cancellationRequestError
   };
+}
+
+function supportsStdinCancellation(capabilities: VbaDevCapabilities): boolean {
+  return capabilities.featureVersions?.['invocation.stdinCancellation'] === '1.0';
+}
+
+function forceKillDelayForManagedCommand(
+  args: readonly string[],
+  capabilities: VbaDevCapabilities,
+  override: number | undefined
+): number | undefined {
+  if (
+    !supportsStdinCancellation(capabilities) ||
+    isProtectedTransactionCommand(args)
+  ) {
+    return undefined;
+  }
+  return override ?? VbaDevCooperativeCancellationGraceMilliseconds;
+}
+
+function isProtectedTransactionCommand(args: readonly string[]): boolean {
+  return (args[0] === 'new' && args[1] === 'excel') ||
+    (args[0] === 'common-module' && (args[1] === 'add' || args[1] === 'update'));
+}
+
+function withStdinCancellationTransport(
+  args: readonly string[],
+  capabilities: VbaDevCapabilities
+): readonly string[] {
+  return supportsStdinCancellation(capabilities)
+    ? [...args, '--cancellation-transport', 'stdin-v1']
+    : args;
 }
 
 async function resolveInvocationVbaDev(

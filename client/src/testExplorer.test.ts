@@ -1839,23 +1839,37 @@ test('No-build Test Explorer profile reports unusable generated output as TestRu
   assert.ok(controller.runs[0].events.includes(`errored:${documentItem.id}:Bin workbook was not found`));
 });
 
-test('Cancelled no-build Test Explorer runs terminate the spawned CLI process', async () => {
+test('Cancelled no-build Test Explorer runs request cooperative CLI cancellation', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const controller = new FakeTestController();
-  let killed = false;
+  let kills = 0;
+  let cancellationRequests = 0;
   let cancelListener: (() => void) | undefined;
+  let closeListener: ((exitCode: number | null, signal: string | null) => void) | undefined;
+  let processArgs: readonly string[] = [];
   const explorer = createExplorer(controller, {
     manifests: new Map([
       [path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]
     ]),
-    startProcess: () => ({
-      onStdout: () => undefined,
-      onStderr: () => undefined,
-      onExit: (listener) => setTimeout(() => listener(null, 'SIGTERM'), 10),
-      kill: () => {
-        killed = true;
-      }
-    })
+    vbaDevResolver: stdinCancellationVbaDevResolver(),
+    startProcess: (_file, args) => {
+      processArgs = args;
+      return {
+        onStdout: () => undefined,
+        onStderr: () => undefined,
+        onExit: () => undefined,
+        onClose: (listener) => {
+          closeListener = listener;
+        },
+        requestCancellation: async () => {
+          cancellationRequests += 1;
+          setTimeout(() => closeListener?.(130, null), 0);
+        },
+        kill: () => {
+          kills += 1;
+        }
+      };
+    }
   });
   await explorer.refresh();
 
@@ -1873,7 +1887,9 @@ test('Cancelled no-build Test Explorer runs terminate the spawned CLI process', 
   cancelListener?.();
   await runPromise;
 
-  assert.equal(killed, true);
+  assert.equal(cancellationRequests, 1);
+  assert.equal(kills, 0);
+  assert.deepEqual(processArgs.slice(-2), ['--cancellation-transport', 'stdin-v1']);
   assert.deepEqual(controller.runs[0].events, [
     `started:${controller.items[0].id}`,
     `cancelled:${controller.items[0].id}`,
@@ -1881,18 +1897,21 @@ test('Cancelled no-build Test Explorer runs terminate the spawned CLI process', 
   ]);
 });
 
-test('Cancelled snapshot test runs terminate the CLI before caller snapshot cleanup', async () => {
+test('Cancelled snapshot test runs await cooperative CLI close before caller snapshot cleanup', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const controller = new FakeTestController();
-  let killed = false;
+  let kills = 0;
+  let cancellationRequests = 0;
   let processExited = false;
   let cleanupCalls = 0;
   let cleanupStartedBeforeExit = false;
   let cancelListener: (() => void) | undefined;
+  let closeListener: ((exitCode: number | null, signal: string | null) => void) | undefined;
   const explorer = createExplorer(controller, {
     manifests: new Map([
       [path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]
     ]),
+    vbaDevResolver: stdinCancellationVbaDevResolver(),
     captureSourceSnapshot: async () => ({
       directoryPath: path.join('C:', 'temp', 'cancelled-snapshot'),
       cleanup: async () => {
@@ -1904,12 +1923,19 @@ test('Cancelled snapshot test runs terminate the CLI before caller snapshot clea
     startProcess: () => ({
       onStdout: () => undefined,
       onStderr: () => undefined,
-      onExit: (listener) => setTimeout(() => {
-        processExited = true;
-        listener(null, 'SIGTERM');
-      }, 10),
+      onExit: () => undefined,
+      onClose: (listener) => {
+        closeListener = listener;
+      },
+      requestCancellation: async () => {
+        cancellationRequests += 1;
+        setTimeout(() => {
+          processExited = true;
+          closeListener?.(130, null);
+        }, 10);
+      },
       kill: () => {
-        killed = true;
+        kills += 1;
       }
     })
   });
@@ -1929,7 +1955,8 @@ test('Cancelled snapshot test runs terminate the CLI before caller snapshot clea
   cancelListener?.();
   await runPromise;
 
-  assert.equal(killed, true);
+  assert.equal(cancellationRequests, 1);
+  assert.equal(kills, 0);
   assert.equal(cleanupCalls, 1);
   assert.equal(cleanupStartedBeforeExit, false);
   assert.deepEqual(controller.runs[0].events, [
@@ -2065,6 +2092,27 @@ function createExplorer(
     }
   };
   return createWorkbookBackedTestExplorer(explorerOptions);
+}
+
+function stdinCancellationVbaDevResolver() {
+  const executablePath = path.join('D:', 'tools', 'vba-dev.exe');
+  return {
+    resolve: async () => ({
+      executablePath,
+      bundledPath: executablePath,
+      source: 'configured' as const,
+      capabilities: {
+        toolVersion: '0.1.0',
+        contractVersion: '1.0',
+        featureVersions: {
+          'invocation.stdinCancellation': '1.0'
+        },
+        commands: {
+          test: { outputSchemaVersion: '1.2' }
+        }
+      }
+    })
+  };
 }
 
 function completedProcess() {

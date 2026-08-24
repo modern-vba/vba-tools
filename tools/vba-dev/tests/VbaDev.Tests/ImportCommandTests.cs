@@ -55,6 +55,140 @@ public sealed class ImportCommandTests
     }
 
     [Fact]
+    public async Task ImportStdinCancellationCanCancelWhileOwnedWorkbookIsOpening()
+    {
+        using var temp = TempDirectory.Create();
+        var sourceDirectory = temp.CreateDirectory("src");
+        var targetWorkbook = Path.Combine(temp.Path, "target.xlsm");
+        File.WriteAllText(
+            Path.Combine(sourceDirectory, "Module1.bas"),
+            "Attribute VB_Name = \"Module1\"",
+            Encoding.UTF8);
+        File.WriteAllText(targetWorkbook, "workbook", Encoding.UTF8);
+        var automation = new FakeWorkbookBuildAutomation
+        {
+            WaitForCancellationOnOpen = true
+        };
+        var application = CommandLineTestFactory.Create(
+            temp.Path,
+            workbookBuildAutomation: automation);
+        using var standardInput = new SignalThenFrameStream(
+            automation.CancelableOpenStarted,
+            "cancel\n"u8.ToArray());
+        using var standardOutput = new StringWriter();
+        using var standardError = new StringWriter();
+
+        var exitCode = await application.InvokeAsync(
+            [
+                "import",
+                "--from",
+                sourceDirectory,
+                "--to",
+                targetWorkbook,
+                "--cancellation-transport",
+                "stdin-v1"
+            ],
+            standardInput,
+            standardOutput,
+            standardError,
+            CancellationToken.None);
+
+        Assert.Equal(130, exitCode);
+        Assert.False(automation.CancellationRequestedAtOpen);
+        Assert.True(automation.CancellationObserved);
+        Assert.DoesNotContain("save", automation.Events);
+    }
+
+    [Fact]
+    public async Task ImportStdinCancellationUsesNativeBoundedGenerationAndWaitsForCleanup()
+    {
+        using var temp = TempDirectory.Create();
+        var sourceDirectory = temp.CreateDirectory("src");
+        var targetWorkbook = Path.Combine(temp.Path, "target.xlsm");
+        File.WriteAllText(
+            Path.Combine(sourceDirectory, "Module1.bas"),
+            "Attribute VB_Name = \"Module1\"",
+            Encoding.UTF8);
+        File.WriteAllText(targetWorkbook, "workbook", Encoding.UTF8);
+        var automation = new FakeNativeImportGenerationAutomation();
+        var application = CommandLineTestFactory.Create(
+            temp.Path,
+            workbookBuildAutomation: automation);
+        using var standardInput = new MemoryStream("cancel\n"u8.ToArray());
+        using var standardOutput = new StringWriter();
+        using var standardError = new StringWriter();
+
+        var exitCode = await application.InvokeAsync(
+            [
+                "import",
+                "--from",
+                sourceDirectory,
+                "--to",
+                targetWorkbook,
+                "--cancellation-transport",
+                "stdin-v1"
+            ],
+            standardInput,
+            standardOutput,
+            standardError,
+            CancellationToken.None);
+
+        Assert.Equal(130, exitCode);
+        Assert.Equal(1, automation.GenerationRuns);
+        Assert.Equal(0, automation.LegacyOpenCalls);
+        Assert.Equal(WorkbookAutomationTimeouts.Default, automation.Timeouts);
+        Assert.True(automation.CancellationObserved);
+        Assert.True(automation.CleanupFinished);
+        Assert.DoesNotContain("save", automation.Events);
+    }
+
+    [Fact]
+    public async Task ImportStdinCancellationDoesNotReturn130WhenCleanupProofFails()
+    {
+        using var temp = TempDirectory.Create();
+        var sourceDirectory = temp.CreateDirectory("src");
+        var targetWorkbook = Path.Combine(temp.Path, "target.xlsm");
+        File.WriteAllText(
+            Path.Combine(sourceDirectory, "Module1.bas"),
+            "Attribute VB_Name = \"Module1\"",
+            Encoding.UTF8);
+        File.WriteAllText(targetWorkbook, "workbook", Encoding.UTF8);
+        var automation = new FakeNativeImportGenerationAutomation
+        {
+            FailCleanupProof = true
+        };
+        var application = CommandLineTestFactory.Create(
+            temp.Path,
+            workbookBuildAutomation: automation);
+        using var standardInput = new MemoryStream("cancel\n"u8.ToArray());
+        using var standardOutput = new StringWriter();
+        using var standardError = new StringWriter();
+
+        var exitCode = await application.InvokeAsync(
+            [
+                "import",
+                "--from",
+                sourceDirectory,
+                "--to",
+                targetWorkbook,
+                "--cancellation-transport",
+                "stdin-v1"
+            ],
+            standardInput,
+            standardOutput,
+            standardError,
+            CancellationToken.None);
+
+        Assert.Equal(1, exitCode);
+        Assert.Equal(1, automation.GenerationRuns);
+        Assert.Equal(0, automation.LegacyOpenCalls);
+        Assert.True(automation.CancellationObserved);
+        Assert.True(automation.CleanupFinished);
+        Assert.Contains("could not be verified", standardError.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("save", automation.Events);
+    }
+
+    [Fact]
     public void ImportCommandResolvesRelativePathsFromWorkingDirectory()
     {
         using var temp = TempDirectory.Create();
@@ -378,5 +512,150 @@ public sealed class ImportCommandTests
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllBytes(path, content);
+    }
+
+    private sealed class FakeNativeImportGenerationAutomation :
+        IWorkbookBuildAutomation,
+        IWorkbookGenerationAutomation
+    {
+        public int GenerationRuns { get; private set; }
+
+        public int LegacyOpenCalls { get; private set; }
+
+        public WorkbookAutomationTimeouts? Timeouts { get; private set; }
+
+        public bool CancellationObserved { get; private set; }
+
+        public bool CleanupFinished { get; private set; }
+
+        public bool FailCleanupProof { get; init; }
+
+        public List<string> Events { get; } = [];
+
+        public IWorkbookBuildSession OpenWorkbook(string workbookPath)
+        {
+            LegacyOpenCalls++;
+            throw new InvalidOperationException("The legacy import automation path was used.");
+        }
+
+        public async Task<TResult> RunAsync<TResult>(
+            string workbookPath,
+            WorkbookAutomationTimeouts timeouts,
+            Func<IWorkbookGenerationSession, CancellationToken, Task<TResult>> operation,
+            CancellationToken cancellationToken)
+        {
+            GenerationRuns++;
+            Timeouts = timeouts;
+            try
+            {
+                return await operation(
+                    new FakeNativeImportGenerationSession(Events),
+                    cancellationToken);
+            }
+            catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
+            {
+                CancellationObserved = true;
+                CleanupFinished = true;
+                Exception cancellationError = FailCleanupProof
+                    ? new WorkbookAutomationCleanupException(
+                        "The owned Excel process release could not be verified.",
+                        ex)
+                    : ex;
+                throw new WorkbookAutomationCanceledException(
+                    new WorkbookAutomationStage(WorkbookAutomationStageKind.ProcessCleanup),
+                    cancellationToken,
+                    cancellationError);
+            }
+        }
+    }
+
+    private sealed class FakeNativeImportGenerationSession(List<string> events) :
+        IWorkbookGenerationSession
+    {
+        public async Task<IReadOnlyList<WorkbookModule>> GetModulesAsync(
+            CancellationToken cancellationToken)
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return [];
+        }
+
+        public Task<IReadOnlyList<WorkbookReference>> GetReferencesAsync(
+            CancellationToken cancellationToken)
+            => Task.FromResult<IReadOnlyList<WorkbookReference>>([]);
+
+        public Task<bool> RemoveReferenceAsync(
+            string referenceName,
+            CancellationToken cancellationToken)
+            => Task.FromResult(false);
+
+        public Task AddReferenceAsync(
+            ResolvedVbaProjectReference reference,
+            CancellationToken cancellationToken)
+            => Task.CompletedTask;
+
+        public Task RemoveModuleAsync(
+            string moduleName,
+            CancellationToken cancellationToken)
+            => Task.CompletedTask;
+
+        public Task ImportModuleAsync(
+            VbeImportSourceFile sourceFile,
+            CancellationToken cancellationToken)
+            => Task.CompletedTask;
+
+        public Task VerifyAsync(CancellationToken cancellationToken)
+            => Task.CompletedTask;
+
+        public Task SaveAsync(CancellationToken cancellationToken)
+        {
+            events.Add("save");
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class SignalThenFrameStream(Task signal, byte[] frame) : Stream
+    {
+        private bool frameRead;
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+            => throw new NotSupportedException();
+
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            if (frameRead)
+            {
+                return 0;
+            }
+
+            await signal.WaitAsync(cancellationToken);
+            frame.CopyTo(buffer);
+            frameRead = true;
+            return frame.Length;
+        }
+
+        public override long Seek(long offset, SeekOrigin origin)
+            => throw new NotSupportedException();
+
+        public override void SetLength(long value)
+            => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count)
+            => throw new NotSupportedException();
     }
 }

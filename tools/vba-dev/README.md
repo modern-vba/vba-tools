@@ -19,6 +19,10 @@ callers can require the `build.sourceSnapshot` or `test.sourceSnapshot` feature
 version `1.0` before supplying those command inputs. Windows snapshot producers
 can also require `sourceSnapshot.activeWindowsCodePage` version `1.0` and read
 the accompanying positive `activeWindowsCodePage` value captured from `GetACP`.
+Managed callers can require `invocation.stdinCancellation` version `1.0` before
+opting into the hidden `--cancellation-transport stdin-v1` control channel. In
+that mode only, exact BOM-less UTF-8 `cancel\n` requests cooperative command
+cancellation; ordinary terminal invocations do not read standard input.
 
 ## PowerShell completion
 

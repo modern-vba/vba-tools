@@ -716,11 +716,12 @@ The Command Palette action `VBA Tools: Doctor` invokes both diagnostics even
 when one fails and presents separately labelled `Project automation` and
 `VBE debugging` results. It is the only aggregate surface; there is no
 `vba-tools doctor` executable. Capability commands remain side-effect free and
-do not substitute for either Doctor. Cancelling during the project stage stops
-the ordinary `vba-dev` child and ends the aggregate before adapter Doctor; that
-palette path does not claim cooperative project cleanup, terminal JSON, or exit
-`130`. Cancellation after adapter Doctor starts uses its cooperative
-`stdin-v1` transport and awaits terminal cleanup evidence.
+do not substitute for either Doctor. Cancelling during the project stage uses
+the hidden managed `vba-dev` `stdin-v1` transport and waits for child close.
+Exit `130` ends the aggregate silently before adapter Doctor, while exit `0` or
+failure remains authoritative after the local request. Cancellation after
+adapter Doctor starts uses its separate cooperative `stdin-v1` transport and
+awaits terminal cleanup evidence.
 
 Probe startup failures carry explicit cleanup evidence. A categorized failure
 may report cleanup as passing only when `CleanupVerified` is true and no

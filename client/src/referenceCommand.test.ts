@@ -95,6 +95,70 @@ test('Reference remove command targets manifest-defined reference entries', asyn
   ]);
 });
 
+test('Reference mutation success remains authoritative after cancellation without starting list', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const calls: Array<{ file: string; args: readonly string[] }> = [];
+  let cancellationRequested = false;
+  let cancelListener: (() => void) | undefined;
+  let closeListener: ((exitCode: number | null, signal: string | null) => void) | undefined;
+  let signalStarted: (() => void) | undefined;
+  const started = new Promise<void>((resolve) => {
+    signalStarted = resolve;
+  });
+  const running = runReferenceAddCommand(createOptions({
+    projectRoot,
+    calls,
+    output: [],
+    startStdout: () => '',
+    advertiseStdinCancellation: true,
+    cancellationToken: {
+      get isCancellationRequested() {
+        return cancellationRequested;
+      },
+      onCancellationRequested: (listener) => {
+        cancelListener = listener;
+        return { dispose: () => undefined };
+      }
+    },
+    startProcess: (file, args) => {
+      calls.push({ file, args });
+      signalStarted?.();
+      return {
+        onStdout: () => undefined,
+        onStderr: () => undefined,
+        onExit: () => undefined,
+        onClose: (listener) => {
+          closeListener = listener;
+        },
+        requestCancellation: async () => undefined,
+        kill: () => undefined
+      };
+    }
+  }), 'Microsoft Scripting Runtime');
+
+  await started;
+  cancellationRequested = true;
+  cancelListener?.();
+  closeListener?.(0, null);
+  const result = await running;
+
+  assert.ok(result);
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.cancelled, false);
+  assert.deepEqual(calls.map((call) => call.args), [
+    ['capabilities', '--format', 'json'],
+    [
+      'reference',
+      'add',
+      'Microsoft Scripting Runtime',
+      '--project',
+      projectRoot,
+      '--cancellation-transport',
+      'stdin-v1'
+    ]
+  ]);
+});
+
 test('Reference commands report a missing input name before invoking CLI', async () => {
   const errors: string[] = [];
   const result = await runReferenceAddCommand(
@@ -169,6 +233,9 @@ function createOptions(
     startStderr?: (args: readonly string[]) => string;
     startExitCode?: (args: readonly string[]) => number;
     diagnosticRefreshes?: Array<{ scopeKey: string; output: string }>;
+    advertiseStdinCancellation?: boolean;
+    cancellationToken?: ReferenceCommandOptions['cancellationToken'];
+    startProcess?: NonNullable<ReferenceCommandOptions['startProcess']>;
   },
   errors: string[] = []
 ): ReferenceCommandOptions {
@@ -186,6 +253,9 @@ function createOptions(
         stdout: JSON.stringify({
           toolVersion: '0.1.0',
           contractVersion: '1.0',
+          featureVersions: options.advertiseStdinCancellation
+            ? { 'invocation.stdinCancellation': '1.0' }
+            : undefined,
           commands: {
             'reference add': { outputSchemaVersion: '1.0' },
             'reference list': { outputSchemaVersion: '1.0' },
@@ -200,7 +270,7 @@ function createOptions(
         stderr: ''
       };
     },
-    startProcess: (file, args) => {
+    startProcess: options.startProcess ?? ((file, args) => {
       options.calls.push({ file, args });
       return {
         onStdout: (listener) => listener(options.startStdout(args)),
@@ -208,7 +278,7 @@ function createOptions(
         onExit: (listener) => listener(options.startExitCode?.(args) ?? 0, null),
         kill: () => undefined
       };
-    },
+    }),
     outputChannel: {
       append: (value) => options.output.push(value),
       appendLine: (value) => options.output.push(`${value}\n`),
@@ -226,8 +296,13 @@ function createOptions(
       errors.push(message);
       return undefined;
     },
+    cancellationToken: options.cancellationToken,
+    forceKillAfterCancellationMilliseconds: 100,
     requiredContract: {
       contractVersion: '1.0',
+      featureVersions: options.advertiseStdinCancellation
+        ? { 'invocation.stdinCancellation': '1.0' }
+        : undefined,
       commandSchemaVersions: {
         'reference add': '1.0',
         'reference list': '1.0',

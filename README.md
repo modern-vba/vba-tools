@@ -141,15 +141,16 @@ project files.
 Complete output from both diagnostics, including every VBE check and any
 remediation details, is written under the two labels in the VBA Tools output
 channel. VBA Tools shows at most one blocking notification and keeps the full
-details in that channel. Cancelling during project Doctor stops that ordinary
-child and ends the aggregate before adapter Doctor starts; this palette path
-does not claim a terminal project JSON result or exit `130`. The two executables
-remain independent: `vba-dev doctor` defaults to project scope and never invokes
-the adapter. Once the VBE stage starts, cancellation sends its versioned
-cooperative request and waits for the adapter to finish terminal Excel and
-workspace cleanup before the result is classified. A failed cancellation
-delivery or invalid terminal JSON remains an infrastructure failure in the
-Output Channel.
+details in that channel. Cancelling during project Doctor sends the versioned
+cooperative request and waits for the ordinary `vba-dev` child to close. Exit
+`130` ends the aggregate silently before adapter Doctor starts, while exit `0`
+or failure and its terminal result remain authoritative after the local request.
+The two executables remain independent: `vba-dev doctor` defaults to project
+scope and never invokes the adapter. Once the VBE stage starts, cancellation
+sends its separate versioned cooperative request and waits for the adapter to
+finish terminal Excel and workspace cleanup before the result is classified. A
+failed cancellation delivery or invalid terminal JSON remains an infrastructure
+failure in the Output Channel.
 
 For an Excel-free CI check, run `vba-dev check`. To inspect only ordinary Excel
 automation readiness without discovering a project, run

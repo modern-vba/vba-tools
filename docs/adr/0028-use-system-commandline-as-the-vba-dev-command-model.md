@@ -56,6 +56,12 @@ outcome. A Node.js caller accumulates standard output and standard error and
 classifies the result only after the child `close` event, not merely `exit`, so
 all process-owned streams have closed before JSON or cleanup diagnostics are
 trusted.
+For ordinary managed commands, the VS Code caller permits ten seconds after
+the local request before terminating the CLI. This exceeds the CLI's five-second
+owned-Excel cleanup grace plus its one-second release-observation allowance and
+leaves time for request delivery, terminal classification, output drain, and
+child close. `new excel`, CommonModules Add, and CommonModules Update have no
+caller force-termination timer.
 The VS Code caller records a failed write in VBA Tools Output and changes its
 running progress message to
 `Cancellation request could not be delivered; waiting for vba-dev to finish.`

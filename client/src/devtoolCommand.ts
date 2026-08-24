@@ -39,6 +39,8 @@ export interface VbaDevCommandRunOptions {
   outputChannel: VbaToolsOutputChannel;
   displayName?: string | undefined;
   cancellationTransport?: 'stdin-v1' | undefined;
+  forceKillAfterCancellationMilliseconds?: number | undefined;
+  reportCancellationProgress?: ((message: string) => void) | undefined;
   cancellationToken?: CommandCancellationToken | undefined;
   startProcess?: StartVbaDevProcess | undefined;
 }
@@ -48,7 +50,9 @@ export interface VbaDevCommandRunResult {
   stdout: string;
   stderr: string;
   cancelled: boolean;
+  cancellationRequested: boolean;
   cancellationRequestDelivered: boolean | undefined;
+  cancellationRequestError: string | undefined;
   message: string;
 }
 
@@ -77,16 +81,47 @@ export function runCompanionCommand(
       stdout: '',
       stderr: '',
       cancelled: true,
+      cancellationRequested: true,
       cancellationRequestDelivered: undefined,
+      cancellationRequestError: undefined,
       message: `${displayName} command was cancelled.`
     });
   }
   const child = startProcess(options.executablePath, options.args);
   let stdout = '';
   let stderr = '';
-  let cancelled = options.cancellationToken?.isCancellationRequested ?? false;
+  let cancellationRequested = options.cancellationToken?.isCancellationRequested ?? false;
   let childCancellationRequested = false;
   let cancellationRequestDelivery: Promise<boolean> | undefined;
+  let cancellationRequestError: string | undefined;
+  let settleCancellationRequestDelivery: ((
+    delivered: boolean,
+    error?: unknown
+  ) => void) | undefined;
+  let forceKillTimer: NodeJS.Timeout | undefined;
+  let settled = false;
+
+  const scheduleForceKill = (): void => {
+    const delay = options.forceKillAfterCancellationMilliseconds;
+    if (delay === undefined || settled || forceKillTimer !== undefined) {
+      return;
+    }
+    forceKillTimer = setTimeout(() => {
+      forceKillTimer = undefined;
+      if (settled) {
+        return;
+      }
+      try {
+        child.kill();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        options.outputChannel.appendLine(
+          `${displayName} command force termination failed: ${message}`
+        );
+      }
+    }, delay);
+    forceKillTimer.unref();
+  };
 
   const requestChildCancellation = (): void => {
     if (childCancellationRequested) {
@@ -94,35 +129,48 @@ export function runCompanionCommand(
     }
     childCancellationRequested = true;
     if (options.cancellationTransport === 'stdin-v1') {
+      options.reportCancellationProgress?.(
+        'Cancellation requested; waiting for vba-dev to finish.'
+      );
+      scheduleForceKill();
       let deliverySettled = false;
       let resolveDelivery: ((delivered: boolean) => void) | undefined;
       cancellationRequestDelivery = new Promise<boolean>((resolve) => {
         resolveDelivery = resolve;
       });
-      const settleDelivery = (delivered: boolean): void => {
+      const settleDelivery = (delivered: boolean, error?: unknown): void => {
         if (deliverySettled) {
           return;
         }
         deliverySettled = true;
         if (!delivered) {
+          cancellationRequestError = error instanceof Error
+            ? error.message
+            : error === undefined
+              ? 'Cancellation delivery did not settle before the command closed.'
+              : String(error);
           options.outputChannel.appendLine(
-            `${displayName} cancellation request could not be delivered; ` +
-            'waiting for the command to close.'
+            `${displayName} cancellation request could not be delivered: ` +
+            cancellationRequestError
+          );
+          options.reportCancellationProgress?.(
+            'Cancellation request could not be delivered; waiting for vba-dev to finish.'
           );
         }
         resolveDelivery?.(delivered);
       };
+      settleCancellationRequestDelivery = settleDelivery;
       if (child.requestCancellation === undefined) {
-        settleDelivery(false);
+        settleDelivery(false, new Error('The command cancellation transport is unavailable.'));
         return;
       }
       try {
         void child.requestCancellation().then(
           () => settleDelivery(true),
-          () => settleDelivery(false)
+          (error) => settleDelivery(false, error)
         );
-      } catch {
-        settleDelivery(false);
+      } catch (error) {
+        settleDelivery(false, error);
       }
       return;
     }
@@ -142,7 +190,6 @@ export function runCompanionCommand(
   });
 
   let cancellationSubscription: CancellationDisposable | undefined;
-  let settled = false;
   let processStarted = child.started ?? child.onSpawn === undefined;
   const result = new Promise<VbaDevCommandRunResult>((resolve) => {
     const complete = (exitCode: number | null, signal: string | null): void => {
@@ -151,18 +198,28 @@ export function runCompanionCommand(
       }
       settled = true;
       cancellationSubscription?.dispose();
-      const commandWasCancelled = cancelled;
+      if (forceKillTimer !== undefined) {
+        clearTimeout(forceKillTimer);
+        forceKillTimer = undefined;
+      }
       const resolvedExitCode = exitCode ?? 1;
+      const commandWasCancelled = resolvedExitCode === 130 ||
+        (options.cancellationTransport === undefined && cancellationRequested);
       void (async () => {
-        const cancellationRequestDelivered = cancellationRequestDelivery === undefined
-          ? undefined
-          : await cancellationRequestDelivery;
+        let cancellationRequestDelivered: boolean | undefined;
+        if (cancellationRequestDelivery !== undefined) {
+          await new Promise<void>((finishDeliveryTurn) => setImmediate(finishDeliveryTurn));
+          settleCancellationRequestDelivery?.(false);
+          cancellationRequestDelivered = await cancellationRequestDelivery;
+        }
         resolve({
           exitCode: resolvedExitCode,
           stdout,
           stderr,
           cancelled: commandWasCancelled,
+          cancellationRequested,
           cancellationRequestDelivered,
+          cancellationRequestError,
           message: commandWasCancelled
             ? `${displayName} command was cancelled.`
             : `${displayName} exited with code ${resolvedExitCode}.`
@@ -193,8 +250,10 @@ export function runCompanionCommand(
     return result;
   }
   cancellationSubscription = options.cancellationToken?.onCancellationRequested(() => {
-    cancelled = true;
-    options.outputChannel.appendLine(`${displayName} command cancelled.`);
+    cancellationRequested = true;
+    options.outputChannel.appendLine(options.cancellationTransport === 'stdin-v1'
+      ? `${displayName} cancellation requested; waiting for the command to close.`
+      : `${displayName} command cancelled.`);
     requestChildCancellation();
   });
   if (settled) {
@@ -202,7 +261,7 @@ export function runCompanionCommand(
     cancellationSubscription = undefined;
     return result;
   }
-  if (cancelled) {
+  if (cancellationRequested) {
     requestChildCancellation();
   }
 

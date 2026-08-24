@@ -421,10 +421,11 @@ fails, and displays separately labelled `Project automation` and `VBE debugging`
 results. Neither underlying executable provides the aggregate operation, and no
 new `vba-tools.exe` command is introduced. Capability inspection remains
 side-effect free; only explicit Doctor execution may start temporary Excel/VBE
-sessions, and neither diagnostic mutates persistent project files. Cancelling
-during the project stage stops the ordinary `vba-dev` child and ends the
-aggregate before adapter Doctor; that palette path does not claim cooperative
-project cleanup, terminal JSON, or exit `130`. Once adapter Doctor starts, its
+sessions, and neither diagnostic mutates persistent project files. ADR 0028
+supersedes this ADR's original immediate-termination description for the
+project stage: managed `vba-dev` Doctor now uses its hidden `stdin-v1`
+cooperative transport, waits for child close, and preserves the terminal exit
+and result as authoritative. Once adapter Doctor starts, its separate
 cooperative `stdin-v1` cancellation remains authoritative.
 
 The Marketplace README describes this implemented contract and states the
