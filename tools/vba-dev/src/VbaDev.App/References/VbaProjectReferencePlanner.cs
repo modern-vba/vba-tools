@@ -225,6 +225,7 @@ public sealed class VbaProjectReferencePlanner
         return selection.MissingExpectedMainReference is null
             ? null
             : DiagnosticResult.Warn(
+                ReferenceCheckId(documentName, null, "manifestConsistency"),
                 $"VbaProjectReferences ({documentName})",
                 $"Manifest/reference consistency warning: document kind '{document.Kind}' is missing expected main reference '{selection.MissingExpectedMainReference}'. Host definitions will not be activated implicitly.");
     }
@@ -239,9 +240,12 @@ public sealed class VbaProjectReferencePlanner
         string documentName,
         ProjectDocument document)
         => document.References
+            .GroupBy(reference => reference.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
             .Where(reference => !VbaProjectReferenceCatalogAvailability.HasUsableCatalog(reference.Name))
             .OrderBy(reference => reference.Name, StringComparer.OrdinalIgnoreCase)
             .Select(reference => DiagnosticResult.Warn(
+                ReferenceCheckId(documentName, reference.Name, "catalogAvailability"),
                 $"VbaProjectReferenceCatalog ({documentName}/{reference.Name})",
                 "No bundled or cached VbaProjectReferenceCatalog metadata is available. The reference remains active, but external editor definitions are unavailable."))
             .ToArray();
@@ -261,6 +265,7 @@ public sealed class VbaProjectReferencePlanner
         if (templateReferences.Contains(reference.Name))
         {
             return DiagnosticResult.Pass(
+                ReferenceCheckId(documentName, reference.Name, "resolution"),
                 $"VbaProjectReferences ({documentName}/{reference.Name})",
                 "Reference is already present in the source template.");
         }
@@ -283,6 +288,7 @@ public sealed class VbaProjectReferencePlanner
         if (resolution.UnverifiedReasonCode is not null)
         {
             return DiagnosticResult.Fail(
+                ReferenceCheckId(documentName, reference.Name, "resolution"),
                 $"VbaProjectReferences ({documentName}/{reference.Name})",
                 $"Reference verification did not complete ({resolution.UnverifiedReasonCode}): {resolution.Message}");
         }
@@ -290,6 +296,7 @@ public sealed class VbaProjectReferencePlanner
         if (resolution.Matches.Count == 0)
         {
             return DiagnosticResult.Fail(
+                ReferenceCheckId(documentName, reference.Name, "resolution"),
                 $"VbaProjectReferences ({documentName}/{reference.Name})",
                 $"Reference was not found: {reference.Name}.");
         }
@@ -297,11 +304,13 @@ public sealed class VbaProjectReferencePlanner
         if (resolution.Matches.Count > 1)
         {
             return DiagnosticResult.Fail(
+                ReferenceCheckId(documentName, reference.Name, "resolution"),
                 $"VbaProjectReferences ({documentName}/{reference.Name})",
                 $"Reference is ambiguous: {reference.Name}.");
         }
 
         return DiagnosticResult.Pass(
+            ReferenceCheckId(documentName, reference.Name, "resolution"),
             $"VbaProjectReferences ({documentName}/{reference.Name})",
             "Reference resolved.");
     }
@@ -335,6 +344,15 @@ public sealed class VbaProjectReferencePlanner
 
         return resolution.Matches[0];
     }
+
+    private static string ReferenceCheckId(
+        string documentName,
+        string? referenceName,
+        string finding)
+        => referenceName is null
+            ? $"project.references.{Uri.EscapeDataString(documentName)}.{finding}"
+            : $"project.references.{Uri.EscapeDataString(documentName)}." +
+              $"{Uri.EscapeDataString(referenceName)}.{finding}";
 
     private VbaProjectReferenceNameResolution Resolve(string referenceName)
     {

@@ -618,11 +618,36 @@ entry points.
 
 ## Doctor
 
-`vba-dev doctor` and `vba-debug-adapter doctor --format json` are independent
-features and do not call each other. `vba-dev doctor` owns project and ordinary
-automation readiness: manifest, source, template, output, CommonModules,
-references, Excel COM, build/test VBIDE access, and hidden-process ownership.
-Native debug commands and break mode cannot fail that project diagnostic.
+Three diagnostic authorities are exposed through four invocations and never
+call one another. `vba-dev check` owns Excel-free static project facts.
+`vba-dev doctor` defaults to active project readiness, while
+`vba-dev doctor --scope environment` owns exactly the five ordinary Excel
+environment checks without discovering a project. The independent
+`vba-debug-adapter doctor --format json` owns native VBE debugging readiness.
+
+| Readiness property | `vba-dev check` | project Doctor | environment Doctor | adapter Doctor |
+| --- | --- | --- | --- | --- |
+| Manifest, paths, source identity, CommonModules, command defaults | Static authority | Includes static facts | No project access | No project access |
+| Selected-reference availability and resolution | No live proof | Active authority | No | No |
+| Applying references to a generated workbook | No | No | No | No |
+| Disposable project-template open and `VBProject` access | No | Active authority | No project template | No project template |
+| Ordinary Windows, COM, process ownership, VBIDE, and cleanup | No | Includes environment evidence | Exact authority | Debug-fixture evidence only |
+| VBA compilation, import, or save | No | No | No | No |
+| Native command context, breakpoint, break mode, and Continue | No | No | No | Active authority |
+| Requires a project | Yes | Yes | No | No |
+| Starts Excel | Never | May start owned instances | One owned instance | One adapter-owned fixture |
+| CI-safe without Excel | Yes | No | No | No |
+
+Project Doctor reports the absolute resolved root and exhaustively combines
+manifest, source, CommonModules, selected-reference, disposable-template
+materialization, and active environment evidence. Environment Doctor returns
+only `platform.windows`, `excel.comStartup`, `excel.processOwnership`,
+`excel.vbideProjectAccess`, and `excel.processCleanup`, in that order, with no
+project or selected-document context. Native debug commands and break mode
+cannot fail either `vba-dev` diagnostic. Their stable detail keys, in the same
+order, are `isWindows`, `dedicatedInstanceStarted`, `ownedByInvocation`,
+`projectAccessSucceeded`, and `ownedProcessReleased`; pass maps to `true`, fail
+to `false`, and every other status to `null`.
 
 `vba-debug-adapter doctor --format json` owns the active
 `DebugEnvironmentDiagnostic`. Using a temporary dedicated Excel/VBE session and
@@ -641,10 +666,15 @@ The probe does not modify persistent project files. Excel or the VBE may appear
 briefly. A missing, disabled, or failing required command fails the diagnostic;
 there is no fallback.
 
-Schema `1.0` emits one JSON object with `schemaVersion`, `toolVersion`, overall
-`status`, `complete`, and ordered `checks`. Each check contains a stable `id`,
-`status`, human-readable `message`, and nonnegative `durationMilliseconds`, plus
-optional `remediation` and `details`. Overall and check status values are
+Both Doctor executables use independently owned schema `1.0` results. The
+`vba-dev` schema adds `scope` and nullable-or-absolute `project` request context;
+the adapter schema has neither field. Each emits one JSON object with
+`schemaVersion`, `toolVersion`, overall `status`, `complete`, and ordered
+`checks`. Each check contains a stable `id`, `status`, human-readable `message`,
+and nonnegative `durationMilliseconds`. The closed `vba-dev` check shape also
+requires machine-readable `details` and permits no adapter-only `remediation`;
+adapter checks may add `remediation` and `details`. Overall and check status
+values are
 `pass`, `warning`, `fail`, and `unverified`; a check blocked by a prerequisite
 may additionally be `skipped`. A conclusive prerequisite failure followed by
 dependency skips is still a complete diagnostic. Cancellation or command
@@ -657,7 +687,12 @@ on both successful and failed diagnostics; logs use stderr. A complete overall
 incomplete result, exits nonzero. The extension parses a valid payload even on
 nonzero exit. Missing or invalid JSON on nonzero exit is a Doctor-command
 infrastructure failure rather than a collection of check results. The command
-accepts no project or document input and uses only adapter-owned fixture state.
+`vba-debug-adapter doctor` accepts no project or document input and uses only
+adapter-owned fixture state. Aggregate priority is `fail`, then `unverified` or
+`skipped`, then `warning`, then `pass`. Project-scope `vba-dev` JSON ends with
+the exact five environment checks in stable order. Exit `130` is reserved for
+an incomplete canceled `vba-dev` result with `excel.processCleanup: pass` and
+cannot hide an observed failed check.
 
 Doctor has no single wall-clock timeout. Workspace and lease creation has a
 5-second deadline; Excel process startup has 30 seconds; fixture workbook
@@ -681,7 +716,11 @@ The Command Palette action `VBA Tools: Doctor` invokes both diagnostics even
 when one fails and presents separately labelled `Project automation` and
 `VBE debugging` results. It is the only aggregate surface; there is no
 `vba-tools doctor` executable. Capability commands remain side-effect free and
-do not substitute for either Doctor.
+do not substitute for either Doctor. Cancelling during the project stage stops
+the ordinary `vba-dev` child and ends the aggregate before adapter Doctor; that
+palette path does not claim cooperative project cleanup, terminal JSON, or exit
+`130`. Cancellation after adapter Doctor starts uses its cooperative
+`stdin-v1` transport and awaits terminal cleanup evidence.
 
 Probe startup failures carry explicit cleanup evidence. A categorized failure
 may report cleanup as passing only when `CleanupVerified` is true and no

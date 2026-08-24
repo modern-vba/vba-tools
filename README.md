@@ -127,8 +127,9 @@ publish workbook, references, and CommonModules entries for each document.
 
 ### 6 - Run Doctor
 
-Run `VBA Tools: Doctor` from the Command Palette. It first runs `vba-dev doctor`
-for **Project automation**, then independently runs
+Run `VBA Tools: Doctor` from the Command Palette. It first runs
+`vba-dev doctor --format json` in its default project scope for **Project
+automation**, then independently runs
 `vba-debug-adapter doctor --format json` for **VBE debugging**, even when the
 project diagnostic reports a failure. The project diagnostic checks project
 paths, manifest state, CommonModules state, reference declarations, and
@@ -140,13 +141,34 @@ project files.
 Complete output from both diagnostics, including every VBE check and any
 remediation details, is written under the two labels in the VBA Tools output
 channel. VBA Tools shows at most one blocking notification and keeps the full
-details in that channel. Each stage can be cancelled independently. The two
-executables remain independent: running `vba-dev doctor` from the `vba-dev`
-terminal performs only the project diagnostic, and neither executable invokes
-the other. Cancelling the VBE stage sends its versioned cooperative request and
-waits for the adapter to finish terminal Excel and workspace cleanup before the
-result is classified. A failed cancellation delivery or invalid terminal JSON
-remains an infrastructure failure in the Output Channel.
+details in that channel. Cancelling during project Doctor stops that ordinary
+child and ends the aggregate before adapter Doctor starts; this palette path
+does not claim a terminal project JSON result or exit `130`. The two executables
+remain independent: `vba-dev doctor` defaults to project scope and never invokes
+the adapter. Once the VBE stage starts, cancellation sends its versioned
+cooperative request and waits for the adapter to finish terminal Excel and
+workspace cleanup before the result is classified. A failed cancellation
+delivery or invalid terminal JSON remains an infrastructure failure in the
+Output Channel.
+
+For an Excel-free CI check, run `vba-dev check`. To inspect only ordinary Excel
+automation readiness without discovering a project, run
+`vba-dev doctor --scope environment --format json`. Direct CLI cancellation
+returns exit `130` only after owned-resource cleanup is proven; an observed
+failure remains a failure.
+
+| Readiness property | `vba-dev check` | project Doctor (default) | environment Doctor | adapter Doctor |
+| --- | --- | --- | --- | --- |
+| Manifest, paths, source identity, CommonModules, command defaults | Proves static facts | Includes the static facts | No project access | No project access |
+| Selected-reference availability and resolution | No live proof | Resolves every selected reference | No | No |
+| Applying references to a generated workbook | No | No | No | No |
+| Disposable project-template open and `VBProject` access | No | Checks materialization readiness | No project template | No project template |
+| Ordinary Windows, COM, owned Excel, VBIDE, and cleanup readiness | No | Includes the five environment checks | Owns exactly the five checks | No; debug-fixture evidence is separate |
+| VBA compilation, source import, or workbook save | No | No | No | No |
+| Native VBE command context, breakpoint, break mode, and Continue | No | No | No | Proves debug readiness |
+| Requires a project | Yes | Yes | No | No |
+| Starts Excel | Never | May start dedicated owned instances | Starts one dedicated owned instance | Starts a dedicated adapter-owned fixture |
+| CI-safe without Excel | Yes | No | No | No |
 
 ---
 

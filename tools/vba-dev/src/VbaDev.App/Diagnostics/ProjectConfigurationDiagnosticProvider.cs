@@ -58,9 +58,10 @@ public sealed class ProjectConfigurationDiagnosticProvider : IDoctorProjectDiagn
     {
         foreach (var diagnostic in DocumentSourceSetLayout.InspectSourceIdentity(documentName, sourceSetPath))
         {
+            var checkId = $"project.sourceLayout.{Uri.EscapeDataString(documentName)}.{diagnostic.Id}";
             results.Add(diagnostic.Status == DocumentSourceSetLayoutDiagnosticStatus.Fail
-                ? DiagnosticResult.Fail(diagnostic.Name, diagnostic.Message)
-                : DiagnosticResult.Warn(diagnostic.Name, diagnostic.Message));
+                ? DiagnosticResult.Fail(checkId, diagnostic.Name, diagnostic.Message)
+                : DiagnosticResult.Warn(checkId, diagnostic.Name, diagnostic.Message));
         }
     }
 }

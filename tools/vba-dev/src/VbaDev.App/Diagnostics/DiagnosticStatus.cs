@@ -21,6 +21,11 @@ public enum DiagnosticStatus
     Fail,
 
     /// <summary>
+    /// The diagnostic could not conclusively classify readiness.
+    /// </summary>
+    Unverified,
+
+    /// <summary>
     /// The diagnostic could not run because a prerequisite context was unavailable.
     /// </summary>
     Skip

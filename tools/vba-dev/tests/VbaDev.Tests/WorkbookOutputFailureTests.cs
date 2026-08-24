@@ -383,7 +383,8 @@ public sealed class WorkbookOutputFailureTests
 
     private sealed class ThrowingEnvironmentDiagnosticPort : IEnvironmentDiagnosticPort
     {
-        public IReadOnlyList<DiagnosticResult> RunEnvironmentDiagnostics()
+        public Task<EnvironmentDiagnosticRun> RunEnvironmentDiagnosticsAsync(
+            CancellationToken cancellationToken)
             => throw new InvalidOperationException("Doctor must not run during build or publish.");
     }
 

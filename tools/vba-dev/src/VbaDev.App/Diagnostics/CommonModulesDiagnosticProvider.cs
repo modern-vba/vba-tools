@@ -45,7 +45,10 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
         }
         catch (CommonModulesManifestException ex)
         {
-            results.Add(DiagnosticResult.Fail("CommonModules manifest", ex.Message));
+            results.Add(DiagnosticResult.Fail(
+                "project.commonModules.manifest",
+                "CommonModules manifest",
+                ex.Message));
             return;
         }
 
@@ -66,6 +69,7 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
         if (sourceMatches.Count == 0)
         {
             results.Add(DiagnosticResult.Fail(
+                CommonModulesCheckId(documentName, module.Name, "storedSource"),
                 $"CommonModules ({documentName}/{module.Name})",
                 $"Installed CommonModule source file was not found under {sourceSetPath}: {module.ModuleFile}."));
             return;
@@ -74,6 +78,7 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
         if (sourceMatches.Count > 1)
         {
             results.Add(DiagnosticResult.Fail(
+                CommonModulesCheckId(documentName, module.Name, "storedSource"),
                 $"CommonModules ({documentName}/{module.Name})",
                 $"Installed CommonModule has multiple source matches for '{module.ModuleFile}': {string.Join(", ", sourceMatches)}."));
         }
@@ -100,6 +105,7 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
             catch (CommonModulesManifestException)
             {
                 results.Add(DiagnosticResult.Fail(
+                    CommonModulesCheckId(documentName, module.Name, "manifestEntry"),
                     $"CommonModules ({documentName}/{module.Name})",
                     $"Unknown CommonModuleName '{module.Name}' in vba-project.json."));
             }
@@ -114,7 +120,16 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
             }
 
             reachableDependencyNames.Add(module.Name);
-            AddDependencyDiagnostics(results, documentName, module.Name, entry, entriesByFile, installedByName, reachableDependencyNames, []);
+            AddDependencyDiagnostics(
+                results,
+                documentName,
+                module.Name,
+                entry,
+                entriesByFile,
+                installedByName,
+                reachableDependencyNames,
+                [],
+                []);
         }
 
         var sourceSetPath = project.ResolvePath(document.SourcePath);
@@ -128,6 +143,7 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
             if (!module.Requested && !reachableDependencyNames.Contains(module.Name))
             {
                 results.Add(DiagnosticResult.Warn(
+                    CommonModulesCheckId(documentName, module.Name, "reachability"),
                     $"CommonModules ({documentName}/{module.Name})",
                     "Installed dependency entry is unreachable from requested CommonModules roots."));
             }
@@ -144,7 +160,8 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
         IReadOnlyDictionary<string, CommonModuleManifestEntry> entriesByFile,
         IReadOnlyDictionary<string, InstalledCommonModule> installedByName,
         HashSet<string> reachableDependencyNames,
-        HashSet<string> visiting)
+        HashSet<string> visiting,
+        HashSet<string> reportedMissingDependencyNames)
     {
         if (!visiting.Add(entry.ModuleFile))
         {
@@ -160,9 +177,14 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
 
             var dependencyName = Path.GetFileNameWithoutExtension(dependencyEntry.ModuleFile);
             reachableDependencyNames.Add(dependencyName);
-            if (!installedByName.ContainsKey(dependencyName))
+            if (!installedByName.ContainsKey(dependencyName) &&
+                reportedMissingDependencyNames.Add(dependencyName))
             {
                 results.Add(DiagnosticResult.Fail(
+                    CommonModulesCheckId(
+                        documentName,
+                        rootName,
+                        $"dependency.{Uri.EscapeDataString(dependencyName)}"),
                     $"CommonModules ({documentName}/{rootName})",
                     $"Requested CommonModule '{rootName}' requires missing dependency '{dependencyName}'."));
             }
@@ -175,7 +197,8 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
                 entriesByFile,
                 installedByName,
                 reachableDependencyNames,
-                visiting);
+                visiting,
+                reportedMissingDependencyNames);
         }
 
         visiting.Remove(entry.ModuleFile);
@@ -199,6 +222,7 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
         if (!File.Exists(repositoryPath))
         {
             results.Add(DiagnosticResult.Fail(
+                CommonModulesCheckId(documentName, module.Name, "repositorySource"),
                 $"CommonModules ({documentName}/{module.Name})",
                 $"CommonModulesRepository source file was not found: {repositoryPath}."));
             return;
@@ -220,8 +244,16 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
             hasDifferentFormSidecar)
         {
             results.Add(DiagnosticResult.Warn(
+                CommonModulesCheckId(documentName, module.Name, "repositorySource"),
                 $"CommonModules ({documentName}/{module.Name})",
                 $"Source file differs from CommonModulesRepository: {sourcePath}."));
         }
     }
+
+    private static string CommonModulesCheckId(
+        string documentName,
+        string moduleName,
+        string finding)
+        => $"project.commonModules.{Uri.EscapeDataString(documentName)}." +
+           $"{Uri.EscapeDataString(moduleName)}.{finding}";
 }

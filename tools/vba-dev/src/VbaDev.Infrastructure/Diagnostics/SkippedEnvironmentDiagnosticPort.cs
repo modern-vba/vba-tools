@@ -11,12 +11,14 @@ public sealed class SkippedEnvironmentDiagnosticPort : IEnvironmentDiagnosticPor
     /// Returns skipped diagnostics explaining that real Excel automation checks are disabled.
     /// </summary>
     /// <returns>The skipped diagnostic results.</returns>
-    public IReadOnlyList<DiagnosticResult> RunEnvironmentDiagnostics()
-        =>
+    public Task<EnvironmentDiagnosticRun> RunEnvironmentDiagnosticsAsync(
+        CancellationToken cancellationToken)
+        => Task.FromResult(new EnvironmentDiagnosticRun(
         [
-            DiagnosticResult.Skip("Excel COM startup", "Real Excel automation diagnostics are optional and are not enabled in this environment."),
-            DiagnosticResult.Skip("Macro-enabled workbook creation", "Real Excel automation diagnostics are optional and are not enabled in this environment."),
-            DiagnosticResult.Skip("VBIDE project access", "Real Excel automation diagnostics are optional and are not enabled in this environment."),
-            DiagnosticResult.Skip("Locked workbook detection", "Locked workbook symptoms are reported by workbook commands when they run.")
-        ];
+            DiagnosticResult.Unverified("platform.windows", "Active environment diagnostics are not enabled in this composition."),
+            DiagnosticResult.Skip("excel.comStartup", "Active environment diagnostics are not enabled in this composition."),
+            DiagnosticResult.Skip("excel.processOwnership", "Active environment diagnostics are not enabled in this composition."),
+            DiagnosticResult.Skip("excel.vbideProjectAccess", "Active environment diagnostics are not enabled in this composition."),
+            DiagnosticResult.Skip("excel.processCleanup", "Active environment diagnostics are not enabled in this composition.")
+        ], Complete: false));
 }

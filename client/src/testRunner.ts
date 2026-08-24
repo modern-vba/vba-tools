@@ -16,6 +16,7 @@ import './testExplorerRefresh.test';
 import './testExplorerInvalidation.test';
 import './projectManifestLanguageServerSync.test';
 import './doctorCommand.test';
+import './vbaDevDoctorOutput.test';
 import './projectCommand.test';
 import './exportCommand.test';
 import './commonModulesCommand.test';

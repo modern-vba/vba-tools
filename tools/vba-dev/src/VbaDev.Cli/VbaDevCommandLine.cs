@@ -431,6 +431,18 @@ public sealed class VbaDevCommandLine
                 parseResult.GetValue(importFromOption),
                 parseResult.GetValue(importToOption),
                 composition.WorkingDirectory))));
+        var checkCommand = AddCommand(
+            rootCommand,
+            "check",
+            "Validate deterministic project facts without starting Excel.");
+        var checkProjectOption = AddProjectOption(checkCommand);
+        checkCommand.SetAction(parseResult => WriteCommandResult(
+            parseResult,
+            composition.StaticProjectCheckCommand.Run(
+                new StaticProjectCheckRequest(
+                    parseResult.GetValue(checkProjectOption),
+                    composition.WorkingDirectory))));
+
         var doctorCommand = AddCapabilityCommand(
             rootCommand,
             "doctor",
@@ -438,11 +450,43 @@ public sealed class VbaDevCommandLine
             "1.0",
             capabilityCommands);
         var doctorProjectOption = AddProjectOption(doctorCommand);
-        doctorCommand.SetAction(parseResult => WriteCommandResult(
-            parseResult,
-            composition.DoctorCommand.Run(new DoctorCommandRequest(
-                parseResult.GetValue(doctorProjectOption),
-                composition.WorkingDirectory))));
+        var doctorScopeOption = CreateStringOption(
+            "--scope",
+            "Diagnostic scope.",
+            "project|environment",
+            ["project", "environment"]);
+        var doctorFormatOption = CreateStringOption(
+            "--format",
+            "Doctor output format.",
+            "text|json",
+            ["text", "json"]);
+        doctorCommand.Add(doctorScopeOption);
+        doctorCommand.Add(doctorFormatOption);
+        doctorCommand.SetAction(async (parseResult, cancellationToken) =>
+        {
+            var environmentScope = parseResult.GetValue(doctorScopeOption) == "environment";
+            if (environmentScope &&
+                parseResult.GetResult(doctorProjectOption) is not null)
+            {
+                return WriteCommandResult(
+                    parseResult,
+                    CommandResult.UsageError(
+                        "--project cannot be used with --scope environment."));
+            }
+
+            return WriteCommandResult(
+                parseResult,
+                await composition.DoctorCommand.RunAsync(new DoctorCommandRequest(
+                    parseResult.GetValue(doctorProjectOption),
+                    composition.WorkingDirectory,
+                    environmentScope
+                        ? DoctorScope.Environment
+                        : DoctorScope.Project,
+                    parseResult.GetValue(doctorFormatOption) == "json"
+                        ? DoctorOutputFormat.Json
+                        : DoctorOutputFormat.Text),
+                    cancellationToken).ConfigureAwait(false));
+        });
 
         var capabilitiesCommand = new Command(
             "capabilities",

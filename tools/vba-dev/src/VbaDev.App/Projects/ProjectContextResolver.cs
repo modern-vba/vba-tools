@@ -90,7 +90,7 @@ public sealed class ProjectContextResolver
         return true;
     }
 
-    private static string ResolveProjectRoot(ProjectResolutionRequest request)
+    internal static string ResolveProjectRoot(ProjectResolutionRequest request)
     {
         if (!string.IsNullOrWhiteSpace(request.ProjectRoot))
         {

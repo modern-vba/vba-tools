@@ -12,6 +12,6 @@ are recorded here. Extension changes remain in the repository root changelog.
 - Canonical `--version` and capabilities metadata from one independent release
   version source.
 - Workbook-backed build, test, publish, import, export, dependency, reference,
-  and doctor command surfaces.
+  Excel-free project check, and scoped active Doctor command surfaces.
 - Caller-owned `build.sourceSnapshot` 1.0 snapshot build input with paired
   caller-selected output for independently hosted tooling.

@@ -47,7 +47,21 @@ test('Doctor command validates the CLI and invokes doctor with an explicit proje
     startProcess: (file, args) => {
       calls.push({ file, args });
       return {
-        onStdout: (listener) => listener('[FAIL] Project manifest: missing\n'),
+        onStdout: (listener) => listener(JSON.stringify({
+          schemaVersion: '1.0',
+          toolVersion: '0.1.0',
+          scope: 'project',
+          project: projectRoot,
+          status: 'fail',
+          complete: true,
+          checks: [{
+            id: 'project.manifest',
+            status: 'fail',
+            message: 'Project manifest is missing.',
+            durationMilliseconds: 0,
+            details: {}
+          }, ...projectEnvironmentChecks()]
+        })),
         onStderr: () => undefined,
         onExit: (listener) => listener(1, null),
         kill: () => undefined
@@ -80,16 +94,20 @@ test('Doctor command validates the CLI and invokes doctor with an explicit proje
   assert.equal(result.projectRoot, projectRoot);
   assert.deepEqual(calls.map((call) => call.args), [
     ['capabilities', '--format', 'json'],
-    ['doctor', '--project', projectRoot]
+    ['doctor', '--format', 'json', '--project', projectRoot]
   ]);
-  assert.match(output.join(''), /\[FAIL\] Project manifest/);
+  assert.match(output.join(''), /\[FAIL\] project\.manifest: Project manifest is missing\./);
   assert.match(notifications[0], /Doctor found blocking issues/);
-  assert.deepEqual(diagnosticRefreshes, [
-    {
-      scopeKey: `project:${projectRoot}`,
-      output: '[FAIL] Project manifest: missing\n'
-    }
-  ]);
+  assert.equal(diagnosticRefreshes.length, 1);
+  assert.equal(diagnosticRefreshes[0].scopeKey, `project:${projectRoot}`);
+  assert.match(
+    diagnosticRefreshes[0].output,
+    /\[FAIL\] project\.manifest: Project manifest is missing\. \(0 ms\)/
+  );
+  assert.match(
+    diagnosticRefreshes[0].output,
+    /\[PASS\] excel\.processCleanup: excel\.processCleanup passed\. \(0 ms\)/
+  );
 });
 
 test('Doctor runs VBE debugging after a failed project diagnostic', async () => {
@@ -101,9 +119,45 @@ test('Doctor runs VBE debugging after a failed project diagnostic', async () => 
   await runDoctorCommand(fixture.options);
 
   assert.deepEqual(fixture.invocations, [
-    `project:doctor --project ${fixture.projectRoot}`,
+    `project:doctor --format json --project ${fixture.projectRoot}`,
     'adapter:doctor --format json --cancellation-transport stdin-v1'
   ]);
+  assert.match(
+    fixture.output.join(''),
+    /\[FAIL\] project\.manifest: Project manifest is invalid\./
+  );
+  assert.doesNotMatch(fixture.output.join(''), /Doctor command infrastructure failure/);
+});
+
+test('Doctor rejects a vba-dev diagnostic for a different project', async () => {
+  const differentProject = path.join('C:', 'work', 'DifferentProject');
+  const fixture = createAggregateDoctorFixture({
+    projectReport: {
+      schemaVersion: '1.0',
+      toolVersion: '0.1.0',
+      scope: 'project',
+      project: differentProject,
+      status: 'pass',
+      complete: true,
+      checks: [{
+        id: 'project.manifest',
+        status: 'pass',
+        message: 'Project manifest is valid.',
+        durationMilliseconds: 0,
+        details: {}
+      }, ...projectEnvironmentChecks()]
+    }
+  });
+
+  await runDoctorCommand(fixture.options);
+
+  assert.deepEqual(fixture.invocations, [
+    `project:doctor --format json --project ${fixture.projectRoot}`,
+    'adapter:doctor --format json --cancellation-transport stdin-v1'
+  ]);
+  assert.match(fixture.output.join(''), /project identity.*does not match/i);
+  assert.match(fixture.output.join(''), /Doctor command infrastructure failure/);
+  assert.equal(fixture.notifications.length, 1);
 });
 
 test('Doctor labels project and VBE output and renders every adapter check', async () => {
@@ -115,7 +169,7 @@ test('Doctor labels project and VBE output and renders every adapter check', asy
 
   const output = fixture.output.join('');
   const projectHeading = output.indexOf('Project automation');
-  const projectResult = output.indexOf('[PASS] Project manifest');
+  const projectResult = output.indexOf('[PASS] project.manifest');
   const vbeHeading = output.indexOf('VBE debugging');
   assert.ok(projectHeading >= 0);
   assert.ok(projectResult > projectHeading);
@@ -282,7 +336,7 @@ test('Doctor rejects an adapter diagnostic missing a required check', async () =
   const output = fixture.output.join('');
   assert.match(output, /Doctor command infrastructure failure/);
   assert.match(output, /missing required check workspace\.deletion/);
-  assert.doesNotMatch(output, /Overall: PASS/);
+  assertOnlyProjectOverallPass(output);
   assert.equal(fixture.notifications.length, 1);
 });
 
@@ -301,7 +355,7 @@ test('Doctor rejects duplicate adapter check identifiers', async () => {
   const output = fixture.output.join('');
   assert.match(output, /Doctor command infrastructure failure/);
   assert.match(output, /duplicate check platform\.windows/);
-  assert.doesNotMatch(output, /Overall: PASS/);
+  assertOnlyProjectOverallPass(output);
   assert.equal(fixture.notifications.length, 1);
 });
 
@@ -320,7 +374,7 @@ test('Doctor rejects required adapter checks reported out of order', async () =>
   const output = fixture.output.join('');
   assert.match(output, /Doctor command infrastructure failure/);
   assert.match(output, /required checks in their stable order/);
-  assert.doesNotMatch(output, /Overall: PASS/);
+  assertOnlyProjectOverallPass(output);
   assert.equal(fixture.notifications.length, 1);
 });
 
@@ -338,7 +392,7 @@ test('Doctor rejects an overall pass that hides a failed adapter check', async (
   const output = fixture.output.join('');
   assert.match(output, /Doctor command infrastructure failure/);
   assert.match(output, /overall status pass does not match fail/);
-  assert.doesNotMatch(output, /Overall: PASS/);
+  assertOnlyProjectOverallPass(output);
   assert.equal(fixture.notifications.length, 1);
 });
 
@@ -360,7 +414,7 @@ test('Doctor rejects an overall pass that hides an unverified adapter check', as
   const output = fixture.output.join('');
   assert.match(output, /Doctor command infrastructure failure/);
   assert.match(output, /overall status pass does not match unverified/);
-  assert.doesNotMatch(output, /Overall: PASS/);
+  assertOnlyProjectOverallPass(output);
   assert.equal(fixture.notifications.length, 1);
 });
 
@@ -381,7 +435,7 @@ test('Doctor rejects an overall pass that hides an adapter warning', async () =>
   const output = fixture.output.join('');
   assert.match(output, /Doctor command infrastructure failure/);
   assert.match(output, /overall status pass does not match warning/);
-  assert.doesNotMatch(output, /Overall: PASS/);
+  assertOnlyProjectOverallPass(output);
   assert.equal(fixture.notifications.length, 1);
 });
 
@@ -419,7 +473,7 @@ test('Doctor rejects a skipped adapter check without an earlier blocker', async 
   const output = fixture.output.join('');
   assert.match(output, /Doctor command infrastructure failure/);
   assert.match(output, /skipped check workspace\.session has no earlier blocker/);
-  assert.doesNotMatch(output, /Overall: PASS/);
+  assertOnlyProjectOverallPass(output);
   assert.equal(fixture.notifications.length, 1);
 });
 
@@ -560,7 +614,7 @@ test('Doctor rejects a passing adapter diagnostic with a nonzero exit', async ()
   const output = fixture.output.join('');
   assert.match(output, /Doctor command infrastructure failure/);
   assert.match(output, /overall status pass requires exit code 0, received 7/);
-  assert.doesNotMatch(output, /Overall: PASS/);
+  assertOnlyProjectOverallPass(output);
   assert.equal(fixture.notifications.length, 1);
 });
 
@@ -595,7 +649,7 @@ test('Doctor rejects a fractional adapter check duration', async () => {
   const output = fixture.output.join('');
   assert.match(output, /Doctor command infrastructure failure/);
   assert.match(output, /nonnegative safe-integer durationMilliseconds/);
-  assert.doesNotMatch(output, /Overall: PASS/);
+  assertOnlyProjectOverallPass(output);
   assert.equal(fixture.notifications.length, 1);
 });
 
@@ -634,12 +688,12 @@ test('Doctor reports an actionable debug-adapter resolution failure after projec
   await runDoctorCommand(fixture.options);
 
   const output = fixture.output.join('');
-  assert.ok(output.indexOf('[PASS] Project manifest') < output.indexOf('VBE debugging'));
+  assert.ok(output.indexOf('[PASS] project.manifest') < output.indexOf('VBE debugging'));
   assert.match(output, /Doctor command infrastructure failure/);
   assert.match(output, new RegExp(escapeRegExp(configuredPath)));
   assert.match(output, /incompatible protocolVersion/);
   assert.deepEqual(fixture.invocations, [
-    `project:doctor --project ${fixture.projectRoot}`
+    `project:doctor --format json --project ${fixture.projectRoot}`
   ]);
   assert.equal(fixture.notifications.length, 1);
 });
@@ -692,7 +746,7 @@ test('Doctor independently cancels VBE debugging after project Doctor completes'
   assert.equal(adapterCancellationRequests, 1);
   assert.equal(adapterKills, 0);
   assert.deepEqual(fixture.invocations, [
-    `project:doctor --project ${fixture.projectRoot}`,
+    `project:doctor --format json --project ${fixture.projectRoot}`,
     'adapter:doctor --format json --cancellation-transport stdin-v1'
   ]);
   assert.match(fixture.output.join(''), /VBE debugging command cancelled\./);
@@ -974,10 +1028,64 @@ test('Doctor independently cancels project Doctor before VBE debugging starts', 
   assert.equal(projectKills, 1);
   assert.equal(adapterResolutions, 0);
   assert.deepEqual(fixture.invocations, [
-    `project:doctor --project ${fixture.projectRoot}`
+    `project:doctor --format json --project ${fixture.projectRoot}`
   ]);
   assert.doesNotMatch(fixture.output.join(''), /VBE debugging/);
   assert.deepEqual(fixture.notifications, []);
+});
+
+test('Doctor still notifies when project cancellation returns a failed diagnostic after cleanup', async () => {
+  const cancellationToken = new TestCancellationToken();
+  const fixture = createAggregateDoctorFixture({ projectExitCode: 1 });
+  const failedReport = getProjectDoctorStdout(
+    { projectExitCode: 1 },
+    fixture.projectRoot
+  );
+  let projectStdout: ((value: string) => void) | undefined;
+  let projectClose: ((exitCode: number | null, signal: string | null) => void) | undefined;
+  let adapterResolutions = 0;
+  let signalProjectStarted: (() => void) | undefined;
+  const projectStarted = new Promise<void>((resolve) => {
+    signalProjectStarted = resolve;
+  });
+  fixture.options.cancellationToken = cancellationToken;
+  fixture.options.startProcess = (_file, args) => {
+    fixture.invocations.push(`project:${args.join(' ')}`);
+    signalProjectStarted?.();
+    return {
+      onStdout: (listener) => {
+        projectStdout = listener;
+      },
+      onStderr: () => undefined,
+      onExit: () => undefined,
+      onClose: (listener) => {
+        projectClose = listener;
+      },
+      kill: () => {
+        projectStdout?.(failedReport);
+        projectClose?.(1, null);
+      }
+    };
+  };
+  fixture.options.vbaDebugAdapterResolver = {
+    resolve: async () => {
+      adapterResolutions += 1;
+      throw new Error('adapter must not resolve after project cancellation');
+    }
+  };
+
+  const runningDoctor = runDoctorCommand(fixture.options);
+  await projectStarted;
+  cancellationToken.cancel();
+  const result = await runningDoctor;
+
+  assert.ok(result);
+  assert.equal(result.cancelled, true);
+  assert.equal(adapterResolutions, 0);
+  assert.match(fixture.output.join(''), /\[FAIL\] project\.manifest/);
+  assert.deepEqual(fixture.notifications, [
+    'VBA Tools: Doctor found blocking issues. See the VBA Tools output for details.'
+  ]);
 });
 
 test('Doctor does not start VBE debugging after cancellation during adapter resolution', async () => {
@@ -1012,7 +1120,7 @@ test('Doctor does not start VBE debugging after cancellation during adapter reso
   assert.ok(result);
   assert.equal(result.cancelled, true);
   assert.deepEqual(fixture.invocations, [
-    `project:doctor --project ${fixture.projectRoot}`
+    `project:doctor --format json --project ${fixture.projectRoot}`
   ]);
   assert.match(fixture.output.join(''), /VBE debugging command cancelled\./);
   assert.deepEqual(fixture.notifications, []);
@@ -1206,7 +1314,7 @@ test('Doctor shows one blocking notification when both diagnostics fail', async 
 
   const output = fixture.output.join('');
   assert.match(output, /Project automation/);
-  assert.match(output, /\[FAIL\] Project manifest is invalid\./);
+  assert.match(output, /\[FAIL\] project\.manifest: Project manifest is invalid\./);
   assert.match(output, /VBE debugging/);
   assert.match(output, /\[FAIL\] vbide\.access/);
   assert.deepEqual(fixture.notifications, [
@@ -1361,6 +1469,7 @@ test('First-run doctor prompt supports a workspace do-not-ask-again choice', asy
 
 interface AggregateDoctorFixtureConfig {
   projectExitCode?: number;
+  projectReport?: unknown;
   projectStdout?: string;
   projectStderr?: string;
   adapterExitCode?: number | null;
@@ -1390,6 +1499,7 @@ function createAggregateDoctorFixture(
   const invocations: string[] = [];
   const output: string[] = [];
   const notifications: string[] = [];
+  const projectStdout = getProjectDoctorStdout(config, projectRoot);
   const options: DoctorCommandOptions = {
     extensionRoot: path.join('C:', 'extension'),
     vbaDevResolver: {
@@ -1436,9 +1546,7 @@ function createAggregateDoctorFixture(
       invocations.push(`project:${args.join(' ')}`);
       return {
         onStdout: (listener) => {
-          if (config.projectStdout !== undefined) {
-            listener(config.projectStdout);
-          }
+          listener(projectStdout);
         },
         onStderr: (listener) => {
           if (config.projectStderr !== undefined) {
@@ -1482,6 +1590,56 @@ function createAggregateDoctorFixture(
   return { projectRoot, invocations, output, notifications, options };
 }
 
+function getProjectDoctorStdout(
+  config: AggregateDoctorFixtureConfig,
+  projectRoot: string
+): string {
+  if (config.projectReport !== undefined) {
+    return JSON.stringify(config.projectReport);
+  }
+  if (
+    config.projectStdout !== undefined &&
+    !config.projectStdout.startsWith('[PASS]') &&
+    !config.projectStdout.startsWith('[FAIL]')
+  ) {
+    return config.projectStdout;
+  }
+
+  const failed = (config.projectExitCode ?? 0) !== 0;
+  return JSON.stringify({
+    schemaVersion: '1.0',
+    toolVersion: '0.1.0',
+    scope: 'project',
+    project: projectRoot,
+    status: failed ? 'fail' : 'pass',
+    complete: true,
+    checks: [{
+      id: 'project.manifest',
+      status: failed ? 'fail' : 'pass',
+      message: failed ? 'Project manifest is invalid.' : 'Project manifest is valid.',
+      durationMilliseconds: 0,
+      details: {}
+    }, ...projectEnvironmentChecks()]
+  });
+}
+
+function projectEnvironmentChecks(): Array<Record<string, unknown>> {
+  const detailNames: Record<string, string> = {
+    'platform.windows': 'isWindows',
+    'excel.comStartup': 'dedicatedInstanceStarted',
+    'excel.processOwnership': 'ownedByInvocation',
+    'excel.vbideProjectAccess': 'projectAccessSucceeded',
+    'excel.processCleanup': 'ownedProcessReleased'
+  };
+  return Object.entries(detailNames).map(([id, detailName]) => ({
+    id,
+    status: 'pass',
+    message: `${id} passed.`,
+    durationMilliseconds: 0,
+    details: { [detailName]: true }
+  }));
+}
+
 class MemoryPromptState {
   private readonly values = new Map<string, unknown>();
 
@@ -1515,6 +1673,10 @@ class TestCancellationToken {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function assertOnlyProjectOverallPass(output: string): void {
+  assert.equal(output.match(/Overall: PASS/g)?.length, 1);
 }
 
 const adapterDoctorCheckIds = [

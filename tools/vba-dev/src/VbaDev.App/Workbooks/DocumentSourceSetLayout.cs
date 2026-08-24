@@ -103,6 +103,7 @@ public static class DocumentSourceSetLayout
         foreach (var group in FindSourceFileNameCollisions(sourceFiles))
         {
             diagnostics.Add(DocumentSourceSetLayoutDiagnostic.Fail(
+                $"sourceIdentity.{Uri.EscapeDataString(group.FileName)}",
                 $"Document source identity ({documentName}/{group.FileName})",
                 $"Duplicate exported source file name. Colliding files: {string.Join(", ", group.SourcePaths)}."));
         }
@@ -129,6 +130,7 @@ public static class DocumentSourceSetLayout
             }
 
             diagnostics.Add(DocumentSourceSetLayoutDiagnostic.Warn(
+                $"formSidecar.{Uri.EscapeDataString(Path.GetRelativePath(sourceSetPath, sidecarPath).Replace('\\', '/'))}",
                 $"Form sidecar ({documentName}/{Path.GetFileName(sidecarPath)})",
                 $"Sidecar has no same-directory .frm, but a same-name form exists elsewhere: {sidecarPath}. Matching forms: {string.Join(", ", matchingForms)}."));
         }
@@ -345,30 +347,34 @@ public sealed record DocumentSourceFileNameCollision(
 /// Represents a source set layout diagnostic produced by source identity inspection.
 /// </summary>
 /// <param name="Status">The diagnostic severity.</param>
+/// <param name="Id">The stable source-layout finding identity.</param>
 /// <param name="Name">The diagnostic name.</param>
 /// <param name="Message">The user-facing diagnostic message.</param>
 public sealed record DocumentSourceSetLayoutDiagnostic(
     DocumentSourceSetLayoutDiagnosticStatus Status,
+    string Id,
     string Name,
     string Message)
 {
     /// <summary>
     /// Creates a failing source set layout diagnostic.
     /// </summary>
+    /// <param name="id">The stable source-layout finding identity.</param>
     /// <param name="name">The diagnostic name.</param>
     /// <param name="message">The diagnostic message.</param>
     /// <returns>A failing layout diagnostic.</returns>
-    public static DocumentSourceSetLayoutDiagnostic Fail(string name, string message)
-        => new(DocumentSourceSetLayoutDiagnosticStatus.Fail, name, message);
+    public static DocumentSourceSetLayoutDiagnostic Fail(string id, string name, string message)
+        => new(DocumentSourceSetLayoutDiagnosticStatus.Fail, id, name, message);
 
     /// <summary>
     /// Creates a warning source set layout diagnostic.
     /// </summary>
+    /// <param name="id">The stable source-layout finding identity.</param>
     /// <param name="name">The diagnostic name.</param>
     /// <param name="message">The diagnostic message.</param>
     /// <returns>A warning layout diagnostic.</returns>
-    public static DocumentSourceSetLayoutDiagnostic Warn(string name, string message)
-        => new(DocumentSourceSetLayoutDiagnosticStatus.Warn, name, message);
+    public static DocumentSourceSetLayoutDiagnostic Warn(string id, string name, string message)
+        => new(DocumentSourceSetLayoutDiagnosticStatus.Warn, id, name, message);
 }
 
 /// <summary>

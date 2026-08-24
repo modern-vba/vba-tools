@@ -23,7 +23,11 @@ public static class ToolingCompositionRoot
     /// </summary>
     /// <returns>The composed services consumed by a command-line host.</returns>
     public static ToolingApplicationComposition CreateApplicationComposition()
-        => CreateApplicationComposition(Directory.GetCurrentDirectory());
+        => CreateApplicationComposition(
+            Directory.GetCurrentDirectory(),
+            environmentDiagnosticPort: new ExcelEnvironmentDiagnosticPort(),
+            projectMaterializationDiagnosticPort:
+                new ExcelProjectMaterializationDiagnosticPort());
 
     /// <summary>
     /// Creates shell-neutral application services with optional test or host-specific adapter overrides.
@@ -48,7 +52,8 @@ public static class ToolingCompositionRoot
         IVbaProjectReferenceResolver? vbaProjectReferenceResolver = null,
         IProjectManifestStore? projectManifestStore = null,
         IVbaProjectReferenceAmbiguityProbe? vbaProjectReferenceAmbiguityProbe = null,
-        IExportDestinationFileOperations? exportDestinationFileOperations = null)
+        IExportDestinationFileOperations? exportDestinationFileOperations = null,
+        IProjectMaterializationDiagnosticPort? projectMaterializationDiagnosticPort = null)
     {
         var manifestStore = projectManifestStore ?? new JsonProjectManifestStore();
         var manifestEditor = new ProjectManifestEditor(manifestStore);
@@ -70,14 +75,21 @@ public static class ToolingCompositionRoot
             projectContextResolver,
             referencePlanner);
         var buildAutomation = workbookBuildAutomation ?? new ExcelComWorkbookBuildAutomation();
+        IReadOnlyList<IDoctorProjectDiagnosticProvider> staticProjectDiagnosticProviders =
+        [
+            new ProjectConfigurationDiagnosticProvider(),
+            new CommonModulesDiagnosticProvider(commonModulesManifestReader),
+            new CommandDefaultsDiagnosticProvider()
+        ];
+        var staticProjectCheckCommand = new StaticProjectCheckCommand(
+            projectContextResolver,
+            staticProjectDiagnosticProviders);
         var doctorPipeline = new DoctorDiagnosticPipeline(
             projectContextResolver,
-            [
-                new ProjectConfigurationDiagnosticProvider(),
-                new CommonModulesDiagnosticProvider(commonModulesManifestReader),
-                new VbaProjectReferenceDiagnosticProvider(referencePlanner),
-                new CommandDefaultsDiagnosticProvider()
-            ],
+            staticProjectDiagnosticProviders,
+            [new VbaProjectReferenceDiagnosticProvider(referencePlanner)],
+            projectMaterializationDiagnosticPort ??
+                new DisabledProjectMaterializationDiagnosticPort(),
             environmentDiagnosticPort ?? new SkippedEnvironmentDiagnosticPort());
         var doctorCommand = new DoctorCommand(
             doctorPipeline,
@@ -104,6 +116,7 @@ public static class ToolingCompositionRoot
         var importCommand = new ImportCommand(buildAutomation);
         return new ToolingApplicationComposition(
             doctorCommand,
+            staticProjectCheckCommand,
             newProjectCommand,
             commonModulesService,
             referenceService,
@@ -129,6 +142,7 @@ public static class ToolingCompositionRoot
 /// Contains shell-neutral application services used by an executable command-line host.
 /// </summary>
 /// <param name="DoctorCommand">The diagnostics command.</param>
+/// <param name="StaticProjectCheckCommand">The Excel-free project check command.</param>
 /// <param name="NewProjectCommand">The project creation command.</param>
 /// <param name="CommonModulesService">The CommonModules service.</param>
 /// <param name="ReferenceService">The VBA reference service.</param>
@@ -142,6 +156,7 @@ public static class ToolingCompositionRoot
 /// <param name="WorkingDirectory">The invocation working directory.</param>
 public sealed record ToolingApplicationComposition(
     DoctorCommand DoctorCommand,
+    StaticProjectCheckCommand StaticProjectCheckCommand,
     NewProjectCommand NewProjectCommand,
     CommonModulesService CommonModulesService,
     VbaProjectReferenceService ReferenceService,

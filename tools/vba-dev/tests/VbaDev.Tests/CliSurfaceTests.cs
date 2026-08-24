@@ -195,7 +195,8 @@ public sealed class CliSurfaceTests
             ["publish"] = ["--project <path>", "--document <name>", "-d"],
             ["export"] = ["--project <path>", "--document <name>", "--from <path>", "--to <dir>"],
             ["import"] = ["--from <dir>", "--to <path>"],
-            ["doctor"] = ["--project <path>"],
+            ["check"] = ["--project <path>"],
+            ["doctor"] = ["--project <path>", "--scope <project|environment>", "--format <text|json>"],
             ["capabilities"] = ["--format <json>"]
         };
 
@@ -229,7 +230,7 @@ public sealed class CliSurfaceTests
         Assert.Equal(0, rootExitCode);
         foreach (var commandName in new[]
                  {
-                     "new", "common-module", "reference", "build", "test", "publish", "export", "import", "doctor", "capabilities"
+                     "new", "common-module", "reference", "build", "test", "publish", "export", "import", "check", "doctor", "capabilities"
                  })
         {
             Assert.Contains(commandName, rootOutput.ToString(), StringComparison.Ordinal);
@@ -245,7 +246,7 @@ public sealed class CliSurfaceTests
         var result = application.Run(["--help"]);
 
         Assert.Equal(0, result.ExitCode);
-        foreach (var commandName in new[] { "new", "common-module", "reference", "build", "test", "publish", "export", "import", "doctor" })
+        foreach (var commandName in new[] { "new", "common-module", "reference", "build", "test", "publish", "export", "import", "check", "doctor" })
         {
             Assert.Contains(commandName, result.StandardOutput, StringComparison.Ordinal);
         }
@@ -270,7 +271,7 @@ public sealed class CliSurfaceTests
     [Fact]
     public void ProjectLevelCommandsDoNotExposeDocumentOptions()
     {
-        foreach (var commandName in new[] { "common-module update", "doctor" })
+        foreach (var commandName in new[] { "common-module update", "check", "doctor" })
         {
             var result = application.Run([.. commandName.Split(' '), "--help"]);
 
@@ -483,13 +484,20 @@ public sealed class CliSurfaceTests
         var suggestions = result.StandardOutput.Split(
             Environment.NewLine,
             StringSplitOptions.RemoveEmptyEntries);
+        var checkResult = application.Run(["[suggest:1]", "c"]);
+        var checkSuggestions = checkResult.StandardOutput.Split(
+            Environment.NewLine,
+            StringSplitOptions.RemoveEmptyEntries);
 
         Assert.Equal(0, result.ExitCode);
         Assert.Contains("build", suggestions);
         Assert.Contains("publish", suggestions);
         Assert.Contains("capabilities", suggestions);
+        Assert.Equal(0, checkResult.ExitCode);
+        Assert.Contains("check", checkSuggestions);
         Assert.DoesNotContain("debug-adapter", suggestions);
         Assert.Empty(result.StandardError);
+        Assert.Empty(checkResult.StandardError);
     }
 
     [Fact]
@@ -693,7 +701,8 @@ public sealed class CliSurfaceTests
 
     private sealed class ThrowingEnvironmentDiagnosticPort : IEnvironmentDiagnosticPort
     {
-        public IReadOnlyList<DiagnosticResult> RunEnvironmentDiagnostics()
+        public Task<EnvironmentDiagnosticRun> RunEnvironmentDiagnosticsAsync(
+            CancellationToken cancellationToken)
             => throw new InvalidOperationException("Help must not access Excel or VBIDE diagnostics.");
     }
 }

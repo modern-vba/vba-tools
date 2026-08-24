@@ -317,22 +317,26 @@ and requires `featureVersions["build.sourceSnapshot"] == "1.0"`. One debug
 session pins both resolved paths and its session ID; configuration changes apply
 only to a later session.
 
-`vba-dev doctor` and `vba-debug-adapter doctor --format json` are independent
-diagnostic functions and never invoke each other. The project CLI diagnoses
-manifest, source, template, output, CommonModules, references, Excel COM, build
-and test VBIDE access, and hidden automation-process ownership. The adapter
-diagnoses native VBE command context, breakpoint and break-mode operation,
-visible debug-process ownership, session workspace leases, reaping, and debug
-cleanup. A native-debug failure does not make `vba-dev` project automation
-unready.
+`vba-dev check`, the two `vba-dev doctor` scopes, and
+`vba-debug-adapter doctor --format json` are independent diagnostic functions
+and never invoke one another. `vba-dev check` owns deterministic manifest,
+source-set, CommonModules, and command-default facts without starting Excel; it
+does not claim compilation, COM/VBIDE, live reference materialization, import,
+save, or debugger readiness. Project Doctor adds selected-reference,
+disposable-template materialization, and applicable active environment evidence
+and reports the normalized absolute project root. The adapter diagnoses native
+VBE command context, breakpoint and break-mode operation, visible debug-process
+ownership, session workspace leases, reaping, and debug cleanup. A native-debug
+failure does not make `vba-dev` project automation unready.
 
 The extension invokes adapter Doctor as `doctor --format json
 --cancellation-transport stdin-v1`. That hidden caller-neutral transport accepts
 only the BOM-less byte frame `cancel\n`; malformed, incomplete, CRLF, BOM-marked,
 or oversized frames and EOF alone are neutral. Ordinary `doctor --format json`
 does not read stdin, and DAP `--stdio` retains exclusive ownership of its input.
-After requesting cancellation, the extension does not force-kill Doctor: it
-waits for process close, terminal cleanup, and one schema-valid JSON result.
+After requesting adapter-Doctor cancellation, the extension does not force-kill
+that adapter process: it waits for process close, terminal cleanup, and one
+schema-valid JSON result.
 Missing or invalid terminal output remains infrastructure failure rather than
 being hidden by the local cancellation request.
 
@@ -352,10 +356,13 @@ Environment scope emits exactly these required check IDs in fixed order:
 `excel.vbideProjectAccess`, and `excel.processCleanup`. Each appears exactly once.
 A conclusively blocked downstream check remains present as `skipped`; after an
 Excel process starts, cleanup is attempted and reported even if VBIDE access
-fails. Consumers bind behavior to stable IDs rather than display text, allow
-unknown additive checks without treating them as substitutes, and require all
-five required checks plus the overall result to be `pass` with `complete: true`
-for guided creation.
+fails. Consumers bind behavior to stable IDs rather than display text, allow no
+replacement or additional environment rows, and require all five checks plus
+the overall result to be `pass` with `complete: true` for guided creation.
+Their stable detail keys, in the same order, are `isWindows`,
+`dedicatedInstanceStarted`, `ownedByInvocation`, `projectAccessSucceeded`, and
+`ownedProcessReleased`; pass maps to `true`, fail to `false`, and every other
+status to `null`.
 
 `vba-dev doctor` JSON schema `1.0` is one object with `schemaVersion`,
 `toolVersion`, `scope`, `project`, overall `status`, `complete`, and ordered
@@ -364,8 +371,9 @@ ordinary project Doctor requires `scope: "project"` and the normalized canonical
 absolute project root in `project`. It has no selected-document field because the
 project report may cover every document. Each check requires a stable `id`,
 `status`, human-readable `message`, and nonnegative
-`durationMilliseconds`; `remediation` and `details` are optional. Overall and
-check statuses are `pass`, `warning`, `fail`, or `unverified`; a dependency-
+`durationMilliseconds`, plus required machine-readable `details`; the closed
+`vba-dev` check shape has no `remediation` field. Overall and check statuses are
+`pass`, `warning`, `fail`, or `unverified`; a dependency-
 blocked check may additionally be `skipped`. Cancellation or command
 infrastructure that prevents the planned diagnostic from completing sets
 `complete: false`. A check skipped because an earlier check conclusively failed
@@ -383,7 +391,11 @@ object even when checks fail; logs use stderr. A complete overall `pass` or
 `warning` exits zero. Overall `fail` or `unverified`, or any incomplete result,
 exits nonzero. The extension still parses and displays valid JSON from a nonzero
 exit. Invalid or missing JSON on nonzero exit is a Doctor-command
-infrastructure failure. The adapter Doctor accepts no project or document and
+infrastructure failure. Aggregate priority is `fail`, then `unverified` or
+`skipped`, then `warning`, then `pass`. Project JSON ends with the exact five
+environment checks in stable order. Exit `130` is reserved for an incomplete
+canceled `vba-dev` result with `excel.processCleanup: pass` and cannot hide an
+observed failed check. The adapter Doctor accepts no project or document and
 uses only adapter-owned temporary fixture state.
 
 Adapter Doctor uses independent stage deadlines rather than one wall-clock
@@ -409,11 +421,13 @@ fails, and displays separately labelled `Project automation` and `VBE debugging`
 results. Neither underlying executable provides the aggregate operation, and no
 new `vba-tools.exe` command is introduced. Capability inspection remains
 side-effect free; only explicit Doctor execution may start temporary Excel/VBE
-sessions, and neither diagnostic mutates persistent project files.
+sessions, and neither diagnostic mutates persistent project files. Cancelling
+during the project stage stops the ordinary `vba-dev` child and ends the
+aggregate before adapter Doctor; that palette path does not claim cooperative
+project cleanup, terminal JSON, or exit `130`. Once adapter Doctor starts, its
+cooperative `stdin-v1` cancellation remains authoritative.
 
-The Marketplace README continues to describe the released implementation rather
-than this future contract until the corresponding behavior is implemented. The
-implementation change updates the README in the same delivery to state the
+The Marketplace README describes this implemented contract and states the
 user-visible promises: F5 and Restart capture current editor content without
 saving it, debugging uses a session-temporary workbook without changing project
 source, template, or bin output, debug workbook changes are discarded with the

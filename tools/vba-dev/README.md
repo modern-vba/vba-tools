@@ -52,7 +52,8 @@ script after moving or replacing that executable.
 | `publish` | document | Publish the selected document. |
 | `export` | document/path | Export modules from a workbook into source. |
 | `import` | path | Import VBA sources into an existing workbook. |
-| `doctor` | project/machine | Check project and machine prerequisites. |
+| `check` | project | Validate deterministic project facts without starting Excel. |
+| `doctor` | project or environment | Actively check project or ordinary Excel-environment readiness. |
 
 Document-scoped commands use the manifest `primaryDocument` when `--document` is omitted.
 
@@ -82,6 +83,7 @@ Commands:
   publish        Publish the selected document.
   export         Export modules from a workbook into source.
   import         Run a path-only import of VBA sources into an existing workbook; unlike build, it does not use vba-project.json.
+  check          Validate deterministic project facts without starting Excel.
   doctor         Check project and machine prerequisites.
 ```
 
@@ -337,6 +339,30 @@ Before import, existing standard modules, class modules, and form modules are re
 
 Unlike `build`, `import` does not add, remove, or normalize manifest-defined references, does not resolve CommonModules dependencies, does not interpret `'#ExcludePublish`, and does not validate whether the workbook compiles.
 
+### check
+
+```text
+vba-dev check
+
+Validate deterministic project facts without starting Excel.
+
+Usage:
+  vba-dev check [options]
+
+Options:
+  --project <path>               Project root containing vba-project.json.
+```
+
+`check` resolves the project and evaluates deterministic manifest, recursive
+source-set identity, CommonModules, and command-default facts. It emits text
+and uses a nonzero exit for a failed, unverified, or skipped static check. It
+never starts Excel, so it is suitable for CI hosts without Excel.
+
+This surface does not prove VBA compilation, live COM or VBIDE access,
+reference materialization, source import, workbook save, or native debugger
+readiness. Use project Doctor for active project readiness and the independent
+adapter Doctor for native debugging readiness.
+
 ### doctor
 
 ```text
@@ -349,9 +375,55 @@ Usage:
 
 Options:
   --project <path>               Project root containing vba-project.json.
+  --scope <project|environment>  Diagnostic scope. Default: project.
+  --format <text|json>           Output format. Default: text.
 ```
 
-`doctor` checks manifest paths, recursive source identity, CommonModules repository state, manifest-defined CommonModules dependencies, manifest-defined VBA project references, and machine prerequisites. Duplicate `.bas`, `.cls`, or `.frm` exported file names in one document source set are failures. A `.frx` with no same-directory `.frm` is a warning only when a same-name `.frm` exists elsewhere in the same source set; `.frx` files with no same-name `.frm` anywhere are ignored. CommonModules drift checks find installed source files in nested directories and fail when an installed CommonModule has multiple matching source files.
+Project scope is the default. It requires an explicit project or one resolved
+deterministically from the current directory, reports its absolute root, and
+exhaustively checks manifest paths, recursive source identity, CommonModules
+repository and dependency state, every selected reference, disposable template
+materialization, and the active environment evidence applicable to ordinary
+project automation. Duplicate `.bas`, `.cls`, or `.frm` exported file names in
+one document source set are failures. A `.frx` with no same-directory `.frm` is
+a warning only when a same-name `.frm` exists elsewhere in the same source set;
+`.frx` files with no same-name `.frm` anywhere are ignored. CommonModules drift
+checks find installed source files in nested directories and fail when an
+installed CommonModule has multiple matching source files. Project Doctor never
+invokes `vba-debug-adapter doctor` and does not claim compilation, import, save,
+or native-debug readiness.
+
+Environment scope rejects `--project`, performs no project discovery or
+project/document access, and starts one dedicated owned Excel instance for its
+active probes. It always attempts to release that owned instance and never
+terminates a pre-existing interactive Excel process. Its output contains
+exactly these checks in order:
+
+1. `platform.windows`
+2. `excel.comStartup`
+3. `excel.processOwnership`
+4. `excel.vbideProjectAccess`
+5. `excel.processCleanup`
+
+Each check has a stable ID, `pass`, `warning`, `fail`, `unverified`, or
+`skipped` status, machine-readable `details`, and a nonnegative duration. Only
+a complete result in which all five checks pass is reusable proof for guided
+project creation. The stable detail keys, in check order, are `isWindows`,
+`dedicatedInstanceStarted`, `ownedByInvocation`, `projectAccessSucceeded`, and
+`ownedProcessReleased`. A passing check uses `true`, a failed check uses
+`false`, and a warning, unverified, or skipped check uses `null`.
+
+JSON format is the closed Doctor schema `1.0`: one object with
+`schemaVersion`, `toolVersion`, `scope`, nullable-or-absolute `project`,
+aggregate `status`, `complete`, and ordered `checks`. Each check contains only
+`id`, `status`, `message`, `durationMilliseconds`, and `details`. After command
+handling begins, expected failures and incomplete diagnostics still emit one
+valid result. A complete `pass` or `warning` exits `0`; `fail`, `unverified`,
+or incomplete execution exits `1`. Aggregate priority is `fail`, then
+`unverified` or `skipped`, then `warning`, then `pass`. Project JSON ends with
+the exact five environment checks in their stable order. Direct cancellation
+exits `130` only when owned-resource cleanup is proven and no observed failure
+would be hidden.
 
 ## vba-project.json
 

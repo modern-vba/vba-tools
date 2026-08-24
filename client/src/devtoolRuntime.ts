@@ -2,6 +2,7 @@ import {
   CompanionExecutableResolver,
   ProcessRunner,
   RequiredVbaDevContract,
+  VbaDevCapabilities,
   isReportedVbaDevResolutionFailure,
   resolveCompatibleVbaDev
 } from './devtool';
@@ -47,12 +48,14 @@ export interface VbaDevCommandRuntimeOptions extends VbaDevInvocationRuntimeOpti
 export interface VbaDevProjectCommandContext {
   project: WorkbookBackedProjectCandidate;
   executablePath: string;
+  capabilities: VbaDevCapabilities;
 }
 
 export interface VbaDevProjectCommandInvocation {
   projectRoot: string;
   argsBeforeProject: readonly string[];
   argsAfterProject?: readonly string[] | undefined;
+  refreshDiagnostics?: boolean | undefined;
 }
 
 export interface VbaDevProjectCommandRunResult {
@@ -88,7 +91,8 @@ export async function resolveVbaDevProjectCommandContext(
 
   return {
     project,
-    executablePath: devtool.executablePath
+    executablePath: devtool.executablePath,
+    capabilities: devtool.capabilities
   };
 }
 
@@ -109,12 +113,14 @@ export async function runResolvedVbaDevProjectCommand(
   options: VbaDevCommandRuntimeOptions,
   context: VbaDevProjectCommandContext,
   argsBeforeProject: readonly string[],
-  argsAfterProject: readonly string[] = []
+  argsAfterProject: readonly string[] = [],
+  refreshDiagnostics = true
 ): Promise<VbaDevProjectCommandRunResult> {
   return runResolvedVbaDevProjectCommandInvocation(options, context.executablePath, {
     projectRoot: context.project.projectRoot,
     argsBeforeProject,
-    argsAfterProject
+    argsAfterProject,
+    refreshDiagnostics
   });
 }
 
@@ -174,10 +180,12 @@ export async function runResolvedVbaDevProjectCommandInvocation(
     startProcess: options.startProcess
   });
 
-  options.diagnosticReporter?.refresh(
-    projectDiagnosticScope(invocation.projectRoot),
-    combineVbaDevDiagnosticOutput(result.stdout, result.stderr)
-  );
+  if (invocation.refreshDiagnostics !== false) {
+    options.diagnosticReporter?.refresh(
+      projectDiagnosticScope(invocation.projectRoot),
+      combineVbaDevDiagnosticOutput(result.stdout, result.stderr)
+    );
+  }
 
   return {
     projectRoot: invocation.projectRoot,
@@ -193,13 +201,12 @@ async function resolveInvocationVbaDev(
   options: VbaDevInvocationRuntimeOptions
 ): Promise<{
   executablePath: string;
+  capabilities: VbaDevCapabilities;
 } | undefined> {
   try {
     if (options.vbaDevResolver !== undefined) {
       const resolution = await options.vbaDevResolver.resolve();
-      return {
-        executablePath: resolution.executablePath
-      };
+      return resolution;
     }
 
     const devtool = await resolveCompatibleVbaDev({
@@ -208,7 +215,7 @@ async function resolveInvocationVbaDev(
       runProcess: options.capabilitiesProcess,
       requiredContract: options.requiredContract
     });
-    return { executablePath: devtool.executablePath };
+    return devtool;
   } catch (error) {
     if (isReportedVbaDevResolutionFailure(error)) {
       return undefined;

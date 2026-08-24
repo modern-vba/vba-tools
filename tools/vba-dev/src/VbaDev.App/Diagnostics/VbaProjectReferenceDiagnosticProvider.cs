@@ -8,7 +8,8 @@ namespace VbaDev.App.Diagnostics;
 /// <summary>
 /// Adds manifest-defined VBA project reference diagnostics.
 /// </summary>
-public sealed class VbaProjectReferenceDiagnosticProvider : IDoctorProjectDiagnosticProvider
+public sealed class VbaProjectReferenceDiagnosticProvider
+    : IActiveDoctorProjectDiagnosticProvider
 {
     private readonly VbaProjectReferencePlanner referencePlanner;
 
@@ -23,7 +24,10 @@ public sealed class VbaProjectReferenceDiagnosticProvider : IDoctorProjectDiagno
     }
 
     /// <inheritdoc />
-    public void AddDiagnostics(List<DiagnosticResult> results, ResolvedProject project)
+    public async Task AddDiagnosticsAsync(
+        List<DiagnosticResult> results,
+        ResolvedProject project,
+        CancellationToken cancellationToken)
     {
         foreach (var (documentName, document) in project.Manifest.Documents.OrderBy(item => item.Key, StringComparer.OrdinalIgnoreCase))
         {
@@ -34,26 +38,29 @@ public sealed class VbaProjectReferenceDiagnosticProvider : IDoctorProjectDiagno
             }
 
             results.AddRange(referencePlanner.CreateReferenceCatalogAvailabilityDiagnostics(documentName, document));
-            var referencesToResolve = document.References.ToArray();
+            var referencesToResolve = document.References
+                .GroupBy(reference => reference.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First())
+                .ToArray();
             VbaProjectReferenceResolutionBatch? resolutionBatch = null;
             if (referencesToResolve.Length > 0)
             {
-                resolutionBatch = referencePlanner.ResolveReferencesAsync(
+                resolutionBatch = await referencePlanner.ResolveReferencesAsync(
                         project.ResolvePath(document.TemplatePath),
                         referencesToResolve.Select(reference => reference.Name).ToArray(),
-                        CancellationToken.None)
-                    .GetAwaiter()
-                    .GetResult();
+                        cancellationToken)
+                    .ConfigureAwait(false);
                 AddResolutionBatchDiagnostics(results, documentName, resolutionBatch);
             }
 
             var resolutionIndex = 0;
-            foreach (var reference in document.References)
+            foreach (var reference in referencesToResolve)
             {
                 if (resolutionBatch is null ||
                     resolutionIndex >= resolutionBatch.References.Count)
                 {
                     results.Add(DiagnosticResult.Fail(
+                        ReferenceCheckId(documentName, reference.Name, "resolution"),
                         $"VbaProjectReferences ({documentName}/{reference.Name})",
                         "Reference resolver returned an incomplete ordered result batch."));
                     continue;
@@ -63,6 +70,7 @@ public sealed class VbaProjectReferenceDiagnosticProvider : IDoctorProjectDiagno
                 if (!resolutionBatch.Complete && resolution.UnverifiedReasonCode is null)
                 {
                     results.Add(DiagnosticResult.Fail(
+                        ReferenceCheckId(documentName, reference.Name, "resolution"),
                         $"VbaProjectReferences ({documentName}/{reference.Name})",
                         "Reference verification did not complete because the shared resolver batch was incomplete."));
                     continue;
@@ -89,17 +97,32 @@ public sealed class VbaProjectReferenceDiagnosticProvider : IDoctorProjectDiagno
         if (resolutionBatch.Diagnostics.Count == 0)
         {
             results.Add(DiagnosticResult.Fail(
+                ReferenceCheckId(documentName, null, "resolutionBatch"),
                 $"VbaProjectReferences ({documentName})",
                 "referenceResolutionIncomplete: Reference resolution did not complete."));
             return;
         }
 
-        foreach (var diagnostic in resolutionBatch.Diagnostics)
+        for (var index = 0; index < resolutionBatch.Diagnostics.Count; index++)
         {
+            var diagnostic = resolutionBatch.Diagnostics[index];
             results.Add(DiagnosticResult.Fail(
+                ReferenceCheckId(
+                    documentName,
+                    null,
+                    $"resolutionBatch.{Uri.EscapeDataString(diagnostic.Code)}.{index}"),
                 $"VbaProjectReferences ({documentName})",
                 $"{diagnostic.Code}: {diagnostic.Message}"));
         }
     }
+
+    private static string ReferenceCheckId(
+        string documentName,
+        string? referenceName,
+        string finding)
+        => referenceName is null
+            ? $"project.references.{Uri.EscapeDataString(documentName)}.{finding}"
+            : $"project.references.{Uri.EscapeDataString(documentName)}." +
+              $"{Uri.EscapeDataString(referenceName)}.{finding}";
 
 }

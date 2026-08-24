@@ -15,6 +15,10 @@ import {
   renderVbaDebugAdapterDoctorReport
 } from './debugAdapterDoctorOutput';
 import {
+  parseVbaDevDoctorReport,
+  renderVbaDevDoctorReport
+} from './vbaDevDoctorOutput';
+import {
   CancellationDisposable,
   CommandCancellationToken,
   StartVbaDevProcess,
@@ -70,7 +74,45 @@ export async function runDoctorCommand(options: DoctorCommandOptions): Promise<D
     options.outputChannel.appendLine(`  Effective: ${resolution.executablePath}`);
   }
 
-  const result = await runResolvedVbaDevProjectCommand(options, context, ['doctor']);
+  const result = await runResolvedVbaDevProjectCommand(
+    options,
+    context,
+    ['doctor', '--format', 'json'],
+    [],
+    false
+  );
+  let projectBlocking = false;
+  if (!result.cancelled || result.stdout.trim().length > 0) {
+    try {
+      const doctorCapability = context.capabilities.commands.doctor;
+      if (doctorCapability === undefined) {
+        throw new Error('vba-dev does not advertise the Doctor output schema.');
+      }
+      const report = parseVbaDevDoctorReport(
+        result.stdout,
+        doctorCapability.outputSchemaVersion,
+        context.capabilities.toolVersion,
+        result.exitCode,
+        {
+          scope: 'project',
+          project: result.projectRoot
+        }
+      );
+      const renderedOutput = `${renderVbaDevDoctorReport(report).join('\n')}\n`;
+      options.outputChannel.append(renderedOutput);
+      options.diagnosticReporter?.refresh(
+        `project:${result.projectRoot}`,
+        renderedOutput
+      );
+      projectBlocking = result.exitCode !== 130 &&
+        (!report.complete || report.status === 'fail' || report.status === 'unverified');
+    } catch (error) {
+      projectBlocking = true;
+      options.outputChannel.appendLine(
+        `Doctor command infrastructure failure: ${getErrorMessage(error)}`
+      );
+    }
+  }
   let adapterBlocking = false;
   let adapterCancelled = false;
   const adapterResolver = options.vbaDebugAdapterResolver ?? {
@@ -153,11 +195,6 @@ export async function runDoctorCommand(options: DoctorCommandOptions): Promise<D
     }
   }
 
-  const projectBlocking = !result.cancelled && hasBlockingDoctorFinding(
-    result.exitCode,
-    result.stdout,
-    result.stderr
-  );
   if (projectBlocking || adapterBlocking) {
     await options.showErrorMessage('VBA Tools: Doctor found blocking issues. See the VBA Tools output for details.');
   }
@@ -193,10 +230,6 @@ export async function promptForFirstRunDoctor(options: FirstRunDoctorPromptOptio
   if (answer === 'Run Doctor') {
     await options.runDoctor();
   }
-}
-
-function hasBlockingDoctorFinding(exitCode: number, stdout: string, stderr: string): boolean {
-  return exitCode !== 0 || stdout.includes('[FAIL]') || stderr.trim().length > 0;
 }
 
 function resolveAdapterWithCancellation(
