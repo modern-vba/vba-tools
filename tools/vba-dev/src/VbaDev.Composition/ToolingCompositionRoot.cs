@@ -2,6 +2,7 @@ using VbaDev.App.Build;
 using VbaDev.App.CommonModules;
 using VbaDev.App.Diagnostics;
 using VbaDev.App.Export;
+using VbaDev.App.HostClasses;
 using VbaDev.App.Import;
 using VbaDev.App.Projects;
 using VbaDev.App.References;
@@ -55,7 +56,8 @@ public static class ToolingCompositionRoot
         IVbaProjectReferenceAmbiguityProbe? vbaProjectReferenceAmbiguityProbe = null,
         IExportDestinationFileOperations? exportDestinationFileOperations = null,
         IProjectMaterializationDiagnosticPort? projectMaterializationDiagnosticPort = null,
-        IProjectManifestMutationCoordinator? projectManifestMutationCoordinator = null)
+        IProjectManifestMutationCoordinator? projectManifestMutationCoordinator = null,
+        IHostClassInspectionAutomation? hostClassInspectionAutomation = null)
     {
         var atomicManifestWriter = new ProjectManifestAtomicWriter();
         var manifestStore = projectManifestStore
@@ -126,6 +128,8 @@ public static class ToolingCompositionRoot
             workbookModuleExporter ?? new ExcelComWorkbookModuleExporter(),
             exportDestinationFileOperations ?? new ExportDestinationFileOperations());
         var importCommand = new ImportCommand(buildAutomation);
+        var hostClassListCommand = new HostClassListCommand(
+            hostClassInspectionAutomation ?? new ExcelComHostClassInspectionAutomation());
         return new ToolingApplicationComposition(
             doctorCommand,
             staticProjectCheckCommand,
@@ -138,6 +142,7 @@ public static class ToolingCompositionRoot
             testCommand,
             exportCommand,
             importCommand,
+            hostClassListCommand,
             projectContextResolver,
             workingDirectory);
     }
@@ -164,6 +169,7 @@ public static class ToolingCompositionRoot
 /// <param name="TestCommand">The workbook test command.</param>
 /// <param name="ExportCommand">The workbook export command.</param>
 /// <param name="ImportCommand">The workbook import command.</param>
+/// <param name="HostClassListCommand">The intrinsic host-class projection command.</param>
 /// <param name="ProjectContextResolver">The project and document context resolver.</param>
 /// <param name="WorkingDirectory">The invocation working directory.</param>
 public sealed record ToolingApplicationComposition(
@@ -178,5 +184,6 @@ public sealed record ToolingApplicationComposition(
     TestCommand TestCommand,
     ExportCommand ExportCommand,
     ImportCommand ImportCommand,
+    HostClassListCommand HostClassListCommand,
     ProjectContextResolver ProjectContextResolver,
     string WorkingDirectory);

@@ -1,6 +1,7 @@
 using VbaDev.App.Cli;
 using VbaDev.App.Diagnostics;
 using VbaDev.App.Export;
+using VbaDev.App.HostClasses;
 using VbaDev.App.Projects;
 using VbaDev.App.References;
 using VbaDev.App.Testing;
@@ -54,7 +55,8 @@ internal static class CommandLineTestFactory
         string? generatingExecutablePath = null,
         IExportDestinationFileOperations? exportDestinationFileOperations = null,
         IProjectMaterializationDiagnosticPort? projectMaterializationDiagnosticPort = null,
-        IProjectManifestMutationCoordinator? projectManifestMutationCoordinator = null)
+        IProjectManifestMutationCoordinator? projectManifestMutationCoordinator = null,
+        IHostClassInspectionAutomation? hostClassInspectionAutomation = null)
     {
         var composition = ToolingCompositionRoot.CreateApplicationComposition(
             workingDirectory,
@@ -68,7 +70,8 @@ internal static class CommandLineTestFactory
             vbaProjectReferenceAmbiguityProbe,
             exportDestinationFileOperations,
             projectMaterializationDiagnosticPort,
-            projectManifestMutationCoordinator);
+            projectManifestMutationCoordinator,
+            hostClassInspectionAutomation);
         return generatingExecutablePath is null
             ? VbaDevCommandLine.Create(composition)
             : VbaDevCommandLine.Create(composition, generatingExecutablePath);

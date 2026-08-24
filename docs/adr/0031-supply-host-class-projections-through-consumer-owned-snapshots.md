@@ -15,12 +15,18 @@ projection state, choose refresh timing, or write the workbook, source,
 manifest, or generated host Event members.
 
 The command never opens the source template in place. It creates a unique
-invocation-owned `HostClassInspectionWorkspace`, copies the selected source
-template into it, and opens only that copy with macros and Excel Events
-disabled. It imports no project source, changes no references, never saves the
-copy, rereads or rehashes no original input after the start-time copy, releases
-its `AutomationExcelProcess` before workspace removal, and emits no projection
-when the copy cannot be prepared.
+invocation-owned `HostClassInspectionWorkspace` and copies the selected source
+template into it. To bind COM to the exact newly Job-owned Excel process, the
+process bootstrapper may first open one generated macro-free `.xlsx` containing
+no project bytes. That bootstrap is used only for process ownership, is neither
+inspected nor saved, and is closed and deleted before the private source copy is
+opened. The command then sets and verifies force-disabled automation security
+and disabled Excel Events, requires zero open workbooks, opens only the private
+source copy read-only, and requires exactly one open workbook. It imports no
+project source, changes no references, never saves the copy, rereads or rehashes
+no original input after the start-time copy, releases its
+`AutomationExcelProcess` before workspace removal, and emits no projection when
+the copy cannot be prepared.
 
 Machine-readable projection output is held until owned-process release is
 proved. Failure to prove release is a command-level failure and emits no JSON

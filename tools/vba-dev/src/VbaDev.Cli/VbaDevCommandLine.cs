@@ -9,6 +9,7 @@ using System.Text.Json.Serialization;
 using VbaDev.App.Cli;
 using VbaDev.App.Diagnostics;
 using VbaDev.App.Export;
+using VbaDev.App.HostClasses;
 using VbaDev.App.Import;
 using VbaDev.App.Projects;
 using VbaDev.App.Testing;
@@ -315,6 +316,34 @@ public sealed class VbaDevCommandLine
                     cancellationToken)
                 .ConfigureAwait(false)));
 
+        var hostClassCommand = AddCommand(rootCommand, "host-class", "Inspect intrinsic host classes.");
+        var hostClassListCommand = AddCapabilityCommand(
+            hostClassCommand,
+            "list",
+            "List intrinsic host classes for the selected document.",
+            "1.0",
+            capabilityCommands);
+        var hostClassListOptions = AddProjectDocumentOptions(hostClassListCommand);
+        var hostClassListFormatOption = CreateStringOption(
+            "--format",
+            "Host-class projection output format.",
+            "text|json",
+            ["text", "json"],
+            "-f");
+        hostClassListCommand.Add(hostClassListFormatOption);
+        hostClassListCommand.SetAction(async (parseResult, cancellationToken) => WriteCommandResult(
+            parseResult,
+            await ResolveDocumentContextAsync(
+                    parseResult,
+                    composition,
+                    hostClassListOptions,
+                    (context, operationCancellationToken) => composition.HostClassListCommand.RunAsync(
+                        context,
+                        parseResult.GetValue(hostClassListFormatOption) ?? "text",
+                        operationCancellationToken),
+                    cancellationToken)
+                .ConfigureAwait(false)));
+
         var buildCommand = AddCapabilityCommand(
             rootCommand,
             "build",
@@ -541,7 +570,8 @@ public sealed class VbaDevCommandLine
                     ["build.sourceSnapshot"] = "1.0",
                     ["test.sourceSnapshot"] = "1.0",
                     ["invocation.stdinCancellation"] = "1.0",
-                    ["sourceSnapshot.activeWindowsCodePage"] = "1.0"
+                    ["sourceSnapshot.activeWindowsCodePage"] = "1.0",
+                    ["hostClass.list"] = "1.0"
                 },
                 GetActiveWindowsCodePage(),
                 capabilityCommands

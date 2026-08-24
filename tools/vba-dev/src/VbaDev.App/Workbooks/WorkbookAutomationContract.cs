@@ -40,7 +40,9 @@ public enum WorkbookAutomationStageKind
     OutputCommit = 9,
     TestExecution = 10,
     ModuleExport = 11,
-    ModuleInspection = 12
+    ModuleInspection = 12,
+    HostClassEnumeration = 13,
+    HostClassInspection = 14
 }
 
 /// <summary>
@@ -67,6 +69,8 @@ public sealed record WorkbookAutomationStage(
                 WorkbookAutomationStageKind.ModuleImport => "module import",
                 WorkbookAutomationStageKind.ModuleExport => "module export",
                 WorkbookAutomationStageKind.ModuleInspection => "module inspection",
+                WorkbookAutomationStageKind.HostClassEnumeration => "host-class enumeration",
+                WorkbookAutomationStageKind.HostClassInspection => "host-class inspection",
                 WorkbookAutomationStageKind.Verification => "workbook verification",
                 WorkbookAutomationStageKind.WorkbookSave => "workbook save",
                 WorkbookAutomationStageKind.TestExecution => "test macro execution",

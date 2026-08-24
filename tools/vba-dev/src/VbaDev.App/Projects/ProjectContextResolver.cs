@@ -47,13 +47,17 @@ public sealed class ProjectContextResolver
     {
         var project = ResolveProject(request);
         var manifest = project.Manifest;
-        var documentName = string.IsNullOrWhiteSpace(request.DocumentName)
+        var requestedDocumentName = string.IsNullOrWhiteSpace(request.DocumentName)
             ? manifest.PrimaryDocument
             : request.DocumentName;
 
-        if (!TryGetDocument(manifest, documentName, out var document))
+        if (!TryGetDocument(
+                manifest,
+                requestedDocumentName,
+                out var documentName,
+                out var document))
         {
-            throw new ProjectManifestException($"Document '{documentName}' is not defined in {ProjectManifest.ManifestFileName}.");
+            throw new ProjectManifestException($"Document '{requestedDocumentName}' is not defined in {ProjectManifest.ManifestFileName}.");
         }
 
         return new ResolvedProjectContext(
@@ -94,7 +98,9 @@ public sealed class ProjectContextResolver
     {
         if (!string.IsNullOrWhiteSpace(request.ProjectRoot))
         {
-            var explicitRoot = Path.GetFullPath(request.ProjectRoot);
+            var explicitRoot = Path.GetFullPath(
+                request.ProjectRoot,
+                Path.GetFullPath(request.StartDirectory));
             var explicitManifest = Path.Combine(explicitRoot, ProjectManifest.ManifestFileName);
             if (!File.Exists(explicitManifest))
             {
@@ -129,22 +135,23 @@ public sealed class ProjectContextResolver
         return null;
     }
 
-    private static bool TryGetDocument(ProjectManifest manifest, string documentName, out ProjectDocument document)
+    private static bool TryGetDocument(
+        ProjectManifest manifest,
+        string documentName,
+        out string declaredName,
+        out ProjectDocument document)
     {
-        if (manifest.Documents.TryGetValue(documentName, out document!))
-        {
-            return true;
-        }
-
         foreach (var item in manifest.Documents)
         {
             if (string.Equals(item.Key, documentName, StringComparison.OrdinalIgnoreCase))
             {
+                declaredName = item.Key;
                 document = item.Value;
                 return true;
             }
         }
 
+        declaredName = string.Empty;
         document = null!;
         return false;
     }

@@ -292,12 +292,18 @@ changes neither the workbook, source, manifest, nor consumer-owned projection
 storage.
 
 `host-class list` never opens the source template in place. It copies the
-template into a unique invocation-owned **HostClassInspectionWorkspace** and
-opens only that copy with macros and Excel Events disabled. It imports no
-project source, changes no references, never saves the copy, rereads or
-rehashes no original input after the start-time copy, releases the
-**AutomationExcelProcess** before removing the workspace, and returns no
-projection if the temporary baseline cannot be prepared.
+template into a unique invocation-owned **HostClassInspectionWorkspace**. To
+bind COM to the exact newly Job-owned Excel process, the process bootstrapper
+may first open one generated macro-free `.xlsx` containing no project bytes.
+That bootstrap is used only for process ownership, is neither inspected nor
+saved, and is closed and deleted before the private source copy is opened. The
+command then sets and verifies force-disabled automation security and disabled
+Excel Events, requires zero open workbooks, opens only the private source copy
+read-only, and requires exactly one open workbook. It imports no project source,
+changes no references, never saves the copy, rereads or rehashes no original
+input after the start-time copy, releases the **AutomationExcelProcess** before
+removing the workspace, and returns no projection if the temporary baseline
+cannot be prepared.
 
 Machine-readable `host-class list` output is held until the command proves
 release of its **AutomationExcelProcess**. Failure to prove release is a

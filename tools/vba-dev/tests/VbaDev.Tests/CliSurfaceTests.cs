@@ -83,9 +83,9 @@ public sealed class CliSurfaceTests
             ? $"\"activeWindowsCodePage\":{capabilities.RootElement.GetProperty("activeWindowsCodePage").GetInt32()},"
             : string.Empty;
         Assert.Equal(
-            "{\"toolVersion\":\"0.1.0\",\"contractVersion\":\"1.0\",\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\",\"test.sourceSnapshot\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}," +
+            "{\"toolVersion\":\"0.1.0\",\"contractVersion\":\"1.0\",\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\",\"test.sourceSnapshot\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"hostClass.list\":\"1.0\"}," +
             activeCodePageProperty +
-            "\"commands\":{\"build\":{\"outputSchemaVersion\":\"1.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"import\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"1.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}}}" + Environment.NewLine,
+            "\"commands\":{\"build\":{\"outputSchemaVersion\":\"1.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-class list\":{\"outputSchemaVersion\":\"1.0\"},\"import\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"1.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}}}" + Environment.NewLine,
             standardOutput.ToString());
         Assert.Empty(standardError.ToString());
     }
@@ -426,6 +426,28 @@ public sealed class CliSurfaceTests
     }
 
     [Fact]
+    public async Task HostClassListHelpExposesDocumentScopedJsonInspection()
+    {
+        using var standardOutput = new StringWriter();
+        using var standardError = new StringWriter();
+        var commandLine = VbaDevCommandLine.CreateDefault();
+
+        var exitCode = await commandLine.InvokeAsync(
+            ["host-class", "list", "--help"],
+            standardOutput,
+            standardError,
+            CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("--project <path>", standardOutput.ToString(), StringComparison.Ordinal);
+        Assert.Contains("--document <name>", standardOutput.ToString(), StringComparison.Ordinal);
+        Assert.Contains("-d", standardOutput.ToString(), StringComparison.Ordinal);
+        Assert.Contains("--format <text|json>", standardOutput.ToString(), StringComparison.Ordinal);
+        Assert.Contains("-f", standardOutput.ToString(), StringComparison.Ordinal);
+        Assert.Empty(standardError.ToString());
+    }
+
+    [Fact]
     public async Task EveryPublicCommandHelpComesFromTheRootCommandGraph()
     {
         var commandLine = VbaDevCommandLine.CreateDefault();
@@ -438,6 +460,7 @@ public sealed class CliSurfaceTests
             ["reference add"] = ["--project <path>", "--document <name>", "-d", "--format <text|json>", "-f"],
             ["reference list"] = ["--project <path>", "--document <name>", "--available", "--format <text|json>", "-f"],
             ["reference remove"] = ["--project <path>", "--document <name>", "-d", "--format <text|json>", "-f"],
+            ["host-class list"] = ["--project <path>", "--document <name>", "-d", "--format <text|json>", "-f"],
             ["build"] =
             [
                 "--project <path>",
@@ -493,7 +516,7 @@ public sealed class CliSurfaceTests
         Assert.Equal(0, rootExitCode);
         foreach (var commandName in new[]
                  {
-                     "new", "common-module", "reference", "build", "test", "publish", "export", "import", "check", "doctor", "capabilities"
+                     "new", "common-module", "reference", "host-class", "build", "test", "publish", "export", "import", "check", "doctor", "capabilities"
                  })
         {
             Assert.Contains(commandName, rootOutput.ToString(), StringComparison.Ordinal);
@@ -509,7 +532,7 @@ public sealed class CliSurfaceTests
         var result = application.Run(["--help"]);
 
         Assert.Equal(0, result.ExitCode);
-        foreach (var commandName in new[] { "new", "common-module", "reference", "build", "test", "publish", "export", "import", "check", "doctor" })
+        foreach (var commandName in new[] { "new", "common-module", "reference", "host-class", "build", "test", "publish", "export", "import", "check", "doctor" })
         {
             Assert.Contains(commandName, result.StandardOutput, StringComparison.Ordinal);
         }
@@ -521,7 +544,7 @@ public sealed class CliSurfaceTests
     [Fact]
     public void ProjectCommandsExposeProjectAndDocumentOptions()
     {
-        foreach (var commandName in new[] { "common-module add", "common-module list", "reference add", "reference list", "reference remove", "build", "test", "publish", "export" })
+        foreach (var commandName in new[] { "common-module add", "common-module list", "reference add", "reference list", "reference remove", "host-class list", "build", "test", "publish", "export" })
         {
             var result = application.Run([.. commandName.Split(' '), "--help"]);
 
