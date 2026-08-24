@@ -8,7 +8,9 @@
       "sourcePath": "src/Book1",
       "templatePath": "src/Book1/Book1.xlsm",
       "binPath": "bin/Book1.xlsm",
-      "publishPath": "publish/Book1.xlsm"
+      "publishPath": "publish/Book1.xlsm",
+      "commonModules": [],
+      "references": []
     },
     "SecondBook": {
       "kind": "excel",
@@ -16,6 +18,7 @@
       "templatePath": "src/SecondBook/SecondBook.xlsm",
       "binPath": "bin/SecondBook.xlsm",
       "publishPath": "publish/SecondBook.xlsm",
+      "commonModules": [],
       "references": [
         {
           "name": "Microsoft Scripting Runtime"

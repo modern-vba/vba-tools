@@ -92,6 +92,24 @@ test('extension activates for workspaces containing a VBA project manifest', () 
   assert.equal(packageJson.activationEvents?.includes('onLanguage:json'), false);
 });
 
+test('extension associates only the canonical project manifest basename with its schema', () => {
+  const packageJson = readPackageJson<{
+    contributes?: {
+      jsonValidation?: Array<{
+        fileMatch?: string | string[];
+        url?: string;
+      }>;
+    };
+  }>();
+
+  assert.deepEqual(packageJson.contributes?.jsonValidation, [
+    {
+      fileMatch: '**/vba-project.json',
+      url: './schemas/project-manifest.schema.json'
+    }
+  ]);
+});
+
 test('extension declares limited Restricted Mode support and restricts executable overrides', () => {
   const packageJson = readPackageJson<{
     capabilities?: {

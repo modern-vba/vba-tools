@@ -119,8 +119,15 @@ internal static class LanguageServerManifestResolution
         {
             try
             {
+                var manifestPath = VbaProjectResolver.TryGetLocalPath(uri)
+                    ?? throw new VbaProjectManifestException(
+                        $"Project manifest URI is not a local file: {uri}");
                 var manifest = ProjectManifestReader.Parse(text, uri);
-                var manifestIdentity = VbaProjectResolver.TryGetLocalPath(uri) ?? uri;
+                _ = DocumentSourceSetIsolationValidator.ResolveAndValidate(
+                    manifest,
+                    manifestPath,
+                    uri);
+                var manifestIdentity = manifestPath;
                 selections = manifest.Documents
                     .Select(document => new VbaProjectReferenceSelectionContext(
                         CreateScopeKey(manifestIdentity, document.Key),

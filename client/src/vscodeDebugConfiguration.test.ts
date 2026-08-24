@@ -1634,14 +1634,18 @@ test('an active source belonging to more than one document source set reports do
         sourcePath: 'src/Shared',
         templatePath: 'Book1.xlsm',
         binPath: 'bin/Book1.xlsm',
-        publishPath: 'publish/Book1.xlsm'
+        publishPath: 'publish/Book1.xlsm',
+        commonModules: [],
+        references: []
       },
       Book2: {
         kind: 'excel',
         sourcePath: 'src/Shared',
         templatePath: 'Book2.xlsm',
         binPath: 'bin/Book2.xlsm',
-        publishPath: 'publish/Book2.xlsm'
+        publishPath: 'publish/Book2.xlsm',
+        commonModules: [],
+        references: []
       }
     }
   });
@@ -1882,7 +1886,9 @@ function manifestJson(projectName: string, documentNames: readonly string[]): st
         sourcePath: `src/${documentName}`,
         templatePath: `src/${documentName}/${documentName}.xlsm`,
         binPath: `bin/${documentName}.xlsm`,
-        publishPath: `publish/${documentName}.xlsm`
+        publishPath: `publish/${documentName}.xlsm`,
+        commonModules: [],
+        references: []
       }
     ]))
   });
@@ -1903,7 +1909,9 @@ function manifestJsonWithSourcePath(
         sourcePath,
         templatePath: `${documentName}.xlsm`,
         binPath: `bin/${documentName}.xlsm`,
-        publishPath: `publish/${documentName}.xlsm`
+        publishPath: `publish/${documentName}.xlsm`,
+        commonModules: [],
+        references: []
       }
     }
   });

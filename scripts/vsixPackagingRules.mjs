@@ -53,6 +53,7 @@ export async function verifyVsixPackaging(options = {}) {
   );
   assertMarketplacePackageMetadata(extensionPackageJson);
   assertExtensionDebugPackage(extensionPackageJson);
+  assertExtensionProjectManifestSchemaPackage(extensionPackageJson);
   assertExtensionWorkspaceTrustPackage(extensionPackageJson);
 
   await fs.access(bundledCliPath);
@@ -88,6 +89,7 @@ export async function verifyVsixPackaging(options = {}) {
     assertVsixContents([...packaged.files.keys()], manifest);
     assertMarketplacePackageMetadata(packaged.packageJson);
     assertExtensionDebugPackage(packaged.packageJson);
+    assertExtensionProjectManifestSchemaPackage(packaged.packageJson);
     assertExtensionWorkspaceTrustPackage(packaged.packageJson);
     assertPackagedVsixMetadata(packaged.vsixManifest, packaged.packageJson, targetPlatform);
     assertPackagedMarkdownLinks(packaged.files);
@@ -292,6 +294,21 @@ export function assertExtensionDebugPackage(packageJson) {
     ) {
       throw new Error(`Extension package metadata must include required extension command ${commandId}.`);
     }
+  }
+}
+
+export function assertExtensionProjectManifestSchemaPackage(packageJson) {
+  const validation = packageJson?.contributes?.jsonValidation;
+  if (
+    !Array.isArray(validation) ||
+    validation.length !== 1 ||
+    !isRecord(validation[0]) ||
+    validation[0].fileMatch !== '**/vba-project.json' ||
+    validation[0].url !== './schemas/project-manifest.schema.json'
+  ) {
+    throw new Error(
+      'Extension package metadata must associate only the canonical **/vba-project.json basename with the bundled ProjectManifest schema.'
+    );
   }
 }
 

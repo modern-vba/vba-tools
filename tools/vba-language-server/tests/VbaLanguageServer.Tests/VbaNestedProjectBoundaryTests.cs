@@ -247,6 +247,7 @@ public sealed class VbaNestedProjectBoundaryTests
                   "templatePath": "{{documentName}}.xlsm",
                   "binPath": "bin/{{documentName}}.xlsm",
                   "publishPath": "publish/{{documentName}}.xlsm",
+                  "commonModules": [],
                   "references": []
                 }
               }

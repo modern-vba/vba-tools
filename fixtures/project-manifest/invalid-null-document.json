@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "projectName": "NullDocumentProject",
+  "primaryDocument": "Book1",
+  "documents": {
+    "Book1": null
+  }
+}

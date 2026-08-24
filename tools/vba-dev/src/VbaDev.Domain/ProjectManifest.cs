@@ -36,7 +36,7 @@ public sealed record ProjectManifest(
     /// <param name="commonModulesRepositoryPath">The optional CommonModulesRepository path to store.</param>
     /// <param name="commonModules">The CommonModules entries to install into the initial document.</param>
     /// <param name="references">The VBA project references required by the initial document.</param>
-    /// <returns>A manifest with one Excel document and default test command settings.</returns>
+    /// <returns>A manifest with one Excel document and no redundant durable command overrides.</returns>
     public static ProjectManifest CreateDefault(
         string projectName,
         string documentName,
@@ -56,7 +56,7 @@ public sealed record ProjectManifest(
             documentName,
             documents,
             ToManifestPath(projectRoot, commonModulesRepositoryPath),
-            new CommandDefaults(Test: new TestCommandDefaults(Format: "text")));
+            CommandDefaults: null);
     }
 
     private static string? ToManifestPath(string projectRoot, string? path)

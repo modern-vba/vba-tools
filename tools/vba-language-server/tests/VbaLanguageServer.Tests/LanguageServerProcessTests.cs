@@ -3655,6 +3655,7 @@ public sealed class LanguageServerProcessTests
                       "templatePath": "src/Book1/Book1.xlsm",
                       "binPath": "bin/Book1/Book1.xlsm",
                       "publishPath": "publish/Book1/Book1.xlsm",
+                      "commonModules": [],
                       "references": [
                         {
                           "name": "Microsoft Excel 16.0 Object Library"
@@ -3670,6 +3671,7 @@ public sealed class LanguageServerProcessTests
                       "templatePath": "src/SecondBook/SecondBook.xlsm",
                       "binPath": "bin/SecondBook/SecondBook.xlsm",
                       "publishPath": "publish/SecondBook/SecondBook.xlsm",
+                      "commonModules": [],
                       "references": [
                         {
                           "name": "Microsoft Scripting Runtime"
@@ -4264,6 +4266,7 @@ public sealed class LanguageServerProcessTests
             var liveManifestText = CreateSingleDocumentManifestText("src/live");
             var otherManifestText = CreateSingleDocumentManifestText("src/other");
             var invalidSourcePathManifestText = CreateSingleDocumentManifestText("\0");
+            var overlappingManifestText = CreateOverlappingManifestText("src/live");
             File.WriteAllText(manifestPath, liveManifestText);
             var callerUri = ToFileUri(callerPath);
             var helperUri = ToFileUri(helperPath);
@@ -4384,8 +4387,76 @@ public sealed class LanguageServerProcessTests
                 callerText,
                 "BuildValue");
             Assert.Equal(helperUri, recoveredAfterInvalidSourcePath.GetProperty("uri").GetString());
+            var recoveredSourcePathDiagnostics = await process.WaitForDiagnosticsAsync(manifestUri);
+            Assert.Empty(
+                recoveredSourcePathDiagnostics.GetProperty("params").GetProperty("diagnostics").EnumerateArray());
 
-            await process.ShutdownAsync(9);
+            var overlapCheckpoint = process.TranscriptCheckpoint;
+            await process.SendNotificationAsync("textDocument/didChange",
+                new
+                {
+                    textDocument = new
+                    {
+                        uri = manifestUri,
+                        version = 15
+                    },
+                    contentChanges = new[]
+                    {
+                        new { text = overlappingManifestText }
+                    }
+                });
+            var overlapDiagnostics = await process.WaitForMessageAsync(
+                overlapCheckpoint,
+                message => message.TryGetProperty("method", out var method)
+                    && method.GetString() == "textDocument/publishDiagnostics"
+                    && message.GetProperty("params").GetProperty("uri").GetString() == manifestUri
+                    && message.GetProperty("params").GetProperty("diagnostics").EnumerateArray()
+                        .Any(diagnostic => (diagnostic.GetProperty("message").GetString() ?? "")
+                            .Contains("document source roots overlap", StringComparison.OrdinalIgnoreCase)));
+            var overlapDiagnostic = Assert.Single(
+                overlapDiagnostics.GetProperty("params").GetProperty("diagnostics").EnumerateArray());
+            Assert.Equal(
+                "invalid-project-manifest",
+                overlapDiagnostic.GetProperty("code").GetString());
+            var overlapMessage = overlapDiagnostic.GetProperty("message").GetString() ?? "";
+            Assert.Contains("Book1", overlapMessage, StringComparison.Ordinal);
+            Assert.Contains("Book2", overlapMessage, StringComparison.Ordinal);
+            Assert.Equal(2, overlapMessage.Split("sourcePath 'src/live'", StringSplitOptions.None).Length - 1);
+            var retainedAfterOverlap = await RequestDefinitionAsync(process, 9,
+                callerUri,
+                callerText,
+                "BuildValue");
+            Assert.Equal(helperUri, retainedAfterOverlap.GetProperty("uri").GetString());
+
+            var recoveryCheckpoint = process.TranscriptCheckpoint;
+            await process.SendNotificationAsync("textDocument/didChange",
+                new
+                {
+                    textDocument = new
+                    {
+                        uri = manifestUri,
+                        version = 16
+                    },
+                    contentChanges = new[]
+                    {
+                        new { text = liveManifestText }
+                    }
+                });
+            var recoveredDiagnostics = await process.WaitForMessageAsync(
+                recoveryCheckpoint,
+                message => message.TryGetProperty("method", out var method)
+                    && method.GetString() == "textDocument/publishDiagnostics"
+                    && message.GetProperty("params").GetProperty("uri").GetString() == manifestUri
+                    && !message.GetProperty("params").GetProperty("diagnostics").EnumerateArray().Any());
+            Assert.Empty(
+                recoveredDiagnostics.GetProperty("params").GetProperty("diagnostics").EnumerateArray());
+            var recoveredAfterOverlap = await RequestDefinitionAsync(process, 10,
+                callerUri,
+                callerText,
+                "BuildValue");
+            Assert.Equal(helperUri, recoveredAfterOverlap.GetProperty("uri").GetString());
+
+            await process.ShutdownAsync(11);
         }
         finally
         {
@@ -4682,11 +4753,45 @@ public sealed class LanguageServerProcessTests
                     templatePath = "src/Book1/Book1.xlsm",
                     binPath = "bin/Book1/Book1.xlsm",
                     publishPath = "publish/Book1/Book1.xlsm",
+                    commonModules = Array.Empty<object>(),
                     references = new[]
                     {
                         new { name = "Microsoft Excel 16.0 Object Library" }
                     }
                 }
+            }
+        };
+        return JsonSerializer.Serialize(
+            manifest,
+            new JsonSerializerOptions
+            {
+                WriteIndented = true
+            });
+    }
+
+    private static string CreateOverlappingManifestText(string sourcePath)
+    {
+        static object CreateDocument(string documentName, string sourcePath)
+            => new
+            {
+                kind = "excel",
+                sourcePath,
+                templatePath = $"src/{documentName}/{documentName}.xlsm",
+                binPath = $"bin/{documentName}.xlsm",
+                publishPath = $"publish/{documentName}.xlsm",
+                commonModules = Array.Empty<object>(),
+                references = Array.Empty<object>()
+            };
+
+        var manifest = new
+        {
+            schemaVersion = 1,
+            projectName = "OverlappingManifestProject",
+            primaryDocument = "Book1",
+            documents = new Dictionary<string, object>
+            {
+                ["Book1"] = CreateDocument("Book1", sourcePath),
+                ["Book2"] = CreateDocument("Book2", sourcePath)
             }
         };
         return JsonSerializer.Serialize(
@@ -4724,6 +4829,7 @@ public sealed class LanguageServerProcessTests
                     templatePath = "src/Book1/Book1.xlsm",
                     binPath = "bin/Book1/Book1.xlsm",
                     publishPath = "publish/Book1/Book1.xlsm",
+                    commonModules = Array.Empty<object>(),
                     references
                 }
             }

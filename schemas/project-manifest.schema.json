@@ -1,5 +1,5 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://modern-vba.github.io/vba-tools/schemas/project-manifest.schema.json",
   "title": "VBA Tools Project Manifest",
   "type": "object",
@@ -28,19 +28,22 @@
       "propertyNames": {
         "minLength": 1
       },
-      "additionalProperties": {
-        "$ref": "#/$defs/document"
-      }
+      "patternProperties": {
+        "^.+$": {
+          "$ref": "#/definitions/document"
+        }
+      },
+      "additionalProperties": false
     },
     "commonModulesRepository": {
       "type": "string",
       "minLength": 1
     },
     "commandDefaults": {
-      "$ref": "#/$defs/commandDefaults"
+      "$ref": "#/definitions/commandDefaults"
     }
   },
-  "$defs": {
+  "definitions": {
     "document": {
       "type": "object",
       "required": [
@@ -48,7 +51,9 @@
         "sourcePath",
         "templatePath",
         "binPath",
-        "publishPath"
+        "publishPath",
+        "commonModules",
+        "references"
       ],
       "additionalProperties": false,
       "properties": {
@@ -74,13 +79,13 @@
         "commonModules": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/commonModule"
+            "$ref": "#/definitions/commonModule"
           }
         },
         "references": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/reference"
+            "$ref": "#/definitions/reference"
           }
         }
       }
@@ -127,10 +132,12 @@
     },
     "commandDefaults": {
       "type": "object",
+      "minProperties": 1,
       "additionalProperties": false,
       "properties": {
         "test": {
           "type": "object",
+          "minProperties": 1,
           "additionalProperties": false,
           "properties": {
             "format": {
@@ -147,6 +154,7 @@
         },
         "excelAutomation": {
           "type": "object",
+          "minProperties": 1,
           "additionalProperties": false,
           "properties": {
             "workbookOpenTimeoutSeconds": {

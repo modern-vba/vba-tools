@@ -33,6 +33,8 @@ public sealed record VbaProjectResolution(
     string? DocumentKind = null,
     IReadOnlyList<VbaProjectReference>? References = null)
 {
+    internal FileSystemPathIdentity? RootIdentity { get; init; }
+
     /// <summary>
     /// Gets the active manifest reference entries, or an empty list for ad-hoc projects.
     /// </summary>
@@ -52,7 +54,9 @@ public sealed record VbaProjectResolution(
         }
 
         return Kind == VbaProjectResolutionKind.ManifestDocument
-            ? VbaProjectResolver.IsPathUnder(localPath, RootPath)
+            ? RootIdentity is not null
+                ? VbaProjectResolver.IsPathUnderIdentity(localPath, RootIdentity)
+                : VbaProjectResolver.IsPathUnder(localPath, RootPath)
             : VbaProjectResolver.SameDirectory(localPath, RootPath);
     }
 }
@@ -76,6 +80,8 @@ public static class VbaProjectResolver
         }
 
         var activeDirectory = Path.GetDirectoryName(activePath) ?? Directory.GetCurrentDirectory();
+        var activeIdentity = ResolvePathIdentity(activePath);
+
         for (var directory = new DirectoryInfo(activeDirectory); directory is not null; directory = directory.Parent)
         {
             var manifestPath = Path.Combine(directory.FullName, "vba-project.json");
@@ -85,18 +91,30 @@ public static class VbaProjectResolver
             }
 
             var manifest = ProjectManifestReader.Parse(File.ReadAllText(manifestPath), manifestPath);
+            var sourceRoots = DocumentSourceSetIsolationValidator.ResolveAndValidate(
+                manifest,
+                manifestPath,
+                manifestPath);
             foreach (var (documentName, document) in manifest.Documents)
             {
-                var sourceRoot = Path.GetFullPath(Path.Combine(directory.FullName, document.SourcePath));
-                if (IsPathUnder(activePath, sourceRoot))
+                var sourceRootIdentity = sourceRoots[documentName];
+                if (FileSystemPathIdentityRelations.SameOrDescendant(
+                        activeIdentity,
+                        sourceRootIdentity))
                 {
+                    var declaredSourceRoot = ResolveManifestPath(
+                        directory.FullName,
+                        document.SourcePath);
                     return new VbaProjectResolution(
                         VbaProjectResolutionKind.ManifestDocument,
-                        sourceRoot,
+                        declaredSourceRoot,
                         manifestPath,
                         documentName,
                         document.Kind,
-                        document.References ?? []);
+                        document.References ?? [])
+                    {
+                        RootIdentity = sourceRootIdentity
+                    };
                 }
             }
 
@@ -149,6 +167,43 @@ public static class VbaProjectResolver
         return candidate.StartsWith(root, StringComparison.OrdinalIgnoreCase);
     }
 
+    internal static bool IsPathUnderIdentity(
+        string candidatePath,
+        FileSystemPathIdentity rootIdentity)
+    {
+        try
+        {
+            var candidateIdentity = ResolvePathIdentity(candidatePath);
+            return FileSystemPathIdentityRelations.SameOrDescendant(
+                candidateIdentity,
+                rootIdentity);
+        }
+        catch (VbaProjectManifestException)
+        {
+            return false;
+        }
+    }
+
+    internal static FileSystemPathIdentity ResolvePathIdentity(string path)
+    {
+        try
+        {
+            return new FileSystemPathIdentityResolver().Resolve(path);
+        }
+        catch (Exception ex) when (ex is ArgumentException
+            or IOException
+            or UnauthorizedAccessException
+            or NotSupportedException
+            or PathTooLongException
+            or System.Security.SecurityException
+            or InvalidOperationException)
+        {
+            throw new VbaProjectManifestException(
+                $"Source path does not have a safely resolvable filesystem identity: {path}",
+                ex);
+        }
+    }
+
     /// <summary>
     /// Determines whether a candidate path is in a directory.
     /// </summary>
@@ -172,6 +227,15 @@ public static class VbaProjectResolver
 
     private static string TrimTrailingSeparator(string path)
         => path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+    private static string ResolveManifestPath(string manifestDirectory, string path)
+    {
+        var normalizedPath = path.Replace('/', Path.DirectorySeparatorChar);
+        return Path.GetFullPath(
+            Path.IsPathRooted(normalizedPath)
+                ? normalizedPath
+                : Path.Combine(manifestDirectory, normalizedPath));
+    }
 
     private static string NormalizeFileAbsolutePath(string path)
     {

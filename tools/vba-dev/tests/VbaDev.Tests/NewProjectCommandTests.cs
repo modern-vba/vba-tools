@@ -1,4 +1,6 @@
 using System.Text;
+using VbaDev.App.CommonModules;
+using VbaDev.App.Projects;
 using VbaDev.App.Workbooks;
 using VbaDev.Cli;
 using VbaDev.Composition;
@@ -10,6 +12,375 @@ namespace VbaDev.Tests;
 
 public sealed class NewProjectCommandTests
 {
+    [Fact]
+    public void NewExcelRejectsAProjectInsideAnAncestorDocumentSourceSetBeforeWorkbookCreation()
+    {
+        using var temp = TempDirectory.Create();
+        var ancestorRoot = temp.CreateDirectory("AncestorProject");
+        var ancestorManifest = ProjectManifest.CreateDefault(
+            "AncestorProject",
+            "AncestorBook",
+            ancestorRoot,
+            null);
+        new JsonProjectManifestStore().Save(ancestorRoot, ancestorManifest);
+        var childRoot = Path.Combine(
+            ancestorRoot,
+            "src",
+            "AncestorBook",
+            "ChildProject");
+        var workbookCreator = new FakeInitialWorkbookCreator();
+        var application = CommandLineTestFactory.Create(
+            temp.Path,
+            initialWorkbookCreator: workbookCreator);
+
+        var result = application.Run([
+            "new",
+            "excel",
+            "--name",
+            "ChildProject",
+            "--output",
+            childRoot
+        ]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("AncestorBook", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("src/AncestorBook", result.StandardError, StringComparison.Ordinal);
+        Assert.Empty(workbookCreator.CreatedPaths);
+        Assert.False(Directory.Exists(childRoot));
+    }
+
+    [Fact]
+    public void NewExcelRejectsAnInvalidAncestorManifestBeforeWorkbookCreation()
+    {
+        using var temp = TempDirectory.Create();
+        var ancestorRoot = temp.CreateDirectory("AncestorProject");
+        File.WriteAllText(
+            Path.Combine(ancestorRoot, ProjectManifest.ManifestFileName),
+            "{\"schemaVersion\":1}",
+            new UTF8Encoding(false));
+        var childRoot = Path.Combine(
+            ancestorRoot,
+            "projects",
+            "ChildProject");
+        var workbookCreator = new FakeInitialWorkbookCreator();
+        var application = CommandLineTestFactory.Create(
+            temp.Path,
+            initialWorkbookCreator: workbookCreator);
+
+        var result = application.Run([
+            "new",
+            "excel",
+            "--name",
+            "ChildProject",
+            "--output",
+            childRoot
+        ]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains(ProjectManifest.ManifestFileName, result.StandardError, StringComparison.Ordinal);
+        Assert.Empty(workbookCreator.CreatedPaths);
+        Assert.False(Directory.Exists(childRoot));
+    }
+
+    [Fact]
+    public void NewExcelFailsClosedForAnUnresolvedAncestorManifestLink()
+    {
+        using var temp = TempDirectory.Create();
+        var ancestorRoot = temp.CreateDirectory("AncestorProject");
+        File.CreateSymbolicLink(
+            Path.Combine(ancestorRoot, ProjectManifest.ManifestFileName),
+            Path.Combine(ancestorRoot, "missing-manifest.json"));
+        var childRoot = Path.Combine(
+            ancestorRoot,
+            "projects",
+            "ChildProject");
+        var workbookCreator = new FakeInitialWorkbookCreator();
+        var application = CommandLineTestFactory.Create(
+            temp.Path,
+            initialWorkbookCreator: workbookCreator);
+
+        var result = application.Run([
+            "new",
+            "excel",
+            "--name",
+            "ChildProject",
+            "--output",
+            childRoot
+        ]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains(ProjectManifest.ManifestFileName, result.StandardError, StringComparison.Ordinal);
+        Assert.Empty(workbookCreator.CreatedPaths);
+        Assert.False(Directory.Exists(childRoot));
+    }
+
+    [Fact]
+    public void NewExcelFailsClosedWhenProjectRootIdentityCannotBeEstablished()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = Path.Combine(temp.Path, "ChildProject");
+        var workbookCreator = new FakeInitialWorkbookCreator();
+        var command = new NewProjectCommand(
+            new JsonProjectManifestStore(),
+            workbookCreator,
+            new CommonModulesManifestReader(),
+            new FailingNewProjectIdentityResolver());
+
+        var result = command.Run(new NewProjectCommandRequest(
+            "ChildProject",
+            null,
+            projectRoot,
+            temp.Path));
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("safely resolvable filesystem identity", result.StandardError, StringComparison.Ordinal);
+        Assert.Empty(workbookCreator.CreatedPaths);
+        Assert.False(Directory.Exists(projectRoot));
+    }
+
+    [Fact]
+    public void NewExcelRejectsAReplacedProjectRootBeforeManifestCommit()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = temp.CreateDirectory("ChildProject");
+        var workbookCreator = new FakeInitialWorkbookCreator();
+        var command = new NewProjectCommand(
+            new JsonProjectManifestStore(),
+            workbookCreator,
+            new CommonModulesManifestReader(),
+            new SequenceNewProjectIdentityResolver(
+                new FileSystemPathIdentity(
+                    projectRoot,
+                    projectRoot,
+                    new FileSystemObjectIdentity(1, 10)),
+                new FileSystemPathIdentity(
+                    projectRoot,
+                    projectRoot,
+                    new FileSystemObjectIdentity(1, 20))));
+
+        var result = command.Run(new NewProjectCommandRequest(
+            "ChildProject",
+            null,
+            projectRoot,
+            temp.Path));
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("filesystem identity changed", result.StandardError, StringComparison.Ordinal);
+        Assert.True(Directory.Exists(projectRoot));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(projectRoot));
+    }
+
+    [Fact]
+    public void NewExcelRejectsAProjectReachedThroughAnAncestorSourceSetAlias()
+    {
+        using var temp = TempDirectory.Create();
+        var ancestorRoot = temp.CreateDirectory("AncestorProject");
+        new JsonProjectManifestStore().Save(
+            ancestorRoot,
+            ProjectManifest.CreateDefault(
+                "AncestorProject",
+                "AncestorBook",
+                ancestorRoot,
+                null));
+        var sourceRoot = Path.Combine(
+            ancestorRoot,
+            "src",
+            "AncestorBook");
+        Directory.CreateDirectory(sourceRoot);
+        var sourceAlias = Path.Combine(temp.Path, "SourceAlias");
+        Directory.CreateSymbolicLink(sourceAlias, sourceRoot);
+        var childRoot = Path.Combine(sourceAlias, "ChildProject");
+        var workbookCreator = new FakeInitialWorkbookCreator();
+        var application = CommandLineTestFactory.Create(
+            temp.Path,
+            initialWorkbookCreator: workbookCreator);
+
+        var result = application.Run([
+            "new",
+            "excel",
+            "--name",
+            "ChildProject",
+            "--output",
+            childRoot
+        ]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("AncestorBook", result.StandardError, StringComparison.Ordinal);
+        Assert.Empty(workbookCreator.CreatedPaths);
+        Assert.False(Directory.Exists(childRoot));
+    }
+
+    [Fact]
+    public void NewExcelAllowsANestedProjectThatIsDisjointFromAncestorSourceSets()
+    {
+        using var temp = TempDirectory.Create();
+        var ancestorRoot = temp.CreateDirectory("AncestorProject");
+        new JsonProjectManifestStore().Save(
+            ancestorRoot,
+            ProjectManifest.CreateDefault(
+                "AncestorProject",
+                "AncestorBook",
+                ancestorRoot,
+                null));
+        var childRoot = Path.Combine(
+            ancestorRoot,
+            "projects",
+            "ChildProject");
+        var application = CommandLineTestFactory.Create(
+            temp.Path,
+            initialWorkbookCreator: new FakeInitialWorkbookCreator());
+
+        var result = application.Run([
+            "new",
+            "excel",
+            "--name",
+            "ChildProject",
+            "--output",
+            childRoot
+        ]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.True(File.Exists(Path.Combine(
+            childRoot,
+            ProjectManifest.ManifestFileName)));
+    }
+
+    [Fact]
+    public void NewExcelRechecksAnAncestorManifestBeforeCommitAndRollsBackOwnedArtifacts()
+    {
+        using var temp = TempDirectory.Create();
+        var ancestorRoot = temp.CreateDirectory("AncestorProject");
+        var childRoot = Path.Combine(
+            ancestorRoot,
+            "src",
+            "AncestorBook",
+            "ChildProject");
+        var workbookCreator = new FakeInitialWorkbookCreator
+        {
+            AfterCreate = _ => new JsonProjectManifestStore().Save(
+                ancestorRoot,
+                ProjectManifest.CreateDefault(
+                    "AncestorProject",
+                    "AncestorBook",
+                    ancestorRoot,
+                    null))
+        };
+        var application = CommandLineTestFactory.Create(
+            temp.Path,
+            initialWorkbookCreator: workbookCreator);
+
+        var result = application.Run([
+            "new",
+            "excel",
+            "--name",
+            "ChildProject",
+            "--output",
+            childRoot
+        ]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("AncestorBook", result.StandardError, StringComparison.Ordinal);
+        Assert.True(File.Exists(Path.Combine(
+            ancestorRoot,
+            ProjectManifest.ManifestFileName)));
+        Assert.False(File.Exists(Path.Combine(
+            childRoot,
+            ProjectManifest.ManifestFileName)));
+        Assert.False(Directory.Exists(childRoot));
+    }
+
+    [Fact]
+    public void NewExcelAcceptsALatestAncestorManifestThatRemainsDisjoint()
+    {
+        using var temp = TempDirectory.Create();
+        var ancestorRoot = temp.CreateDirectory("AncestorProject");
+        var childRoot = Path.Combine(
+            ancestorRoot,
+            "projects",
+            "ChildProject");
+        var workbookCreator = new FakeInitialWorkbookCreator
+        {
+            AfterCreate = _ => new JsonProjectManifestStore().Save(
+                ancestorRoot,
+                ProjectManifest.CreateDefault(
+                    "AncestorProject",
+                    "AncestorBook",
+                    ancestorRoot,
+                    null))
+        };
+        var application = CommandLineTestFactory.Create(
+            temp.Path,
+            initialWorkbookCreator: workbookCreator);
+
+        var result = application.Run([
+            "new",
+            "excel",
+            "--name",
+            "ChildProject",
+            "--output",
+            childRoot
+        ]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.True(File.Exists(Path.Combine(
+            childRoot,
+            ProjectManifest.ManifestFileName)));
+        Assert.True(File.Exists(Path.Combine(
+            ancestorRoot,
+            ProjectManifest.ManifestFileName)));
+    }
+
+    [Fact]
+    public void NewExcelRollbackPreservesAByteIdenticalForeignWorkbookReplacement()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        var ancestorRoot = temp.CreateDirectory("AncestorProject");
+        var childRoot = Path.Combine(
+            ancestorRoot,
+            "src",
+            "AncestorBook",
+            "ChildProject");
+        var workbookPath = Path.Combine(
+            childRoot,
+            "src",
+            "ChildProject",
+            "ChildProject.xlsm");
+        var displacedOwnedWorkbook = workbookPath + ".owned";
+        var resolver = new CallbackOnSecondNewProjectIdentityResolution(() =>
+        {
+            File.Move(workbookPath, displacedOwnedWorkbook);
+            File.Copy(displacedOwnedWorkbook, workbookPath);
+            new JsonProjectManifestStore().Save(
+                ancestorRoot,
+                ProjectManifest.CreateDefault(
+                    "AncestorProject",
+                    "AncestorBook",
+                    ancestorRoot,
+                    null));
+        });
+        var command = new NewProjectCommand(
+            new JsonProjectManifestStore(),
+            new FakeInitialWorkbookCreator(),
+            new CommonModulesManifestReader(),
+            resolver);
+
+        var result = command.Run(new NewProjectCommandRequest(
+            "ChildProject",
+            null,
+            childRoot,
+            temp.Path));
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.True(File.Exists(workbookPath));
+        Assert.Equal("fake xlsm", File.ReadAllText(workbookPath));
+        Assert.True(File.Exists(displacedOwnedWorkbook));
+    }
+
     [Fact]
     public async Task NewCreatesProjectLayoutWorkbookAndUtf16Manifest()
     {
@@ -287,6 +658,40 @@ public sealed class NewProjectCommandTests
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllText(path, content, new UTF8Encoding(false));
     }
+
+    private sealed class FailingNewProjectIdentityResolver : IFileSystemPathIdentityResolver
+    {
+        public FileSystemPathIdentity Resolve(string path)
+            => throw new UnauthorizedAccessException(path);
+    }
+
+    private sealed class SequenceNewProjectIdentityResolver(
+        params FileSystemPathIdentity[] identities) : IFileSystemPathIdentityResolver
+    {
+        private readonly Queue<FileSystemPathIdentity> remaining = new(identities);
+
+        public FileSystemPathIdentity Resolve(string path)
+            => remaining.Dequeue();
+    }
+
+    private sealed class CallbackOnSecondNewProjectIdentityResolution(
+        Action callback) : IFileSystemPathIdentityResolver
+    {
+        private readonly FileSystemPathIdentityResolver inner = new();
+        private int resolutionCount;
+
+        public FileSystemPathIdentity Resolve(string path)
+        {
+            var identity = inner.Resolve(path);
+            resolutionCount++;
+            if (resolutionCount == 2)
+            {
+                callback();
+            }
+
+            return identity;
+        }
+    }
 }
 
 internal sealed class FakeInitialWorkbookCreator : IInitialWorkbookCreator
@@ -300,11 +705,14 @@ internal sealed class FakeInitialWorkbookCreator : IInitialWorkbookCreator
 
     public List<string> CreatedPaths { get; } = [];
 
+    public Action<string>? AfterCreate { get; init; }
+
     public IReadOnlyList<string> CreateInitialWorkbook(string workbookPath)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(workbookPath)!);
         File.WriteAllText(workbookPath, "fake xlsm", new UTF8Encoding(false));
         CreatedPaths.Add(workbookPath);
+        AfterCreate?.Invoke(workbookPath);
         return referenceNames;
     }
 }

@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "projectName": "NestedSourceRootsProject",
+  "primaryDocument": "Book1",
+  "documents": {
+    "Book1": {
+      "kind": "excel",
+      "sourcePath": "src",
+      "templatePath": "templates/Book1.xlsm",
+      "binPath": "bin/Book1.xlsm",
+      "publishPath": "publish/Book1.xlsm",
+      "commonModules": [],
+      "references": []
+    },
+    "Book2": {
+      "kind": "excel",
+      "sourcePath": "src/Book2",
+      "templatePath": "templates/Book2.xlsm",
+      "binPath": "bin/Book2.xlsm",
+      "publishPath": "publish/Book2.xlsm",
+      "commonModules": [],
+      "references": []
+    }
+  }
+}

@@ -48,6 +48,7 @@ public sealed class VbaInteractiveWorkSchedulerProcessTests
                             templatePath = "src/Book1/Book1.xlsm",
                             binPath = "bin/Book1/Book1.xlsm",
                             publishPath = "publish/Book1/Book1.xlsm",
+                            commonModules = Array.Empty<object>(),
                             references = Array.Empty<object>()
                         }
                     }

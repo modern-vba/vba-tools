@@ -140,7 +140,9 @@ public sealed class VbaProjectManifestWorkspaceConcurrencyTests
                       "sourcePath": "src",
                       "templatePath": "Book1.xlsm",
                       "binPath": "bin/Book1.xlsm",
-                      "publishPath": "publish/Book1.xlsm"
+                      "publishPath": "publish/Book1.xlsm",
+                      "commonModules": [],
+                      "references": []
                     }
                   }
                 }

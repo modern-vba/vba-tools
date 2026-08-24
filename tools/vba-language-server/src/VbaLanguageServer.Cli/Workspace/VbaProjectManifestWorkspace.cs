@@ -1002,6 +1002,7 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
 
         var activeDirectory =
             Path.GetDirectoryName(activePath) ?? Directory.GetCurrentDirectory();
+        var activeIdentity = VbaProjectResolver.ResolvePathIdentity(activePath);
         var effectiveManifest = CreateEffectiveManifest(
             manifestPath,
             manifestUri,
@@ -1009,7 +1010,11 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
         foreach (var (documentName, document) in effectiveManifest.Manifest.Documents)
         {
             var sourceRoot = effectiveManifest.SourceRoots[documentName];
-            if (VbaProjectResolver.IsPathUnder(activePath, sourceRoot))
+            var sourceRootIdentity =
+                effectiveManifest.SourceRootIdentities[documentName];
+            if (FileSystemPathIdentityRelations.SameOrDescendant(
+                    activeIdentity,
+                    sourceRootIdentity))
             {
                 return new VbaProjectResolution(
                     VbaProjectResolutionKind.ManifestDocument,
@@ -1017,7 +1022,10 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
                     manifestPath,
                     documentName,
                     document.Kind,
-                    document.References ?? []);
+                    document.References ?? [])
+                {
+                    RootIdentity = sourceRootIdentity
+                };
             }
         }
 
@@ -1139,6 +1147,7 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
         var activeDirectory =
             Path.GetDirectoryName(activePath)
             ?? Directory.GetCurrentDirectory();
+        var activeIdentity = VbaProjectResolver.ResolvePathIdentity(activePath);
         var sawKnownManifestState = false;
         lock (gate)
         {
@@ -1188,9 +1197,11 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
                 {
                     var sourceRoot =
                         effectiveManifest.SourceRoots[documentName];
-                    if (VbaProjectResolver.IsPathUnder(
-                        activePath,
-                        sourceRoot))
+                    var sourceRootIdentity =
+                        effectiveManifest.SourceRootIdentities[documentName];
+                    if (FileSystemPathIdentityRelations.SameOrDescendant(
+                            activeIdentity,
+                            sourceRootIdentity))
                     {
                         resolution = new VbaProjectResolution(
                             VbaProjectResolutionKind.ManifestDocument,
@@ -1198,7 +1209,10 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
                             manifestPath,
                             documentName,
                             document.Kind,
-                            document.References ?? []);
+                            document.References ?? [])
+                        {
+                            RootIdentity = sourceRootIdentity
+                        };
                         return true;
                     }
                 }
@@ -1232,6 +1246,7 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
         }
 
         var activeDirectory = Path.GetDirectoryName(activePath) ?? Directory.GetCurrentDirectory();
+        var activeIdentity = VbaProjectResolver.ResolvePathIdentity(activePath);
         for (var directory = new DirectoryInfo(activeDirectory); directory is not null; directory = directory.Parent)
         {
             var manifestPath = Path.Combine(directory.FullName, ManifestFileName);
@@ -1265,7 +1280,11 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
             foreach (var (documentName, document) in effectiveManifest.Manifest.Documents)
             {
                 var sourceRoot = effectiveManifest.SourceRoots[documentName];
-                if (VbaProjectResolver.IsPathUnder(activePath, sourceRoot))
+                var sourceRootIdentity =
+                    effectiveManifest.SourceRootIdentities[documentName];
+                if (FileSystemPathIdentityRelations.SameOrDescendant(
+                        activeIdentity,
+                        sourceRootIdentity))
                 {
                     return new VbaProjectResolution(
                         VbaProjectResolutionKind.ManifestDocument,
@@ -1273,7 +1292,10 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
                         manifestPath,
                         documentName,
                         document.Kind,
-                        document.References ?? []);
+                        document.References ?? [])
+                    {
+                        RootIdentity = sourceRootIdentity
+                    };
                 }
             }
 
@@ -1683,27 +1705,35 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
         string text)
     {
         var manifest = ProjectManifestReader.Parse(text, uri);
-        var manifestDirectory = Path.GetDirectoryName(manifestPath) ?? Directory.GetCurrentDirectory();
-        var sourceRoots = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (documentName, document) in manifest.Documents)
-        {
-            try
+        var sourceRootIdentities =
+            DocumentSourceSetIsolationValidator.ResolveAndValidate(
+                manifest,
+                manifestPath,
+                uri);
+        var manifestDirectory = Path.GetDirectoryName(
+                Path.GetFullPath(manifestPath))
+            ?? throw new VbaProjectManifestException(
+                $"Project manifest path has no parent directory: {uri}");
+        var sourceRoots = manifest.Documents.ToDictionary(
+            pair => pair.Key,
+            pair =>
             {
-                sourceRoots[documentName] = Path.GetFullPath(
-                    Path.Combine(manifestDirectory, document.SourcePath));
-            }
-            catch (Exception ex) when (ex is ArgumentException
-                or NotSupportedException
-                or PathTooLongException
-                or System.Security.SecurityException)
-            {
-                throw new VbaProjectManifestException(
-                    $"Document '{documentName}' has an invalid sourcePath in project manifest: {uri}",
-                    ex);
-            }
-        }
+                var normalizedPath = pair.Value.SourcePath.Replace(
+                    '/',
+                    Path.DirectorySeparatorChar);
+                return Path.GetFullPath(
+                    Path.IsPathRooted(normalizedPath)
+                        ? normalizedPath
+                        : Path.Combine(manifestDirectory, normalizedPath));
+            },
+            StringComparer.OrdinalIgnoreCase);
 
-        return new EffectiveManifest(uri, text, manifest, sourceRoots);
+        return new EffectiveManifest(
+            uri,
+            text,
+            manifest,
+            sourceRoots,
+            sourceRootIdentities);
     }
 
     private static bool TryGetManifestPath(string uri, out string manifestPath)
@@ -1793,5 +1823,6 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
         string Uri,
         string Text,
         ProjectManifest Manifest,
-        IReadOnlyDictionary<string, string> SourceRoots);
+        IReadOnlyDictionary<string, string> SourceRoots,
+        IReadOnlyDictionary<string, FileSystemPathIdentity> SourceRootIdentities);
 }

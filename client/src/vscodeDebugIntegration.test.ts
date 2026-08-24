@@ -595,7 +595,9 @@ test('only the owning VBA debug session release cancels its pending restart prep
         sourcePath: 'src/Book1',
         templatePath: 'src/Book1/Book1.xlsm',
         binPath: 'bin/Book1.xlsm',
-        publishPath: 'publish/Book1.xlsm'
+        publishPath: 'publish/Book1.xlsm',
+        commonModules: [],
+        references: []
       }
     }
   });
@@ -888,7 +890,9 @@ test('VBA debug integration shutdown cancels bound restart capture before cleanu
             sourcePath: 'src/Book1',
             templatePath: 'src/Book1/Book1.xlsm',
             binPath: 'bin/Book1.xlsm',
-            publishPath: 'publish/Book1.xlsm'
+            publishPath: 'publish/Book1.xlsm',
+            commonModules: [],
+            references: []
           }
         }
       }),

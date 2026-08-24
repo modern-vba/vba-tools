@@ -69,6 +69,131 @@ public sealed class ProjectManifestTests
     }
 
     [Fact]
+    public void SaveWritesCanonicalBytesAndOmitsAbsentOptionalState()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = temp.CreateDirectory("CanonicalProject");
+        var manifest = ProjectManifest.CreateDefault(
+            "CanonicalProject",
+            "Book1",
+            projectRoot,
+            null) with
+        {
+            CommandDefaults = null
+        };
+        var store = new JsonProjectManifestStore();
+
+        store.Save(projectRoot, manifest);
+
+        var bytes = File.ReadAllBytes(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
+        Assert.Equal(0xFF, bytes[0]);
+        Assert.Equal(0xFE, bytes[1]);
+        var actual = Encoding.Unicode.GetString(bytes[2..]);
+        var expected = """
+        {
+          "schemaVersion": 1,
+          "projectName": "CanonicalProject",
+          "primaryDocument": "Book1",
+          "documents": {
+            "Book1": {
+              "kind": "excel",
+              "sourcePath": "src/Book1",
+              "templatePath": "src/Book1/Book1.xlsm",
+              "binPath": "bin/Book1.xlsm",
+              "publishPath": "publish/Book1.xlsm",
+              "commonModules": [],
+              "references": []
+            }
+          }
+        }
+        """.ReplaceLineEndings("\r\n") + "\r\n";
+
+        Assert.Equal(expected, actual);
+    }
+
+    [Fact]
+    public void SaveWritesCompleteCanonicalBytesInSchemaPropertyOrder()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = temp.CreateDirectory("CanonicalProject");
+        var store = new JsonProjectManifestStore();
+
+        store.Save(projectRoot, ProjectManifestTestData.FullManifest(projectRoot));
+
+        var actual = File.ReadAllBytes(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
+        Assert.Equal(
+            ProjectManifestTestData.ExpectedFullCanonicalBytes(),
+            actual);
+    }
+
+    [Fact]
+    public void ReorderedMinifiedUtf8InputRoundTripsToStableCanonicalBytes()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = temp.CreateDirectory("CanonicalProject");
+        var manifestPath = Path.Combine(projectRoot, ProjectManifest.ManifestFileName);
+        var nonCanonicalJson = """
+        {"commandDefaults":{"excelAutomation":{"workbookSaveTimeoutSeconds":180,"workbookOpenTimeoutSeconds":120},"test":{"executionTimeoutSeconds":240,"format":"ndjson"}},"commonModulesRepository":"../common_modules_repo","documents":{"Book1":{"references":[{"name":"Microsoft Scripting Runtime"}],"commonModules":[{"testOnly":false,"requested":true,"moduleFile":"Runtime.bas","name":"Runtime"}],"publishPath":"publish/Book1.xlsm","binPath":"bin/Book1.xlsm","templatePath":"src/Book1/Book1.xlsm","sourcePath":"src/Book1","kind":"excel"}},"primaryDocument":"Book1","projectName":"CanonicalProject","schemaVersion":1}
+        """;
+        File.WriteAllText(manifestPath, nonCanonicalJson, new UTF8Encoding(false));
+        var store = new JsonProjectManifestStore();
+
+        var manifest = store.Load(manifestPath);
+        store.Save(projectRoot, manifest);
+        var firstCanonicalBytes = File.ReadAllBytes(manifestPath);
+        var reloadedManifest = store.Load(manifestPath);
+        store.Save(projectRoot, reloadedManifest);
+        var secondCanonicalBytes = File.ReadAllBytes(manifestPath);
+
+        Assert.Equal(ProjectManifestTestData.ExpectedFullCanonicalBytes(), firstCanonicalBytes);
+        Assert.Equal(firstCanonicalBytes, secondCanonicalBytes);
+    }
+
+    [Fact]
+    public void OverlappingSaveIsRejectedBeforeReplacingTheExistingManifest()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = temp.CreateDirectory("Project");
+        var manifestPath = Path.Combine(projectRoot, ProjectManifest.ManifestFileName);
+        var store = new JsonProjectManifestStore();
+        store.Save(
+            projectRoot,
+            ProjectManifest.CreateDefault("Project", "Book1", projectRoot, null));
+        var priorBytes = File.ReadAllBytes(manifestPath);
+        var invalidManifest = ProjectManifestTestData.TwoDocumentManifest(projectRoot);
+        invalidManifest.Documents["SecondBook"] = invalidManifest.Documents["SecondBook"] with
+        {
+            SourcePath = "src/Book1"
+        };
+
+        var error = Assert.Throws<ProjectManifestException>(() =>
+            store.Save(projectRoot, invalidManifest));
+
+        Assert.Contains("Book1", error.Message, StringComparison.Ordinal);
+        Assert.Contains("SecondBook", error.Message, StringComparison.Ordinal);
+        Assert.Equal(priorBytes, File.ReadAllBytes(manifestPath));
+    }
+
+    [Fact]
+    public void DefaultManifestOmitsRedundantBuiltInCommandDefaults()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = temp.CreateDirectory("DefaultProject");
+        var manifest = ProjectManifest.CreateDefault(
+            "DefaultProject",
+            "Book1",
+            projectRoot,
+            null);
+        var store = new JsonProjectManifestStore();
+
+        store.Save(projectRoot, manifest);
+
+        var bytes = File.ReadAllBytes(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
+        using var document = JsonDocument.Parse(Encoding.Unicode.GetString(bytes[2..]));
+        Assert.False(document.RootElement.TryGetProperty("commandDefaults", out _));
+    }
+
+    [Fact]
     public void LoadAcceptsUtf16LeBomAndUtf8Inputs()
     {
         using var temp = TempDirectory.Create();
@@ -114,7 +239,8 @@ public sealed class ProjectManifestTests
                   "requested": true,
                   "testOnly": false
                 }
-              ]
+              ],
+              "references": []
             }
           }
         }
@@ -144,7 +270,8 @@ public sealed class ProjectManifestTests
               "templatePath": "src/Book1/Book1.xlsm",
               "binPath": "bin/Book1.xlsm",
               "publishPath": "publish/Book1.xlsm",
-              "commonModules": [null]
+              "commonModules": [null],
+              "references": []
             }
           }
         }
@@ -161,7 +288,7 @@ public sealed class ProjectManifestTests
     {
         using var temp = TempDirectory.Create();
         var root = temp.CreateDirectory("Project");
-        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        var manifest = ProjectManifestTestData.FullManifest(root);
         var editor = new ProjectManifestEditor(new FailingProjectManifestStore());
 
         var error = Assert.Throws<ProjectManifestEditException>(() => editor.SaveWithRecovery(root, manifest));
@@ -171,7 +298,9 @@ public sealed class ProjectManifestTests
         var recoveryBytes = File.ReadAllBytes(recoveryFile);
         Assert.Equal(0xff, recoveryBytes[0]);
         Assert.Equal(0xfe, recoveryBytes[1]);
-        Assert.Contains("\"Project\"", File.ReadAllText(recoveryFile, Encoding.Unicode), StringComparison.Ordinal);
+        Assert.Equal(
+            ProjectManifestTestData.ExpectedFullCanonicalBytes(),
+            recoveryBytes);
     }
 
     [Fact]
@@ -456,6 +585,34 @@ public sealed class ProjectManifestTests
     [InlineData("invalid-missing-primary-document.json", "primaryDocument")]
     [InlineData("invalid-primary-document-not-defined.json", "primaryDocument")]
     [InlineData("invalid-empty-reference-name.json", "reference name")]
+    [InlineData("invalid-empty-common-modules-repository.json", "commonModulesRepository")]
+    [InlineData("invalid-empty-command-defaults.json", "commandDefaults")]
+    [InlineData("invalid-empty-excel-automation-defaults.json", "commandDefaults.excelAutomation")]
+    [InlineData("invalid-empty-project-name.json", "projectName")]
+    [InlineData("invalid-empty-primary-document.json", "primaryDocument")]
+    [InlineData("invalid-empty-test-defaults.json", "commandDefaults.test")]
+    [InlineData("invalid-unknown-root-property.json", "unexpected")]
+    [InlineData("invalid-unknown-document-property.json", "unexpected")]
+    [InlineData("invalid-unknown-common-module-property.json", "unexpected")]
+    [InlineData("invalid-unknown-command-default-property.json", "unexpected")]
+    [InlineData("invalid-unknown-excel-automation-default-property.json", "unexpected")]
+    [InlineData("invalid-unknown-test-default-property.json", "unexpected")]
+    [InlineData("invalid-workbook-open-timeout.json", "workbookOpenTimeoutSeconds")]
+    [InlineData("invalid-workbook-save-timeout.json", "workbookSaveTimeoutSeconds")]
+    [InlineData("invalid-mis-cased-root-property.json", "ProjectName")]
+    [InlineData("invalid-mis-cased-test-default-property.json", "Format")]
+    [InlineData("invalid-mis-cased-document-kind.json", "EXCEL")]
+    [InlineData("invalid-test-execution-timeout.json", "executionTimeoutSeconds")]
+    [InlineData("invalid-test-format.json", "JSON")]
+    [InlineData("invalid-missing-selection-arrays.json", "commonModules")]
+    [InlineData("invalid-missing-template-path.json", "templatePath")]
+    [InlineData("invalid-null-optional-property.json", "commonModulesRepository")]
+    [InlineData("invalid-null-command-default.json", "test")]
+    [InlineData("invalid-null-document.json", "Book1")]
+    [InlineData("invalid-null-reference.json", "null")]
+    [InlineData("invalid-schema-version.json", "schemaVersion")]
+    [InlineData("invalid-equal-source-roots.json", "Book1")]
+    [InlineData("invalid-nested-source-roots.json", "Book2")]
     public void SharedInvalidFixturesFailVbaDevManifestValidation(string fixtureName, string expectedMessage)
     {
         var ex = Assert.Throws<ProjectManifestException>(
@@ -481,6 +638,94 @@ public sealed class ProjectManifestTests
 
 internal static class ProjectManifestTestData
 {
+    public static ProjectManifest FullManifest(string projectRoot)
+        => ProjectManifest.CreateDefault(
+            "CanonicalProject",
+            "Book1",
+            projectRoot,
+            Path.GetFullPath(Path.Combine(projectRoot, "..", "common_modules_repo")),
+            [new InstalledCommonModule("Runtime", "Runtime.bas", Requested: true, TestOnly: false)],
+            [new VbaProjectReference("Microsoft Scripting Runtime")]) with
+        {
+            CommandDefaults = new CommandDefaults(
+                Test: new TestCommandDefaults(
+                    Format: "ndjson",
+                    ExecutionTimeoutSeconds: 240),
+                ExcelAutomation: new ExcelAutomationCommandDefaults(
+                    WorkbookOpenTimeoutSeconds: 120,
+                    WorkbookSaveTimeoutSeconds: 180))
+        };
+
+    public static byte[] ExpectedFullCanonicalBytes()
+    {
+        var json = """
+        {
+          "schemaVersion": 1,
+          "projectName": "CanonicalProject",
+          "primaryDocument": "Book1",
+          "documents": {
+            "Book1": {
+              "kind": "excel",
+              "sourcePath": "src/Book1",
+              "templatePath": "src/Book1/Book1.xlsm",
+              "binPath": "bin/Book1.xlsm",
+              "publishPath": "publish/Book1.xlsm",
+              "commonModules": [
+                {
+                  "name": "Runtime",
+                  "moduleFile": "Runtime.bas",
+                  "requested": true,
+                  "testOnly": false
+                }
+              ],
+              "references": [
+                {
+                  "name": "Microsoft Scripting Runtime"
+                }
+              ]
+            }
+          },
+          "commonModulesRepository": "../common_modules_repo",
+          "commandDefaults": {
+            "test": {
+              "format": "ndjson",
+              "executionTimeoutSeconds": 240
+            },
+            "excelAutomation": {
+              "workbookOpenTimeoutSeconds": 120,
+              "workbookSaveTimeoutSeconds": 180
+            }
+          }
+        }
+        """.ReplaceLineEndings("\r\n") + "\r\n";
+        var content = Encoding.Unicode.GetBytes(json);
+        var bytes = new byte[2 + content.Length];
+        bytes[0] = 0xff;
+        bytes[1] = 0xfe;
+        Buffer.BlockCopy(content, 0, bytes, 2, content.Length);
+        return bytes;
+    }
+
+    public static string ExpectedMinimalCanonicalJson(string projectName)
+        => $$"""
+        {
+          "schemaVersion": 1,
+          "projectName": "{{projectName}}",
+          "primaryDocument": "Book1",
+          "documents": {
+            "Book1": {
+              "kind": "excel",
+              "sourcePath": "src/Book1",
+              "templatePath": "src/Book1/Book1.xlsm",
+              "binPath": "bin/Book1.xlsm",
+              "publishPath": "publish/Book1.xlsm",
+              "commonModules": [],
+              "references": []
+            }
+          }
+        }
+        """.ReplaceLineEndings("\r\n") + "\r\n";
+
     public static string ValidJson(string projectName)
         => $$"""
         {
@@ -493,7 +738,9 @@ internal static class ProjectManifestTestData
               "sourcePath": "src/Book1",
               "templatePath": "src/Book1/Book1.xlsm",
               "binPath": "bin/Book1.xlsm",
-              "publishPath": "publish/Book1.xlsm"
+              "publishPath": "publish/Book1.xlsm",
+              "commonModules": [],
+              "references": []
             }
           },
           "commonModulesRepository": "../common_modules_repo",

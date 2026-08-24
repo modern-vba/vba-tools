@@ -17,8 +17,13 @@ public sealed class ProjectManifestFixtureTests
         string expectedPrimaryDocument,
         int expectedDocumentCount)
     {
+        var fixturePath = ProjectManifestFixturePath(fixtureName);
         var manifest = ProjectManifestReader.Parse(
-            File.ReadAllText(ProjectManifestFixturePath(fixtureName)),
+            File.ReadAllText(fixturePath),
+            fixtureName);
+        _ = DocumentSourceSetIsolationValidator.ResolveAndValidate(
+            manifest,
+            fixturePath,
             fixtureName);
 
         Assert.Equal(expectedProjectName, manifest.ProjectName);
@@ -30,12 +35,49 @@ public sealed class ProjectManifestFixtureTests
     [InlineData("invalid-missing-primary-document.json", "primaryDocument")]
     [InlineData("invalid-primary-document-not-defined.json", "primaryDocument")]
     [InlineData("invalid-empty-reference-name.json", "reference name")]
+    [InlineData("invalid-empty-common-modules-repository.json", "commonModulesRepository")]
+    [InlineData("invalid-empty-command-defaults.json", "commandDefaults")]
+    [InlineData("invalid-empty-excel-automation-defaults.json", "commandDefaults.excelAutomation")]
+    [InlineData("invalid-empty-project-name.json", "projectName")]
+    [InlineData("invalid-empty-primary-document.json", "primaryDocument")]
+    [InlineData("invalid-empty-test-defaults.json", "commandDefaults.test")]
+    [InlineData("invalid-unknown-root-property.json", "unexpected")]
+    [InlineData("invalid-unknown-document-property.json", "unexpected")]
+    [InlineData("invalid-unknown-common-module-property.json", "unexpected")]
+    [InlineData("invalid-unknown-command-default-property.json", "unexpected")]
+    [InlineData("invalid-unknown-excel-automation-default-property.json", "unexpected")]
+    [InlineData("invalid-unknown-test-default-property.json", "unexpected")]
+    [InlineData("invalid-workbook-open-timeout.json", "workbookOpenTimeoutSeconds")]
+    [InlineData("invalid-workbook-save-timeout.json", "workbookSaveTimeoutSeconds")]
+    [InlineData("invalid-mis-cased-root-property.json", "ProjectName")]
+    [InlineData("invalid-mis-cased-test-default-property.json", "Format")]
+    [InlineData("invalid-mis-cased-document-kind.json", "EXCEL")]
+    [InlineData("invalid-test-execution-timeout.json", "executionTimeoutSeconds")]
+    [InlineData("invalid-test-format.json", "JSON")]
+    [InlineData("invalid-missing-selection-arrays.json", "commonModules")]
+    [InlineData("invalid-missing-template-path.json", "templatePath")]
+    [InlineData("invalid-null-optional-property.json", "commonModulesRepository")]
+    [InlineData("invalid-null-command-default.json", "test")]
+    [InlineData("invalid-null-document.json", "Book1")]
+    [InlineData("invalid-null-reference.json", "null")]
+    [InlineData("invalid-schema-version.json", "schemaVersion")]
+    [InlineData("invalid-equal-source-roots.json", "Book1")]
+    [InlineData("invalid-nested-source-roots.json", "Book2")]
     public void SharedInvalidFixturesFailLanguageServerManifestValidation(
         string fixtureName,
         string expectedMessage)
     {
+        var fixturePath = ProjectManifestFixturePath(fixtureName);
         var ex = Assert.Throws<VbaProjectManifestException>(() =>
-            ProjectManifestReader.Parse(File.ReadAllText(ProjectManifestFixturePath(fixtureName)), fixtureName));
+        {
+            var manifest = ProjectManifestReader.Parse(
+                File.ReadAllText(fixturePath),
+                fixtureName);
+            _ = DocumentSourceSetIsolationValidator.ResolveAndValidate(
+                manifest,
+                fixturePath,
+                fixtureName);
+        });
 
         Assert.Contains(expectedMessage, ex.Message, StringComparison.OrdinalIgnoreCase);
     }

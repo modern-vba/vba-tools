@@ -727,7 +727,8 @@ public sealed class VbaLanguageWorkspaceTests
             WriteProjectManifest(
                 projectRoot,
                 book1SourcePath: "src/SecondBook",
-                book1References: ["Microsoft Scripting Runtime"]);
+                book1References: ["Microsoft Scripting Runtime"],
+                secondBookSourcePath: "src/RetiredBook");
             var refreshedSnapshot = workspace.CreateProjectSnapshot(secondBookUri);
 
             Assert.Equal("Book1", firstSnapshot.Resolution.DocumentName);
@@ -1116,7 +1117,8 @@ public sealed class VbaLanguageWorkspaceTests
     private static void WriteProjectManifest(
         string projectRoot,
         string book1SourcePath = "src/Book1",
-        IReadOnlyList<string>? book1References = null)
+        IReadOnlyList<string>? book1References = null,
+        string secondBookSourcePath = "src/SecondBook")
     {
         Directory.CreateDirectory(Path.Combine(projectRoot, "src", "Book1"));
         Directory.CreateDirectory(Path.Combine(projectRoot, "src", "SecondBook"));
@@ -1136,15 +1138,17 @@ public sealed class VbaLanguageWorkspaceTests
                     templatePath = "src/Book1/Book1.xlsm",
                     binPath = "bin/Book1/Book1.xlsm",
                     publishPath = "publish/Book1/Book1.xlsm",
+                    commonModules = Array.Empty<object>(),
                     references = references.Select(reference => new { name = reference }).ToArray()
                 },
                 ["SecondBook"] = new
                 {
                     kind = "excel",
-                    sourcePath = "src/SecondBook",
+                    sourcePath = secondBookSourcePath,
                     templatePath = "src/SecondBook/SecondBook.xlsm",
                     binPath = "bin/SecondBook/SecondBook.xlsm",
                     publishPath = "publish/SecondBook/SecondBook.xlsm",
+                    commonModules = Array.Empty<object>(),
                     references = new[]
                     {
                         new { name = "Visual Basic For Applications" }

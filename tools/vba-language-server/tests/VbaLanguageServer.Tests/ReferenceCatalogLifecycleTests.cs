@@ -2406,6 +2406,7 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
                     templatePath = "src/Book1/Book1.xlsm",
                     binPath = "bin/Book1/Book1.xlsm",
                     publishPath = "publish/Book1/Book1.xlsm",
+                    commonModules = Array.Empty<object>(),
                     references = referenceNames
                         .Select(referenceName => new { name = referenceName })
                         .ToArray()
@@ -2472,6 +2473,7 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
             templatePath = $"{sourcePath}/Book.xlsm",
             binPath = $"bin/{Path.GetFileName(sourcePath)}/Book.xlsm",
             publishPath = $"publish/{Path.GetFileName(sourcePath)}/Book.xlsm",
+            commonModules = Array.Empty<object>(),
             references = referenceNames
                 .Select(referenceName => new { name = referenceName })
                 .ToArray()

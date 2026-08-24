@@ -1,5 +1,4 @@
 using System.Text;
-using System.Text.Json;
 using VbaDev.App.Projects;
 using VbaDev.Domain;
 
@@ -10,14 +9,6 @@ namespace VbaDev.Infrastructure.Projects;
 /// </summary>
 public sealed class JsonProjectManifestStore : IProjectManifestStore
 {
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        WriteIndented = true
-    };
-
-    private static readonly UnicodeEncoding Utf16LeWithBom = new(bigEndian: false, byteOrderMark: true);
-
     /// <summary>
     /// Loads and validates a project manifest JSON file.
     /// </summary>
@@ -30,7 +21,12 @@ public sealed class JsonProjectManifestStore : IProjectManifestStore
             using var stream = File.OpenRead(manifestPath);
             using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
             var json = reader.ReadToEnd();
-            return ProjectManifestReader.Parse(json, manifestPath);
+            var manifest = ProjectManifestReader.Parse(json, manifestPath);
+            _ = DocumentSourceSetIsolationValidator.ResolveAndValidate(
+                manifest,
+                manifestPath,
+                manifestPath);
+            return manifest;
         }
         catch (VbaProjectManifestException ex)
         {
@@ -53,18 +49,23 @@ public sealed class JsonProjectManifestStore : IProjectManifestStore
     /// <param name="manifest">The manifest to save.</param>
     public void Save(string projectRoot, ProjectManifest manifest)
     {
+        var manifestPath = Path.Combine(projectRoot, ProjectManifest.ManifestFileName);
         try
         {
             ProjectManifestValidator.Validate(manifest, ProjectManifest.ManifestFileName);
+            _ = DocumentSourceSetIsolationValidator.ResolveAndValidate(
+                manifest,
+                manifestPath,
+                ProjectManifest.ManifestFileName);
         }
         catch (VbaProjectManifestException ex)
         {
             throw new ProjectManifestException(ex.Message, ex);
         }
         Directory.CreateDirectory(projectRoot);
-        var manifestPath = Path.Combine(projectRoot, ProjectManifest.ManifestFileName);
-        var json = JsonSerializer.Serialize(manifest, JsonOptions);
-        File.WriteAllText(manifestPath, json + Environment.NewLine, Utf16LeWithBom);
+        File.WriteAllBytes(
+            manifestPath,
+            ProjectManifestCanonicalSerializer.SerializeToUtf16LeBytes(manifest));
     }
 
 }

@@ -22,7 +22,8 @@
           "requested": false,
           "testOnly": false
         }
-      ]
+      ],
+      "references": []
     }
   }
 }

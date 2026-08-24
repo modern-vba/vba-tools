@@ -38,7 +38,15 @@ test('cleanup export cancellation obtains exact consent before resolving vba-dev
         projectName: 'BookProject',
         primaryDocument: 'Book1',
         documents: {
-          Book1: { sourcePath: 'src/Book1' }
+          Book1: {
+            kind: 'excel',
+            sourcePath: 'src/Book1',
+            templatePath: 'src/Book1/Book1.xlsm',
+            binPath: 'bin/Book1.xlsm',
+            publishPath: 'publish/Book1.xlsm',
+            commonModules: [],
+            references: []
+          }
         }
       });
     },
@@ -114,7 +122,15 @@ test('cleanup export pins the destination and document that received consent', a
       projectName: 'PinnedProject',
       primaryDocument: 'book1',
       documents: {
-        Book1: { sourcePath: manifestSourcePath }
+        Book1: {
+          kind: 'excel',
+          sourcePath: manifestSourcePath,
+          templatePath: 'src/Book1/Book1.xlsm',
+          binPath: 'bin/Book1.xlsm',
+          publishPath: 'publish/Book1.xlsm',
+          commonModules: [],
+          references: []
+        }
       }
     }),
     showWarningMessage: async (_message, _options, ..._items) => {

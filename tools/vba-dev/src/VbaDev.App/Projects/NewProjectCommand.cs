@@ -20,6 +20,7 @@ public sealed class NewProjectCommand
     private readonly IProjectManifestStore manifestStore;
     private readonly IInitialWorkbookCreator initialWorkbookCreator;
     private readonly CommonModulesManifestReader commonModulesManifestReader;
+    private readonly NewProjectAncestorSourceSetIsolation ancestorSourceSetIsolation;
 
     /// <summary>
     /// Creates the new-project command.
@@ -31,10 +32,26 @@ public sealed class NewProjectCommand
         IProjectManifestStore manifestStore,
         IInitialWorkbookCreator initialWorkbookCreator,
         CommonModulesManifestReader commonModulesManifestReader)
+        : this(
+            manifestStore,
+            initialWorkbookCreator,
+            commonModulesManifestReader,
+            new FileSystemPathIdentityResolver())
+    {
+    }
+
+    internal NewProjectCommand(
+        IProjectManifestStore manifestStore,
+        IInitialWorkbookCreator initialWorkbookCreator,
+        CommonModulesManifestReader commonModulesManifestReader,
+        IFileSystemPathIdentityResolver pathIdentityResolver)
     {
         this.manifestStore = manifestStore;
         this.initialWorkbookCreator = initialWorkbookCreator;
         this.commonModulesManifestReader = commonModulesManifestReader;
+        ancestorSourceSetIsolation = new NewProjectAncestorSourceSetIsolation(
+            manifestStore,
+            pathIdentityResolver);
     }
 
     /// <summary>
@@ -59,56 +76,88 @@ public sealed class NewProjectCommand
             return CommandResult.UsageError($"Target project directory is not empty: {projectRoot}");
         }
 
+        FileSystemPathIdentity initialProjectIdentity;
+        try
+        {
+            initialProjectIdentity = ancestorSourceSetIsolation.ValidateInitial(projectRoot);
+        }
+        catch (ProjectManifestException ex)
+        {
+            return CommandResult.UsageError(ex.Message);
+        }
+
         var warnings = new StringBuilder();
-        Directory.CreateDirectory(projectRoot);
         var sourceSetPath = Path.Combine(projectRoot, "src", documentName);
         var binPath = Path.Combine(projectRoot, "bin");
         var publishPath = Path.Combine(projectRoot, "publish");
-        Directory.CreateDirectory(sourceSetPath);
-        Directory.CreateDirectory(binPath);
-        Directory.CreateDirectory(publishPath);
-
-        var commonModulesRepository = DiscoverCommonModulesRepository(projectRoot);
-        if (commonModulesRepository is null)
+        var artifacts = new NewProjectArtifactTracker();
+        try
         {
-            warnings.AppendLine("CommonModulesRepository was not found; project creation continued without shared modules.");
+            artifacts.EnsureDirectory(projectRoot);
+            artifacts.EnsureDirectory(sourceSetPath);
+            artifacts.EnsureDirectory(binPath);
+            artifacts.EnsureDirectory(publishPath);
+
+            var commonModulesRepository = DiscoverCommonModulesRepository(projectRoot);
+            if (commonModulesRepository is null)
+            {
+                warnings.AppendLine("CommonModulesRepository was not found; project creation continued without shared modules.");
+            }
+
+            var workbookPath = Path.Combine(sourceSetPath, $"{documentName}.xlsm");
+            var referenceNames = initialWorkbookCreator.CreateInitialWorkbook(workbookPath)
+                .Concat(StandardInitialReferenceNames)
+                .ToArray();
+            artifacts.RecordCreatedFile(workbookPath);
+            var references = CreateReferenceEntries(referenceNames);
+            var commonModules = Array.Empty<InstalledCommonModule>();
+
+            if (commonModulesRepository is not null)
+            {
+                commonModules = CopyInitialCommonModules(
+                    commonModulesRepository,
+                    sourceSetPath,
+                    artifacts);
+            }
+
+            var manifest = ProjectManifest.CreateDefault(
+                projectName,
+                documentName,
+                projectRoot,
+                commonModulesRepository,
+                commonModules,
+                references);
+            ancestorSourceSetIsolation.ValidateFinal(
+                projectRoot,
+                initialProjectIdentity);
+            manifestStore.Save(projectRoot, manifest);
+
+            return new CommandResult(
+                0,
+                $"Created project '{projectName}' at {projectRoot}.{Environment.NewLine}",
+                warnings.ToString());
         }
-
-        var workbookPath = Path.Combine(sourceSetPath, $"{documentName}.xlsm");
-        var referenceNames = initialWorkbookCreator.CreateInitialWorkbook(workbookPath)
-            .Concat(StandardInitialReferenceNames)
-            .ToArray();
-        var references = CreateReferenceEntries(referenceNames);
-        var commonModules = Array.Empty<InstalledCommonModule>();
-
-        if (commonModulesRepository is not null)
+        catch (CommonModulesManifestException ex)
         {
-            try
-            {
-                commonModules = CopyInitialCommonModules(commonModulesRepository, sourceSetPath);
-            }
-            catch (CommonModulesManifestException ex)
-            {
-                return CommandResult.UsageError(ex.Message);
-            }
+            artifacts.Rollback();
+            return CommandResult.UsageError(ex.Message);
         }
-
-        var manifest = ProjectManifest.CreateDefault(
-            projectName,
-            documentName,
-            projectRoot,
-            commonModulesRepository,
-            commonModules,
-            references);
-        manifestStore.Save(projectRoot, manifest);
-
-        return new CommandResult(
-            0,
-            $"Created project '{projectName}' at {projectRoot}.{Environment.NewLine}",
-            warnings.ToString());
+        catch (ProjectManifestException ex)
+        {
+            artifacts.Rollback();
+            return CommandResult.UsageError(ex.Message);
+        }
+        catch
+        {
+            artifacts.Rollback();
+            throw;
+        }
     }
 
-    private InstalledCommonModule[] CopyInitialCommonModules(string commonModulesRepository, string sourceSetPath)
+    private InstalledCommonModule[] CopyInitialCommonModules(
+        string commonModulesRepository,
+        string sourceSetPath,
+        NewProjectArtifactTracker artifacts)
     {
         var entries = commonModulesManifestReader.Load(commonModulesRepository);
         var requestedEntries = entries
@@ -136,8 +185,9 @@ public sealed class NewProjectCommand
 
         foreach (var plan in copyPlan)
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(plan.TargetPath)!);
-            File.Copy(plan.SourcePath, plan.TargetPath, overwrite: true);
+            artifacts.EnsureDirectory(Path.GetDirectoryName(plan.TargetPath)!);
+            File.Copy(plan.SourcePath, plan.TargetPath, overwrite: false);
+            artifacts.RecordCreatedFile(plan.TargetPath);
         }
 
         return selectedEntries

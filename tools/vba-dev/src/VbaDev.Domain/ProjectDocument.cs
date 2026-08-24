@@ -29,16 +29,16 @@ public sealed record ProjectDocument
         string templatePath,
         string binPath,
         string publishPath,
-        List<InstalledCommonModule>? commonModules = null,
-        List<VbaProjectReference>? references = null)
+        List<InstalledCommonModule>? commonModules,
+        List<VbaProjectReference>? references)
     {
         Kind = kind;
         SourcePath = sourcePath;
         TemplatePath = templatePath;
         BinPath = binPath;
         PublishPath = publishPath;
-        CommonModules = commonModules ?? [];
-        References = references ?? [];
+        CommonModules = commonModules!;
+        References = references!;
     }
 
     /// <summary>
@@ -93,6 +93,6 @@ public sealed record ProjectDocument
             $"src/{documentName}/{documentName}.xlsm",
             $"bin/{documentName}.xlsm",
             $"publish/{documentName}.xlsm",
-            commonModules?.ToList(),
-            references?.ToList());
+            commonModules?.ToList() ?? [],
+            references?.ToList() ?? []);
 }

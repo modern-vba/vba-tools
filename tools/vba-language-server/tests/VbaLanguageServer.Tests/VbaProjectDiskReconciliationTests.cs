@@ -7143,6 +7143,7 @@ public sealed class VbaProjectDiskReconciliationTests
                     templatePath = "src/Book1/Book1.xlsm",
                     binPath = "bin/Book1/Book1.xlsm",
                     publishPath = "publish/Book1/Book1.xlsm",
+                    commonModules = Array.Empty<object>(),
                     references = references
                         .Select(reference => new { name = reference })
                         .ToArray()
@@ -7183,6 +7184,7 @@ public sealed class VbaProjectDiskReconciliationTests
             templatePath = $"src/{documentName}/{documentName}.xlsm",
             binPath = $"bin/{documentName}/{documentName}.xlsm",
             publishPath = $"publish/{documentName}/{documentName}.xlsm",
+            commonModules = Array.Empty<object>(),
             references = references
                 .Select(reference => new { name = reference })
                 .ToArray()

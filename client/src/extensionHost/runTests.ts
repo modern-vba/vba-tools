@@ -55,7 +55,9 @@ async function createDebugConfigurationFixture(): Promise<string> {
         sourcePath: 'src/Book1',
         templatePath: 'src/Book1/Book1.xlsm',
         binPath: 'bin/Book1.xlsm',
-        publishPath: 'publish/Book1.xlsm'
+        publishPath: 'publish/Book1.xlsm',
+        commonModules: [],
+        references: []
       }
     }
   }, undefined, 2), 'utf8');

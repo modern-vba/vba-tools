@@ -1,5 +1,3 @@
-using System.Text;
-using System.Text.Json;
 using VbaDev.Domain;
 
 namespace VbaDev.App.Projects;
@@ -9,14 +7,6 @@ namespace VbaDev.App.Projects;
 /// </summary>
 public sealed class ProjectManifestEditor
 {
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        WriteIndented = true
-    };
-
-    private static readonly UnicodeEncoding Utf16LeWithBom = new(bigEndian: false, byteOrderMark: true);
-
     private readonly IProjectManifestStore manifestStore;
 
     /// <summary>
@@ -35,9 +25,29 @@ public sealed class ProjectManifestEditor
     /// <returns>A mutable manifest clone.</returns>
     public static ProjectManifest Clone(ProjectManifest manifest)
     {
-        var json = JsonSerializer.Serialize(manifest, JsonOptions);
-        return JsonSerializer.Deserialize<ProjectManifest>(json, JsonOptions)
-            ?? throw new ProjectManifestException("Project manifest could not be cloned.");
+        var documents = manifest.Documents.ToDictionary(
+            pair => pair.Key,
+            pair => pair.Value with
+            {
+                CommonModules = [.. pair.Value.CommonModules],
+                References = [.. pair.Value.References]
+            },
+            StringComparer.OrdinalIgnoreCase);
+        var commandDefaults = manifest.CommandDefaults is null
+            ? null
+            : new CommandDefaults(
+                manifest.CommandDefaults.Test is null
+                    ? null
+                    : manifest.CommandDefaults.Test with { },
+                manifest.CommandDefaults.ExcelAutomation is null
+                    ? null
+                    : manifest.CommandDefaults.ExcelAutomation with { });
+
+        return manifest with
+        {
+            Documents = documents,
+            CommandDefaults = commandDefaults
+        };
     }
 
     /// <summary>
@@ -100,8 +110,9 @@ public sealed class ProjectManifestEditor
         {
             Directory.CreateDirectory(projectRoot);
             var recoveryPath = Path.Combine(projectRoot, $"vba-project.failed-{DateTime.Now:yyyyMMdd-HHmmss-fff}.json");
-            var json = JsonSerializer.Serialize(manifest, JsonOptions);
-            File.WriteAllText(recoveryPath, json + Environment.NewLine, Utf16LeWithBom);
+            File.WriteAllBytes(
+                recoveryPath,
+                ProjectManifestCanonicalSerializer.SerializeToUtf16LeBytes(manifest));
             return recoveryPath;
         }
         catch (IOException ex)

@@ -51,6 +51,7 @@
       "changelog.md",
       "LICENSE.txt",
       "SUPPORT.md",
+      "schemas/project-manifest.schema.json",
       "distribution-manifest.json",
       "assets/icon.png",
       "package.json",

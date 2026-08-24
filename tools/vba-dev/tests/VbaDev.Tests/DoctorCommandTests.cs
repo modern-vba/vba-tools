@@ -1334,7 +1334,8 @@ public sealed class DoctorCommandTests
                       "requested": true,
                       "testOnly": false
                     }
-                  ]
+                  ],
+                  "references": []
                 }
               }
             }

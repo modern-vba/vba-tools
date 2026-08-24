@@ -11,6 +11,7 @@ import {
   assertBundledCliCapabilities,
   assertCliPublishSettings,
   assertExtensionDebugPackage,
+  assertExtensionProjectManifestSchemaPackage,
   assertExtensionWorkspaceTrustPackage,
   assertLanguageServerPublishSettings,
   assertMarketplacePackageMetadata,
@@ -35,7 +36,8 @@ const marketplaceDocumentPaths = [
   'readme.md',
   'changelog.md',
   'LICENSE.txt',
-  'SUPPORT.md'
+  'SUPPORT.md',
+  'schemas/project-manifest.schema.json'
 ];
 const standaloneDebugAdapterPaths = [
   requiredBundledDebugAdapterPath,
@@ -113,9 +115,35 @@ test('distribution manifest requires every Marketplace-facing document and icon'
     'changelog.md',
     'LICENSE.txt',
     'SUPPORT.md',
+    'schemas/project-manifest.schema.json',
     marketplaceIconPath
   ]) {
     assert.ok(manifest.vsix.requiredFiles.includes(requiredPath), requiredPath);
+  }
+});
+
+test('extension package associates only the canonical ProjectManifest basename with its bundled schema', async () => {
+  const packageJson = JSON.parse(
+    await fs.readFile(new URL('../package.json', import.meta.url), 'utf8')
+  );
+
+  assert.doesNotThrow(() => assertExtensionProjectManifestSchemaPackage(packageJson));
+  for (const invalidValidation of [
+    [],
+    [{ fileMatch: '**/vba-project*.json', url: './schemas/project-manifest.schema.json' }],
+    [{ fileMatch: '**/vba-project.failed-*.json', url: './schemas/project-manifest.schema.json' }],
+    [{ fileMatch: '**/vba-project.json', url: './schemas/other.schema.json' }],
+    [
+      { fileMatch: '**/vba-project.json', url: './schemas/project-manifest.schema.json' },
+      { fileMatch: '**/vba-project.failed-*.json', url: './schemas/project-manifest.schema.json' }
+    ]
+  ]) {
+    const invalidPackage = structuredClone(packageJson);
+    invalidPackage.contributes.jsonValidation = invalidValidation;
+    assert.throws(
+      () => assertExtensionProjectManifestSchemaPackage(invalidPackage),
+      /canonical.*vba-project\.json.*schema/i
+    );
   }
 });
 
@@ -873,6 +901,7 @@ test('packaging verification checks file contents publish settings and bundled C
       file === 'readme.md' ? '[Support](SUPPORT.md)\n' : '# Document\n'
     ]),
     [distributionManifestPath, null],
+    ['schemas/project-manifest.schema.json', null],
     [marketplaceIconPath, null],
     [requiredBundledCliPath, null],
     [requiredBundledDebugAdapterPath, null],

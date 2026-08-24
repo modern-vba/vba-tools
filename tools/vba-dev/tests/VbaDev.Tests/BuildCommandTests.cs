@@ -14,6 +14,33 @@ namespace VbaDev.Tests;
 public sealed class BuildCommandTests
 {
     [Fact]
+    public void BuildRejectsOverlappingDocumentSourceRootsBeforeExcel()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var manifest = ProjectManifestTestData.TwoDocumentManifest(root);
+        manifest.Documents["SecondBook"] = manifest.Documents["SecondBook"] with
+        {
+            SourcePath = "src/Book1"
+        };
+        File.WriteAllBytes(
+            Path.Combine(root, ProjectManifest.ManifestFileName),
+            ProjectManifestCanonicalSerializer.SerializeToUtf16LeBytes(manifest));
+        var automation = new FakeWorkbookBuildAutomation();
+        var application = CommandLineTestFactory.Create(
+            root,
+            workbookBuildAutomation: automation);
+
+        var result = application.Run(["build"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("document source roots overlap", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Book1", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("SecondBook", result.StandardError, StringComparison.Ordinal);
+        Assert.Empty(automation.OpenedWorkbooks);
+    }
+
+    [Fact]
     public async Task BuildUsesSelectedDocumentPathsAndFlushesImportableComponentsOnly()
     {
         using var temp = TempDirectory.Create();
@@ -73,6 +100,7 @@ public sealed class BuildCommandTests
             Path.GetRelativePath(root, templatePath),
             Path.GetRelativePath(root, binPath),
             Path.GetRelativePath(root, publishPath),
+            commonModules: [],
             references: [new VbaProjectReference("Snapshot Reference")]);
         new JsonProjectManifestStore().Save(root, manifest);
         var manifestPath = Path.Combine(root, ProjectManifest.ManifestFileName);
@@ -290,7 +318,9 @@ public sealed class BuildCommandTests
             Path.GetRelativePath(root, sourceSetPath),
             Path.GetRelativePath(root, templatePath),
             Path.Combine("bin", "Book1.xlsm"),
-            Path.Combine("publish", "Book1.xlsm"));
+            Path.Combine("publish", "Book1.xlsm"),
+            commonModules: [],
+            references: []);
         new JsonProjectManifestStore().Save(root, manifest);
         Directory.CreateDirectory(Path.GetDirectoryName(templatePath)!);
         var templateBytes = Encoding.UTF8.GetBytes("source-template");
