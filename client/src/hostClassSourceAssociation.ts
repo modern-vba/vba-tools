@@ -3,6 +3,24 @@ import type {
   HostClassProjectionSnapshotEntry
 } from './hostClassProjectionLifecycle';
 
+// MS-VBAL WSC: tab, end-of-medium, space, DBCS whitespace, and Unicode Zs
+// characters that are not CP2 characters. U+00A0 is the only Zs member mapped
+// to a single-byte 0x80-0xff Windows code-page value and is therefore excluded.
+const VBA_WSC_CHARACTERS = '\\u0009\\u0019\\u0020\\u1680\\u2000-\\u200a\\u202f\\u205f\\u3000';
+const VBA_WSC = `[${VBA_WSC_CHARACTERS}]`;
+const VB_NAME_LIKE_PATTERN = new RegExp(
+  `^${VBA_WSC}*Attribute${VBA_WSC}+VB_Name(?=${VBA_WSC}|=|$)`,
+  'iu'
+);
+const VALID_VB_NAME_PATTERN = new RegExp(
+  `^${VBA_WSC}*Attribute${VBA_WSC}+VB_Name${VBA_WSC}*=${VBA_WSC}*"([^"]+)"${VBA_WSC}*$`,
+  'iu'
+);
+const TRIM_VBA_LAYOUT_PATTERN = new RegExp(
+  `^${VBA_WSC}+|${VBA_WSC}+$`,
+  'gu'
+);
+
 export interface HostClassSourceCandidate {
   readonly sourceUri: string;
   readonly kind: 'form' | 'document';
@@ -101,8 +119,6 @@ type VbNameMetadata =
 
 function readExplicitVbNameMetadata(text: string): VbNameMetadata {
   const lines = text.split(/\r\n|\n|\r/u);
-  const vbNameLike = /^[ \t]*Attribute[ \t]+VB_Name(?=[ \t]|=|$)/iu;
-  const validVbName = /^[ \t]*Attribute[ \t]+VB_Name[ \t]*=[ \t]*"([^"]+)"[ \t]*$/iu;
   const header = locateClassHeader(lines);
 
   const names: string[] = [];
@@ -111,8 +127,8 @@ function readExplicitVbNameMetadata(text: string): VbNameMetadata {
   if (header.start >= 0) {
     while (headerEnd < lines.length) {
       const line = lines[headerEnd] as string;
-      if (vbNameLike.test(line)) {
-        const match = validVbName.exec(line);
+      if (VB_NAME_LIKE_PATTERN.test(line)) {
+        const match = VALID_VB_NAME_PATTERN.exec(line);
         const name = match?.[1];
         if (name === undefined || !isPlausibleModuleName(name)) {
           invalid = true;
@@ -131,7 +147,7 @@ function readExplicitVbNameMetadata(text: string): VbNameMetadata {
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] as string;
-    if (!vbNameLike.test(line)) {
+    if (!VB_NAME_LIKE_PATTERN.test(line)) {
       continue;
     }
     if (index < header.start || index >= headerEnd) {
@@ -155,10 +171,10 @@ function locateClassHeader(
   if (firstNonempty < 0) {
     return { start: -1, invalid: false };
   }
-  if (/^[ \t]*Attribute(?=[ \t]|$)/iu.test(lines[firstNonempty] as string)) {
+  if (vbaLayoutKeywordPattern('Attribute').test(lines[firstNonempty] as string)) {
     return { start: firstNonempty, invalid: false };
   }
-  if (!/^[ \t]*VERSION(?=[ \t]|$)/iu.test(lines[firstNonempty] as string)) {
+  if (!vbaLayoutKeywordPattern('VERSION').test(lines[firstNonempty] as string)) {
     return { start: -1, invalid: true };
   }
 
@@ -169,7 +185,7 @@ function locateClassHeader(
     if (line.length === 0) {
       continue;
     }
-    if (/^Begin(?:Property)?(?:[ \t]|$)/iu.test(line)) {
+    if (new RegExp(`^Begin(?:Property)?(?=${VBA_WSC}|$)`, 'iu').test(line)) {
       designerDepth += 1;
       sawDesignerBlock = true;
       continue;
@@ -180,10 +196,10 @@ function locateClassHeader(
       }
       continue;
     }
-    if (/^Attribute(?=[ \t]|$)/iu.test(line)) {
+    if (new RegExp(`^Attribute(?=${VBA_WSC}|$)`, 'iu').test(line)) {
       return { start: index, invalid: false };
     }
-    if (!sawDesignerBlock && /^Object[ \t]*=/iu.test(line)) {
+    if (!sawDesignerBlock && new RegExp(`^Object${VBA_WSC}*=`, 'iu').test(line)) {
       continue;
     }
     return { start: -1, invalid: true };
@@ -193,14 +209,21 @@ function locateClassHeader(
 }
 
 function isClassHeaderAttribute(line: string): boolean {
-  return /^[ \t]*Attribute[ \t]+(?:VB_GlobalNameSpace|VB_Creatable)[ \t]*=[ \t]*False[ \t]*$/iu
-    .test(line) ||
-    /^[ \t]*Attribute[ \t]+(?:VB_PredeclaredId|VB_Exposed|VB_Customizable)[ \t]*=[ \t]*(?:True|False)[ \t]*$/iu
-      .test(line);
+  return new RegExp(
+    `^${VBA_WSC}*Attribute${VBA_WSC}+(?:VB_GlobalNameSpace|VB_Creatable)${VBA_WSC}*=${VBA_WSC}*False${VBA_WSC}*$`,
+    'iu'
+  ).test(line) || new RegExp(
+    `^${VBA_WSC}*Attribute${VBA_WSC}+(?:VB_PredeclaredId|VB_Exposed|VB_Customizable)${VBA_WSC}*=${VBA_WSC}*(?:True|False)${VBA_WSC}*$`,
+    'iu'
+  ).test(line);
 }
 
 function trimVbaLayout(value: string): string {
-  return value.replace(/^[ \t]+|[ \t]+$/gu, '');
+  return value.replace(TRIM_VBA_LAYOUT_PATTERN, '');
+}
+
+function vbaLayoutKeywordPattern(keyword: string): RegExp {
+  return new RegExp(`^${VBA_WSC}*${keyword}(?=${VBA_WSC}|$)`, 'iu');
 }
 
 function isPlausibleModuleName(value: string): boolean {

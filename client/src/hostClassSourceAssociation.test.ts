@@ -172,6 +172,24 @@ test('HostClass association preserves NBSP inside an explicit VB_Name value', ()
   assert.deepEqual(result.failures, []);
 });
 
+test('HostClass association accepts MS-VBAL ideographic layout whitespace', () => {
+  const result = associateHostClassSources([{
+    sourceUri: 'file:///C:/work/Invoices/src/InvoiceForm.frm',
+    kind: 'form',
+    text: 'Attribute\u3000VB_Name\u3000=\u3000"InvoiceForm"\n'
+  }], [{
+    identity: { name: 'InvoiceForm', kind: 'form' },
+    authority: 'current',
+    projection: {
+      intrinsicEventSourceName: 'UserForm',
+      events: []
+    }
+  }]);
+
+  assert.equal(result.associations[0]?.attributeVbName, 'InvoiceForm');
+  assert.deepEqual(result.failures, []);
+});
+
 test('HostClass association does not confuse a longer attribute identifier with VB_Name', () => {
   const result = associateHostClassSources([{
     sourceUri: 'file:///C:/work/Invoices/src/InvoiceForm.frm',
