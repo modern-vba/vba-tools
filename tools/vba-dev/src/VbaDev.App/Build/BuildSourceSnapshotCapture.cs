@@ -45,7 +45,13 @@ internal sealed class BuildSourceSnapshotCaptureFactory
                 $"Build source snapshot directory was not found: {snapshotPath}");
         }
 
-        var sourceFiles = DocumentSourceSetLayout.EnumerateVbaSourceFiles(snapshotPath);
+        var sourceFiles = DocumentSourceSetLayout
+            .EnumerateVbaSourceFiles(snapshotPath)
+            .OrderBy(source => source.FileName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(source => source.FileName, StringComparer.Ordinal)
+            .ThenBy(source => source.SourcePath, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(source => source.SourcePath, StringComparer.Ordinal)
+            .ToArray();
         DocumentSourceSetLayout.ThrowIfDuplicateSourceFileNames(snapshotPath, sourceFiles);
         var inventory = sourceFiles
             .Select(source => new SnapshotSourceInventoryEntry(

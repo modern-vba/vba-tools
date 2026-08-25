@@ -100,4 +100,29 @@ public sealed class BuildSourceSnapshotCaptureTests
         Assert.Equal("caller-owned", File.ReadAllText(sentinelPath, Encoding.UTF8));
         Assert.Empty(Directory.EnumerateDirectories(scratchRoot));
     }
+
+    [Fact]
+    public void CaptureOrdersTheFlatSourceInventoryDeterministically()
+    {
+        using var temp = TempDirectory.Create();
+        var snapshotPath = temp.CreateDirectory("snapshot");
+        File.WriteAllText(
+            Path.Combine(snapshotPath, "Zeta.bas"),
+            "Attribute VB_Name = \"Zeta\"\r\n",
+            Encoding.UTF8);
+        var nestedPath = Path.Combine(snapshotPath, "nested");
+        Directory.CreateDirectory(nestedPath);
+        File.WriteAllText(
+            Path.Combine(nestedPath, "Alpha.bas"),
+            "Attribute VB_Name = \"Alpha\"\r\n",
+            Encoding.UTF8);
+        var scratchRoot = temp.CreateDirectory("scratch");
+
+        using var capture = new BuildSourceSnapshotCaptureFactory(scratchRoot)
+            .Create(snapshotPath, CancellationToken.None);
+
+        Assert.Equal(
+            ["Alpha.bas", "Zeta.bas"],
+            capture.SourceFiles.Select(source => source.FileName));
+    }
 }

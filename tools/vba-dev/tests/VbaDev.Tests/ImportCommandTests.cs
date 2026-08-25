@@ -55,6 +55,42 @@ public sealed class ImportCommandTests
     }
 
     [Fact]
+    public void ImportRejectsRetainedComponentCollisionBeforeFlushingAnyMutation()
+    {
+        using var temp = TempDirectory.Create();
+        var sourceDirectory = temp.CreateDirectory("src");
+        var sourcePath = Path.Combine(sourceDirectory, "Incoming.bas");
+        var targetWorkbook = Path.Combine(temp.Path, "target.xlsm");
+        File.WriteAllText(
+            sourcePath,
+            "Attribute VB_Name = \"thisworkbook\"",
+            Encoding.UTF8);
+        var targetBytes = Encoding.UTF8.GetBytes("workbook");
+        File.WriteAllBytes(targetWorkbook, targetBytes);
+        var automation = new FakeWorkbookBuildAutomation(
+            new WorkbookModule("OldModule", WorkbookModuleKind.StandardModule),
+            new WorkbookModule("ThisWorkbook", WorkbookModuleKind.Document));
+        var application = CommandLineTestFactory.Create(
+            temp.Path,
+            workbookBuildAutomation: automation);
+
+        var result = application.Run([
+            "import",
+            "--from",
+            sourceDirectory,
+            "--to",
+            targetWorkbook
+        ]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("retained component 'ThisWorkbook'", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains(sourcePath, result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal([targetWorkbook], automation.OpenedWorkbooks);
+        Assert.Empty(automation.Events);
+        Assert.Equal(targetBytes, File.ReadAllBytes(targetWorkbook));
+    }
+
+    [Fact]
     public async Task ImportStdinCancellationCanCancelWhileOwnedWorkbookIsOpening()
     {
         using var temp = TempDirectory.Create();
@@ -217,8 +253,12 @@ public sealed class ImportCommandTests
         using var temp = TempDirectory.Create();
         var sourceDirectory = temp.CreateDirectory("src");
         var targetWorkbook = Path.Combine(temp.Path, "target.xlsm");
-        WriteText(Path.Combine(sourceDirectory, "z", "Zeta.cls"), "VERSION 1.0 CLASS");
-        WriteText(Path.Combine(sourceDirectory, "forms", "Dialog.frm"), "VERSION 5.00");
+        WriteText(
+            Path.Combine(sourceDirectory, "z", "Zeta.cls"),
+            "VERSION 1.0 CLASS\r\nAttribute VB_Name = \"Zeta\"");
+        WriteText(
+            Path.Combine(sourceDirectory, "forms", "Dialog.frm"),
+            "VERSION 5.00\r\nBegin VB.Form Dialog\r\nEnd\r\nAttribute VB_Name = \"Dialog\"");
         WriteBytes(Path.Combine(sourceDirectory, "forms", "Dialog.frx"), [1, 2, 3]);
         WriteText(Path.Combine(sourceDirectory, "Alpha.bas"), "Attribute VB_Name = \"Alpha\"");
         WriteBytes(Path.Combine(sourceDirectory, "nested", "Orphan.frx"), [9, 9, 9]);
@@ -261,6 +301,65 @@ public sealed class ImportCommandTests
     }
 
     [Fact]
+    public void ImportCommandRejectsDifferentlyNamedSourcesWithTheSameModuleIdentityBeforeExcel()
+    {
+        using var temp = TempDirectory.Create();
+        var sourceDirectory = temp.CreateDirectory("src");
+        var alphaPath = Path.Combine(sourceDirectory, "Alpha.bas");
+        var zetaPath = Path.Combine(sourceDirectory, "Zeta.bas");
+        var targetWorkbook = Path.Combine(temp.Path, "target.xlsm");
+        WriteText(alphaPath, "Attribute VB_Name = \"CollisionName\"");
+        WriteText(zetaPath, "Attribute VB_Name = \"collisionname\"");
+        var targetBytes = Encoding.UTF8.GetBytes("workbook");
+        File.WriteAllBytes(targetWorkbook, targetBytes);
+        var automation = new FakeWorkbookBuildAutomation();
+        var application = CommandLineTestFactory.Create(temp.Path, workbookBuildAutomation: automation);
+
+        var result = application.Run(["import", "--from", sourceDirectory, "--to", targetWorkbook]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("Source identity", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains(alphaPath, result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(zetaPath, result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(automation.OpenedWorkbooks);
+        Assert.Empty(automation.Events);
+        Assert.Equal(targetBytes, File.ReadAllBytes(targetWorkbook));
+    }
+
+    [Fact]
+    public void ImportCommandReportsActualProjectAndReferenceConflictsBeforeAnyMutation()
+    {
+        using var temp = TempDirectory.Create();
+        var sourceDirectory = temp.CreateDirectory("src");
+        var projectSourcePath = Path.Combine(sourceDirectory, "ProjectCollision.bas");
+        var referenceSourcePath = Path.Combine(sourceDirectory, "ReferenceCollision.bas");
+        var targetWorkbook = Path.Combine(temp.Path, "target.xlsm");
+        WriteText(projectSourcePath, "Attribute VB_Name = \"actualproject\"");
+        WriteText(referenceSourcePath, "Attribute VB_Name = \"actualreference\"");
+        var targetBytes = Encoding.UTF8.GetBytes("workbook");
+        File.WriteAllBytes(targetWorkbook, targetBytes);
+        var automation = new FakeWorkbookBuildAutomation(
+            new WorkbookModule("OldModule", WorkbookModuleKind.StandardModule))
+        {
+            ProjectName = "ActualProject"
+        };
+        automation.References.Add(new WorkbookReference(
+            "Friendly reference description",
+            IsRemovable: true,
+            NamespaceName: "ActualReference"));
+        var application = CommandLineTestFactory.Create(temp.Path, workbookBuildAutomation: automation);
+
+        var result = application.Run(["import", "--from", sourceDirectory, "--to", targetWorkbook]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("containing project 'ActualProject'", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("active reference 'ActualReference'", result.StandardError, StringComparison.Ordinal);
+        Assert.Equal([targetWorkbook], automation.OpenedWorkbooks);
+        Assert.Empty(automation.Events);
+        Assert.Equal(targetBytes, File.ReadAllBytes(targetWorkbook));
+    }
+
+    [Fact]
     public void ImportCommandDoesNotApplyBuildOrPublishManifestBehavior()
     {
         using var temp = TempDirectory.Create();
@@ -268,11 +367,11 @@ public sealed class ImportCommandTests
         var targetWorkbook = Path.Combine(temp.Path, "target.xlsm");
         File.WriteAllText(
             Path.Combine(sourceDirectory, "Excluded.bas"),
-            "'#ExcludePublish\nAttribute VB_Name = \"Excluded\"",
+            "Attribute VB_Name = \"Excluded\"\n'#ExcludePublish",
             Encoding.UTF8);
         File.WriteAllText(targetWorkbook, "workbook", Encoding.UTF8);
         var automation = new FakeWorkbookBuildAutomation();
-        automation.References.Add(new WorkbookReference("Unlisted Library", IsRemovable: true));
+        automation.References.Add(new WorkbookReference("Unlisted Library", IsRemovable: true, NamespaceName: "UnlistedLibrary"));
         var application = CommandLineTestFactory.Create(temp.Path, workbookBuildAutomation: automation);
 
         var result = application.Run(["import", "--from", sourceDirectory, "--to", targetWorkbook]);
@@ -572,6 +671,9 @@ public sealed class ImportCommandTests
     private sealed class FakeNativeImportGenerationSession(List<string> events) :
         IWorkbookGenerationSession
     {
+        public Task<string> GetProjectNameAsync(CancellationToken cancellationToken)
+            => Task.FromResult("VbaProject");
+
         public async Task<IReadOnlyList<WorkbookModule>> GetModulesAsync(
             CancellationToken cancellationToken)
         {

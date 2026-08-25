@@ -45,6 +45,25 @@ public sealed class VbaProjectReferencePlanner
     public VbaProjectReferenceResolutionBatch ResolveReferences(IReadOnlyList<string> referenceNames)
         => referenceResolver.Resolve(referenceNames);
 
+    internal async Task<VbaProjectReferenceResolutionBatch> ResolveReferencesAgainstSessionAsync(
+        IWorkbookGenerationSession session,
+        IReadOnlyList<string> referenceNames,
+        CancellationToken cancellationToken)
+    {
+        var batch = ResolveReferences(referenceNames);
+        if (!batch.Complete ||
+            !batch.References.Any(reference => reference.Matches.Count > 1))
+        {
+            return batch;
+        }
+
+        return await VbaProjectReferenceAmbiguityProbe.ResolveAgainstSessionAsync(
+                session,
+                batch,
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
     /// <summary>
     /// Resolves and filters the registered available-reference inventory without probing ambiguity.
     /// </summary>

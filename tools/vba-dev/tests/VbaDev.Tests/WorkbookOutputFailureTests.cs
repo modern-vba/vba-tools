@@ -163,6 +163,40 @@ public sealed class WorkbookOutputFailureTests
         Assert.Empty(EnumerateOwnedStaging(project.SelectedOutputDirectory(commandName)));
     }
 
+    [Fact]
+    public async Task PublishFailsClosedWhenAnIncludedSourceChangesBeforeStaging()
+    {
+        using var temp = TempDirectory.Create();
+        var project = CreateProject(temp);
+        var sourcePath = Path.Combine(project.Context.DocumentSourceSetPath, "Local.bas");
+        var automation = new CompletingWorkbookGenerationAutomation();
+        var importSourceSetFactory = new VbeImportSourceSetFactory(() =>
+        {
+            File.WriteAllText(
+                sourcePath,
+                "Attribute VB_Name = \"Local\"\r\n'#ExcludePublish\r\n",
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+            return 65001;
+        });
+        var command = CreateCommand(
+            project.Context,
+            automation,
+            importSourceSetFactory: importSourceSetFactory);
+
+        var result = await RunAsync(
+            "publish",
+            command,
+            project.Context,
+            CancellationToken.None);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("changed after", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(sourcePath, result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, automation.RunCount);
+        Assert.Equal("previous-publish", File.ReadAllText(project.Context.PublishDocumentPath, Encoding.UTF8));
+        Assert.Empty(EnumerateOwnedStaging(project.SelectedOutputDirectory("publish")));
+    }
+
     [Theory]
     [InlineData("build")]
     [InlineData("publish")]
@@ -241,13 +275,15 @@ public sealed class WorkbookOutputFailureTests
     private static WorkbookOutputCommand CreateCommand(
         ResolvedProjectContext context,
         IWorkbookGenerationAutomation automation,
-        IWorkbookOutputTransactionFactory? transactionFactory = null)
+        IWorkbookOutputTransactionFactory? transactionFactory = null,
+        VbeImportSourceSetFactory? importSourceSetFactory = null)
     {
         var pipeline = new WorkbookGenerationPipeline(
             automation,
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),
-            transactionFactory ?? new WorkbookOutputTransactionFactory());
+            transactionFactory ?? new WorkbookOutputTransactionFactory(),
+            importSourceSetFactory ?? new VbeImportSourceSetFactory());
         return new WorkbookOutputCommand(new WorkbookSourcePlanner(), pipeline);
     }
 
@@ -314,16 +350,24 @@ public sealed class WorkbookOutputFailureTests
 
     private sealed class CompletingWorkbookGenerationAutomation : IWorkbookGenerationAutomation
     {
+        public int RunCount { get; private set; }
+
         public Task<TResult> RunAsync<TResult>(
             string workbookPath,
             WorkbookAutomationTimeouts timeouts,
             Func<IWorkbookGenerationSession, CancellationToken, Task<TResult>> operation,
             CancellationToken cancellationToken)
-            => operation(new EmptyWorkbookGenerationSession(), cancellationToken);
+        {
+            RunCount++;
+            return operation(new EmptyWorkbookGenerationSession(), cancellationToken);
+        }
     }
 
     private sealed class EmptyWorkbookGenerationSession : IWorkbookGenerationSession
     {
+        public Task<string> GetProjectNameAsync(CancellationToken cancellationToken)
+            => Task.FromResult("VbaProject");
+
         public Task<IReadOnlyList<WorkbookModule>> GetModulesAsync(CancellationToken cancellationToken)
             => Task.FromResult<IReadOnlyList<WorkbookModule>>([]);
 

@@ -11,6 +11,7 @@ public sealed class ImportCommand
 {
     private readonly IWorkbookGenerationAutomation workbookGenerationAutomation;
     private readonly VbeImportSourceSetFactory importSourceSetFactory;
+    private readonly WorkbookMaterializationNamePreflight namePreflight = new();
 
     /// <summary>
     /// Creates the import command.
@@ -81,15 +82,32 @@ public sealed class ImportCommand
             var sourceFiles = ResolveSourceFiles(sourceDirectory);
             ValidateTargetWorkbook(targetWorkbookPath);
             using var importSourceSet = importSourceSetFactory.Create(sourceFiles);
+            var sourcePreflight = namePreflight.InspectSourcePhase(importSourceSet.SourceFiles);
+            if (sourcePreflight.HasFailures)
+            {
+                namePreflight.ThrowIfFailed(sourcePreflight);
+            }
 
             await workbookGenerationAutomation.RunAsync(
                 targetWorkbookPath,
                 WorkbookAutomationTimeouts.Default,
                 async (session, operationCancellationToken) =>
                 {
+                    var projectName = await session
+                        .GetProjectNameAsync(operationCancellationToken)
+                        .ConfigureAwait(false);
                     var modules = await session
                         .GetModulesAsync(operationCancellationToken)
                         .ConfigureAwait(false);
+                    var references = await session
+                        .GetReferencesAsync(operationCancellationToken)
+                        .ConfigureAwait(false);
+                    var livePreflight = namePreflight.InspectLivePhase(
+                        importSourceSet.SourceFiles,
+                        modules.Where(component => !component.Kind.IsImportable()).ToArray(),
+                        projectName,
+                        references);
+                    namePreflight.ThrowIfFailed(sourcePreflight, livePreflight);
                     foreach (var component in modules.Where(component => component.Kind.IsImportable()))
                     {
                         operationCancellationToken.ThrowIfCancellationRequested();

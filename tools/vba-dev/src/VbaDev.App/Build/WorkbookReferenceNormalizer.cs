@@ -70,7 +70,6 @@ public sealed class WorkbookReferenceNormalizer
     public async Task<IReadOnlyList<string>> NormalizeAsync(
         IWorkbookGenerationSession session,
         string documentName,
-        string baselineWorkbookPath,
         IReadOnlyList<VbaProjectReference> desiredReferences,
         CancellationToken cancellationToken)
     {
@@ -106,8 +105,8 @@ public sealed class WorkbookReferenceNormalizer
             .ToArray();
         if (missingNames.Length > 0)
         {
-            var resolutionBatch = await referencePlanner.ResolveReferencesAsync(
-                    baselineWorkbookPath,
+            var resolutionBatch = await referencePlanner.ResolveReferencesAgainstSessionAsync(
+                    session,
                     missingNames,
                     cancellationToken)
                 .ConfigureAwait(false);

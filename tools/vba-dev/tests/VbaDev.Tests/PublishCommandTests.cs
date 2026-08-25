@@ -1,5 +1,7 @@
 using System.Text;
 using System.Runtime.InteropServices;
+using VbaDev.App.Build;
+using VbaDev.App.Projects;
 using VbaDev.App.Testing;
 using VbaDev.App.Workbooks;
 using VbaDev.Cli;
@@ -72,6 +74,73 @@ public sealed class PublishCommandTests
     }
 
     [Fact]
+    public void BuildIncludesTestOnlyIdentityConflictWhilePublishExcludesIt()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        manifest.Documents["Book1"].CommonModules.Add(
+            new InstalledCommonModule(
+                "TestOnly",
+                "TestOnly.bas",
+                Requested: true,
+                TestOnly: true));
+        new JsonProjectManifestStore().Save(root, manifest);
+        CreateWorkbookSource(
+            root,
+            "Book1",
+            ("Runtime.bas", "Attribute VB_Name = \"CollisionName\""),
+            ("TestOnly.bas", "Attribute VB_Name = \"collisionname\""));
+        var automation = new FakeWorkbookBuildAutomation();
+        var application = CommandLineTestFactory.Create(
+            root,
+            workbookBuildAutomation: automation);
+
+        var build = application.Run(["build"]);
+        var publish = application.Run(["publish"]);
+
+        Assert.Equal(1, build.ExitCode);
+        Assert.Contains("Source identity 'collisionname'", build.StandardError, StringComparison.Ordinal);
+        Assert.Contains("Runtime.bas", build.StandardError, StringComparison.Ordinal);
+        Assert.Contains("TestOnly.bas", build.StandardError, StringComparison.Ordinal);
+        Assert.Equal(0, publish.ExitCode);
+        Assert.Equal(["import:Runtime.bas", "save"], automation.Events);
+        Assert.Single(automation.OpenedWorkbooks);
+    }
+
+    [Fact]
+    public void PublishRejectsIncludedSourceIdentityConflictBeforeExcelOrOutputReplacement()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(
+            root,
+            ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        CreateWorkbookSource(
+            root,
+            "Book1",
+            ("First.bas", "Attribute VB_Name = \"CollisionName\""),
+            ("Second.bas", "Attribute VB_Name = \"collisionname\""));
+        var publishPath = Path.Combine(root, "publish", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(publishPath)!);
+        File.WriteAllText(publishPath, "previous-publish", Encoding.UTF8);
+        var automation = new FakeWorkbookBuildAutomation();
+        var application = CommandLineTestFactory.Create(
+            root,
+            workbookBuildAutomation: automation);
+
+        var result = application.Run(["publish"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("Source identity 'CollisionName'", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("First.bas", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("Second.bas", result.StandardError, StringComparison.Ordinal);
+        Assert.Empty(automation.OpenedWorkbooks);
+        Assert.Empty(automation.Events);
+        Assert.Equal("previous-publish", File.ReadAllText(publishPath, Encoding.UTF8));
+    }
+
+    [Fact]
     public void PublishExcludesProjectLocalMarkerNearTopWithoutFilenameOnlyTestPattern()
     {
         using var temp = TempDirectory.Create();
@@ -94,12 +163,117 @@ public sealed class PublishCommandTests
     }
 
     [Fact]
+    public void PublishRejectsDuplicateFlatFileNamesBeforeApplyingExclusionMarkers()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(
+            root,
+            ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        CreateWorkbookSource(
+            root,
+            "Book1",
+            (Path.Combine("runtime", "Feature.bas"),
+                "Attribute VB_Name = \"RuntimeFeature\"\r\n"),
+            (Path.Combine("hidden", "feature.bas"),
+                "Attribute VB_Name = \"HiddenFeature\"\r\n'#ExcludePublish\r\n"));
+        var publishPath = Path.Combine(root, "publish", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(publishPath)!);
+        File.WriteAllText(publishPath, "previous-publish", Encoding.UTF8);
+        var automation = new FakeWorkbookBuildAutomation();
+        var application = CommandLineTestFactory.Create(
+            root,
+            workbookBuildAutomation: automation);
+
+        var result = application.Run(["publish"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("Duplicate VBA source file names", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("Feature.bas", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(automation.OpenedWorkbooks);
+        Assert.Empty(automation.Events);
+        Assert.Equal("previous-publish", File.ReadAllText(publishPath, Encoding.UTF8));
+    }
+
+    [Fact]
+    public void PublishUsesVbaWhitespaceWhenRecognizingTheExclusionMarker()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        var sourceDirectory = Path.Combine(root, "src", "Book1");
+        Directory.CreateDirectory(sourceDirectory);
+        var templatePath = Path.Combine(sourceDirectory, "Book1.xlsm");
+        File.WriteAllText(templatePath, "template", Encoding.UTF8);
+        var utf8Bom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: true);
+        File.WriteAllText(
+            Path.Combine(sourceDirectory, "IdeographicSpace.bas"),
+            "Attribute VB_Name = \"IdeographicSpace\"\r\n\u3000'#ExcludePublish\r\n",
+            utf8Bom);
+        File.WriteAllText(
+            Path.Combine(sourceDirectory, "NonBreakingSpace.bas"),
+            "Attribute VB_Name = \"NonBreakingSpace\"\r\n\u00a0'#ExcludePublish\r\n",
+            utf8Bom);
+        var context = new ResolvedProjectContext(
+            root,
+            Path.Combine(root, ProjectManifest.ManifestFileName),
+            manifest,
+            "Book1",
+            manifest.Documents["Book1"],
+            sourceDirectory,
+            templatePath,
+            Path.Combine(root, "bin", "Book1.xlsm"),
+            Path.Combine(root, "publish", "Book1.xlsm"),
+            null);
+        var planner = new WorkbookSourcePlanner(() => 1252);
+
+        var selected = planner.ResolvePublishSourceFiles(context);
+
+        Assert.Equal(["NonBreakingSpace.bas"], selected.Select(source => source.FileName));
+    }
+
+    [Fact]
+    public void PublishFailsWhenMarkerSelectionCannotStrictlyDecodeTheCandidate()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(
+            root,
+            ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        var sourceDirectory = Path.Combine(root, "src", "Book1");
+        Directory.CreateDirectory(sourceDirectory);
+        File.WriteAllText(
+            Path.Combine(sourceDirectory, "Book1.xlsm"),
+            "template:Book1",
+            Encoding.UTF8);
+        var sourcePath = Path.Combine(sourceDirectory, "Broken.bas");
+        File.WriteAllBytes(
+            sourcePath,
+            Encoding.ASCII.GetBytes("'#ExcludePublish\r\n").Concat(new byte[] { 0x81 }).ToArray());
+        var automation = new FakeWorkbookBuildAutomation();
+        var application = CommandLineTestFactory.Create(
+            root,
+            workbookBuildAutomation: automation);
+
+        var result = application.Run(["publish"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("strictly decoded", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(sourcePath, result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(automation.OpenedWorkbooks);
+        Assert.Empty(automation.Events);
+    }
+
+    [Fact]
     public void PublishTreatsIncludedFormAndFrxAsOneSourceUnit()
     {
         using var temp = TempDirectory.Create();
         var root = temp.CreateDirectory("Project");
         new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
-        CreateWorkbookSource(root, "Book1", ("Dialog.frm", "VERSION 5.00"));
+        CreateWorkbookSource(
+            root,
+            "Book1",
+            ("Dialog.frm", "VERSION 5.00\r\nBegin VB.Form Dialog\r\nEnd\r\nAttribute VB_Name = \"Dialog\""));
         var frxPath = Path.Combine(root, "src", "Book1", "Dialog.frx");
         File.WriteAllBytes(frxPath, [1, 2, 3]);
         var automation = new FakeWorkbookBuildAutomation();
@@ -121,7 +295,7 @@ public sealed class PublishCommandTests
     }
 
     [Fact]
-    public void PublishNormalizesReferencesBeforeImportingSource()
+    public void PublishRemovesReplaceableModulesBeforeNormalizingReferencesAndImportingSource()
     {
         using var temp = TempDirectory.Create();
         var root = temp.CreateDirectory("Project");
@@ -130,7 +304,7 @@ public sealed class PublishCommandTests
         new JsonProjectManifestStore().Save(root, manifest);
         CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
         var automation = new FakeWorkbookBuildAutomation(new WorkbookModule("OldModule", WorkbookModuleKind.StandardModule));
-        automation.References.Add(new WorkbookReference("Unlisted Library", IsRemovable: true));
+        automation.References.Add(new WorkbookReference("Unlisted Library", IsRemovable: true, NamespaceName: "UnlistedLibrary"));
         var resolver = new FakeVbaProjectReferenceResolver(
             new ResolvedVbaProjectReference("Microsoft Scripting Runtime", "{420B2830-E718-11CF-893D-00A0C9054228}", 1, 0));
         var application = CommandLineTestFactory.Create(
@@ -143,9 +317,9 @@ public sealed class PublishCommandTests
         Assert.Equal(0, result.ExitCode);
         Assert.Equal(
             [
+                "remove:OldModule",
                 "remove-ref:Unlisted Library",
                 "add-ref:Microsoft Scripting Runtime",
-                "remove:OldModule",
                 "import:Local.bas",
                 "save"
             ],
@@ -163,8 +337,8 @@ public sealed class PublishCommandTests
         new JsonProjectManifestStore().Save(root, manifest);
         CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
         var automation = new FakeWorkbookBuildAutomation(new WorkbookModule("OldModule", WorkbookModuleKind.StandardModule));
-        automation.References.Add(new WorkbookReference("OLE Automation", IsRemovable: false));
-        automation.References.Add(new WorkbookReference("Unlisted Library", IsRemovable: true));
+        automation.References.Add(new WorkbookReference("OLE Automation", IsRemovable: false, NamespaceName: "stdole"));
+        automation.References.Add(new WorkbookReference("Unlisted Library", IsRemovable: true, NamespaceName: "UnlistedLibrary"));
         var resolver = new FakeVbaProjectReferenceResolver(
             new ResolvedVbaProjectReference("OLE Automation", "{00020430-0000-0000-C000-000000000046}", 1, 0),
             new ResolvedVbaProjectReference("OLE Automation", "{00020430-0000-0000-C000-000000000046}", 2, 0),
@@ -181,9 +355,9 @@ public sealed class PublishCommandTests
         Assert.Contains("Microsoft Scripting Runtime", resolver.RequestedNames);
         Assert.Equal(
             [
+                "remove:OldModule",
                 "remove-ref:Unlisted Library",
                 "add-ref:Microsoft Scripting Runtime",
-                "remove:OldModule",
                 "import:Local.bas",
                 "save"
             ],

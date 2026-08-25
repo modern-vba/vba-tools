@@ -281,6 +281,8 @@ Options:
 
 `build` creates the bin workbook from the source template, normalizes manifest-defined VBA project references, recursively imports source files, and writes the selected document's bin output. Project-local source files are imported after CommonModules dependency ordering, sorted by extension-including exported file name. Duplicate `.bas`, `.cls`, or `.frm` file names fail before source import. `.frx` files are not imported or validated independently.
 
+Before Excel starts, build stages every selected source, requires its authoritative exported module identity, and reports all case-insensitive source conflicts. In the disposable workbook it checks the actual project, retained-component, and active-reference namespaces, removes replaceable components, normalizes references, then checks the final protected and VBE-adopted reference identities again. Any authority gap or conflict fails before source import, save, or atomic output replacement and preserves the source template and previous output. Build-before-test uses this same profile and preflight.
+
 Supplying `--source-snapshot` and `--output` together instead builds from that complete recursive source inventory without reading the persistent document source set. Snapshot builds preserve caller bytes in invocation scratch, reject filesystem-canonical output aliases to caller or manifest-owned inputs and outputs, and atomically replace only the selected caller output. Neither option is valid by itself.
 
 ### test
@@ -329,6 +331,8 @@ Options:
 
 `publish` creates the publish workbook from the source template, normalizes manifest-defined VBA project references, recursively imports publishable source files, and writes the selected document's publish output. It uses the same flat file-name ordering and duplicate-source failure behavior as `build`. Publish excludes installed CommonModules whose project-manifest entries record `testOnly: true` and project-local source files whose first scanned lines contain `'#ExcludePublish`. Build and publish do not read the current CommonModules repository; `doctor` owns repository consistency checks.
 
+Publish runs the same two-phase namespace preflight as build over only that publishable source profile. Identity defects confined to excluded `testOnly` or `'#ExcludePublish` source do not block publish, while duplicate flat file names and other structural profile-selection failures still do.
+
 ### export
 
 ```text
@@ -372,6 +376,8 @@ Options:
 `.frx` files are not independent import inputs and are not preflighted separately. A matching same-directory `.frx` may be consumed by the form import mechanism for its `.frm`; orphan `.frx` files are ignored.
 
 Before import, existing standard modules, class modules, and form modules are removed from the workbook. Document modules such as `ThisWorkbook` and worksheet modules are left in place. The workbook is saved only after flush and import complete successfully.
+
+Before flushing any component, import requires authoritative incoming module identities and compares them case-insensitively with the target's actual `VBProject.Name`, active `Reference.Name` values, and retained document-module names. An incomplete identity or conflict closes the workbook without saving and leaves the target file unchanged.
 
 Unlike `build`, `import` does not add, remove, or normalize manifest-defined references, does not resolve CommonModules dependencies, does not interpret `'#ExcludePublish`, and does not validate whether the workbook compiles.
 
@@ -428,6 +434,8 @@ checks find installed source files in nested directories and fail when an
 installed CommonModule has multiple matching source files. Project Doctor never
 invokes `vba-debug-adapter doctor` and does not claim compilation, import, save,
 or native-debug readiness.
+
+For each document, project Doctor evaluates build and publish namespace profiles independently. It runs source preflight before Excel, then uses one disposable template copy to remove replaceable components, normalize references, and inspect actual final project, retained-component, protected-reference, and VBE-adopted identities. It imports no source, saves no workbook, deletes the copy, and reports each profile's conflicts in deterministic order.
 
 Environment scope rejects `--project`, performs no project discovery or
 project/document access, and starts one dedicated owned Excel instance for its

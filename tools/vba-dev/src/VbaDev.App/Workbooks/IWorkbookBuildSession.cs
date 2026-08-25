@@ -6,6 +6,11 @@ namespace VbaDev.App.Workbooks;
 public interface IWorkbookBuildSession : IDisposable
 {
     /// <summary>
+    /// Gets the actual name of the open workbook's VBA project.
+    /// </summary>
+    string GetProjectName();
+
+    /// <summary>
     /// Gets the modules currently present in the workbook's VBA project.
     /// </summary>
     /// <returns>The current workbook modules.</returns>
@@ -29,6 +34,15 @@ public interface IWorkbookBuildSession : IDisposable
     /// </summary>
     /// <param name="reference">The reference identity to add.</param>
     void AddReference(ResolvedVbaProjectReference reference);
+
+    /// <summary>
+    /// Probes one ambiguous reference candidate against the current workbook state and rolls it back.
+    /// </summary>
+    VbaProjectReferenceProbeAttemptResult TryResolveReference(
+        string referenceName,
+        ResolvedVbaProjectReference candidate)
+        => throw new NotSupportedException(
+            "This workbook session does not support in-session reference probing.");
 
     /// <summary>
     /// Removes a module from the workbook's VBA project.

@@ -18,8 +18,10 @@ public interface IWorkbookGenerationAutomation
 /// <summary>
 /// Exposes the bounded operations available inside one owned workbook generation session.
 /// </summary>
-public interface IWorkbookGenerationSession
+public interface IWorkbookGenerationSession : IVbaProjectReferenceProbeSession
 {
+    Task<string> GetProjectNameAsync(CancellationToken cancellationToken);
+
     Task<IReadOnlyList<WorkbookModule>> GetModulesAsync(CancellationToken cancellationToken);
 
     Task<IReadOnlyList<WorkbookReference>> GetReferencesAsync(CancellationToken cancellationToken);
@@ -29,6 +31,18 @@ public interface IWorkbookGenerationSession
     Task AddReferenceAsync(
         ResolvedVbaProjectReference reference,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Probes one ambiguous reference candidate against this session's current logical state.
+    /// Implementations must leave that state unchanged before returning.
+    /// </summary>
+    Task<VbaProjectReferenceProbeAttemptResult> IVbaProjectReferenceProbeSession.TryResolveAsync(
+        string referenceName,
+        ResolvedVbaProjectReference candidate,
+        CancellationToken cancellationToken)
+        => Task.FromException<VbaProjectReferenceProbeAttemptResult>(
+            new NotSupportedException(
+                "This workbook generation session does not support in-session reference probing."));
 
     Task RemoveModuleAsync(string moduleName, CancellationToken cancellationToken);
 
@@ -73,6 +87,9 @@ internal sealed class SynchronousWorkbookGenerationAutomation(
     private sealed class SynchronousWorkbookGenerationSession(
         IWorkbookBuildSession session) : IWorkbookGenerationSession
     {
+        public Task<string> GetProjectNameAsync(CancellationToken cancellationToken)
+            => RunAsync(session.GetProjectName, cancellationToken);
+
         public Task<IReadOnlyList<WorkbookModule>> GetModulesAsync(CancellationToken cancellationToken)
             => RunAsync(session.GetModules, cancellationToken);
 
@@ -88,6 +105,14 @@ internal sealed class SynchronousWorkbookGenerationAutomation(
             ResolvedVbaProjectReference reference,
             CancellationToken cancellationToken)
             => RunAsync(() => session.AddReference(reference), cancellationToken);
+
+        public Task<VbaProjectReferenceProbeAttemptResult> TryResolveAsync(
+            string referenceName,
+            ResolvedVbaProjectReference candidate,
+            CancellationToken cancellationToken)
+            => RunAsync(
+                () => session.TryResolveReference(referenceName, candidate),
+                cancellationToken);
 
         public Task RemoveModuleAsync(string moduleName, CancellationToken cancellationToken)
             => RunAsync(() => session.RemoveModule(moduleName), cancellationToken);

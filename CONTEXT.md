@@ -1411,10 +1411,12 @@ ambiguous. The probe removes all temporary state and never saves a project
 workbook.
 If a same-name reference already exists in a fresh ambiguity-probe baseline,
 its concrete GUID, major, and minor identity is adopted instead of adding a
-duplicate. Build, publish, and test-build materialization may likewise adopt a
-same-name reference from the workbook they already opened. `reference add`,
-either `reference list` mode, and `doctor` never open a source template only to
-search for that shortcut.
+duplicate. Build, publish, test-build, and Doctor build/publish materialization
+may likewise adopt a same-name reference from the cleaned disposable workbook
+they already opened; an in-session candidate restores that logical reference
+inventory before the next candidate. `reference add`, either `reference list`
+mode, and Doctor's independent selected-reference diagnostic never open a
+source template only to search for that shortcut.
 _Avoid_: manifest name, display name, reference description
 
 **VbaProjectReferenceResolutionInventory**:
@@ -4296,10 +4298,10 @@ Dev: "Should `vba-project.json` store TypeLib GUIDs for references?"
 Domain Expert: "No. The `ProjectManifest` stores the human-visible `VbaProjectReference` name from `Reference.Description`. After discovery resolves that name, catalogs and caches may use `VbaProjectReferenceCatalogIdentity` keys such as GUID, version, LCID, and path."
 
 Dev: "What if one manifest reference name matches several TypeLib candidates?"
-Domain Expert: "Registry ambiguity alone is not an error. Probe each candidate through `References.AddFromGuid` from a fresh temporary copy of the explicitly selected document's source template, or the primary document's source template when no document is specified. Use the returned `Reference` identity rather than the requested registry identity, and coalesce candidates that VBE maps to the same result. Adopt one distinct usable result; fail as unavailable when none remains and as ambiguous only when multiple distinct usable results remain."
+Domain Expert: "Registry ambiguity alone is not an error. A reference-only caller or Doctor's independent selected-reference diagnostic probes each candidate through `References.AddFromGuid` from a fresh temporary copy of the explicitly selected document's source template, or the primary document's source template when no document is specified. Build, publish, test-build, and Doctor materialization instead use their already-open cleaned disposable workbook and restore its logical reference inventory after each candidate. Use the returned `Reference` identity rather than the requested registry identity, and coalesce candidates that VBE maps to the same result. Adopt one distinct usable result; fail as unavailable when none remains and as ambiguous only when multiple distinct usable results remain."
 
 Dev: "Should `reference list` open the source template merely to check whether it already contains a same-name reference?"
-Domain Expert: "No. Zero registry matches are unavailable and one registry identity is adopted without Excel. Only a registry-ambiguous name starts the VBE-equivalent probe, where a same-name reference already present in the fresh baseline supplies its identity. Build, publish, and test builds may use the same shortcut because their materialization workbook is already open."
+Domain Expert: "No. Zero registry matches are unavailable and one registry identity is adopted without Excel. Only a registry-ambiguous name starts the VBE-equivalent probe, where a same-name reference already present in the fresh baseline supplies its identity. Build, publish, test builds, and Doctor's build/publish materialization profiles may use the same shortcut because their disposable materialization workbook is already open."
 
 Dev: "Should `reference list --available` hide or disable a resolved library when its project name conflicts with a current source module?"
 Domain Expert: "No. Both list modes are `VbaProjectReferenceResolutionInventory` operations, so they neither inspect nor annotate current source compatibility. Keep the resolved candidate selectable in CLI output, completion, and QuickPick; after dependency intent is recorded, Language Server validation, Doctor, and materialization preflight own conflict feedback."

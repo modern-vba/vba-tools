@@ -5,4 +5,8 @@ namespace VbaDev.App.Workbooks;
 /// </summary>
 /// <param name="Name">The human-visible reference name.</param>
 /// <param name="IsRemovable">Whether VBIDE reports that the reference can be removed.</param>
-public sealed record WorkbookReference(string Name, bool IsRemovable);
+/// <param name="NamespaceName">The actual project or library name exposed by VBIDE.</param>
+public sealed record WorkbookReference(
+    string Name,
+    bool IsRemovable,
+    string? NamespaceName = null);

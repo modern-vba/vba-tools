@@ -289,6 +289,234 @@ public sealed class VbeImportSourceSetTests
     }
 
     [Fact]
+    public void StagesFormWithNestedDesignerPropertyMetadata()
+    {
+        using var temp = TempDirectory.Create();
+        var formPath = Path.Combine(temp.Path, "Dialog.frm");
+        File.WriteAllText(
+            formPath,
+            string.Join("\r\n", [
+                "VERSION 5.00",
+                "Begin VB.Form Dialog",
+                "  BeginProperty Font",
+                "    Name = \"Aptos\"",
+                "  EndProperty",
+                "End",
+                "Attribute VB_Name = \"Dialog\"",
+                "Attribute VB_PredeclaredId = True",
+                "Option Explicit",
+                string.Empty
+            ]),
+            new UTF8Encoding(false));
+
+        using var sourceSet = VbeImportSourceSet.Create(
+            [new VbaSourceFile(formPath, VbaSourceKind.Form, null)],
+            activeCodePage: 1252);
+
+        new WorkbookMaterializationNamePreflight()
+            .ValidateSourcePhase(sourceSet.SourceFiles);
+        var staged = Assert.Single(sourceSet.SourceFiles);
+        Assert.Equal("Dialog", staged.ImportVerification.ComponentName);
+    }
+
+    [Theory]
+    [InlineData("Begin VB.Form Dialog\r\nEndProperty")]
+    [InlineData("Begin VB.Form Dialog\r\n  BeginProperty Font\r\n  End\r\nEndProperty")]
+    public void RejectsMismatchedObjectDesignerBlockClosers(string designerBlock)
+    {
+        using var temp = TempDirectory.Create();
+        var formPath = Path.Combine(temp.Path, "Dialog.frm");
+        File.WriteAllText(
+            formPath,
+            $"VERSION 5.00\r\n{designerBlock}\r\nAttribute VB_Name = \"Dialog\"\r\n",
+            new UTF8Encoding(false));
+
+        using var sourceSet = VbeImportSourceSet.Create(
+            [new VbaSourceFile(formPath, VbaSourceKind.Form, null)],
+            activeCodePage: 1252);
+
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            new WorkbookMaterializationNamePreflight()
+                .ValidateSourcePhase(sourceSet.SourceFiles));
+
+        Assert.Contains("invalid ModuleIdentity", error.Message, StringComparison.Ordinal);
+        Assert.Contains(formPath, error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void AcceptsActiveCodePageIdentifierCharactersInModuleIdentity()
+    {
+        using var temp = TempDirectory.Create();
+        var sourcePath = Path.Combine(temp.Path, "Cp2Name.bas");
+        File.WriteAllText(
+            sourcePath,
+            "Attribute VB_Name = \"A\u00a0\"\r\n",
+            new UTF8Encoding(false));
+
+        using var sourceSet = VbeImportSourceSet.Create(
+            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
+            activeCodePage: 1252);
+
+        new WorkbookMaterializationNamePreflight()
+            .ValidateSourcePhase(sourceSet.SourceFiles);
+        Assert.Equal(
+            "A\u00a0",
+            Assert.Single(sourceSet.SourceFiles).ImportVerification.ComponentName);
+    }
+
+    [Fact]
+    public void RejectsReservedIdentifierAsModuleIdentity()
+    {
+        using var temp = TempDirectory.Create();
+        var sourcePath = Path.Combine(temp.Path, "Reserved.bas");
+        File.WriteAllText(
+            sourcePath,
+            "Attribute VB_Name = \"If\"\r\n",
+            new UTF8Encoding(false));
+        using var sourceSet = VbeImportSourceSet.Create(
+            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
+            activeCodePage: 1252);
+
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            new WorkbookMaterializationNamePreflight()
+                .ValidateSourcePhase(sourceSet.SourceFiles));
+
+        Assert.Contains("invalid ModuleIdentity", error.Message, StringComparison.Ordinal);
+        Assert.Contains(sourcePath, error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void RejectsProceduralIdentityAfterAnotherHeaderAttribute()
+    {
+        using var temp = TempDirectory.Create();
+        var sourcePath = Path.Combine(temp.Path, "Misplaced.bas");
+        File.WriteAllText(
+            sourcePath,
+            string.Join("\r\n", [
+                "Attribute VB_Description = \"not the module identity\"",
+                "Attribute VB_Name = \"Misplaced\"",
+                string.Empty
+            ]),
+            new UTF8Encoding(false));
+        using var sourceSet = VbeImportSourceSet.Create(
+            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
+            activeCodePage: 1252);
+
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            new WorkbookMaterializationNamePreflight()
+                .ValidateSourcePhase(sourceSet.SourceFiles));
+
+        Assert.Contains("invalid ModuleIdentity", error.Message, StringComparison.Ordinal);
+        Assert.Contains(sourcePath, error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void RejectsMalformedProceduralIdentityRecordAfterAValidIdentity()
+    {
+        using var temp = TempDirectory.Create();
+        var sourcePath = Path.Combine(temp.Path, "MalformedIdentity.bas");
+        File.WriteAllText(
+            sourcePath,
+            string.Join("\r\n", [
+                "Attribute VB_Name = \"GoodIdentity\"",
+                "Attribute VB_Name.\"BadIdentity\"",
+                string.Empty
+            ]),
+            new UTF8Encoding(false));
+        using var sourceSet = VbeImportSourceSet.Create(
+            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
+            activeCodePage: 1252);
+
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            new WorkbookMaterializationNamePreflight()
+                .ValidateSourcePhase(sourceSet.SourceFiles));
+
+        Assert.Contains("invalid ModuleIdentity", error.Message, StringComparison.Ordinal);
+        Assert.Contains(sourcePath, error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void DoesNotTreatLongerAttributeIdentifiersAsMalformedIdentityRecords()
+    {
+        using var temp = TempDirectory.Create();
+        var sourcePath = Path.Combine(temp.Path, "LongerAttributeNames.bas");
+        File.WriteAllText(
+            sourcePath,
+            string.Join("\r\n", [
+                "Attribute VB_Name = \"GoodIdentity\"",
+                "Attribute VB_NameX = \"EnglishContinuation\"",
+                "Attribute VB_Name日 = \"JapaneseContinuation\"",
+                string.Empty
+            ]),
+            new UTF8Encoding(false));
+        using var sourceSet = VbeImportSourceSet.Create(
+            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
+            activeCodePage: 65001);
+
+        new WorkbookMaterializationNamePreflight()
+            .ValidateSourcePhase(sourceSet.SourceFiles);
+
+        Assert.Equal(
+            "GoodIdentity",
+            Assert.Single(sourceSet.SourceFiles).ImportVerification.ComponentName);
+    }
+
+    [Fact]
+    public void RejectsModuleIdentityThatMixesOtherwiseValidIdentifierForms()
+    {
+        using var temp = TempDirectory.Create();
+        var sourcePath = Path.Combine(temp.Path, "MixedForms.bas");
+        File.WriteAllText(
+            sourcePath,
+            "Attribute VB_Name = \"日\u00a0\"\r\n",
+            new UTF8Encoding(false));
+        using var sourceSet = VbeImportSourceSet.Create(
+            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
+            activeCodePage: 65001);
+
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            new WorkbookMaterializationNamePreflight()
+                .ValidateSourcePhase(sourceSet.SourceFiles));
+
+        Assert.Contains("invalid ModuleIdentity", error.Message, StringComparison.Ordinal);
+        Assert.Contains(sourcePath, error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void UsesTheLastValidObjectHeaderIdentityForImportVerification()
+    {
+        using var temp = TempDirectory.Create();
+        var classPath = Path.Combine(temp.Path, "WorkerClass.cls");
+        File.WriteAllText(
+            classPath,
+            string.Join("\r\n", [
+                "VERSION 1.0 CLASS",
+                "BEGIN",
+                "  MultiUse = -1  'True",
+                "END",
+                "Attribute VB_Name = \"EarlierName\"",
+                "Attribute VB_Name = \"FinalName\"",
+                "Attribute VB_Exposed = False",
+                "Option Explicit",
+                string.Empty
+            ]),
+            new UTF8Encoding(false));
+
+        using var sourceSet = VbeImportSourceSet.Create(
+            [new VbaSourceFile(classPath, VbaSourceKind.ClassModule, null)],
+            activeCodePage: 1252);
+
+        var staged = Assert.Single(sourceSet.SourceFiles);
+        Assert.Equal("FinalName", staged.ImportVerification.ComponentName);
+        VbeImportedComponentVerifier.Verify(
+            staged.ImportVerification,
+            new VbeImportedComponent(
+                "FinalName",
+                VbaSourceKind.ClassModule,
+                staged.ImportVerification.CodeModuleLines));
+    }
+
+    [Fact]
     public void CapturesTheActiveCodePageOnceAndPreservesCallerOwnedSourcesAndFormSidecars()
     {
         using var temp = TempDirectory.Create();

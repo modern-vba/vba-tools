@@ -464,6 +464,13 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookGeneratio
     {
         public WorkbookAutomationStage? LastStage { get; private set; }
 
+        public Task<string> GetProjectNameAsync(CancellationToken cancellationToken)
+            => ExecuteAsync(
+                new WorkbookAutomationStage(WorkbookAutomationStageKind.ModuleInspection),
+                timeouts.ModuleImport,
+                cancellationToken,
+                session.GetProjectName);
+
         public Task<IReadOnlyList<WorkbookModule>> GetModulesAsync(
             CancellationToken cancellationToken)
             => ExecuteAsync(
@@ -501,6 +508,18 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookGeneratio
                 timeouts.ReferenceAttempt,
                 cancellationToken,
                 () => session.AddReference(reference));
+
+        public Task<VbaProjectReferenceProbeAttemptResult> TryResolveAsync(
+            string referenceName,
+            ResolvedVbaProjectReference candidate,
+            CancellationToken cancellationToken)
+            => ExecuteAsync(
+                new WorkbookAutomationStage(
+                    WorkbookAutomationStageKind.ReferenceAttempt,
+                    referenceName),
+                timeouts.ReferenceAttempt,
+                cancellationToken,
+                () => session.TryResolveReference(referenceName, candidate));
 
         public Task RemoveModuleAsync(
             string moduleName,

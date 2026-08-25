@@ -598,6 +598,40 @@ public sealed class TestCommandTests
     }
 
     [Fact]
+    public void DefaultBuildBeforeTestStopsOnSourceIdentityConflictBeforeTheRunner()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(
+            root,
+            ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        CreateWorkbookSource(
+            root,
+            "Book1",
+            ("Alpha.bas", "Attribute VB_Name = \"CollisionName\"\r\n"),
+            ("Zeta.bas", "Attribute VB_Name = \"collisionname\"\r\n"));
+        var binPath = Path.Combine(root, "bin", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
+        File.WriteAllText(binPath, "previous-bin", Encoding.UTF8);
+        var runner = new FakeWorkbookTestRunner();
+        var buildAutomation = new FakeWorkbookBuildAutomation();
+        var application = CommandLineTestFactory.Create(
+            root,
+            workbookBuildAutomation: buildAutomation,
+            workbookTestRunner: runner);
+
+        var result = application.Run(["test", "--format", "text"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("Source identity", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("Alpha.bas", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("Zeta.bas", result.StandardError, StringComparison.Ordinal);
+        Assert.Empty(buildAutomation.OpenedWorkbooks);
+        Assert.Empty(runner.Workbooks);
+        Assert.Equal("previous-bin", File.ReadAllText(binPath, Encoding.UTF8));
+    }
+
+    [Fact]
     public void SnapshotTestBuildsAndRunsSameFilenameWorkbookWithoutTouchingManifestBin()
     {
         using var temp = TempDirectory.Create();
@@ -652,6 +686,66 @@ public sealed class TestCommandTests
         Assert.Equal(snapshotBytes, File.ReadAllBytes(snapshotSourcePath));
         Assert.Contains("import:Test_Module.bas", buildAutomation.Events);
         Assert.Contains("\"type\":\"runFinished\"", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SnapshotTestPreflightFailureSuppressesRunnerAndPreservesCallerArtifacts()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var persistentSourcePath = Path.Combine(root, "missing-source", "Book1");
+        var templatePath = Path.Combine(root, "templates", "Book1.xlsm");
+        var binPath = Path.Combine(root, "bin", "Book1.xlsm");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        manifest.Documents["Book1"] = manifest.Documents["Book1"] with
+        {
+            SourcePath = Path.GetRelativePath(root, persistentSourcePath),
+            TemplatePath = Path.GetRelativePath(root, templatePath),
+            BinPath = Path.GetRelativePath(root, binPath)
+        };
+        new JsonProjectManifestStore().Save(root, manifest);
+        Directory.CreateDirectory(Path.GetDirectoryName(templatePath)!);
+        File.WriteAllText(templatePath, "snapshot-test-template", Encoding.UTF8);
+        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
+        var manifestBinBytes = Encoding.UTF8.GetBytes("persistent-bin");
+        File.WriteAllBytes(binPath, manifestBinBytes);
+        var snapshotPath = temp.CreateDirectory("caller-snapshot");
+        var firstSourcePath = Path.Combine(snapshotPath, "first", "Alpha.bas");
+        var secondSourcePath = Path.Combine(snapshotPath, "second", "Zeta.bas");
+        Directory.CreateDirectory(Path.GetDirectoryName(firstSourcePath)!);
+        Directory.CreateDirectory(Path.GetDirectoryName(secondSourcePath)!);
+        var firstSourceBytes = Encoding.UTF8.GetBytes(
+            "Attribute VB_Name = \"CollisionName\"\r\n");
+        var secondSourceBytes = Encoding.UTF8.GetBytes(
+            "Attribute VB_Name = \"collisionname\"\r\n");
+        File.WriteAllBytes(firstSourcePath, firstSourceBytes);
+        File.WriteAllBytes(secondSourcePath, secondSourceBytes);
+        var buildAutomation = new FakeWorkbookBuildAutomation();
+        var runner = new FakeWorkbookTestRunner();
+        var application = CommandLineTestFactory.Create(
+            root,
+            workbookBuildAutomation: buildAutomation,
+            workbookTestRunner: runner);
+
+        var result = application.Run(
+        [
+            "test",
+            "--source-snapshot",
+            snapshotPath,
+            "--format",
+            "ndjson"
+        ]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("Source identity", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains(firstSourcePath, result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(secondSourcePath, result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(buildAutomation.OpenedWorkbooks);
+        Assert.Empty(runner.Workbooks);
+        Assert.Equal(manifestBinBytes, File.ReadAllBytes(binPath));
+        Assert.Equal(firstSourceBytes, File.ReadAllBytes(firstSourcePath));
+        Assert.Equal(secondSourceBytes, File.ReadAllBytes(secondSourcePath));
+        Assert.False(Directory.Exists(persistentSourcePath));
     }
 
     [Fact]

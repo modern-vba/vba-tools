@@ -14,6 +14,7 @@ namespace VbaDev.Tests;
 [Collection(WindowsExcelIntegrationCollection.Name)]
 public sealed class WorkbookGenerationWindowsExcelIntegrationTests
 {
+    private const string ScriptingGuid = "420b2830-e718-11cf-893d-00a0c9054228";
     private readonly ITestOutputHelper output;
 
     public WorkbookGenerationWindowsExcelIntegrationTests(ITestOutputHelper output)
@@ -51,6 +52,44 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
             },
             CancellationToken.None);
         await terminationController.RequestCleanupAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [WindowsExcelIntegrationFact]
+    [Trait("Category", "WindowsExcelIntegration")]
+    public async Task InSessionReferenceProbeRestoresTheOpenWorkbookInventory()
+    {
+        using var temp = TempDirectory.Create();
+        var workbookPath = Path.Combine(temp.Path, "ReferenceProbe.xlsm");
+        CreateEmptyMacroEnabledWorkbook(workbookPath);
+        var originalWorkbook = File.ReadAllBytes(workbookPath);
+        var initialProcesses = CaptureExcelProcessIds();
+
+        try
+        {
+            var automation = new ExcelComWorkbookBuildAutomation();
+            using var session = automation.OpenWorkbook(
+                workbookPath,
+                CancellationToken.None);
+            var baseline = session.GetReferences().ToArray();
+
+            var result = session.TryResolveReference(
+                "Microsoft Scripting Runtime",
+                new ResolvedVbaProjectReference(
+                    "Microsoft Scripting Runtime",
+                    ScriptingGuid,
+                    1,
+                    0));
+
+            Assert.Equal(VbaProjectReferenceProbeAttemptOutcome.Accepted, result.Outcome);
+            Assert.Equal(ScriptingGuid, result.Reference!.Guid);
+            Assert.Equal(baseline, session.GetReferences());
+        }
+        finally
+        {
+            await WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20));
+        }
+
+        Assert.Equal(originalWorkbook, File.ReadAllBytes(workbookPath));
     }
 
     [WindowsExcelIntegrationFact]

@@ -1,5 +1,7 @@
+using VbaDev.App.Build;
 using VbaDev.App.Diagnostics;
 using VbaDev.App.Projects;
+using VbaDev.App.References;
 using VbaDev.App.Workbooks;
 using VbaDev.Cli;
 using VbaDev.Composition;
@@ -1167,12 +1169,15 @@ public sealed class DoctorCommandTests
 
         Assert.Equal(1, result.ExitCode);
         using var output = JsonDocument.Parse(result.StandardOutput);
-        Assert.Contains(
-            output.RootElement.GetProperty("checks").EnumerateArray(),
-            check =>
-                check.GetProperty("id").GetString() ==
-                    "project.workbookMaterialization/Book1" &&
-                check.GetProperty("status").GetString() == "fail");
+        foreach (var profile in new[] { "build", "publish" })
+        {
+            Assert.Contains(
+                output.RootElement.GetProperty("checks").EnumerateArray(),
+                check =>
+                    check.GetProperty("id").GetString() ==
+                        $"project.workbookMaterialization/Book1/{profile}" &&
+                    check.GetProperty("status").GetString() == "fail");
+        }
         Assert.Equal(
             DoctorDiagnosticPipeline.EnvironmentCheckIds,
             output.RootElement
@@ -1182,6 +1187,701 @@ public sealed class DoctorCommandTests
                 .TakeLast(5)
                 .ToArray());
         Assert.Equal([stagedWorkbook], deletedWorkbooks);
+    }
+
+    [Fact]
+    public async Task DoctorEvaluatesBuildAndPublishNamePreflightProfilesIndependently()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateDoctorProjectWithoutRepository(temp);
+        var sourceSet = Path.Combine(root, "src", "Book1");
+        var runtimePath = Path.Combine(sourceSet, "Runtime.bas");
+        var testOnlyPath = Path.Combine(sourceSet, "TestOnly.bas");
+        File.WriteAllText(
+            runtimePath,
+            "Attribute VB_Name = \"CollisionName\"",
+            Encoding.UTF8);
+        File.WriteAllText(
+            testOnlyPath,
+            "Attribute VB_Name = \"collisionname\"",
+            Encoding.UTF8);
+        var store = new JsonProjectManifestStore();
+        var manifest = store.Load(Path.Combine(root, ProjectManifest.ManifestFileName));
+        manifest.Documents["Book1"].CommonModules.Add(
+            new InstalledCommonModule(
+                "TestOnly",
+                "TestOnly.bas",
+                Requested: true,
+                TestOnly: true));
+        store.Save(root, manifest);
+        var stagedWorkbook = Path.Combine(temp.Path, "staged-Book1.xlsm");
+        var deletedWorkbooks = new List<string>();
+        var automation = new SuccessfulEnvironmentWorkbookAutomation();
+        var materializationPort = new ExcelProjectMaterializationDiagnosticPort(
+            automation,
+            _ => stagedWorkbook,
+            deletedWorkbooks.Add);
+        var application = CommandLineTestFactory.Create(
+            root,
+            new FakeEnvironmentDiagnosticPort(),
+            projectMaterializationDiagnosticPort: materializationPort);
+
+        var result = await application.RunAsync(
+            ["doctor", "--format", "json"]);
+
+        Assert.Equal(1, result.ExitCode);
+        using var output = JsonDocument.Parse(result.StandardOutput);
+        var checks = output.RootElement.GetProperty("checks").EnumerateArray().ToArray();
+        Assert.Contains(
+            checks,
+            check =>
+                check.GetProperty("id").GetString() ==
+                    "project.workbookMaterialization/Book1/build" &&
+                check.GetProperty("status").GetString() == "fail");
+        Assert.Contains(
+            checks,
+            check =>
+                check.GetProperty("id").GetString() ==
+                    "project.workbookMaterialization/Book1/publish" &&
+                check.GetProperty("status").GetString() == "pass");
+        Assert.Equal(1, automation.RunCount);
+        Assert.Equal([stagedWorkbook], deletedWorkbooks);
+    }
+
+    [Fact]
+    public async Task DoctorReinspectsFinalProjectAuthorityAfterWorkbookNormalization()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateDoctorProjectWithoutRepository(temp);
+        File.WriteAllText(
+            Path.Combine(root, "src", "Book1", "Runtime.bas"),
+            "Attribute VB_Name = \"FinalProject\"\r\n",
+            Encoding.UTF8);
+        var stagedWorkbook = Path.Combine(temp.Path, "staged-Book1.xlsm");
+        var deletedWorkbooks = new List<string>();
+        var automation = new ReinspectingEnvironmentWorkbookAutomation(
+            initialProjectName: "InitialProject",
+            finalProjectName: "FinalProject",
+            initialModules:
+            [
+                new WorkbookModule("OldModule", WorkbookModuleKind.StandardModule)
+            ],
+            finalModules: [],
+            initialReferences: [],
+            finalReferences: []);
+        var materializationPort = new ExcelProjectMaterializationDiagnosticPort(
+            automation,
+            _ => stagedWorkbook,
+            deletedWorkbooks.Add);
+        var application = CommandLineTestFactory.Create(
+            root,
+            new FakeEnvironmentDiagnosticPort(),
+            projectMaterializationDiagnosticPort: materializationPort);
+
+        var result = await application.RunAsync(
+            ["doctor", "--format", "json"]);
+
+        Assert.Equal(1, result.ExitCode);
+        using var output = JsonDocument.Parse(result.StandardOutput);
+        foreach (var profile in new[] { "build", "publish" })
+        {
+            var check = Assert.Single(
+                output.RootElement.GetProperty("checks").EnumerateArray(),
+                candidate => candidate.GetProperty("id").GetString() ==
+                    $"project.workbookMaterialization/Book1/{profile}");
+            Assert.Equal("fail", check.GetProperty("status").GetString());
+            Assert.Contains(
+                "containing project 'FinalProject'",
+                check.GetProperty("message").GetString(),
+                StringComparison.Ordinal);
+        }
+
+        Assert.Equal(2, automation.Session.ProjectNameReads);
+        Assert.Equal(2, automation.Session.ModuleReads);
+        Assert.Contains("remove:OldModule", automation.Session.Events);
+        Assert.DoesNotContain("import", automation.Session.Events);
+        Assert.DoesNotContain("verify", automation.Session.Events);
+        Assert.DoesNotContain("save", automation.Session.Events);
+        Assert.Equal([stagedWorkbook], deletedWorkbooks);
+    }
+
+    [Fact]
+    public async Task DoctorPreservesConclusiveInitialConflictsBeforeReferenceNormalization()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateDoctorProjectWithoutRepository(temp);
+        File.WriteAllText(
+            Path.Combine(root, "src", "Book1", "Runtime.bas"),
+            "Attribute VB_Name = \"ActualProject\"\r\n",
+            Encoding.UTF8);
+        var store = new JsonProjectManifestStore();
+        var manifest = store.Load(Path.Combine(root, ProjectManifest.ManifestFileName));
+        manifest.Documents["Book1"].References.Add(
+            new VbaProjectReference("Unresolvable Library"));
+        store.Save(root, manifest);
+        var resolver = new FakeVbaProjectReferenceResolver();
+        var automation = new ReinspectingEnvironmentWorkbookAutomation(
+            initialProjectName: "ActualProject",
+            finalProjectName: "ActualProject",
+            initialModules: [],
+            finalModules: [],
+            initialReferences: [],
+            finalReferences: []);
+        var stagedWorkbook = Path.Combine(temp.Path, "staged-Book1.xlsm");
+        var deletedWorkbooks = new List<string>();
+        var materializationPort = new ExcelProjectMaterializationDiagnosticPort(
+            automation,
+            _ => stagedWorkbook,
+            deletedWorkbooks.Add,
+            new WorkbookSourcePlanner(() => 65001),
+            new WorkbookReferenceNormalizer(
+                new VbaProjectReferencePlanner(resolver)),
+            new VbeImportSourceSetFactory(() => 65001),
+            new WorkbookMaterializationNamePreflight());
+        var application = CommandLineTestFactory.Create(
+            root,
+            new FakeEnvironmentDiagnosticPort(),
+            projectMaterializationDiagnosticPort: materializationPort);
+
+        var result = await application.RunAsync(
+            ["doctor", "--format", "json"]);
+
+        Assert.Equal(1, result.ExitCode);
+        using var output = JsonDocument.Parse(result.StandardOutput);
+        foreach (var profile in new[] { "build", "publish" })
+        {
+            var check = Assert.Single(
+                output.RootElement.GetProperty("checks").EnumerateArray(),
+                candidate => candidate.GetProperty("id").GetString() ==
+                    $"project.workbookMaterialization/Book1/{profile}");
+            Assert.Equal("fail", check.GetProperty("status").GetString());
+            Assert.Contains(
+                "containing project 'ActualProject'",
+                check.GetProperty("message").GetString(),
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                "Unresolvable Library",
+                check.GetProperty("message").GetString(),
+                StringComparison.Ordinal);
+        }
+
+        Assert.Empty(resolver.RequestedNames);
+        Assert.Equal(1, automation.Session.ProjectNameReads);
+        Assert.Equal(1, automation.Session.ModuleReads);
+        Assert.DoesNotContain("import", automation.Session.Events);
+        Assert.DoesNotContain("verify", automation.Session.Events);
+        Assert.DoesNotContain("save", automation.Session.Events);
+        Assert.Equal([stagedWorkbook], deletedWorkbooks);
+    }
+
+    [Fact]
+    public async Task DoctorUsesProtectedReferenceNamespaceAsInitialMaterializationAuthority()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateDoctorProjectWithoutRepository(temp);
+        File.WriteAllText(
+            Path.Combine(root, "src", "Book1", "Runtime.bas"),
+            "Attribute VB_Name = \"ProtectedNamespace\"\r\n",
+            Encoding.UTF8);
+        var automation = new ReinspectingEnvironmentWorkbookAutomation(
+            initialProjectName: "ActualProject",
+            finalProjectName: "UnusedProject",
+            initialModules: [],
+            finalModules: [],
+            initialReferences:
+            [
+                new WorkbookReference(
+                    "Protected Library",
+                    IsRemovable: false,
+                    NamespaceName: "ProtectedNamespace")
+            ],
+            finalReferences: []);
+        var stagedWorkbook = Path.Combine(temp.Path, "staged-Book1.xlsm");
+        var deletedWorkbooks = new List<string>();
+        var materializationPort = new ExcelProjectMaterializationDiagnosticPort(
+            automation,
+            _ => stagedWorkbook,
+            deletedWorkbooks.Add,
+            new WorkbookSourcePlanner(() => 65001),
+            new WorkbookReferenceNormalizer(
+                new VbaProjectReferencePlanner(
+                    new FakeVbaProjectReferenceResolver())),
+            new VbeImportSourceSetFactory(() => 65001),
+            new WorkbookMaterializationNamePreflight());
+        var application = CommandLineTestFactory.Create(
+            root,
+            new FakeEnvironmentDiagnosticPort(),
+            projectMaterializationDiagnosticPort: materializationPort);
+
+        var result = await application.RunAsync(
+            ["doctor", "--format", "json"]);
+
+        Assert.Equal(1, result.ExitCode);
+        using var output = JsonDocument.Parse(result.StandardOutput);
+        foreach (var profile in new[] { "build", "publish" })
+        {
+            var check = Assert.Single(
+                output.RootElement.GetProperty("checks").EnumerateArray(),
+                candidate => candidate.GetProperty("id").GetString() ==
+                    $"project.workbookMaterialization/Book1/{profile}");
+            Assert.Equal("fail", check.GetProperty("status").GetString());
+            Assert.Contains(
+                "active reference 'ProtectedNamespace'",
+                check.GetProperty("message").GetString(),
+                StringComparison.Ordinal);
+        }
+
+        Assert.Equal(1, automation.Session.ReferenceReads);
+        Assert.DoesNotContain(
+            automation.Session.Events,
+            item => item.StartsWith("remove", StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            automation.Session.Events,
+            item => item.StartsWith("add-reference", StringComparison.Ordinal));
+        Assert.DoesNotContain("import", automation.Session.Events);
+        Assert.DoesNotContain("verify", automation.Session.Events);
+        Assert.DoesNotContain("save", automation.Session.Events);
+        Assert.Equal([stagedWorkbook], deletedWorkbooks);
+    }
+
+    [Fact]
+    public async Task DoctorProbesAmbiguousReferenceAgainstItsSingleCleanedWorkbookCopy()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateDoctorProjectWithoutRepository(temp);
+        var store = new JsonProjectManifestStore();
+        var manifest = store.Load(Path.Combine(root, ProjectManifest.ManifestFileName));
+        manifest.Documents["Book1"].References.Add(
+            new VbaProjectReference("Ambiguous Library"));
+        store.Save(root, manifest);
+        var resolvedIdentity = new ResolvedVbaProjectReference(
+            "Ambiguous Library",
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            2,
+            0);
+        var registryResolver = new FakeVbaProjectReferenceResolver(
+            resolvedIdentity,
+            new ResolvedVbaProjectReference(
+                "Ambiguous Library",
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                3,
+                0));
+        var externalMaterializationProbe = new RecordingDoctorAmbiguityProbe(
+            resolvedIdentity);
+        var automation = new ReinspectingEnvironmentWorkbookAutomation(
+            initialProjectName: "ActualProject",
+            finalProjectName: "ActualProject",
+            initialModules:
+            [
+                new WorkbookModule(
+                    "ReplaceableModule",
+                    WorkbookModuleKind.StandardModule)
+            ],
+            finalModules: [],
+            initialReferences:
+            [
+                new WorkbookReference(
+                    "Old Library",
+                    IsRemovable: true,
+                    NamespaceName: "OldNamespace")
+            ],
+            finalReferences:
+            [
+                new WorkbookReference(
+                    "Ambiguous Library",
+                    IsRemovable: true,
+                    NamespaceName: "AdoptedNamespace")
+            ],
+            referenceProbe: (_, candidate) =>
+                candidate.Guid.Equals(
+                    resolvedIdentity.Guid,
+                    StringComparison.OrdinalIgnoreCase)
+                    ? VbaProjectReferenceProbeAttemptResult.Accepted(resolvedIdentity)
+                    : VbaProjectReferenceProbeAttemptResult.Rejected());
+        var stagedWorkbook = Path.Combine(temp.Path, "staged-Book1.xlsm");
+        var stageCount = 0;
+        var deletedWorkbooks = new List<string>();
+        var materializationPort = new ExcelProjectMaterializationDiagnosticPort(
+            automation,
+            _ =>
+            {
+                stageCount++;
+                return stagedWorkbook;
+            },
+            deletedWorkbooks.Add,
+            new WorkbookSourcePlanner(() => 65001),
+            new WorkbookReferenceNormalizer(
+                new VbaProjectReferencePlanner(
+                    registryResolver,
+                    externalMaterializationProbe)),
+            new VbeImportSourceSetFactory(() => 65001),
+            new WorkbookMaterializationNamePreflight());
+        var application = CommandLineTestFactory.Create(
+            root,
+            new FakeEnvironmentDiagnosticPort(),
+            vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
+                resolvedIdentity),
+            projectMaterializationDiagnosticPort: materializationPort);
+
+        var result = await application.RunAsync(
+            ["doctor", "--format", "json"]);
+
+        Assert.True(
+            result.ExitCode == 0,
+            result.StandardOutput + Environment.NewLine + result.StandardError);
+        using var output = JsonDocument.Parse(result.StandardOutput);
+        foreach (var profile in new[] { "build", "publish" })
+        {
+            var check = Assert.Single(
+                output.RootElement.GetProperty("checks").EnumerateArray(),
+                candidate => candidate.GetProperty("id").GetString() ==
+                    $"project.workbookMaterialization/Book1/{profile}");
+            Assert.Equal("pass", check.GetProperty("status").GetString());
+        }
+
+        Assert.Equal(1, stageCount);
+        Assert.Equal([stagedWorkbook], deletedWorkbooks);
+        Assert.Empty(externalMaterializationProbe.BaselineWorkbookPaths);
+        Assert.Contains("remove:ReplaceableModule", automation.Session.Events);
+        Assert.Contains("remove-reference:Old Library", automation.Session.Events);
+        Assert.Contains(
+            $"probe-reference:{resolvedIdentity.Guid}",
+            automation.Session.Events);
+        Assert.DoesNotContain("import", automation.Session.Events);
+        Assert.DoesNotContain("verify", automation.Session.Events);
+        Assert.DoesNotContain("save", automation.Session.Events);
+    }
+
+    [Fact]
+    public async Task DoctorReportsEveryFinalComponentProjectAndAdoptedReferenceConflictInOrder()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateDoctorProjectWithoutRepository(temp);
+        var sourceDirectory = Path.Combine(root, "src", "Book1");
+        File.WriteAllText(
+            Path.Combine(sourceDirectory, "AComponent.bas"),
+            "Attribute VB_Name = \"SurvivingModule\"\r\n",
+            Encoding.UTF8);
+        File.WriteAllText(
+            Path.Combine(sourceDirectory, "BProject.bas"),
+            "Attribute VB_Name = \"FinalProject\"\r\n",
+            Encoding.UTF8);
+        File.WriteAllText(
+            Path.Combine(sourceDirectory, "CReference.bas"),
+            "Attribute VB_Name = \"AdoptedNamespace\"\r\n",
+            Encoding.UTF8);
+        var store = new JsonProjectManifestStore();
+        var manifest = store.Load(Path.Combine(root, ProjectManifest.ManifestFileName));
+        manifest.Documents["Book1"].References.Add(
+            new VbaProjectReference("Friendly Library Description"));
+        store.Save(root, manifest);
+        var resolvedReference = new ResolvedVbaProjectReference(
+            "Friendly Library Description",
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            1,
+            0);
+        var automation = new ReinspectingEnvironmentWorkbookAutomation(
+            initialProjectName: "InitialProject",
+            finalProjectName: "FinalProject",
+            initialModules:
+            [
+                new WorkbookModule("OldModule", WorkbookModuleKind.StandardModule)
+            ],
+            finalModules:
+            [
+                new WorkbookModule("SurvivingModule", WorkbookModuleKind.StandardModule)
+            ],
+            initialReferences: [],
+            finalReferences:
+            [
+                new WorkbookReference(
+                    "Friendly Library Description",
+                    IsRemovable: true,
+                    NamespaceName: "AdoptedNamespace")
+            ]);
+        var stagedWorkbook = Path.Combine(temp.Path, "staged-Book1.xlsm");
+        var deletedWorkbooks = new List<string>();
+        var materializationPort = new ExcelProjectMaterializationDiagnosticPort(
+            automation,
+            _ => stagedWorkbook,
+            deletedWorkbooks.Add,
+            new WorkbookSourcePlanner(() => 65001),
+            new WorkbookReferenceNormalizer(
+                new VbaProjectReferencePlanner(
+                    new FakeVbaProjectReferenceResolver(resolvedReference))),
+            new VbeImportSourceSetFactory(() => 65001),
+            new WorkbookMaterializationNamePreflight());
+        var application = CommandLineTestFactory.Create(
+            root,
+            new FakeEnvironmentDiagnosticPort(),
+            projectMaterializationDiagnosticPort: materializationPort);
+
+        var result = await application.RunAsync(
+            ["doctor", "--format", "json"]);
+
+        Assert.Equal(1, result.ExitCode);
+        using var output = JsonDocument.Parse(result.StandardOutput);
+        foreach (var profile in new[] { "build", "publish" })
+        {
+            var check = Assert.Single(
+                output.RootElement.GetProperty("checks").EnumerateArray(),
+                candidate => candidate.GetProperty("id").GetString() ==
+                    $"project.workbookMaterialization/Book1/{profile}");
+            var message = check.GetProperty("message").GetString()!;
+            var componentIndex = message.IndexOf(
+                "retained component 'SurvivingModule'",
+                StringComparison.Ordinal);
+            var projectIndex = message.IndexOf(
+                "containing project 'FinalProject'",
+                StringComparison.Ordinal);
+            var referenceIndex = message.IndexOf(
+                "active reference 'AdoptedNamespace'",
+                StringComparison.Ordinal);
+            Assert.Equal("fail", check.GetProperty("status").GetString());
+            Assert.True(componentIndex >= 0);
+            Assert.True(projectIndex > componentIndex);
+            Assert.True(referenceIndex > projectIndex);
+        }
+
+        Assert.Contains("remove:OldModule", automation.Session.Events);
+        Assert.Contains("add-reference:Friendly Library Description", automation.Session.Events);
+        Assert.Equal(2, automation.Session.ProjectNameReads);
+        Assert.Equal(2, automation.Session.ModuleReads);
+        Assert.Equal(3, automation.Session.ReferenceReads);
+        Assert.DoesNotContain("import", automation.Session.Events);
+        Assert.DoesNotContain("verify", automation.Session.Events);
+        Assert.DoesNotContain("save", automation.Session.Events);
+        Assert.Equal([stagedWorkbook], deletedWorkbooks);
+    }
+
+    [Fact]
+    public async Task DoctorPreservesStaticIdentityFailuresWhenTheTemplateIsMissing()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateDoctorProjectWithoutRepository(temp);
+        var templatePath = Path.Combine(root, "src", "Book1", "Book1.xlsm");
+        File.WriteAllText(
+            Path.Combine(root, "src", "Book1", "Broken.bas"),
+            "Public Sub Run()\r\nEnd Sub\r\n",
+            Encoding.UTF8);
+        File.Delete(templatePath);
+        var automation = new RecordingEnvironmentWorkbookAutomation();
+        var profileCaptures = 0;
+        var materializationPort = new ExcelProjectMaterializationDiagnosticPort(
+            automation,
+            _ => throw new InvalidOperationException("The missing template must not be staged."),
+            _ => throw new InvalidOperationException("No staged workbook should exist."),
+            new WorkbookSourcePlanner(),
+            new WorkbookReferenceNormalizer(
+                new VbaProjectReferencePlanner(
+                    new FakeVbaProjectReferenceResolver())),
+            new VbeImportSourceSetFactory(() =>
+            {
+                profileCaptures++;
+                return 65001;
+            }),
+            new WorkbookMaterializationNamePreflight());
+        var application = CommandLineTestFactory.Create(
+            root,
+            new FakeEnvironmentDiagnosticPort(),
+            projectMaterializationDiagnosticPort: materializationPort);
+
+        var result = await application.RunAsync(
+            ["doctor", "--format", "json"]);
+
+        Assert.Equal(1, result.ExitCode);
+        using var output = JsonDocument.Parse(result.StandardOutput);
+        foreach (var profile in new[] { "build", "publish" })
+        {
+            var check = Assert.Single(
+                output.RootElement.GetProperty("checks").EnumerateArray(),
+                candidate => candidate.GetProperty("id").GetString() ==
+                    $"project.workbookMaterialization/Book1/{profile}");
+            Assert.Equal("fail", check.GetProperty("status").GetString());
+            Assert.Contains(
+                "authoritative ModuleIdentity",
+                check.GetProperty("message").GetString(),
+                StringComparison.Ordinal);
+        }
+
+        Assert.Equal(0, automation.RunCount);
+        Assert.Equal(2, profileCaptures);
+    }
+
+    [Fact]
+    public async Task DoctorDisposesPreparedSourceProfilesWhenLaterProfilePreparationIsCanceled()
+    {
+        using var temp = TempDirectory.Create();
+        using var cancellation = new CancellationTokenSource();
+        var root = CreateDoctorProjectWithoutRepository(temp);
+        var automation = new RecordingEnvironmentWorkbookAutomation();
+        var stagingPaths = new List<string>();
+        var materializationPort = new ExcelProjectMaterializationDiagnosticPort(
+            automation,
+            _ => throw new InvalidOperationException("Cancellation must prevent workbook staging."),
+            _ => throw new InvalidOperationException("No staged workbook should exist."),
+            new WorkbookSourcePlanner(() => 65001),
+            new WorkbookReferenceNormalizer(
+                new VbaProjectReferencePlanner(
+                    new FakeVbaProjectReferenceResolver())),
+            new VbeImportSourceSetFactory(
+                () => 65001,
+                sourceSet =>
+                {
+                    stagingPaths.Add(sourceSet.StagingPath);
+                    cancellation.Cancel();
+                }),
+            new WorkbookMaterializationNamePreflight());
+        var application = CommandLineTestFactory.Create(
+            root,
+            new FakeEnvironmentDiagnosticPort(),
+            projectMaterializationDiagnosticPort: materializationPort);
+
+        var result = await application.RunAsync(
+            ["doctor", "--format", "json"],
+            cancellation.Token);
+
+        Assert.Equal(1, result.ExitCode);
+        var stagingPath = Assert.Single(stagingPaths);
+        Assert.False(Directory.Exists(stagingPath));
+        Assert.Equal(0, automation.RunCount);
+    }
+
+    [Fact]
+    public async Task DoctorDisposesEverySourceProfileWhenStagedWorkbookCleanupFails()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateDoctorProjectWithoutRepository(temp);
+        var stagedWorkbook = Path.Combine(temp.Path, "staged-Book1.xlsm");
+        var stagingPaths = new List<string>();
+        var deleteAttempts = 0;
+        var materializationPort = new ExcelProjectMaterializationDiagnosticPort(
+            new SuccessfulEnvironmentWorkbookAutomation(),
+            _ => stagedWorkbook,
+            _ =>
+            {
+                deleteAttempts++;
+                throw new IOException("The staged workbook remained locked.");
+            },
+            new WorkbookSourcePlanner(() => 65001),
+            new WorkbookReferenceNormalizer(
+                new VbaProjectReferencePlanner(
+                    new FakeVbaProjectReferenceResolver())),
+            new VbeImportSourceSetFactory(
+                () => 65001,
+                sourceSet => stagingPaths.Add(sourceSet.StagingPath)),
+            new WorkbookMaterializationNamePreflight());
+        var application = CommandLineTestFactory.Create(
+            root,
+            new FakeEnvironmentDiagnosticPort(),
+            projectMaterializationDiagnosticPort: materializationPort);
+
+        var result = await application.RunAsync(
+            ["doctor", "--format", "json"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Equal(1, deleteAttempts);
+        Assert.Equal(2, stagingPaths.Count);
+        Assert.All(stagingPaths, path => Assert.False(Directory.Exists(path)));
+    }
+
+    [Fact]
+    public async Task DoctorRemovesItsStagingDirectoryWhenTemplateCopyFails()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateDoctorProjectWithoutRepository(temp);
+        var stagingDirectory = Path.Combine(temp.Path, "failed-doctor-stage");
+        var automation = new RecordingEnvironmentWorkbookAutomation();
+        var deleteAttempts = 0;
+        var materializationPort = new ExcelProjectMaterializationDiagnosticPort(
+            automation,
+            templatePath =>
+            {
+                File.Delete(templatePath);
+                return ExcelProjectMaterializationDiagnosticPort.StageTemplateWorkbook(
+                    templatePath,
+                    stagingDirectory);
+            },
+            _ => deleteAttempts++,
+            new WorkbookSourcePlanner(() => 65001),
+            new WorkbookReferenceNormalizer(
+                new VbaProjectReferencePlanner(
+                    new FakeVbaProjectReferenceResolver())),
+            new VbeImportSourceSetFactory(() => 65001),
+            new WorkbookMaterializationNamePreflight());
+        var application = CommandLineTestFactory.Create(
+            root,
+            new FakeEnvironmentDiagnosticPort(),
+            projectMaterializationDiagnosticPort: materializationPort);
+
+        var result = await application.RunAsync(
+            ["doctor", "--format", "json"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.False(Directory.Exists(stagingDirectory));
+        Assert.Equal(0, deleteAttempts);
+        Assert.Equal(0, automation.RunCount);
+    }
+
+    [Fact]
+    public async Task DoctorAttemptsEverySourceProfileCleanupWhenTemplateIsMissing()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateDoctorProjectWithoutRepository(temp);
+        var templatePath = Path.Combine(root, "src", "Book1", "Book1.xlsm");
+        File.WriteAllText(
+            Path.Combine(root, "src", "Book1", "Runtime.bas"),
+            "Attribute VB_Name = \"Runtime\"\r\n",
+            Encoding.UTF8);
+        File.Delete(templatePath);
+        var stagingPaths = new List<string>();
+        FileStream? lockedSource = null;
+        var materializationPort = new ExcelProjectMaterializationDiagnosticPort(
+            new RecordingEnvironmentWorkbookAutomation(),
+            _ => throw new InvalidOperationException("The missing template must not be staged."),
+            _ => throw new InvalidOperationException("No staged workbook should exist."),
+            new WorkbookSourcePlanner(() => 65001),
+            new WorkbookReferenceNormalizer(
+                new VbaProjectReferencePlanner(
+                    new FakeVbaProjectReferenceResolver())),
+            new VbeImportSourceSetFactory(
+                () => 65001,
+                sourceSet =>
+                {
+                    stagingPaths.Add(sourceSet.StagingPath);
+                    if (stagingPaths.Count == 1)
+                    {
+                        lockedSource = File.Open(
+                            Assert.Single(sourceSet.SourceFiles).SourcePath,
+                            FileMode.Open,
+                            FileAccess.Read,
+                            FileShare.None);
+                    }
+                }),
+            new WorkbookMaterializationNamePreflight());
+        var application = CommandLineTestFactory.Create(
+            root,
+            new FakeEnvironmentDiagnosticPort(),
+            projectMaterializationDiagnosticPort: materializationPort);
+
+        try
+        {
+            var result = await application.RunAsync(
+                ["doctor", "--format", "json"]);
+
+            Assert.Equal(1, result.ExitCode);
+            Assert.Equal(2, stagingPaths.Count);
+            Assert.True(Directory.Exists(stagingPaths[0]));
+            Assert.False(Directory.Exists(stagingPaths[1]));
+        }
+        finally
+        {
+            lockedSource?.Dispose();
+            foreach (var stagingPath in stagingPaths.Where(Directory.Exists))
+            {
+                Directory.Delete(stagingPath, recursive: true);
+            }
+        }
     }
 
     [Fact]
@@ -1806,7 +2506,7 @@ public sealed class DoctorCommandTests
         manifest.Documents["Book1"].References.Add(new VbaProjectReference("OLE Automation"));
         new JsonProjectManifestStore().Save(root, manifest);
         var automation = new FakeWorkbookBuildAutomation();
-        automation.References.Add(new WorkbookReference("OLE Automation", IsRemovable: false));
+        automation.References.Add(new WorkbookReference("OLE Automation", IsRemovable: false, NamespaceName: "stdole"));
         var resolver = new FakeVbaProjectReferenceResolver();
         var application = CommandLineTestFactory.Create(
             root,
@@ -2078,6 +2778,8 @@ public sealed class DoctorCommandTests
 
         public RecordingEnvironmentWorkbookSession Session { get; }
 
+        public int RunCount { get; private set; }
+
         public string? WorkbookPath { get; private set; }
 
         public async Task<TResult> RunAsync<TResult>(
@@ -2086,8 +2788,139 @@ public sealed class DoctorCommandTests
             Func<IWorkbookGenerationSession, CancellationToken, Task<TResult>> operation,
             CancellationToken cancellationToken)
         {
+            RunCount++;
             WorkbookPath = workbookPath;
             return await operation(Session, cancellationToken);
+        }
+    }
+
+    private sealed class ReinspectingEnvironmentWorkbookAutomation(
+        string initialProjectName,
+        string finalProjectName,
+        IReadOnlyList<WorkbookModule> initialModules,
+        IReadOnlyList<WorkbookModule> finalModules,
+        IReadOnlyList<WorkbookReference> initialReferences,
+        IReadOnlyList<WorkbookReference> finalReferences,
+        Func<string, ResolvedVbaProjectReference, VbaProjectReferenceProbeAttemptResult>?
+            referenceProbe = null)
+        : IWorkbookGenerationAutomation
+    {
+        public ReinspectingEnvironmentWorkbookSession Session { get; } = new(
+            initialProjectName,
+            finalProjectName,
+            initialModules,
+            finalModules,
+            initialReferences,
+            finalReferences,
+            referenceProbe);
+
+        public Task<TResult> RunAsync<TResult>(
+            string workbookPath,
+            WorkbookAutomationTimeouts timeouts,
+            Func<IWorkbookGenerationSession, CancellationToken, Task<TResult>> operation,
+            CancellationToken cancellationToken)
+            => operation(Session, cancellationToken);
+    }
+
+    private sealed class ReinspectingEnvironmentWorkbookSession(
+        string initialProjectName,
+        string finalProjectName,
+        IReadOnlyList<WorkbookModule> initialModules,
+        IReadOnlyList<WorkbookModule> finalModules,
+        IReadOnlyList<WorkbookReference> initialReferences,
+        IReadOnlyList<WorkbookReference> finalReferences,
+        Func<string, ResolvedVbaProjectReference, VbaProjectReferenceProbeAttemptResult>?
+            referenceProbe)
+        : IWorkbookGenerationSession
+    {
+        public List<string> Events { get; } = [];
+
+        public int ProjectNameReads { get; private set; }
+
+        public int ModuleReads { get; private set; }
+
+        public int ReferenceReads { get; private set; }
+
+        public Task<string> GetProjectNameAsync(CancellationToken cancellationToken)
+        {
+            Events.Add("get-project-name");
+            ProjectNameReads++;
+            return Task.FromResult(ProjectNameReads == 1
+                ? initialProjectName
+                : finalProjectName);
+        }
+
+        public Task<IReadOnlyList<WorkbookModule>> GetModulesAsync(CancellationToken cancellationToken)
+        {
+            Events.Add("get-modules");
+            ModuleReads++;
+            return Task.FromResult(ModuleReads == 1
+                ? initialModules
+                : finalModules);
+        }
+
+        public Task<IReadOnlyList<WorkbookReference>> GetReferencesAsync(CancellationToken cancellationToken)
+        {
+            Events.Add("get-references");
+            ReferenceReads++;
+            return Task.FromResult(ReferenceReads <= 2
+                ? initialReferences
+                : finalReferences);
+        }
+
+        public Task<bool> RemoveReferenceAsync(
+            string referenceName,
+            CancellationToken cancellationToken)
+        {
+            Events.Add($"remove-reference:{referenceName}");
+            return Task.FromResult(true);
+        }
+
+        public Task AddReferenceAsync(
+            ResolvedVbaProjectReference reference,
+            CancellationToken cancellationToken)
+        {
+            Events.Add($"add-reference:{reference.Name}");
+            return Task.CompletedTask;
+        }
+
+        public Task<VbaProjectReferenceProbeAttemptResult> TryResolveAsync(
+            string referenceName,
+            ResolvedVbaProjectReference candidate,
+            CancellationToken cancellationToken)
+        {
+            Events.Add($"probe-reference:{candidate.Guid}");
+            return Task.FromResult(referenceProbe?.Invoke(referenceName, candidate)
+                ?? throw new NotSupportedException(
+                    "This Doctor session was not configured for reference probing."));
+        }
+
+        public Task RemoveModuleAsync(
+            string moduleName,
+            CancellationToken cancellationToken)
+        {
+            Events.Add($"remove:{moduleName}");
+            return Task.CompletedTask;
+        }
+
+        public Task ImportModuleAsync(
+            VbeImportSourceFile sourceFile,
+            CancellationToken cancellationToken)
+        {
+            Events.Add("import");
+            throw new NotSupportedException();
+        }
+
+        public Task VerifyAsync(CancellationToken cancellationToken)
+        {
+            Events.Add("verify");
+            throw new NotSupportedException();
+        }
+
+        public Task SaveAsync(CancellationToken cancellationToken)
+        {
+            Events.Add("save");
+            throw new NotSupportedException();
         }
     }
 
@@ -2151,6 +2984,9 @@ public sealed class DoctorCommandTests
 
         public int GetModulesCount { get; private set; }
 
+        public Task<string> GetProjectNameAsync(CancellationToken cancellationToken)
+            => Task.FromResult("VbaProject");
+
         public Task<IReadOnlyList<WorkbookModule>> GetModulesAsync(
             CancellationToken cancellationToken)
         {
@@ -2166,22 +3002,22 @@ public sealed class DoctorCommandTests
 
         public Task<IReadOnlyList<WorkbookReference>> GetReferencesAsync(
             CancellationToken cancellationToken)
-            => throw new NotSupportedException();
+            => Task.FromResult<IReadOnlyList<WorkbookReference>>([]);
 
         public Task<bool> RemoveReferenceAsync(
             string referenceName,
             CancellationToken cancellationToken)
-            => throw new NotSupportedException();
+            => Task.FromResult(false);
 
         public Task AddReferenceAsync(
             ResolvedVbaProjectReference reference,
             CancellationToken cancellationToken)
-            => throw new NotSupportedException();
+            => Task.CompletedTask;
 
         public Task RemoveModuleAsync(
             string moduleName,
             CancellationToken cancellationToken)
-            => throw new NotSupportedException();
+            => Task.CompletedTask;
 
         public Task ImportModuleAsync(
             VbeImportSourceFile sourceFile,

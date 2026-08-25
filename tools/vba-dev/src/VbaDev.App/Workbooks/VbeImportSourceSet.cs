@@ -10,6 +10,7 @@ namespace VbaDev.App.Workbooks;
 public sealed class VbeImportSourceSetFactory
 {
     private readonly Func<int> getActiveCodePage;
+    private readonly Action<VbeImportSourceSet>? sourceSetCreated;
 
     /// <summary>
     /// Creates a factory that reads the active Windows ANSI code page directly from GetACP.
@@ -19,16 +20,31 @@ public sealed class VbeImportSourceSetFactory
     {
     }
 
-    internal VbeImportSourceSetFactory(Func<int> getActiveCodePage)
+    internal VbeImportSourceSetFactory(
+        Func<int> getActiveCodePage,
+        Action<VbeImportSourceSet>? sourceSetCreated = null)
     {
         this.getActiveCodePage = getActiveCodePage ?? throw new ArgumentNullException(nameof(getActiveCodePage));
+        this.sourceSetCreated = sourceSetCreated;
     }
 
     /// <summary>
     /// Captures the active code page once and stages every supplied source for one invocation.
     /// </summary>
     public VbeImportSourceSet Create(IReadOnlyList<VbaSourceFile> sourceFiles)
-        => VbeImportSourceSet.Create(sourceFiles, getActiveCodePage());
+    {
+        var sourceSet = VbeImportSourceSet.Create(sourceFiles, getActiveCodePage());
+        try
+        {
+            sourceSetCreated?.Invoke(sourceSet);
+            return sourceSet;
+        }
+        catch
+        {
+            sourceSet.Dispose();
+            throw;
+        }
+    }
 }
 
 /// <summary>
@@ -118,7 +134,7 @@ public sealed class VbeImportSourceSet : IDisposable
                     var diagnosticPath = sourceFile.ExpectedUnicodeTextSourcePath
                         ?? diagnosticSourcePath;
                     throw new InvalidOperationException(
-                        $"Debug source snapshot content does not match build source '{diagnosticPath}'.");
+                        $"VBA source content changed after it was selected for materialization: '{diagnosticPath}'.");
                 }
 
                 var importBytes = EncodeForVbe(
@@ -140,15 +156,21 @@ public sealed class VbeImportSourceSet : IDisposable
                         $"VBA source '{diagnosticSourcePath}' declares component kind '{projectedKind}' instead of expected '{sourceFile.Kind}'.");
                 }
 
+                var moduleIdentityAuthority = VbeModuleIdentityMetadataReader.Read(
+                    decoded.Text,
+                    sourceFile.Kind);
+
                 stagedSources.Add(new VbeImportSourceFile(
                     stagedSourcePath,
                     sourceFile.Kind,
                     stagedBinaryPath,
                     new VbeImportVerification(
-                        projection.ModuleName,
+                        moduleIdentityAuthority.Name ?? projection.ModuleName,
                         projectedKind,
                         projection.CodeModuleLines,
-                        decoded.EncodingToken)));
+                        decoded.EncodingToken),
+                    diagnosticSourcePath,
+                    moduleIdentityAuthority));
             }
 
             return new VbeImportSourceSet(

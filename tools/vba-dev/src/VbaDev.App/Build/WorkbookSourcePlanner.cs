@@ -11,6 +11,28 @@ public sealed class WorkbookSourcePlanner
 {
     private const int PublishMarkerScanLineLimit = 32;
     private const string PublishExclusionMarker = "'#ExcludePublish";
+    private static readonly char[] VbaWhitespaceCharacters =
+    [
+        '\u0009', '\u0019', '\u0020', '\u1680',
+        '\u2000', '\u2001', '\u2002', '\u2003', '\u2004', '\u2005',
+        '\u2006', '\u2007', '\u2008', '\u2009', '\u200a',
+        '\u202f', '\u205f', '\u3000'
+    ];
+    private readonly Func<int> getActiveCodePage;
+
+    /// <summary>
+    /// Creates a source planner that uses the active Windows code page for strict marker decoding.
+    /// </summary>
+    public WorkbookSourcePlanner()
+        : this(ActiveWindowsAnsiCodePage.Get)
+    {
+    }
+
+    internal WorkbookSourcePlanner(Func<int> getActiveCodePage)
+    {
+        this.getActiveCodePage = getActiveCodePage
+            ?? throw new ArgumentNullException(nameof(getActiveCodePage));
+    }
 
     /// <summary>
     /// Resolves the source files for build output, including test-only project and CommonModules sources.
@@ -20,8 +42,20 @@ public sealed class WorkbookSourcePlanner
     public IReadOnlyList<VbaSourceFile> ResolveBuildSourceFiles(ResolvedProjectContext context)
         => ResolveSourceFiles(
             context,
+            requireTemplate: true,
             includeCommonModule: _ => true,
-            includeProjectLocalSource: _ => true);
+            selectProjectLocalSource: source => source);
+
+    /// <summary>
+    /// Resolves the build source profile without requiring the template to exist yet.
+    /// </summary>
+    public IReadOnlyList<VbaSourceFile> ResolveBuildSourceFilesForPreflight(
+        ResolvedProjectContext context)
+        => ResolveSourceFiles(
+            context,
+            requireTemplate: false,
+            includeCommonModule: _ => true,
+            selectProjectLocalSource: source => source);
 
     /// <summary>
     /// Resolves the source files for publish output, excluding test-only and explicitly excluded sources.
@@ -29,17 +63,36 @@ public sealed class WorkbookSourcePlanner
     /// <param name="context">The resolved project and document context.</param>
     /// <returns>The ordered source files to import into the published workbook.</returns>
     public IReadOnlyList<VbaSourceFile> ResolvePublishSourceFiles(ResolvedProjectContext context)
-        => ResolveSourceFiles(
+        => ResolvePublishSourceFiles(context, requireTemplate: true);
+
+    /// <summary>
+    /// Resolves the publish source profile without requiring the template to exist yet.
+    /// </summary>
+    public IReadOnlyList<VbaSourceFile> ResolvePublishSourceFilesForPreflight(
+        ResolvedProjectContext context)
+        => ResolvePublishSourceFiles(context, requireTemplate: false);
+
+    private IReadOnlyList<VbaSourceFile> ResolvePublishSourceFiles(
+        ResolvedProjectContext context,
+        bool requireTemplate)
+    {
+        var activeCodePage = getActiveCodePage();
+        return ResolveSourceFiles(
             context,
+            requireTemplate,
             includeCommonModule: entry => !entry.TestOnly,
-            includeProjectLocalSource: source => !HasPublishExclusionMarker(source));
+            selectProjectLocalSource: source => SelectPublishSource(
+                source,
+                activeCodePage));
+    }
 
     private IReadOnlyList<VbaSourceFile> ResolveSourceFiles(
         ResolvedProjectContext context,
+        bool requireTemplate,
         Func<InstalledCommonModule, bool> includeCommonModule,
-        Func<VbaSourceFile, bool> includeProjectLocalSource)
+        Func<VbaSourceFile, VbaSourceFile?> selectProjectLocalSource)
     {
-        if (!File.Exists(context.TemplateDocumentPath))
+        if (requireTemplate && !File.Exists(context.TemplateDocumentPath))
         {
             throw new BuildCommandException($"Template workbook was not found: {context.TemplateDocumentPath}");
         }
@@ -77,23 +130,38 @@ public sealed class WorkbookSourcePlanner
         orderedSourceFiles.AddRange(sourceFilesByName
             .Values
             .Where(source => !commonModuleSet.Contains(source.FileName))
-            .Where(includeProjectLocalSource)
+            .Select(selectProjectLocalSource)
+            .OfType<VbaSourceFile>()
             .OrderBy(source => source.FileName, StringComparer.OrdinalIgnoreCase));
 
         return orderedSourceFiles;
     }
 
-    private static bool HasPublishExclusionMarker(VbaSourceFile source)
+    private static VbaSourceFile? SelectPublishSource(
+        VbaSourceFile source,
+        int activeCodePage)
     {
-        foreach (var line in File.ReadLines(source.SourcePath).Take(PublishMarkerScanLineLimit))
+        var diagnosticSourcePath = source.DiagnosticSourcePath ?? source.SourcePath;
+        var text = VbeImportSourceSet.DecodeSourceText(
+            File.ReadAllBytes(source.SourcePath),
+            activeCodePage,
+            diagnosticSourcePath);
+        foreach (var line in text
+            .Split(["\r\n", "\n", "\r"], StringSplitOptions.None)
+            .Take(PublishMarkerScanLineLimit))
         {
-            if (line.TrimStart().StartsWith(PublishExclusionMarker, StringComparison.OrdinalIgnoreCase))
+            if (line.TrimStart(VbaWhitespaceCharacters)
+                .StartsWith(PublishExclusionMarker, StringComparison.OrdinalIgnoreCase))
             {
-                return true;
+                return null;
             }
         }
 
-        return false;
+        return source with
+        {
+            ExpectedUnicodeText = text,
+            ExpectedUnicodeTextSourcePath = diagnosticSourcePath
+        };
     }
 
 }

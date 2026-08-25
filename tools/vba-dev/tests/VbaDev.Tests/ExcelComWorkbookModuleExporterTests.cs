@@ -68,6 +68,8 @@ public sealed class ExcelComWorkbookModuleExporterTests
 
     private sealed class LegacyWorkbookBuildSession : IWorkbookBuildSession
     {
+        public string GetProjectName() => "VbaProject";
+
         public IReadOnlyList<WorkbookModule> GetModules() => [];
 
         public IReadOnlyList<WorkbookReference> GetReferences() => [];
@@ -101,6 +103,9 @@ public sealed class ExcelComWorkbookModuleExporterTests
 
     private sealed class LegacyWorkbookGenerationSession : IWorkbookGenerationSession
     {
+        public Task<string> GetProjectNameAsync(CancellationToken cancellationToken)
+            => Task.FromResult("VbaProject");
+
         public Task<IReadOnlyList<WorkbookModule>> GetModulesAsync(CancellationToken cancellationToken)
             => Task.FromResult<IReadOnlyList<WorkbookModule>>([]);
 
@@ -135,6 +140,9 @@ public sealed class ExcelComWorkbookModuleExporterTests
     private sealed class ExportRecordingWorkbookGenerationSession(
         IReadOnlyList<WorkbookModule> modules) : IWorkbookGenerationSession
     {
+        public Task<string> GetProjectNameAsync(CancellationToken cancellationToken)
+            => Task.FromResult("VbaProject");
+
         public Task<IReadOnlyList<WorkbookModule>> GetModulesAsync(CancellationToken cancellationToken)
             => Task.FromResult(modules);
 

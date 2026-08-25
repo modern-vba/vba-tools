@@ -48,7 +48,19 @@ public sealed class WorkbookGenerationPipelineTests
         Assert.Same(timeouts, automation.Timeouts);
         Assert.Equal("new-workbook", File.ReadAllText(targetPath, Encoding.UTF8));
         Assert.Equal(
-            ["open", "get-references", "get-modules", "verify", "save", "cleanup-proved"],
+            [
+                "open",
+                "get-project-name",
+                "get-modules",
+                "get-references",
+                "get-references",
+                "get-project-name",
+                "get-modules",
+                "get-references",
+                "verify",
+                "save",
+                "cleanup-proved"
+            ],
             events);
     }
 
@@ -91,8 +103,13 @@ public sealed class WorkbookGenerationPipelineTests
                 "snapshot-release",
                 "transaction-create",
                 "open",
-                "get-references",
+                "get-project-name",
                 "get-modules",
+                "get-references",
+                "get-references",
+                "get-project-name",
+                "get-modules",
+                "get-references",
                 "verify",
                 "save"
             ],
@@ -143,7 +160,7 @@ public sealed class WorkbookGenerationPipelineTests
     }
 
     [Fact]
-    public async Task MissingAmbiguousReferenceUsesTheSelectedTemplateAndAddsTheProbeIdentity()
+    public async Task MissingAmbiguousReferenceIsProbedAgainstTheCleanedOpenWorkbook()
     {
         using var temp = TempDirectory.Create();
         var templatePath = Path.Combine(temp.Path, "Template.xlsm");
@@ -151,12 +168,37 @@ public sealed class WorkbookGenerationPipelineTests
         Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
         File.WriteAllText(templatePath, "new-workbook", Encoding.UTF8);
         var events = new List<string>();
-        var automation = new RecordingWorkbookGenerationAutomation(events);
         var resolvedIdentity = new ResolvedVbaProjectReference(
             "Ambiguous Library",
             "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
             2,
             0);
+        var automation = new RecordingWorkbookGenerationAutomation(events)
+        {
+            Modules = [new WorkbookModule("OldModule", WorkbookModuleKind.StandardModule)],
+            FinalModules = [],
+            References =
+            [
+                new WorkbookReference(
+                    "Old Library",
+                    IsRemovable: true,
+                    NamespaceName: "OldNamespace")
+            ],
+            FinalReferences =
+            [
+                new WorkbookReference(
+                    "Ambiguous Library",
+                    IsRemovable: true,
+                    NamespaceName: "AdoptedNamespace")
+            ],
+            OnRemoveModule = moduleName => events.Add($"remove-module:{moduleName}"),
+            OnRemoveReference = referenceName => events.Add($"remove-reference:{referenceName}"),
+            OnReferenceProbe = (_, candidate) =>
+            {
+                events.Add($"probe-reference:{candidate.Guid}");
+                return VbaProjectReferenceProbeAttemptResult.Accepted(resolvedIdentity);
+            }
+        };
         var probe = new RecordingBuildAmbiguityProbe(resolvedIdentity);
         var pipeline = new WorkbookGenerationPipeline(
             automation,
@@ -180,8 +222,14 @@ public sealed class WorkbookGenerationPipelineTests
             WorkbookAutomationTimeouts.Default,
             CancellationToken.None);
 
-        Assert.Equal([templatePath], probe.BaselineWorkbookPaths);
+        Assert.Empty(probe.BaselineWorkbookPaths);
         Assert.Equal([resolvedIdentity], automation.AddedReferences);
+        Assert.True(
+            events.IndexOf("remove-module:OldModule") <
+            events.IndexOf("remove-reference:Old Library"));
+        Assert.True(
+            events.IndexOf("remove-reference:Old Library") <
+            events.IndexOf($"probe-reference:{resolvedIdentity.Guid}"));
         Assert.True(File.Exists(targetPath));
     }
 
@@ -316,6 +364,647 @@ public sealed class WorkbookGenerationPipelineTests
     }
 
     [Fact]
+    public async Task SourceIdentityConflictFailsBeforeOwnedExcelOrOutputStagingStarts()
+    {
+        using var temp = TempDirectory.Create();
+        var templatePath = Path.Combine(temp.Path, "Template.xlsm");
+        var targetPath = Path.Combine(temp.Path, "Book1.xlsm");
+        var firstSourcePath = Path.Combine(temp.Path, "First.bas");
+        var secondSourcePath = Path.Combine(temp.Path, "Second.bas");
+        File.WriteAllText(templatePath, "new-workbook", Encoding.UTF8);
+        File.WriteAllText(targetPath, "previous-workbook", Encoding.UTF8);
+        File.WriteAllText(
+            firstSourcePath,
+            "Attribute VB_Name = \"SharedName\"\r\n",
+            new UTF8Encoding(false));
+        File.WriteAllText(
+            secondSourcePath,
+            "Attribute VB_Name = \"sharedname\"\r\n",
+            new UTF8Encoding(false));
+        var events = new List<string>();
+        var pipeline = CreatePipeline(new RecordingWorkbookGenerationAutomation(events));
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+            "Book1",
+            templatePath,
+            targetPath,
+            [],
+            [
+                new VbaSourceFile(firstSourcePath, VbaSourceKind.StandardModule, null),
+                new VbaSourceFile(secondSourcePath, VbaSourceKind.StandardModule, null)
+            ],
+            WorkbookAutomationTimeouts.Default,
+            CancellationToken.None));
+
+        Assert.Contains("SharedName", error.Message, StringComparison.Ordinal);
+        Assert.Contains(firstSourcePath, error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(secondSourcePath, error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(events);
+        Assert.Equal("previous-workbook", File.ReadAllText(targetPath, Encoding.UTF8));
+        Assert.Empty(Directory.EnumerateFiles(temp.Path, ".Book1.*.tmp.xlsm"));
+    }
+
+    [Fact]
+    public async Task MissingAuthoritativeSourceIdentityFailsBeforeOwnedExcelOrOutputStagingStarts()
+    {
+        using var temp = TempDirectory.Create();
+        var templatePath = Path.Combine(temp.Path, "Template.xlsm");
+        var targetPath = Path.Combine(temp.Path, "Book1.xlsm");
+        var sourcePath = Path.Combine(temp.Path, "FallbackOnly.bas");
+        File.WriteAllText(templatePath, "new-workbook", Encoding.UTF8);
+        File.WriteAllText(targetPath, "previous-workbook", Encoding.UTF8);
+        File.WriteAllText(
+            sourcePath,
+            "Public Sub Run()\r\nEnd Sub\r\n",
+            new UTF8Encoding(false));
+        var events = new List<string>();
+        var pipeline = CreatePipeline(new RecordingWorkbookGenerationAutomation(events));
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+            "Book1",
+            templatePath,
+            targetPath,
+            [],
+            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
+            WorkbookAutomationTimeouts.Default,
+            CancellationToken.None));
+
+        Assert.Contains("authoritative ModuleIdentity", error.Message, StringComparison.Ordinal);
+        Assert.Contains(sourcePath, error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(events);
+        Assert.Equal("previous-workbook", File.ReadAllText(targetPath, Encoding.UTF8));
+        Assert.Empty(Directory.EnumerateFiles(temp.Path, ".Book1.*.tmp.xlsm"));
+    }
+
+    [Fact]
+    public async Task StaticPreflightReportsEveryInvalidIdentityAndProvableConflictInSourceOrder()
+    {
+        using var temp = TempDirectory.Create();
+        var templatePath = Path.Combine(temp.Path, "Template.xlsm");
+        var targetPath = Path.Combine(temp.Path, "Book1.xlsm");
+        var misplacedPath = Path.Combine(temp.Path, "First.bas");
+        var missingPath = Path.Combine(temp.Path, "Second.bas");
+        var conflictPath = Path.Combine(temp.Path, "Third.bas");
+        var caseConflictPath = Path.Combine(temp.Path, "Fourth.bas");
+        File.WriteAllText(templatePath, "new-workbook", Encoding.UTF8);
+        File.WriteAllText(targetPath, "previous-workbook", Encoding.UTF8);
+        File.WriteAllText(
+            misplacedPath,
+            "Public Sub Run()\r\nEnd Sub\r\nAttribute VB_Name = \"Misplaced\"\r\n",
+            new UTF8Encoding(false));
+        File.WriteAllText(
+            missingPath,
+            "Public Sub Run()\r\nEnd Sub\r\n",
+            new UTF8Encoding(false));
+        File.WriteAllText(
+            conflictPath,
+            "Attribute VB_Name = \"CollisionName\"\r\n",
+            new UTF8Encoding(false));
+        File.WriteAllText(
+            caseConflictPath,
+            "Attribute VB_Name = \"collisionname\"\r\n",
+            new UTF8Encoding(false));
+        var events = new List<string>();
+        var pipeline = CreatePipeline(new RecordingWorkbookGenerationAutomation(events));
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+            "Book1",
+            templatePath,
+            targetPath,
+            [],
+            [
+                new VbaSourceFile(conflictPath, VbaSourceKind.StandardModule, null),
+                new VbaSourceFile(misplacedPath, VbaSourceKind.StandardModule, null),
+                new VbaSourceFile(caseConflictPath, VbaSourceKind.StandardModule, null),
+                new VbaSourceFile(missingPath, VbaSourceKind.StandardModule, null)
+            ],
+            WorkbookAutomationTimeouts.Default,
+            CancellationToken.None));
+
+        var misplacedIndex = error.Message.IndexOf(misplacedPath, StringComparison.OrdinalIgnoreCase);
+        var missingIndex = error.Message.IndexOf(missingPath, StringComparison.OrdinalIgnoreCase);
+        var conflictIndex = error.Message.IndexOf("Source identity 'CollisionName'", StringComparison.Ordinal);
+        var conflictSourceIndex = error.Message.IndexOf(conflictPath, conflictIndex, StringComparison.OrdinalIgnoreCase);
+        var caseConflictSourceIndex = error.Message.IndexOf(caseConflictPath, conflictIndex, StringComparison.OrdinalIgnoreCase);
+        Assert.True(conflictIndex >= 0);
+        Assert.True(conflictSourceIndex > conflictIndex);
+        Assert.True(caseConflictSourceIndex > conflictSourceIndex);
+        Assert.True(misplacedIndex > caseConflictSourceIndex);
+        Assert.True(missingIndex > misplacedIndex);
+        Assert.Empty(events);
+        Assert.Equal("previous-workbook", File.ReadAllText(targetPath, Encoding.UTF8));
+        Assert.Empty(Directory.EnumerateFiles(temp.Path, ".Book1.*.tmp.xlsm"));
+    }
+
+    [Fact]
+    public async Task MisplacedObjectIdentityFailsBeforeOwnedExcelOrOutputStagingStarts()
+    {
+        using var temp = TempDirectory.Create();
+        var templatePath = Path.Combine(temp.Path, "Template.xlsm");
+        var targetPath = Path.Combine(temp.Path, "Book1.xlsm");
+        var sourcePath = Path.Combine(temp.Path, "Worker.cls");
+        File.WriteAllText(templatePath, "new-workbook", Encoding.UTF8);
+        File.WriteAllText(targetPath, "previous-workbook", Encoding.UTF8);
+        File.WriteAllText(
+            sourcePath,
+            string.Join("\r\n", [
+                "VERSION 1.0 CLASS",
+                "BEGIN",
+                "  MultiUse = -1  'True",
+                "END",
+                "Attribute VB_Name = \"Worker\"",
+                "Attribute VB_Exposed = False",
+                "Option Explicit",
+                "Attribute VB_Name = \"Misplaced\"",
+                string.Empty
+            ]),
+            new UTF8Encoding(false));
+        var events = new List<string>();
+        var pipeline = CreatePipeline(new RecordingWorkbookGenerationAutomation(events));
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+            "Book1",
+            templatePath,
+            targetPath,
+            [],
+            [new VbaSourceFile(sourcePath, VbaSourceKind.ClassModule, null)],
+            WorkbookAutomationTimeouts.Default,
+            CancellationToken.None));
+
+        Assert.Contains("invalid ModuleIdentity metadata", error.Message, StringComparison.Ordinal);
+        Assert.Contains(sourcePath, error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(events);
+        Assert.Equal("previous-workbook", File.ReadAllText(targetPath, Encoding.UTF8));
+        Assert.Empty(Directory.EnumerateFiles(temp.Path, ".Book1.*.tmp.xlsm"));
+    }
+
+    [Fact]
+    public async Task RetainedComponentConflictFailsBeforeSourceImportOrSave()
+    {
+        using var temp = TempDirectory.Create();
+        var templatePath = Path.Combine(temp.Path, "Template.xlsm");
+        var targetPath = Path.Combine(temp.Path, "Book1.xlsm");
+        var sourcePath = Path.Combine(temp.Path, "Incoming.bas");
+        File.WriteAllText(templatePath, "new-workbook", Encoding.UTF8);
+        File.WriteAllText(targetPath, "previous-workbook", Encoding.UTF8);
+        File.WriteAllText(
+            sourcePath,
+            "Attribute VB_Name = \"thisworkbook\"\r\n",
+            new UTF8Encoding(false));
+        var events = new List<string>();
+        var automation = new RecordingWorkbookGenerationAutomation(events)
+        {
+            Modules = [new WorkbookModule("ThisWorkbook", WorkbookModuleKind.Document)]
+        };
+        var pipeline = CreatePipeline(automation);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+            "Book1",
+            templatePath,
+            targetPath,
+            [],
+            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
+            WorkbookAutomationTimeouts.Default,
+            CancellationToken.None));
+
+        Assert.Contains("retained component 'ThisWorkbook'", error.Message, StringComparison.Ordinal);
+        Assert.Contains(sourcePath, error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("verify", events);
+        Assert.DoesNotContain("save", events);
+        Assert.Equal("previous-workbook", File.ReadAllText(targetPath, Encoding.UTF8));
+        Assert.Empty(Directory.EnumerateFiles(temp.Path, ".Book1.*.tmp.xlsm"));
+    }
+
+    [Fact]
+    public async Task IncompleteRetainedComponentIdentityFailsBeforeSourceImportOrSave()
+    {
+        using var temp = TempDirectory.Create();
+        var templatePath = Path.Combine(temp.Path, "Template.xlsm");
+        var targetPath = Path.Combine(temp.Path, "Book1.xlsm");
+        var sourcePath = Path.Combine(temp.Path, "Incoming.bas");
+        File.WriteAllText(templatePath, "new-workbook", Encoding.UTF8);
+        File.WriteAllText(targetPath, "previous-workbook", Encoding.UTF8);
+        File.WriteAllText(
+            sourcePath,
+            "Attribute VB_Name = \"Incoming\"\r\n",
+            new UTF8Encoding(false));
+        var events = new List<string>();
+        var automation = new RecordingWorkbookGenerationAutomation(events)
+        {
+            Modules = [new WorkbookModule(" ", WorkbookModuleKind.Document)]
+        };
+        var pipeline = CreatePipeline(automation);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+            "Book1",
+            templatePath,
+            targetPath,
+            [],
+            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
+            WorkbookAutomationTimeouts.Default,
+            CancellationToken.None));
+
+        Assert.Contains("retained component identity", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("incomplete", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("verify", events);
+        Assert.DoesNotContain("save", events);
+        Assert.Equal("previous-workbook", File.ReadAllText(targetPath, Encoding.UTF8));
+        Assert.Empty(Directory.EnumerateFiles(temp.Path, ".Book1.*.tmp.xlsm"));
+    }
+
+    [Fact]
+    public async Task ContainingProjectConflictUsesTheActualTemporaryWorkbookName()
+    {
+        using var temp = TempDirectory.Create();
+        var templatePath = Path.Combine(temp.Path, "Template.xlsm");
+        var targetPath = Path.Combine(temp.Path, "Book1.xlsm");
+        var sourcePath = Path.Combine(temp.Path, "Incoming.bas");
+        File.WriteAllText(templatePath, "new-workbook", Encoding.UTF8);
+        File.WriteAllText(targetPath, "previous-workbook", Encoding.UTF8);
+        File.WriteAllText(
+            sourcePath,
+            "Attribute VB_Name = \"actualproject\"\r\n",
+            new UTF8Encoding(false));
+        var events = new List<string>();
+        var automation = new RecordingWorkbookGenerationAutomation(events)
+        {
+            ProjectName = "ActualProject"
+        };
+        var pipeline = CreatePipeline(automation);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+            "ManifestDocumentLabel",
+            templatePath,
+            targetPath,
+            [],
+            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
+            WorkbookAutomationTimeouts.Default,
+            CancellationToken.None));
+
+        Assert.Contains("containing project 'ActualProject'", error.Message, StringComparison.Ordinal);
+        Assert.Contains(sourcePath, error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("verify", events);
+        Assert.DoesNotContain("save", events);
+        Assert.Equal("previous-workbook", File.ReadAllText(targetPath, Encoding.UTF8));
+        Assert.Empty(Directory.EnumerateFiles(temp.Path, ".Book1.*.tmp.xlsm"));
+    }
+
+    [Fact]
+    public async Task ConclusiveProjectConflictFailsBeforeReferenceNormalization()
+    {
+        using var temp = TempDirectory.Create();
+        var templatePath = Path.Combine(temp.Path, "Template.xlsm");
+        var targetPath = Path.Combine(temp.Path, "Book1.xlsm");
+        var sourcePath = Path.Combine(temp.Path, "Incoming.bas");
+        File.WriteAllText(templatePath, "new-workbook", Encoding.UTF8);
+        File.WriteAllText(targetPath, "previous-workbook", Encoding.UTF8);
+        File.WriteAllText(
+            sourcePath,
+            "Attribute VB_Name = \"ActualProject\"\r\n",
+            new UTF8Encoding(false));
+        var events = new List<string>();
+        var automation = new RecordingWorkbookGenerationAutomation(events)
+        {
+            ProjectName = "ActualProject"
+        };
+        var pipeline = CreatePipeline(automation);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+            "Book1",
+            templatePath,
+            targetPath,
+            [new VbaProjectReference("Missing Library")],
+            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
+            WorkbookAutomationTimeouts.Default,
+            CancellationToken.None));
+
+        Assert.Contains("containing project 'ActualProject'", error.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("Missing Library", error.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("verify", events);
+        Assert.DoesNotContain("save", events);
+        Assert.Equal("previous-workbook", File.ReadAllText(targetPath, Encoding.UTF8));
+        Assert.Empty(Directory.EnumerateFiles(temp.Path, ".Book1.*.tmp.xlsm"));
+    }
+
+    [Fact]
+    public async Task FinalPreflightReinspectsProjectIdentityAfterReferenceNormalization()
+    {
+        using var temp = TempDirectory.Create();
+        var templatePath = Path.Combine(temp.Path, "Template.xlsm");
+        var targetPath = Path.Combine(temp.Path, "Book1.xlsm");
+        var sourcePath = Path.Combine(temp.Path, "Incoming.bas");
+        File.WriteAllText(templatePath, "new-workbook", Encoding.UTF8);
+        File.WriteAllText(targetPath, "previous-workbook", Encoding.UTF8);
+        File.WriteAllText(
+            sourcePath,
+            "Attribute VB_Name = \"Incoming\"\r\n",
+            new UTF8Encoding(false));
+        var events = new List<string>();
+        var automation = new RecordingWorkbookGenerationAutomation(events)
+        {
+            ProjectName = "InitialProject",
+            FinalProjectName = "Incoming"
+        };
+        var pipeline = CreatePipeline(automation);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+            "Book1",
+            templatePath,
+            targetPath,
+            [],
+            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
+            WorkbookAutomationTimeouts.Default,
+            CancellationToken.None));
+
+        Assert.Contains("containing project 'Incoming'", error.Message, StringComparison.Ordinal);
+        Assert.Equal(2, events.Count(item => item == "get-project-name"));
+        Assert.DoesNotContain("verify", events);
+        Assert.DoesNotContain("save", events);
+        Assert.Equal("previous-workbook", File.ReadAllText(targetPath, Encoding.UTF8));
+        Assert.Empty(Directory.EnumerateFiles(temp.Path, ".Book1.*.tmp.xlsm"));
+    }
+
+    [Fact]
+    public async Task FinalPreflightTreatsEverySurvivingComponentAsCollisionAuthority()
+    {
+        using var temp = TempDirectory.Create();
+        var templatePath = Path.Combine(temp.Path, "Template.xlsm");
+        var targetPath = Path.Combine(temp.Path, "Book1.xlsm");
+        var sourcePath = Path.Combine(temp.Path, "Incoming.bas");
+        File.WriteAllText(templatePath, "new-workbook", Encoding.UTF8);
+        File.WriteAllText(targetPath, "previous-workbook", Encoding.UTF8);
+        File.WriteAllText(
+            sourcePath,
+            "Attribute VB_Name = \"Incoming\"\r\n",
+            new UTF8Encoding(false));
+        var events = new List<string>();
+        var imported = false;
+        var automation = new RecordingWorkbookGenerationAutomation(events)
+        {
+            FinalModules = [new WorkbookModule("Incoming", WorkbookModuleKind.StandardModule)],
+            OnImport = _ => imported = true
+        };
+        var pipeline = CreatePipeline(automation);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+            "Book1",
+            templatePath,
+            targetPath,
+            [],
+            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
+            WorkbookAutomationTimeouts.Default,
+            CancellationToken.None));
+
+        Assert.Contains("retained component 'Incoming'", error.Message, StringComparison.Ordinal);
+        Assert.Equal(2, events.Count(item => item == "get-modules"));
+        Assert.False(imported);
+        Assert.DoesNotContain("verify", events);
+        Assert.DoesNotContain("save", events);
+        Assert.Equal("previous-workbook", File.ReadAllText(targetPath, Encoding.UTF8));
+        Assert.Empty(Directory.EnumerateFiles(temp.Path, ".Book1.*.tmp.xlsm"));
+    }
+
+    [Fact]
+    public async Task IncompleteContainingProjectIdentityFailsBeforeSourceImportOrSave()
+    {
+        using var temp = TempDirectory.Create();
+        var templatePath = Path.Combine(temp.Path, "Template.xlsm");
+        var targetPath = Path.Combine(temp.Path, "Book1.xlsm");
+        var sourcePath = Path.Combine(temp.Path, "Incoming.bas");
+        File.WriteAllText(templatePath, "new-workbook", Encoding.UTF8);
+        File.WriteAllText(targetPath, "previous-workbook", Encoding.UTF8);
+        File.WriteAllText(
+            sourcePath,
+            "Attribute VB_Name = \"Incoming\"\r\n",
+            new UTF8Encoding(false));
+        var events = new List<string>();
+        var automation = new RecordingWorkbookGenerationAutomation(events)
+        {
+            ProjectName = " "
+        };
+        var pipeline = CreatePipeline(automation);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+            "Book1",
+            templatePath,
+            targetPath,
+            [],
+            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
+            WorkbookAutomationTimeouts.Default,
+            CancellationToken.None));
+
+        Assert.Contains("containing project identity", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("incomplete", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("verify", events);
+        Assert.DoesNotContain("save", events);
+        Assert.Equal("previous-workbook", File.ReadAllText(targetPath, Encoding.UTF8));
+        Assert.Empty(Directory.EnumerateFiles(temp.Path, ".Book1.*.tmp.xlsm"));
+    }
+
+    [Fact]
+    public async Task IncompleteLiveAuthorityDoesNotSuppressConflictsProvedByCompleteSiblings()
+    {
+        using var temp = TempDirectory.Create();
+        var templatePath = Path.Combine(temp.Path, "Template.xlsm");
+        var targetPath = Path.Combine(temp.Path, "Book1.xlsm");
+        var retainedSourcePath = Path.Combine(temp.Path, "Retained.bas");
+        var referenceSourcePath = Path.Combine(temp.Path, "Reference.bas");
+        File.WriteAllText(templatePath, "new-workbook", Encoding.UTF8);
+        File.WriteAllText(targetPath, "previous-workbook", Encoding.UTF8);
+        File.WriteAllText(
+            retainedSourcePath,
+            "Attribute VB_Name = \"ThisWorkbook\"\r\n",
+            new UTF8Encoding(false));
+        File.WriteAllText(
+            referenceSourcePath,
+            "Attribute VB_Name = \"ActualReference\"\r\n",
+            new UTF8Encoding(false));
+        var events = new List<string>();
+        var automation = new RecordingWorkbookGenerationAutomation(events)
+        {
+            ProjectName = " ",
+            Modules =
+            [
+                new WorkbookModule(" ", WorkbookModuleKind.Document),
+                new WorkbookModule("ThisWorkbook", WorkbookModuleKind.Document)
+            ],
+            References =
+            [
+                new WorkbookReference(
+                    "Incomplete reference description",
+                    IsRemovable: false,
+                    NamespaceName: " "),
+                new WorkbookReference(
+                    "Friendly reference description",
+                    IsRemovable: false,
+                    NamespaceName: "ActualReference")
+            ]
+        };
+        var pipeline = CreatePipeline(automation);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+            "Book1",
+            templatePath,
+            targetPath,
+            [],
+            [
+                new VbaSourceFile(retainedSourcePath, VbaSourceKind.StandardModule, null),
+                new VbaSourceFile(referenceSourcePath, VbaSourceKind.StandardModule, null)
+            ],
+            WorkbookAutomationTimeouts.Default,
+            CancellationToken.None));
+
+        Assert.Contains("containing project identity is incomplete", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("retained component identity at index 0 is incomplete", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("active reference identity is incomplete", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("retained component 'ThisWorkbook'", error.Message, StringComparison.Ordinal);
+        Assert.Contains("active reference 'ActualReference'", error.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("verify", events);
+        Assert.DoesNotContain("save", events);
+        Assert.Equal("previous-workbook", File.ReadAllText(targetPath, Encoding.UTF8));
+        Assert.Empty(Directory.EnumerateFiles(temp.Path, ".Book1.*.tmp.xlsm"));
+    }
+
+    [Fact]
+    public async Task ProtectedReferenceConflictUsesItsFinalActualNamespaceName()
+    {
+        using var temp = TempDirectory.Create();
+        var templatePath = Path.Combine(temp.Path, "Template.xlsm");
+        var targetPath = Path.Combine(temp.Path, "Book1.xlsm");
+        var sourcePath = Path.Combine(temp.Path, "Incoming.bas");
+        File.WriteAllText(templatePath, "new-workbook", Encoding.UTF8);
+        File.WriteAllText(targetPath, "previous-workbook", Encoding.UTF8);
+        File.WriteAllText(
+            sourcePath,
+            "Attribute VB_Name = \"protectednamespace\"\r\n",
+            new UTF8Encoding(false));
+        var events = new List<string>();
+        var automation = new RecordingWorkbookGenerationAutomation(events)
+        {
+            References =
+            [
+                new WorkbookReference(
+                    "Protected Library Description",
+                    IsRemovable: false,
+                    NamespaceName: "ProtectedNamespace")
+            ]
+        };
+        var pipeline = CreatePipeline(automation);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+            "Book1",
+            templatePath,
+            targetPath,
+            [],
+            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
+            WorkbookAutomationTimeouts.Default,
+            CancellationToken.None));
+
+        Assert.Contains("active reference 'ProtectedNamespace'", error.Message, StringComparison.Ordinal);
+        Assert.Contains(sourcePath, error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Single(events, item => item == "get-references");
+        Assert.DoesNotContain("verify", events);
+        Assert.DoesNotContain("save", events);
+        Assert.Equal("previous-workbook", File.ReadAllText(targetPath, Encoding.UTF8));
+        Assert.Empty(Directory.EnumerateFiles(temp.Path, ".Book1.*.tmp.xlsm"));
+    }
+
+    [Fact]
+    public async Task IncompleteFinalReferenceIdentityFailsBeforeSourceImportOrSave()
+    {
+        using var temp = TempDirectory.Create();
+        var templatePath = Path.Combine(temp.Path, "Template.xlsm");
+        var targetPath = Path.Combine(temp.Path, "Book1.xlsm");
+        var sourcePath = Path.Combine(temp.Path, "Incoming.bas");
+        File.WriteAllText(templatePath, "new-workbook", Encoding.UTF8);
+        File.WriteAllText(targetPath, "previous-workbook", Encoding.UTF8);
+        File.WriteAllText(
+            sourcePath,
+            "Attribute VB_Name = \"Incoming\"\r\n",
+            new UTF8Encoding(false));
+        var events = new List<string>();
+        var automation = new RecordingWorkbookGenerationAutomation(events)
+        {
+            FinalReferences =
+            [
+                new WorkbookReference(
+                    "Incomplete Library Description",
+                    IsRemovable: false,
+                    NamespaceName: " ")
+            ]
+        };
+        var pipeline = CreatePipeline(automation);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+            "Book1",
+            templatePath,
+            targetPath,
+            [],
+            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
+            WorkbookAutomationTimeouts.Default,
+            CancellationToken.None));
+
+        Assert.Contains("active reference identity", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("incomplete", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("verify", events);
+        Assert.DoesNotContain("save", events);
+        Assert.Equal("previous-workbook", File.ReadAllText(targetPath, Encoding.UTF8));
+        Assert.Empty(Directory.EnumerateFiles(temp.Path, ".Book1.*.tmp.xlsm"));
+    }
+
+    [Fact]
+    public async Task AddedReferenceConflictUsesTheNamespaceNameAdoptedByVbe()
+    {
+        using var temp = TempDirectory.Create();
+        var templatePath = Path.Combine(temp.Path, "Template.xlsm");
+        var targetPath = Path.Combine(temp.Path, "Book1.xlsm");
+        var sourcePath = Path.Combine(temp.Path, "Incoming.bas");
+        File.WriteAllText(templatePath, "new-workbook", Encoding.UTF8);
+        File.WriteAllText(targetPath, "previous-workbook", Encoding.UTF8);
+        File.WriteAllText(
+            sourcePath,
+            "Attribute VB_Name = \"adoptednamespace\"\r\n",
+            new UTF8Encoding(false));
+        var events = new List<string>();
+        var resolvedReference = new ResolvedVbaProjectReference(
+            "Friendly Library Description",
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            1,
+            0);
+        var automation = new RecordingWorkbookGenerationAutomation(events)
+        {
+            FinalReferences =
+            [
+                new WorkbookReference(
+                    "Friendly Library Description",
+                    IsRemovable: true,
+                    NamespaceName: "AdoptedNamespace")
+            ]
+        };
+        var pipeline = new WorkbookGenerationPipeline(
+            automation,
+            new WorkbookReferenceNormalizer(
+                new VbaProjectReferencePlanner(
+                    new FakeVbaProjectReferenceResolver(resolvedReference))));
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+            "Book1",
+            templatePath,
+            targetPath,
+            [new VbaProjectReference("Friendly Library Description")],
+            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
+            WorkbookAutomationTimeouts.Default,
+            CancellationToken.None));
+
+        Assert.Contains("active reference 'AdoptedNamespace'", error.Message, StringComparison.Ordinal);
+        Assert.Equal([resolvedReference], automation.AddedReferences);
+        Assert.Equal(3, events.Count(item => item == "get-references"));
+        Assert.DoesNotContain("verify", events);
+        Assert.DoesNotContain("save", events);
+        Assert.Equal("previous-workbook", File.ReadAllText(targetPath, Encoding.UTF8));
+    }
+
+    [Fact]
     public async Task DebugSnapshotTextMismatchFailsBeforeOwnedExcelOrOutputStagingStarts()
     {
         using var temp = TempDirectory.Create();
@@ -351,7 +1040,7 @@ public sealed class WorkbookGenerationPipelineTests
             WorkbookAutomationTimeouts.Default,
             CancellationToken.None));
 
-        Assert.Contains("snapshot", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("changed after", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains(sourcePath, error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(1, codePageReads);
         Assert.Empty(events);
@@ -429,9 +1118,28 @@ public sealed class WorkbookGenerationPipelineTests
 
         public Action<VbeImportSourceFile>? OnImport { get; init; }
 
+        public Action<string>? OnRemoveModule { get; init; }
+
+        public Action<string>? OnRemoveReference { get; init; }
+
+        public Func<string, ResolvedVbaProjectReference, VbaProjectReferenceProbeAttemptResult>?
+            OnReferenceProbe { get; init; }
+
         public WorkbookAutomationTimeouts? Timeouts { get; private set; }
 
         public List<ResolvedVbaProjectReference> AddedReferences { get; } = [];
+
+        public IReadOnlyList<WorkbookModule> Modules { get; init; } = [];
+
+        public IReadOnlyList<WorkbookModule>? FinalModules { get; init; }
+
+        public string ProjectName { get; init; } = "VbaProject";
+
+        public string? FinalProjectName { get; init; }
+
+        public IReadOnlyList<WorkbookReference> References { get; init; } = [];
+
+        public IReadOnlyList<WorkbookReference>? FinalReferences { get; init; }
 
         public async Task<TResult> RunAsync<TResult>(
             string workbookPath,
@@ -445,7 +1153,16 @@ public sealed class WorkbookGenerationPipelineTests
                 new RecordingWorkbookGenerationSession(
                     events,
                     AddedReferences,
-                    OnImport),
+                    Modules,
+                    FinalModules,
+                    ProjectName,
+                    FinalProjectName,
+                    References,
+                    FinalReferences,
+                    OnImport,
+                    OnRemoveModule,
+                    OnRemoveReference,
+                    OnReferenceProbe),
                 cancellationToken);
             BeforeReturn?.Invoke();
             return result;
@@ -455,22 +1172,57 @@ public sealed class WorkbookGenerationPipelineTests
     private sealed class RecordingWorkbookGenerationSession(
         List<string> events,
         List<ResolvedVbaProjectReference> addedReferences,
-        Action<VbeImportSourceFile>? onImport = null) : IWorkbookGenerationSession
+        IReadOnlyList<WorkbookModule> modules,
+        IReadOnlyList<WorkbookModule>? finalModules,
+        string projectName,
+        string? finalProjectName,
+        IReadOnlyList<WorkbookReference> references,
+        IReadOnlyList<WorkbookReference>? finalReferences,
+        Action<VbeImportSourceFile>? onImport = null,
+        Action<string>? onRemoveModule = null,
+        Action<string>? onRemoveReference = null,
+        Func<string, ResolvedVbaProjectReference, VbaProjectReferenceProbeAttemptResult>?
+            onReferenceProbe = null) : IWorkbookGenerationSession
     {
+        private int moduleReads;
+        private int projectNameReads;
+        private int referenceReads;
+
+        public Task<string> GetProjectNameAsync(CancellationToken cancellationToken)
+        {
+            events.Add("get-project-name");
+            projectNameReads++;
+            return Task.FromResult(
+                projectNameReads > 1 && finalProjectName is not null
+                    ? finalProjectName
+                    : projectName);
+        }
+
         public Task<IReadOnlyList<WorkbookModule>> GetModulesAsync(CancellationToken cancellationToken)
         {
             events.Add("get-modules");
-            return Task.FromResult<IReadOnlyList<WorkbookModule>>([]);
+            moduleReads++;
+            return Task.FromResult(
+                moduleReads > 1 && finalModules is not null
+                    ? finalModules
+                    : modules);
         }
 
         public Task<IReadOnlyList<WorkbookReference>> GetReferencesAsync(CancellationToken cancellationToken)
         {
             events.Add("get-references");
-            return Task.FromResult<IReadOnlyList<WorkbookReference>>([]);
+            referenceReads++;
+            return Task.FromResult(
+                referenceReads > 2 && finalReferences is not null
+                    ? finalReferences
+                    : references);
         }
 
         public Task<bool> RemoveReferenceAsync(string referenceName, CancellationToken cancellationToken)
-            => Task.FromResult(true);
+        {
+            onRemoveReference?.Invoke(referenceName);
+            return Task.FromResult(true);
+        }
 
         public Task AddReferenceAsync(
             ResolvedVbaProjectReference reference,
@@ -481,7 +1233,18 @@ public sealed class WorkbookGenerationPipelineTests
         }
 
         public Task RemoveModuleAsync(string moduleName, CancellationToken cancellationToken)
-            => Task.CompletedTask;
+        {
+            onRemoveModule?.Invoke(moduleName);
+            return Task.CompletedTask;
+        }
+
+        public Task<VbaProjectReferenceProbeAttemptResult> TryResolveAsync(
+            string referenceName,
+            ResolvedVbaProjectReference candidate,
+            CancellationToken cancellationToken)
+            => Task.FromResult(onReferenceProbe?.Invoke(referenceName, candidate)
+                ?? throw new NotSupportedException(
+                    "This recording session was not configured for reference probing."));
 
         public Task ImportModuleAsync(VbeImportSourceFile sourceFile, CancellationToken cancellationToken)
         {

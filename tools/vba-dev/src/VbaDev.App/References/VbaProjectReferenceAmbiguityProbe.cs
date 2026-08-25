@@ -27,10 +27,11 @@ public sealed class VbaProjectReferenceAmbiguityProbe(
             return await automation.RunAsync(
                     baseline,
                     timeouts,
-                    (session, operationCancellationToken) => ResolveAsync(
+                    (session, operationCancellationToken) => ResolveAgainstSessionCoreAsync(
                         session,
                         registryResolution,
-                        operationCancellationToken),
+                        operationCancellationToken,
+                        preserveCancellationAsEvidence: true),
                     cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -78,10 +79,21 @@ public sealed class VbaProjectReferenceAmbiguityProbe(
             registryResolution,
             cancellationToken);
 
-    private static async Task<VbaProjectReferenceResolutionBatch> ResolveAsync(
+    internal static Task<VbaProjectReferenceResolutionBatch> ResolveAgainstSessionAsync(
         IVbaProjectReferenceProbeSession session,
         VbaProjectReferenceResolutionBatch registryResolution,
         CancellationToken cancellationToken)
+        => ResolveAgainstSessionCoreAsync(
+            session,
+            registryResolution,
+            cancellationToken,
+            preserveCancellationAsEvidence: false);
+
+    private static async Task<VbaProjectReferenceResolutionBatch> ResolveAgainstSessionCoreAsync(
+        IVbaProjectReferenceProbeSession session,
+        VbaProjectReferenceResolutionBatch registryResolution,
+        CancellationToken cancellationToken,
+        bool preserveCancellationAsEvidence)
     {
         var references = new List<VbaProjectReferenceNameResolution>(
             registryResolution.References.Count);
@@ -115,6 +127,11 @@ public sealed class VbaProjectReferenceAmbiguityProbe(
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
+                if (!preserveCancellationAsEvidence)
+                {
+                    throw;
+                }
+
                 references.Add(CreateUnverified(
                     reference,
                     "cancelled",
@@ -190,6 +207,12 @@ public sealed class VbaProjectReferenceAmbiguityProbe(
                             candidate,
                             cancellationToken)
                         .ConfigureAwait(false);
+                }
+                catch (NotSupportedException)
+                {
+                    return new ReferenceProbeResult(
+                        registryResolution,
+                        ProcessTrusted: true);
                 }
                 catch (VbaProjectReferenceProbeAttemptException exception)
                     when (exception.ProcessTrusted)

@@ -13,6 +13,7 @@ public sealed class WorkbookGenerationPipeline
     private readonly WorkbookReferenceNormalizer referenceNormalizer;
     private readonly IWorkbookOutputTransactionFactory transactionFactory;
     private readonly VbeImportSourceSetFactory importSourceSetFactory;
+    private readonly WorkbookMaterializationNamePreflight namePreflight = new();
 
     /// <summary>
     /// Creates the workbook generation pipeline.
@@ -144,9 +145,11 @@ public sealed class WorkbookGenerationPipeline
         WorkbookAutomationTimeouts timeouts,
         CancellationToken cancellationToken)
     {
-        VbeImportSourceSet? importSourceSet = CreateImportSourceSetAndReleaseInput(
+        var preparedSource = CreateImportSourceSetAndReleaseInput(
             sourceInput,
             cancellationToken);
+        VbeImportSourceSet? importSourceSet = preparedSource.SourceSet;
+        var sourcePreflight = preparedSource.Preflight;
         IWorkbookOutputTransaction? transaction = null;
         try
         {
@@ -158,22 +161,63 @@ public sealed class WorkbookGenerationPipeline
                 timeouts,
                 async (session, operationCancellationToken) =>
                 {
-                    var result = await referenceNormalizer.NormalizeAsync(
-                            session,
-                            documentName,
-                            templateWorkbookPath,
-                            desiredReferences,
-                            operationCancellationToken)
+                    var projectName = await session
+                        .GetProjectNameAsync(operationCancellationToken)
                         .ConfigureAwait(false);
                     var modules = await session
                         .GetModulesAsync(operationCancellationToken)
                         .ConfigureAwait(false);
+                    var retainedModules = modules
+                        .Where(component => !component.Kind.IsImportable())
+                        .ToArray();
+                    var activeReferences = await session
+                        .GetReferencesAsync(operationCancellationToken)
+                        .ConfigureAwait(false);
+                    var desiredReferenceNames = desiredReferences
+                        .Select(reference => reference.Name)
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    var referencesKnownToRemain = activeReferences
+                        .Where(reference =>
+                            !reference.IsRemovable ||
+                            desiredReferenceNames.Contains(reference.Name))
+                        .ToArray();
+                    var initialLivePreflight = namePreflight.InspectLivePhase(
+                        importSourceSet.SourceFiles,
+                        retainedModules,
+                        projectName,
+                        referencesKnownToRemain);
+                    if (initialLivePreflight.HasFailures)
+                    {
+                        namePreflight.ThrowIfFailed(sourcePreflight, initialLivePreflight);
+                    }
                     foreach (var component in modules.Where(component => component.Kind.IsImportable()))
                     {
                         await session
                             .RemoveModuleAsync(component.Name, operationCancellationToken)
                             .ConfigureAwait(false);
                     }
+
+                    var result = await referenceNormalizer.NormalizeAsync(
+                            session,
+                            documentName,
+                            desiredReferences,
+                            operationCancellationToken)
+                        .ConfigureAwait(false);
+                    var finalProjectName = await session
+                        .GetProjectNameAsync(operationCancellationToken)
+                        .ConfigureAwait(false);
+                    var finalModules = await session
+                        .GetModulesAsync(operationCancellationToken)
+                        .ConfigureAwait(false);
+                    var finalReferences = await session
+                        .GetReferencesAsync(operationCancellationToken)
+                        .ConfigureAwait(false);
+                    var finalLivePreflight = namePreflight.InspectLivePhase(
+                        importSourceSet.SourceFiles,
+                        finalModules,
+                        finalProjectName,
+                        finalReferences);
+                    namePreflight.ThrowIfFailed(sourcePreflight, finalLivePreflight);
 
                     foreach (var sourceFile in importSourceSet.SourceFiles)
                     {
@@ -269,11 +313,12 @@ public sealed class WorkbookGenerationPipeline
         }
     }
 
-    private VbeImportSourceSet CreateImportSourceSetAndReleaseInput(
+    private PreparedImportSource CreateImportSourceSetAndReleaseInput(
         IWorkbookGenerationSourceInput sourceInput,
         CancellationToken cancellationToken)
     {
         VbeImportSourceSet? importSourceSet = null;
+        WorkbookMaterializationNamePreflightReport? sourcePreflight = null;
         Exception? failure = null;
         try
         {
@@ -281,6 +326,11 @@ public sealed class WorkbookGenerationPipeline
                 cancellationToken,
                 new WorkbookAutomationStage(WorkbookAutomationStageKind.ExcelStartup));
             importSourceSet = importSourceSetFactory.Create(sourceInput.SourceFiles);
+            sourcePreflight = namePreflight.InspectSourcePhase(importSourceSet.SourceFiles);
+            if (sourcePreflight.HasFailures)
+            {
+                namePreflight.ThrowIfFailed(sourcePreflight);
+            }
         }
         catch (Exception ex)
         {
@@ -313,7 +363,7 @@ public sealed class WorkbookGenerationPipeline
             ExceptionDispatchInfo.Capture(failure).Throw();
         }
 
-        return importSourceSet!;
+        return new PreparedImportSource(importSourceSet!, sourcePreflight!);
     }
 
     private static Exception CombineFailures(Exception? operationError, Exception cleanupError)
@@ -322,6 +372,10 @@ public sealed class WorkbookGenerationPipeline
             : new InvalidOperationException(
                 $"{operationError.Message} {cleanupError.Message}",
                 new AggregateException(operationError, cleanupError));
+
+    private sealed record PreparedImportSource(
+        VbeImportSourceSet SourceSet,
+        WorkbookMaterializationNamePreflightReport Preflight);
 
     /// <summary>
     /// Contains non-fatal warnings emitted while generating a workbook.

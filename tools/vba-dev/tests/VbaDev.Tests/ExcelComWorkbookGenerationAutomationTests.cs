@@ -197,6 +197,38 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
     }
 
     [Fact]
+    public async Task InSessionReferenceProbeRunsThroughTheBoundedOwnedSession()
+    {
+        var events = new List<string>();
+        var dispatcher = new RecordingGenerationDispatcher(events);
+        var lifecycle = new FakeWorkbookGenerationLifecycle(events);
+        var automation = new ExcelComWorkbookBuildAutomation(
+            new RecordingGenerationDispatcherFactory(dispatcher),
+            lifecycle);
+        var candidate = new ResolvedVbaProjectReference(
+            "Ambiguous Library",
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            2,
+            0);
+
+        var result = await automation.RunAsync(
+            "staged.xlsm",
+            WorkbookAutomationTimeouts.Default,
+            (session, cancellationToken) => session.TryResolveAsync(
+                candidate.Name,
+                candidate,
+                cancellationToken),
+            CancellationToken.None);
+
+        Assert.Equal(
+            VbaProjectReferenceProbeAttemptOutcome.Accepted,
+            result.Outcome);
+        Assert.Equal(candidate, result.Reference);
+        Assert.Contains($"probe-reference:{candidate.Name}", events);
+        Assert.True(lifecycle.Owner.HasExited);
+    }
+
+    [Fact]
     public async Task SaveTimeoutIdentifiesTheStageAndTerminatesOnlyTheAttachedOwnerAfterGrace()
     {
         var events = new List<string>();
@@ -815,6 +847,12 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
         IWorkbookBuildSession,
         IExcelComWorkbookTestSession
     {
+        public string GetProjectName()
+        {
+            events.Add("get-project-name");
+            return "VbaProject";
+        }
+
         public IReadOnlyList<WorkbookModule> GetModules()
         {
             if (blockGetModulesUntilTermination && !owner.Terminated.Wait(TimeSpan.FromSeconds(5)))
@@ -840,6 +878,14 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
 
         public void AddReference(ResolvedVbaProjectReference reference)
             => events.Add($"add-reference:{reference.Name}");
+
+        public VbaProjectReferenceProbeAttemptResult TryResolveReference(
+            string referenceName,
+            ResolvedVbaProjectReference candidate)
+        {
+            events.Add($"probe-reference:{referenceName}");
+            return VbaProjectReferenceProbeAttemptResult.Accepted(candidate);
+        }
 
         public void RemoveModule(string moduleName)
             => events.Add($"remove-module:{moduleName}");
@@ -948,6 +994,9 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
     private sealed class DualWorkbookGenerationSession(List<string> events)
         : IWorkbookGenerationSession
     {
+        public Task<string> GetProjectNameAsync(CancellationToken cancellationToken)
+            => Task.FromResult("VbaProject");
+
         public Task<IReadOnlyList<WorkbookModule>> GetModulesAsync(CancellationToken cancellationToken)
             => Task.FromResult<IReadOnlyList<WorkbookModule>>([]);
 

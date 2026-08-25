@@ -9,12 +9,17 @@ public sealed record VbeImportSourceFile
         string sourcePath,
         VbaSourceKind kind,
         string? binaryPath,
-        VbeImportVerification importVerification)
+        VbeImportVerification importVerification,
+        string? diagnosticSourcePath = null,
+        VbeModuleIdentityAuthority? moduleIdentityAuthority = null)
     {
         SourcePath = sourcePath;
         Kind = kind;
         BinaryPath = binaryPath;
         ImportVerification = importVerification;
+        DiagnosticSourcePath = diagnosticSourcePath ?? sourcePath;
+        ModuleIdentityAuthority = moduleIdentityAuthority
+            ?? VbeModuleIdentityAuthority.Authoritative(importVerification.ComponentName);
     }
 
     /// <summary>
@@ -36,6 +41,13 @@ public sealed record VbeImportSourceFile
     /// Gets the exact component contract to verify after import.
     /// </summary>
     public VbeImportVerification ImportVerification { get; }
+
+    /// <summary>
+    /// Gets the caller-visible source path used in preflight diagnostics.
+    /// </summary>
+    public string DiagnosticSourcePath { get; }
+
+    internal VbeModuleIdentityAuthority ModuleIdentityAuthority { get; }
 
     /// <summary>
     /// Gets the flat source file name presented to VBIDE.

@@ -16,12 +16,12 @@ public interface IVbaProjectReferenceProbeAutomation
 }
 
 /// <summary>
-/// Probes candidates through fresh copies of one caller-selected workbook baseline.
+/// Probes candidates against one repeatable logical workbook baseline.
 /// </summary>
 public interface IVbaProjectReferenceProbeSession
 {
     /// <summary>
-    /// Attempts one registered GUID/version candidate against a fresh baseline copy.
+    /// Attempts one registered GUID/version candidate and restores the same logical baseline.
     /// </summary>
     Task<VbaProjectReferenceProbeAttemptResult> TryResolveAsync(
         string referenceName,
