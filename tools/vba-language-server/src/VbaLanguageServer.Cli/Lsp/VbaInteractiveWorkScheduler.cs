@@ -527,6 +527,27 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
     }
 
     /// <summary>
+    /// Admits a mutation whose greatest queued rank supersedes lower-ranked work with the same key.
+    /// </summary>
+    public VbaInteractiveWorkAdmission AdmitCoalescibleMutation(
+        string method,
+        string coalescingKey,
+        long rank,
+        Func<CancellationToken, Task> executeAsync)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(coalescingKey);
+        return Admit(
+            VbaInteractiveWorkKind.Mutation,
+            method,
+            captureRead: null,
+            coalescingKey,
+            requestId: null,
+            (cancellationToken, _) => executeAsync(cancellationToken),
+            advancesReadFence: true,
+            coalescingRank: rank);
+    }
+
+    /// <summary>
     /// Admits ordered non-mutating work without advancing the read fence.
     /// </summary>
     public VbaInteractiveWorkAdmission AdmitBarrier(
@@ -767,7 +788,8 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
         VbaLspRequestId? requestId,
         Func<CancellationToken, Action, Task> executeAsync,
         bool advancesReadFence,
-        bool usesReservedCapacity = false)
+        bool usesReservedCapacity = false,
+        long? coalescingRank = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(method);
         ArgumentNullException.ThrowIfNull(executeAsync);
@@ -830,6 +852,7 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
                     : null,
                 captureRead,
                 coalescingKey,
+                coalescingRank,
                 requestId,
                 admittedAt,
                 _ => executeAsync(
@@ -1361,6 +1384,12 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
             return work;
         }
 
+        if (work.Kind == VbaInteractiveWorkKind.Mutation
+            && work.CoalescingRank is not null)
+        {
+            return await CoalesceRankedMutationRunAsync(work);
+        }
+
         var current = work;
         while (TryReadAlreadyQueuedWork(out var next))
         {
@@ -1370,12 +1399,91 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
                 return current;
             }
 
-            await CompleteSupersededWorkAsync(current);
-            current = next;
+            if (current.CoalescingRank is { } currentRank
+                && next.CoalescingRank is { } nextRank
+                && currentRank >= nextRank)
+            {
+                await CompleteSupersededWorkAsync(next);
+                current = current with
+                {
+                    ReadFence = Math.Max(current.ReadFence, next.ReadFence)
+                };
+            }
+            else
+            {
+                await CompleteSupersededWorkAsync(current);
+                current = next;
+            }
         }
 
         return current;
     }
+
+    private async Task<ScheduledWork> CoalesceRankedMutationRunAsync(
+        ScheduledWork first)
+    {
+        var rankedRun = new List<ScheduledWork> { first };
+        ScheduledWork? boundary = null;
+        while (TryReadAlreadyQueuedWork(out var next))
+        {
+            if (!CanJoinRankedMutationRun(first, next))
+            {
+                boundary = next;
+                break;
+            }
+
+            rankedRun.Add(next);
+        }
+
+        var survivors = new List<ScheduledWork>();
+        foreach (var group in rankedRun.GroupBy(
+            work => work.CoalescingKey!,
+            StringComparer.OrdinalIgnoreCase))
+        {
+            var winner = group
+                .OrderByDescending(work => work.CoalescingRank)
+                .ThenBy(work => work.InputSequence)
+                .First();
+            var maximumReadFence = group.Max(work => work.ReadFence);
+            survivors.Add(winner with { ReadFence = maximumReadFence });
+            foreach (var superseded in group.Where(work => !ReferenceEquals(work, winner)))
+            {
+                await CompleteSupersededWorkAsync(superseded);
+            }
+        }
+
+        survivors.Sort((left, right) =>
+            left.InputSequence.CompareTo(right.InputSequence));
+        PrependBufferedWork([
+            .. survivors.Skip(1),
+            .. boundary is null ? [] : new[] { boundary }
+        ]);
+        return survivors[0];
+    }
+
+    private void PrependBufferedWork(IEnumerable<ScheduledWork> prefix)
+    {
+        var tail = bufferedWork.ToArray();
+        bufferedWork.Clear();
+        foreach (var work in prefix)
+        {
+            bufferedWork.Enqueue(work);
+        }
+        foreach (var work in tail)
+        {
+            bufferedWork.Enqueue(work);
+        }
+    }
+
+    private static bool CanJoinRankedMutationRun(
+        ScheduledWork first,
+        ScheduledWork candidate)
+        => candidate.Kind == VbaInteractiveWorkKind.Mutation
+            && candidate.CoalescingKey is not null
+            && candidate.CoalescingRank is not null
+            && candidate.Method.Equals(
+                first.Method,
+                StringComparison.Ordinal);
 
     private bool TryReadAlreadyQueuedWork(out ScheduledWork work)
     {
@@ -1695,6 +1803,7 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
         VbaInteractiveReadPolicy? ReadPolicy,
         Func<CancellationToken, VbaInteractiveCapturedRead>? CaptureRead,
         string? CoalescingKey,
+        long? CoalescingRank,
         VbaLspRequestId? RequestId,
         long AdmittedAt,
         Func<CancellationToken, Task> ExecuteAsync,

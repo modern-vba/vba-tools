@@ -138,7 +138,8 @@ test('restricted activation keeps language assistance safe without eager managed
     'utf8'
   );
 
-  assert.match(extensionSource, /outputChannel = createLazyOutputChannel\(/);
+  assert.match(extensionSource, /const extensionOutputChannel = createLazyOutputChannel\(/);
+  assert.match(extensionSource, /outputChannel = extensionOutputChannel;/);
   assert.match(
     extensionSource,
     /resolveCompanionExecutableForLanguageActivation\(\s*workspace\.isTrusted,\s*\(\) => vbaDevResolver\.resolve\(\)/
@@ -157,7 +158,7 @@ test('extension wires Workspace Trust into every non-palette managed launch surf
 
   assert.match(
     extensionSource,
-    /invalidateManagedToolingState: \(\) => vbaDevResolver\.invalidate\(\)/
+    /invalidateManagedToolingState: \(\) => \{\s*vbaDevResolver\.invalidate\(\);\s*backgroundVbaDevResolver\.invalidate\(\);\s*\}/
   );
   assert.match(
     extensionSource,
@@ -174,6 +175,30 @@ test('extension wires Workspace Trust into every non-palette managed launch surf
   assert.match(
     extensionSource,
     /promptForActiveWorkbookBackedProject\([\s\S]*?command\.commandId === 'vbaTools\.doctor'[\s\S]*?\?\.handler/
+  );
+});
+
+test('extension watches selected Host Event paths through absolute RelativePattern bases', () => {
+  const extensionSource = fs.readFileSync(
+    path.join(process.cwd(), 'client', 'src', 'extension.ts'),
+    'utf8'
+  );
+
+  assert.match(
+    extensionSource,
+    /new HostClassProjectionWatcherRegistry\(\{[\s\S]*?workspace\.createFileSystemWatcher\(\s*new RelativePattern\(Uri\.file\(basePath\), pattern\)\s*\)[\s\S]*?onActiveDocumentsChanged: \(documents\) => hostClassWatchers\.synchronize\(documents\)/
+  );
+});
+
+test('extension reconciles Host Event documents when workspace folders change', () => {
+  const extensionSource = fs.readFileSync(
+    path.join(process.cwd(), 'client', 'src', 'extension.ts'),
+    'utf8'
+  );
+
+  assert.match(
+    extensionSource,
+    /workspace\.onDidChangeWorkspaceFolders\([\s\S]*?hostWorkspace\.reconcileWorkspaceFolders\(\s*workspace\.workspaceFolders/
   );
 });
 
@@ -430,6 +455,32 @@ test('extension contributes daily WorkbookBackedProject commands only', () => {
 
   assert.equal(commands.some((command) => command.command === 'vbaTools.capabilities'), false);
   assert.equal(commands.some((command) => command.command === 'vbaTools.testNoBuild'), false);
+});
+
+test('extension contributes the explicit Host Events refresh command exactly', () => {
+  const packageJson = readPackageJson<{
+    activationEvents?: string[];
+    contributes?: {
+      commands?: Array<{
+        command?: string;
+        title?: string;
+        enablement?: string;
+      }>;
+    };
+  }>();
+
+  assert.deepEqual(
+    packageJson.contributes?.commands?.find((command) =>
+      command.command === 'vbaTools.hostClasses.refresh'
+    ),
+    {
+      command: 'vbaTools.hostClasses.refresh',
+      title: 'VBA Tools: Refresh Host Events'
+    }
+  );
+  assert.ok(packageJson.activationEvents?.includes(
+    'onCommand:vbaTools.hostClasses.refresh'
+  ));
 });
 
 test('extension forwards export command request arguments to dedicated orchestration', () => {

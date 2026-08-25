@@ -81,6 +81,17 @@ internal interface IVbaProjectManifestResolutionSource
 
     VbaProjectResolution Resolve(string activeUri);
 
+    bool TryResolveManifestDocument(
+        string projectPath,
+        string documentName,
+        out VbaProjectResolution resolution)
+    {
+        resolution = new VbaProjectResolution(
+            VbaProjectResolutionKind.AdHoc,
+            "");
+        return false;
+    }
+
     VbaProjectManifestResolutionCapture CaptureResolution(string activeUri)
     {
         while (true)
@@ -1022,7 +1033,10 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
                     manifestPath,
                     documentName,
                     document.Kind,
-                    document.References ?? [])
+                    document.References ?? [],
+                    VbaProjectResolver.ResolveManifestPath(
+                        Path.GetDirectoryName(manifestPath)!,
+                        document.TemplatePath))
                 {
                     RootIdentity = sourceRootIdentity
                 };
@@ -1124,6 +1138,77 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
         }
     }
 
+    public bool TryResolveManifestDocument(
+        string projectPath,
+        string documentName,
+        out VbaProjectResolution resolution)
+    {
+        resolution = new VbaProjectResolution(
+            VbaProjectResolutionKind.AdHoc,
+            "");
+        string manifestPath;
+        string manifestUri;
+        try
+        {
+            manifestPath = Path.Combine(
+                Path.GetFullPath(projectPath),
+                ManifestFileName);
+            manifestUri = new Uri(manifestPath).AbsoluteUri;
+        }
+        catch (Exception ex) when (
+            ex is ArgumentException
+            or NotSupportedException
+            or PathTooLongException
+            or UriFormatException)
+        {
+            return false;
+        }
+
+        if (!TryGetEffectiveManifest(
+                manifestUri,
+                out var effectiveUri,
+                out var text,
+                out _))
+        {
+            return false;
+        }
+
+        var effectiveManifest = CreateEffectiveManifest(
+            manifestPath,
+            effectiveUri,
+            text);
+        foreach (var (candidateName, document) in
+            effectiveManifest.Manifest.Documents)
+        {
+            if (!candidateName.Equals(
+                    documentName,
+                    StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var sourceRoot = effectiveManifest.SourceRoots[candidateName];
+            var sourceRootIdentity =
+                effectiveManifest.SourceRootIdentities[candidateName];
+            resolution = new VbaProjectResolution(
+                VbaProjectResolutionKind.ManifestDocument,
+                sourceRoot,
+                manifestPath,
+                candidateName,
+                document.Kind,
+                document.References ?? [],
+                VbaProjectResolver.ResolveManifestPath(
+                    Path.GetDirectoryName(manifestPath)!,
+                    document.TemplatePath))
+            {
+                RootIdentity = sourceRootIdentity
+            };
+            return true;
+        }
+
+        return false;
+    }
+
     /// <summary>
     /// Resolves a source URI against effective manifest overlays and watched deletion state.
     /// </summary>
@@ -1209,7 +1294,10 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
                             manifestPath,
                             documentName,
                             document.Kind,
-                            document.References ?? [])
+                            document.References ?? [],
+                            VbaProjectResolver.ResolveManifestPath(
+                                Path.GetDirectoryName(manifestPath)!,
+                                document.TemplatePath))
                         {
                             RootIdentity = sourceRootIdentity
                         };
@@ -1292,7 +1380,10 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
                         manifestPath,
                         documentName,
                         document.Kind,
-                        document.References ?? [])
+                        document.References ?? [],
+                        VbaProjectResolver.ResolveManifestPath(
+                            Path.GetDirectoryName(manifestPath)!,
+                            document.TemplatePath))
                     {
                         RootIdentity = sourceRootIdentity
                     };

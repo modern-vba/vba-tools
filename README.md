@@ -22,6 +22,8 @@ build, test, publish, export, and validate Excel macro workbooks from a
 - Use semantic highlighting for declarations and resolved references.
 - Format VBA source with the built-in document formatter.
 - Run workbook-backed VBA tests from VS Code Test Explorer.
+- Keep intrinsic form and document Host Events available to language features
+  through document-scoped, last-known-good projection snapshots.
 - Debug eligible VBA procedures in the native VBE from VS Code, with ordinary
   source breakpoints.
 - Run project commands from the Command Palette: Doctor, Build, Test, Publish,
@@ -247,6 +249,7 @@ existing bin workbook.
 | `VBA Tools: Test` | Build, then run VBA unit tests for the selected workbook document. |
 | `VBA Tools: Publish` | Generate the publish workbook for the selected document. |
 | `VBA Tools: Export` | Export VBA modules from the selected workbook into source. |
+| `VBA Tools: Refresh Host Events` | Reinspect intrinsic Host Events for one selected workbook document. |
 | `VBA Tools: Add Common Module` | Add CommonModules entries to the selected document. |
 | `VBA Tools: List Common Modules` | List CommonModules entries for the selected document. |
 | `VBA Tools: Update Common Modules` | Update installed CommonModules entries. |
@@ -437,6 +440,52 @@ and publish apply those references to generated workbooks.
 
 ---
 
+## Host Events
+
+For each active document in `vba-project.json`, VBA Tools inspects the selected
+source-template workbook and supplies intrinsic form and document Host Events
+to the language server as one immutable, document-wide snapshot. Inspection
+runs on document activation, an effective document or template identity
+change, a create/change/delete event for that same template, or an explicit
+`VBA Tools: Refresh Host Events` command. Automatic triggers use a one-second
+trailing-edge debounce and one extension-wide queue permits only one
+`host-class list` process at a time. While a manifest edit is being debounced,
+the extension fences matching in-flight results until the final effective
+document and source-template context has been resolved.
+
+Editing exported `.bas`, `.cls`, `.frm`, or `.frx` source does not start Excel.
+Those edits only reevaluate source association through an explicit,
+case-insensitive `Attribute VB_Name` and a compatible component kind. Active
+editor changes, reference refreshes, and build, test, publish, or output
+workbook changes also do not trigger inspection unless the selected template
+identity changes. Synchronous completion, hover, diagnostics, and other editor
+requests use the latest committed snapshot and never launch or wait for Excel.
+
+The current exported-source collector associates `.frm` form sources only.
+An exported `.cls` remains an ordinary `ClassModule` and is never inferred to
+be an intrinsic document module from its name, metadata flags, or a matching
+projection. A future document-source adapter must provide authoritative
+document provenance before document-source association becomes active.
+
+`VBA Tools: Refresh Host Events` lets you choose one manifest document, joins
+the same queue without debounce, and shows cancellable progress. A clean
+success is silent. Inspection failures and source-association problems remain
+in the VBA Tools output channel; an explicit failure offers `Show Output`, and
+a successful explicit refresh with association problems shows one warning with
+the same action. Background failure and cancellation do not show popups.
+
+The `VBA Host Events` status item appears only while inspection is queued or
+running or when attention is required. Its hover identifies the project,
+document, lifecycle state, last-known-good use, reason, and association-failure
+counts; selecting it opens Output and does not retry. Failed, partial,
+cancelled, or unverified inspection preserves applicable last-known-good data
+and schedules no timer-based retry. Correct the template or `Attribute
+VB_Name`, then use a later lifecycle trigger or the explicit refresh command.
+Host Event inspection requires a trusted workspace, desktop Excel, and trusted
+access to the VBA project object model.
+
+---
+
 ## Test Explorer
 
 Workbook-backed projects appear in VS Code Test Explorer when the workspace
@@ -532,6 +581,8 @@ cannot influence executable selection.
 | F5 cannot establish VBE debugging | Run `VBA Tools: Doctor` and review the `VBE debugging` checks and remediation in the VBA Tools output channel. |
 | VBE Doctor reports an adapter infrastructure failure | Check the executable path and compatibility details in the VBA Tools output channel. If `vbaTools.debugAdapter.path` is set, correct or clear the explicit path; invalid overrides intentionally do not fall back. |
 | Excel blocks workbook automation | Enable trusted access to the VBA project object model in Excel Trust Center settings. |
+| Host Events remain queued, unavailable, or last-known-good | Select the `VBA Host Events` status item, review generation, context, reason, and cleanup details in VBA Tools Output, confirm the selected source template exists and is closed, then run `VBA Tools: Refresh Host Events`. There is no automatic retry. |
+| A form or document source cannot associate with Host Events | Review the complete association record in VBA Tools Output and repair or re-export its explicit `Attribute VB_Name`; file names and display names are not association fallbacks. |
 | Tests do not appear in Test Explorer | Confirm that `vba-project.json` is in the opened workspace and reload the VS Code window after changing project layout. |
 | Format on save does not run | Set `editor.defaultFormatter` for `[vba]` to `modern-vba.vba-tools`. |
 | You need to test a custom CLI build | Set `vbaTools.devtool.path` to the full path of the replacement `vba-dev.exe`. |
@@ -549,7 +600,9 @@ cannot influence executable selection.
 - No separate .NET runtime is required for the bundled Windows executables.
 
 Standalone editing features are available for exported VBA source files. Excel
-is only required when running workbook-backed automation commands.
+is required for manifest-backed workbook automation, including automatic or
+explicit Host Event inspection. Synchronous editor requests never start or
+wait for that inspection.
 
 ---
 

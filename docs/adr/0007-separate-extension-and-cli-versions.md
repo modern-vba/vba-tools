@@ -21,6 +21,15 @@ The resolved `reference list --format json` contract is independently advertised
 with schema version `1.0`; both configured and `--available` modes use that
 schema and identify their mode in the payload.
 
+Read-only Host Event inspection is independently advertised as
+`featureVersions["hostClass.list"] == "1.0"` and CLI spelling
+`commandSchemaVersions["host-class list"] == "1.0"`. The extension consumes
+that complete invocation result, owns refresh generations and retained state,
+and folds it into the separate `vba/hostClassProjectionSnapshot` notification
+schema `1`; CLI schema `1.0`, LSP schema `1`, document-local snapshot revision,
+and extension refresh generation are distinct compatibility and freshness
+values.
+
 The extension-owned `vba-dev-contract.json` also requires top-level
 `featureVersions["invocation.stdinCancellation"] == "1.0"` and
 `featureVersions["projectCreation.pathValidation"] == "1.0"`, plus
@@ -29,8 +38,10 @@ executable-wide invocation capability rather than a per-command output field:
 it lets every extension-managed ordinary command receive the hidden
 `stdin-v1` cooperative cancellation request, while each command retains its
 own transaction, cleanup, exit, and result contract. `new excel`,
-`common-module add`, and `common-module update` additionally retain their
-command-specific prohibition on caller force-kill fallback. A configured CLI
+`common-module add`, `common-module update`, and `host-class list` additionally
+retain their command-specific prohibition on caller force-kill fallback.
+Host-class replacement waits for the CLI to exit after releasing its owned
+Excel process before the extension scheduler starts another inspection. A configured CLI
 that omits or mismatches the required feature is incompatible, so the extension
 issues the established actionable warning and selects a compatible bundled CLI
 for the whole session rather than mixing executables by command. If the bundled

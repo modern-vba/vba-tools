@@ -4,7 +4,8 @@
     "build.sourceSnapshot": "1.0",
     "test.sourceSnapshot": "1.0",
     "invocation.stdinCancellation": "1.0",
-    "sourceSnapshot.activeWindowsCodePage": "1.0"
+    "sourceSnapshot.activeWindowsCodePage": "1.0",
+    "hostClass.list": "1.0"
   },
   "commandSchemaVersions": {
     "build": "1.0",
@@ -13,6 +14,7 @@
     "common-module update": "1.0",
     "doctor": "1.0",
     "export": "1.0",
+    "host-class list": "1.0",
     "publish": "1.0",
     "reference add": "1.0",
     "reference list": "1.0",

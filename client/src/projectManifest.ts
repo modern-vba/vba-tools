@@ -7,6 +7,7 @@ export interface ProjectManifestProjection {
 export interface WorkbookBackedProjectDocument {
   name: string;
   sourcePath: string;
+  templatePath: string;
   binPath: string;
 }
 
@@ -119,6 +120,7 @@ export function parseProjectManifestProjection(json: string): ProjectManifestPro
     documents.push({
       name,
       sourcePath: document.sourcePath,
+      templatePath: document.templatePath,
       binPath: document.binPath
     });
   }

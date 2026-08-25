@@ -31,6 +31,7 @@ export interface VbaDevInvocationRuntimeOptions {
   capabilitiesProcess?: ProcessRunner | undefined;
   startProcess?: StartVbaDevProcess | undefined;
   outputChannel: VbaToolsOutputChannel;
+  revealOutput?: boolean | undefined;
   diagnosticReporter?: VbaDevDiagnosticReporterLike | undefined;
   cancellationToken?: CommandCancellationToken | undefined;
   forceKillAfterCancellationMilliseconds?: number | undefined;
@@ -169,6 +170,7 @@ export async function runVbaDevCommandInvocation(
     executablePath: devtool.executablePath,
     args: withStdinCancellationTransport(args, devtool.capabilities),
     outputChannel: options.outputChannel,
+    revealOutput: options.revealOutput,
     reportCancellationProgress: options.reportCancellationProgress,
     cancellationToken: options.cancellationToken,
     startProcess: options.startProcess,
@@ -210,6 +212,7 @@ export async function runResolvedVbaDevProjectCommandInvocation(
     executablePath,
     args: withStdinCancellationTransport(args, capabilities),
     outputChannel: options.outputChannel,
+    revealOutput: options.revealOutput,
     reportCancellationProgress: options.reportCancellationProgress,
     cancellationToken: options.cancellationToken,
     startProcess: options.startProcess,
@@ -254,15 +257,16 @@ function forceKillDelayForManagedCommand(
 ): number | undefined {
   if (
     !supportsStdinCancellation(capabilities) ||
-    isProtectedTransactionCommand(args)
+    isCallerForceKillExemptCommand(args)
   ) {
     return undefined;
   }
   return override ?? VbaDevCooperativeCancellationGraceMilliseconds;
 }
 
-function isProtectedTransactionCommand(args: readonly string[]): boolean {
+function isCallerForceKillExemptCommand(args: readonly string[]): boolean {
   return (args[0] === 'new' && args[1] === 'excel') ||
+    (args[0] === 'host-class' && args[1] === 'list') ||
     (args[0] === 'common-module' && (args[1] === 'add' || args[1] === 'update'));
 }
 

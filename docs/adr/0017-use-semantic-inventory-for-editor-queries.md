@@ -48,6 +48,13 @@ currently provides the Excel experience. Future Word or PowerPoint support
 must add or select host catalog data at the project/reference boundary rather
 than add host-specific policy to the generic interactive infrastructure.
 
+The accepted document-wide `HostClassProjectionSnapshot` is also an immutable
+inventory input. `current` class entries provide authoritative projected Host
+Event evidence, `lastKnownGood` entries are explicitly advisory, and
+`indeterminate` entries provide no projected Event candidate. The inventory
+never consumes raw CLI results, operational lifecycle messages, class deltas,
+or tombstones, and an editor query never initiates or waits for inspection.
+
 ## Consequences
 
 There is no compatibility-index fallback inside a committed project snapshot.

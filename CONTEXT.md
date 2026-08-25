@@ -572,9 +572,10 @@ The project-local manifest, stored as `vba-project.json`, that identifies a
 `WorkbookBackedProject` and carries default values for VS Code commands and
 `VbaDev` operations. It is also the language server's source of truth for the
 `VbaProjectReferenceSelection` of each document definition; VS Code settings do
-not define project references for workbook-backed projects. It identifies the
-source template inspected for `HostClassProjection`, but does not store a
-generated host Event list. A project-local `project.json` is not a
+not define project references for workbook-backed projects. It identifies each
+document's source template used to produce its host-class result, but does not
+store a generated host Event list or `HostClassProjectionSnapshot`. A
+project-local `project.json` is not a
 `ProjectManifest` for language-server project-boundary or reference-selection
 behavior.
 _Avoid_: package file, extension settings, workspace settings
@@ -948,7 +949,7 @@ A `VbaProject` inferred from exported source files when no containing
 `LanguageVocabulary`, and the always-active `VbaStandardLibraryReference`, but
 it has no manifest-controlled `VbaProjectReferenceSelection` and therefore does
 not contribute definitions from other external references. It also has no
-source-template-backed `HostClassProjection`, so intrinsic host Event evidence
+source-template-backed `HostClassProjectionSnapshot`, so intrinsic host Event evidence
 remains `indeterminate`. Its source boundary is the active source file's
 directory, not nested organization directories or the VS Code workspace root.
 _Avoid_: workbook-backed project, default Excel project, settings-backed project
@@ -1226,10 +1227,11 @@ form.
 _Avoid_: source-host coalescing, duplicate Event collision, intrinsic handler Rename
 
 **HostClassProjectionLifecycle**:
-The consumer-owned `VscodeExtension` project lifecycle that obtains one
-immutable `HostClassProjection` for each active `ProjectDocument` from
-`HostClassList` and commits each `resolved` class independently to the language
-server. An `unverified` class preserves its
+The consumer-owned `VscodeExtension` project lifecycle that obtains the
+document-scoped intrinsic class set for each active `ProjectDocument` from
+`HostClassList`, folds it into one immutable
+`HostClassProjectionSnapshot`, and commits each `resolved` class independently
+to the language server. An `unverified` class preserves its
 `LastKnownGoodHostClassProjection`, or remains `indeterminate` when none exists;
 `VbaDev` owns only the inspection invocation and its Excel process.
 _Avoid_: CLI-owned projection cache, completion-time inspection, manifest Event list
@@ -1245,9 +1247,10 @@ _Avoid_: CLI request ID, inspection timestamp, source-template hash
 **HostClassProjectionRefreshTrigger**:
 A lifecycle event that can change the selected source-template host classes:
 project-document activation, effective document or source-template identity
-change, same-template file change, or explicit consumer refresh. Exported
-source edits, reference-catalog changes, editor selection, and generated-output
-changes are not triggers.
+change, same-template file create/change/delete or temporary absence, or
+explicit consumer refresh. Exported source edits, reference-catalog changes,
+editor selection, build/test/publish completion, and generated-output changes
+are not triggers.
 _Avoid_: source-edit refresh, catalog refresh, build-completion refresh
 
 **HostClassSourceAssociationReevaluation**:
@@ -1293,8 +1296,9 @@ _Avoid_: HostClassProjectionResult, incremental projection update, operational l
 **HostClassProjectionSnapshotRevision**:
 The consumer-owned, monotonically increasing transport fence for successive
 `HostClassProjectionSnapshot`s of one `ProjectDocument`. The language server
-accepts only the latest matching project context and replays the latest desired
-snapshot after a connection restart.
+accepts only a newer update with exact matching project, document, and selected
+source-template context. The extension replays the latest desired snapshot
+after a connection restart.
 _Avoid_: HostClassProjectionRefreshGeneration, CLI schema version, source revision
 
 **HostClassProjectionAuthority**:
@@ -1307,8 +1311,9 @@ _Avoid_: stale semantic authority, cached validation evidence, all-or-nothing pr
 
 **HostClassList**:
 The read-only, document-scoped `vba-dev host-class list` operation that inspects
-the selected source template and returns its `HostClassProjection` as
-human-readable text or schema-versioned JSON. It defaults to the
+the selected source template and returns a `HostClassProjectionResult`
+containing every enumerated intrinsic class as human-readable text or
+schema-versioned JSON. It defaults to the
 `PrimaryOfficeDocument` when no document is specified, owns a dedicated
 `AutomationExcelProcess`, and changes neither the workbook, source, manifest,
 nor projection storage.
@@ -3862,7 +3867,7 @@ Dev: "Should editing `Module1.bas` or refreshing a reference catalog start host-
 Domain Expert: "No. A `HostClassProjectionRefreshTrigger` is initial project-document activation, an effective manifest document or source-template identity change, a create/change/delete event for the selected template file, or an explicit consumer refresh. Removing a document or changing its template identity cancels in-flight work and removes the old projection. A same-path template change advances the generation but preserves last-known-good on failure; temporary template absence is unavailable rather than authoritative deletion. Source edits, reference-only changes, editor changes, and bin or publish changes do not trigger inspection. Relevant source and manifest changes may still run `HostClassSourceAssociationReevaluation` against the current snapshot without starting Excel."
 
 Dev: "Can several template saves start several Excel inspections at once?"
-Domain Expert: "No. `HostClassProjectionRefreshScheduler` runs at most one `HostClassList` invocation extension-wide. Automatic file and manifest triggers use a one-second trailing-edge debounce; activation and explicit refresh do not. Each document retains only its newest pending generation. A trigger superseding that document's running inspection requests cooperative cancellation, discards any stale terminal result, and waits for CLI and Excel cleanup before replacement. Other documents retain FIFO order, queue waiting has no timeout, and extension shutdown cancels running work and drops the queue."
+Domain Expert: "No. `HostClassProjectionRefreshScheduler` runs at most one `HostClassList` invocation extension-wide. Automatic file and manifest activity uses a one-second trailing-edge debounce; activation and explicit refresh do not. A selected-template event advances its generation and requests cancellation immediately before delaying replacement. A raw manifest observation instead fences a matching in-flight result until the final effective context is resolved, so unchanged manifest context releases that result without starting Excel and changed context cannot accept stale output. Each document retains only its newest pending generation. A trigger superseding that document's running inspection requests cooperative cancellation, discards any stale terminal result, and waits for CLI and Excel cleanup before replacement. Other documents retain FIFO order, queue waiting has no timeout, and extension shutdown cancels running work and drops the queue."
 
 Dev: "Does a failed or unverified host-class refresh retry itself after a delay?"
 Domain Expert: "No. `HostClassProjectionRefreshRecovery` waits for a later lifecycle trigger or explicit consumer refresh to start a new generation. Valid partial results retain their class-level meaning, invocation failures preserve applicable last-known-good state, and cancellation or supersession does not create another retry. Explicit refresh bypasses debounce but still uses the single-flight scheduler. Schema `1.0` adds no retryability or backoff fields."

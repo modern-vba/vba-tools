@@ -16,6 +16,7 @@ const requiredExtensionCommandIds = [
   'vbaTools.build',
   'vbaTools.test',
   'vbaTools.publish',
+  'vbaTools.hostClasses.refresh',
   'vbaTools.export',
   'vbaTools.commonModules.add',
   'vbaTools.commonModules.list',

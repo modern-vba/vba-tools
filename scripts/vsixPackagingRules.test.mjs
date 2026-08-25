@@ -369,7 +369,11 @@ test('extension package metadata includes the complete user command surface', as
     await fs.readFile(new URL('../package.json', import.meta.url), 'utf8')
   );
 
-  for (const commandId of ['vbaTools.doctor', 'vbaTools.newExcel']) {
+  for (const commandId of [
+    'vbaTools.doctor',
+    'vbaTools.newExcel',
+    'vbaTools.hostClasses.refresh'
+  ]) {
     const missingCommand = structuredClone(packageJson);
     missingCommand.contributes.commands = missingCommand.contributes.commands.filter(
       (command) => command.command !== commandId

@@ -31,6 +31,14 @@ executor slot: a captured background read that is waiting for capacity cannot
 hold the ordered lane or delay a later mutation. A later `didChange` does not
 cancel or alter the pinned read.
 
+Consumer-owned Host Event snapshots enter the same lane as ranked,
+coalescible mutations. For one project-document key, the greatest queued
+document-local revision survives even when arrival order is stale; independent
+document keys preserve their surviving input order. Execution still validates
+the current manifest context and retained revision before atomically replacing
+or clearing the snapshot, so coalescing is an admission optimization rather
+than freshness authority.
+
 The scheduler owns the consistency and priority mapping. Feature code supplies
 an LSP query kind and cannot choose a priority, freshness rule, project scope,
 catalog wait, or arbitrary live-workspace callback. The internal classes are:

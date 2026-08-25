@@ -23,6 +23,10 @@ Include enough information to reproduce and diagnose the problem:
 - Windows version and architecture;
 - desktop Excel version when workbook automation is involved;
 - the command or editor action that failed, its full output, and relevant logs;
+- for Host Event problems, the selected project, document, source-template
+  path, trigger, generation and revision, status hover, and the complete
+  queue/start/cancel/commit/discard or source-association record from VBA Tools
+  Output;
 - a minimal exported VBA source or project manifest when it can be shared
   safely.
 
@@ -34,7 +38,10 @@ posting publicly.
 The initial Marketplace package targets Windows x64 (`win32-x64`). Editor-only
 language, formatting, and navigation features do not require Excel. Workbook
 build, test, publish, export, doctor, and native VBE debugging commands require
-desktop Excel and trusted access to the VBA project object model.
+desktop Excel and trusted access to the VBA project object model. Background or
+explicit Host Event inspection has the same Excel and Workspace Trust
+requirements, but synchronous editor requests consume only committed snapshots
+and never start or wait for Excel.
 
 ## Service Level
 

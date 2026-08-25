@@ -44,6 +44,22 @@ building, testing, publishing, exporting, CommonModules updates, and project
 reference manifest edits stay in `vba-dev`; the language server owns editor
 language features.
 
+The VS Code extension also owns Host Event inspection and retained projection
+state. It sends `vba/hostClassProjectionSnapshot` schema `1` notifications as
+immutable full replacements or clears for one manifest document. Each payload
+has an independent, monotonically increasing document-local revision and exact
+canonical project, document, and source-template context. The language server
+strictly validates the payload, rejects stale revisions and mismatched current
+contexts, coalesces queued notifications for the same document to the greatest
+revision, atomically replaces the accepted snapshot, and invalidates only that
+project's semantic inventory.
+
+`current` entries are authoritative Host Event evidence,
+`lastKnownGood` entries are advisory, and `indeterminate` entries provide no
+projected Event candidate. Interactive requests capture committed immutable
+state; they never invoke `vba-dev`, launch Excel, or wait for inspection or
+notification completion.
+
 ## Development
 
 Build the language server:

@@ -38,6 +38,7 @@ export interface VbaDevCommandRunOptions {
   args: readonly string[];
   outputChannel: VbaToolsOutputChannel;
   displayName?: string | undefined;
+  revealOutput?: boolean | undefined;
   cancellationTransport?: 'stdin-v1' | undefined;
   forceKillAfterCancellationMilliseconds?: number | undefined;
   reportCancellationProgress?: ((message: string) => void) | undefined;
@@ -177,7 +178,9 @@ export function runCompanionCommand(
     child.kill();
   };
 
-  options.outputChannel.show(true);
+  if (options.revealOutput !== false) {
+    options.outputChannel.show(true);
+  }
   options.outputChannel.appendLine(`> ${options.executablePath} ${options.args.join(' ')}`);
 
   child.onStdout((value) => {

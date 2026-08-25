@@ -225,6 +225,7 @@ test('the managed command registry gates every process-launching palette family'
     'vbaTools.build',
     'vbaTools.test',
     'vbaTools.publish',
+    'vbaTools.hostClasses.refresh',
     'vbaTools.commonModules.add',
     'vbaTools.commonModules.list',
     'vbaTools.commonModules.update',

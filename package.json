@@ -56,6 +56,7 @@
     "onCommand:vbaTools.build",
     "onCommand:vbaTools.test",
     "onCommand:vbaTools.publish",
+    "onCommand:vbaTools.hostClasses.refresh",
     "onCommand:vbaTools.export",
     "onCommand:vbaTools.commonModules.add",
     "onCommand:vbaTools.commonModules.list",
@@ -210,6 +211,10 @@
       {
         "command": "vbaTools.publish",
         "title": "VBA Tools: Publish"
+      },
+      {
+        "command": "vbaTools.hostClasses.refresh",
+        "title": "VBA Tools: Refresh Host Events"
       },
       {
         "command": "vbaTools.export",

@@ -51,7 +51,8 @@ internal sealed class VbaProjectSnapshotBuilder
     public VbaProjectSnapshot BuildSnapshot(
         VbaProjectResolution resolution,
         IReadOnlyDictionary<string, VbaTrackedDocument> scopedTrackedDocuments,
-        VbaProjectReferenceCatalogSet referenceCatalogs)
+        VbaProjectReferenceCatalogSet referenceCatalogs,
+        VbaHostClassProjectionSnapshot? hostClassProjectionSnapshot)
     {
         var scopedDocuments = scopedTrackedDocuments
             .ToDictionary(pair => pair.Key, pair => pair.Value.Text, StringComparer.OrdinalIgnoreCase);
@@ -66,7 +67,8 @@ internal sealed class VbaProjectSnapshotBuilder
         var semanticInventory = VbaSemanticInventory.Create(
             scopedSourceDocuments,
             manifestContext.ReferenceSelection,
-            referenceCatalogs);
+            referenceCatalogs,
+            hostClassProjectionSnapshot);
 
         return new VbaProjectSnapshot(
             resolution,

@@ -6,6 +6,13 @@ Open buffers remain authoritative over equivalent disk sources. A watched reload
 
 Warm snapshot reuse does not stat known source files or reread disk. Raw disk writes that do not arrive through a watcher may therefore remain stale until a later reconciliation or explicit watched reload admits the change. This is an intentional watcher-first freshness model and preserves interactive latency. The full-text LSP synchronization contract remains unchanged.
 
+An accepted extension-owned `HostClassProjectionSnapshot` is another immutable
+project-snapshot input. Its exact manifest-document context and document-local
+revision are retained outside source text. Replacing or clearing it invalidates
+only the matching project-document cache and project-aware diagnostics; an
+unrelated project retains its warm snapshot. Interactive capture reads the
+latest committed value and performs no synchronous Host Event inspection.
+
 Cold snapshot materialization, watched source reloads, and background reconciliation use one shared `VbaProjectDiskInventory` instance. Its cold capture may reuse decoded text when stable file metadata and the source invalidation generation are unchanged. Its reconciliation observation always performs a stable byte read, even when length and last-write time match the previous observation, so a missed watcher event with unchanged metadata can still converge.
 
 Closed disk source uses one `DiskSourceDecoding` contract. A recognized UTF-8

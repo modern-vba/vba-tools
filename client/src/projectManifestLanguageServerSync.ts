@@ -44,6 +44,7 @@ export interface ProjectManifestLanguageServerSyncOptions {
   readonly sendNotification: (method: string, parameters: unknown) => Promise<void>;
   readonly subscriptions: ProjectManifestSyncDisposable[];
   readonly reportError?: (error: unknown) => void | Promise<void>;
+  readonly onDidSynchronizeLanguageClient?: () => void | Promise<void>;
 }
 
 export interface ProjectManifestLanguageServerSync {
@@ -194,6 +195,7 @@ export function registerProjectManifestLanguageServerSync(
   };
 
   const synchronizeOpenDocuments = (): void => {
+    const generation = connectionGeneration;
     desiredManifests.clear();
     for (const document of options.getOpenDocuments()) {
       const snapshot = getProjectManifestSnapshot(document);
@@ -205,6 +207,14 @@ export function registerProjectManifestLanguageServerSync(
     for (const key of desiredManifests.keys()) {
       enqueueReconciliation(key);
     }
+
+    notificationQueue = notificationQueue
+      .then(async () => {
+        if (isRunning && generation === connectionGeneration) {
+          await options.onDidSynchronizeLanguageClient?.();
+        }
+      })
+      .catch(reportError);
   };
 
   const changeRunningState = (nextIsRunning: boolean): void => {

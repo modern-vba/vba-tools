@@ -1618,6 +1618,51 @@ public sealed class VbaInteractiveWorkSchedulerTests
     }
 
     [Fact]
+    public async Task Ranked_coalescible_mutations_execute_the_greatest_revision_not_the_latest_arrival()
+    {
+        var executed = new List<string>();
+        var blockerStarted = CreateSignal();
+        var releaseBlocker = CreateSignal();
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var blocker = scheduler.AdmitBarrier(
+            "test/ranked-coalescing-gate",
+            async cancellationToken =>
+            {
+                blockerStarted.TrySetResult();
+                await releaseBlocker.Task.WaitAsync(cancellationToken);
+            });
+        await blockerStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var revisionThree = scheduler.AdmitCoalescibleMutation(
+            "vba/hostClassProjectionSnapshot",
+            "C:/work/Project\u001eBook1",
+            rank: 3,
+            _ =>
+            {
+                executed.Add("revision-3");
+                return Task.CompletedTask;
+            });
+        var revisionTwo = scheduler.AdmitCoalescibleMutation(
+            "vba/hostClassProjectionSnapshot",
+            "C:/work/Project\u001eBook1",
+            rank: 2,
+            _ =>
+            {
+                executed.Add("revision-2");
+                return Task.CompletedTask;
+            });
+
+        releaseBlocker.TrySetResult();
+        await Task.WhenAll(
+                blocker.Completion,
+                revisionThree.Completion,
+                revisionTwo.Completion)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(["revision-3"], executed);
+    }
+
+    [Fact]
     public async Task Coalescible_mutations_do_not_cross_a_read_fence()
     {
         var executed = new List<string>();

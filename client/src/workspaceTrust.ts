@@ -21,6 +21,7 @@ export const ManagedToolingCommandIds = [
   'vbaTools.build',
   'vbaTools.test',
   'vbaTools.publish',
+  'vbaTools.hostClasses.refresh',
   'vbaTools.commonModules.add',
   'vbaTools.commonModules.list',
   'vbaTools.commonModules.update',

@@ -31,6 +31,7 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
     private readonly IVbaProjectDiskInventory diskInventory;
     private readonly VbaProjectSourceDocumentCache diskDocumentCache;
     private readonly VbaProjectSnapshotProvider snapshotProvider;
+    private readonly VbaHostClassProjectionSnapshotStore hostClassProjectionStore;
     private readonly IVbaDocumentAnalysisBuildObserver analysisBuildObserver;
     private VbaWorkspaceSnapshotState? workspaceSnapshotState;
     private long nextDocumentLifecycleEpoch;
@@ -98,6 +99,7 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
             new VbaFileSystemProjectDiskInventory(projectFileSystem);
         diskDocumentCache = new VbaProjectSourceDocumentCache();
         ManifestWorkspace = new VbaProjectManifestWorkspace(projectFileSystem);
+        hostClassProjectionStore = new VbaHostClassProjectionSnapshotStore();
         snapshotProvider = new VbaProjectSnapshotProvider(
             referenceCatalogCache,
             diskInventory,
@@ -105,7 +107,8 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
             ManifestWorkspace,
             lifecycleObserver,
             snapshotBuildObserver,
-            reconciliationAuthorityLeaseObserver);
+            reconciliationAuthorityLeaseObserver,
+            hostClassProjectionStore);
     }
 
     /// <summary>
@@ -827,6 +830,22 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
             capture.ActiveUris,
             capture.WorkspaceState,
             cancellationToken);
+    }
+
+    internal bool TryApplyHostClassProjectionSnapshot(
+        VbaHostClassProjectionSnapshotUpdate update)
+    {
+        IReadOnlyList<string> activeUris;
+        lock (gate)
+        {
+            activeUris = documents.Values
+                .Select(state => state.Document.Uri)
+                .ToArray();
+        }
+
+        return snapshotProvider.TryApplyHostClassProjectionSnapshot(
+            update,
+            activeUris);
     }
 
     VbaSemanticInventory IVbaInteractiveWorkspaceCapture.CaptureProjectSemanticInventory(

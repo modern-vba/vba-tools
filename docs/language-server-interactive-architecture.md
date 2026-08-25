@@ -165,6 +165,39 @@ revision reservation and mailbox posting in producer order, while revision
 freshness remains in the producer Module. Concurrent producers therefore
 cannot restore an older pending revision.
 
+### Host-class snapshot mutations
+
+The extension owns Host Event inspection, refresh generations, operational
+status, last-known-good folding, and desired snapshot replay. The language
+server receives only the closed `vba/hostClassProjectionSnapshot` notification
+schema `1`: an immutable full `present` snapshot or `cleared` state for one
+manifest document. This transport schema is independent from the
+`host-class list --format json` CLI schema `1.0` and from source or workspace
+revisions.
+
+Admission parses the complete nested schema before mutation scheduling. Pending
+notifications with the same project-document key are ranked by their positive
+document-local revision, and the ordered lane retains the greatest queued
+revision even when different documents are interleaved. At execution, the
+workspace accepts only a revision newer than retained state whose canonical
+project, exact document name, and canonical selected source-template match the
+current manifest resolution. Acceptance atomically replaces or clears the
+complete stored snapshot and invalidates only matching project-snapshot and
+project-aware diagnostic state.
+
+After language-client start or restart, the extension completes manifest
+synchronization before replaying the latest desired snapshot for every active
+document. Replay starts no inspection and one failed notification does not
+prevent later documents from being attempted.
+
+`current` entries provide authoritative projected Host Event evidence,
+`lastKnownGood` entries remain advisory, and `indeterminate` entries supply no
+projected Event candidate. A request admitted before a later replacement keeps
+its already captured immutable inventory; a later request sees the accepted
+replacement. No completion, hover, signature-help, diagnostic, or other editor
+request invokes `vba-dev`, launches Excel, or waits for inspection or
+notification completion.
+
 ## Hot-path stages
 
 An ordinary open-document edit follows these stages:

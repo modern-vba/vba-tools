@@ -115,6 +115,38 @@ test('ProjectManifest sync reopens the latest full text after a language server 
   });
 });
 
+test('ProjectManifest sync completes before replaying consumer-owned snapshots after restart', async () => {
+  const manifest = new FakeDocument(
+    'file',
+    String.raw`C:\work\vba-project.json`,
+    'file:///C:/work/vba-project.json',
+    'json',
+    1,
+    '{"version":1}'
+  );
+  const harness = new SyncHarness([manifest], false);
+  const order: string[] = [];
+  const sendNotification = harness.options.sendNotification;
+  const sync = registerProjectManifestLanguageServerSync({
+    ...harness.options,
+    sendNotification: async (method, parameters) => {
+      order.push(method);
+      await sendNotification(method, parameters);
+    },
+    onDidSynchronizeLanguageClient: async () => {
+      order.push('host-class replay');
+    }
+  });
+
+  harness.state.setRunning(true);
+  await sync.flush();
+
+  assert.deepEqual(order, [
+    'textDocument/didOpen',
+    'host-class replay'
+  ]);
+});
+
 test('ProjectManifest sync serializes open change and close notifications', async () => {
   const manifest = new FakeDocument(
     'file',

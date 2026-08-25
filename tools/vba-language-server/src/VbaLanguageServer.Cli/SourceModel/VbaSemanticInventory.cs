@@ -21,13 +21,16 @@ public sealed class VbaSemanticInventory
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, IReadOnlyList<int>> semanticTokenDataCache =
         new(StringComparer.OrdinalIgnoreCase);
+    private readonly VbaHostClassProjectionSnapshot? hostClassProjectionSnapshot;
 
     private VbaSemanticInventory(
         IReadOnlyList<VbaSourceDocument> sourceDocuments,
-        VbaNameCandidateInventory definitionCandidates)
+        VbaNameCandidateInventory definitionCandidates,
+        VbaHostClassProjectionSnapshot? hostClassProjectionSnapshot)
     {
         this.sourceDocuments = sourceDocuments;
         this.definitionCandidates = definitionCandidates;
+        this.hostClassProjectionSnapshot = hostClassProjectionSnapshot;
         semanticResolution = new VbaSemanticResolution(
             definitionCandidates,
             resolutionPolicy);
@@ -45,7 +48,8 @@ public sealed class VbaSemanticInventory
     public static VbaSemanticInventory Create(
         IReadOnlyDictionary<string, VbaSourceDocument> sourceDocuments,
         VbaProjectReferenceSelection? referenceSelection = null,
-        VbaProjectReferenceCatalogSet? referenceCatalogs = null)
+        VbaProjectReferenceCatalogSet? referenceCatalogs = null,
+        VbaHostClassProjectionSnapshot? hostClassProjectionSnapshot = null)
     {
         var documents = FreezeList(
             sourceDocuments.Values.Select(CaptureDocument));
@@ -62,8 +66,15 @@ public sealed class VbaSemanticInventory
             activeReferenceDefinitions);
         return new VbaSemanticInventory(
             documents,
-            definitionCandidates);
+            definitionCandidates,
+            hostClassProjectionSnapshot);
     }
+
+    /// <summary>
+    /// Gets the immutable consumer-owned host-class projection for this project snapshot.
+    /// </summary>
+    public VbaHostClassProjectionSnapshot? HostClassProjectionSnapshot
+        => hostClassProjectionSnapshot;
 
     /// <summary>
     /// Gets definitions declared in a document.

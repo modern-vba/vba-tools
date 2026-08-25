@@ -42,6 +42,15 @@ build must release its hidden Excel process before the adapter cleans
 caller-owned session artifacts or starts visible Excel. CLI and adapter
 compatibility are validated and versioned independently.
 
+Host Event inspection is a separate extension-owned lifecycle and never runs
+through the debug adapter. It invokes read-only, document-scoped
+`vba-dev host-class list`, shares one extension-wide inspection slot, waits for
+that invocation's hidden Excel process release, and sends only a folded
+immutable snapshot to the language server. Debug start, Restart, break state,
+and adapter Doctor neither trigger nor wait for Host Event inspection, while
+synchronous editor requests consume committed snapshot state without starting
+Excel.
+
 The snapshot directory is authoritative rather than an overlay. It contains the
 complete recursive `.bas`, `.cls`, and `.frm` inventory plus same-directory
 `.frx` sidecars as actual bytes and preserves the original
@@ -203,6 +212,13 @@ from extension and CLI releases, and `commandSchemaVersions` pins each command
 output consumed by the extension. `vba-dev capabilities --format json` reports
 only this project-command contract; it no longer advertises or starts a debug
 adapter.
+
+The same CLI requirement independently pins
+`featureVersions["hostClass.list"] == "1.0"` and
+`commandSchemaVersions["host-class list"] == "1.0"` for the extension-owned
+Host Event lifecycle. These values do not become debug-adapter requirements:
+the extension invokes and validates the inspection result, then supplies the
+language server's separate numeric snapshot schema `1`.
 
 The debug component separately versions its DAP extensions and advertises its
 stdio entry point through `vba-debug-adapter capabilities --format json`. The

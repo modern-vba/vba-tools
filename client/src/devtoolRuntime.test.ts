@@ -3,6 +3,43 @@ import assert from 'node:assert/strict';
 
 import { runVbaDevCommandInvocation } from './devtoolRuntime';
 
+test('managed background invocation preserves output without revealing it', async () => {
+  let reveals = 0;
+  const output: string[] = [];
+  const result = await runVbaDevCommandInvocation({
+    extensionRoot: String.raw`C:\extensions\vba-tools`,
+    vbaDevResolver: {
+      resolve: async () => ({
+        executablePath: String.raw`C:\tools\vba-dev.exe`,
+        capabilities: {
+          toolVersion: '0.1.0',
+          contractVersion: '1.0',
+          featureVersions: {},
+          commands: {}
+        },
+        bundledPath: String.raw`C:\tools\vba-dev.exe`,
+        source: 'bundled'
+      })
+    },
+    revealOutput: false,
+    outputChannel: {
+      append: (value) => output.push(value),
+      appendLine: (value) => output.push(`${value}\n`),
+      show: () => { reveals += 1; }
+    },
+    startProcess: () => ({
+      onStdout: (listener) => listener('{"complete":true}\n'),
+      onStderr: (listener) => listener(''),
+      onExit: (listener) => listener(0, null),
+      kill: () => undefined
+    })
+  }, ['host-class', 'list']);
+
+  assert.equal(result?.exitCode, 0);
+  assert.equal(reveals, 0);
+  assert.match(output.join(''), /complete/);
+});
+
 test('common-module add is never caller-force-killed after cooperative cancellation', async () => {
   const outcome = await runProtectedCancellation(['common-module', 'add', 'Feature']);
 
@@ -21,6 +58,14 @@ test('common-module update is never caller-force-killed after cooperative cancel
 
 test('new excel is never caller-force-killed after cooperative cancellation', async () => {
   const outcome = await runProtectedCancellation(['new', 'excel', '--name', 'BookProject']);
+
+  assert.equal(outcome.kills, 0);
+  assert.ok(outcome.result);
+  assert.equal(outcome.result.cancelled, true);
+});
+
+test('host-class list is never caller-force-killed before owned Excel cleanup completes', async () => {
+  const outcome = await runProtectedCancellation(['host-class', 'list']);
 
   assert.equal(outcome.kills, 0);
   assert.ok(outcome.result);

@@ -302,10 +302,11 @@ VSIX file list, and runs bundled executable probes:
   `vba-debug-adapter-contract.json` must be present.
 - packaged metadata must point `main` at the compiled extension, activate
   dynamic VBA debug resolution, contribute the supported launch schema and user
-  commands, and keep `module` and `procedure` atomic.
+  commands including `vbaTools.hostClasses.refresh`, and keep `module` and
+  `procedure` atomic.
 - the bundled `vba-dev.exe` must answer `capabilities --format json` with the
-  command and source-snapshot contract required by the extension, without a DAP
-  or debug-adapter surface.
+  command and source-snapshot contract required by the extension, including
+  HostClass inspection schema `1.0`, without a DAP or debug-adapter surface.
 - the bundled `vba-debug-adapter.exe` must answer `capabilities --format json`
   with its independent contract, accept its pinned `vba-dev.exe` path, and start
   its stdio transport with a canonical session ID.
@@ -338,9 +339,9 @@ bin/vba-language-server/win-x64/vba-language-server.exe --version
 ## Clean Windows Smoke
 
 This smoke is required for a release that introduces or changes the native VBE
-debug workflow. For a release that does not affect debugging, an unavailable
-clean Windows environment may be recorded as `Clean Windows smoke: not run` in
-the GitHub Release notes.
+debug workflow or Host Event inspection lifecycle. For an unrelated release,
+an unavailable clean Windows environment may be recorded as `Clean Windows
+smoke: not run` in the GitHub Release notes.
 
 When the environment is available, run this smoke on Windows 11 with desktop
 Excel installed and without a separately installed .NET runtime.
@@ -354,29 +355,33 @@ Excel installed and without a separately installed .NET runtime.
 6. Open a workbook-backed sample workspace that contains `vba-project.json`.
 7. Enable trusted access to the VBA project object model in Excel.
 8. Run `VBA Tools: Doctor`.
-9. Run `VBA Tools: Build`.
-10. Run `VBA Tools: Test`.
-11. Confirm Test Explorer shows workbook-backed test nodes.
-12. Run the Test Explorer default `Run Tests` profile.
-13. Create or open a debug sample whose standard module contains `Option Private
+9. Run `VBA Tools: Refresh Host Events` for one document. Confirm a clean
+   refresh is silent, the `VBA Host Events` status item hides after completion,
+   and VBA Tools Output records the committed document-local generation,
+   revision, context, and class counts.
+10. Run `VBA Tools: Build`.
+11. Run `VBA Tools: Test`.
+12. Confirm Test Explorer shows workbook-backed test nodes.
+13. Run the Test Explorer default `Run Tests` profile.
+14. Create or open a debug sample whose standard module contains `Option Private
     Module` and a public parameterless `Sub` that records a harmless completion
     marker.
-14. Set an enabled ordinary line breakpoint on an executable statement in that
+15. Set an enabled ordinary line breakpoint on an executable statement in that
     procedure.
-15. Make an unsaved edit in the target source, then press F5 without a saved
+16. Make an unsaved edit in the target source, then press F5 without a saved
     launch configuration. Confirm the packaged dynamic configuration captures
     the dirty editor content without saving, opens a same-filename workbook from
     the adapter-owned temporary directory in a dedicated visible Excel/VBE
     process, transfers the breakpoint, and stops in native VBE Break mode.
-16. Continue from the VBE. Confirm the completion marker is recorded and VS Code
+17. Continue from the VBE. Confirm the completion marker is recorded and VS Code
     keeps the debug session active after procedure completion.
-17. Exit the owned Excel process. Confirm VS Code displays the final process-exit
+18. Exit the owned Excel process. Confirm VS Code displays the final process-exit
     termination message and no owned Excel process remains.
-18. Exit without saving and confirm the project source, source template, bin,
+19. Exit without saving and confirm the project source, source template, bin,
     and publish outputs are unchanged. Repeat with a saved `launch.json` target
     after another dirty edit and confirm a new F5 captures the fresh editor
     content without saving it.
-19. Run the bundled language-server executable directly:
+20. Run the bundled language-server executable directly:
 
     ```powershell
     .\bin\vba-language-server\win-x64\vba-language-server.exe --version

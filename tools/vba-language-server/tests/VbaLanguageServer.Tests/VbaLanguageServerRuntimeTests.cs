@@ -11,6 +11,247 @@ namespace VbaLanguageServer.Tests;
 public sealed class VbaLanguageServerRuntimeTests
 {
     [Fact]
+    public async Task Host_class_snapshot_notification_mutates_the_workspace_before_shutdown()
+    {
+        var previousExitCode = Environment.ExitCode;
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-runtime-host-").FullName;
+        try
+        {
+            var sourceRoot = Path.Combine(projectRoot, "src", "Book1");
+            Directory.CreateDirectory(sourceRoot);
+            File.WriteAllText(
+                Path.Combine(projectRoot, "vba-project.json"),
+                JsonSerializer.Serialize(new
+                {
+                    schemaVersion = 1,
+                    projectName = "RuntimeHostProject",
+                    primaryDocument = "Book1",
+                    documents = new Dictionary<string, object>
+                    {
+                        ["Book1"] = new
+                        {
+                            kind = "excel",
+                            sourcePath = "src/Book1",
+                            templatePath = "src/Book1/Book1.xlsm",
+                            binPath = "bin/Book1/Book1.xlsm",
+                            publishPath = "publish/Book1/Book1.xlsm",
+                            commonModules = Array.Empty<object>(),
+                            references = Array.Empty<object>()
+                        }
+                    }
+                }));
+            var sourceUri = new Uri(Path.Combine(sourceRoot, "Worker.bas")).AbsoluteUri;
+            await using var input = new MemoryStream(CreateFramedInput(
+                new
+                {
+                    jsonrpc = "2.0",
+                    method = "textDocument/didOpen",
+                    @params = new
+                    {
+                        textDocument = new
+                        {
+                            uri = sourceUri,
+                            languageId = "vba",
+                            version = 1,
+                            text = "Attribute VB_Name = \"Worker\"\nPublic Sub Run()\nEnd Sub\n"
+                        }
+                    }
+                },
+                new
+                {
+                    jsonrpc = "2.0",
+                    method = "vba/hostClassProjectionSnapshot",
+                    @params = new
+                    {
+                        schemaVersion = 1,
+                        revision = 1,
+                        project = Path.GetFullPath(projectRoot),
+                        document = "Book1",
+                        sourceTemplate = Path.GetFullPath(
+                            Path.Combine(sourceRoot, "Book1.xlsm")),
+                        state = "present",
+                        classEnumerationComplete = true,
+                        classes = Array.Empty<object>()
+                    }
+                },
+                new
+                {
+                    jsonrpc = "2.0",
+                    id = 1,
+                    method = "shutdown"
+                },
+                new
+                {
+                    jsonrpc = "2.0",
+                    method = "exit"
+                }));
+            await using var output = new MemoryStream();
+            var transport = new LspMessageTransport(input, output);
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()));
+            var catalogLifecycle = new NoOpReferenceCatalogLifecycle();
+            var runtime = new VbaLanguageServerRuntime(
+                transport,
+                new VbaLspRequestExecution(transport, workspace),
+                new VbaDocumentLifecycle(
+                    transport,
+                    workspace,
+                    catalogLifecycle),
+                hostClassProjectionSnapshotHandler:
+                    new VbaHostClassProjectionSnapshotHandler(workspace));
+
+            await runtime.RunAsync().WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Equal(
+                1,
+                workspace.CreateProjectSnapshot(sourceUri)
+                    .SemanticInventory.HostClassProjectionSnapshot?.Revision);
+        }
+        finally
+        {
+            Environment.ExitCode = previousExitCode;
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Host_class_snapshot_notifications_coalesce_to_the_greatest_queued_revision()
+    {
+        var previousExitCode = Environment.ExitCode;
+        var analysisGate = new BlockingDocumentAnalysisObserver();
+        try
+        {
+            await using var input = new MemoryStream(CreateFramedInput(
+                new
+                {
+                    jsonrpc = "2.0",
+                    method = "textDocument/didOpen",
+                    @params = new
+                    {
+                        textDocument = new
+                        {
+                            uri = "file:///C:/work/HostQueueGate.bas",
+                            languageId = "vba",
+                            version = 1,
+                            text = "Public Sub Run()\nEnd Sub\n"
+                        }
+                    }
+                },
+                CreateHostSnapshotNotification(revision: 3),
+                CreateHostSnapshotNotification(revision: 2),
+                new
+                {
+                    jsonrpc = "2.0",
+                    id = 1,
+                    method = "shutdown"
+                },
+                new
+                {
+                    jsonrpc = "2.0",
+                    method = "exit"
+                }));
+            await using var output = new MemoryStream();
+            var transport = new LspMessageTransport(input, output);
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()),
+                NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+                analysisGate);
+            var handler = new RecordingHostClassProjectionSnapshotHandler();
+            var catalogLifecycle = new NoOpReferenceCatalogLifecycle();
+            var runtime = new VbaLanguageServerRuntime(
+                transport,
+                new VbaLspRequestExecution(transport, workspace),
+                new VbaDocumentLifecycle(
+                    transport,
+                    workspace,
+                    catalogLifecycle),
+                hostClassProjectionSnapshotHandler: handler);
+
+            var run = runtime.RunAsync();
+            await analysisGate.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            analysisGate.Release.TrySetResult();
+            await run.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Equal([3], handler.AppliedRevisions);
+        }
+        finally
+        {
+            analysisGate.Release.TrySetResult();
+            Environment.ExitCode = previousExitCode;
+        }
+    }
+
+    [Fact]
+    public async Task Host_class_snapshot_notifications_coalesce_across_interleaved_documents()
+    {
+        var previousExitCode = Environment.ExitCode;
+        var analysisGate = new BlockingDocumentAnalysisObserver();
+        try
+        {
+            await using var input = new MemoryStream(CreateFramedInput(
+                new
+                {
+                    jsonrpc = "2.0",
+                    method = "textDocument/didOpen",
+                    @params = new
+                    {
+                        textDocument = new
+                        {
+                            uri = "file:///C:/work/HostInterleavedGate.bas",
+                            languageId = "vba",
+                            version = 1,
+                            text = "Public Sub Run()\nEnd Sub\n"
+                        }
+                    }
+                },
+                CreateHostSnapshotNotification(revision: 2, document: "BookA"),
+                CreateHostSnapshotNotification(revision: 1, document: "BookB"),
+                CreateHostSnapshotNotification(revision: 3, document: "BookA"),
+                new
+                {
+                    jsonrpc = "2.0",
+                    id = 1,
+                    method = "shutdown"
+                },
+                new
+                {
+                    jsonrpc = "2.0",
+                    method = "exit"
+                }));
+            await using var output = new MemoryStream();
+            var transport = new LspMessageTransport(input, output);
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()),
+                NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+                analysisGate);
+            var handler = new RecordingHostClassProjectionSnapshotHandler();
+            var runtime = new VbaLanguageServerRuntime(
+                transport,
+                new VbaLspRequestExecution(transport, workspace),
+                new VbaDocumentLifecycle(
+                    transport,
+                    workspace,
+                    new NoOpReferenceCatalogLifecycle()),
+                hostClassProjectionSnapshotHandler: handler);
+
+            var run = runtime.RunAsync();
+            await analysisGate.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            analysisGate.Release.TrySetResult();
+            await run.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Equal(["BookB:1", "BookA:3"], handler.Applied);
+        }
+        finally
+        {
+            analysisGate.Release.TrySetResult();
+            Environment.ExitCode = previousExitCode;
+        }
+    }
+
+    [Fact]
     public async Task Exit_waits_for_owned_capacity_after_shutdown_instead_of_faulting()
     {
         var previousExitCode = Environment.ExitCode;
@@ -263,6 +504,91 @@ public sealed class VbaLanguageServerRuntimeTests
         }
 
         return stream.ToArray();
+    }
+
+    private static object CreateHostSnapshotNotification(
+        long revision,
+        string document = "Book1")
+        => new
+        {
+            jsonrpc = "2.0",
+            method = "vba/hostClassProjectionSnapshot",
+            @params = new
+            {
+                schemaVersion = 1,
+                revision,
+                project = "C:\\work\\Project",
+                document,
+                sourceTemplate = "C:\\work\\Project\\Book1.xlsm",
+                state = "present",
+                classEnumerationComplete = true,
+                classes = Array.Empty<object>()
+            }
+        };
+
+    private sealed class RecordingHostClassProjectionSnapshotHandler
+        : IVbaHostClassProjectionSnapshotHandler
+    {
+        public List<long> AppliedRevisions { get; } = [];
+        public List<string> Applied { get; } = [];
+
+        public bool TryParse(
+            JsonNode? parameters,
+            out VbaHostClassProjectionSnapshotUpdate update)
+        {
+            update = default!;
+            if (parameters is not JsonObject payload
+                || payload["revision"] is not JsonValue revisionNode
+                || !revisionNode.TryGetValue<long>(out var revision))
+            {
+                return false;
+            }
+
+            if (payload["document"] is not JsonValue documentNode
+                || !documentNode.TryGetValue<string>(out var document))
+            {
+                return false;
+            }
+
+            var context = new VbaHostClassProjectionContext(
+                "C:\\work\\Project",
+                document,
+                "C:\\work\\Project\\Book1.xlsm");
+            update = new VbaHostClassProjectionSnapshotUpdate(
+                context,
+                revision,
+                new VbaHostClassProjectionSnapshot(
+                    revision,
+                    context,
+                    ClassEnumerationComplete: true,
+                    Classes: []));
+            return true;
+        }
+
+        public bool TryApply(VbaHostClassProjectionSnapshotUpdate update)
+        {
+            AppliedRevisions.Add(update.Revision);
+            Applied.Add($"{update.Context.Document}:{update.Revision}");
+            return true;
+        }
+    }
+
+    private sealed class BlockingDocumentAnalysisObserver
+        : IVbaDocumentAnalysisBuildObserver
+    {
+        public TaskCompletionSource Started { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource Release { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void BeforeBuild(
+            VbaDocumentAnalysisBuildContext context,
+            CancellationToken cancellationToken)
+        {
+            Started.TrySetResult();
+            Release.Task.Wait(cancellationToken);
+        }
     }
 
     private sealed class BlockingRequestGate : IVbaLspRequestExecutionGate

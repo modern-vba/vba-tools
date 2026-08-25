@@ -30,6 +30,32 @@ test('VbaDev command output streams to the provided output channel', async () =>
   assert.match(lines.join(''), /doctor output/);
 });
 
+test('VbaDev background command records output without revealing the channel', async () => {
+  const lines: string[] = [];
+  let reveals = 0;
+  const result = await runVbaDevCommand({
+    executablePath: 'vba-dev.exe',
+    args: ['host-class', 'list'],
+    revealOutput: false,
+    outputChannel: {
+      append: (value) => lines.push(value),
+      appendLine: (value) => lines.push(`${value}\n`),
+      show: () => { reveals += 1; }
+    },
+    startProcess: () => ({
+      onStdout: (listener) => listener('{"complete":true}\n'),
+      onStderr: (listener) => listener(''),
+      onExit: (listener) => listener(0, null),
+      kill: () => undefined
+    })
+  });
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(reveals, 0);
+  assert.match(lines.join(''), /host-class list/);
+  assert.match(lines.join(''), /complete/);
+});
+
 test('VbaDev command cancellation kills the spawned process and reports cancellation', async () => {
   let killed = false;
   let cancelListener: (() => void) | undefined;

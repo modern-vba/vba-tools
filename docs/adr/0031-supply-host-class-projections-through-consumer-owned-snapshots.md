@@ -9,7 +9,11 @@ document-scoped `vba-dev host-class list` command. It follows ordinary project
 discovery, selects the requested `ProjectDocument` or the primary document when
 `--document` is omitted, defaults to human-readable text, and exposes
 schema-versioned JSON through `--format json`; `capabilities --format json`
-advertises `featureVersions["hostClass.list"]` as `1.0`. The command owns its
+advertises `featureVersions["hostClass.list"]` and
+`commandSchemaVersions["host-class list"]` as `1.0`. These string-valued CLI
+contracts are independent from the extension-to-language-server notification
+schema `1`, extension refresh generation, and document-local snapshot revision.
+The command owns its
 inspection invocation and dedicated Excel/VBIDE process, but does not persist
 projection state, choose refresh timing, or write the workbook, source,
 manifest, or generated host Event members.
@@ -61,6 +65,12 @@ that preserves the current projection and every correctly associated source but
 makes `HostClassProjectionStatus` attention-required. It creates no source
 diagnostic, Doctor result, automatic Excel retry, or file-name binding. The
 ordinary non-host `ModuleIdentity` file-name fallback is unchanged.
+
+The current exported-source collector supplies only `.frm` candidates as
+`form`. Exported `.cls` files are ordinary `ClassModule` sources and their
+name, `VB_PredeclaredId`, or a matching projection never manufactures
+`document` provenance. The `document` association path is reserved for a
+future adapter that can supply authoritative document-source provenance.
 
 A source module currently associated with a current projected form class has a
 `HostManagedModuleIdentity`. Ordinary source semantic Rename does not change
@@ -294,12 +304,19 @@ projection lifecycle invalidation and refresh rules take precedence.
 
 The extension uses one `HostClassProjectionRefreshScheduler` across all project
 documents and permits at most one running `host-class list` invocation.
-Automatic template and manifest triggers use a one-second trailing-edge
-debounce before the effective request context is resolved; initial activation
-and explicit refresh bypass the debounce. Each canonical `ProjectDocument`
-retains only its latest pending generation. A new trigger advances that
-generation immediately, replaces an older queued request for the same document,
-and requests cooperative cancellation when that document is already running.
+Automatic template and manifest activity uses a one-second trailing-edge
+debounce; initial activation and explicit refresh bypass it. A selected-template
+event advances its document generation and requests cancellation immediately,
+then delays replacement inspection. A raw manifest observation instead fences
+the matching in-flight result while manifest parsing and effective request-context
+resolution are delayed; an unchanged context releases that result without
+creating an inspection trigger, while a resolved document or template identity
+change advances the generation and schedules replacement. This prevents transient
+invalid editor text from clearing state and prevents an old-context result from
+committing during manifest reconciliation. Each canonical `ProjectDocument`
+retains only its latest pending generation. A new resolved trigger replaces an
+older queued request for the same document and requests cooperative cancellation
+when that document is already running.
 Replacement never starts before the superseded CLI has exited and its owned
 Excel process cleanup has completed. Any schema-valid partial result from the
 superseded generation is discarded whole. Work for other documents is not

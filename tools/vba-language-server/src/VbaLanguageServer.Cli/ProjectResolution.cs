@@ -25,13 +25,15 @@ public enum VbaProjectResolutionKind
 /// <param name="DocumentName">The manifest document name for manifest-backed projects.</param>
 /// <param name="DocumentKind">The manifest document kind for manifest-backed projects.</param>
 /// <param name="References">The manifest references active for the resolved document.</param>
+/// <param name="SourceTemplatePath">The canonical selected source-template path for manifest-backed projects.</param>
 public sealed record VbaProjectResolution(
     VbaProjectResolutionKind Kind,
     string RootPath,
     string? ManifestPath = null,
     string? DocumentName = null,
     string? DocumentKind = null,
-    IReadOnlyList<VbaProjectReference>? References = null)
+    IReadOnlyList<VbaProjectReference>? References = null,
+    string? SourceTemplatePath = null)
 {
     internal FileSystemPathIdentity? RootIdentity { get; init; }
 
@@ -111,7 +113,10 @@ public static class VbaProjectResolver
                         manifestPath,
                         documentName,
                         document.Kind,
-                        document.References ?? [])
+                        document.References ?? [],
+                        ResolveManifestPath(
+                            directory.FullName,
+                            document.TemplatePath))
                     {
                         RootIdentity = sourceRootIdentity
                     };
@@ -228,7 +233,7 @@ public static class VbaProjectResolver
     private static string TrimTrailingSeparator(string path)
         => path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
-    private static string ResolveManifestPath(string manifestDirectory, string path)
+    internal static string ResolveManifestPath(string manifestDirectory, string path)
     {
         var normalizedPath = path.Replace('/', Path.DirectorySeparatorChar);
         return Path.GetFullPath(
