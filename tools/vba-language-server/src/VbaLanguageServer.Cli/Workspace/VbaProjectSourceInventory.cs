@@ -52,7 +52,9 @@ internal static class VbaProjectSourceInventory
 
         return new VbaProjectSourceInventorySnapshot(
             documents,
-            diskCapture.Sources);
+            diskCapture.Sources,
+            diskCapture.Failures,
+            diskCapture.ExistingCandidateSourcePaths);
     }
 
     private static Dictionary<string, VbaTrackedDocument>
@@ -80,4 +82,6 @@ internal static class VbaProjectSourceInventory
 /// </summary>
 internal sealed record VbaProjectSourceInventorySnapshot(
     Dictionary<string, VbaTrackedDocument> Documents,
-    IReadOnlyList<VbaProjectDiskSource> DiskSources);
+    IReadOnlyList<VbaProjectDiskSource> DiskSources,
+    IReadOnlyList<VbaProjectDiskSourceFailure> Failures,
+    IReadOnlySet<string> ExistingOpenSourcePaths);

@@ -38,6 +38,7 @@ internal sealed class VbaDiagnosticsPublisher
     private readonly IVbaDiagnosticsPublicationObserver publicationObserver;
     private VbaInteractiveWorkScheduler? scheduler;
     private VbaLatestOnlyBackgroundMailbox? publicationMailbox;
+    private bool diskSourceDiagnosticsAttached;
 
     /// <summary>
     /// Creates a diagnostics publisher.
@@ -75,6 +76,7 @@ internal sealed class VbaDiagnosticsPublisher
     public void AttachScheduler(VbaInteractiveWorkScheduler interactiveScheduler)
     {
         ArgumentNullException.ThrowIfNull(interactiveScheduler);
+        var attachDiskSourceDiagnostics = false;
         lock (enqueueGate)
         {
             lock (gate)
@@ -96,7 +98,15 @@ internal sealed class VbaDiagnosticsPublisher
                     VbaInteractiveBackgroundWorkType.DiagnosticsPublication,
                     StringComparer.OrdinalIgnoreCase,
                     CompleteTerminalRevisionState);
+                diskSourceDiagnosticsAttached = true;
+                attachDiskSourceDiagnostics = true;
             }
+        }
+
+        if (attachDiskSourceDiagnostics)
+        {
+            workspace.DiskSourceDiagnosticsChanged +=
+                OnDiskSourceDiagnosticsChanged;
         }
     }
 
@@ -110,6 +120,22 @@ internal sealed class VbaDiagnosticsPublisher
         var snapshot = workspace.GetDocumentDiagnosticsSnapshot(uri, cancellationToken);
         if (snapshot is null)
         {
+            var diskSourceFailure = workspace.GetDiskSourceFailure(
+                uri,
+                cancellationToken);
+            if (diskSourceFailure is not null)
+            {
+                EnqueuePublication(
+                    diskSourceFailure.Uri,
+                    () => workspace.IsCurrentDiskSourceFailure(
+                        diskSourceFailure),
+                    publicationCancellationToken =>
+                        PublishDiskSourceFailureAsync(
+                            diskSourceFailure,
+                            publicationCancellationToken));
+                return Task.CompletedTask;
+            }
+
             return PublishEmptyDiagnosticsAsync(uri, cancellationToken);
         }
 
@@ -123,6 +149,32 @@ internal sealed class VbaDiagnosticsPublisher
             cancellationToken => PublishDiagnosticsAsync(snapshot, cancellationToken));
         return Task.CompletedTask;
     }
+
+    private Task PublishDiskSourceFailureAsync(
+        VbaProjectDiskSourceFailure failure,
+        CancellationToken cancellationToken)
+        => transport.WriteNotificationAsync(
+            "textDocument/publishDiagnostics",
+            new
+            {
+                uri = failure.Uri,
+                diagnostics = new object[]
+                {
+                    new
+                    {
+                        range = new
+                        {
+                            start = new { line = 0, character = 0 },
+                            end = new { line = 0, character = 1 }
+                        },
+                        severity = 1,
+                        code = "invalid-disk-source-encoding",
+                        source = "vba-language-server",
+                        message = failure.DiagnosticMessage
+                    }
+                }
+            },
+            cancellationToken);
 
     /// <summary>
     /// Clears diagnostics for a document.
@@ -221,17 +273,34 @@ internal sealed class VbaDiagnosticsPublisher
     /// </summary>
     internal void Stop()
     {
+        var detachDiskSourceDiagnostics = false;
         lock (enqueueGate)
         {
             VbaLatestOnlyBackgroundMailbox? mailbox;
             lock (gate)
             {
                 mailbox = publicationMailbox;
+                if (diskSourceDiagnosticsAttached)
+                {
+                    diskSourceDiagnosticsAttached = false;
+                    detachDiskSourceDiagnostics = true;
+                }
             }
 
             mailbox?.Stop();
         }
+
+        if (detachDiskSourceDiagnostics)
+        {
+            workspace.DiskSourceDiagnosticsChanged -=
+                OnDiskSourceDiagnosticsChanged;
+        }
     }
+
+    private void OnDiskSourceDiagnosticsChanged(string uri)
+        => _ = PublishTrackedDiagnosticsAsync(
+            uri,
+            CancellationToken.None);
 
     private Task PublishDiagnosticsAsync(
         VbaDocumentDiagnosticsSnapshot snapshot,

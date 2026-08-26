@@ -34,6 +34,20 @@ It reads `.bas`, `.cls`, and `.frm` files. When a workspace contains a
 `vba-project.json` manifest, project context and manifest-defined VBA project
 references are used to improve cross-file and external reference resolution.
 
+## Closed source encoding
+
+Closed exported source is decoded strictly by a process-wide policy: a
+recognized UTF-8 or UTF-16 BOM wins, otherwise valid UTF-8 wins, and only on
+Windows may invalid UTF-8 fall back to the active ANSI code page captured once
+with `GetACP`. ACP 65001 is UTF-8 and non-Windows hosts have no implicit legacy
+fallback. Invalid bytes produce `invalid-disk-source-encoding`; they are not
+replaced, guessed, or parsed as different text.
+
+Open editor documents are already authoritative Unicode and bypass this byte
+decoder. Encoding never selects the accepted VBA identifier forms. The
+separate `vba-dev` VBE import pipeline owns any ACP staging needed by
+`VBComponents.Import`.
+
 ## Runtime Boundary
 
 The first extension release bundles the Windows x64 C# executable. There is no

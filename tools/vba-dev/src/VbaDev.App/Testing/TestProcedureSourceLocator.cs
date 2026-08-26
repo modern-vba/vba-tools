@@ -48,7 +48,7 @@ public sealed class TestProcedureSourceLocator
             parsedSourceSetPath,
             locationSourceSetPath,
             results,
-            static (_, bytes) => VbaSourceFileTextReader.Decode(bytes));
+            static (_, bytes) => TestSourceFileTextReader.Decode(bytes));
 
     internal IReadOnlyList<TestResultRecord> LocateSnapshot(
         string parsedSourceSetPath,

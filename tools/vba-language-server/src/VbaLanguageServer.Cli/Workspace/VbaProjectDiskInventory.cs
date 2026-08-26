@@ -1,7 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
 using VbaLanguageServer.ProjectModel;
-using VbaLanguageServer.Syntax;
 
 namespace VbaLanguageServer.Workspace;
 
@@ -45,6 +44,15 @@ internal sealed record VbaProjectDiskSource(
     VbaProjectDiskContentIdentity ContentIdentity);
 
 /// <summary>
+/// Represents one closed source that could not be decoded without substitution.
+/// </summary>
+internal sealed record VbaProjectDiskSourceFailure(
+    string Uri,
+    string FullPath,
+    VbaProjectSourceFileMetadata Metadata,
+    string DiagnosticMessage);
+
+/// <summary>
 /// Represents one disk source from the immutable project snapshot used as a scan baseline.
 /// </summary>
 internal sealed record VbaProjectDiskKnownSource(
@@ -58,7 +66,12 @@ internal sealed record VbaProjectDiskKnownSource(
 /// </summary>
 internal sealed record VbaProjectDiskColdSourceCapture(
     IReadOnlyList<VbaProjectDiskSource> Sources,
-    IReadOnlySet<string> OwnedCandidateSourcePaths);
+    IReadOnlyList<VbaProjectDiskSourceFailure> Failures,
+    IReadOnlySet<string> OwnedCandidateSourcePaths)
+{
+    public IReadOnlySet<string> ExistingCandidateSourcePaths { get; init; } =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+}
 
 /// <summary>
 /// Represents the optional disk manifest captured with one project scan.
@@ -82,6 +95,8 @@ internal sealed record VbaProjectDiskObservation(
     IReadOnlyList<VbaProjectDiskSource> Sources,
     VbaProjectDiskManifest? Manifest)
 {
+    public IReadOnlyList<VbaProjectDiskSourceFailure> Failures { get; init; } = [];
+
     /// <summary>
     /// Gets source paths that still exist below the scanned root but are now
     /// owned by a descendant project manifest.
@@ -149,6 +164,8 @@ internal sealed class VbaProjectDiskObservationRequest
         { get; }
 
     public IReadOnlyList<string> ObservedManifestBarrierUris { get; }
+
+    public IReadOnlyList<string> OpenSourceUris { get; init; } = [];
 }
 
 /// <summary>
@@ -178,6 +195,7 @@ internal interface IVbaProjectDiskInventory : IVbaProjectDiskObservationSource
         VbaProjectResolution resolution,
         string sourceUri,
         IReadOnlyDictionary<string, bool> manifestBarrierOverrides,
+        out VbaProjectDiskSourceFailure? failure,
         CancellationToken cancellationToken);
 
     void InvalidateSource(string localPath);
@@ -193,6 +211,7 @@ internal sealed class VbaFileSystemProjectDiskInventory
     private static readonly string[] SourcePatterns = ["*.bas", "*.cls", "*.frm"];
     private readonly object gate = new();
     private readonly IVbaProjectFileSystem fileSystem;
+    private readonly DiskSourceDecoding sourceDecoding;
     private readonly Dictionary<string, CachedSource> sourceCache =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> activeLoads =
@@ -201,14 +220,26 @@ internal sealed class VbaFileSystemProjectDiskInventory
         new(StringComparer.OrdinalIgnoreCase);
 
     public VbaFileSystemProjectDiskInventory()
-        : this(SystemVbaProjectFileSystem.Instance)
+        : this(
+            SystemVbaProjectFileSystem.Instance,
+            DiskSourceDecoding.ForCurrentProcess)
     {
     }
 
     internal VbaFileSystemProjectDiskInventory(
         IVbaProjectFileSystem fileSystem)
+        : this(fileSystem, DiskSourceDecoding.ForCurrentProcess)
     {
+    }
+
+    internal VbaFileSystemProjectDiskInventory(
+        IVbaProjectFileSystem fileSystem,
+        DiskSourceDecoding sourceDecoding)
+    {
+        ArgumentNullException.ThrowIfNull(fileSystem);
+        ArgumentNullException.ThrowIfNull(sourceDecoding);
         this.fileSystem = fileSystem;
+        this.sourceDecoding = sourceDecoding;
     }
 
     internal int Count
@@ -230,45 +261,70 @@ internal sealed class VbaFileSystemProjectDiskInventory
         CancellationToken cancellationToken)
     {
         var excludedPaths = CreateLocalPathSet(excludedSourceUris);
+        var candidatePaths = CreateLocalPathSet(candidateSourceUris);
         var ownership = new SourceOwnership(
             resolution,
             fileSystem,
             manifestBarrierOverrides);
-        var sources = EnumerateSourcePaths(resolution, cancellationToken)
-            .Where(ownership.ContainsSource)
-            .Where(path => !excludedPaths.Contains(path))
-            .Select(
-                path => TryCaptureSource(
-                    path,
-                    forceStableRead: false,
-                    cancellationToken,
-                    out var source)
-                        ? source
-                        : null)
-            .Where(source => source is not null)
-            .Select(source => source!)
-            .ToArray();
-        var ownedCandidatePaths = candidateSourceUris
-            .Select(VbaProjectResolver.TryGetLocalPath)
-            .Where(path => path is not null)
-            .Select(path => Path.GetFullPath(path!))
+        var sources = new List<VbaProjectDiskSource>();
+        var failures = new List<VbaProjectDiskSourceFailure>();
+        var existingCandidatePaths = new HashSet<string>(
+            StringComparer.OrdinalIgnoreCase);
+        foreach (var path in EnumerateSourcePaths(
+            resolution,
+            cancellationToken))
+        {
+            if (!ownership.ContainsSource(path)
+                || excludedPaths.Contains(path))
+            {
+                continue;
+            }
+
+            if (candidatePaths.Contains(path))
+            {
+                existingCandidatePaths.Add(path);
+                continue;
+            }
+
+            if (TryCaptureSource(
+                path,
+                forceStableRead: false,
+                cancellationToken,
+                out var source,
+                out var failure))
+            {
+                sources.Add(source);
+            }
+            else if (failure is not null)
+            {
+                failures.Add(failure);
+            }
+        }
+
+        var ownedCandidatePaths = candidatePaths
             .Where(ownership.ContainsSource)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         return new VbaProjectDiskColdSourceCapture(
-            sources,
-            ownedCandidatePaths);
+            sources.ToArray(),
+            failures.ToArray(),
+            ownedCandidatePaths)
+        {
+            ExistingCandidateSourcePaths = existingCandidatePaths
+        };
     }
 
     public VbaProjectDiskSource? CaptureWatchedSource(
         VbaProjectResolution resolution,
         string sourceUri,
         IReadOnlyDictionary<string, bool> manifestBarrierOverrides,
+        out VbaProjectDiskSourceFailure? failure,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var localPath = VbaProjectResolver.TryGetLocalPath(sourceUri);
         if (localPath is null)
         {
+            failure = null;
             return null;
         }
 
@@ -279,6 +335,7 @@ internal sealed class VbaFileSystemProjectDiskInventory
             manifestBarrierOverrides);
         if (!ownership.ContainsSource(fullPath))
         {
+            failure = null;
             return null;
         }
 
@@ -287,7 +344,8 @@ internal sealed class VbaFileSystemProjectDiskInventory
             fullPath,
             forceStableRead: true,
             cancellationToken,
-            out var source)
+            out var source,
+            out failure)
                 ? source
                 : null;
     }
@@ -342,7 +400,8 @@ internal sealed class VbaFileSystemProjectDiskInventory
             request.Project,
             request.ManifestCandidates.ToArray(),
             manifestBarrierOverrides,
-            request.ObservedManifestBarrierUris.ToArray());
+            request.ObservedManifestBarrierUris.ToArray(),
+            CreateLocalPathSet(request.OpenSourceUris));
     }
 
     private VbaProjectDiskObservation ObserveReconciliation(
@@ -350,6 +409,7 @@ internal sealed class VbaFileSystemProjectDiskInventory
         CancellationToken cancellationToken)
     {
         var sources = new List<VbaProjectDiskSource>();
+        var failures = new List<VbaProjectDiskSourceFailure>();
         var existingNonOwnedSourcePaths = new HashSet<string>(
             StringComparer.OrdinalIgnoreCase);
         var observedManifestBarrierPaths = new HashSet<string>(
@@ -374,13 +434,23 @@ internal sealed class VbaFileSystemProjectDiskInventory
                     continue;
                 }
 
+                if (observation.OpenSourcePaths.Contains(fullPath))
+                {
+                    continue;
+                }
+
                 if (TryCaptureSource(
                     fullPath,
                     forceStableRead: true,
                     cancellationToken,
-                    out var source))
+                    out var source,
+                    out var failure))
                 {
                     sources.Add(source);
+                }
+                else if (failure is not null)
+                {
+                    failures.Add(failure);
                 }
             }
 
@@ -450,6 +520,7 @@ internal sealed class VbaFileSystemProjectDiskInventory
 
         return new VbaProjectDiskObservation(sources, manifest)
         {
+            Failures = failures.ToArray(),
             ExistingNonOwnedSourcePaths = existingNonOwnedSourcePaths,
             ObservedManifestBarriers = observedManifestBarriers.ToArray(),
             MissingObservedManifestBarrierUris =
@@ -504,13 +575,15 @@ internal sealed class VbaFileSystemProjectDiskInventory
         string localPath,
         bool forceStableRead,
         CancellationToken cancellationToken,
-        out VbaProjectDiskSource source)
+        out VbaProjectDiskSource source,
+        out VbaProjectDiskSourceFailure? failure)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var fullPath = Path.GetFullPath(localPath);
         if (!fileSystem.TryGetSourceMetadata(fullPath, out var metadata))
         {
             source = null!;
+            failure = null;
             return false;
         }
 
@@ -522,6 +595,7 @@ internal sealed class VbaFileSystemProjectDiskInventory
                 && cached.Metadata == metadata)
             {
                 source = CreateSource(fullPath, cached);
+                failure = null;
                 return true;
             }
 
@@ -555,6 +629,7 @@ internal sealed class VbaFileSystemProjectDiskInventory
                             source = CreateSource(
                                 fullPath,
                                 retriedCached);
+                            failure = null;
                             return true;
                         }
                     }
@@ -568,11 +643,13 @@ internal sealed class VbaFileSystemProjectDiskInventory
                 catch (FileNotFoundException)
                 {
                     source = null!;
+                    failure = null;
                     return false;
                 }
                 catch (DirectoryNotFoundException)
                 {
                     source = null!;
+                    failure = null;
                     return false;
                 }
 
@@ -582,6 +659,7 @@ internal sealed class VbaFileSystemProjectDiskInventory
                     out var loadedMetadata))
                 {
                     source = null!;
+                    failure = null;
                     return false;
                 }
 
@@ -591,7 +669,34 @@ internal sealed class VbaFileSystemProjectDiskInventory
                     continue;
                 }
 
-                var text = VbaSourceFileTextReader.Decode(sourceBytes);
+                string text;
+                try
+                {
+                    text = sourceDecoding.Decode(sourceBytes, fullPath);
+                }
+                catch (DiskSourceDecodingException error)
+                {
+                    lock (gate)
+                    {
+                        publicationGenerations.TryGetValue(
+                            fullPath,
+                            out var currentPublicationGeneration);
+                        if (currentPublicationGeneration
+                            == capturedPublicationGeneration)
+                        {
+                            sourceCache.Remove(fullPath);
+                        }
+                    }
+
+                    source = null!;
+                    failure = new VbaProjectDiskSourceFailure(
+                        new Uri(fullPath).AbsoluteUri,
+                        fullPath,
+                        loadedMetadata,
+                        error.Message);
+                    return false;
+                }
+
                 CachedSource loaded;
                 lock (gate)
                 {
@@ -619,6 +724,7 @@ internal sealed class VbaFileSystemProjectDiskInventory
                 }
 
                 source = CreateSource(fullPath, loaded);
+                failure = null;
                 return true;
             }
 
@@ -692,7 +798,8 @@ internal sealed class VbaFileSystemProjectDiskInventory
         VbaProjectDiskProjectScope Project,
         IReadOnlyList<VbaProjectDiskManifestProbe> ManifestCandidates,
         IReadOnlyDictionary<string, bool> ManifestBarrierOverrides,
-        IReadOnlyList<string> ObservedManifestBarrierUris);
+        IReadOnlyList<string> ObservedManifestBarrierUris,
+        IReadOnlySet<string> OpenSourcePaths);
 
     private sealed record CachedSource(
         VbaProjectSourceFileMetadata Metadata,

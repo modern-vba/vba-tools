@@ -330,6 +330,9 @@ internal sealed class VbaProjectSnapshotProvider
             var snapshot = snapshotBuilder.BuildSnapshot(
                 capture.Resolution,
                 inventorySnapshot.Documents,
+                inventorySnapshot.DiskSources,
+                inventorySnapshot.Failures,
+                inventorySnapshot.ExistingOpenSourcePaths,
                 capture.ReferenceCatalogState.CatalogSet,
                 capture.HostClassProjectionState.Snapshot);
             buildObserver.BeforeStore(workspaceState.Version, cancellationToken);
@@ -1466,6 +1469,8 @@ internal sealed class VbaProjectSnapshotProvider
                 scopeState.ActiveUri,
                 scopeState.Resolution,
                 diskSources,
+                snapshot.SourceDocuments,
+                snapshot.ExistingOpenSourcePaths,
                 trackedUris);
             if (supersededCacheIdentity is not null
                 && !supersededCacheIdentity.Key.Equals(
@@ -1487,6 +1492,8 @@ internal sealed class VbaProjectSnapshotProvider
         string activeUri,
         VbaProjectResolution resolution,
         IReadOnlyList<VbaProjectDiskSource> diskSources,
+        IReadOnlyDictionary<string, string> sourceDocuments,
+        IReadOnlySet<string> existingOpenSourcePaths,
         IReadOnlyList<string> trackedUris)
     {
         var authorityKey = CreateReconciliationAuthorityKey(
@@ -1501,7 +1508,11 @@ internal sealed class VbaProjectSnapshotProvider
                 out var mappedAuthorityKey)
                 ? mappedAuthorityKey
                 : authorityKey;
-        var knownSources = CreateKnownSources(diskSources);
+        var knownSources = CreateKnownSources(
+            diskSources,
+            sourceDocuments,
+            existingOpenSourcePaths,
+            trackedUris);
         if (!reconciliationBaselines.TryGetValue(
                 previousAuthorityKey,
                 out var previousBaseline))
@@ -1532,15 +1543,56 @@ internal sealed class VbaProjectSnapshotProvider
     }
 
     private static IReadOnlyList<VbaProjectDiskKnownSource> CreateKnownSources(
-        IReadOnlyList<VbaProjectDiskSource> diskSources)
-        => diskSources
+        IReadOnlyList<VbaProjectDiskSource> diskSources,
+        IReadOnlyDictionary<string, string> sourceDocuments,
+        IReadOnlySet<string> existingOpenSourcePaths,
+        IReadOnlyList<string> trackedUris)
+    {
+        var knownSources = diskSources
             .Select(
                 source => new VbaProjectDiskKnownSource(
                     source.Uri,
                     source.FullPath,
                     source.Text,
                     source.ContentIdentity))
-            .ToArray();
+            .ToList();
+        var knownPaths = knownSources
+            .Select(source => source.FullPath)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var uri in trackedUris)
+        {
+            var matchingSource = sourceDocuments.FirstOrDefault(
+                document => SameDocumentIdentity(document.Key, uri));
+            if (matchingSource.Key is null)
+            {
+                continue;
+            }
+
+            var localPath = VbaProjectResolver.TryGetLocalPath(
+                matchingSource.Key);
+            if (localPath is null)
+            {
+                continue;
+            }
+
+            var fullPath = Path.GetFullPath(localPath);
+            if (!existingOpenSourcePaths.Contains(fullPath)
+                || !knownPaths.Add(fullPath))
+            {
+                continue;
+            }
+
+            knownSources.Add(
+                new VbaProjectDiskKnownSource(
+                    matchingSource.Key,
+                    fullPath,
+                    matchingSource.Value,
+                    VbaProjectDiskContentIdentity.FromText(
+                        matchingSource.Value)));
+        }
+
+        return knownSources.ToArray();
+    }
 
     private static string CreateReconciliationAuthorityKey(
         string activeUri,

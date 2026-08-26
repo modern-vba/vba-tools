@@ -1,51 +1,46 @@
 using System.Text;
 
-namespace VbaLanguageServer.Syntax;
+namespace VbaDev.App.Testing;
 
 /// <summary>
-/// Decodes VBA source text using the encodings commonly emitted by the VBE and source-control tools.
+/// Preserves the legacy source-location decoder used outside language-server disk analysis.
 /// </summary>
-public static class VbaSourceFileTextReader
+internal static class TestSourceFileTextReader
 {
     private static readonly byte[] Utf8Preamble = [0xEF, 0xBB, 0xBF];
     private static readonly byte[] Utf16LittleEndianPreamble = [0xFF, 0xFE];
     private static readonly byte[] Utf16BigEndianPreamble = [0xFE, 0xFF];
-
     private static readonly Encoding Utf8Strict = new UTF8Encoding(
         encoderShouldEmitUTF8Identifier: false,
         throwOnInvalidBytes: true);
-
     private static readonly Lazy<Encoding> Cp932 = new(() =>
     {
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
         return Encoding.GetEncoding(932);
     });
 
-    /// <summary>
-    /// Decodes one exported VBA source file from its byte representation.
-    /// </summary>
-    /// <param name="bytes">The complete source-file bytes.</param>
-    /// <returns>The decoded VBA source text.</returns>
-    public static string Decode(byte[] bytes)
+    internal static string Decode(byte[] bytes)
     {
         if (bytes.Length == 0)
         {
             return string.Empty;
         }
 
-        if (HasPrefix(bytes, Utf8Preamble))
+        if (bytes.AsSpan().StartsWith(Utf8Preamble))
         {
-            return Utf8Strict.GetString(bytes.AsSpan(3));
+            return Utf8Strict.GetString(bytes.AsSpan(Utf8Preamble.Length));
         }
 
-        if (HasPrefix(bytes, Utf16LittleEndianPreamble))
+        if (bytes.AsSpan().StartsWith(Utf16LittleEndianPreamble))
         {
-            return Encoding.Unicode.GetString(bytes.AsSpan(2));
+            return Encoding.Unicode.GetString(
+                bytes.AsSpan(Utf16LittleEndianPreamble.Length));
         }
 
-        if (HasPrefix(bytes, Utf16BigEndianPreamble))
+        if (bytes.AsSpan().StartsWith(Utf16BigEndianPreamble))
         {
-            return Encoding.BigEndianUnicode.GetString(bytes.AsSpan(2));
+            return Encoding.BigEndianUnicode.GetString(
+                bytes.AsSpan(Utf16BigEndianPreamble.Length));
         }
 
         try
@@ -57,7 +52,4 @@ public static class VbaSourceFileTextReader
             return Cp932.Value.GetString(bytes);
         }
     }
-
-    private static bool HasPrefix(byte[] bytes, ReadOnlySpan<byte> prefix)
-        => bytes.AsSpan().StartsWith(prefix);
 }

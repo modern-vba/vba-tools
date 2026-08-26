@@ -27,6 +27,72 @@ public sealed class VbaProjectDiskReconciliationTests
     }
 
     [Fact]
+    public async Task Reconciliation_commits_decode_failure_without_reusing_previous_text()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-reconcile-invalid-source-").FullName;
+        try
+        {
+            WriteProjectManifest(projectRoot);
+            var sourceRoot = Path.Combine(projectRoot, "src", "Book1");
+            var callerUri = ToFileUri(Path.Combine(sourceRoot, "Caller.bas"));
+            var helperPath = Path.Combine(sourceRoot, "Helper.bas");
+            var helperUri = ToFileUri(helperPath);
+            const string callerText = "Public Sub Run()\nEnd Sub\n";
+            var helperText = CreateModule("Helper", "BuildBefore");
+            File.WriteAllText(helperPath, helperText);
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()),
+                NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+                NullVbaDocumentAnalysisBuildObserver.Instance,
+                NullVbaProjectSnapshotBuildObserver.Instance,
+                SystemVbaProjectFileSystem.Instance,
+                reconciliationAuthorityLeaseObserver: null,
+                sourceDecoding: new DiskSourceDecoding(
+                    supportsLegacyFallback: false,
+                    activeCodePage: 65001));
+            workspace.UpdateDocument(callerUri, callerText);
+            _ = workspace.CreateProjectSnapshot(callerUri);
+            File.WriteAllBytes(helperPath, [0xC3, 0x28]);
+            var diagnostics = new RecordingDiagnostics();
+            await using var scheduler = CreateSerialScheduler();
+            await using var reconciler = new VbaProjectReconciler(
+                workspace,
+                diagnostics,
+                cadence: Timeout.InfiniteTimeSpan);
+            reconciler.AttachScheduler(scheduler);
+
+            await reconciler.ReconcileAsync()
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Contains(helperUri, diagnostics.TrackedUris);
+            Assert.DoesNotContain(helperUri, diagnostics.EmptyUris);
+            Assert.NotNull(workspace.GetDiskSourceFailure(helperUri));
+            Assert.Empty(
+                workspace.CreateProjectSnapshot(callerUri)
+                    .SemanticInventory
+                    .GetWorkspaceSymbols("BuildBefore"));
+
+            var recoveredText = CreateModule("Helper", "BuildAfter");
+            File.WriteAllText(helperPath, recoveredText);
+            await reconciler.ReconcileAsync()
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Null(workspace.GetDiskSourceFailure(helperUri));
+            Assert.Contains(
+                workspace.CreateProjectSnapshot(callerUri)
+                    .SemanticInventory
+                    .GetWorkspaceSymbols("BuildAfter"),
+                symbol => symbol.Uri == helperUri);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Authority_generation_change_at_lease_rejects_before_manifest_write()
     {
         var projectRoot = Directory.CreateTempSubdirectory(

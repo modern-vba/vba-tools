@@ -162,6 +162,19 @@ internal sealed record ReloadChange(
         CapturedManifestBarrierRevision,
         CapturedAuthorityGeneration);
 
+internal sealed record DecodeFailureChange(
+    string AuthorityKey,
+    VbaProjectDiskSourceFailure Failure,
+    long CapturedWorkspaceRevision,
+    long CapturedManifestBarrierRevision,
+    long CapturedAuthorityGeneration)
+    : ReconciliationChange(
+        AuthorityKey,
+        Failure.Uri,
+        CapturedWorkspaceRevision,
+        CapturedManifestBarrierRevision,
+        CapturedAuthorityGeneration);
+
 internal sealed record DeleteChange(
     string AuthorityKey,
     string Uri,
@@ -726,6 +739,22 @@ public sealed partial class VbaLanguageWorkspace
                                 reload.ContentIdentity));
                         effects.Add(
                             new ReconciledSourceDiagnosticsEffect(reload.Uri));
+                        committedMutation = true;
+                    }
+
+                    break;
+                case DecodeFailureChange decodeFailure:
+                    if (CommitReconciledDiskSourceFailure(
+                            decodeFailure.Failure,
+                            decodeFailure.CapturedWorkspaceRevision))
+                    {
+                        snapshotProvider
+                            .CommitDeletedReconciledSourceBaseline(
+                                decodeFailure.AuthorityKey,
+                                decodeFailure.Failure.Uri);
+                        effects.Add(
+                            new ReconciledSourceDiagnosticsEffect(
+                                decodeFailure.Failure.Uri));
                         committedMutation = true;
                     }
 

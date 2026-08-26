@@ -3900,8 +3900,7 @@ public sealed class LanguageServerProcessTests
             var removedDefinition = await SendDefinitionRequestAsync(process, 3, callerUri, callerText, "BuildValue");
             Assert.Equal(JsonValueKind.Null, removedDefinition.ValueKind);
 
-            Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
-            File.WriteAllBytes(renamedHelperPath, Encoding.GetEncoding(932).GetBytes(renamedHelperText));
+            File.WriteAllText(renamedHelperPath, renamedHelperText);
             await process.SendNotificationAsync("workspace/didChangeWatchedFiles",
                 new
                 {
@@ -3918,6 +3917,52 @@ public sealed class LanguageServerProcessTests
                 hover.GetProperty("result").GetProperty("contents").GetProperty("value").GetString());
 
             await process.ShutdownAsync(6);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_publishes_diagnostic_for_invalid_closed_source_encoding()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-invalid-source-encoding-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(projectRoot, "Worker.bas");
+            var sourceUri = ToFileUri(sourcePath);
+            File.WriteAllBytes(sourcePath, [0xFF, 0xFE, 0x00, 0xD8]);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+            await process.InitializeAsync();
+
+            await process.SendNotificationAsync(
+                "workspace/didChangeWatchedFiles",
+                new
+                {
+                    changes = new[]
+                    {
+                        new { uri = sourceUri, type = 1 }
+                    }
+                });
+
+            var notification = await process.WaitForNotificationAsync(
+                "textDocument/publishDiagnostics");
+            var parameters = notification.GetProperty("params");
+            Assert.Equal(
+                sourceUri,
+                parameters.GetProperty("uri").GetString());
+            var diagnostic = Assert.Single(
+                parameters.GetProperty("diagnostics").EnumerateArray());
+            Assert.Equal(
+                "invalid-disk-source-encoding",
+                diagnostic.GetProperty("code").GetString());
+            Assert.Contains(
+                sourcePath,
+                diagnostic.GetProperty("message").GetString());
+
+            await process.ShutdownAsync(2);
         }
         finally
         {

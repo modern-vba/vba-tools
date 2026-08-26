@@ -1746,7 +1746,11 @@ public sealed class VbaLanguageWorkspaceTests
             File.WriteAllBytes(helperPath, Encoding.GetEncoding(932).GetBytes(helperText));
             File.WriteAllBytes(classPath, Encoding.GetEncoding(932).GetBytes(classText));
             var workspace = new VbaLanguageWorkspace(
-                new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.CreateBundled()));
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()),
+                new DiskSourceDecoding(
+                    supportsLegacyFallback: true,
+                    activeCodePage: 932));
             workspace.UpdateDocument(callerUri, string.Join('\n', [
                 "Attribute VB_Name = \"Caller\"",
                 "Public Sub Run()",
@@ -1769,6 +1773,92 @@ public sealed class VbaLanguageWorkspaceTests
             Assert.Equal(documentation, definition.Documentation);
             Assert.Equal("Function BuildValue() As String", definition.Signature?.Label);
             Assert.Equal(classDocumentation, classDefinition.Documentation);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Disk_encoding_and_active_acp_do_not_limit_identifier_forms()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-encoding-identifier-").FullName;
+        try
+        {
+            WriteProjectManifest(projectRoot);
+            var helperPath = Path.Combine(
+                projectRoot,
+                "src",
+                "Book1",
+                "Helper.bas");
+            var helperUri = ToFileUri(helperPath);
+            File.WriteAllText(
+                helperPath,
+                "Attribute VB_Name = \"Helper\"\n"
+                + "Public Function 日本語() As String\n"
+                + "End Function\n",
+                new UTF8Encoding(
+                    encoderShouldEmitUTF8Identifier: false,
+                    throwOnInvalidBytes: true));
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()),
+                new DiskSourceDecoding(
+                    supportsLegacyFallback: true,
+                    activeCodePage: 1252));
+
+            var symbols = workspace
+                .CreateProjectSnapshot(helperUri)
+                .SemanticInventory
+                .GetWorkspaceSymbols("日本語");
+
+            Assert.Contains(
+                symbols,
+                symbol => symbol.Name == "日本語"
+                    && symbol.Uri == helperUri);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Open_unicode_text_overrides_invalid_equivalent_disk_bytes()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-open-invalid-disk-").FullName;
+        try
+        {
+            WriteProjectManifest(projectRoot);
+            var sourcePath = Path.Combine(
+                projectRoot,
+                "src",
+                "Book1",
+                "Worker.bas");
+            var sourceUri = ToFileUri(sourcePath);
+            File.WriteAllBytes(sourcePath, [0xC3, 0x28]);
+            const string openText =
+                "Attribute VB_Name = \"Worker\"\n"
+                + "Public Sub 日本語()\n"
+                + "End Sub\n";
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()),
+                new DiskSourceDecoding(
+                    supportsLegacyFallback: false,
+                    activeCodePage: 65001));
+            workspace.OpenDocument(sourceUri, version: 1, openText);
+
+            var snapshot = workspace.CreateProjectSnapshot(sourceUri);
+
+            Assert.Equal(openText, snapshot.SourceDocuments[sourceUri]);
+            Assert.Null(workspace.GetDiskSourceFailure(sourceUri));
+            Assert.Contains(
+                snapshot.SemanticInventory.GetWorkspaceSymbols("日本語"),
+                symbol => symbol.Uri == sourceUri);
         }
         finally
         {

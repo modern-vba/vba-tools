@@ -293,6 +293,110 @@ public sealed class VbaDiagnosticsPublisherTests
     }
 
     [Fact]
+    public async Task Watched_invalid_closed_source_publishes_actionable_encoding_diagnostic()
+    {
+        var sourcePath = Path.Combine(
+            Directory.CreateTempSubdirectory("vba-ls-invalid-source-").FullName,
+            "Worker.bas");
+        try
+        {
+            File.WriteAllBytes(sourcePath, [0xC3, 0x28]);
+            var uri = new Uri(sourcePath).AbsoluteUri;
+            await using var output = new CapturingWriteStream();
+            await using var scheduler = new VbaInteractiveWorkScheduler();
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()),
+                new DiskSourceDecoding(
+                    supportsLegacyFallback: false,
+                    activeCodePage: 65001));
+            var publisher = new VbaDiagnosticsPublisher(
+                new LspMessageTransport(Stream.Null, output),
+                workspace);
+            publisher.AttachScheduler(scheduler);
+            var pipeline = new VbaDocumentChangePipeline(
+                workspace,
+                new RecordingReferenceCatalogLifecycle(),
+                publisher);
+
+            await pipeline.ApplyAsync(
+                new VbaWatchedFileReloadChange(uri),
+                CancellationToken.None);
+
+            var parameters = Assert.IsType<JsonObject>(
+                Assert.Single(ReadJsonMessages(
+                    await output.WaitForMessageCountAsync(1)))["params"]);
+            Assert.Equal(uri, parameters["uri"]?.GetValue<string>());
+            var diagnostic = Assert.IsType<JsonObject>(
+                Assert.Single(Assert.IsType<JsonArray>(
+                    parameters["diagnostics"])));
+            Assert.Equal(
+                "invalid-disk-source-encoding",
+                diagnostic["code"]?.GetValue<string>());
+            Assert.Contains(
+                sourcePath,
+                diagnostic["message"]?.GetValue<string>());
+            Assert.Null(workspace.GetDocumentText(uri));
+        }
+        finally
+        {
+            Directory.Delete(
+                Path.GetDirectoryName(sourcePath)!,
+                recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Cold_snapshot_publishes_encoding_diagnostic_for_invalid_closed_helper()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-invalid-cold-source-").FullName;
+        try
+        {
+            var callerPath = Path.Combine(projectRoot, "Caller.bas");
+            var helperPath = Path.Combine(projectRoot, "Helper.bas");
+            var callerUri = new Uri(callerPath).AbsoluteUri;
+            var helperUri = new Uri(helperPath).AbsoluteUri;
+            const string callerText = "Public Sub Run()\nEnd Sub\n";
+            File.WriteAllText(callerPath, callerText);
+            File.WriteAllBytes(helperPath, [0xC3, 0x28]);
+            await using var output = new CapturingWriteStream();
+            await using var scheduler = new VbaInteractiveWorkScheduler();
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()),
+                new DiskSourceDecoding(
+                    supportsLegacyFallback: false,
+                    activeCodePage: 65001));
+            workspace.OpenDocument(callerUri, version: 1, callerText);
+            var publisher = new VbaDiagnosticsPublisher(
+                new LspMessageTransport(Stream.Null, output),
+                workspace);
+            publisher.AttachScheduler(scheduler);
+
+            var snapshot = workspace.CreateProjectSnapshot(callerUri);
+
+            Assert.DoesNotContain(
+                helperUri,
+                snapshot.SourceDocuments.Keys);
+            var parameters = Assert.IsType<JsonObject>(
+                Assert.Single(ReadJsonMessages(
+                    await output.WaitForMessageCountAsync(1)))["params"]);
+            Assert.Equal(helperUri, parameters["uri"]?.GetValue<string>());
+            var diagnostic = Assert.IsType<JsonObject>(
+                Assert.Single(Assert.IsType<JsonArray>(
+                    parameters["diagnostics"])));
+            Assert.Equal(
+                "invalid-disk-source-encoding",
+                diagnostic["code"]?.GetValue<string>());
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Idle_wait_completes_only_after_the_latest_tombstone_is_terminal()
     {
         const string uri = "file:///C:/work/Worker.bas";

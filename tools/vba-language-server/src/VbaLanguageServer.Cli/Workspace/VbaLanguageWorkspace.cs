@@ -15,7 +15,17 @@ public sealed record VbaProjectSnapshot(
     VbaProjectResolution Resolution,
     IReadOnlyDictionary<string, string> SourceDocuments,
     VbaProjectReferenceSelection? ReferenceSelection,
-    VbaSemanticInventory SemanticInventory);
+    VbaSemanticInventory SemanticInventory)
+{
+    internal IReadOnlyList<VbaProjectDiskSourceFailure>
+        DiskSourceFailures { get; init; } = [];
+
+    internal IReadOnlyList<VbaProjectDiskSource>
+        DiskSources { get; init; } = [];
+
+    internal IReadOnlySet<string> ExistingOpenSourcePaths { get; init; } =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+}
 
 /// <summary>
 /// Maintains open document text and creates project snapshots for language-server features.
@@ -26,6 +36,8 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
     private readonly Dictionary<string, WorkspaceDocumentState> documents = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, AcceptedDocumentRevisionState> acceptedRevisions =
         new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, VbaProjectDiskSourceFailure>
+        diskSourceFailures = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> excludedSourceUris = new(StringComparer.OrdinalIgnoreCase);
     private readonly VbaSourceRevisionHistory sourceRevisionHistory = new();
     private readonly IVbaProjectDiskInventory diskInventory;
@@ -38,6 +50,8 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
     private long nextDocumentReservationToken;
     private long workspaceVersion;
 
+    internal event Action<string>? DiskSourceDiagnosticsChanged;
+
     /// <summary>
     /// Creates a language workspace.
     /// </summary>
@@ -46,6 +60,20 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         : this(
             referenceCatalogCache,
             NullVbaProjectReferenceCatalogLifecycleObserver.Instance)
+    {
+    }
+
+    internal VbaLanguageWorkspace(
+        VbaProjectReferenceCatalogCache referenceCatalogCache,
+        DiskSourceDecoding sourceDecoding)
+        : this(
+            referenceCatalogCache,
+            NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+            NullVbaDocumentAnalysisBuildObserver.Instance,
+            NullVbaProjectSnapshotBuildObserver.Instance,
+            SystemVbaProjectFileSystem.Instance,
+            reconciliationAuthorityLeaseObserver: null,
+            sourceDecoding: sourceDecoding)
     {
     }
 
@@ -92,11 +120,14 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         IVbaProjectSnapshotBuildObserver snapshotBuildObserver,
         IVbaProjectFileSystem projectFileSystem,
         IVbaProjectReconciliationAuthorityLeaseObserver?
-            reconciliationAuthorityLeaseObserver = null)
+            reconciliationAuthorityLeaseObserver = null,
+        DiskSourceDecoding? sourceDecoding = null)
     {
         this.analysisBuildObserver = analysisBuildObserver;
         diskInventory =
-            new VbaFileSystemProjectDiskInventory(projectFileSystem);
+            new VbaFileSystemProjectDiskInventory(
+                projectFileSystem,
+                sourceDecoding ?? DiskSourceDecoding.ForCurrentProcess);
         diskDocumentCache = new VbaProjectSourceDocumentCache();
         ManifestWorkspace = new VbaProjectManifestWorkspace(projectFileSystem);
         hostClassProjectionStore = new VbaHostClassProjectionSnapshotStore();
@@ -312,6 +343,17 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        lock (gate)
+        {
+            if (GetAcceptedRevisionState(uri)?.Authority
+                    == WorkspaceDocumentAuthority.OpenBuffer
+                || GetDocumentState(uri)?.Authority
+                    == WorkspaceDocumentAuthority.OpenBuffer)
+            {
+                return false;
+            }
+        }
+
         var localPath = VbaProjectResolver.TryGetLocalPath(uri);
         if (localPath is null)
         {
@@ -323,12 +365,15 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
             manifestCapture.Resolution,
             uri,
             manifestCapture.Barriers.Overrides,
+            out var failure,
             cancellationToken);
         if (source is null)
         {
-            return false;
+            return failure is not null
+                && RecordDiskSourceFailure(failure);
         }
 
+        ClearDiskSourceFailure(uri);
         diskDocumentCache.Invalidate(localPath);
         return ReloadSourceDocumentCore(
             uri,
@@ -413,11 +458,37 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                 existing?.Analysis);
         }
 
+        ClearDiskSourceFailure(uri);
         InvalidateDiskDocument(uri);
         return BuildAndCommitDocumentAnalysis(
             reservation,
             text,
             cancellationToken);
+    }
+
+    private bool CommitReconciledDiskSourceFailure(
+        VbaProjectDiskSourceFailure failure,
+        long capturedWorkspaceRevision)
+    {
+        lock (gate)
+        {
+            var accepted = GetAcceptedRevisionState(failure.Uri);
+            var existing = GetDocumentState(failure.Uri);
+            if (GetSourceRevision(failure.Uri) > capturedWorkspaceRevision
+                || accepted?.Authority == WorkspaceDocumentAuthority.OpenBuffer
+                || existing?.Authority == WorkspaceDocumentAuthority.OpenBuffer)
+            {
+                return false;
+            }
+
+            if (!RecordDiskSourceFailure(failure))
+            {
+                return false;
+            }
+        }
+
+        InvalidateDiskDocument(failure.Uri);
+        return true;
     }
 
     /// <summary>
@@ -482,6 +553,7 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         lock (gate)
         {
             var exclusionAdded = AddExcludedSourceIdentity(uri);
+            var failureRemoved = ClearDiskSourceFailure(uri);
             var revisionKey = FindAcceptedRevisionKey(uri);
             var documentKey = FindDocumentKey(uri);
             var hasOpenRevision = revisionKey is not null
@@ -492,7 +564,7 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                     == WorkspaceDocumentAuthority.OpenBuffer;
             if (hasOpenRevision || hasOpenDocument)
             {
-                if (exclusionAdded)
+                if (exclusionAdded || failureRemoved)
                 {
                     MarkWorkspaceChanged(uri);
                 }
@@ -508,7 +580,7 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
 
             var documentRemoved = documentKey is not null
                 && documents.Remove(documentKey);
-            if (exclusionAdded || documentRemoved)
+            if (exclusionAdded || documentRemoved || failureRemoved)
             {
                 MarkWorkspaceChanged(uri);
             }
@@ -551,6 +623,7 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                 return false;
             }
 
+            var failureRemoved = ClearDiskSourceFailure(uri);
             var exclusionAdded = AddExcludedSourceIdentity(uri);
             if (revisionKey is not null)
             {
@@ -560,7 +633,7 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
 
             var documentRemoved = documentKey is not null
                 && documents.Remove(documentKey);
-            if (exclusionAdded || documentRemoved)
+            if (exclusionAdded || documentRemoved || failureRemoved)
             {
                 MarkWorkspaceChanged(uri);
             }
@@ -704,6 +777,41 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         }
     }
 
+    internal VbaProjectDiskSourceFailure? GetDiskSourceFailure(
+        string uri,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (gate)
+        {
+            if (GetAcceptedRevisionState(uri)?.Authority
+                    == WorkspaceDocumentAuthority.OpenBuffer
+                || GetDocumentState(uri)?.Authority
+                    == WorkspaceDocumentAuthority.OpenBuffer)
+            {
+                return null;
+            }
+
+            var key = FindDiskSourceFailureKey(uri);
+            return key is null ? null : diskSourceFailures[key];
+        }
+    }
+
+    internal bool IsCurrentDiskSourceFailure(
+        VbaProjectDiskSourceFailure failure)
+    {
+        lock (gate)
+        {
+            var key = FindDiskSourceFailureKey(failure.Uri);
+            return key is not null
+                && diskSourceFailures[key] == failure
+                && GetAcceptedRevisionState(failure.Uri)?.Authority
+                    != WorkspaceDocumentAuthority.OpenBuffer
+                && GetDocumentState(failure.Uri)?.Authority
+                    != WorkspaceDocumentAuthority.OpenBuffer;
+        }
+    }
+
     /// <summary>
     /// Checks whether a captured diagnostics snapshot still owns the latest tracked revision.
     /// </summary>
@@ -809,10 +917,12 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         var capture = CaptureProjectSnapshotState(
             includeActiveUris: false);
         using var revisionCapture = capture.RevisionCapture;
-        return snapshotProvider.CreateProjectSnapshot(
+        var snapshot = snapshotProvider.CreateProjectSnapshot(
             activeUri,
             capture.WorkspaceState,
             cancellationToken);
+        ApplyColdDiskSourceDiagnostics(snapshot);
+        return snapshot;
     }
 
     /// <summary>
@@ -826,10 +936,16 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         var capture = CaptureProjectSnapshotState(
             includeActiveUris: true);
         using var revisionCapture = capture.RevisionCapture;
-        return snapshotProvider.CreateProjectSnapshots(
+        var snapshots = snapshotProvider.CreateProjectSnapshots(
             capture.ActiveUris,
             capture.WorkspaceState,
             cancellationToken);
+        foreach (var snapshot in snapshots)
+        {
+            ApplyColdDiskSourceDiagnostics(snapshot);
+        }
+
+        return snapshots;
     }
 
     internal bool TryApplyHostClassProjectionSnapshot(
@@ -1259,6 +1375,104 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
 
         return acceptedRevisions.Keys.FirstOrDefault(
             candidate => SameDocumentIdentity(candidate, uri));
+    }
+
+    private string? FindDiskSourceFailureKey(string uri)
+    {
+        if (diskSourceFailures.ContainsKey(uri))
+        {
+            return uri;
+        }
+
+        return diskSourceFailures.Keys.FirstOrDefault(
+            candidate => SameDocumentIdentity(candidate, uri));
+    }
+
+    private bool RecordDiskSourceFailure(
+        VbaProjectDiskSourceFailure failure)
+    {
+        lock (gate)
+        {
+            var accepted = GetAcceptedRevisionState(failure.Uri);
+            var existing = GetDocumentState(failure.Uri);
+            if (accepted?.Authority == WorkspaceDocumentAuthority.OpenBuffer
+                || existing?.Authority == WorkspaceDocumentAuthority.OpenBuffer)
+            {
+                return false;
+            }
+
+            var failureKey = FindDiskSourceFailureKey(failure.Uri);
+            if (failureKey is not null
+                && diskSourceFailures[failureKey] == failure
+                && accepted is null
+                && existing is null)
+            {
+                return false;
+            }
+
+            var acceptedKey = FindAcceptedRevisionKey(failure.Uri);
+            if (acceptedKey is not null)
+            {
+                acceptedRevisions.Remove(acceptedKey);
+                Monitor.PulseAll(gate);
+            }
+
+            var documentKey = FindDocumentKey(failure.Uri);
+            if (documentKey is not null)
+            {
+                documents.Remove(documentKey);
+            }
+
+            if (failureKey is not null)
+            {
+                diskSourceFailures.Remove(failureKey);
+            }
+
+            diskSourceFailures[failure.Uri] = failure;
+            MarkWorkspaceChanged(failure.Uri);
+            return true;
+        }
+    }
+
+    private bool ClearDiskSourceFailure(string uri)
+    {
+        lock (gate)
+        {
+            var key = FindDiskSourceFailureKey(uri);
+            if (key is null)
+            {
+                return false;
+            }
+
+            return diskSourceFailures.Remove(key);
+        }
+    }
+
+    private void ApplyColdDiskSourceDiagnostics(
+        VbaProjectSnapshot snapshot)
+    {
+        var changedUris = new HashSet<string>(
+            StringComparer.OrdinalIgnoreCase);
+        foreach (var source in snapshot.DiskSources)
+        {
+            if (ClearDiskSourceFailure(source.Uri))
+            {
+                changedUris.Add(source.Uri);
+            }
+        }
+
+        foreach (var failure in snapshot.DiskSourceFailures)
+        {
+            if (RecordDiskSourceFailure(failure))
+            {
+                changedUris.Add(failure.Uri);
+            }
+        }
+
+        foreach (var uri in changedUris)
+        {
+            DiskSourceDiagnosticsChanged?.Invoke(uri);
+        }
     }
 
     private bool AddExcludedSourceIdentity(string uri)

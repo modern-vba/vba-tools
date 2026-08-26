@@ -38,11 +38,11 @@ Implementation and cache for cold project-snapshot materialization, watched
 source reload, and background reconciliation. `VbaProjectReconciler` depends on
 it through a one-method observation Seam whose immutable disk-only request
 contains the resolved project disk scope, ordered manifest probes, barrier
-overrides, and observed barrier URIs. Authority keys, authority generations,
-workspace, source, and manifest revisions, known-source baselines, and
-open-document state stay in the reconciler and workspace reconciliation scope;
-the inventory does not receive them or decide whether an observation may
-commit. Production
+overrides, observed barrier URIs, and open-source URI exclusions. Open text,
+document versions, authority keys, authority generations, workspace and
+manifest revisions, and known-source baselines stay in the reconciler and
+workspace reconciliation scope; the inventory does not receive them or decide
+whether an observation may commit. Production
 and deterministic test Adapters use that same narrow observation Interface.
 The filesystem Adapter owns source extension enumeration,
 recursive versus top-directory scope, nested-manifest ownership, path/URI
@@ -60,6 +60,22 @@ enumeration, metadata query, source read, or project/semantic rebuild.
 Disk changes become visible through accepted watcher events, reconciliation,
 or an explicit reload; an unreported raw disk write may remain stale while the
 warm snapshot is valid.
+
+Closed `.bas`, `.cls`, and `.frm` bytes use one process-wide
+`DiskSourceDecoding` service. Recognized UTF-8, UTF-16 LE, and UTF-16 BE BOMs
+select strict decoders; BOM-less bytes try strict UTF-8 first. Only a Windows
+process then tries the `GetACP` code page captured once at process start, and
+ACP 65001 remains the canonical UTF-8 path. Non-Windows hosts have no implicit
+legacy fallback. Invalid bytes become an `invalid-disk-source-encoding`
+diagnostic and never become parsed or semantic text. Existing open paths are
+still ownership facts, but their authoritative LSP Unicode text bypasses disk
+reads and decoding during cold capture and reconciliation.
+
+This policy ends when source bytes have become Unicode. `VbaIdentifier`
+continues to recognize every MS-VBAL `VbaIdentifierForm` independently of the
+file encoding and ACP. VBE import is a separate `vba-dev` boundary with its own
+operation-fixed ACP staging and lossless verification; language-server disk
+decoding does not define `VBComponents.Import` behavior.
 
 Background reconciliation keeps a stable authority identity separate from a
 manifest's mutable content identity. A manifest-backed authority is keyed by

@@ -565,7 +565,7 @@ internal sealed class VbaProjectReconciler
 
     private static VbaProjectDiskObservationRequest
         CreateDiskObservationRequest(VbaProjectReconciliationScope scope)
-        => new(
+        => new VbaProjectDiskObservationRequest(
             new VbaProjectDiskProjectScope(
                 scope.Resolution.Kind,
                 scope.Resolution.RootPath,
@@ -583,7 +583,10 @@ internal sealed class VbaProjectReconciler
                 .ToArray(),
             scope.ObservedManifestBarrierCandidates
                 .Select(candidate => candidate.Uri)
-                .ToArray());
+                .ToArray())
+        {
+            OpenSourceUris = scope.OpenSourceUris
+        };
 
     private async Task<IReadOnlyList<ScopeScan>> ScanScopesAsync(
         IReadOnlyList<VbaProjectReconciliationScope> scopes,
@@ -723,11 +726,38 @@ internal sealed class VbaProjectReconciler
             var currentByPath = scan.Disk.Sources.ToDictionary(
                 source => source.FullPath,
                 StringComparer.OrdinalIgnoreCase);
+            var failuresByPath = scan.Disk.Failures.ToDictionary(
+                failure => failure.FullPath,
+                StringComparer.OrdinalIgnoreCase);
             foreach (var known in knownByPath.Values
                 .OrderBy(source => source.FullPath, StringComparer.OrdinalIgnoreCase))
             {
                 if (!currentByPath.ContainsKey(known.FullPath))
                 {
+                    var remainsOpenAndOwned =
+                        scan.Scope.OpenSourceUris.Any(
+                            uri => SameDocumentIdentity(uri, known.Uri))
+                        && !scan.Disk.ExistingNonOwnedSourcePaths.Contains(
+                            known.FullPath);
+                    if (remainsOpenAndOwned)
+                    {
+                        continue;
+                    }
+
+                    if (failuresByPath.TryGetValue(
+                        known.FullPath,
+                        out var failure))
+                    {
+                        scopeChanges.Add(
+                            new DecodeFailureChange(
+                                scan.Scope.AuthorityKey,
+                                failure,
+                                scan.Scope.CapturedWorkspaceRevision,
+                                scan.Scope.ManifestBarriers.Revision,
+                                scan.Scope.AuthorityGeneration));
+                        continue;
+                    }
+
                     scopeChanges.Add(
                         scan.Disk.ExistingNonOwnedSourcePaths.Contains(
                             known.FullPath)
@@ -744,6 +774,21 @@ internal sealed class VbaProjectReconciler
                                 scan.Scope.ManifestBarriers.Revision,
                                 scan.Scope.AuthorityGeneration));
                 }
+            }
+
+            foreach (var failure in failuresByPath.Values
+                .Where(failure => !knownByPath.ContainsKey(failure.FullPath))
+                .OrderBy(
+                    failure => failure.FullPath,
+                    StringComparer.OrdinalIgnoreCase))
+            {
+                scopeChanges.Add(
+                    new DecodeFailureChange(
+                        scan.Scope.AuthorityKey,
+                        failure,
+                        scan.Scope.CapturedWorkspaceRevision,
+                        scan.Scope.ManifestBarriers.Revision,
+                        scan.Scope.AuthorityGeneration));
             }
 
             foreach (var current in currentByPath.Values
@@ -855,9 +900,7 @@ internal sealed class VbaProjectReconciler
                     !HasSameProjectAuthority(
                         scan.Scope.Resolution,
                         resolution),
-                scan.Disk.Sources
-                    .Select(source => source.Uri)
-                    .ToArray(),
+                GetRetainedSourceUris(scan),
                 scan.Scope.ManifestBarriers.Revision,
                 scan.Scope.AuthorityGeneration);
         }
@@ -969,9 +1012,7 @@ internal sealed class VbaProjectReconciler
                 !HasSameProjectAuthority(
                     scan.Scope.Resolution,
                     fallbackResolution),
-                scan.Disk.Sources
-                    .Select(source => source.Uri)
-                    .ToArray(),
+                GetRetainedSourceUris(scan),
                 scan.Scope.ManifestBarriers.Revision,
                 scan.Scope.AuthorityGeneration);
         }
@@ -1014,9 +1055,7 @@ internal sealed class VbaProjectReconciler
                 invalidFallbackResolution,
                 scan.Scope.ManifestBarriers.Revision,
                 scan.Scope.AuthorityGeneration,
-                scan.Disk.Sources
-                    .Select(source => source.Uri)
-                    .ToArray());
+                GetRetainedSourceUris(scan));
         }
 
         if (unchangedBaseline
@@ -1054,10 +1093,23 @@ internal sealed class VbaProjectReconciler
                     scan.Scope.Resolution,
                     effectiveResolution),
             RetainedPreviousSourceUris:
-                scan.Disk.Sources
-                    .Select(source => source.Uri)
-                    .ToArray());
+                GetRetainedSourceUris(scan));
     }
+
+    private static string[] GetRetainedSourceUris(ScopeScan scan)
+        => scan.Disk.Sources
+            .Select(source => source.Uri)
+            .Concat(
+                scan.Scope.OpenSourceUris.Where(uri =>
+                {
+                    var localPath =
+                        VbaProjectResolver.TryGetLocalPath(uri);
+                    return localPath is not null
+                        && !scan.Disk.ExistingNonOwnedSourcePaths.Contains(
+                            Path.GetFullPath(localPath));
+                }))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
 
     private static VbaProjectReconciliationManifestCandidate?
         GetOpenAuthorityCandidate(
