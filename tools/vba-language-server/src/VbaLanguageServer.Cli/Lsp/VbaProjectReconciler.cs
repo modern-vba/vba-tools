@@ -11,6 +11,11 @@ internal interface IVbaProjectDiskReconciliationDiagnostics
 {
     void EnqueueTrackedDiagnostics(string uri, CancellationToken cancellationToken);
 
+    void EnqueueProjectDiagnostics(
+        string uri,
+        CancellationToken cancellationToken)
+        => EnqueueTrackedDiagnostics(uri, cancellationToken);
+
     void EnqueueEmptyDiagnostics(string uri, CancellationToken cancellationToken);
 }
 
@@ -522,7 +527,9 @@ internal sealed class VbaProjectReconciler
                                         .TryCommitProjectReconciliationScope(
                                             plan,
                                             linkedCancellation.Token);
-                                    foreach (var effect in result.Effects)
+                                    foreach (var effect in result.Effects
+                                        .Where(effect => effect is not
+                                            ReconciledProjectDiagnosticsEffect))
                                     {
                                         DispatchEffect(effect);
                                     }
@@ -532,9 +539,14 @@ internal sealed class VbaProjectReconciler
                                 cancellationToken)
                             .ConfigureAwait(false);
                     await commit.Completion.ConfigureAwait(false);
-                    _ = result
+                    var committedResult = result
                         ?? throw new InvalidOperationException(
                             "Project reconciliation commit completed without a result.");
+                    foreach (var effect in committedResult.Effects
+                        .OfType<ReconciledProjectDiagnosticsEffect>())
+                    {
+                        DispatchEffect(effect);
+                    }
                 }
                 finally
                 {
@@ -818,7 +830,28 @@ internal sealed class VbaProjectReconciler
                         PreviousResolution =
                             scan.Scope.Resolution,
                         CapturedOpenSourceUris =
-                            scan.Scope.OpenSourceUris
+                            scan.Scope.OpenSourceUris,
+                        CapturedProjectSourceUris =
+                            scan.Scope.KnownSources
+                                .Select(source => source.Uri)
+                                .Concat(scan.Scope.OpenSourceUris)
+                                .Distinct(StringComparer.OrdinalIgnoreCase)
+                                .OrderBy(
+                                    uri => uri,
+                                    StringComparer.OrdinalIgnoreCase)
+                                .ToArray(),
+                        CapturedManifestSourceUris = scans
+                            .Where(candidate => HasManifestAuthority(
+                                candidate.Scope.Resolution,
+                                change.Uri))
+                            .SelectMany(candidate => candidate.Scope.KnownSources
+                                .Select(source => source.Uri)
+                                .Concat(candidate.Scope.OpenSourceUris))
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .OrderBy(
+                                uri => uri,
+                                StringComparer.OrdinalIgnoreCase)
+                                .ToArray()
                     })
                 .ToArray();
             if (orderedMutations.Length > 0)
@@ -1285,6 +1318,11 @@ internal sealed class VbaProjectReconciler
                 case ReconciledSourceDiagnosticsEffect source:
                     diagnostics.EnqueueTrackedDiagnostics(
                         source.Uri,
+                        CancellationToken.None);
+                    break;
+                case ReconciledProjectDiagnosticsEffect project:
+                    diagnostics.EnqueueProjectDiagnostics(
+                        project.Uri,
                         CancellationToken.None);
                     break;
                 case ReconciledSourceDiagnosticsClearedEffect source:

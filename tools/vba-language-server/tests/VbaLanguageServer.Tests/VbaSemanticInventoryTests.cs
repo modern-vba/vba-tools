@@ -371,6 +371,389 @@ public sealed class VbaSemanticInventoryTests
         }
     }
 
+    [Fact]
+    public void Inventory_preserves_each_conditional_variant_visibility()
+    {
+        const string uri = "file:///C:/work/ConditionalVisibility.cls";
+        var sourceDocuments = CreateSourceDocuments(new Dictionary<string, string>
+        {
+            [uri] =
+                """
+                Attribute VB_Name = "ConditionalVisibility"
+                #If VBA7 Then
+                Friend Function BuildValue() As Long
+                    BuildValue = 1
+                End Function
+                #Else
+                Private Function BUILDVALUE() As Long
+                    BUILDVALUE = 2
+                End Function
+                #End If
+                """
+        });
+        var inventory = VbaSemanticInventory.Create(sourceDocuments);
+
+        Assert.Equal(
+            [("BuildValue", "Friend"), ("BUILDVALUE", "Private")],
+            inventory
+                .GetDocumentDefinitions(uri)
+                .Where(definition => definition.Name.Equals(
+                    "BuildValue",
+                    StringComparison.OrdinalIgnoreCase))
+                .Select(definition => (definition.Name, definition.Visibility.ToString())));
+    }
+
+    [Fact]
+    public void Inventory_resolves_a_project_visible_friend_conditional_family()
+    {
+        const string callerUri = "file:///C:/work/Caller.bas";
+        const string workerUri = "file:///C:/work/Worker.cls";
+        var sourceDocuments = CreateSourceDocuments(new Dictionary<string, string>
+        {
+            [callerUri] =
+                """
+                Attribute VB_Name = "Caller"
+                Public Sub Run()
+                    Dim worker As Worker
+                    Set worker = New Worker
+                    worker.BuildValue
+                End Sub
+                """,
+            [workerUri] =
+                """
+                Attribute VB_Name = "Worker"
+                #If VBA7 Then
+                Friend Sub BuildValue()
+                End Sub
+                #Else
+                Private Sub buildvalue()
+                End Sub
+                #End If
+                """
+        });
+        var inventory = VbaSemanticInventory.Create(sourceDocuments);
+
+        Assert.Equal(
+            [2, 5],
+            inventory
+                .ResolveDefinitions(
+                    callerUri,
+                    4,
+                    "    worker.BuildValue".Length)
+                .Select(location => location.Range.Start.Line));
+    }
+
+    [Fact]
+    public void Inventory_binds_an_external_use_to_the_conditional_family_not_the_visible_variant()
+    {
+        const string callerUri = "file:///C:/work/ConditionalCaller.bas";
+        const string workerUri = "file:///C:/work/ConditionalWorker.bas";
+        var sourceDocuments = CreateSourceDocuments(new Dictionary<string, string>
+        {
+            [callerUri] =
+                """
+                Attribute VB_Name = "ConditionalCaller"
+                Public Sub Run()
+                    Debug.Print BUILDVALUE()
+                End Sub
+                """,
+            [workerUri] =
+                """
+                Attribute VB_Name = "ConditionalWorker"
+                #If FIRST_CONFIGURATION Then
+                Private Function buildValue() As Long
+                    buildValue = 1
+                End Function
+                #Else
+                Public Function BUILDVALUE() As Long
+                    BUILDVALUE = 2
+                End Function
+                #End If
+                """
+        });
+        var inventory = VbaSemanticInventory.Create(sourceDocuments);
+
+        var useTarget = Assert.IsType<VbaConditionalFamilyNameTarget>(
+            inventory.ResolveSourceTarget(
+                callerUri,
+                2,
+                "    Debug.Print ".Length));
+        var privateDeclarationTarget = Assert.IsType<VbaConditionalFamilyNameTarget>(
+            inventory.ResolveSourceTarget(
+                workerUri,
+                2,
+                "Private Function ".Length));
+        var publicDeclarationTarget = Assert.IsType<VbaConditionalFamilyNameTarget>(
+            inventory.ResolveSourceTarget(
+                workerUri,
+                6,
+                "Public Function ".Length));
+
+        Assert.Equal(privateDeclarationTarget.Identity, useTarget.Identity);
+        Assert.Equal(publicDeclarationTarget.Identity, useTarget.Identity);
+        Assert.Equal("buildValue", useTarget.CanonicalName);
+        Assert.Equal("BUILDVALUE", useTarget.SelectedDefinition.Name);
+        Assert.Equal(
+            ["buildValue", "BUILDVALUE"],
+            useTarget.PhysicalDefinitions.Select(definition => definition.Name));
+
+        var occurrenceIndex = GetRequiredFieldValue<VbaResolvedIdentifierOccurrenceIndex>(
+            inventory);
+        var familyOccurrences = occurrenceIndex
+            .GetAll()
+            .Where(occurrence => occurrence.Occurrence.Name.Equals(
+                "buildValue",
+                StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        Assert.NotEmpty(familyOccurrences);
+        Assert.All(
+            familyOccurrences,
+            occurrence => Assert.Equal(
+                useTarget.Identity,
+                Assert.IsType<VbaConditionalFamilyNameTarget>(
+                    occurrence.Target).Identity));
+    }
+
+    [Fact]
+    public void Inventory_binds_complementary_conditional_accessors_to_one_property_target()
+    {
+        const string uri = "file:///C:/work/ConditionalProperty.cls";
+        var sourceDocuments = CreateSourceDocuments(new Dictionary<string, string>
+        {
+            [uri] =
+                """
+                VERSION 1.0 CLASS
+                Attribute VB_Name = "ConditionalProperty"
+                #If READ_CONFIGURATION Then
+                Public Property Get Amount() As Long
+                    Amount = 1
+                End Property
+                #End If
+                #If WRITE_CONFIGURATION Then
+                Public Property Let amount(ByVal value As Long)
+                End Property
+                #End If
+                Public Sub Run()
+                    Debug.Print Amount
+                    Amount = 2
+                End Sub
+                """
+        });
+        var inventory = VbaSemanticInventory.Create(sourceDocuments);
+
+        var readAccessor = Assert.IsType<VbaPropertyNameTarget>(
+            inventory.ResolveSourceTarget(
+                uri,
+                3,
+                "Public Property Get ".Length));
+        var writeAccessor = Assert.IsType<VbaPropertyNameTarget>(
+            inventory.ResolveSourceTarget(
+                uri,
+                8,
+                "Public Property Let ".Length));
+        var readUse = Assert.IsType<VbaPropertyNameTarget>(
+            inventory.ResolveSourceTarget(
+                uri,
+                12,
+                "    Debug.Print ".Length));
+        var writeUse = Assert.IsType<VbaPropertyNameTarget>(
+            inventory.ResolveSourceTarget(uri, 13, 4));
+
+        Assert.Equal(readAccessor.Identity, writeAccessor.Identity);
+        Assert.Equal(readAccessor.Identity, readUse.Identity);
+        Assert.Equal(readAccessor.Identity, writeUse.Identity);
+        Assert.Equal("Amount", readUse.CanonicalName);
+        Assert.Equal(
+            [3, 8],
+            readUse.PhysicalDefinitions.Select(definition =>
+                definition.Range.Start.Line));
+    }
+
+    [Fact]
+    public void Inventory_binds_ordinary_complementary_accessors_to_one_property_target()
+    {
+        const string uri = "file:///C:/work/OrdinaryProperty.cls";
+        var sourceDocuments = CreateSourceDocuments(new Dictionary<string, string>
+        {
+            [uri] =
+                """
+                VERSION 1.0 CLASS
+                Attribute VB_Name = "OrdinaryProperty"
+                Public Property Get Amount() As Long
+                    Amount = 1
+                End Property
+                Public Property Let amount(ByVal value As Long)
+                End Property
+                Public Sub Run()
+                    Debug.Print Amount
+                    Amount = 2
+                End Sub
+                """
+        });
+        var inventory = VbaSemanticInventory.Create(sourceDocuments);
+
+        var readAccessor = inventory.ResolveSourceTarget(
+            uri,
+            2,
+            "Public Property Get ".Length);
+        var writeAccessor = inventory.ResolveSourceTarget(
+            uri,
+            5,
+            "Public Property Let ".Length);
+        var readUse = inventory.ResolveSourceTarget(
+            uri,
+            8,
+            "    Debug.Print ".Length);
+        var writeUse = inventory.ResolveSourceTarget(uri, 9, 4);
+        Assert.NotNull(readAccessor);
+        Assert.NotNull(writeAccessor);
+        Assert.NotNull(readUse);
+        Assert.NotNull(writeUse);
+
+        Assert.Equal(readAccessor.Identity, writeAccessor.Identity);
+        Assert.Equal(readAccessor.Identity, readUse.Identity);
+        Assert.Equal(readAccessor.Identity, writeUse.Identity);
+        Assert.Equal("Amount", readUse.CanonicalName);
+        Assert.Equal(
+            [2, 5],
+            readUse.PhysicalDefinitions.Select(definition =>
+                definition.Range.Start.Line));
+    }
+
+    [Fact]
+    public void Inventory_selects_a_guarded_setter_family_for_a_mixed_provenance_write()
+    {
+        const string uri = "file:///C:/work/MixedPropertySetterProvenance.cls";
+        var sourceDocuments = CreateSourceDocuments(new Dictionary<string, string>
+        {
+            [uri] =
+                """
+                VERSION 1.0 CLASS
+                Attribute VB_Name = "MixedPropertySetterProvenance"
+                Public Property Get value() As Long
+                End Property
+                #If FIRST_WRITE_CONFIGURATION Then
+                Public Property Let Value(ByVal firstAssigned As Long)
+                End Property
+                #Else
+                Public Property Let VALUE(ByVal secondAssigned As Long)
+                End Property
+                #End If
+                Public Sub Run()
+                    Value = 1
+                End Sub
+                """
+        });
+        var inventory = VbaSemanticInventory.Create(sourceDocuments);
+
+        var getter = Assert.IsType<VbaPropertyNameTarget>(
+            inventory.ResolveSourceTarget(
+                uri,
+                2,
+                "Public Property Get ".Length));
+        var setter = Assert.IsType<VbaPropertyNameTarget>(
+            inventory.ResolveSourceTarget(
+                uri,
+                5,
+                "Public Property Let ".Length));
+        Assert.Equal(2, getter.AccessorTargets.Count);
+        Assert.False(getter.AccessorTargets[0].IsConditionalFamily);
+        Assert.True(getter.AccessorTargets[1].IsConditionalFamily);
+        Assert.All(
+            getter.AccessorTargets[1].PhysicalDefinitions,
+            definition => Assert.True(
+                definition.PropertyAccess.HasFlag(
+                    VbaPropertyAccess.Writable)));
+        Assert.Equal(
+            VbaCompletionExpectation.AssignmentTarget,
+            sourceDocuments[uri].SyntaxTree!.GetPositionSyntax(
+                    12,
+                    "    Value".Length)
+                .CompletionExpectation);
+        var nameResolution = new VbaNameResolutionService(
+            sourceDocuments.Values.ToArray(),
+            referenceSelection: null,
+            VbaProjectReferenceCatalogSet.Empty);
+        var writeOutcome = nameResolution.ResolvePreferredOutcome(
+            uri,
+            new VbaLanguageServer.Diagnostics.VbaPosition(12, 4),
+            qualifier: null,
+            "Value",
+            definition => definition.Kind
+                    == VbaSourceDefinitionKind.Property
+                && definition.PropertyAccess.HasFlag(
+                    VbaPropertyAccess.Writable));
+        Assert.Equal(VbaNameResolutionKind.Resolved, writeOutcome.Kind);
+        Assert.IsType<VbaPropertyNameTarget>(writeOutcome.Target);
+        var writeUse = Assert.IsType<VbaPropertyNameTarget>(
+            inventory.ResolveSourceTarget(uri, 12, 4));
+
+        Assert.Equal(getter.Identity, setter.Identity);
+        Assert.Equal(getter.Identity, writeUse.Identity);
+        Assert.True(writeUse.IsConditionalFamily);
+        Assert.Equal(
+            [5, 8],
+            writeUse.PhysicalDefinitions.Select(definition =>
+                definition.Range.Start.Line));
+    }
+
+    [Fact]
+    public void Inventory_links_property_accessors_before_mixed_kind_conditional_families()
+    {
+        const string uri = "file:///C:/work/MixedKindConditionalProperty.cls";
+        var sourceDocuments = CreateSourceDocuments(new Dictionary<string, string>
+        {
+            [uri] =
+                """
+                VERSION 1.0 CLASS
+                Attribute VB_Name = "MixedKindConditionalProperty"
+                #If FUNCTION_CONFIGURATION Then
+                Public Function Value() As Long
+                End Function
+                #End If
+                #If GET_CONFIGURATION Then
+                Public Property Get value() As Long
+                End Property
+                #End If
+                #If LET_CONFIGURATION Then
+                Public Property Let VALUE(ByVal assigned As Long)
+                End Property
+                #End If
+                """
+        });
+        var inventory = VbaSemanticInventory.Create(sourceDocuments);
+
+        var readAccessor = Assert.IsType<VbaPropertyNameTarget>(
+            inventory.ResolveSourceTarget(
+                uri,
+                7,
+                "Public Property Get ".Length));
+        var writeAccessor = Assert.IsType<VbaPropertyNameTarget>(
+            inventory.ResolveSourceTarget(
+                uri,
+                11,
+                "Public Property Let ".Length));
+
+        Assert.Equal(readAccessor.Identity, writeAccessor.Identity);
+        Assert.Equal(2, readAccessor.AccessorTargets.Count);
+        Assert.All(
+            readAccessor.AccessorTargets,
+            target =>
+            {
+                Assert.IsType<VbaConditionalFamilyNameTarget>(target);
+                Assert.True(target.PhysicalDefinitions
+                    .Where(definition =>
+                        definition.Kind == VbaSourceDefinitionKind.Property)
+                    .Select(definition => definition.PropertyAccessorKind)
+                    .Distinct()
+                    .Count() <= 1);
+            });
+        Assert.Equal(
+            [3, 7, 11],
+            readAccessor.PhysicalDefinitions.Select(definition =>
+                definition.Range.Start.Line));
+    }
+
     private static IReadOnlyDictionary<string, VbaSourceDocument> CreateSourceDocuments(
         IReadOnlyDictionary<string, string> sourceTexts)
         => sourceTexts.ToDictionary(

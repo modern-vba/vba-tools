@@ -81,6 +81,15 @@ internal sealed record VbaDocumentAnalysis(
 }
 
 /// <summary>
+/// Captures one tracked document revision that owns project diagnostics.
+/// </summary>
+internal sealed record VbaDocumentDiagnosticsOwnership(
+    string Uri,
+    int? ClientVersion,
+    long LifecycleEpoch,
+    long ReservationToken);
+
+/// <summary>
 /// Captures a diagnostics publication candidate and the workspace revision that owns it.
 /// </summary>
 /// <param name="Analysis">The immutable document analysis to publish.</param>
@@ -91,7 +100,11 @@ internal sealed record VbaDocumentDiagnosticsSnapshot(
     VbaDocumentAnalysis Analysis,
     int? ClientVersion,
     long LifecycleEpoch,
-    long ReservationToken);
+    long ReservationToken,
+    IReadOnlyList<VbaProjectValidationDiagnostic> ProjectValidationDiagnostics,
+    IReadOnlyList<VbaDocumentDiagnosticsOwnership> ProjectOwnership,
+    VbaProjectSnapshotProvider.ProjectSnapshotOwnership?
+        ProjectSnapshotOwnership);
 
 /// <summary>
 /// Represents one document tracked in workspace memory or project source inventory.

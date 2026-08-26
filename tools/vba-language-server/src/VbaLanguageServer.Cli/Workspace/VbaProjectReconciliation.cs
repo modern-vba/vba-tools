@@ -111,6 +111,9 @@ internal abstract record VbaProjectReconciliationEffect;
 internal sealed record ReconciledSourceDiagnosticsEffect(string Uri)
     : VbaProjectReconciliationEffect;
 
+internal sealed record ReconciledProjectDiagnosticsEffect(string Uri)
+    : VbaProjectReconciliationEffect;
+
 internal sealed record ReconciledSourceDiagnosticsClearedEffect(string Uri)
     : VbaProjectReconciliationEffect;
 
@@ -144,6 +147,10 @@ internal abstract record ReconciliationChange(
     public VbaProjectResolution? PreviousResolution { get; init; }
 
     public IReadOnlyList<string> CapturedOpenSourceUris { get; init; } = [];
+
+    public IReadOnlyList<string> CapturedProjectSourceUris { get; init; } = [];
+
+    public IReadOnlyList<string> CapturedManifestSourceUris { get; init; } = [];
 }
 
 internal sealed record ReloadChange(
@@ -308,7 +315,6 @@ public sealed partial class VbaLanguageWorkspace
         {
             trackedUris = CaptureTrackedDocumentUris();
         }
-
         if (!snapshotProvider.IsReconciliationScopeCurrent(
                 plan.AuthorityKey,
                 plan.CapturedManifestBarrierRevision,
@@ -326,6 +332,8 @@ public sealed partial class VbaLanguageWorkspace
 
         var progress = new List<VbaProjectReconciliationProgress>();
         var effects = new List<VbaProjectReconciliationEffect>();
+        var projectDiagnosticsCandidates =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var initialOpenAuthorities =
             new Dictionary<string, VbaProjectResolution?>(
                 StringComparer.OrdinalIgnoreCase);
@@ -737,8 +745,7 @@ public sealed partial class VbaLanguageWorkspace
                                 Path.GetFullPath(reload.FullPath),
                                 reload.Text,
                                 reload.ContentIdentity));
-                        effects.Add(
-                            new ReconciledSourceDiagnosticsEffect(reload.Uri));
+                        projectDiagnosticsCandidates.Add(reload.Uri);
                         committedMutation = true;
                     }
 
@@ -755,6 +762,8 @@ public sealed partial class VbaLanguageWorkspace
                         effects.Add(
                             new ReconciledSourceDiagnosticsEffect(
                                 decodeFailure.Failure.Uri));
+                        projectDiagnosticsCandidates.Add(
+                            decodeFailure.Failure.Uri);
                         committedMutation = true;
                     }
 
@@ -772,6 +781,8 @@ public sealed partial class VbaLanguageWorkspace
                         effects.Add(
                             new ReconciledSourceDiagnosticsClearedEffect(
                                 delete.Uri));
+                        projectDiagnosticsCandidates.Add(delete.Uri);
+
                         committedMutation = true;
                     }
 
@@ -780,6 +791,7 @@ public sealed partial class VbaLanguageWorkspace
                     snapshotProvider.ReleaseReconciledSourceOwnership(
                         release.AuthorityKey,
                         release.Uri);
+                    projectDiagnosticsCandidates.Add(release.Uri);
                     committedMutation = true;
                     break;
             }
@@ -795,6 +807,15 @@ public sealed partial class VbaLanguageWorkspace
                 || isManifestChange
                     && ManifestWorkspace.Version != manifestVersionBefore)
             {
+                foreach (var affectedSourceUri in
+                    change.CapturedManifestSourceUris
+                        .Concat(change.CapturedProjectSourceUris)
+                        .Concat(trackedUris.Where(uri =>
+                            IsPotentiallyAffectedSource(change, uri))))
+                {
+                    projectDiagnosticsCandidates.Add(affectedSourceUri);
+                }
+
                 requiresFollowUp = true;
                 if (!progress.Any(
                         item => item.Kind
@@ -812,6 +833,9 @@ public sealed partial class VbaLanguageWorkspace
             initialOpenAuthorities,
             effects,
             CancellationToken.None);
+        AddProjectDiagnosticsEffects(
+            projectDiagnosticsCandidates,
+            effects);
         var outcome = rejectedMutationTail
             ? committedMutation
                 ? VbaProjectReconciliationCommitOutcome
@@ -823,6 +847,41 @@ public sealed partial class VbaLanguageWorkspace
             requiresFollowUp,
             progress,
             effects);
+    }
+
+    private void AddProjectDiagnosticsEffects(
+        IEnumerable<string> candidates,
+        List<VbaProjectReconciliationEffect> effects)
+    {
+        var anchors = candidates
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(uri =>
+            {
+                ManifestWorkspace.TryResolveKnownState(
+                    uri,
+                    out var resolution);
+                return new
+                {
+                    Uri = uri,
+                    ProjectKey = VbaProjectSnapshotIdentity
+                        .Create(uri, resolution)
+                        .Key
+                };
+            })
+            .GroupBy(candidate => candidate.ProjectKey, StringComparer.Ordinal)
+            .Select(group => group
+                .OrderBy(
+                    candidate => candidate.Uri,
+                    StringComparer.OrdinalIgnoreCase)
+                .ThenBy(candidate => candidate.Uri, StringComparer.Ordinal)
+                .First()
+                .Uri)
+            .OrderBy(uri => uri, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(uri => uri, StringComparer.Ordinal);
+        foreach (var anchor in anchors)
+        {
+            effects.Add(new ReconciledProjectDiagnosticsEffect(anchor));
+        }
     }
 
     private void CaptureOpenAuthorities(

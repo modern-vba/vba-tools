@@ -1,3 +1,4 @@
+using VbaLanguageServer.Diagnostics;
 using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.SourceModel;
 using VbaLanguageServer.Syntax;
@@ -29,6 +30,9 @@ public sealed record VbaProjectSnapshot(
     internal IReadOnlyDictionary<string, bool> ManifestBarrierOverrides
         { get; init; } = new Dictionary<string, bool>(
             StringComparer.OrdinalIgnoreCase);
+
+    internal VbaProjectSnapshotProvider.ProjectSnapshotOwnership?
+        DiagnosticsOwnership { get; init; }
 }
 
 /// <summary>
@@ -779,19 +783,97 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         {
             var state = GetDocumentState(uri);
             var accepted = GetAcceptedRevisionState(uri);
-            return state is not null
-                && accepted is not null
-                && !accepted.HasPendingBuild
-                && accepted.Authority == state.Authority
-                && accepted.Version == state.Version
-                && accepted.LifecycleEpoch == state.LifecycleEpoch
-                && accepted.ReservationToken == state.ReservationToken
-                    ? new VbaDocumentDiagnosticsSnapshot(
-                        state.Analysis,
-                        state.Version,
-                        state.LifecycleEpoch,
-                        state.ReservationToken)
-                    : null;
+            if (state is null
+                || accepted is null
+                || accepted.HasPendingBuild
+                || accepted.Authority != state.Authority
+                || accepted.Version != state.Version
+                || accepted.LifecycleEpoch != state.LifecycleEpoch
+                || accepted.ReservationToken != state.ReservationToken)
+            {
+                return null;
+            }
+
+            var ownership = new VbaDocumentDiagnosticsOwnership(
+                state.Analysis.Uri,
+                state.Version,
+                state.LifecycleEpoch,
+                state.ReservationToken);
+            return new VbaDocumentDiagnosticsSnapshot(
+                state.Analysis,
+                state.Version,
+                state.LifecycleEpoch,
+                state.ReservationToken,
+                [],
+                [ownership],
+                ProjectSnapshotOwnership: null);
+        }
+    }
+
+    /// <summary>
+    /// Captures diagnostics for every tracked source in the active project snapshot.
+    /// </summary>
+    internal IReadOnlyList<VbaDocumentDiagnosticsSnapshot>?
+        GetProjectDiagnosticsSnapshots(
+            string activeUri,
+            CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var projectSnapshot = CreateProjectSnapshot(activeUri, cancellationToken);
+        lock (gate)
+        {
+            var captured = new List<(
+                WorkspaceDocumentState State,
+                AcceptedDocumentRevisionState Accepted)>();
+            foreach (var (sourceUri, sourceText) in projectSnapshot.SourceDocuments)
+            {
+                var state = GetDocumentState(sourceUri);
+                if (state is null)
+                {
+                    continue;
+                }
+
+                var accepted = GetAcceptedRevisionState(sourceUri);
+                if (accepted is null
+                    || accepted.HasPendingBuild
+                    || accepted.Authority != state.Authority
+                    || accepted.Version != state.Version
+                    || accepted.LifecycleEpoch != state.LifecycleEpoch
+                    || accepted.ReservationToken != state.ReservationToken
+                    || !string.Equals(
+                        state.Analysis.Text,
+                        sourceText,
+                        StringComparison.Ordinal))
+                {
+                    return null;
+                }
+
+                captured.Add((state, accepted));
+            }
+
+            if (captured.Count == 0)
+            {
+                return [];
+            }
+
+            var ownership = captured
+                .Select(item => new VbaDocumentDiagnosticsOwnership(
+                    item.State.Analysis.Uri,
+                    item.State.Version,
+                    item.State.LifecycleEpoch,
+                    item.State.ReservationToken))
+                .ToArray();
+            return captured
+                .Select(item => new VbaDocumentDiagnosticsSnapshot(
+                    item.State.Analysis,
+                    item.State.Version,
+                    item.State.LifecycleEpoch,
+                    item.State.ReservationToken,
+                    projectSnapshot.SemanticInventory
+                        .GetProjectValidationDiagnostics(item.State.Analysis.Uri),
+                    ownership,
+                    projectSnapshot.DiagnosticsOwnership))
+                .ToArray();
         }
     }
 
@@ -859,6 +941,43 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                 && accepted.ReservationToken == reservationToken
                 && state.ReservationToken == reservationToken;
         }
+    }
+
+    internal bool AreLatestDiagnosticsSnapshots(
+        IReadOnlyList<VbaDocumentDiagnosticsOwnership> ownership,
+        VbaProjectSnapshotProvider.ProjectSnapshotOwnership?
+            projectSnapshotOwnership)
+    {
+        if (!snapshotProvider.IsCurrentProjectSnapshot(
+                projectSnapshotOwnership))
+        {
+            return false;
+        }
+
+        bool documentsAreCurrent;
+        lock (gate)
+        {
+            documentsAreCurrent = ownership.Count > 0
+                && ownership.All(item =>
+                {
+                    var state = GetDocumentState(item.Uri);
+                    var accepted = GetAcceptedRevisionState(item.Uri);
+                    return state is not null
+                        && accepted is not null
+                        && !accepted.HasPendingBuild
+                        && accepted.Authority == state.Authority
+                        && accepted.Version == item.ClientVersion
+                        && state.Version == item.ClientVersion
+                        && accepted.LifecycleEpoch == item.LifecycleEpoch
+                        && state.LifecycleEpoch == item.LifecycleEpoch
+                        && accepted.ReservationToken == item.ReservationToken
+                        && state.ReservationToken == item.ReservationToken;
+                });
+        }
+
+        return documentsAreCurrent
+            && snapshotProvider.IsCurrentProjectSnapshot(
+                projectSnapshotOwnership);
     }
 
     /// <summary>

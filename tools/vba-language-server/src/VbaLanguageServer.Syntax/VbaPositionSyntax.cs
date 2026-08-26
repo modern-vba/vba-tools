@@ -205,6 +205,7 @@ public sealed record VbaPositionSyntax(
     VbaPositionRegion Region,
     VbaPositionIdentifierSyntax? Identifier,
     VbaCompletionExpectation CompletionExpectation,
+    VbaPropertyAccessorKind? AssignmentPropertyAccessorKind,
     IReadOnlyList<string> ContextualStatements,
     IReadOnlyList<string> SyntaxWords,
     IReadOnlyList<string> SupplementalSyntaxWords,
@@ -229,6 +230,7 @@ public sealed record VbaPositionSyntax(
         VbaPositionRegion.Outside,
         null,
         VbaCompletionExpectation.None,
+        null,
         [],
         [],
         [],
@@ -448,6 +450,7 @@ internal sealed class VbaPositionSyntaxIndex
                 region,
                 null,
                 VbaCompletionExpectation.None,
+                null,
                 [],
                 [],
                 [],
@@ -488,6 +491,9 @@ internal sealed class VbaPositionSyntaxIndex
             contextualStatements,
             syntaxWords,
             starterWords);
+        var assignmentPropertyAccessorKind = GetAssignmentPropertyAccessorKind(
+            statement,
+            completionExpectation);
         var completionReplacementRange = GetCompletionReplacementRange(
             statement,
             position,
@@ -498,6 +504,7 @@ internal sealed class VbaPositionSyntaxIndex
             region,
             identifier,
             completionExpectation,
+            assignmentPropertyAccessorKind,
             contextualStatements,
             syntaxWords,
             supplementalSyntaxWords,
@@ -509,6 +516,41 @@ internal sealed class VbaPositionSyntaxIndex
             enclosingBlocks,
             labelReference,
             completionReplacementRange);
+    }
+
+    private static VbaPropertyAccessorKind? GetAssignmentPropertyAccessorKind(
+        StatementSpan statement,
+        VbaCompletionExpectation completionExpectation)
+    {
+        if (completionExpectation != VbaCompletionExpectation.AssignmentTarget
+            || statement.SignificantTokens.Count == 0)
+        {
+            return null;
+        }
+
+        var firstIndex = statement.SignificantTokens[0].Kind
+                == VbaTokenKind.NumericLiteral
+            && statement.SignificantTokens[0].Text.All(char.IsDigit)
+                ? 1
+                : 0;
+        if (firstIndex >= statement.SignificantTokens.Count)
+        {
+            return null;
+        }
+
+        var first = statement.SignificantTokens[firstIndex];
+        if (IsWord(first, "Set"))
+        {
+            return VbaPropertyAccessorKind.Set;
+        }
+
+        if (IsWord(first, "Let")
+            || FindAssignmentOperator(statement.SignificantTokens) is not null)
+        {
+            return VbaPropertyAccessorKind.Let;
+        }
+
+        return null;
     }
 
     private bool TryGetPosition(int line, int character, out VbaSyntaxPosition position)

@@ -100,9 +100,14 @@ internal sealed class VbaDocumentChangePipeline
     {
         if (IsProjectManifestUri(change.Uri))
         {
+            var affectedTrackedSources =
+                CaptureTrackedSourcesOwnedByManifest(
+                    change.Uri,
+                    cancellationToken);
             await ApplyManifestOverlayUpdateAsync(
                 change.Uri,
                 manifestWorkspace.OpenManifest(change.Uri, change.Version, change.Text),
+                affectedTrackedSources,
                 cancellationToken);
             workspace.RetireInactiveManifestState();
             return;
@@ -124,9 +129,14 @@ internal sealed class VbaDocumentChangePipeline
     {
         if (IsProjectManifestUri(change.Uri))
         {
+            var affectedTrackedSources =
+                CaptureTrackedSourcesOwnedByManifest(
+                    change.Uri,
+                    cancellationToken);
             await ApplyManifestOverlayUpdateAsync(
                 change.Uri,
                 manifestWorkspace.ChangeManifest(change.Uri, change.Version, change.Text),
+                affectedTrackedSources,
                 cancellationToken);
             workspace.RetireInactiveManifestState();
             return;
@@ -153,9 +163,16 @@ internal sealed class VbaDocumentChangePipeline
                 CaptureOpenSourcesOwnedByManifest(
                     uri,
                     cancellationToken);
+            var affectedTrackedSources =
+                CaptureTrackedSourcesOwnedByManifest(
+                    uri,
+                    cancellationToken);
             if (manifestWorkspace.CloseManifest(uri))
             {
-                await ApplyEffectiveManifestStateAsync(uri, cancellationToken);
+                await ApplyEffectiveManifestStateAsync(
+                    uri,
+                    affectedTrackedSources,
+                    cancellationToken);
                 ReactivateTransferredOpenSourceCatalogs(
                     uri,
                     affectedOpenSources,
@@ -166,9 +183,28 @@ internal sealed class VbaDocumentChangePipeline
             return;
         }
 
+        if (!IsVbaSourceUri(uri))
+        {
+            return;
+        }
+
+        var affectedProjectUris = workspace
+            .CreateProjectSnapshot(uri, cancellationToken)
+            .SourceDocuments
+            .Keys
+            .ToArray();
         if (workspace.CloseDocument(uri, cancellationToken))
         {
             await diagnosticsPublisher.PublishEmptyDiagnosticsAsync(uri, cancellationToken);
+            var remainingUri = affectedProjectUris.FirstOrDefault(candidate =>
+                !string.Equals(candidate, uri, StringComparison.OrdinalIgnoreCase)
+                && workspace.GetDocumentAnalysis(candidate, cancellationToken) is not null);
+            if (remainingUri is not null)
+            {
+                await diagnosticsPublisher.PublishProjectDiagnosticsAsync(
+                    remainingUri,
+                    cancellationToken);
+            }
         }
     }
 
@@ -193,9 +229,16 @@ internal sealed class VbaDocumentChangePipeline
                 CaptureOpenSourcesOwnedByManifest(
                     uri,
                     cancellationToken);
+            var affectedTrackedSources =
+                CaptureTrackedSourcesOwnedByManifest(
+                    uri,
+                    cancellationToken);
             if (manifestWorkspace.ReloadManifest(uri))
             {
-                await ApplyEffectiveManifestStateAsync(uri, cancellationToken);
+                await ApplyEffectiveManifestStateAsync(
+                    uri,
+                    affectedTrackedSources,
+                    cancellationToken);
                 ReactivateTransferredOpenSourceCatalogs(
                     uri,
                     affectedOpenSources,
@@ -230,9 +273,16 @@ internal sealed class VbaDocumentChangePipeline
                 CaptureOpenSourcesOwnedByManifest(
                     uri,
                     cancellationToken);
+            var affectedTrackedSources =
+                CaptureTrackedSourcesOwnedByManifest(
+                    uri,
+                    cancellationToken);
             if (manifestWorkspace.DeleteManifest(uri))
             {
-                await ApplyEffectiveManifestStateAsync(uri, cancellationToken);
+                await ApplyEffectiveManifestStateAsync(
+                    uri,
+                    affectedTrackedSources,
+                    cancellationToken);
                 ReactivateTransferredOpenSourceCatalogs(
                     uri,
                     affectedOpenSources,
@@ -248,9 +298,23 @@ internal sealed class VbaDocumentChangePipeline
             return;
         }
 
+        var affectedProjectUris = workspace
+            .CreateProjectSnapshot(uri, cancellationToken)
+            .SourceDocuments
+            .Keys
+            .ToArray();
         if (workspace.DeleteSourceDocument(uri, cancellationToken))
         {
             await diagnosticsPublisher.PublishEmptyDiagnosticsAsync(uri, cancellationToken);
+            var remainingUri = affectedProjectUris.FirstOrDefault(candidate =>
+                !string.Equals(candidate, uri, StringComparison.OrdinalIgnoreCase)
+                && workspace.GetDocumentAnalysis(candidate, cancellationToken) is not null);
+            if (remainingUri is not null)
+            {
+                await diagnosticsPublisher.PublishProjectDiagnosticsAsync(
+                    remainingUri,
+                    cancellationToken);
+            }
         }
     }
 
@@ -258,11 +322,12 @@ internal sealed class VbaDocumentChangePipeline
         string uri,
         CancellationToken cancellationToken)
     {
-        await diagnosticsPublisher.PublishTrackedDiagnosticsAsync(uri, cancellationToken);
+        await diagnosticsPublisher.PublishProjectDiagnosticsAsync(uri, cancellationToken);
     }
 
     private async Task ApplyEffectiveManifestStateAsync(
         string uri,
+        IReadOnlyList<string> previouslyAffectedSourceUris,
         CancellationToken cancellationToken)
     {
         if (manifestWorkspace.TryGetEffectiveManifest(
@@ -276,6 +341,10 @@ internal sealed class VbaDocumentChangePipeline
                 error,
                 cancellationToken: cancellationToken);
             await ApplyManifestTextAsync(effectiveUri, text, cancellationToken);
+            await PublishAffectedManifestProjectDiagnosticsAsync(
+                uri,
+                previouslyAffectedSourceUris,
+                cancellationToken);
             return;
         }
 
@@ -284,11 +353,16 @@ internal sealed class VbaDocumentChangePipeline
             error,
             cancellationToken);
         catalogLifecycle.DeactivateManifest(uri);
+        await PublishAffectedManifestProjectDiagnosticsAsync(
+            uri,
+            previouslyAffectedSourceUris,
+            cancellationToken);
     }
 
     private async Task ApplyManifestOverlayUpdateAsync(
         string uri,
         VbaProjectManifestOverlayUpdate update,
+        IReadOnlyList<string> previouslyAffectedSourceUris,
         CancellationToken cancellationToken)
     {
         if (!update.Accepted)
@@ -307,7 +381,10 @@ internal sealed class VbaDocumentChangePipeline
 
         if (update.EffectiveChanged)
         {
-            await ApplyEffectiveManifestStateAsync(uri, cancellationToken);
+            await ApplyEffectiveManifestStateAsync(
+                uri,
+                previouslyAffectedSourceUris,
+                cancellationToken);
         }
     }
 
@@ -318,6 +395,57 @@ internal sealed class VbaDocumentChangePipeline
     {
         catalogLifecycle.ApplyManifestSelectionChange(uri, text);
         return Task.CompletedTask;
+    }
+
+    private async Task PublishAffectedManifestProjectDiagnosticsAsync(
+        string manifestUri,
+        IReadOnlyList<string> previouslyAffectedSourceUris,
+        CancellationToken cancellationToken)
+    {
+        var remainingUris = previouslyAffectedSourceUris
+            .Concat(CaptureTrackedSourcesOwnedByManifest(
+                manifestUri,
+                cancellationToken))
+            .Where(IsVbaSourceUri)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        while (remainingUris.Count > 0)
+        {
+            var activeUri = remainingUris
+                .OrderBy(uri => uri, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(uri => uri, StringComparer.Ordinal)
+                .First();
+            var projectUris = workspace
+                .CreateProjectSnapshot(activeUri, cancellationToken)
+                .SourceDocuments
+                .Keys;
+            foreach (var projectUri in projectUris)
+            {
+                remainingUris.Remove(projectUri);
+            }
+
+            remainingUris.Remove(activeUri);
+            await diagnosticsPublisher.PublishProjectDiagnosticsAsync(
+                activeUri,
+                cancellationToken);
+        }
+    }
+
+    private IReadOnlyList<string> CaptureTrackedSourcesOwnedByManifest(
+        string manifestUri,
+        CancellationToken cancellationToken)
+    {
+        var manifestPath = VbaProjectResolver.TryGetLocalPath(manifestUri);
+        return manifestPath is null
+            ? []
+            : workspace.GetDocumentUris(cancellationToken)
+                .Where(sourceUri => HasManifestAuthority(
+                    manifestWorkspace
+                        .CaptureResolution(sourceUri)
+                        .Resolution,
+                    manifestPath))
+                .OrderBy(uri => uri, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(uri => uri, StringComparer.Ordinal)
+                .ToArray();
     }
 
     private IReadOnlyList<string> CaptureOpenSourcesOwnedByManifest(

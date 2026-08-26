@@ -7,6 +7,19 @@ namespace VbaLanguageServer.SourceModel;
 /// </summary>
 internal sealed class VbaResolutionPolicy
 {
+    private readonly VbaConditionalDeclarationFamilyIndex conditionalFamilies;
+
+    public VbaResolutionPolicy()
+        : this(new VbaConditionalDeclarationFamilyIndex([]))
+    {
+    }
+
+    public VbaResolutionPolicy(
+        VbaConditionalDeclarationFamilyIndex conditionalFamilies)
+    {
+        this.conditionalFamilies = conditionalFamilies;
+    }
+
     public const int LocalRank = 0;
     public const int CurrentModuleRank = 1;
     public const int ProjectRank = 2;
@@ -20,6 +33,7 @@ internal sealed class VbaResolutionPolicy
 
     public bool IsRenameTarget(VbaSourceDefinition definition)
         => !VbaProjectReferenceCatalogSet.IsExternalDefinition(definition)
+            && conditionalFamilies.GetFamily(definition) is null
             && (definition.Visibility == VbaSourceDefinitionVisibility.Local || IsReferenceTarget(definition));
 
     public bool IsTypeDefinition(VbaSourceDefinition definition)
@@ -33,7 +47,11 @@ internal sealed class VbaResolutionPolicy
         VbaProjectReferenceSelection? referenceSelection)
         => ResolveRankedCandidatesOutcome(
             candidates,
-            referenceSelection).Definition;
+            referenceSelection).Target?.SelectedDefinition;
+
+    public VbaResolvedNameTarget CreateNameTarget(
+        VbaSourceDefinition selectedDefinition)
+        => conditionalFamilies.CreateNameTarget(selectedDefinition);
 
     public VbaNameResolutionOutcome ResolveRankedCandidatesOutcome(
         IEnumerable<VbaRankedDefinition> candidates,
@@ -51,16 +69,31 @@ internal sealed class VbaResolutionPolicy
             .ToArray();
         var bestDefinitions = VbaPropertyAccessorCoalescing.Coalesce(
             bestCandidates.Select(candidate => candidate.Definition));
-        if (bestDefinitions.Count == 1)
+        var bestTargets = new List<VbaResolvedNameTarget>(
+            bestDefinitions.Count);
+        var seenLogicalTargets = new HashSet<
+            VbaResolvedNameTargetIdentity>();
+        foreach (var definition in bestDefinitions)
         {
-            return VbaNameResolutionOutcome.Resolved(bestDefinitions[0]);
+            var target = CreateNameTarget(definition);
+            if (target is VbaDefinitionNameTarget
+                || seenLogicalTargets.Add(target.Identity))
+            {
+                bestTargets.Add(target);
+            }
+        }
+
+        if (bestTargets.Count == 1)
+        {
+            return VbaNameResolutionOutcome.Resolved(
+                bestTargets[0]);
         }
 
         if (bestRank == ReferenceRank && referenceSelection?.MainVbaProjectReference is not null)
         {
-            var mainReferenceCandidates = bestDefinitions
-                .Where(definition => VbaProjectReferenceName.AreEquivalent(
-                    definition.ModuleName,
+            var mainReferenceCandidates = bestTargets
+                .Where(target => VbaProjectReferenceName.AreEquivalent(
+                    target.SelectedDefinition.ModuleName,
                     referenceSelection.MainVbaProjectReference.Name))
                 .ToArray();
             if (mainReferenceCandidates.Length == 1)
@@ -90,6 +123,127 @@ internal sealed class VbaResolutionPolicy
 /// <param name="Rank">The lower numeric precedence rank.</param>
 internal sealed record VbaRankedDefinition(VbaSourceDefinition Definition, int Rank);
 
+internal abstract record VbaResolvedNameTargetIdentity;
+
+internal sealed record VbaDefinitionNameTargetIdentity(
+    VbaDefinitionIdentity DefinitionIdentity)
+    : VbaResolvedNameTargetIdentity;
+
+internal sealed record VbaConditionalFamilyNameTargetIdentity(
+    ConditionalFamilyIdentity FamilyIdentity)
+    : VbaResolvedNameTargetIdentity;
+
+internal sealed record VbaPropertyNameTargetIdentity(
+    object ProjectSnapshot,
+    string OwnerKey)
+    : VbaResolvedNameTargetIdentity;
+
+internal abstract class VbaResolvedNameTarget
+{
+    public abstract VbaResolvedNameTargetIdentity Identity { get; }
+
+    public abstract string CanonicalName { get; }
+
+    public abstract VbaSourceDefinition SelectedDefinition { get; }
+
+    public abstract IReadOnlyList<VbaSourceDefinition> PhysicalDefinitions { get; }
+
+    public abstract bool IsConditionalFamily { get; }
+}
+
+internal sealed class VbaDefinitionNameTarget : VbaResolvedNameTarget
+{
+    private readonly IReadOnlyList<VbaSourceDefinition> physicalDefinitions;
+
+    public VbaDefinitionNameTarget(VbaSourceDefinition definition)
+    {
+        SelectedDefinition = definition;
+        Identity = new VbaDefinitionNameTargetIdentity(definition.Identity);
+        physicalDefinitions = [definition];
+    }
+
+    public override VbaResolvedNameTargetIdentity Identity { get; }
+
+    public override string CanonicalName => SelectedDefinition.Name;
+
+    public override VbaSourceDefinition SelectedDefinition { get; }
+
+    public override IReadOnlyList<VbaSourceDefinition> PhysicalDefinitions
+        => physicalDefinitions;
+
+    public override bool IsConditionalFamily => false;
+}
+
+internal sealed class VbaConditionalFamilyNameTarget : VbaResolvedNameTarget
+{
+    public VbaConditionalFamilyNameTarget(
+        ConditionalDeclarationFamily family,
+        VbaSourceDefinition selectedDefinition)
+    {
+        Family = family;
+        SelectedDefinition = selectedDefinition;
+        Identity = new VbaConditionalFamilyNameTargetIdentity(family.Identity);
+    }
+
+    public ConditionalDeclarationFamily Family { get; }
+
+    public override VbaResolvedNameTargetIdentity Identity { get; }
+
+    public override string CanonicalName => Family.CanonicalName;
+
+    public override VbaSourceDefinition SelectedDefinition { get; }
+
+    public override IReadOnlyList<VbaSourceDefinition> PhysicalDefinitions
+        => Family.Variants;
+
+    public override bool IsConditionalFamily => true;
+}
+
+internal sealed class VbaPropertyNameTarget : VbaResolvedNameTarget
+{
+    private readonly VbaResolvedNameTarget selectedAccessorTarget;
+
+    public VbaPropertyNameTarget(
+        PropertyNameTargetDescriptor property,
+        VbaSourceDefinition selectedDefinition)
+    {
+        Property = property;
+        SelectedDefinition = selectedDefinition;
+        selectedAccessorTarget = property.AccessorTargets
+            .FirstOrDefault(target => target.PhysicalDefinitions.Any(
+                definition => definition.Identity
+                    == selectedDefinition.Identity))
+            ?? new VbaDefinitionNameTarget(selectedDefinition);
+    }
+
+    public PropertyNameTargetDescriptor Property { get; }
+
+    public IReadOnlyList<VbaResolvedNameTarget> AccessorTargets
+        => Property.AccessorTargets;
+
+    public override VbaResolvedNameTargetIdentity Identity => Property.Identity;
+
+    public override string CanonicalName
+        => Property.IsUnifiedConditionalFamily
+            ? Property.CanonicalName
+            : selectedAccessorTarget.IsConditionalFamily
+                ? selectedAccessorTarget.CanonicalName
+                : Property.CanonicalName;
+
+    public override VbaSourceDefinition SelectedDefinition { get; }
+
+    public override IReadOnlyList<VbaSourceDefinition> PhysicalDefinitions
+        => Property.IsUnifiedConditionalFamily
+            ? Property.UnifiedPhysicalDefinitions
+            : selectedAccessorTarget.IsConditionalFamily
+                ? selectedAccessorTarget.PhysicalDefinitions
+                : Property.PropertyDefinitions;
+
+    public override bool IsConditionalFamily
+        => Property.IsUnifiedConditionalFamily
+            || selectedAccessorTarget.IsConditionalFamily;
+}
+
 internal enum VbaNameResolutionKind
 {
     Resolved,
@@ -101,21 +255,21 @@ internal enum VbaNameResolutionKind
 
 internal sealed record VbaNameResolutionOutcome(
     VbaNameResolutionKind Kind,
-    VbaSourceDefinition? Definition)
+    VbaResolvedNameTarget? Target)
 {
     public static VbaNameResolutionOutcome Unresolved { get; } =
-        new(VbaNameResolutionKind.Unresolved, Definition: null);
+        new(VbaNameResolutionKind.Unresolved, Target: null);
 
     public static VbaNameResolutionOutcome Ambiguous { get; } =
-        new(VbaNameResolutionKind.Ambiguous, Definition: null);
+        new(VbaNameResolutionKind.Ambiguous, Target: null);
 
     public static VbaNameResolutionOutcome AnalysisIncomplete { get; } =
-        new(VbaNameResolutionKind.AnalysisIncomplete, Definition: null);
+        new(VbaNameResolutionKind.AnalysisIncomplete, Target: null);
 
     public static VbaNameResolutionOutcome NonSemantic { get; } =
-        new(VbaNameResolutionKind.NonSemantic, Definition: null);
+        new(VbaNameResolutionKind.NonSemantic, Target: null);
 
     public static VbaNameResolutionOutcome Resolved(
-        VbaSourceDefinition definition)
-        => new(VbaNameResolutionKind.Resolved, definition);
+        VbaResolvedNameTarget target)
+        => new(VbaNameResolutionKind.Resolved, target);
 }

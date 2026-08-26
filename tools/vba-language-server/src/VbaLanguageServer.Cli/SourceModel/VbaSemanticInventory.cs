@@ -11,9 +11,10 @@ public sealed class VbaSemanticInventory
 {
     private readonly IReadOnlyList<VbaSourceDocument> sourceDocuments;
     private readonly VbaNameCandidateInventory definitionCandidates;
-    private readonly VbaResolutionPolicy resolutionPolicy = new();
+    private readonly VbaResolutionPolicy resolutionPolicy;
     private readonly VbaSemanticResolution semanticResolution;
     private readonly VbaResolvedIdentifierOccurrenceIndex resolvedOccurrences;
+    private readonly VbaProjectValidationDiagnosticIndex projectValidationDiagnostics;
     private readonly VbaSourceFormatter sourceFormatter;
     private readonly VbaProjectReferenceSelection? referenceSelection;
     private readonly VbaProjectReferenceCatalogSet referenceCatalogs;
@@ -33,6 +34,8 @@ public sealed class VbaSemanticInventory
     {
         this.sourceDocuments = sourceDocuments;
         this.definitionCandidates = definitionCandidates;
+        resolutionPolicy = new VbaResolutionPolicy(
+            definitionCandidates.ConditionalFamilies);
         this.referenceSelection = referenceSelection;
         this.referenceCatalogs = referenceCatalogs;
         this.hostClassProjectionSnapshot = hostClassProjectionSnapshot;
@@ -41,7 +44,9 @@ public sealed class VbaSemanticInventory
             resolutionPolicy);
         resolvedOccurrences = new VbaResolvedIdentifierOccurrenceIndex(
             sourceDocuments,
-            semanticResolution.ResolveSourceDefinition);
+            semanticResolution.ResolveSourceTarget);
+        projectValidationDiagnostics = new VbaProjectValidationDiagnosticIndex(
+            sourceDocuments);
         sourceFormatter = new VbaSourceFormatter(
             semanticResolution,
             resolvedOccurrences);
@@ -89,6 +94,10 @@ public sealed class VbaSemanticInventory
     public IReadOnlyList<VbaSourceDefinition> GetDocumentDefinitions(string uri)
         => definitionCandidates.GetDocumentDefinitions(uri);
 
+    internal IReadOnlyList<VbaProjectValidationDiagnostic>
+        GetProjectValidationDiagnostics(string uri)
+        => projectValidationDiagnostics.GetDiagnostics(uri);
+
     /// <summary>
     /// Searches workspace symbols across indexed source documents.
     /// </summary>
@@ -112,12 +121,27 @@ public sealed class VbaSemanticInventory
         => semanticResolution.GetCompletionResult(uri, line, character);
 
     public VbaDefinitionLocation? ResolveDefinition(string uri, int line, int character)
+        => ResolveDefinitions(uri, line, character).FirstOrDefault();
+
+    public IReadOnlyList<VbaDefinitionLocation> ResolveDefinitions(
+        string uri,
+        int line,
+        int character)
     {
-        var definition = ResolveSourceDefinition(uri, line, character);
-        return definition is null
-            || definition.Identity.Origin == VbaDefinitionOrigin.ProjectReference
-                ? null
-                : definition.Location;
+        var target = ResolveSourceTarget(uri, line, character);
+        if (target is null
+            || target.SelectedDefinition.Identity.Origin
+                == VbaDefinitionOrigin.ProjectReference)
+        {
+            return [];
+        }
+
+        var definitions = target.IsConditionalFamily
+            ? GetLogicalNavigationDefinitions(target)
+            : [target.SelectedDefinition];
+        return definitions
+            .Select(variant => variant.Location)
+            .ToArray();
     }
 
     public IReadOnlyList<VbaDefinitionLocation> FindReferences(
@@ -127,19 +151,23 @@ public sealed class VbaSemanticInventory
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var target = ResolveSourceDefinition(uri, line, character);
+        var target = ResolveSourceTarget(uri, line, character);
         if (target is null)
         {
             return [];
         }
 
-        target = GetLogicalRenameTarget(target);
-
-        var references = GetLogicalRenameTargetDefinitions(target)
-            .SelectMany(definition => resolvedOccurrences.FindMatching(
-                definition,
-                cancellationToken))
+        var declarationDefinitions = target is VbaPropertyNameTarget property
+            ? property.Property.PropertyDefinitions
+            : GetLogicalNavigationDefinitions(target);
+        var references = resolvedOccurrences.FindMatching(
+                target,
+                cancellationToken)
             .Select(occurrence => new VbaDefinitionLocation(occurrence.Uri, occurrence.Range))
+            .Concat(declarationDefinitions
+                .Where(definition => definition.Identity.Origin
+                    == VbaDefinitionOrigin.Source)
+                .Select(definition => definition.Location))
             .GroupBy(reference => $"{reference.Uri}:{GetRangeKey(reference.Range)}", StringComparer.OrdinalIgnoreCase)
             .Select(group => group.First())
             .OrderBy(reference => reference.Uri, StringComparer.OrdinalIgnoreCase)
@@ -150,8 +178,104 @@ public sealed class VbaSemanticInventory
         return references;
     }
 
+    private IReadOnlyList<VbaSourceDefinition> GetLogicalNavigationDefinitions(
+        VbaResolvedNameTarget target)
+    {
+        if (target is VbaPropertyNameTarget
+            {
+                IsConditionalFamily: false
+            } ordinaryProperty)
+        {
+            return ordinaryProperty.Property.PropertyDefinitions
+                .DistinctBy(definition => definition.Identity)
+                .OrderBy(
+                    definition => definition.Uri,
+                    StringComparer.OrdinalIgnoreCase)
+                .ThenBy(definition => definition.Uri, StringComparer.Ordinal)
+                .ThenBy(definition => definition.Range.Start.Line)
+                .ThenBy(definition => definition.Range.Start.Character)
+                .ThenBy(definition => definition.Range.End.Line)
+                .ThenBy(definition => definition.Range.End.Character)
+                .ToArray();
+        }
+
+        var definitions = new Dictionary<
+            VbaDefinitionIdentity,
+            VbaSourceDefinition>();
+        var pending = new Queue<VbaSourceDefinition>();
+        foreach (var physicalDefinition in target.PhysicalDefinitions)
+        {
+            pending.Enqueue(physicalDefinition);
+        }
+        while (pending.TryDequeue(out var definition))
+        {
+            if (!definitions.TryAdd(definition.Identity, definition))
+            {
+                continue;
+            }
+
+            foreach (var variant in definitionCandidates.ConditionalFamilies
+                .GetLogicalDefinitions(definition))
+            {
+                pending.Enqueue(variant);
+            }
+
+            if (definition.Kind != VbaSourceDefinitionKind.Property)
+            {
+                continue;
+            }
+
+            if (resolutionPolicy.CreateNameTarget(definition)
+                is not VbaPropertyNameTarget
+                {
+                    IsConditionalFamily: true
+                } conditionalProperty)
+            {
+                continue;
+            }
+
+            foreach (var propertyCandidate in
+                conditionalProperty.PhysicalDefinitions)
+            {
+                pending.Enqueue(propertyCandidate);
+            }
+        }
+
+        return definitions.Values
+            .OrderBy(definition => definition.Uri, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(definition => definition.Uri, StringComparer.Ordinal)
+            .ThenBy(definition => definition.Range.Start.Line)
+            .ThenBy(definition => definition.Range.Start.Character)
+            .ThenBy(definition => definition.Range.End.Line)
+            .ThenBy(definition => definition.Range.End.Character)
+            .ToArray();
+    }
+
     public VbaSourceDefinition? ResolveSourceDefinition(string uri, int line, int character)
         => semanticResolution.ResolveSourceDefinition(uri, line, character);
+
+    internal VbaResolvedNameTarget? ResolveSourceTarget(
+        string uri,
+        int line,
+        int character)
+        => semanticResolution.ResolveSourceTarget(uri, line, character);
+
+    internal VbaHoverResult? ResolveHover(string uri, int line, int character)
+    {
+        var target = ResolveSourceTarget(uri, line, character);
+        if (target is null)
+        {
+            return null;
+        }
+
+        var definitions = target.IsConditionalFamily
+            ? target.PhysicalDefinitions
+            : [target.SelectedDefinition];
+        return new VbaHoverResult(
+            target.CanonicalName,
+            definitions,
+            target.IsConditionalFamily);
+    }
 
     public VbaSignatureHelp? GetSignatureHelp(string uri, int line, int character)
         => semanticResolution.GetSignatureHelp(uri, line, character);
@@ -340,8 +464,10 @@ public sealed class VbaSemanticInventory
         }
 
         var targetOccurrences = GetLogicalRenameTargetDefinitions(target)
-            .SelectMany(definition => resolvedOccurrences.FindMatching(
-                definition,
+            .Select(resolutionPolicy.CreateNameTarget)
+            .DistinctBy(logicalTarget => logicalTarget.Identity)
+            .SelectMany(logicalTarget => resolvedOccurrences.FindMatching(
+                logicalTarget,
                 cancellationToken))
             .GroupBy(
                 occurrence => CreateOccurrenceKey(
@@ -599,11 +725,11 @@ public sealed class VbaSemanticInventory
     {
         var targetIsModule = IsModuleIdentity(target);
         var candidateIsModule = IsModuleIdentity(candidate);
-        var targetIsPublicType = IsProjectPublicType(target);
-        var candidateIsPublicType = IsProjectPublicType(candidate);
-        return targetIsModule && (candidateIsModule || candidateIsPublicType)
-            || candidateIsModule && targetIsPublicType
-            || targetIsPublicType && candidateIsPublicType;
+        var targetIsProjectVisibleType = IsProjectVisibleType(target);
+        var candidateIsProjectVisibleType = IsProjectVisibleType(candidate);
+        return targetIsModule && (candidateIsModule || candidateIsProjectVisibleType)
+            || candidateIsModule && targetIsProjectVisibleType
+            || targetIsProjectVisibleType && candidateIsProjectVisibleType;
     }
 
     private static bool IsModuleIdentity(VbaSourceDefinition definition)
@@ -611,8 +737,8 @@ public sealed class VbaSemanticInventory
             or VbaSourceDefinitionKind.Class
             or VbaSourceDefinitionKind.Form;
 
-    private static bool IsProjectPublicType(VbaSourceDefinition definition)
-        => definition.Visibility == VbaSourceDefinitionVisibility.Public
+    private static bool IsProjectVisibleType(VbaSourceDefinition definition)
+        => definition.Visibility.IsProjectVisible()
             && IsDeclaredType(definition);
 
     private static bool IsDeclaredType(VbaSourceDefinition definition)
@@ -683,7 +809,7 @@ public sealed class VbaSemanticInventory
             var postDefinition = IsDeclarationOccurrence(occurrence)
                 ? FindHypotheticalDefinition(
                     hypothetical,
-                    occurrence.Definition,
+                    occurrence.Target.SelectedDefinition,
                     changes,
                     newName)
                 : hypothetical.ResolveSourceDefinition(
@@ -715,7 +841,7 @@ public sealed class VbaSemanticInventory
             var postDefinition = IsDeclarationOccurrence(occurrence)
                 ? FindHypotheticalDefinition(
                     hypothetical,
-                    occurrence.Definition,
+                    occurrence.Target.SelectedDefinition,
                     changes)
                 : hypothetical.ResolveSourceDefinition(
                     occurrence.Uri,
@@ -723,7 +849,7 @@ public sealed class VbaSemanticInventory
                     mappedOccurrenceRange.Start.Character);
             var expectedDefinition = FindHypotheticalDefinition(
                 hypothetical,
-                occurrence.Definition,
+                occurrence.Target.SelectedDefinition,
                 changes);
             if (expectedDefinition is null)
             {
@@ -876,7 +1002,7 @@ public sealed class VbaSemanticInventory
         {
             return hypothetical.resolvedOccurrences
                 .GetAll()
-                .Select(occurrence => occurrence.Definition)
+                .Select(occurrence => occurrence.Target.SelectedDefinition)
                 .FirstOrDefault(candidate => candidate.Identity == definition.Identity)
                 ?? definition;
         }
@@ -999,9 +1125,9 @@ public sealed class VbaSemanticInventory
         VbaResolvedIdentifierOccurrence occurrence)
         => string.Equals(
                 occurrence.Uri,
-                occurrence.Definition.Uri,
+                occurrence.Target.SelectedDefinition.Uri,
                 StringComparison.OrdinalIgnoreCase)
-            && occurrence.Range == occurrence.Definition.Range;
+            && occurrence.Range == occurrence.Target.SelectedDefinition.Range;
 
     private static VbaRenameFailure ResolutionChanged(string message)
         => new("resolutionChanged", message);

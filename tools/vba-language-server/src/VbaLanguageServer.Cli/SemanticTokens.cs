@@ -98,7 +98,7 @@ internal static class VbaSemanticTokenBuilder
             }
 
             if (!TryCreateSemanticToken(
-                occurrence.Definition,
+                occurrence.Target.SelectedDefinition,
                 isDeclaration: false,
                 out var referenceToken,
                 occurrence.Range,

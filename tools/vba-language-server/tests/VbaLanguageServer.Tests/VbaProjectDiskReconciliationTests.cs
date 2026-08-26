@@ -216,6 +216,191 @@ public sealed class VbaProjectDiskReconciliationTests
     }
 
     [Fact]
+    public void Manifest_commit_refreshes_all_tracked_source_scopes()
+    {
+        static string CreateManifest(bool includeReference)
+        {
+            object CreateDocument(string name)
+                => new
+                {
+                    kind = "excel",
+                    sourcePath = $"src/{name}",
+                    templatePath = $"src/{name}/{name}.xlsm",
+                    binPath = $"bin/{name}/{name}.xlsm",
+                    publishPath = $"publish/{name}/{name}.xlsm",
+                    commonModules = Array.Empty<object>(),
+                    references = includeReference
+                        ? new[]
+                        {
+                            new
+                            {
+                                name = "Microsoft Scripting Runtime",
+                                requested = true
+                            }
+                        }
+                        : Array.Empty<object>()
+                };
+
+            return System.Text.Json.JsonSerializer.Serialize(new
+            {
+                schemaVersion = 1,
+                projectName = "TrackedScopes",
+                primaryDocument = "Book1",
+                documents = new Dictionary<string, object>
+                {
+                    ["Book1"] = CreateDocument("Book1"),
+                    ["Book2"] = CreateDocument("Book2")
+                }
+            });
+        }
+
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-reconcile-tracked-scopes-").FullName;
+        var unrelatedRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-reconcile-unrelated-scope-").FullName;
+        try
+        {
+            var manifestPath = Path.Combine(projectRoot, "vba-project.json");
+            File.WriteAllText(manifestPath, CreateManifest(includeReference: false));
+            var firstPath = Path.Combine(
+                projectRoot,
+                "src",
+                "Book1",
+                "First.bas");
+            var firstPeerPath = Path.Combine(
+                projectRoot,
+                "src",
+                "Book1",
+                "FirstPeer.bas");
+            var secondPath = Path.Combine(
+                projectRoot,
+                "src",
+                "Book2",
+                "Second.bas");
+            Directory.CreateDirectory(Path.GetDirectoryName(firstPath)!);
+            Directory.CreateDirectory(Path.GetDirectoryName(secondPath)!);
+            var firstText = CreateModule("First", "RunFirst");
+            var firstPeerText = CreateModule("FirstPeer", "RunFirstPeer");
+            var secondText = CreateModule("Second", "RunSecond");
+            File.WriteAllText(firstPath, firstText);
+            File.WriteAllText(firstPeerPath, firstPeerText);
+            File.WriteAllText(secondPath, secondText);
+            var firstUri = ToFileUri(firstPath);
+            var firstPeerUri = ToFileUri(firstPeerPath);
+            var secondUri = ToFileUri(secondPath);
+            var unrelatedPath = Path.Combine(unrelatedRoot, "Unrelated.bas");
+            var unrelatedText = CreateModule("Unrelated", "RunUnrelated");
+            File.WriteAllText(unrelatedPath, unrelatedText);
+            var unrelatedUri = ToFileUri(unrelatedPath);
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()));
+            workspace.UpdateDocument(firstUri, firstText);
+            workspace.UpdateDocument(firstPeerUri, firstPeerText);
+            workspace.UpdateDocument(secondUri, secondText);
+            workspace.UpdateDocument(unrelatedUri, unrelatedText);
+            _ = workspace.CreateProjectSnapshot(firstUri);
+            _ = workspace.CreateProjectSnapshot(secondUri);
+            _ = workspace.CreateProjectSnapshot(unrelatedUri);
+
+            VbaProjectReconciliationScopePlan plan;
+            using (var capture = workspace.CaptureProjectReconciliation())
+            {
+                Assert.Equal(3, capture.Scopes.Count);
+                var firstScope = Assert.Single(capture.Scopes, scope =>
+                    scope.OpenSourceUris.Contains(
+                        firstUri,
+                        StringComparer.OrdinalIgnoreCase));
+                plan = CreateManifestReloadPlan(
+                    firstScope,
+                    CreateManifest(includeReference: true),
+                    [firstUri, firstPeerUri, secondUri]);
+            }
+
+            var committed = workspace.TryCommitProjectReconciliationScope(
+                plan,
+                CancellationToken.None);
+
+            Assert.Equal(
+                VbaProjectReconciliationCommitOutcome.Committed,
+                committed.Outcome);
+            var refreshedUris = committed.Effects
+                .OfType<ReconciledProjectDiagnosticsEffect>()
+                .Select(effect => effect.Uri)
+                .ToArray();
+            Assert.Equal([firstUri, secondUri], refreshedUris);
+            Assert.DoesNotContain(firstPeerUri, refreshedUris);
+            Assert.DoesNotContain(unrelatedUri, refreshedUris);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+            Directory.Delete(unrelatedRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Manifest_commit_refreshes_a_source_opened_after_the_scan()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-reconcile-late-open-refresh-").FullName;
+        try
+        {
+            WriteProjectManifest(projectRoot, "src");
+            var firstPath = Path.Combine(
+                projectRoot,
+                "src",
+                "Book1",
+                "First.bas");
+            var latePath = Path.Combine(
+                projectRoot,
+                "src",
+                "Legacy",
+                "Late.bas");
+            Directory.CreateDirectory(Path.GetDirectoryName(firstPath)!);
+            Directory.CreateDirectory(Path.GetDirectoryName(latePath)!);
+            var firstText = CreateModule("First", "RunFirst");
+            var lateText = CreateModule("Late", "RunLate");
+            File.WriteAllText(firstPath, firstText);
+            File.WriteAllText(latePath, lateText);
+            var firstUri = ToFileUri(firstPath);
+            var lateUri = ToFileUri(latePath);
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()));
+            workspace.UpdateDocument(firstUri, firstText);
+            _ = workspace.CreateProjectSnapshot(firstUri);
+
+            VbaProjectReconciliationScopePlan plan;
+            using (var capture = workspace.CaptureProjectReconciliation())
+            {
+                plan = CreateManifestReloadPlan(
+                    Assert.Single(capture.Scopes),
+                    CreateProjectManifestText("src/Book1"),
+                    [firstUri]);
+            }
+
+            workspace.UpdateDocument(lateUri, lateText);
+            var committed = workspace.TryCommitProjectReconciliationScope(
+                plan,
+                CancellationToken.None);
+
+            Assert.Equal(
+                VbaProjectReconciliationCommitOutcome.Committed,
+                committed.Outcome);
+            Assert.Equal(
+                [firstUri, lateUri],
+                committed.Effects
+                    .OfType<ReconciledProjectDiagnosticsEffect>()
+                    .Select(effect => effect.Uri));
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Scope_stop_retains_revision_watermark_and_dispatches_committed_effects()
     {
         var projectRoot = Directory.CreateTempSubdirectory(
@@ -319,7 +504,7 @@ public sealed class VbaProjectDiskReconciliationTests
     }
 
     [Fact]
-    public async Task Queued_required_mutation_cannot_overtake_reconciliation_effects()
+    public async Task Project_diagnostics_effects_run_after_the_required_commit_lane_releases()
     {
         var projectRoot = Directory.CreateTempSubdirectory(
             "vba-ls-reconcile-effect-order-").FullName;
@@ -352,7 +537,7 @@ public sealed class VbaProjectDiskReconciliationTests
                 helperPath,
                 CreateModule("Helper", "BuildReconciled"));
             buildObserver.Arm();
-            var effects = new OrderedEffectDiagnostics(helperUri);
+            var effects = new OrderedEffectDiagnostics();
             var timing = new CommitEffectTimingSink(effects);
             await using var scheduler = new VbaInteractiveWorkScheduler(
                 timing,
@@ -372,7 +557,6 @@ public sealed class VbaProjectDiskReconciliationTests
             var newestText =
                 CreateModule("Helper", "BuildNewest");
             File.WriteAllText(helperPath, newestText);
-            var effectObservedAtNewerMutation = false;
             VbaInteractiveWorkAdmission newerMutation;
             try
             {
@@ -381,8 +565,6 @@ public sealed class VbaProjectDiskReconciliationTests
                             "test/newer-source-reload",
                             cancellationToken =>
                             {
-                                effectObservedAtNewerMutation =
-                                    effects.EffectObserved;
                                 effects.Events.Enqueue("newer-mutation");
                                 workspace.ReloadSourceDocument(
                                     helperUri,
@@ -404,12 +586,11 @@ public sealed class VbaProjectDiskReconciliationTests
                     timing.CommitCompleted.Task)
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
-            Assert.True(
+            Assert.False(
                 timing.EffectObservedBeforeCommitCompletion);
-            Assert.True(effectObservedAtNewerMutation);
-            Assert.Equal(
-                ["reconciliation-effect", "newer-mutation"],
-                effects.Events.ToArray());
+            Assert.Contains(
+                "reconciliation-effect",
+                effects.Events);
             Assert.Equal(newestText, workspace.GetDocumentText(helperUri));
             var snapshot = workspace.CreateProjectSnapshot(callerUri);
             Assert.Contains(
@@ -419,6 +600,76 @@ public sealed class VbaProjectDiskReconciliationTests
             Assert.Empty(
                 snapshot.SemanticInventory.GetWorkspaceSymbols(
                     "BuildReconciled"));
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Reconciled_manifest_selection_effect_does_not_overtake_a_newer_open_overlay()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-reconcile-stale-manifest-effect-").FullName;
+        try
+        {
+            WriteProjectManifest(
+                projectRoot,
+                "src/Book1",
+                "Visual Basic For Applications");
+            var callerUri = ToFileUri(Path.Combine(
+                projectRoot,
+                "src",
+                "Book1",
+                "Caller.bas"));
+            var manifestPath = Path.Combine(
+                projectRoot,
+                "vba-project.json");
+            var manifestUri = ToFileUri(manifestPath);
+            var workspace = CreateWorkspace(callerUri);
+            _ = workspace.CreateProjectSnapshot(callerUri);
+            var reconciledText = CreateProjectManifestText(
+                "src/Book1",
+                "Microsoft Excel 16.0 Object Library");
+            File.WriteAllText(manifestPath, reconciledText);
+            var overlayText = CreateProjectManifestText(
+                "src/Book1",
+                "Microsoft Office 16.0 Object Library");
+            var manifestEvents = new RecordingManifestEvents();
+            var effectObservedBeforeNewerOverlay = false;
+            var timing = new CommitCompletionActionTimingSink(() =>
+            {
+                effectObservedBeforeNewerOverlay =
+                    manifestEvents.SelectionChanges.Count == 1;
+                var opened = workspace.ManifestWorkspace.OpenManifest(
+                    manifestUri,
+                    documentVersion: 1,
+                    overlayText);
+                Assert.True(opened.Accepted);
+            });
+            await using var scheduler = new VbaInteractiveWorkScheduler(
+                timing,
+                options: new VbaInteractiveWorkSchedulerOptions(
+                    CoalesceSupersededMutations: true,
+                    MaxOwnedWork: 1));
+            await using var reconciler = new VbaProjectReconciler(
+                workspace,
+                manifestEvents: manifestEvents,
+                cadence: Timeout.InfiniteTimeSpan);
+            reconciler.AttachScheduler(scheduler);
+
+            await reconciler.ReconcileAsync()
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.True(effectObservedBeforeNewerOverlay);
+            Assert.Equal(
+                (manifestUri, reconciledText),
+                Assert.Single(manifestEvents.SelectionChanges));
+            var resolution = workspace.ManifestWorkspace.Resolve(callerUri);
+            Assert.Equal(
+                "Microsoft Office 16.0 Object Library",
+                Assert.Single(resolution.ReferenceEntries).Name);
         }
         finally
         {
@@ -692,11 +943,9 @@ public sealed class VbaProjectDiskReconciliationTests
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.Equal(1, commitObserver.ScopeFenceValidationCount);
-            Assert.Equal(
-                sourcePaths.Length,
+            Assert.Single(
                 diagnostics.TrackedUris
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .Count());
+                    .Distinct(StringComparer.OrdinalIgnoreCase));
         }
         finally
         {
@@ -757,8 +1006,9 @@ public sealed class VbaProjectDiskReconciliationTests
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.Equal(2, commitObserver.ScopeFenceValidationCount);
+            Assert.Contains(callerUri, diagnostics.TrackedUris);
             Assert.Equal(
-                sourcePaths.Length,
+                2,
                 diagnostics.TrackedUris
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .Count());
@@ -1162,8 +1412,10 @@ public sealed class VbaProjectDiskReconciliationTests
                 symbol => symbol.Uri == ToFileUri(renamedFromPath));
             Assert.Contains(ToFileUri(deletedPath), diagnostics.EmptyUris);
             Assert.Contains(ToFileUri(renamedFromPath), diagnostics.EmptyUris);
-            Assert.Contains(ToFileUri(addedPath), diagnostics.TrackedUris);
-            Assert.Contains(ToFileUri(renamedToPath), diagnostics.TrackedUris);
+            Assert.Equal(
+                [ToFileUri(addedPath)],
+                diagnostics.TrackedUris
+                    .Distinct(StringComparer.OrdinalIgnoreCase));
         }
         finally
         {
@@ -7253,7 +7505,8 @@ public sealed class VbaProjectDiskReconciliationTests
     private static VbaProjectReconciliationScopePlan
         CreateManifestReloadPlan(
             VbaProjectReconciliationScope scope,
-            string manifestText)
+            string manifestText,
+            IReadOnlyList<string>? capturedManifestSourceUris = null)
     {
         var manifestPath = scope.Resolution.ManifestPath
             ?? throw new InvalidOperationException(
@@ -7286,7 +7539,20 @@ public sealed class VbaProjectDiskReconciliationTests
                 .ToArray())
         {
             PreviousResolution = scope.Resolution,
-            CapturedOpenSourceUris = scope.OpenSourceUris
+            CapturedOpenSourceUris = scope.OpenSourceUris,
+            CapturedProjectSourceUris = scope.KnownSources
+                .Select(source => source.Uri)
+                .Concat(scope.OpenSourceUris)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(uri => uri, StringComparer.OrdinalIgnoreCase)
+                .ToArray(),
+            CapturedManifestSourceUris = capturedManifestSourceUris
+                ?? scope.KnownSources
+                    .Select(source => source.Uri)
+                    .Concat(scope.OpenSourceUris)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(uri => uri, StringComparer.OrdinalIgnoreCase)
+                    .ToArray()
         };
         return new VbaProjectReconciliationScopePlan(
             scope.AuthorityKey,
@@ -7568,13 +7834,7 @@ public sealed class VbaProjectDiskReconciliationTests
     private sealed class OrderedEffectDiagnostics
         : IVbaProjectDiskReconciliationDiagnostics
     {
-        private readonly string targetUri;
         private int effectObserved;
-
-        public OrderedEffectDiagnostics(string targetUri)
-        {
-            this.targetUri = targetUri;
-        }
 
         public System.Collections.Concurrent.ConcurrentQueue<string> Events
             { get; } = new();
@@ -7586,14 +7846,12 @@ public sealed class VbaProjectDiskReconciliationTests
             string uri,
             CancellationToken cancellationToken)
         {
-            if (!string.Equals(
-                uri,
-                targetUri,
-                StringComparison.OrdinalIgnoreCase))
-            {
-                return;
-            }
+        }
 
+        public void EnqueueProjectDiagnostics(
+            string uri,
+            CancellationToken cancellationToken)
+        {
             Interlocked.Exchange(ref effectObserved, 1);
             Events.Enqueue("reconciliation-effect");
         }
@@ -7635,6 +7893,29 @@ public sealed class VbaProjectDiskReconciliationTests
             EffectObservedBeforeCommitCompletion =
                 effects.EffectObserved;
             CommitCompleted.TrySetResult();
+        }
+    }
+
+    private sealed class CommitCompletionActionTimingSink
+        : IVbaInteractiveWorkTimingSink
+    {
+        private readonly Action commitCompletionAction;
+
+        public CommitCompletionActionTimingSink(Action commitCompletionAction)
+        {
+            this.commitCompletionAction = commitCompletionAction;
+        }
+
+        public void RecordAdmission(VbaInteractiveWorkAdmissionTiming timing)
+        {
+        }
+
+        public void RecordCompletion(VbaInteractiveWorkCompletionTiming timing)
+        {
+            if (timing.Method == "vba/reconcile/commit")
+            {
+                commitCompletionAction();
+            }
         }
     }
 

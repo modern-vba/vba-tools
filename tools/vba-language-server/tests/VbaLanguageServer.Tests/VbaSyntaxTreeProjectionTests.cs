@@ -7,6 +7,66 @@ namespace VbaLanguageServer.Tests;
 public sealed class VbaSyntaxTreeProjectionTests
 {
     [Fact]
+    public void Position_syntax_distinguishes_let_and_set_assignment_targets_across_active_statements()
+    {
+        const string uri = "file:///C:/work/PropertyAssignmentForms.bas";
+        var lines = new[]
+        {
+            "Attribute VB_Name = \"PropertyAssignmentForms\"",
+            "Public Sub Run()",
+            "    If ready Then Set target = Nothing",
+            "    Set _",
+            "        target = Nothing",
+            "    target = 1",
+            "100 Set target = Nothing",
+            "End Sub"
+        };
+        var tree = VbaSyntaxTree.ParseModule(uri, string.Join('\n', lines));
+
+        var singleLineSet = tree.GetPositionSyntax(
+            2,
+            lines[2].IndexOf("target", StringComparison.Ordinal)
+                + "target".Length);
+        var continuedSet = tree.GetPositionSyntax(
+            4,
+            lines[4].IndexOf("target", StringComparison.Ordinal)
+                + "target".Length);
+        var implicitLet = tree.GetPositionSyntax(
+            5,
+            lines[5].IndexOf("target", StringComparison.Ordinal)
+                + "target".Length);
+        var numericLabelSet = tree.GetPositionSyntax(
+            6,
+            lines[6].IndexOf("target", StringComparison.Ordinal)
+                + "target".Length);
+
+        Assert.Equal(
+            VbaCompletionExpectation.AssignmentTarget,
+            singleLineSet.CompletionExpectation);
+        Assert.Equal(
+            VbaPropertyAccessorKind.Set,
+            singleLineSet.AssignmentPropertyAccessorKind);
+        Assert.Equal(
+            VbaCompletionExpectation.AssignmentTarget,
+            continuedSet.CompletionExpectation);
+        Assert.Equal(
+            VbaPropertyAccessorKind.Set,
+            continuedSet.AssignmentPropertyAccessorKind);
+        Assert.Equal(
+            VbaCompletionExpectation.AssignmentTarget,
+            implicitLet.CompletionExpectation);
+        Assert.Equal(
+            VbaPropertyAccessorKind.Let,
+            implicitLet.AssignmentPropertyAccessorKind);
+        Assert.Equal(
+            VbaCompletionExpectation.AssignmentTarget,
+            numericLabelSet.CompletionExpectation);
+        Assert.Equal(
+            VbaPropertyAccessorKind.Set,
+            numericLabelSet.AssignmentPropertyAccessorKind);
+    }
+
+    [Fact]
     public void Lexer_token_positions_match_source_coordinates_across_mixed_newlines()
     {
         const string uri = "file:///C:/work/MixedNewlines.bas";
@@ -63,6 +123,47 @@ public sealed class VbaSyntaxTreeProjectionTests
         Assert.IsType<VbaSyntaxTreeChangeSet.ModuleMember>(result);
         Assert.Contains(result.SyntaxTree.Module.CallableDeclarations, declaration => declaration.Name == "BuildValue");
         Assert.Contains(result.SyntaxTree.Module.CallableDeclarations, declaration => declaration.Name == "Run");
+    }
+
+    [Fact]
+    public void Parser_returns_member_proof_for_a_conditional_directive_only_edit()
+    {
+        const string uri = "file:///C:/work/IncrementalConditionalFamily.bas";
+        var conditional = string.Join('\n', [
+            "Attribute VB_Name = \"IncrementalConditionalFamily\"",
+            "Option Explicit",
+            "Public Sub Run()",
+            "#If VBA7 Then",
+            "    Dim BuildValue As String",
+            "#Else",
+            "    Dim buildvalue As String",
+            "#End If",
+            "    Debug.Print BuildValue",
+            "End Sub"
+        ]);
+        var unconditional = string.Join('\n', [
+            "Attribute VB_Name = \"IncrementalConditionalFamily\"",
+            "Option Explicit",
+            "Public Sub Run()",
+            "",
+            "    Dim BuildValue As String",
+            "",
+            "    Dim buildvalue As String",
+            "",
+            "    Debug.Print BuildValue",
+            "End Sub"
+        ]);
+        var previousSyntaxTree = VbaSyntaxTree.ParseModule(uri, conditional);
+
+        var result = VbaSyntaxTree.ParseOrUpdate(
+            uri,
+            unconditional,
+            previousSyntaxTree);
+
+        var memberChange = Assert.IsType<
+            VbaSyntaxTreeChangeSet.ModuleMember>(result);
+        Assert.Equal("Run", memberChange.PreviousMember.Name);
+        Assert.Equal("Run", memberChange.CurrentMember.Name);
     }
 
     [Fact]

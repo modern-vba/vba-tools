@@ -1433,6 +1433,3925 @@ public sealed class LanguageServerProcessTests
     }
 
     [Fact]
+    public async Task Server_defines_a_use_as_every_conditional_declaration_variant()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalFunctions.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalFunctions\"",
+            "Option Explicit",
+            "#If VBA7 Then",
+            "Public Function BuildValue() As String",
+            "End Function",
+            "#Else",
+            "Public Function buildvalue() As String",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Debug.Print BuildValue()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var definition = await SendDefinitionRequestAsync(
+            process,
+            2,
+            uri,
+            text,
+            "BuildValue()",
+            text.LastIndexOf("BuildValue()", StringComparison.Ordinal)
+                - text.IndexOf("BuildValue()", StringComparison.Ordinal));
+
+        Assert.Equal(JsonValueKind.Array, definition.ValueKind);
+        var locations = definition.EnumerateArray().ToArray();
+        Assert.Equal(2, locations.Length);
+        Assert.Equal(3, locations[0].GetProperty("range").GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(6, locations[1].GetProperty("range").GetProperty("start").GetProperty("line").GetInt32());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_forms_one_family_from_nested_conditional_branches()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/NestedConditionalFamily.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"NestedConditionalFamily\"",
+            "#If OUTER_CONFIGURATION Then",
+            "#If INNER_CONFIGURATION Then",
+            "Public Function BuildValue() As String",
+            "End Function",
+            "#Else",
+            "Public Function buildvalue() As String",
+            "End Function",
+            "#End If",
+            "#End If",
+            "Public Sub Run()",
+            "    Debug.Print BuildValue()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var definition = await SendDefinitionRequestAsync(
+            process,
+            2,
+            uri,
+            text,
+            "BuildValue()",
+            text.LastIndexOf("BuildValue()", StringComparison.Ordinal)
+                - text.IndexOf("BuildValue()", StringComparison.Ordinal));
+        Assert.Equal(
+            [3, 6],
+            definition
+                .EnumerateArray()
+                .Select(location => location
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32()));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_marks_a_single_conditional_completion_without_exposing_its_condition()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalCompletion.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalCompletion\"",
+            "Option Explicit",
+            "#If VBA7 Then",
+            "Public Function BuildValue() As String",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Bui",
+            "    Debug.Print BuildValue()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri },
+                position = new { line = 7, character = "    Bui".Length }
+            });
+        var item = completion
+            .GetProperty("result")
+            .EnumerateArray()
+            .Single(candidate => candidate.GetProperty("label").GetString() == "BuildValue");
+
+        Assert.EndsWith(" [#If]", item.GetProperty("detail").GetString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("VBA7", item.GetRawText(), StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("[#If]", item.GetProperty("label").GetString(), StringComparison.Ordinal);
+
+        var hover = await SendPositionRequestAsync(
+            process,
+            3,
+            "textDocument/hover",
+            uri,
+            text,
+            "Debug.Print BuildValue()",
+            "Debug.Print ".Length);
+        var hoverValue = hover
+            .GetProperty("result")
+            .GetProperty("contents")
+            .GetProperty("value")
+            .GetString();
+        Assert.Contains(
+            "**BuildValue [#If]**",
+            hoverValue,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Function BuildValue() As String [#If]",
+            hoverValue,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "VBA7",
+            hoverValue,
+            StringComparison.OrdinalIgnoreCase);
+
+        var references = await SendPositionRequestAsync(
+            process,
+            4,
+            "textDocument/references",
+            uri,
+            text,
+            "Debug.Print BuildValue()",
+            "Debug.Print ".Length);
+        Assert.Equal(
+            [3, 8],
+            references
+                .GetProperty("result")
+                .EnumerateArray()
+                .Select(location => location
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32()));
+
+        await process.ShutdownAsync(5);
+    }
+
+    [Fact]
+    public async Task Server_projects_one_completion_row_for_an_all_guarded_mixed_kind_family()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalMixedKindCompletion.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalMixedKindCompletion\"",
+            "#If FUNCTION_CONFIGURATION Then",
+            "Public Function BuildValue() As String",
+            "End Function",
+            "#End If",
+            "#If PROPERTY_CONFIGURATION Then",
+            "Public Property Get buildvalue() As String",
+            "End Property",
+            "#End If",
+            "Public Sub Run()",
+            "    buil",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri },
+                position = new { line = 10, character = "    buil".Length }
+            });
+        var item = Assert.Single(
+            completion.GetProperty("result").EnumerateArray(),
+            candidate => string.Equals(
+                candidate.GetProperty("label").GetString(),
+                "BuildValue",
+                StringComparison.OrdinalIgnoreCase));
+
+        Assert.Equal("BuildValue", item.GetProperty("label").GetString());
+        Assert.EndsWith(
+            " [#If]",
+            item.GetProperty("detail").GetString(),
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "FUNCTION_CONFIGURATION",
+            item.GetRawText(),
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            "PROPERTY_CONFIGURATION",
+            item.GetRawText(),
+            StringComparison.OrdinalIgnoreCase);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_completes_a_module_qualified_mixed_kind_conditional_family_once()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string helperUri = "file:///C:/work/Helper.bas";
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(helperUri, string.Join('\n', [
+                "Attribute VB_Name = \"Helper\"",
+                "#If FUNCTION_CONFIGURATION Then",
+                "Public Function BuildValue() As String",
+                "End Function",
+                "#End If",
+                "#If PROPERTY_CONFIGURATION Then",
+                "Public Property Get buildvalue() As String",
+                "End Property",
+                "#End If"
+            ])));
+        const string callerUri = "file:///C:/work/ConditionalMixedKindCaller.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalMixedKindCaller\"",
+            "Public Sub Run()",
+            "    Dim result As String",
+            "    result = Helper.",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = callerUri },
+                position = new
+                {
+                    line = 3,
+                    character = "    result = Helper.".Length
+                }
+            });
+        var item = Assert.Single(
+            completion.GetProperty("result").EnumerateArray(),
+            candidate => string.Equals(
+                candidate.GetProperty("label").GetString(),
+                "BuildValue",
+                StringComparison.OrdinalIgnoreCase));
+
+        Assert.Equal("BuildValue", item.GetProperty("label").GetString());
+        Assert.EndsWith(
+            " [#If]",
+            item.GetProperty("detail").GetString(),
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "FUNCTION_CONFIGURATION",
+            item.GetRawText(),
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            "PROPERTY_CONFIGURATION",
+            item.GetRawText(),
+            StringComparison.OrdinalIgnoreCase);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_completes_one_logical_type_for_conditional_type_variants()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalTypeCompletion.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalTypeCompletion\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Enum RunMode",
+            "    FirstMode = 1",
+            "End Enum",
+            "#End If",
+            "#If SECOND_CONFIGURATION Then",
+            "Private Enum runmode",
+            "    SecondMode = 2",
+            "End Enum",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim current As run",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri },
+                position = new { line = 12, character = "    Dim current As run".Length }
+            });
+        var item = Assert.Single(
+            completion.GetProperty("result").EnumerateArray(),
+            candidate => string.Equals(
+                candidate.GetProperty("label").GetString(),
+                "RunMode",
+                StringComparison.OrdinalIgnoreCase));
+
+        Assert.Equal("RunMode", item.GetProperty("label").GetString());
+        Assert.EndsWith(
+            " [#If]",
+            item.GetProperty("detail").GetString(),
+            StringComparison.Ordinal);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_defines_every_project_visible_friend_type_variant()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string firstUri = "file:///C:/work/FriendTypeA.bas";
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(firstUri, string.Join('\n', [
+                "Attribute VB_Name = \"FriendTypeA\"",
+                "#If FIRST_CONFIGURATION Then",
+                "Friend Enum RunMode",
+                "    FirstMode = 1",
+                "End Enum",
+                "#End If"
+            ])));
+        const string secondUri = "file:///C:/work/FriendTypeB.bas";
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(secondUri, string.Join('\n', [
+                "Attribute VB_Name = \"FriendTypeB\"",
+                "#If SECOND_CONFIGURATION Then",
+                "Friend Enum runmode",
+                "    SecondMode = 2",
+                "End Enum",
+                "#End If"
+            ])));
+        const string callerUri = "file:///C:/work/FriendTypeCaller.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"FriendTypeCaller\"",
+            "Public Sub Run()",
+            "    Dim current As RunMode",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var definition = await SendDefinitionRequestAsync(
+            process,
+            2,
+            callerUri,
+            callerText,
+            "RunMode");
+
+        Assert.Equal(
+            [(firstUri, 2), (secondUri, 2)],
+            definition
+                .EnumerateArray()
+                .Select(location => (
+                    location.GetProperty("uri").GetString(),
+                    location
+                        .GetProperty("range")
+                        .GetProperty("start")
+                        .GetProperty("line")
+                        .GetInt32())));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_completes_one_logical_member_for_conditional_member_variants()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string workerUri = "file:///C:/work/ConditionalWorker.cls";
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, string.Join('\n', [
+                "VERSION 1.0 CLASS",
+                "Attribute VB_Name = \"ConditionalWorker\"",
+                "#If FIRST_CONFIGURATION Then",
+                "Public Function BuildValue() As String",
+                "End Function",
+                "#End If",
+                "#If SECOND_CONFIGURATION Then",
+                "Public Function buildvalue() As String",
+                "End Function",
+                "#End If"
+            ])));
+        const string callerUri = "file:///C:/work/ConditionalMemberCaller.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalMemberCaller\"",
+            "Private worker As ConditionalWorker",
+            "Public Sub Run()",
+            "    worker.buil",
+            "    Debug.Print worker.BuildValue()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = callerUri },
+                position = new { line = 3, character = "    worker.buil".Length }
+            });
+        var item = Assert.Single(
+            completion.GetProperty("result").EnumerateArray(),
+            candidate => string.Equals(
+                candidate.GetProperty("label").GetString(),
+                "BuildValue",
+                StringComparison.OrdinalIgnoreCase));
+
+        Assert.Equal("BuildValue", item.GetProperty("label").GetString());
+        Assert.EndsWith(
+            " [#If]",
+            item.GetProperty("detail").GetString(),
+            StringComparison.Ordinal);
+
+        var definition = await SendDefinitionRequestAsync(
+            process,
+            3,
+            callerUri,
+            callerText,
+            "worker.BuildValue()",
+            "worker.".Length);
+        Assert.Equal(
+            [workerUri, workerUri],
+            definition
+                .EnumerateArray()
+                .Select(location => location.GetProperty("uri").GetString()));
+        Assert.Equal(
+            [3, 7],
+            definition
+                .EnumerateArray()
+                .Select(location => location
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32()));
+
+        await process.ShutdownAsync(4);
+    }
+
+    [Fact]
+    public async Task Server_completes_a_conditional_member_when_only_a_later_variant_is_eligible()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string workerUri = "file:///C:/work/ConditionalEligibleWorker.cls";
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, string.Join('\n', [
+                "VERSION 1.0 CLASS",
+                "Attribute VB_Name = \"ConditionalEligibleWorker\"",
+                "#If SUB_CONFIGURATION Then",
+                "Public Sub BuildValue()",
+                "End Sub",
+                "#End If",
+                "#If FUNCTION_CONFIGURATION Then",
+                "Public Function buildvalue() As String",
+                "End Function",
+                "#End If"
+            ])));
+        const string callerUri = "file:///C:/work/ConditionalEligibleCaller.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalEligibleCaller\"",
+            "Private worker As ConditionalEligibleWorker",
+            "Public Sub Run()",
+            "    Dim result As String",
+            "    result = worker.buil",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = callerUri },
+                position = new
+                {
+                    line = 4,
+                    character = "    result = worker.buil".Length
+                }
+            });
+        var item = Assert.Single(
+            completion.GetProperty("result").EnumerateArray(),
+            candidate => string.Equals(
+                candidate.GetProperty("label").GetString(),
+                "BuildValue",
+                StringComparison.OrdinalIgnoreCase));
+
+        Assert.Equal("BuildValue", item.GetProperty("label").GetString());
+        Assert.Equal(3, item.GetProperty("kind").GetInt32());
+        Assert.StartsWith(
+            "Function buildvalue() As String",
+            item.GetProperty("detail").GetString(),
+            StringComparison.Ordinal);
+        Assert.EndsWith(
+            " [#If]",
+            item.GetProperty("detail").GetString(),
+            StringComparison.Ordinal);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_does_not_complete_a_conditional_member_from_an_invisible_later_variant()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string workerUri = "file:///C:/work/ConditionalVisibilityWorker.cls";
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, string.Join('\n', [
+                "VERSION 1.0 CLASS",
+                "Attribute VB_Name = \"ConditionalVisibilityWorker\"",
+                "#If WRITE_CONFIGURATION Then",
+                "Public Property Let Value(ByVal assigned As Long)",
+                "End Property",
+                "#End If",
+                "#If READ_CONFIGURATION Then",
+                "Private Property Get value() As Long",
+                "End Property",
+                "#End If"
+            ])));
+        const string callerUri = "file:///C:/work/ConditionalVisibilityCaller.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalVisibilityCaller\"",
+            "Private worker As ConditionalVisibilityWorker",
+            "Public Sub Run()",
+            "    Dim result As Long",
+            "    result = worker.val",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = callerUri },
+                position = new
+                {
+                    line = 4,
+                    character = "    result = worker.val".Length
+                }
+            });
+
+        Assert.DoesNotContain(
+            completion.GetProperty("result").EnumerateArray(),
+            candidate => string.Equals(
+                candidate.GetProperty("label").GetString(),
+                "Value",
+                StringComparison.OrdinalIgnoreCase));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_requires_a_visible_accessor_before_binding_a_unified_property_family()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string workerUri = "file:///C:/work/UnifiedPropertyVisibilityWorker.cls";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"UnifiedPropertyVisibilityWorker\"",
+            "#If READ_CONFIGURATION Then",
+            "Public Property Get Value() As Long",
+            "End Property",
+            "#End If",
+            "#If WRITE_CONFIGURATION Then",
+            "Private Property Let value(ByVal assigned As Long)",
+            "End Property",
+            "#End If",
+            "Private Sub WriteInside()",
+            "    Value = 1",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+        const string callerUri = "file:///C:/work/UnifiedPropertyVisibilityCaller.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"UnifiedPropertyVisibilityCaller\"",
+            "Private worker As UnifiedPropertyVisibilityWorker",
+            "Public Sub Run()",
+            "    Debug.Print worker.Value",
+            "    worker.Value = 1",
+            "    worker.val = 1",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var readDefinition = await SendDefinitionRequestAsync(
+            process,
+            2,
+            callerUri,
+            callerText,
+            "worker.Value",
+            "worker.".Length);
+        Assert.Equal(
+            [3, 7],
+            readDefinition
+                .EnumerateArray()
+                .Select(location => location
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32()));
+
+        var writeDefinition = await SendDefinitionRequestAsync(
+            process,
+            3,
+            callerUri,
+            callerText,
+            "worker.Value = 1",
+            "worker.".Length);
+        Assert.Equal(JsonValueKind.Null, writeDefinition.ValueKind);
+
+        var writeHover = await SendPositionRequestAsync(
+            process,
+            4,
+            "textDocument/hover",
+            callerUri,
+            callerText,
+            "worker.Value = 1",
+            "worker.".Length);
+        Assert.Equal(JsonValueKind.Null, writeHover.GetProperty("result").ValueKind);
+
+        var internalWriteDefinition = await SendDefinitionRequestAsync(
+            process,
+            5,
+            workerUri,
+            workerText,
+            "    Value = 1",
+            "    ".Length);
+        Assert.Equal(
+            [3, 7],
+            internalWriteDefinition
+                .EnumerateArray()
+                .Select(location => location
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32()));
+
+        var writeCompletion = await process.SendRequestAsync(
+            6,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = callerUri },
+                position = new
+                {
+                    line = 5,
+                    character = "    worker.val".Length
+                }
+            });
+        Assert.DoesNotContain(
+            writeCompletion.GetProperty("result").EnumerateArray(),
+            candidate => string.Equals(
+                candidate.GetProperty("label").GetString(),
+                "Value",
+                StringComparison.OrdinalIgnoreCase));
+
+        await process.ShutdownAsync(7);
+    }
+
+    [Fact]
+    public async Task Server_completes_an_unqualified_conditional_family_when_only_a_later_variant_is_eligible()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalEligibleUnqualified.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalEligibleUnqualified\"",
+            "#If SUB_CONFIGURATION Then",
+            "Public Sub BuildValue()",
+            "End Sub",
+            "#End If",
+            "#If FUNCTION_CONFIGURATION Then",
+            "Public Function buildvalue() As String",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As String",
+            "    result = buil",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri },
+                position = new
+                {
+                    line = 11,
+                    character = "    result = buil".Length
+                }
+            });
+        var item = Assert.Single(
+            completion.GetProperty("result").EnumerateArray(),
+            candidate => string.Equals(
+                candidate.GetProperty("label").GetString(),
+                "BuildValue",
+                StringComparison.OrdinalIgnoreCase));
+
+        Assert.Equal("BuildValue", item.GetProperty("label").GetString());
+        Assert.Equal(3, item.GetProperty("kind").GetInt32());
+        Assert.StartsWith(
+            "Function buildvalue() As String",
+            item.GetProperty("detail").GetString(),
+            StringComparison.Ordinal);
+        Assert.EndsWith(
+            " [#If]",
+            item.GetProperty("detail").GetString(),
+            StringComparison.Ordinal);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_does_not_complete_an_eligible_declaration_through_an_ordinary_same_name_ambiguity()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/OrdinaryCompletionAmbiguity.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"OrdinaryCompletionAmbiguity\"",
+            "Public Sub BuildValue()",
+            "End Sub",
+            "Public Function buildvalue() As String",
+            "End Function",
+            "Public Sub Run()",
+            "    Dim result As String",
+            "    result = buil",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri },
+                position = new
+                {
+                    line = 7,
+                    character = "    result = buil".Length
+                }
+            });
+
+        Assert.DoesNotContain(
+            completion.GetProperty("result").EnumerateArray(),
+            candidate => string.Equals(
+                candidate.GetProperty("label").GetString(),
+                "BuildValue",
+                StringComparison.OrdinalIgnoreCase));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_resolves_a_function_and_complementary_property_accessors_as_one_conditional_family()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalFunctionPropertyOverlap.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalFunctionPropertyOverlap\"",
+            "#If FUNCTION_CONFIGURATION Then",
+            "Public Function Value() As Long",
+            "End Function",
+            "#End If",
+            "#If GET_CONFIGURATION Then",
+            "Public Property Get value() As Long",
+            "End Property",
+            "#End If",
+            "#If LET_CONFIGURATION Then",
+            "Public Property Let VALUE(ByVal assigned As Long)",
+            "End Property",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As Long",
+            "    result = val",
+            "    Debug.Print Value",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri },
+                position = new
+                {
+                    line = 16,
+                    character = "    result = val".Length
+                }
+            });
+        var item = Assert.Single(
+            completion.GetProperty("result").EnumerateArray(),
+            candidate => string.Equals(
+                candidate.GetProperty("label").GetString(),
+                "Value",
+                StringComparison.OrdinalIgnoreCase));
+        Assert.Equal("Value", item.GetProperty("label").GetString());
+        Assert.EndsWith(
+            " [#If]",
+            item.GetProperty("detail").GetString(),
+            StringComparison.Ordinal);
+
+        var definition = await SendDefinitionRequestAsync(
+            process,
+            3,
+            uri,
+            text,
+            "Debug.Print Value",
+            "Debug.Print ".Length);
+
+        Assert.Equal(
+            [3, 7, 11],
+            definition
+                .EnumerateArray()
+                .Select(location => location
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32()));
+
+        var hover = await SendPositionRequestAsync(
+            process,
+            4,
+            "textDocument/hover",
+            uri,
+            text,
+            "Debug.Print Value",
+            "Debug.Print ".Length);
+        var hoverValue = hover
+            .GetProperty("result")
+            .GetProperty("contents")
+            .GetProperty("value")
+            .GetString();
+        Assert.Contains("Function Value", hoverValue, StringComparison.Ordinal);
+        Assert.Contains(
+            "Property value() As Long",
+            hoverValue,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Property VALUE(assigned As Long)",
+            hoverValue,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "FUNCTION_CONFIGURATION",
+            hoverValue,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            "GET_CONFIGURATION",
+            hoverValue,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            "LET_CONFIGURATION",
+            hoverValue,
+            StringComparison.OrdinalIgnoreCase);
+
+        await process.ShutdownAsync(5);
+    }
+
+    [Fact]
+    public async Task Server_does_not_absorb_an_unconditional_property_accessor_through_a_guarded_accessor_family()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/MixedConditionalPropertyCollision.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"MixedConditionalPropertyCollision\"",
+            "#If FUNCTION_CONFIGURATION Then",
+            "Public Function Value() As Long",
+            "End Function",
+            "#End If",
+            "#If GET_CONFIGURATION Then",
+            "Public Property Get value() As Long",
+            "End Property",
+            "#End If",
+            "Public Property Let VALUE(ByVal assigned As Long)",
+            "End Property",
+            "Public Sub Run()",
+            "    Dim result As Long",
+            "    result = val",
+            "    Debug.Print Value",
+            "    Value = 1",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var diagnostics = await process.WaitForDiagnosticsAsync(uri);
+        var duplicateLines = diagnostics
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray()
+            .Where(diagnostic => diagnostic.GetProperty("code").GetString()
+                == "validation.duplicateDeclaration")
+            .Select(diagnostic => diagnostic
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32())
+            .ToArray();
+        Assert.Contains(3, duplicateLines);
+        Assert.Contains(10, duplicateLines);
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri },
+                position = new
+                {
+                    line = 14,
+                    character = "    result = val".Length
+                }
+            });
+        Assert.DoesNotContain(
+            completion.GetProperty("result").EnumerateArray(),
+            candidate => string.Equals(
+                candidate.GetProperty("label").GetString(),
+                "Value",
+                StringComparison.OrdinalIgnoreCase));
+
+        var definition = await SendDefinitionRequestAsync(
+            process,
+            3,
+            uri,
+            text,
+            "Debug.Print Value",
+            "Debug.Print ".Length);
+        Assert.Equal(JsonValueKind.Null, definition.ValueKind);
+
+        var hover = await SendPositionRequestAsync(
+            process,
+            4,
+            "textDocument/hover",
+            uri,
+            text,
+            "Debug.Print Value",
+            "Debug.Print ".Length);
+        Assert.Equal(
+            JsonValueKind.Null,
+            hover.GetProperty("result").ValueKind);
+
+        var assignmentDefinition = await SendDefinitionRequestAsync(
+            process,
+            5,
+            uri,
+            text,
+            "    Value = 1",
+            "    ".Length);
+        Assert.Equal(JsonValueKind.Null, assignmentDefinition.ValueKind);
+
+        var assignmentHover = await SendPositionRequestAsync(
+            process,
+            6,
+            "textDocument/hover",
+            uri,
+            text,
+            "    Value = 1",
+            "    ".Length);
+        Assert.Equal(
+            JsonValueKind.Null,
+            assignmentHover.GetProperty("result").ValueKind);
+
+        var declarationDefinition = await SendDefinitionRequestAsync(
+            process,
+            7,
+            uri,
+            text,
+            "Public Function Value",
+            "Public Function ".Length);
+        Assert.Equal(
+            [3, 7],
+            declarationDefinition
+                .EnumerateArray()
+                .Select(location => location
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32()));
+
+        var functionReferences = await SendPositionRequestAsync(
+            process,
+            8,
+            "textDocument/references",
+            uri,
+            text,
+            "Public Function Value",
+            "Public Function ".Length);
+        Assert.Equal(
+            [3, 7],
+            functionReferences
+                .GetProperty("result")
+                .EnumerateArray()
+                .Select(location => location
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32()));
+
+        var propertyReferences = await SendPositionRequestAsync(
+            process,
+            9,
+            "textDocument/references",
+            uri,
+            text,
+            "Public Property Let VALUE",
+            "Public Property Let ".Length);
+        Assert.Equal(
+            [7, 10],
+            propertyReferences
+                .GetProperty("result")
+                .EnumerateArray()
+                .Select(location => location
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32()));
+
+        await process.ShutdownAsync(10);
+    }
+
+    [Fact]
+    public async Task Server_does_not_complete_a_source_qualified_write_through_a_mixed_collision()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string targetUri = "file:///C:/work/MixedQualifiedCollision.bas";
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(targetUri, string.Join('\n', [
+                "Attribute VB_Name = \"MixedQualifiedCollision\"",
+                "#If FUNCTION_CONFIGURATION Then",
+                "Public Function Value() As Long",
+                "End Function",
+                "#End If",
+                "#If GET_CONFIGURATION Then",
+                "Public Property Get value() As Long",
+                "End Property",
+                "#End If",
+                "Public Property Let VALUE(ByVal assigned As Long)",
+                "End Property"
+            ])));
+        const string callerUri = "file:///C:/work/MixedQualifiedCaller.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"MixedQualifiedCaller\"",
+            "Public Sub Run()",
+            "    MixedQualifiedCollision. = 1",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = callerUri },
+                position = new
+                {
+                    line = 2,
+                    character = "    MixedQualifiedCollision.".Length
+                }
+            });
+        Assert.DoesNotContain(
+            completion.GetProperty("result").EnumerateArray(),
+            candidate => string.Equals(
+                candidate.GetProperty("label").GetString(),
+                "Value",
+                StringComparison.OrdinalIgnoreCase));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_resolves_a_member_function_and_complementary_property_accessors_as_one_conditional_family()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string workerUri = "file:///C:/work/ConditionalMemberPropertyOverlap.cls";
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, string.Join('\n', [
+                "VERSION 1.0 CLASS",
+                "Attribute VB_Name = \"ConditionalMemberPropertyOverlap\"",
+                "#If FUNCTION_CONFIGURATION Then",
+                "Public Function Value() As Long",
+                "End Function",
+                "#End If",
+                "#If GET_CONFIGURATION Then",
+                "Public Property Get value() As Long",
+                "End Property",
+                "#End If",
+                "#If LET_CONFIGURATION Then",
+                "Public Property Let VALUE(ByVal assigned As Long)",
+                "End Property",
+                "#End If"
+            ])));
+        const string callerUri = "file:///C:/work/ConditionalMemberPropertyCaller.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalMemberPropertyCaller\"",
+            "Private item As ConditionalMemberPropertyOverlap",
+            "Public Sub Run()",
+            "    Debug.Print item.Value",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var definition = await SendDefinitionRequestAsync(
+            process,
+            2,
+            callerUri,
+            callerText,
+            "item.Value",
+            "item.".Length);
+
+        Assert.Equal(
+            [(workerUri, 3), (workerUri, 7), (workerUri, 11)],
+            definition
+                .EnumerateArray()
+                .Select(location => (
+                    location.GetProperty("uri").GetString(),
+                    location
+                        .GetProperty("range")
+                        .GetProperty("start")
+                        .GetProperty("line")
+                        .GetInt32())));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_keeps_members_from_every_project_type_variant()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string firstUri = "file:///C:/work/ConditionalPayloadA.bas";
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(firstUri, string.Join('\n', [
+                "Attribute VB_Name = \"ConditionalPayloadA\"",
+                "#If FIRST_CONFIGURATION Then",
+                "Public Type Payload",
+                "    FirstValue As Long",
+                "End Type",
+                "#End If"
+            ])));
+        const string secondUri = "file:///C:/work/ConditionalPayloadB.bas";
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(secondUri, string.Join('\n', [
+                "Attribute VB_Name = \"ConditionalPayloadB\"",
+                "#If SECOND_CONFIGURATION Then",
+                "Public Type payload",
+                "    SecondValue As Long",
+                "End Type",
+                "#End If"
+            ])));
+        const string callerUri = "file:///C:/work/ConditionalPayloadCaller.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalPayloadCaller\"",
+            "Private item As Payload",
+            "Public Sub Run()",
+            "    item.",
+            "    Debug.Print item.SecondValue",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = callerUri },
+                position = new { line = 3, character = "    item.".Length }
+            });
+        var labels = completion
+            .GetProperty("result")
+            .EnumerateArray()
+            .Select(candidate => candidate.GetProperty("label").GetString())
+            .ToArray();
+        Assert.Contains("FirstValue", labels);
+        Assert.Contains("SecondValue", labels);
+
+        var definition = await SendDefinitionRequestAsync(
+            process,
+            3,
+            callerUri,
+            callerText,
+            "item.SecondValue",
+            "item.".Length);
+        Assert.Equal(secondUri, definition.GetProperty("uri").GetString());
+        Assert.Equal(
+            3,
+            definition
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32());
+
+        await process.ShutdownAsync(4);
+    }
+
+    [Fact]
+    public async Task Server_defines_a_same_named_member_family_across_project_type_variants()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string firstUri = "file:///C:/work/ConditionalPayloadMemberA.bas";
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(firstUri, string.Join('\n', [
+                "Attribute VB_Name = \"ConditionalPayloadMemberA\"",
+                "#If FIRST_CONFIGURATION Then",
+                "Public Type Payload",
+                "    Value As Long",
+                "End Type",
+                "#End If"
+            ])));
+        const string secondUri = "file:///C:/work/ConditionalPayloadMemberB.bas";
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(secondUri, string.Join('\n', [
+                "Attribute VB_Name = \"ConditionalPayloadMemberB\"",
+                "#If SECOND_CONFIGURATION Then",
+                "Public Type payload",
+                "    value As Long",
+                "End Type",
+                "#End If"
+            ])));
+        const string callerUri = "file:///C:/work/ConditionalPayloadMemberCaller.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalPayloadMemberCaller\"",
+            "Private item As Payload",
+            "Public Sub Run()",
+            "    item.val",
+            "    Debug.Print item.Value",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = callerUri },
+                position = new { line = 3, character = "    item.val".Length }
+            });
+        var item = Assert.Single(
+            completion.GetProperty("result").EnumerateArray(),
+            candidate => string.Equals(
+                candidate.GetProperty("label").GetString(),
+                "Value",
+                StringComparison.OrdinalIgnoreCase));
+        Assert.Equal("Value", item.GetProperty("label").GetString());
+        Assert.EndsWith(
+            " [#If]",
+            item.GetProperty("detail").GetString(),
+            StringComparison.Ordinal);
+
+        var definition = await SendDefinitionRequestAsync(
+            process,
+            3,
+            callerUri,
+            callerText,
+            "item.Value",
+            "item.".Length);
+
+        Assert.Equal(
+            [firstUri, secondUri],
+            definition
+                .EnumerateArray()
+                .Select(location => location.GetProperty("uri").GetString()));
+        Assert.Equal(
+            [3, 3],
+            definition
+                .EnumerateArray()
+                .Select(location => location
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32()));
+
+        var references = await SendPositionRequestAsync(
+            process,
+            4,
+            "textDocument/references",
+            callerUri,
+            callerText,
+            "item.Value",
+            "item.".Length);
+        Assert.Equal(
+            [(firstUri, 3), (secondUri, 3), (callerUri, 4)],
+            references
+                .GetProperty("result")
+                .EnumerateArray()
+                .Select(location => (
+                    location.GetProperty("uri").GetString(),
+                    location
+                        .GetProperty("range")
+                        .GetProperty("start")
+                        .GetProperty("line")
+                        .GetInt32())));
+
+        var hover = await SendPositionRequestAsync(
+            process,
+            5,
+            "textDocument/hover",
+            callerUri,
+            callerText,
+            "item.Value",
+            "item.".Length);
+        var hoverValue = hover
+            .GetProperty("result")
+            .GetProperty("contents")
+            .GetProperty("value")
+            .GetString();
+        Assert.Contains("**Value [#If]**", hoverValue, StringComparison.Ordinal);
+        Assert.Contains("Value As Long [#If]", hoverValue, StringComparison.Ordinal);
+        Assert.Contains("value As Long [#If]", hoverValue, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "FIRST_CONFIGURATION",
+            hoverValue,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            "SECOND_CONFIGURATION",
+            hoverValue,
+            StringComparison.OrdinalIgnoreCase);
+
+        await process.ShutdownAsync(6);
+    }
+
+    [Fact]
+    public async Task Server_hovers_one_conditional_family_with_every_physical_declaration()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalHover.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalHover\"",
+            "Option Explicit",
+            "#If VBA7 Then",
+            "Public Function BuildValue() As String",
+            "End Function",
+            "#ElseIf Win64 Then",
+            "Public Function buildvalue(ByVal value As Long) As Long",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Debug.Print BuildValue()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var hover = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/hover",
+            uri,
+            text,
+            "Debug.Print BuildValue()",
+            "Debug.Print ".Length);
+        var value = hover
+            .GetProperty("result")
+            .GetProperty("contents")
+            .GetProperty("value")
+            .GetString();
+
+        Assert.Contains("**BuildValue [#If]**", value, StringComparison.Ordinal);
+        Assert.Contains("Function BuildValue() As String [#If]", value, StringComparison.Ordinal);
+        Assert.Contains(
+            "Function buildvalue(value As Long) As Long [#If]",
+            value,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("VBA7", value, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Win64", value, StringComparison.OrdinalIgnoreCase);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_hovers_an_ordinary_property_with_its_readable_accessor_when_the_setter_is_first()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/SetterFirstProperty.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"SetterFirstProperty\"",
+            "Public Property Let Value(ByVal assigned As Long)",
+            "End Property",
+            "Public Property Get value() As Long",
+            "End Property",
+            "Public Sub Run()",
+            "    Debug.Print Value",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var hover = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/hover",
+            uri,
+            text,
+            "Debug.Print Value",
+            "Debug.Print ".Length);
+        var hoverValue = hover
+            .GetProperty("result")
+            .GetProperty("contents")
+            .GetProperty("value")
+            .GetString();
+
+        Assert.Contains(
+            "Property value() As Long",
+            hoverValue,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "assigned As Long",
+            hoverValue,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("[#If]", hoverValue, StringComparison.Ordinal);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_keeps_ordinary_property_definition_single_target()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/OrdinaryPropertyDefinition.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"OrdinaryPropertyDefinition\"",
+            "Public Property Let Value(ByVal assigned As Long)",
+            "End Property",
+            "Public Property Get value() As Long",
+            "End Property",
+            "Public Sub Run()",
+            "    Debug.Print Value",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var definition = await SendDefinitionRequestAsync(
+            process,
+            2,
+            uri,
+            text,
+            "Debug.Print Value",
+            "Debug.Print ".Length);
+
+        Assert.Equal(
+            4,
+            definition
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_hovers_an_ordinary_setter_declaration_as_the_setter()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/OrdinaryPropertyDeclarationHover.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"OrdinaryPropertyDeclarationHover\"",
+            "Public Property Let Value(ByVal assigned As Long)",
+            "End Property",
+            "Public Property Get value() As Long",
+            "End Property"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var hover = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/hover",
+            uri,
+            text,
+            "Public Property Let Value",
+            "Public Property Let ".Length);
+        var hoverValue = hover
+            .GetProperty("result")
+            .GetProperty("contents")
+            .GetProperty("value")
+            .GetString();
+
+        Assert.Contains(
+            "Property Value(assigned As Long)",
+            hoverValue,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "Property value() As Long",
+            hoverValue,
+            StringComparison.Ordinal);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_keeps_ordinary_property_completion_casing_from_the_readable_accessor_when_setter_is_first()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/OrdinaryPropertyCompletionCasing.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"OrdinaryPropertyCompletionCasing\"",
+            "Public Property Let VALUE(ByVal assigned As Long)",
+            "End Property",
+            "Public Property Get value() As Long",
+            "End Property",
+            "Public Sub Run()",
+            "    Dim result As Long",
+            "    result = val",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri },
+                position = new
+                {
+                    line = 8,
+                    character = "    result = val".Length
+                }
+            });
+        var item = Assert.Single(
+            completion.GetProperty("result").EnumerateArray(),
+            candidate => string.Equals(
+                candidate.GetProperty("label").GetString(),
+                "value",
+                StringComparison.OrdinalIgnoreCase));
+
+        Assert.Equal("value", item.GetProperty("label").GetString());
+        Assert.Equal(
+            "value",
+            item.GetProperty("textEdit").GetProperty("newText").GetString());
+        Assert.DoesNotContain(
+            "[#If]",
+            item.GetProperty("detail").GetString(),
+            StringComparison.Ordinal);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_keeps_source_qualified_ordinary_property_write_completion_casing_from_the_setter()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string propertyUri = "file:///C:/work/OrdinaryPropertyWriteModule.bas";
+        var propertyText = string.Join('\n', [
+            "Attribute VB_Name = \"OrdinaryPropertyWriteModule\"",
+            "Public Property Get value() As Long",
+            "End Property",
+            "Public Property Let VALUE(ByVal assigned As Long)",
+            "End Property"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(propertyUri, propertyText));
+        const string callerUri = "file:///C:/work/OrdinaryPropertyWriteCaller.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"OrdinaryPropertyWriteCaller\"",
+            "Public Sub Run()",
+            "    OrdinaryPropertyWriteModule. = 1",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = callerUri },
+                position = new
+                {
+                    line = 2,
+                    character = "    OrdinaryPropertyWriteModule.".Length
+                }
+            });
+        var item = Assert.Single(
+            completion.GetProperty("result").EnumerateArray(),
+            candidate => string.Equals(
+                candidate.GetProperty("label").GetString(),
+                "VALUE",
+                StringComparison.OrdinalIgnoreCase));
+
+        Assert.Equal("VALUE", item.GetProperty("label").GetString());
+        Assert.StartsWith(
+            "Property VALUE(assigned)",
+            item.GetProperty("detail").GetString(),
+            StringComparison.Ordinal);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_keeps_unqualified_ordinary_property_write_completion_from_the_coalesced_readable_accessor()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/OrdinaryPropertyWriteCompletion.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"OrdinaryPropertyWriteCompletion\"",
+            "Public Property Get value() As Long",
+            "End Property",
+            "Public Property Let VALUE(ByVal assigned As Long)",
+            "End Property",
+            "Public Sub Run()",
+            "    val = 1",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri },
+                position = new
+                {
+                    line = 7,
+                    character = "    val".Length
+                }
+            });
+        var item = Assert.Single(
+            completion.GetProperty("result").EnumerateArray(),
+            candidate => string.Equals(
+                candidate.GetProperty("label").GetString(),
+                "value",
+                StringComparison.OrdinalIgnoreCase));
+
+        Assert.Equal("value", item.GetProperty("label").GetString());
+        Assert.Equal(
+            "value",
+            item.GetProperty("textEdit").GetProperty("newText").GetString());
+        Assert.Equal(
+            "Property value() As Long",
+            item.GetProperty("detail").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_references_every_conditional_variant_and_family_use()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalReferences.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalReferences\"",
+            "Option Explicit",
+            "#If VBA7 Then",
+            "Public Function BuildValue() As String",
+            "End Function",
+            "#Else",
+            "Public Function buildvalue() As String",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Debug.Print BuildValue()",
+            "    Debug.Print buildvalue()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var references = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/references",
+            uri,
+            text,
+            "Debug.Print BuildValue()",
+            "Debug.Print ".Length);
+        var lines = references
+            .GetProperty("result")
+            .EnumerateArray()
+            .Select(location => location
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32())
+            .ToArray();
+
+        Assert.Equal([3, 6, 10, 11], lines);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_keeps_conditional_family_casing_independent_of_variant_visibility()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string familyUri = "file:///C:/work/ConditionalVisibility.bas";
+        var familyText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalVisibility\"",
+            "Option Explicit",
+            "#If INTERNAL_BUILD Then",
+            "Private Function buildValue() As String",
+            "End Function",
+            "#Else",
+            "Public Function BUILDVALUE() As String",
+            "End Function",
+            "#End If"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(familyUri, familyText));
+        const string callerUri = "file:///C:/work/Caller.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"Caller\"",
+            "Option Explicit",
+            "Public Sub Run()",
+            "    buil",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = callerUri },
+                position = new { line = 3, character = "    buil".Length }
+            });
+        var item = Assert.Single(
+            completion.GetProperty("result").EnumerateArray(),
+            candidate => string.Equals(
+                candidate.GetProperty("label").GetString(),
+                "buildValue",
+                StringComparison.OrdinalIgnoreCase));
+
+        Assert.Equal("buildValue", item.GetProperty("label").GetString());
+        Assert.EndsWith(" [#If]", item.GetProperty("detail").GetString(), StringComparison.Ordinal);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_diagnoses_every_mixed_unconditional_and_conditional_collision()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/MixedConditionalCollision.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"MixedConditionalCollision\"",
+            "Option Explicit",
+            "Public Function BuildValue() As String",
+            "End Function",
+            "#If VBA7 Then",
+            "Public Function buildvalue() As String",
+            "End Function",
+            "#End If"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var collisions = notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray()
+            .Where(diagnostic => diagnostic.GetProperty("code").GetString()
+                == "validation.duplicateDeclaration")
+            .ToArray();
+
+        Assert.Equal(2, collisions.Length);
+        Assert.Equal(
+            [2, 5],
+            collisions.Select(diagnostic => diagnostic
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32()));
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_does_not_diagnose_an_all_guarded_family_that_can_coexist()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/CoexistingConditionalFamily.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"CoexistingConditionalFamily\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function BuildValue() As String",
+            "End Function",
+            "#End If",
+            "#If SECOND_CONFIGURATION Then",
+            "Public Function buildvalue() As String",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Debug.Print BuildValue()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            diagnostic => diagnostic.GetProperty("code").GetString()
+                == "validation.duplicateDeclaration");
+
+        var definition = await SendDefinitionRequestAsync(
+            process,
+            2,
+            uri,
+            text,
+            "Debug.Print BuildValue()",
+            "Debug.Print ".Length);
+        Assert.Equal(
+            [2, 6],
+            definition
+                .EnumerateArray()
+                .Select(location => location
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32()));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_keeps_complementary_property_accessors_legal_across_conditionals()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalPropertyAccessors.cls";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalPropertyAccessors\"",
+            "Public Property Get Value() As Long",
+            "End Property",
+            "#If WRITE_ENABLED Then",
+            "Public Property Let Value(ByVal RHS As Long)",
+            "End Property",
+            "#End If"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            diagnostic => diagnostic.GetProperty("code").GetString()
+                == "validation.duplicateDeclaration");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_preserves_a_guarded_get_family_when_the_complementary_setter_is_unconditional()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/MixedPropertyAccessorProvenance.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"MixedPropertyAccessorProvenance\"",
+            "#If FIRST_READ_CONFIGURATION Then",
+            "Public Property Get Value() As Long",
+            "End Property",
+            "#Else",
+            "Public Property Get value() As Long",
+            "End Property",
+            "#End If",
+            "Public Property Let VALUE(ByVal assigned As Long)",
+            "End Property",
+            "Public Sub Run()",
+            "    Dim result As Long",
+            "    result = val",
+            "    Debug.Print Value",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri },
+                position = new
+                {
+                    line = 13,
+                    character = "    result = val".Length
+                }
+            });
+        var item = Assert.Single(
+            completion.GetProperty("result").EnumerateArray(),
+            candidate => string.Equals(
+                candidate.GetProperty("label").GetString(),
+                "Value",
+                StringComparison.OrdinalIgnoreCase));
+        Assert.Equal("Value", item.GetProperty("label").GetString());
+        Assert.EndsWith(
+            " [#If]",
+            item.GetProperty("detail").GetString(),
+            StringComparison.Ordinal);
+
+        var definition = await SendDefinitionRequestAsync(
+            process,
+            3,
+            uri,
+            text,
+            "Debug.Print Value",
+            "Debug.Print ".Length);
+        Assert.Equal(
+            [3, 6],
+            definition
+                .EnumerateArray()
+                .Select(location => location
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32()));
+
+        var hover = await SendPositionRequestAsync(
+            process,
+            4,
+            "textDocument/hover",
+            uri,
+            text,
+            "Debug.Print Value",
+            "Debug.Print ".Length);
+        var hoverValue = hover
+            .GetProperty("result")
+            .GetProperty("contents")
+            .GetProperty("value")
+            .GetString();
+        Assert.Contains(
+            "Property Value() As Long [#If]",
+            hoverValue,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Property value() As Long [#If]",
+            hoverValue,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "assigned As Long",
+            hoverValue,
+            StringComparison.Ordinal);
+
+        await process.ShutdownAsync(5);
+    }
+
+    [Fact]
+    public async Task Server_preserves_a_guarded_setter_family_when_the_complementary_getter_is_unconditional()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/MixedPropertySetterProvenance.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"MixedPropertySetterProvenance\"",
+            "Public Property Get value() As Long",
+            "End Property",
+            "#If FIRST_WRITE_CONFIGURATION Then",
+            "Public Property Let Value(ByVal firstAssigned As Long)",
+            "End Property",
+            "#Else",
+            "Public Property Let VALUE(ByVal secondAssigned As Long)",
+            "End Property",
+            "#End If",
+            "Public Sub Run()",
+            "    val = 1",
+            "    Value = 1",
+            "    Debug.Print value",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri },
+                position = new
+                {
+                    line = 12,
+                    character = "    val".Length
+                }
+            });
+        var item = Assert.Single(
+            completion.GetProperty("result").EnumerateArray(),
+            candidate => string.Equals(
+                candidate.GetProperty("label").GetString(),
+                "Value",
+                StringComparison.OrdinalIgnoreCase));
+        Assert.Equal("Value", item.GetProperty("label").GetString());
+        Assert.EndsWith(
+            " [#If]",
+            item.GetProperty("detail").GetString(),
+            StringComparison.Ordinal);
+
+        var definition = await SendDefinitionRequestAsync(
+            process,
+            3,
+            uri,
+            text,
+            "    Value = 1",
+            "    ".Length);
+        Assert.Equal(
+            [5, 8],
+            definition
+                .EnumerateArray()
+                .Select(location => location
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32()));
+
+        var hover = await SendPositionRequestAsync(
+            process,
+            4,
+            "textDocument/hover",
+            uri,
+            text,
+            "    Value = 1",
+            "    ".Length);
+        var hoverValue = hover
+            .GetProperty("result")
+            .GetProperty("contents")
+            .GetProperty("value")
+            .GetString();
+        Assert.Contains(
+            "Property Value(firstAssigned As Long) [#If]",
+            hoverValue,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Property VALUE(secondAssigned As Long) [#If]",
+            hoverValue,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "Property value() As Long",
+            hoverValue,
+            StringComparison.Ordinal);
+
+        var readDefinition = await SendDefinitionRequestAsync(
+            process,
+            5,
+            uri,
+            text,
+            "Debug.Print value",
+            "Debug.Print ".Length);
+        Assert.Equal(JsonValueKind.Object, readDefinition.ValueKind);
+        Assert.Equal(
+            2,
+            readDefinition
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32());
+
+        await process.ShutdownAsync(6);
+    }
+
+    [Fact]
+    public async Task Server_completes_the_ordinary_setter_for_a_mixed_provenance_member_write()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string workerUri = "file:///C:/work/MixedMemberWriteWorker.cls";
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, string.Join('\n', [
+                "VERSION 1.0 CLASS",
+                "Attribute VB_Name = \"MixedMemberWriteWorker\"",
+                "#If FIRST_READ_CONFIGURATION Then",
+                "Public Property Get Value() As Long",
+                "End Property",
+                "#Else",
+                "Public Property Get value() As Long",
+                "End Property",
+                "#End If",
+                "Public Property Let VALUE(ByVal assigned As Long)",
+                "End Property"
+            ])));
+        const string callerUri = "file:///C:/work/MixedMemberWriteCaller.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"MixedMemberWriteCaller\"",
+            "Private worker As MixedMemberWriteWorker",
+            "Public Sub Run()",
+            "    worker. = 1",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = callerUri },
+                position = new
+                {
+                    line = 3,
+                    character = "    worker.".Length
+                }
+            });
+        var item = Assert.Single(
+            completion.GetProperty("result").EnumerateArray(),
+            candidate => string.Equals(
+                candidate.GetProperty("label").GetString(),
+                "VALUE",
+                StringComparison.OrdinalIgnoreCase));
+        Assert.Equal("VALUE", item.GetProperty("label").GetString());
+        Assert.StartsWith(
+            "Property VALUE(assigned)",
+            item.GetProperty("detail").GetString(),
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "[#If]",
+            item.GetProperty("detail").GetString(),
+            StringComparison.Ordinal);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_completes_the_ordinary_let_accessor_for_an_unqualified_mixed_property_write()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/MixedUnqualifiedPropertyWrite.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"MixedUnqualifiedPropertyWrite\"",
+            "Public Property Get Value() As Variant",
+            "End Property",
+            "Public Property Let value(ByVal valueAssigned As Variant)",
+            "End Property",
+            "#If SET_CONFIGURATION Then",
+            "Public Property Set VALUE(ByVal objectAssigned As Object)",
+            "End Property",
+            "#End If",
+            "Public Sub Run()",
+            "    val = 1",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri },
+                position = new { line = 11, character = "    val".Length }
+            });
+        var item = Assert.Single(
+            completion.GetProperty("result").EnumerateArray(),
+            candidate => string.Equals(
+                candidate.GetProperty("label").GetString(),
+                "value",
+                StringComparison.OrdinalIgnoreCase));
+        Assert.Equal("value", item.GetProperty("label").GetString());
+        Assert.StartsWith(
+            "Property value(valueAssigned)",
+            item.GetProperty("detail").GetString(),
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "[#If]",
+            item.GetProperty("detail").GetString(),
+            StringComparison.Ordinal);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_completes_the_ordinary_set_accessor_for_an_unqualified_mixed_property_write()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/MixedUnqualifiedPropertySet.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"MixedUnqualifiedPropertySet\"",
+            "Public Property Get Value() As Object",
+            "End Property",
+            "Public Property Set value(ByVal objectAssigned As Object)",
+            "End Property",
+            "#If LET_CONFIGURATION Then",
+            "Public Property Let VALUE(ByVal scalarAssigned As Variant)",
+            "End Property",
+            "#End If",
+            "Public Sub Run()",
+            "    Set val = Nothing",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri },
+                position = new { line = 11, character = "    Set val".Length }
+            });
+        var item = Assert.Single(
+            completion.GetProperty("result").EnumerateArray(),
+            candidate => string.Equals(
+                candidate.GetProperty("label").GetString(),
+                "value",
+                StringComparison.OrdinalIgnoreCase));
+        Assert.Equal("value", item.GetProperty("label").GetString());
+        Assert.StartsWith(
+            "Property value(objectAssigned)",
+            item.GetProperty("detail").GetString(),
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "[#If]",
+            item.GetProperty("detail").GetString(),
+            StringComparison.Ordinal);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_navigates_the_guarded_setter_family_for_a_member_write()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string workerUri = "file:///C:/work/MixedMemberSetterWorker.cls";
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, string.Join('\n', [
+                "VERSION 1.0 CLASS",
+                "Attribute VB_Name = \"MixedMemberSetterWorker\"",
+                "Public Property Get value() As Long",
+                "End Property",
+                "#If FIRST_WRITE_CONFIGURATION Then",
+                "Public Property Let Value(ByVal firstAssigned As Long)",
+                "End Property",
+                "#Else",
+                "Public Property Let VALUE(ByVal secondAssigned As Long)",
+                "End Property",
+                "#End If"
+            ])));
+        const string callerUri = "file:///C:/work/MixedMemberSetterCaller.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"MixedMemberSetterCaller\"",
+            "Private worker As MixedMemberSetterWorker",
+            "Public Sub Run()",
+            "    worker.Value = 1",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var definition = await SendDefinitionRequestAsync(
+            process,
+            2,
+            callerUri,
+            callerText,
+            "worker.Value = 1",
+            "worker.".Length);
+        Assert.Equal(
+            [5, 8],
+            definition
+                .EnumerateArray()
+                .Select(location => location
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32()));
+
+        var hover = await SendPositionRequestAsync(
+            process,
+            3,
+            "textDocument/hover",
+            callerUri,
+            callerText,
+            "worker.Value = 1",
+            "worker.".Length);
+        var hoverValue = hover
+            .GetProperty("result")
+            .GetProperty("contents")
+            .GetProperty("value")
+            .GetString();
+        Assert.Contains("Property Value(firstAssigned As Long) [#If]", hoverValue);
+        Assert.Contains("Property VALUE(secondAssigned As Long) [#If]", hoverValue);
+        Assert.DoesNotContain("Property value() As Long", hoverValue);
+
+        await process.ShutdownAsync(4);
+    }
+
+    [Fact]
+    public async Task Server_keeps_a_guarded_getter_result_assignment_on_the_getter_family()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/MixedGetterResultAssignment.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"MixedGetterResultAssignment\"",
+            "#If FIRST_READ_CONFIGURATION Then",
+            "Public Property Get Value() As Long",
+            "    Value = 1",
+            "End Property",
+            "#Else",
+            "Public Property Get value() As Long",
+            "    value = 2",
+            "End Property",
+            "#End If",
+            "Public Property Let VALUE(ByVal assigned As Long)",
+            "End Property"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var definition = await SendDefinitionRequestAsync(
+            process,
+            2,
+            uri,
+            text,
+            "    Value = 1",
+            "    ".Length);
+        Assert.Equal(
+            [3, 7],
+            definition
+                .EnumerateArray()
+                .Select(location => location
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32()));
+
+        var hover = await SendPositionRequestAsync(
+            process,
+            3,
+            "textDocument/hover",
+            uri,
+            text,
+            "    Value = 1",
+            "    ".Length);
+        var hoverValue = hover
+            .GetProperty("result")
+            .GetProperty("contents")
+            .GetProperty("value")
+            .GetString();
+        Assert.Contains(
+            "Property Value() As Long [#If]",
+            hoverValue,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Property value() As Long [#If]",
+            hoverValue,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "assigned As Long",
+            hoverValue,
+            StringComparison.Ordinal);
+
+        await process.ShutdownAsync(4);
+    }
+
+    [Fact]
+    public async Task Server_does_not_treat_a_same_name_leading_dot_write_as_the_getter_result()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string workerUri = "file:///C:/work/LeadingDotPropertyWorker.cls";
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, string.Join('\n', [
+                "VERSION 1.0 CLASS",
+                "Attribute VB_Name = \"LeadingDotPropertyWorker\"",
+                "Public Property Get Value() As Long",
+                "End Property",
+                "#If FIRST_WRITE_CONFIGURATION Then",
+                "Public Property Let value(ByVal firstAssigned As Long)",
+                "End Property",
+                "#Else",
+                "Public Property Let VALUE(ByVal secondAssigned As Long)",
+                "End Property",
+                "#End If"
+            ])));
+        const string hostUri = "file:///C:/work/LeadingDotPropertyHost.cls";
+        var hostText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"LeadingDotPropertyHost\"",
+            "Private worker As LeadingDotPropertyWorker",
+            "Public Property Get Value() As Long",
+            "    With worker",
+            "        .val = 1",
+            "        .Value = 1",
+            "    End With",
+            "    Value = 1",
+            "End Property"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(hostUri, hostText));
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = hostUri },
+                position = new
+                {
+                    line = 5,
+                    character = "        .val".Length
+                }
+            });
+        var item = Assert.Single(
+            completion.GetProperty("result").EnumerateArray(),
+            candidate => string.Equals(
+                candidate.GetProperty("label").GetString(),
+                "value",
+                StringComparison.OrdinalIgnoreCase));
+        Assert.Equal("value", item.GetProperty("label").GetString());
+        Assert.Contains("firstAssigned", item.GetProperty("detail").GetString());
+        Assert.EndsWith(" [#If]", item.GetProperty("detail").GetString());
+
+        var memberDefinition = await SendDefinitionRequestAsync(
+            process,
+            3,
+            hostUri,
+            hostText,
+            ".Value = 1",
+            ".".Length);
+        Assert.Equal(
+            [5, 8],
+            memberDefinition
+                .EnumerateArray()
+                .Select(location => location
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32()));
+
+        var resultDefinition = await SendDefinitionRequestAsync(
+            process,
+            4,
+            hostUri,
+            hostText,
+            "    Value = 1",
+            "    ".Length);
+        Assert.Equal(JsonValueKind.Object, resultDefinition.ValueKind);
+        Assert.Equal(
+            3,
+            resultDefinition
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32());
+
+        await process.ShutdownAsync(5);
+    }
+
+    [Fact]
+    public async Task Server_navigates_every_conditional_property_accessor_variant()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalPropertyFamily.cls";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalPropertyFamily\"",
+            "#If FIRST_GET Then",
+            "Public Property Get Value() As Long",
+            "End Property",
+            "#Else",
+            "Public Property Get value() As Long",
+            "End Property",
+            "#End If",
+            "#If FIRST_LET Then",
+            "Public Property Let VALUE(ByVal RHS As Long)",
+            "End Property",
+            "#Else",
+            "Public Property Let Value(ByVal RHS As Long)",
+            "End Property",
+            "#End If",
+            "Public Sub Run()",
+            "    Debug.Print Value",
+            "    Value = 1",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var definition = await SendDefinitionRequestAsync(
+            process,
+            2,
+            uri,
+            text,
+            "Debug.Print Value",
+            "Debug.Print ".Length);
+        Assert.Equal(
+            [2, 5, 9, 12],
+            definition
+                .EnumerateArray()
+                .Select(location => location
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32()));
+
+        var references = await SendPositionRequestAsync(
+            process,
+            3,
+            "textDocument/references",
+            uri,
+            text,
+            "Debug.Print Value",
+            "Debug.Print ".Length);
+        Assert.Equal(
+            [2, 5, 9, 12, 16, 17],
+            references
+                .GetProperty("result")
+                .EnumerateArray()
+                .Select(location => location
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32()));
+
+        await process.ShutdownAsync(4);
+    }
+
+    [Fact]
+    public async Task Server_keeps_guarded_get_let_and_set_as_one_property_for_both_write_forms()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalPropertyWriteForms.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalPropertyWriteForms\"",
+            "#If READ_CONFIGURATION Then",
+            "Public Property Get Value() As Variant",
+            "End Property",
+            "#End If",
+            "#If VALUE_WRITE_CONFIGURATION Then",
+            "Public Property Let value(ByVal valueAssigned As Variant)",
+            "End Property",
+            "#End If",
+            "#If OBJECT_WRITE_CONFIGURATION Then",
+            "Public Property Set VALUE(ByVal objectAssigned As Object)",
+            "End Property",
+            "#End If",
+            "Public Sub Run()",
+            "    val = 1",
+            "    Set val = Nothing",
+            "    Value = 1",
+            "    Set Value = Nothing",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var letCompletion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri },
+                position = new
+                {
+                    line = 15,
+                    character = "    val".Length
+                }
+            });
+        var letItem = Assert.Single(
+            letCompletion.GetProperty("result").EnumerateArray(),
+            candidate => string.Equals(
+                candidate.GetProperty("label").GetString(),
+                "Value",
+                StringComparison.OrdinalIgnoreCase));
+        Assert.Equal("Value", letItem.GetProperty("label").GetString());
+        Assert.Contains("valueAssigned", letItem.GetProperty("detail").GetString());
+        Assert.EndsWith(" [#If]", letItem.GetProperty("detail").GetString());
+
+        var setCompletion = await process.SendRequestAsync(
+            3,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri },
+                position = new
+                {
+                    line = 16,
+                    character = "    Set val".Length
+                }
+            });
+        var setItem = Assert.Single(
+            setCompletion.GetProperty("result").EnumerateArray(),
+            candidate => string.Equals(
+                candidate.GetProperty("label").GetString(),
+                "Value",
+                StringComparison.OrdinalIgnoreCase));
+        Assert.Equal("Value", setItem.GetProperty("label").GetString());
+        Assert.Contains("objectAssigned", setItem.GetProperty("detail").GetString());
+        Assert.EndsWith(" [#If]", setItem.GetProperty("detail").GetString());
+
+        var letDefinition = await SendDefinitionRequestAsync(
+            process,
+            4,
+            uri,
+            text,
+            "    Value = 1",
+            "    ".Length);
+        Assert.Equal(
+            [3, 7, 11],
+            letDefinition
+                .EnumerateArray()
+                .Select(location => location
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32()));
+
+        var setDefinition = await SendDefinitionRequestAsync(
+            process,
+            5,
+            uri,
+            text,
+            "Set Value = Nothing",
+            "Set ".Length);
+        Assert.Equal(
+            [3, 7, 11],
+            setDefinition
+                .EnumerateArray()
+                .Select(location => location
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32()));
+
+        var hover = await SendPositionRequestAsync(
+            process,
+            6,
+            "textDocument/hover",
+            uri,
+            text,
+            "    Value = 1",
+            "    ".Length);
+        var hoverValue = hover
+            .GetProperty("result")
+            .GetProperty("contents")
+            .GetProperty("value")
+            .GetString();
+        Assert.Contains("Property Value() As Variant [#If]", hoverValue);
+        Assert.Contains("Property value(valueAssigned As Variant) [#If]", hoverValue);
+        Assert.Contains("Property VALUE(objectAssigned As Object) [#If]", hoverValue);
+
+        await process.ShutdownAsync(7);
+    }
+
+    [Fact]
+    public async Task Server_selects_the_guarded_let_or_set_family_for_each_mixed_provenance_write_form()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/MixedPropertyWriteForms.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"MixedPropertyWriteForms\"",
+            "Public Property Get Value() As Variant",
+            "End Property",
+            "#If FIRST_VALUE_WRITE_CONFIGURATION Then",
+            "Public Property Let value(ByVal valueAssigned As Variant)",
+            "End Property",
+            "#Else",
+            "Public Property Let VALUE(ByVal valueAssigned As Variant)",
+            "End Property",
+            "#End If",
+            "#If FIRST_OBJECT_WRITE_CONFIGURATION Then",
+            "Public Property Set VALUE(ByVal objectAssigned As Object)",
+            "End Property",
+            "#Else",
+            "Public Property Set Value(ByVal objectAssigned As Object)",
+            "End Property",
+            "#End If",
+            "Public Sub Run()",
+            "    val = 1",
+            "    Set val = Nothing",
+            "    Value = 1",
+            "    Set Value = Nothing",
+            "100 Set val = Nothing",
+            "110 Set Value = Nothing",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var letCompletion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri },
+                position = new
+                {
+                    line = 19,
+                    character = "    val".Length
+                }
+            });
+        var letItem = Assert.Single(
+            letCompletion.GetProperty("result").EnumerateArray(),
+            candidate => string.Equals(
+                candidate.GetProperty("label").GetString(),
+                "value",
+                StringComparison.OrdinalIgnoreCase));
+        Assert.Equal("value", letItem.GetProperty("label").GetString());
+        Assert.Contains("valueAssigned", letItem.GetProperty("detail").GetString());
+        Assert.EndsWith(" [#If]", letItem.GetProperty("detail").GetString());
+
+        var setCompletion = await process.SendRequestAsync(
+            3,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri },
+                position = new
+                {
+                    line = 20,
+                    character = "    Set val".Length
+                }
+            });
+        var setItem = Assert.Single(
+            setCompletion.GetProperty("result").EnumerateArray(),
+            candidate => string.Equals(
+                candidate.GetProperty("label").GetString(),
+                "VALUE",
+                StringComparison.OrdinalIgnoreCase));
+        Assert.Equal("VALUE", setItem.GetProperty("label").GetString());
+        Assert.Contains("objectAssigned", setItem.GetProperty("detail").GetString());
+        Assert.EndsWith(" [#If]", setItem.GetProperty("detail").GetString());
+
+        var letDefinition = await SendDefinitionRequestAsync(
+            process,
+            4,
+            uri,
+            text,
+            "    Value = 1",
+            "    ".Length);
+        Assert.Equal(
+            [5, 8],
+            letDefinition
+                .EnumerateArray()
+                .Select(location => location
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32()));
+
+        var setDefinition = await SendDefinitionRequestAsync(
+            process,
+            5,
+            uri,
+            text,
+            "Set Value = Nothing",
+            "Set ".Length);
+        Assert.Equal(
+            [12, 15],
+            setDefinition
+                .EnumerateArray()
+                .Select(location => location
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32()));
+
+        var numericLabelSetCompletion = await process.SendRequestAsync(
+            6,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri },
+                position = new
+                {
+                    line = 23,
+                    character = "100 Set val".Length
+                }
+            });
+        var numericLabelSetItem = Assert.Single(
+            numericLabelSetCompletion.GetProperty("result").EnumerateArray(),
+            candidate => string.Equals(
+                candidate.GetProperty("label").GetString(),
+                "VALUE",
+                StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(
+            "VALUE",
+            numericLabelSetItem.GetProperty("label").GetString());
+        Assert.Contains(
+            "objectAssigned",
+            numericLabelSetItem.GetProperty("detail").GetString());
+        Assert.EndsWith(
+            " [#If]",
+            numericLabelSetItem.GetProperty("detail").GetString());
+
+        var numericLabelSetDefinition = await SendDefinitionRequestAsync(
+            process,
+            7,
+            uri,
+            text,
+            "110 Set Value = Nothing",
+            "110 Set ".Length);
+        Assert.Equal(
+            [12, 15],
+            numericLabelSetDefinition
+                .EnumerateArray()
+                .Select(location => location
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32()));
+
+        var numericLabelSetHover = await SendPositionRequestAsync(
+            process,
+            8,
+            "textDocument/hover",
+            uri,
+            text,
+            "110 Set Value = Nothing",
+            "110 Set ".Length);
+        var numericLabelSetHoverValue = numericLabelSetHover
+            .GetProperty("result")
+            .GetProperty("contents")
+            .GetProperty("value")
+            .GetString();
+        Assert.Contains(
+            "Property VALUE(objectAssigned As Object) [#If]",
+            numericLabelSetHoverValue,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Property Value(objectAssigned As Object) [#If]",
+            numericLabelSetHoverValue,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "valueAssigned",
+            numericLabelSetHoverValue,
+            StringComparison.Ordinal);
+
+        await process.ShutdownAsync(9);
+    }
+
+    [Fact]
+    public async Task Server_diagnoses_repeated_property_accessors_in_one_guarded_branch()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/RepeatedConditionalProperty.cls";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"RepeatedConditionalProperty\"",
+            "#If VBA7 Then",
+            "Public Property Get Value() As Long",
+            "End Property",
+            "Public Property Get value() As Long",
+            "End Property",
+            "#End If"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var duplicateLines = notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray()
+            .Where(diagnostic => diagnostic.GetProperty("code").GetString()
+                == "validation.duplicateDeclaration")
+            .Select(diagnostic => diagnostic
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32())
+            .ToArray();
+        Assert.Equal([2, 4], duplicateLines);
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_diagnoses_a_function_and_property_collision_across_conditionals()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalCallableCollision.cls";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalCallableCollision\"",
+            "Public Function Value() As Long",
+            "End Function",
+            "#If PROPERTY_CONFIGURATION Then",
+            "Public Property Get value() As Long",
+            "End Property",
+            "#End If"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var duplicateLines = notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray()
+            .Where(diagnostic => diagnostic.GetProperty("code").GetString()
+                == "validation.duplicateDeclaration")
+            .Select(diagnostic => diagnostic
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32())
+            .ToArray();
+        Assert.Equal([1, 4], duplicateLines);
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_diagnoses_an_enum_member_and_module_value_collision()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalEnumMemberCollision.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalEnumMemberCollision\"",
+            "Public Enum RunState",
+            "    Ready = 1",
+            "End Enum",
+            "#If LEGACY_CONFIGURATION Then",
+            "Private Const ready As Long = 2",
+            "#End If"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var duplicateLines = notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray()
+            .Where(diagnostic => diagnostic.GetProperty("code").GetString()
+                == "validation.duplicateDeclaration")
+            .Select(diagnostic => diagnostic
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32())
+            .ToArray();
+        Assert.Equal([2, 5], duplicateLines);
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_forms_a_project_type_family_across_source_modules()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string firstUri = "file:///C:/work/ConditionalTypesA.bas";
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(firstUri, string.Join('\n', [
+                "Attribute VB_Name = \"ConditionalTypesA\"",
+                "#If FIRST_CONFIGURATION Then",
+                "Public Enum RunMode",
+                "    FirstMode = 1",
+                "End Enum",
+                "#End If"
+            ])));
+        const string secondUri = "file:///C:/work/ConditionalTypesB.bas";
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(secondUri, string.Join('\n', [
+                "Attribute VB_Name = \"ConditionalTypesB\"",
+                "#If SECOND_CONFIGURATION Then",
+                "Public Enum runmode",
+                "    SecondMode = 2",
+                "End Enum",
+                "#End If"
+            ])));
+        const string callerUri = "file:///C:/work/ConditionalTypeCaller.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalTypeCaller\"",
+            "Private currentMode As RunMode"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var definition = await SendDefinitionRequestAsync(
+            process,
+            2,
+            callerUri,
+            callerText,
+            "RunMode");
+        Assert.Equal(JsonValueKind.Array, definition.ValueKind);
+        Assert.Equal(
+            [firstUri, secondUri],
+            definition
+                .EnumerateArray()
+                .Select(location => location.GetProperty("uri").GetString()));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_forms_one_type_family_across_conditional_visibility_variants()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalTypeVisibility.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalTypeVisibility\"",
+            "#If PUBLIC_CONFIGURATION Then",
+            "Public Type Payload",
+            "    PublicValue As Long",
+            "End Type",
+            "#Else",
+            "Private Type payload",
+            "    PrivateValue As Long",
+            "End Type",
+            "#End If",
+            "Private current As Payload"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var definition = await SendDefinitionRequestAsync(
+            process,
+            2,
+            uri,
+            text,
+            "Payload",
+            text.LastIndexOf("Payload", StringComparison.Ordinal)
+                - text.IndexOf("Payload", StringComparison.Ordinal));
+        Assert.Equal(JsonValueKind.Array, definition.ValueKind);
+        Assert.Equal(
+            [2, 6],
+            definition
+                .EnumerateArray()
+                .Select(location => location
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32()));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_rebuilds_a_conditional_family_after_a_directive_only_edit()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/IncrementalConditionalFamily.bas";
+        var conditionalText = string.Join('\n', [
+            "Attribute VB_Name = \"IncrementalConditionalFamily\"",
+            "Option Explicit",
+            "Public Sub Run()",
+            "#If VBA7 Then",
+            "    Dim BuildValue As String",
+            "#Else",
+            "    Dim buildvalue As String",
+            "#End If",
+            "    Debug.Print BuildValue",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, conditionalText));
+        await process.WaitForDiagnosticsAsync(uri);
+
+        var conditionalDefinition = await SendDefinitionRequestAsync(
+            process,
+            2,
+            uri,
+            conditionalText,
+            "BuildValue",
+            conditionalText.LastIndexOf("BuildValue", StringComparison.Ordinal)
+                - conditionalText.IndexOf("BuildValue", StringComparison.Ordinal));
+        Assert.Equal(2, conditionalDefinition.GetArrayLength());
+
+        var unconditionalText = string.Join('\n', [
+            "Attribute VB_Name = \"IncrementalConditionalFamily\"",
+            "Option Explicit",
+            "Public Sub Run()",
+            "",
+            "    Dim BuildValue As String",
+            "",
+            "    Dim buildvalue As String",
+            "",
+            "    Debug.Print BuildValue",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didChange",
+            new
+            {
+                textDocument = new { uri, version = 2 },
+                contentChanges = new[]
+                {
+                    new { text = unconditionalText }
+                }
+            });
+        var diagnostics = await process.WaitForDiagnosticsAsync(uri);
+        Assert.Equal(
+            [4, 6],
+            diagnostics
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray()
+                .Where(diagnostic => diagnostic.GetProperty("code").GetString()
+                    == "validation.duplicateDeclaration")
+                .Select(diagnostic => diagnostic
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32()));
+
+        var unconditionalDefinition = await SendDefinitionRequestAsync(
+            process,
+            3,
+            uri,
+            unconditionalText,
+            "BuildValue",
+            unconditionalText.LastIndexOf("BuildValue", StringComparison.Ordinal)
+                - unconditionalText.IndexOf("BuildValue", StringComparison.Ordinal));
+        Assert.Equal(JsonValueKind.Null, unconditionalDefinition.ValueKind);
+
+        await process.ShutdownAsync(4);
+    }
+
+    [Fact]
+    public async Task Server_does_not_invent_a_family_or_collision_from_an_unterminated_conditional()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/UnterminatedConditionalFamily.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"UnterminatedConditionalFamily\"",
+            "Public Sub Run()",
+            "    Debug.Print BuildValue()",
+            "End Sub",
+            "#If VBA7 Then",
+            "Public Function BuildValue() As String",
+            "End Function",
+            "#Else",
+            "Public Function buildvalue() As String",
+            "End Function"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var diagnostics = await process.WaitForDiagnosticsAsync(uri);
+        var publishedDiagnostics = diagnostics
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray()
+            .ToArray();
+        Assert.Contains(
+            publishedDiagnostics,
+            diagnostic => diagnostic.GetProperty("code").GetString()
+                == "syntax.malformedPreprocessorNesting");
+        Assert.DoesNotContain(
+            publishedDiagnostics,
+            diagnostic => diagnostic.GetProperty("code").GetString()
+                == "validation.duplicateDeclaration");
+
+        var definition = await SendDefinitionRequestAsync(
+            process,
+            2,
+            uri,
+            text,
+            "BuildValue()");
+        Assert.Equal(JsonValueKind.Null, definition.ValueKind);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_republishes_project_type_collision_diagnostics_for_both_modules()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string firstUri = "file:///C:/work/ProjectTypeA.bas";
+        var firstText = string.Join('\n', [
+            "Attribute VB_Name = \"ProjectTypeA\"",
+            "Public Enum RunMode",
+            "    FirstMode = 1",
+            "End Enum"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(firstUri, firstText, version: 7));
+
+        var initialFirst = await process.WaitForDiagnosticsAsync(firstUri);
+        var initialFirstParameters = initialFirst.GetProperty("params");
+        Assert.Equal(7, initialFirstParameters.GetProperty("version").GetInt32());
+        Assert.DoesNotContain(
+            initialFirstParameters.GetProperty("diagnostics").EnumerateArray(),
+            diagnostic => diagnostic.GetProperty("code").GetString()
+                == "validation.duplicateDeclaration");
+
+        const string secondUri = "file:///C:/work/ProjectTypeB.bas";
+        var secondText = string.Join('\n', [
+            "Attribute VB_Name = \"ProjectTypeB\"",
+            "#If SECOND_CONFIGURATION Then",
+            "Public Enum runmode",
+            "    SecondMode = 2",
+            "End Enum",
+            "#End If"
+        ]);
+        var firstRepublishedTask = process.WaitForDiagnosticsAsync(firstUri);
+        var secondPublishedTask = process.WaitForDiagnosticsAsync(secondUri);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(secondUri, secondText, version: 11));
+
+        await Task.WhenAll(firstRepublishedTask, secondPublishedTask);
+        AssertProjectDuplicate(
+            await firstRepublishedTask,
+            firstUri,
+            expectedVersion: 7,
+            expectedLine: 1);
+        AssertProjectDuplicate(
+            await secondPublishedTask,
+            secondUri,
+            expectedVersion: 11,
+            expectedLine: 2);
+
+        await process.ShutdownAsync(2);
+
+        static void AssertProjectDuplicate(
+            JsonElement notification,
+            string expectedUri,
+            int expectedVersion,
+            int expectedLine)
+        {
+            var parameters = notification.GetProperty("params");
+            Assert.Equal(expectedUri, parameters.GetProperty("uri").GetString());
+            Assert.Equal(expectedVersion, parameters.GetProperty("version").GetInt32());
+            var duplicate = Assert.Single(
+                parameters
+                    .GetProperty("diagnostics")
+                    .EnumerateArray(),
+                diagnostic => diagnostic.GetProperty("code").GetString()
+                    == "validation.duplicateDeclaration");
+            var range = duplicate.GetProperty("range");
+            Assert.Equal(
+                expectedLine,
+                range.GetProperty("start").GetProperty("line").GetInt32());
+            Assert.Equal(
+                "Public Enum ".Length,
+                range.GetProperty("start").GetProperty("character").GetInt32());
+            Assert.Equal(
+                "Public Enum ".Length + "RunMode".Length,
+                range.GetProperty("end").GetProperty("character").GetInt32());
+        }
+    }
+
+    [Fact]
+    public async Task Server_clears_a_project_collision_from_its_peer_when_a_source_closes()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string firstUri = "file:///C:/work/ClosingTypeA.bas";
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(firstUri, string.Join('\n', [
+                "Attribute VB_Name = \"ClosingTypeA\"",
+                "Public Enum RunMode",
+                "    FirstMode = 1",
+                "End Enum"
+            ]), version: 7));
+        await process.WaitForDiagnosticsAsync(firstUri);
+
+        const string secondUri = "file:///C:/work/ClosingTypeB.bas";
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(secondUri, string.Join('\n', [
+                "Attribute VB_Name = \"ClosingTypeB\"",
+                "#If SECOND_CONFIGURATION Then",
+                "Public Enum runmode",
+                "    SecondMode = 2",
+                "End Enum",
+                "#End If"
+            ]), version: 11));
+        var firstCollision = await process.WaitForDiagnosticsAsync(firstUri);
+        await process.WaitForDiagnosticsAsync(secondUri);
+        Assert.Contains(
+            firstCollision
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            diagnostic => diagnostic.GetProperty("code").GetString()
+                == "validation.duplicateDeclaration");
+
+        var firstClearedTask = process.WaitForDiagnosticsAsync(firstUri);
+        await process.SendNotificationAsync(
+            "textDocument/didClose",
+            new
+            {
+                textDocument = new { uri = secondUri }
+            });
+
+        var firstCleared = await firstClearedTask;
+        var parameters = firstCleared.GetProperty("params");
+        Assert.Equal(7, parameters.GetProperty("version").GetInt32());
+        Assert.DoesNotContain(
+            parameters.GetProperty("diagnostics").EnumerateArray(),
+            diagnostic => diagnostic.GetProperty("code").GetString()
+                == "validation.duplicateDeclaration");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_clears_a_project_collision_from_its_peer_when_a_watched_source_is_deleted()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-conditional-delete-").FullName;
+        try
+        {
+            var sourceRoot = Directory.CreateDirectory(Path.Combine(
+                projectRoot,
+                "src",
+                "Book1")).FullName;
+            File.WriteAllText(
+                Path.Combine(projectRoot, "vba-project.json"),
+                CreateSingleDocumentManifestText("src/Book1"));
+            var firstPath = Path.Combine(sourceRoot, "ProjectTypeA.bas");
+            var firstText = string.Join('\n', [
+                "Attribute VB_Name = \"ProjectTypeA\"",
+                "Public Enum RunMode",
+                "    FirstMode = 1",
+                "End Enum"
+            ]);
+            File.WriteAllText(firstPath, firstText);
+            var secondPath = Path.Combine(sourceRoot, "ProjectTypeB.bas");
+            File.WriteAllText(secondPath, string.Join('\n', [
+                "Attribute VB_Name = \"ProjectTypeB\"",
+                "#If SECOND_CONFIGURATION Then",
+                "Public Enum runmode",
+                "    SecondMode = 2",
+                "End Enum",
+                "#End If"
+            ]));
+            var firstUri = ToFileUri(firstPath);
+            var secondUri = ToFileUri(secondPath);
+
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+            await process.InitializeAsync();
+            var initialFirstTask = process.WaitForDiagnosticsAsync(firstUri);
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(firstUri, firstText, version: 7));
+            Assert.Contains(
+                (await initialFirstTask)
+                    .GetProperty("params")
+                    .GetProperty("diagnostics")
+                    .EnumerateArray(),
+                diagnostic => diagnostic.GetProperty("code").GetString()
+                    == "validation.duplicateDeclaration");
+
+            var clearedFirstTask = process.WaitForDiagnosticsAsync(firstUri);
+            var clearedSecondTask = process.WaitForDiagnosticsAsync(secondUri);
+            File.Delete(secondPath);
+            await SendWatchedFileChangeAsync(process, secondUri, type: 3);
+            await Task.WhenAll(clearedFirstTask, clearedSecondTask);
+
+            var firstParameters = (await clearedFirstTask).GetProperty("params");
+            Assert.Equal(7, firstParameters.GetProperty("version").GetInt32());
+            Assert.DoesNotContain(
+                firstParameters.GetProperty("diagnostics").EnumerateArray(),
+                diagnostic => diagnostic.GetProperty("code").GetString()
+                    == "validation.duplicateDeclaration");
+            var secondParameters = (await clearedSecondTask).GetProperty("params");
+            Assert.False(secondParameters.TryGetProperty("version", out _));
+            Assert.Empty(secondParameters.GetProperty("diagnostics").EnumerateArray());
+
+            await process.ShutdownAsync(2);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_refreshes_project_diagnostics_when_a_manifest_splits_the_project_boundary()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-conditional-manifest-boundary-").FullName;
+        try
+        {
+            File.WriteAllText(
+                Path.Combine(projectRoot, "vba-project.json"),
+                CreateSingleDocumentManifestText("src"));
+            var firstRoot = Directory.CreateDirectory(Path.Combine(
+                projectRoot,
+                "src",
+                "Book1")).FullName;
+            var secondRoot = Directory.CreateDirectory(Path.Combine(
+                projectRoot,
+                "src",
+                "SecondBook")).FullName;
+            var firstPath = Path.Combine(firstRoot, "ProjectTypeA.bas");
+            var firstText = string.Join('\n', [
+                "Attribute VB_Name = \"ProjectTypeA\"",
+                "Public Enum RunMode",
+                "    FirstMode = 1",
+                "End Enum"
+            ]);
+            File.WriteAllText(firstPath, firstText);
+            var secondPath = Path.Combine(secondRoot, "ProjectTypeB.bas");
+            var secondText = string.Join('\n', [
+                "Attribute VB_Name = \"ProjectTypeB\"",
+                "#If SECOND_CONFIGURATION Then",
+                "Public Enum runmode",
+                "    SecondMode = 2",
+                "End Enum",
+                "#End If"
+            ]);
+            File.WriteAllText(secondPath, secondText);
+            var firstUri = ToFileUri(firstPath);
+            var secondUri = ToFileUri(secondPath);
+            var manifestUri = ToFileUri(Path.Combine(
+                projectRoot,
+                "vba-project.json"));
+
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+            await process.InitializeAsync();
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(firstUri, firstText, version: 7));
+            await process.WaitForDiagnosticsAsync(firstUri);
+            var collidingFirstTask = process.WaitForDiagnosticsAsync(firstUri);
+            var collidingSecondTask = process.WaitForDiagnosticsAsync(secondUri);
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(secondUri, secondText, version: 11));
+            await Task.WhenAll(collidingFirstTask, collidingSecondTask);
+            Assert.All(
+                new[] { await collidingFirstTask, await collidingSecondTask },
+                notification => Assert.Contains(
+                    notification
+                        .GetProperty("params")
+                        .GetProperty("diagnostics")
+                        .EnumerateArray(),
+                    diagnostic => diagnostic.GetProperty("code").GetString()
+                        == "validation.duplicateDeclaration"));
+
+            var clearedFirstTask = process.WaitForDiagnosticsAsync(firstUri);
+            var clearedSecondTask = process.WaitForDiagnosticsAsync(secondUri);
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(
+                    manifestUri,
+                    ProjectManifestFixtureText("multi-document.json"),
+                    version: 20));
+            await Task.WhenAll(clearedFirstTask, clearedSecondTask);
+
+            AssertProjectCollisionCleared(await clearedFirstTask, 7);
+            AssertProjectCollisionCleared(await clearedSecondTask, 11);
+
+            await process.ShutdownAsync(2);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+
+        static void AssertProjectCollisionCleared(
+            JsonElement notification,
+            int expectedVersion)
+        {
+            var parameters = notification.GetProperty("params");
+            Assert.Equal(expectedVersion, parameters.GetProperty("version").GetInt32());
+            Assert.DoesNotContain(
+                parameters.GetProperty("diagnostics").EnumerateArray(),
+                diagnostic => diagnostic.GetProperty("code").GetString()
+                    == "validation.duplicateDeclaration");
+        }
+    }
+
+    [Fact]
+    public async Task Server_refreshes_disk_only_project_diagnostics_when_a_manifest_splits_the_project_boundary()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-conditional-disk-manifest-boundary-").FullName;
+        try
+        {
+            File.WriteAllText(
+                Path.Combine(projectRoot, "vba-project.json"),
+                CreateSingleDocumentManifestText("src"));
+            var firstRoot = Directory.CreateDirectory(Path.Combine(
+                projectRoot,
+                "src",
+                "Book1")).FullName;
+            var secondRoot = Directory.CreateDirectory(Path.Combine(
+                projectRoot,
+                "src",
+                "SecondBook")).FullName;
+            var firstPath = Path.Combine(firstRoot, "ProjectTypeA.bas");
+            var firstText = string.Join('\n', [
+                "Attribute VB_Name = \"ProjectTypeA\"",
+                "Public Enum RunMode",
+                "    FirstMode = 1",
+                "End Enum"
+            ]);
+            File.WriteAllText(firstPath, firstText);
+            var secondPath = Path.Combine(secondRoot, "ProjectTypeB.bas");
+            var secondText = string.Join('\n', [
+                "Attribute VB_Name = \"ProjectTypeB\"",
+                "#If SECOND_CONFIGURATION Then",
+                "Public Enum runmode",
+                "    SecondMode = 2",
+                "End Enum",
+                "#End If"
+            ]);
+            File.WriteAllText(secondPath, secondText);
+            var firstUri = ToFileUri(firstPath);
+            var secondUri = ToFileUri(secondPath);
+            var manifestUri = ToFileUri(Path.Combine(
+                projectRoot,
+                "vba-project.json"));
+
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+            await process.InitializeAsync();
+            var initialFirstTask = process.WaitForDiagnosticsAsync(firstUri);
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(firstUri, firstText, version: 7));
+            await initialFirstTask;
+            var trackedFirstTask = process.WaitForDiagnosticsAsync(firstUri);
+            var trackedSecondTask = process.WaitForDiagnosticsAsync(secondUri);
+            await SendWatchedFileChangeAsync(process, secondUri, type: 2);
+            await Task.WhenAll(trackedFirstTask, trackedSecondTask);
+            Assert.All(
+                new[] { await trackedFirstTask, await trackedSecondTask },
+                notification => Assert.Contains(
+                    notification
+                        .GetProperty("params")
+                        .GetProperty("diagnostics")
+                        .EnumerateArray(),
+                    diagnostic => diagnostic.GetProperty("code").GetString()
+                        == "validation.duplicateDeclaration"));
+            Assert.False(
+                (await trackedSecondTask)
+                    .GetProperty("params")
+                    .TryGetProperty("version", out _));
+
+            var clearedFirstTask = process.WaitForDiagnosticsAsync(firstUri);
+            var clearedSecondTask = process.WaitForDiagnosticsAsync(secondUri);
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(
+                    manifestUri,
+                    ProjectManifestFixtureText("multi-document.json"),
+                    version: 20));
+            await Task.WhenAll(clearedFirstTask, clearedSecondTask);
+
+            AssertProjectCollisionCleared(await clearedFirstTask, expectedVersion: 7);
+            AssertProjectCollisionCleared(await clearedSecondTask, expectedVersion: null);
+
+            await process.ShutdownAsync(2);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+
+        static void AssertProjectCollisionCleared(
+            JsonElement notification,
+            int? expectedVersion)
+        {
+            var parameters = notification.GetProperty("params");
+            if (expectedVersion is int version)
+            {
+                Assert.Equal(version, parameters.GetProperty("version").GetInt32());
+            }
+            else
+            {
+                Assert.False(parameters.TryGetProperty("version", out _));
+            }
+
+            Assert.DoesNotContain(
+                parameters.GetProperty("diagnostics").EnumerateArray(),
+                diagnostic => diagnostic.GetProperty("code").GetString()
+                    == "validation.duplicateDeclaration");
+        }
+    }
+
+    [Fact]
+    public async Task Server_keeps_conditional_families_inside_manifest_project_boundaries()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-conditional-boundary-").FullName;
+        try
+        {
+            File.WriteAllText(
+                Path.Combine(projectRoot, "vba-project.json"),
+                ProjectManifestFixtureText("multi-document.json"));
+            Directory.CreateDirectory(Path.Combine(projectRoot, "src", "Book1"));
+            Directory.CreateDirectory(Path.Combine(projectRoot, "src", "SecondBook"));
+
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+            await process.InitializeAsync();
+
+            var firstHelperUri = ToFileUri(Path.Combine(
+                projectRoot,
+                "src",
+                "Book1",
+                "Helper.bas"));
+            var firstCallerUri = ToFileUri(Path.Combine(
+                projectRoot,
+                "src",
+                "Book1",
+                "Caller.bas"));
+            var secondHelperUri = ToFileUri(Path.Combine(
+                projectRoot,
+                "src",
+                "SecondBook",
+                "Helper.bas"));
+            var secondCallerUri = ToFileUri(Path.Combine(
+                projectRoot,
+                "src",
+                "SecondBook",
+                "Caller.bas"));
+            var firstHelperText = string.Join('\n', [
+                "Attribute VB_Name = \"FirstHelper\"",
+                "#If FIRST_CONFIGURATION Then",
+                "Public Function BuildValue() As String",
+                "End Function",
+                "#End If"
+            ]);
+            var secondHelperText = string.Join('\n', [
+                "Attribute VB_Name = \"SecondHelper\"",
+                "#If SECOND_CONFIGURATION Then",
+                "Public Function buildvalue() As Long",
+                "End Function",
+                "#End If"
+            ]);
+            var firstCallerText = string.Join('\n', [
+                "Attribute VB_Name = \"FirstCaller\"",
+                "Public Sub Run()",
+                "    Debug.Print BuildValue()",
+                "End Sub"
+            ]);
+            var secondCallerText = string.Join('\n', [
+                "Attribute VB_Name = \"SecondCaller\"",
+                "Public Sub Run()",
+                "    Debug.Print buildvalue()",
+                "End Sub"
+            ]);
+
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(firstHelperUri, firstHelperText, version: 7));
+            var firstDiagnostics = await process.WaitForDiagnosticsAsync(firstHelperUri);
+            Assert.DoesNotContain(
+                firstDiagnostics
+                    .GetProperty("params")
+                    .GetProperty("diagnostics")
+                    .EnumerateArray(),
+                diagnostic => diagnostic.GetProperty("code").GetString()
+                    == "validation.duplicateDeclaration");
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(secondHelperUri, secondHelperText, version: 11));
+            var secondDiagnostics = await process.WaitForDiagnosticsAsync(secondHelperUri);
+            Assert.DoesNotContain(
+                secondDiagnostics
+                    .GetProperty("params")
+                    .GetProperty("diagnostics")
+                    .EnumerateArray(),
+                diagnostic => diagnostic.GetProperty("code").GetString()
+                    == "validation.duplicateDeclaration");
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(firstCallerUri, firstCallerText));
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(secondCallerUri, secondCallerText));
+
+            var firstDefinition = await RequestDefinitionAsync(
+                process,
+                2,
+                firstCallerUri,
+                firstCallerText,
+                "BuildValue");
+            Assert.Equal(JsonValueKind.Object, firstDefinition.ValueKind);
+            Assert.Equal(
+                firstHelperUri,
+                firstDefinition.GetProperty("uri").GetString());
+            var secondDefinition = await RequestDefinitionAsync(
+                process,
+                3,
+                secondCallerUri,
+                secondCallerText,
+                "buildvalue");
+            Assert.Equal(JsonValueKind.Object, secondDefinition.ValueKind);
+            Assert.Equal(
+                secondHelperUri,
+                secondDefinition.GetProperty("uri").GetString());
+
+            await process.ShutdownAsync(4);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Server_returns_source_completion_items_and_language_vocabulary()
     {
         await using var process = await LanguageServerProcessHarness.StartAsync();
@@ -5216,6 +9135,73 @@ public sealed class LanguageServerProcessTests
                 diagnostic.GetProperty("code").GetString());
             Assert.Contains(
                 sourcePath,
+                diagnostic.GetProperty("message").GetString());
+
+            await process.ShutdownAsync(2);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_publishes_invalid_closed_source_encoding_with_a_tracked_project_peer()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-invalid-source-peer-").FullName;
+        try
+        {
+            var callerPath = Path.Combine(projectRoot, "Caller.bas");
+            var callerUri = ToFileUri(callerPath);
+            var callerText = "Attribute VB_Name = \"Caller\"\n"
+                + "Public Sub Run()\n"
+                + "End Sub\n";
+            File.WriteAllText(callerPath, callerText);
+            var workerPath = Path.Combine(projectRoot, "Worker.bas");
+            var workerUri = ToFileUri(workerPath);
+            File.WriteAllText(
+                workerPath,
+                "Attribute VB_Name = \"Worker\"\n"
+                    + "Public Sub Work()\n"
+                    + "End Sub\n");
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+            await process.InitializeAsync();
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(callerUri, callerText));
+            await process.WaitForDiagnosticsAsync(callerUri);
+            await process.SendNotificationAsync(
+                "workspace/didChangeWatchedFiles",
+                new
+                {
+                    changes = new[]
+                    {
+                        new { uri = workerUri, type = 1 }
+                    }
+                });
+            await process.WaitForDiagnosticsAsync(workerUri);
+
+            File.WriteAllBytes(workerPath, [0xFF, 0xFE, 0x00, 0xD8]);
+            await process.SendNotificationAsync(
+                "workspace/didChangeWatchedFiles",
+                new
+                {
+                    changes = new[]
+                    {
+                        new { uri = workerUri, type = 2 }
+                    }
+                });
+
+            var notification = await process.WaitForDiagnosticsAsync(workerUri);
+            var parameters = notification.GetProperty("params");
+            var diagnostic = Assert.Single(
+                parameters.GetProperty("diagnostics").EnumerateArray());
+            Assert.Equal(
+                "invalid-disk-source-encoding",
+                diagnostic.GetProperty("code").GetString());
+            Assert.Contains(
+                workerPath,
                 diagnostic.GetProperty("message").GetString());
 
             await process.ShutdownAsync(2);

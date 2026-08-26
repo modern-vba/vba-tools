@@ -241,8 +241,8 @@ internal sealed class VbaLspRequestExecution
                     (request, inventory, token) =>
                     {
                         token.ThrowIfCancellationRequested();
-                        return VbaLspFeatureProjection.CreateLocation(
-                            inventory.ResolveDefinition(
+                        return VbaLspFeatureProjection.CreateDefinitionLocations(
+                            inventory.ResolveDefinitions(
                                 request.Uri,
                                 request.Line,
                                 request.Character));
@@ -279,7 +279,7 @@ internal sealed class VbaLspRequestExecution
                     {
                         token.ThrowIfCancellationRequested();
                         return VbaLspFeatureProjection.CreateHover(
-                            inventory.ResolveSourceDefinition(
+                            inventory.ResolveHover(
                                 request.Uri,
                                 request.Line,
                                 request.Character));

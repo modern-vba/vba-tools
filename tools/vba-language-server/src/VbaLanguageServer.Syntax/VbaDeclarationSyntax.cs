@@ -88,6 +88,11 @@ public enum VbaDeclarationVisibility
     Public,
 
     /// <summary>
+    /// A declaration visible throughout the current VBA project.
+    /// </summary>
+    Friend,
+
+    /// <summary>
     /// A declaration visible only inside the current module.
     /// </summary>
     Private,

@@ -103,6 +103,53 @@ internal sealed record VbaProjectSnapshotIdentity(string Key)
 /// </summary>
 internal sealed class VbaProjectSnapshotProvider
 {
+    internal sealed class ProjectSnapshotOwnership
+    {
+        internal ProjectSnapshotOwnership(
+            VbaProjectSnapshotIdentity cacheIdentity,
+            string activeUri,
+            VbaProjectResolution resolution,
+            long workspaceVersion,
+            long manifestVersion,
+            long hostClassProjectionRevision,
+            long fullInvalidationGeneration,
+            long scopeInvalidationGeneration,
+            object scopeIdentity,
+            IReadOnlyList<string> sourceUris)
+        {
+            CacheIdentity = cacheIdentity;
+            ActiveUri = activeUri;
+            Resolution = resolution;
+            WorkspaceVersion = workspaceVersion;
+            ManifestVersion = manifestVersion;
+            HostClassProjectionRevision = hostClassProjectionRevision;
+            FullInvalidationGeneration = fullInvalidationGeneration;
+            ScopeInvalidationGeneration = scopeInvalidationGeneration;
+            ScopeIdentity = scopeIdentity;
+            SourceUris = sourceUris;
+        }
+
+        internal VbaProjectSnapshotIdentity CacheIdentity { get; }
+
+        internal string ActiveUri { get; }
+
+        internal VbaProjectResolution Resolution { get; }
+
+        internal long WorkspaceVersion { get; }
+
+        internal long ManifestVersion { get; }
+
+        internal long HostClassProjectionRevision { get; }
+
+        internal long FullInvalidationGeneration { get; }
+
+        internal long ScopeInvalidationGeneration { get; }
+
+        internal object ScopeIdentity { get; }
+
+        internal IReadOnlyList<string> SourceUris { get; }
+    }
+
     private readonly object gate = new();
     private readonly Dictionary<string, CachedProjectSnapshot> cache = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, ReconciliationBaseline> reconciliationBaselines =
@@ -319,10 +366,11 @@ internal sealed class VbaProjectSnapshotProvider
                 workspaceState.ExcludedSourceUris,
                 capture.ManifestBarriers.Overrides,
                 cancellationToken);
+            var sourceUris = inventorySnapshot.Documents.Keys.ToArray();
             RegisterScopeSources(
                 capture.CacheIdentity,
                 capturedInvalidation,
-                inventorySnapshot.Documents.Keys);
+                sourceUris);
 
             buildObserver.BeforeBuildSemanticInventory(
                 capture.ActiveUri,
@@ -337,7 +385,18 @@ internal sealed class VbaProjectSnapshotProvider
                 capture.HostClassProjectionState.Snapshot) with
             {
                 ManifestBarrierOverrides =
-                    capture.ManifestBarriers.Overrides
+                    capture.ManifestBarriers.Overrides,
+                DiagnosticsOwnership = new ProjectSnapshotOwnership(
+                    capture.CacheIdentity,
+                    capture.ActiveUri,
+                    capture.Resolution,
+                    workspaceState.Version,
+                    capture.ManifestBarriers.Revision,
+                    capture.HostClassProjectionState.Revision,
+                    capturedInvalidation.FullGeneration,
+                    capturedInvalidation.ScopeGeneration,
+                    capturedInvalidation.State,
+                    sourceUris)
             };
             buildObserver.BeforeStore(workspaceState.Version, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
@@ -347,9 +406,7 @@ internal sealed class VbaProjectSnapshotProvider
                 capture.ManifestBarriers.Revision,
                 capture.ReferenceCatalogState.Revision,
                 capture.HostClassProjectionState.Revision,
-                capturedInvalidation,
                 capture.SupersededCacheIdentity,
-                inventorySnapshot.Documents.Keys,
                 inventorySnapshot.DiskSources,
                 snapshot,
                 workspaceState.Documents.Keys.ToArray());
@@ -371,6 +428,20 @@ internal sealed class VbaProjectSnapshotProvider
             cache.Clear();
             scopeAuthoritySeeds.Clear();
             scopeAuthorityLookup = ProjectScopeAuthorityLookup.Empty;
+        }
+    }
+
+    internal bool IsCurrentProjectSnapshot(
+        ProjectSnapshotOwnership? ownership)
+    {
+        if (ownership is null)
+        {
+            return false;
+        }
+
+        lock (gate)
+        {
+            return IsCurrentProjectSnapshotCore(ownership);
         }
     }
 
@@ -1408,39 +1479,21 @@ internal sealed class VbaProjectSnapshotProvider
         long snapshotManifestVersion,
         long snapshotReferenceCatalogRevision,
         long snapshotHostClassProjectionRevision,
-        CapturedProjectScopeInvalidation capturedInvalidation,
         VbaProjectSnapshotIdentity? supersededCacheIdentity,
-        IEnumerable<string> sourceUris,
         IReadOnlyList<VbaProjectDiskSource> diskSources,
         VbaProjectSnapshot snapshot,
         IReadOnlyList<string> trackedUris)
     {
         lock (gate)
         {
-            if (fullInvalidationGeneration != capturedInvalidation.FullGeneration
-                || !scopeInvalidationStates.TryGetValue(
-                    cacheIdentity.Key,
-                    out var scopeState)
-                || !ReferenceEquals(
-                    scopeState,
-                    capturedInvalidation.State)
-                || scopeState.Generation != capturedInvalidation.ScopeGeneration
-                || manifestResolutionSource.CaptureScopeBarriers(
-                        scopeState.ActiveUri,
-                        scopeState.Resolution)
-                    .Revision != snapshotManifestVersion
-                || hostClassProjectionStore
-                    .CaptureSelectionState(scopeState.Resolution)
-                    .Revision != snapshotHostClassProjectionRevision
-                || HasSourceChangedSince(
-                    scopeState.Resolution,
-                    scopeState.ActiveUri,
-                    snapshotWorkspaceVersion,
-                    sourceRevisionHistory,
-                    sourceUris))
+            if (snapshot.DiagnosticsOwnership is null
+                || !IsCurrentProjectSnapshotCore(
+                    snapshot.DiagnosticsOwnership))
             {
                 return;
             }
+
+            var scopeState = scopeInvalidationStates[cacheIdentity.Key];
 
             if (cache.TryGetValue(cacheIdentity.Key, out var current)
                 && (current.WorkspaceVersion > snapshotWorkspaceVersion
@@ -1490,6 +1543,34 @@ internal sealed class VbaProjectSnapshotProvider
 
             RebuildScopeAuthorityLookup();
         }
+    }
+
+    private bool IsCurrentProjectSnapshotCore(
+        ProjectSnapshotOwnership ownership)
+    {
+        return fullInvalidationGeneration
+                == ownership.FullInvalidationGeneration
+            && scopeInvalidationStates.TryGetValue(
+                ownership.CacheIdentity.Key,
+                out var scopeState)
+            && ReferenceEquals(
+                scopeState,
+                ownership.ScopeIdentity)
+            && scopeState.Generation
+                == ownership.ScopeInvalidationGeneration
+            && manifestResolutionSource.CaptureScopeBarriers(
+                    ownership.ActiveUri,
+                    ownership.Resolution)
+                .Revision == ownership.ManifestVersion
+            && hostClassProjectionStore
+                .CaptureSelectionState(ownership.Resolution)
+                .Revision == ownership.HostClassProjectionRevision
+            && !HasSourceChangedSince(
+                ownership.Resolution,
+                ownership.ActiveUri,
+                ownership.WorkspaceVersion,
+                sourceRevisionHistory,
+                ownership.SourceUris);
     }
 
     private string? RegisterReconciliationScope(

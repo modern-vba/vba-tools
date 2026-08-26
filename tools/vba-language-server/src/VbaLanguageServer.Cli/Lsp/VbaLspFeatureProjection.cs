@@ -95,6 +95,15 @@ internal static class VbaLspFeatureProjection
             })
             .ToArray<object>();
 
+    public static object? CreateDefinitionLocations(
+        IReadOnlyList<VbaDefinitionLocation> locations)
+        => locations.Count switch
+        {
+            0 => null,
+            1 => CreateLocation(locations[0]),
+            _ => CreateLocations(locations)
+        };
+
     public static object[] CreateWorkspaceSymbols(IReadOnlyList<VbaWorkspaceSymbol> symbols)
         => symbols
             .GroupBy(symbol => $"{symbol.Uri}:{symbol.Range.Start.Line}:{symbol.Range.Start.Character}:{symbol.Name}", StringComparer.OrdinalIgnoreCase)
@@ -116,18 +125,20 @@ internal static class VbaLspFeatureProjection
             .Select(CreateCompletionItem)
             .ToArray<object>();
 
-    public static object? CreateHover(VbaSourceDefinition? definition)
+    public static object? CreateHover(VbaHoverResult? hover)
     {
-        if (definition is null)
+        if (hover is null || hover.Definitions.Count == 0)
         {
             return null;
         }
 
-        var declaration = CreateHoverDeclarationBlock(
-            definition.Signature?.Label ?? definition.DeclarationLabel ?? definition.Name);
-        var value = string.IsNullOrWhiteSpace(definition.Documentation)
-            ? declaration
-            : $"{definition.Documentation}\n\n---\n\n{declaration}";
+        var definition = hover.Definitions[0];
+        var value = hover.IsConditionalFamily
+            ? $"**{hover.CanonicalName} [#If]**\n\n"
+                + string.Join(
+                    "\n\n",
+                    hover.Definitions.Select(CreateConditionalHoverVariant))
+            : CreateOrdinaryHoverValue(definition);
         return new
         {
             contents = new
@@ -137,6 +148,26 @@ internal static class VbaLspFeatureProjection
             },
             range = definition.Range
         };
+    }
+
+    private static string CreateOrdinaryHoverValue(VbaSourceDefinition definition)
+    {
+        var declaration = CreateHoverDeclarationBlock(
+            definition.Signature?.Label ?? definition.DeclarationLabel ?? definition.Name);
+        return string.IsNullOrWhiteSpace(definition.Documentation)
+            ? declaration
+            : $"{definition.Documentation}\n\n---\n\n{declaration}";
+    }
+
+    private static string CreateConditionalHoverVariant(VbaSourceDefinition definition)
+    {
+        var declaration = definition.Signature?.Label
+            ?? definition.DeclarationLabel
+            ?? definition.Name;
+        var block = CreateHoverDeclarationBlock($"{declaration} [#If]");
+        return string.IsNullOrWhiteSpace(definition.Documentation)
+            ? block
+            : $"{block}\n\n{definition.Documentation}";
     }
 
     private static string CreateHoverDeclarationBlock(string declaration)
@@ -276,17 +307,11 @@ internal static class VbaLspFeatureProjection
             return null;
         }
 
-        if (!string.IsNullOrWhiteSpace(definition.DeclarationLabel))
-        {
-            return definition.DeclarationLabel;
-        }
-
-        if (!string.IsNullOrWhiteSpace(definition.Signature?.Label))
-        {
-            return definition.Signature.Label;
-        }
-
-        return definition.Kind switch
+        var detail = !string.IsNullOrWhiteSpace(definition.DeclarationLabel)
+            ? definition.DeclarationLabel
+            : !string.IsNullOrWhiteSpace(definition.Signature?.Label)
+                ? definition.Signature.Label
+                : definition.Kind switch
         {
             VbaSourceDefinitionKind.Module => $"Module {definition.Name}",
             VbaSourceDefinitionKind.Class => $"Class {definition.Name}",
@@ -295,6 +320,7 @@ internal static class VbaLspFeatureProjection
             VbaSourceDefinitionKind.Type => $"Type {definition.Name}",
             _ => definition.Name
         };
+        return candidate.IsConditionalFamily ? $"{detail} [#If]" : detail;
     }
 
     private static string CreateCompletionSortText(VbaCompletionCandidate candidate)

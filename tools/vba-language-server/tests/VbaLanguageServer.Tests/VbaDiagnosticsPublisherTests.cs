@@ -205,6 +205,966 @@ public sealed class VbaDiagnosticsPublisherTests
     }
 
     [Fact]
+    public async Task Project_batch_cannot_replace_a_newer_peer_tombstone_with_a_stale_reservation()
+    {
+        const string firstUri = "file:///C:/work/First.bas";
+        const string secondUri = "file:///C:/work/Second.bas";
+        await using var output = new CapturingWriteStream();
+        var blockerStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseBlocker = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var scheduler = new VbaInteractiveWorkScheduler(
+            options: new VbaInteractiveWorkSchedulerOptions(
+                CoalesceSupersededMutations: true,
+                MaxOwnedWork: 1));
+        var blocker = scheduler.AdmitMutation(async cancellationToken =>
+        {
+            blockerStarted.TrySetResult();
+            await releaseBlocker.Task.WaitAsync(cancellationToken);
+        });
+        await blockerStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()));
+        workspace.OpenDocument(firstUri, 1, "Public Enum RunMode\nEnd Enum\n");
+        workspace.OpenDocument(secondUri, 1, "Public Enum runmode\nEnd Enum\n");
+        var observer = new BlockingFirstRevisionObserver();
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, output),
+            workspace,
+            observer);
+        publisher.AttachScheduler(scheduler);
+
+        var staleBatch = Task.Run(
+            () => publisher.PublishProjectDiagnosticsAsync(
+                firstUri,
+                CancellationToken.None));
+        var firstReservedUri = await observer.FirstRevisionReserved.Task
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        var closingUri = string.Equals(
+            firstReservedUri,
+            firstUri,
+            StringComparison.OrdinalIgnoreCase)
+                ? secondUri
+                : firstUri;
+        Assert.True(workspace.CloseDocument(closingUri));
+        await publisher.PublishEmptyDiagnosticsAsync(
+            closingUri,
+            CancellationToken.None);
+
+        observer.ReleaseFirstRevision();
+        await staleBatch.WaitAsync(TimeSpan.FromSeconds(5));
+        releaseBlocker.TrySetResult();
+        await blocker.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+        await Task.WhenAll(
+                publisher.WaitForIdleAsync(firstUri),
+                publisher.WaitForIdleAsync(secondUri))
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        var notification = Assert.Single(ReadJsonMessages(output.ReadText()));
+        var parameters = Assert.IsType<JsonObject>(notification["params"]);
+        Assert.Equal(closingUri, parameters["uri"]?.GetValue<string>());
+        Assert.Null(parameters["version"]);
+        Assert.Empty(Assert.IsType<JsonArray>(parameters["diagnostics"]));
+    }
+
+    [Fact]
+    public async Task Reconciliation_source_deletion_republishes_project_diagnostics_for_the_survivor()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-reconciliation-diagnostics-").FullName;
+        try
+        {
+            var sourceRoot = Directory.CreateDirectory(Path.Combine(
+                projectRoot,
+                "src",
+                "Book1")).FullName;
+            File.WriteAllText(
+                Path.Combine(projectRoot, "vba-project.json"),
+                System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    schemaVersion = 1,
+                    projectName = "ReconciliationDiagnostics",
+                    primaryDocument = "Book1",
+                    documents = new Dictionary<string, object>
+                    {
+                        ["Book1"] = new
+                        {
+                            kind = "excel",
+                            sourcePath = "src/Book1",
+                            templatePath = "src/Book1/Book1.xlsm",
+                            binPath = "bin/Book1/Book1.xlsm",
+                            publishPath = "publish/Book1/Book1.xlsm",
+                            commonModules = Array.Empty<object>(),
+                            references = Array.Empty<object>()
+                        }
+                    }
+                }));
+            var firstPath = Path.Combine(sourceRoot, "ProjectTypeA.bas");
+            var firstText = string.Join('\n', [
+                "Attribute VB_Name = \"ProjectTypeA\"",
+                "Public Enum RunMode",
+                "    FirstMode = 1",
+                "End Enum"
+            ]);
+            File.WriteAllText(firstPath, firstText);
+            var secondPath = Path.Combine(sourceRoot, "ProjectTypeB.bas");
+            File.WriteAllText(secondPath, string.Join('\n', [
+                "Attribute VB_Name = \"ProjectTypeB\"",
+                "#If SECOND_CONFIGURATION Then",
+                "Public Enum runmode",
+                "    SecondMode = 2",
+                "End Enum",
+                "#End If"
+            ]));
+            var firstUri = new Uri(Path.GetFullPath(firstPath)).AbsoluteUri;
+            var secondUri = new Uri(Path.GetFullPath(secondPath)).AbsoluteUri;
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()));
+            workspace.OpenDocument(firstUri, 7, firstText);
+            _ = workspace.CreateProjectSnapshot(firstUri);
+            await using var output = new CapturingWriteStream();
+            await using var scheduler = new VbaInteractiveWorkScheduler(
+                options: new VbaInteractiveWorkSchedulerOptions(
+                    CoalesceSupersededMutations: true,
+                    MaxOwnedWork: 1));
+            var publisher = new VbaDiagnosticsPublisher(
+                new LspMessageTransport(Stream.Null, output),
+                workspace);
+            publisher.AttachScheduler(scheduler);
+            await publisher.PublishProjectDiagnosticsAsync(
+                firstUri,
+                CancellationToken.None);
+            await publisher.WaitForIdleAsync(firstUri)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Contains(
+                Assert.IsType<JsonArray>(
+                    Assert.IsType<JsonObject>(
+                        Assert.Single(ReadJsonMessages(output.ReadText()))["params"])
+                    ["diagnostics"]),
+                diagnostic => Assert.IsType<JsonObject>(diagnostic)["code"]
+                    ?.GetValue<string>() == "validation.duplicateDeclaration");
+
+            File.Delete(secondPath);
+            await using var reconciler = new VbaProjectReconciler(
+                workspace,
+                publisher,
+                cadence: Timeout.InfiniteTimeSpan);
+            reconciler.AttachScheduler(scheduler);
+            await reconciler.ReconcileAsync()
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            await Task.WhenAll(
+                    publisher.WaitForIdleAsync(firstUri),
+                    publisher.WaitForIdleAsync(secondUri))
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            var survivorParameters = Assert.IsType<JsonObject>(
+                ReadJsonMessages(output.ReadText())
+                    .Select(message => Assert.IsType<JsonObject>(message["params"]))
+                    .Last(parameters => parameters["uri"]?.GetValue<string>() == firstUri));
+            Assert.Equal(7, survivorParameters["version"]?.GetValue<int>());
+            Assert.DoesNotContain(
+                Assert.IsType<JsonArray>(survivorParameters["diagnostics"]),
+                diagnostic => Assert.IsType<JsonObject>(diagnostic)["code"]
+                    ?.GetValue<string>() == "validation.duplicateDeclaration");
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Reconciliation_manifest_boundary_split_republishes_diagnostics_for_each_new_project()
+    {
+        static string CreateManifest(bool split)
+        {
+            static object CreateDocument(string name, string sourcePath)
+                => new
+                {
+                    kind = "excel",
+                    sourcePath,
+                    templatePath = $"src/{name}/{name}.xlsm",
+                    binPath = $"bin/{name}/{name}.xlsm",
+                    publishPath = $"publish/{name}/{name}.xlsm",
+                    commonModules = Array.Empty<object>(),
+                    references = Array.Empty<object>()
+                };
+
+            var documents = split
+                ? new Dictionary<string, object>
+                {
+                    ["Book1"] = CreateDocument("Book1", "src/Book1"),
+                    ["Book2"] = CreateDocument("Book2", "src/Book2")
+                }
+                : new Dictionary<string, object>
+                {
+                    ["Book1"] = CreateDocument("Book1", "src")
+                };
+            return System.Text.Json.JsonSerializer.Serialize(new
+            {
+                schemaVersion = 1,
+                projectName = "ReconciliationBoundary",
+                primaryDocument = "Book1",
+                documents
+            });
+        }
+
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-reconciliation-boundary-").FullName;
+        try
+        {
+            var manifestPath = Path.Combine(projectRoot, "vba-project.json");
+            File.WriteAllText(manifestPath, CreateManifest(split: false));
+            var firstRoot = Directory.CreateDirectory(Path.Combine(
+                projectRoot,
+                "src",
+                "Book1")).FullName;
+            var secondRoot = Directory.CreateDirectory(Path.Combine(
+                projectRoot,
+                "src",
+                "Book2")).FullName;
+            var firstPath = Path.Combine(firstRoot, "ProjectTypeA.bas");
+            var firstText = string.Join('\n', [
+                "Attribute VB_Name = \"ProjectTypeA\"",
+                "Public Enum RunMode",
+                "    FirstMode = 1",
+                "End Enum"
+            ]);
+            File.WriteAllText(firstPath, firstText);
+            var secondPath = Path.Combine(secondRoot, "ProjectTypeB.bas");
+            var secondText = string.Join('\n', [
+                "Attribute VB_Name = \"ProjectTypeB\"",
+                "#If SECOND_CONFIGURATION Then",
+                "Public Enum runmode",
+                "    SecondMode = 2",
+                "End Enum",
+                "#End If"
+            ]);
+            File.WriteAllText(secondPath, secondText);
+            var firstUri = new Uri(Path.GetFullPath(firstPath)).AbsoluteUri;
+            var secondUri = new Uri(Path.GetFullPath(secondPath)).AbsoluteUri;
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()));
+            workspace.OpenDocument(firstUri, 7, firstText);
+            workspace.OpenDocument(secondUri, 11, secondText);
+            _ = workspace.CreateProjectSnapshot(firstUri);
+            await using var output = new CapturingWriteStream();
+            await using var scheduler = new VbaInteractiveWorkScheduler(
+                options: new VbaInteractiveWorkSchedulerOptions(
+                    CoalesceSupersededMutations: true,
+                    MaxOwnedWork: 1));
+            var publisher = new VbaDiagnosticsPublisher(
+                new LspMessageTransport(Stream.Null, output),
+                workspace);
+            publisher.AttachScheduler(scheduler);
+            await publisher.PublishProjectDiagnosticsAsync(
+                firstUri,
+                CancellationToken.None);
+            await Task.WhenAll(
+                    publisher.WaitForIdleAsync(firstUri),
+                    publisher.WaitForIdleAsync(secondUri))
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            var baselineMessages = ReadJsonMessages(output.ReadText());
+            foreach (var uri in new[] { firstUri, secondUri })
+            {
+                var parameters = Assert.IsType<JsonObject>(
+                    baselineMessages
+                        .Select(message => Assert.IsType<JsonObject>(message["params"]))
+                        .Last(candidate => candidate["uri"]?.GetValue<string>() == uri));
+                Assert.Contains(
+                    Assert.IsType<JsonArray>(parameters["diagnostics"]),
+                    diagnostic => Assert.IsType<JsonObject>(diagnostic)["code"]
+                        ?.GetValue<string>() == "validation.duplicateDeclaration");
+            }
+
+            File.WriteAllText(manifestPath, CreateManifest(split: true));
+            await using var reconciler = new VbaProjectReconciler(
+                workspace,
+                publisher,
+                cadence: Timeout.InfiniteTimeSpan);
+            reconciler.AttachScheduler(scheduler);
+            await reconciler.ReconcileAsync()
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            await Task.WhenAll(
+                    publisher.WaitForIdleAsync(firstUri),
+                    publisher.WaitForIdleAsync(secondUri))
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            var refreshParameters = ReadJsonMessages(output.ReadText())
+                .Skip(baselineMessages.Count)
+                .Select(message => Assert.IsType<JsonObject>(message["params"]))
+                .Where(parameters => new[] { firstUri, secondUri }.Contains(
+                    parameters["uri"]?.GetValue<string>(),
+                    StringComparer.OrdinalIgnoreCase))
+                .ToArray();
+            foreach (var expected in new[] { (firstUri, 7), (secondUri, 11) })
+            {
+                var parameters = refreshParameters.Last(candidate =>
+                    candidate["uri"]?.GetValue<string>() == expected.Item1);
+                Assert.Equal(expected.Item2, parameters["version"]?.GetValue<int>());
+                Assert.DoesNotContain(
+                    Assert.IsType<JsonArray>(parameters["diagnostics"]),
+                    diagnostic => Assert.IsType<JsonObject>(diagnostic)["code"]
+                        ?.GetValue<string>() == "validation.duplicateDeclaration");
+            }
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Reconciliation_manifest_expansion_republishes_diagnostics_for_a_newly_owned_project()
+    {
+        static string CreateManifest(bool includeSecondDocument)
+        {
+            static object CreateDocument(string name)
+                => new
+                {
+                    kind = "excel",
+                    sourcePath = $"src/{name}",
+                    templatePath = $"src/{name}/{name}.xlsm",
+                    binPath = $"bin/{name}/{name}.xlsm",
+                    publishPath = $"publish/{name}/{name}.xlsm",
+                    commonModules = Array.Empty<object>(),
+                    references = Array.Empty<object>()
+                };
+
+            var documents = new Dictionary<string, object>
+            {
+                ["Book1"] = CreateDocument("Book1")
+            };
+            if (includeSecondDocument)
+            {
+                documents["Book2"] = CreateDocument("Book2");
+            }
+
+            return System.Text.Json.JsonSerializer.Serialize(new
+            {
+                schemaVersion = 1,
+                projectName = "ReconciliationExpansion",
+                primaryDocument = "Book1",
+                documents
+            });
+        }
+
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-reconciliation-expansion-").FullName;
+        try
+        {
+            var manifestPath = Path.Combine(projectRoot, "vba-project.json");
+            File.WriteAllText(
+                manifestPath,
+                CreateManifest(includeSecondDocument: false));
+            var firstPath = Path.Combine(
+                projectRoot,
+                "src",
+                "Book1",
+                "First.bas");
+            var secondPath = Path.Combine(
+                projectRoot,
+                "src",
+                "Book2",
+                "Second.bas");
+            Directory.CreateDirectory(Path.GetDirectoryName(firstPath)!);
+            Directory.CreateDirectory(Path.GetDirectoryName(secondPath)!);
+            const string firstText = "Attribute VB_Name = \"First\"\n"
+                + "Public Sub RunFirst()\n"
+                + "End Sub\n";
+            const string secondText = "Attribute VB_Name = \"Second\"\n"
+                + "Public Sub RunSecond()\n"
+                + "End Sub\n";
+            File.WriteAllText(firstPath, firstText);
+            File.WriteAllText(secondPath, secondText);
+            var firstUri = new Uri(Path.GetFullPath(firstPath)).AbsoluteUri;
+            var secondUri = new Uri(Path.GetFullPath(secondPath)).AbsoluteUri;
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()));
+            workspace.OpenDocument(firstUri, 7, firstText);
+            workspace.OpenDocument(secondUri, 11, secondText);
+            _ = workspace.CreateProjectSnapshot(firstUri);
+            _ = workspace.CreateProjectSnapshot(secondUri);
+            await using var output = new CapturingWriteStream();
+            await using var scheduler = new VbaInteractiveWorkScheduler(
+                options: new VbaInteractiveWorkSchedulerOptions(
+                    CoalesceSupersededMutations: true,
+                    MaxOwnedWork: 1));
+            var publisher = new VbaDiagnosticsPublisher(
+                new LspMessageTransport(Stream.Null, output),
+                workspace);
+            publisher.AttachScheduler(scheduler);
+
+            File.WriteAllText(
+                manifestPath,
+                CreateManifest(includeSecondDocument: true));
+            await using var reconciler = new VbaProjectReconciler(
+                workspace,
+                publisher,
+                cadence: Timeout.InfiniteTimeSpan);
+            reconciler.AttachScheduler(scheduler);
+            await reconciler.ReconcileAsync()
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            await Task.WhenAll(
+                    publisher.WaitForIdleAsync(firstUri),
+                    publisher.WaitForIdleAsync(secondUri))
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            var publishedUris = ReadJsonMessages(output.ReadText())
+                .Select(message => Assert.IsType<JsonObject>(message["params"]))
+                .Select(parameters => parameters["uri"]?.GetValue<string>())
+                .ToArray();
+            Assert.Contains(firstUri, publishedUris);
+            Assert.Contains(secondUri, publishedUris);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Manifest_change_refreshes_only_sources_owned_by_that_manifest()
+    {
+        static string CreateManifest(bool split)
+        {
+            static object CreateDocument(string name, string sourcePath)
+                => new
+                {
+                    kind = "excel",
+                    sourcePath,
+                    templatePath = $"src/{name}/{name}.xlsm",
+                    binPath = $"bin/{name}/{name}.xlsm",
+                    publishPath = $"publish/{name}/{name}.xlsm",
+                    commonModules = Array.Empty<object>(),
+                    references = Array.Empty<object>()
+                };
+
+            var documents = split
+                ? new Dictionary<string, object>
+                {
+                    ["Book1"] = CreateDocument("Book1", "src/Book1"),
+                    ["Book2"] = CreateDocument("Book2", "src/Book2")
+                }
+                : new Dictionary<string, object>
+                {
+                    ["Book1"] = CreateDocument("Book1", "src")
+                };
+            return System.Text.Json.JsonSerializer.Serialize(new
+            {
+                schemaVersion = 1,
+                projectName = "ScopedManifestRefresh",
+                primaryDocument = "Book1",
+                documents
+            });
+        }
+
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-scoped-manifest-refresh-").FullName;
+        var unrelatedRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-unrelated-manifest-refresh-").FullName;
+        try
+        {
+            var manifestPath = Path.Combine(projectRoot, "vba-project.json");
+            File.WriteAllText(manifestPath, CreateManifest(split: false));
+            var firstPath = Path.Combine(projectRoot, "src", "Book1", "First.bas");
+            var secondPath = Path.Combine(projectRoot, "src", "Book2", "Second.bas");
+            Directory.CreateDirectory(Path.GetDirectoryName(firstPath)!);
+            Directory.CreateDirectory(Path.GetDirectoryName(secondPath)!);
+            var firstText = "Attribute VB_Name = \"First\"\nPublic Sub RunFirst()\nEnd Sub\n";
+            var secondText = "Attribute VB_Name = \"Second\"\nPublic Sub RunSecond()\nEnd Sub\n";
+            File.WriteAllText(firstPath, firstText);
+            File.WriteAllText(secondPath, secondText);
+            var unrelatedPath = Path.Combine(unrelatedRoot, "Unrelated.bas");
+            var unrelatedText = "Attribute VB_Name = \"Unrelated\"\nPublic Sub Run()\nEnd Sub\n";
+            File.WriteAllText(unrelatedPath, unrelatedText);
+            var firstUri = new Uri(Path.GetFullPath(firstPath)).AbsoluteUri;
+            var secondUri = new Uri(Path.GetFullPath(secondPath)).AbsoluteUri;
+            var unrelatedUri = new Uri(Path.GetFullPath(unrelatedPath)).AbsoluteUri;
+            var manifestUri = new Uri(Path.GetFullPath(manifestPath)).AbsoluteUri;
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()));
+            workspace.OpenDocument(firstUri, 7, firstText);
+            workspace.UpdateDocument(secondUri, secondText);
+            workspace.OpenDocument(unrelatedUri, 13, unrelatedText);
+            _ = workspace.CreateProjectSnapshot(firstUri);
+            _ = workspace.CreateProjectSnapshot(unrelatedUri);
+            await using var output = new CapturingWriteStream();
+            await using var scheduler = new VbaInteractiveWorkScheduler(
+                options: new VbaInteractiveWorkSchedulerOptions(
+                    CoalesceSupersededMutations: true,
+                    MaxOwnedWork: 1));
+            var publisher = new VbaDiagnosticsPublisher(
+                new LspMessageTransport(Stream.Null, output),
+                workspace);
+            publisher.AttachScheduler(scheduler);
+            var pipeline = new VbaDocumentChangePipeline(
+                workspace,
+                new RecordingReferenceCatalogLifecycle(),
+                publisher);
+
+            await pipeline.ApplyAsync(
+                new VbaTextDocumentOpenedChange(
+                    manifestUri,
+                    20,
+                    CreateManifest(split: true)),
+                CancellationToken.None);
+            await Task.WhenAll(
+                    publisher.WaitForIdleAsync(manifestUri),
+                    publisher.WaitForIdleAsync(firstUri),
+                    publisher.WaitForIdleAsync(secondUri),
+                    publisher.WaitForIdleAsync(unrelatedUri))
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            var publishedUris = ReadJsonMessages(output.ReadText())
+                .Select(message => Assert.IsType<JsonObject>(message["params"]))
+                .Select(parameters => parameters["uri"]?.GetValue<string>())
+                .ToArray();
+            Assert.Contains(firstUri, publishedUris);
+            Assert.Contains(secondUri, publishedUris);
+            Assert.DoesNotContain(unrelatedUri, publishedUris);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+            Directory.Delete(unrelatedRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Reconciliation_manifest_split_republishes_diagnostics_for_a_sibling_materialized_scope()
+    {
+        static string CreateManifest(bool split)
+        {
+            static object CreateDocument(string name, string sourcePath)
+                => new
+                {
+                    kind = "excel",
+                    sourcePath,
+                    templatePath = $"src/{name}/{name}.xlsm",
+                    binPath = $"bin/{name}/{name}.xlsm",
+                    publishPath = $"publish/{name}/{name}.xlsm",
+                    commonModules = Array.Empty<object>(),
+                    references = Array.Empty<object>()
+                };
+
+            var documents = split
+                ? new Dictionary<string, object>
+                {
+                    ["Book1A"] = CreateDocument("Book1A", "src/Book1/A"),
+                    ["Book1B"] = CreateDocument("Book1B", "src/Book1/B"),
+                    ["Book2A"] = CreateDocument("Book2A", "src/Book2/A"),
+                    ["Book2B"] = CreateDocument("Book2B", "src/Book2/B")
+                }
+                : new Dictionary<string, object>
+                {
+                    ["Book1"] = CreateDocument("Book1", "src/Book1"),
+                    ["Book2"] = CreateDocument("Book2", "src/Book2")
+                };
+            return System.Text.Json.JsonSerializer.Serialize(new
+            {
+                schemaVersion = 1,
+                projectName = "SiblingReconciliationBoundary",
+                primaryDocument = split ? "Book1A" : "Book1",
+                documents
+            });
+        }
+
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-reconciliation-sibling-boundary-").FullName;
+        try
+        {
+            var manifestPath = Path.Combine(projectRoot, "vba-project.json");
+            File.WriteAllText(manifestPath, CreateManifest(split: false));
+            var sourceSpecifications = new[]
+            {
+                ("Book1/A", "ProjectTypeA.bas", "RunMode1", 7),
+                ("Book1/B", "ProjectTypeB.bas", "runmode1", 8),
+                ("Book2/A", "ProjectTypeC.bas", "RunMode2", 11),
+                ("Book2/B", "ProjectTypeD.bas", "runmode2", 12)
+            };
+            var sources = sourceSpecifications
+                .Select(specification =>
+                {
+                    var sourceRoot = Directory.CreateDirectory(Path.Combine(
+                        projectRoot,
+                        "src",
+                        specification.Item1.Replace('/', Path.DirectorySeparatorChar)))
+                        .FullName;
+                    var path = Path.Combine(sourceRoot, specification.Item2);
+                    var text = string.Join('\n', [
+                        $"Attribute VB_Name = \"{Path.GetFileNameWithoutExtension(path)}\"",
+                        $"Public Enum {specification.Item3}",
+                        "    FirstMode = 1",
+                        "End Enum"
+                    ]);
+                    File.WriteAllText(path, text);
+                    return (
+                        Uri: new Uri(Path.GetFullPath(path)).AbsoluteUri,
+                        Text: text,
+                        Version: specification.Item4);
+                })
+                .ToArray();
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()));
+            foreach (var source in sources)
+            {
+                workspace.OpenDocument(source.Uri, source.Version, source.Text);
+            }
+
+            _ = workspace.CreateProjectSnapshot(sources[0].Uri);
+            _ = workspace.CreateProjectSnapshot(sources[2].Uri);
+            await using var output = new CapturingWriteStream();
+            await using var scheduler = new VbaInteractiveWorkScheduler(
+                options: new VbaInteractiveWorkSchedulerOptions(
+                    CoalesceSupersededMutations: true,
+                    MaxOwnedWork: 1));
+            var publisher = new VbaDiagnosticsPublisher(
+                new LspMessageTransport(Stream.Null, output),
+                workspace);
+            publisher.AttachScheduler(scheduler);
+            await publisher.PublishProjectDiagnosticsAsync(
+                sources[0].Uri,
+                CancellationToken.None);
+            await publisher.PublishProjectDiagnosticsAsync(
+                sources[2].Uri,
+                CancellationToken.None);
+            await Task.WhenAll(sources.Select(source =>
+                    publisher.WaitForIdleAsync(source.Uri)))
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            var baselineMessages = ReadJsonMessages(output.ReadText());
+            foreach (var source in sources)
+            {
+                var parameters = Assert.IsType<JsonObject>(
+                    baselineMessages
+                        .Select(message => Assert.IsType<JsonObject>(message["params"]))
+                        .Last(candidate => candidate["uri"]?.GetValue<string>()
+                            == source.Uri));
+                Assert.Contains(
+                    Assert.IsType<JsonArray>(parameters["diagnostics"]),
+                    diagnostic => Assert.IsType<JsonObject>(diagnostic)["code"]
+                        ?.GetValue<string>() == "validation.duplicateDeclaration");
+            }
+
+            File.WriteAllText(manifestPath, CreateManifest(split: true));
+            await using var reconciler = new VbaProjectReconciler(
+                workspace,
+                publisher,
+                cadence: Timeout.InfiniteTimeSpan);
+            reconciler.AttachScheduler(scheduler);
+            await reconciler.ReconcileAsync()
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            await Task.WhenAll(sources.Select(source =>
+                    publisher.WaitForIdleAsync(source.Uri)))
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            var refreshParameters = ReadJsonMessages(output.ReadText())
+                .Skip(baselineMessages.Count)
+                .Select(message => Assert.IsType<JsonObject>(message["params"]))
+                .Where(parameters => sources.Any(source =>
+                    string.Equals(
+                        source.Uri,
+                        parameters["uri"]?.GetValue<string>(),
+                        StringComparison.OrdinalIgnoreCase)))
+                .ToArray();
+            foreach (var source in sources)
+            {
+                var parameters = refreshParameters.Last(candidate =>
+                    candidate["uri"]?.GetValue<string>() == source.Uri);
+                Assert.Equal(
+                    source.Version,
+                    parameters["version"]?.GetValue<int>());
+                Assert.DoesNotContain(
+                    Assert.IsType<JsonArray>(parameters["diagnostics"]),
+                    diagnostic => Assert.IsType<JsonObject>(diagnostic)["code"]
+                        ?.GetValue<string>() == "validation.duplicateDeclaration");
+            }
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Reconciliation_decode_failure_publishes_encoding_diagnostic_with_a_tracked_project_peer()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-reconciliation-encoding-").FullName;
+        try
+        {
+            var sourceRoot = Directory.CreateDirectory(Path.Combine(
+                projectRoot,
+                "src",
+                "Book1")).FullName;
+            File.WriteAllText(
+                Path.Combine(projectRoot, "vba-project.json"),
+                System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    schemaVersion = 1,
+                    projectName = "ReconciliationEncoding",
+                    primaryDocument = "Book1",
+                    documents = new Dictionary<string, object>
+                    {
+                        ["Book1"] = new
+                        {
+                            kind = "excel",
+                            sourcePath = "src/Book1",
+                            templatePath = "src/Book1/Book1.xlsm",
+                            binPath = "bin/Book1/Book1.xlsm",
+                            publishPath = "publish/Book1/Book1.xlsm",
+                            commonModules = Array.Empty<object>(),
+                            references = Array.Empty<object>()
+                        }
+                    }
+                }));
+            var callerPath = Path.Combine(sourceRoot, "Caller.bas");
+            const string callerText = "Attribute VB_Name = \"Caller\"\n"
+                + "Public Sub Run()\n"
+                + "End Sub\n";
+            File.WriteAllText(callerPath, callerText);
+            var helperPath = Path.Combine(sourceRoot, "Helper.bas");
+            File.WriteAllText(
+                helperPath,
+                "Attribute VB_Name = \"Helper\"\n"
+                    + "Public Sub Work()\n"
+                    + "End Sub\n");
+            var callerUri = new Uri(Path.GetFullPath(callerPath)).AbsoluteUri;
+            var helperUri = new Uri(Path.GetFullPath(helperPath)).AbsoluteUri;
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()),
+                NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+                NullVbaDocumentAnalysisBuildObserver.Instance,
+                NullVbaProjectSnapshotBuildObserver.Instance,
+                SystemVbaProjectFileSystem.Instance,
+                reconciliationAuthorityLeaseObserver: null,
+                sourceDecoding: new DiskSourceDecoding(
+                    supportsLegacyFallback: false,
+                    activeCodePage: 65001));
+            workspace.OpenDocument(callerUri, 7, callerText);
+            _ = workspace.CreateProjectSnapshot(callerUri);
+            File.WriteAllBytes(helperPath, [0xC3, 0x28]);
+            await using var output = new CapturingWriteStream();
+            await using var scheduler = new VbaInteractiveWorkScheduler(
+                options: new VbaInteractiveWorkSchedulerOptions(
+                    CoalesceSupersededMutations: true,
+                    MaxOwnedWork: 1));
+            var publisher = new VbaDiagnosticsPublisher(
+                new LspMessageTransport(Stream.Null, output),
+                workspace);
+            publisher.AttachScheduler(scheduler);
+            await using var reconciler = new VbaProjectReconciler(
+                workspace,
+                publisher,
+                cadence: Timeout.InfiniteTimeSpan);
+            reconciler.AttachScheduler(scheduler);
+
+            await reconciler.ReconcileAsync()
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            await Task.WhenAll(
+                    publisher.WaitForIdleAsync(callerUri),
+                    publisher.WaitForIdleAsync(helperUri))
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            var parameters = Assert.IsType<JsonObject>(
+                ReadJsonMessages(output.ReadText())
+                    .Select(message => Assert.IsType<JsonObject>(message["params"]))
+                    .Last(candidate => candidate["uri"]?.GetValue<string>() == helperUri));
+            var diagnostic = Assert.IsType<JsonObject>(
+                Assert.Single(Assert.IsType<JsonArray>(parameters["diagnostics"])));
+            Assert.Equal(
+                "invalid-disk-source-encoding",
+                diagnostic["code"]?.GetValue<string>());
+            Assert.Contains(
+                helperPath,
+                diagnostic["message"]?.GetValue<string>());
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Project_snapshot_invalidated_during_build_cannot_publish_stale_diagnostics()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-stale-project-diagnostics-").FullName;
+        var buildObserver = new BlockingFirstProjectSnapshotBuildObserver();
+        TaskCompletionSource? releaseSchedulerBlocker = null;
+        try
+        {
+            var sourceRoot = Directory.CreateDirectory(Path.Combine(
+                projectRoot,
+                "src",
+                "Book1")).FullName;
+            File.WriteAllText(
+                Path.Combine(projectRoot, "vba-project.json"),
+                System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    schemaVersion = 1,
+                    projectName = "StaleProjectDiagnostics",
+                    primaryDocument = "Book1",
+                    documents = new Dictionary<string, object>
+                    {
+                        ["Book1"] = new
+                        {
+                            kind = "excel",
+                            sourcePath = "src/Book1",
+                            templatePath = "src/Book1/Book1.xlsm",
+                            binPath = "bin/Book1/Book1.xlsm",
+                            publishPath = "publish/Book1/Book1.xlsm",
+                            commonModules = Array.Empty<object>(),
+                            references = Array.Empty<object>()
+                        }
+                    }
+                }));
+            var firstPath = Path.Combine(sourceRoot, "ProjectTypeA.bas");
+            var firstText = string.Join('\n', [
+                "Attribute VB_Name = \"ProjectTypeA\"",
+                "Public Enum RunMode",
+                "    FirstMode = 1",
+                "End Enum"
+            ]);
+            File.WriteAllText(firstPath, firstText);
+            var secondPath = Path.Combine(sourceRoot, "ProjectTypeB.bas");
+            File.WriteAllText(secondPath, string.Join('\n', [
+                "Attribute VB_Name = \"ProjectTypeB\"",
+                "#If SECOND_CONFIGURATION Then",
+                "Public Enum runmode",
+                "    SecondMode = 2",
+                "End Enum",
+                "#End If"
+            ]));
+            var firstUri = new Uri(Path.GetFullPath(firstPath)).AbsoluteUri;
+            var secondUri = new Uri(Path.GetFullPath(secondPath)).AbsoluteUri;
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()),
+                NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+                NullVbaDocumentAnalysisBuildObserver.Instance,
+                buildObserver);
+            workspace.OpenDocument(firstUri, 7, firstText);
+            await using var output = new CapturingWriteStream();
+            var blockerStarted = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            releaseSchedulerBlocker = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            await using var scheduler = new VbaInteractiveWorkScheduler(
+                options: new VbaInteractiveWorkSchedulerOptions(
+                    CoalesceSupersededMutations: true,
+                    MaxOwnedWork: 1));
+            var blocker = scheduler.AdmitMutation(async cancellationToken =>
+            {
+                blockerStarted.TrySetResult();
+                await releaseSchedulerBlocker.Task.WaitAsync(
+                    cancellationToken);
+            });
+            await blockerStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var publisher = new VbaDiagnosticsPublisher(
+                new LspMessageTransport(Stream.Null, output),
+                workspace);
+            publisher.AttachScheduler(scheduler);
+
+            var stalePublication = Task.Run(
+                () => publisher.PublishProjectDiagnosticsAsync(
+                    firstUri,
+                    CancellationToken.None));
+            await buildObserver.FirstBuildWaiting.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.True(workspace.DeleteSourceDocument(secondUri));
+            await publisher.PublishProjectDiagnosticsAsync(
+                firstUri,
+                CancellationToken.None);
+            buildObserver.ReleaseFirstBuild();
+            await stalePublication.WaitAsync(TimeSpan.FromSeconds(5));
+            releaseSchedulerBlocker.TrySetResult();
+            await blocker.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+            await publisher.WaitForIdleAsync(firstUri)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            var parameters = Assert.IsType<JsonObject>(
+                Assert.Single(ReadJsonMessages(output.ReadText()))["params"]);
+            Assert.Equal(firstUri, parameters["uri"]?.GetValue<string>());
+            Assert.Equal(7, parameters["version"]?.GetValue<int>());
+            Assert.DoesNotContain(
+                Assert.IsType<JsonArray>(parameters["diagnostics"]),
+                diagnostic => Assert.IsType<JsonObject>(diagnostic)["code"]
+                    ?.GetValue<string>() == "validation.duplicateDeclaration");
+        }
+        finally
+        {
+            buildObserver.ReleaseFirstBuild();
+            releaseSchedulerBlocker?.TrySetResult();
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Project_capture_unavailable_while_peer_builds_does_not_publish_document_only_clear()
+    {
+        const string firstUri = "file:///C:/work/First.bas";
+        const string secondUri = "file:///C:/work/Second.bas";
+        const string firstText = "Public Enum RunMode\nEnd Enum\n";
+        const string secondText = "Public Enum runmode\nEnd Enum\n";
+        var buildObserver = new BlockingNextDocumentAnalysisBuildObserver();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()),
+            NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+            buildObserver);
+        workspace.OpenDocument(firstUri, 1, firstText);
+        workspace.OpenDocument(secondUri, 1, secondText);
+        await using var output = new CapturingWriteStream();
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, output),
+            workspace);
+        publisher.AttachScheduler(scheduler);
+        await publisher.PublishProjectDiagnosticsAsync(
+            firstUri,
+            CancellationToken.None);
+        await Task.WhenAll(
+                publisher.WaitForIdleAsync(firstUri),
+                publisher.WaitForIdleAsync(secondUri))
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        var baselineMessageCount = output.MessageCount;
+        Assert.Equal(2, baselineMessageCount);
+
+        buildObserver.BlockNextBuild();
+        var change = Task.Run(() => workspace.ChangeDocument(
+            secondUri,
+            2,
+            secondText + "' pending change\n"));
+        await buildObserver.BuildStarted.Task
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            await publisher.PublishProjectDiagnosticsAsync(
+                firstUri,
+                CancellationToken.None);
+            await publisher.WaitForIdleAsync(firstUri)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Equal(baselineMessageCount, output.MessageCount);
+        }
+        finally
+        {
+            buildObserver.ReleaseBuild();
+        }
+
+        Assert.True(await change.WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
     public async Task Publication_observer_failure_cannot_strand_pending_diagnostics()
     {
         const string uri = "file:///C:/work/Worker.bas";
@@ -379,9 +1339,17 @@ public sealed class VbaDiagnosticsPublisherTests
             Assert.DoesNotContain(
                 helperUri,
                 snapshot.SourceDocuments.Keys);
+            await Task.WhenAll(
+                    publisher.WaitForIdleAsync(callerUri),
+                    publisher.WaitForIdleAsync(helperUri))
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            var initialMessages = ReadJsonMessages(output.ReadText());
+            var helperMessage = Assert.Single(
+                initialMessages,
+                message => Assert.IsType<JsonObject>(message["params"])
+                    ["uri"]?.GetValue<string>() == helperUri);
             var parameters = Assert.IsType<JsonObject>(
-                Assert.Single(ReadJsonMessages(
-                    await output.WaitForMessageCountAsync(1)))["params"]);
+                helperMessage["params"]);
             Assert.Equal(helperUri, parameters["uri"]?.GetValue<string>());
             var diagnostic = Assert.IsType<JsonObject>(
                 Assert.Single(Assert.IsType<JsonArray>(
@@ -389,6 +1357,117 @@ public sealed class VbaDiagnosticsPublisherTests
             Assert.Equal(
                 "invalid-disk-source-encoding",
                 diagnostic["code"]?.GetValue<string>());
+
+            File.WriteAllText(
+                helperPath,
+                "Public Sub Helper()\nEnd Sub\n");
+            Assert.True(workspace.ChangeDocument(
+                callerUri,
+                version: 2,
+                callerText));
+            _ = workspace.CreateProjectSnapshot(callerUri);
+            await Task.WhenAll(
+                    publisher.WaitForIdleAsync(callerUri),
+                    publisher.WaitForIdleAsync(helperUri))
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            var recoveryParameters = ReadJsonMessages(output.ReadText())
+                .Skip(initialMessages.Count)
+                .Select(message => Assert.IsType<JsonObject>(message["params"]))
+                .Last(parameters => parameters["uri"]?.GetValue<string>()
+                    == helperUri);
+            Assert.Empty(Assert.IsType<JsonArray>(
+                recoveryParameters["diagnostics"]));
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Cold_encoding_failure_refreshes_project_diagnostics_for_an_open_peer()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-cold-encoding-project-refresh-").FullName;
+        try
+        {
+            var callerPath = Path.Combine(projectRoot, "Caller.bas");
+            var helperPath = Path.Combine(projectRoot, "Helper.bas");
+            var callerUri = new Uri(callerPath).AbsoluteUri;
+            var helperUri = new Uri(helperPath).AbsoluteUri;
+            const string callerText = "Attribute VB_Name = \"Caller\"\n"
+                + "Public Enum RunMode\n"
+                + "    CallerMode = 1\n"
+                + "End Enum\n";
+            const string helperText = "Attribute VB_Name = \"Helper\"\n"
+                + "Public Enum runmode\n"
+                + "    HelperMode = 2\n"
+                + "End Enum\n";
+            File.WriteAllText(callerPath, callerText);
+            File.WriteAllText(helperPath, helperText);
+            await using var output = new CapturingWriteStream();
+            await using var scheduler = new VbaInteractiveWorkScheduler();
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()),
+                new DiskSourceDecoding(
+                    supportsLegacyFallback: false,
+                    activeCodePage: 65001));
+            workspace.OpenDocument(callerUri, version: 7, callerText);
+            var publisher = new VbaDiagnosticsPublisher(
+                new LspMessageTransport(Stream.Null, output),
+                workspace);
+            publisher.AttachScheduler(scheduler);
+
+            await publisher.PublishProjectDiagnosticsAsync(
+                callerUri,
+                CancellationToken.None);
+            await publisher.WaitForIdleAsync(callerUri)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            var baselineMessages = ReadJsonMessages(output.ReadText());
+            var baselineParameters = Assert.IsType<JsonObject>(
+                baselineMessages
+                    .Select(message => Assert.IsType<JsonObject>(message["params"]))
+                    .Last(parameters => parameters["uri"]?.GetValue<string>()
+                        == callerUri));
+            Assert.Contains(
+                Assert.IsType<JsonArray>(baselineParameters["diagnostics"]),
+                diagnostic => Assert.IsType<JsonObject>(diagnostic)["code"]
+                    ?.GetValue<string>() == "validation.duplicateDeclaration");
+
+            File.WriteAllBytes(helperPath, [0xC3, 0x28]);
+            Assert.True(workspace.ChangeDocument(
+                callerUri,
+                version: 8,
+                callerText));
+            await publisher.PublishProjectDiagnosticsAsync(
+                callerUri,
+                CancellationToken.None);
+            await Task.WhenAll(
+                    publisher.WaitForIdleAsync(callerUri),
+                    publisher.WaitForIdleAsync(helperUri))
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            var refreshParameters = ReadJsonMessages(output.ReadText())
+                .Skip(baselineMessages.Count)
+                .Select(message => Assert.IsType<JsonObject>(message["params"]))
+                .ToArray();
+            var callerParameters = refreshParameters.Last(parameters =>
+                parameters["uri"]?.GetValue<string>() == callerUri);
+            Assert.Equal(8, callerParameters["version"]?.GetValue<int>());
+            Assert.DoesNotContain(
+                Assert.IsType<JsonArray>(callerParameters["diagnostics"]),
+                diagnostic => Assert.IsType<JsonObject>(diagnostic)["code"]
+                    ?.GetValue<string>() == "validation.duplicateDeclaration");
+            var helperParameters = refreshParameters.Last(parameters =>
+                parameters["uri"]?.GetValue<string>() == helperUri);
+            Assert.Equal(
+                "invalid-disk-source-encoding",
+                Assert.IsType<JsonObject>(
+                    Assert.Single(Assert.IsType<JsonArray>(
+                        helperParameters["diagnostics"])))
+                    ["code"]?.GetValue<string>());
         }
         finally
         {
@@ -726,22 +1805,24 @@ public sealed class VbaDiagnosticsPublisherTests
     private sealed class BlockingFirstRevisionObserver
         : IVbaDiagnosticsPublicationObserver
     {
-        private readonly TaskCompletionSource firstRevisionReserved =
+        private readonly TaskCompletionSource<string> firstRevisionReserved =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource releaseFirstRevision =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int reservationClaimed;
 
-        public TaskCompletionSource FirstRevisionReserved
+        public TaskCompletionSource<string> FirstRevisionReserved
             => firstRevisionReserved;
 
         public void AfterRevisionReserved(string uri, long revision)
         {
-            if (revision != 1)
+            if (revision != 1
+                || Interlocked.Exchange(ref reservationClaimed, 1) != 0)
             {
                 return;
             }
 
-            firstRevisionReserved.TrySetResult();
+            firstRevisionReserved.TrySetResult(uri);
             releaseFirstRevision.Task.GetAwaiter().GetResult();
         }
 
@@ -937,6 +2018,62 @@ public sealed class VbaDiagnosticsPublisherTests
 
         public void DeactivateManifest(string uri)
         {
+        }
+    }
+
+    private sealed class BlockingFirstProjectSnapshotBuildObserver
+        : IVbaProjectSnapshotBuildObserver
+    {
+        private readonly ManualResetEventSlim release = new();
+        private int observedBuilds;
+
+        public TaskCompletionSource FirstBuildWaiting { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void BeforeStore(
+            long workspaceVersion,
+            CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref observedBuilds) != 1)
+            {
+                return;
+            }
+
+            FirstBuildWaiting.TrySetResult();
+            release.Wait(cancellationToken);
+        }
+
+        public void ReleaseFirstBuild()
+            => release.Set();
+    }
+
+    private sealed class BlockingNextDocumentAnalysisBuildObserver
+        : IVbaDocumentAnalysisBuildObserver
+    {
+        private readonly TaskCompletionSource releaseBuild = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int blockNext;
+
+        public TaskCompletionSource BuildStarted { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void BlockNextBuild()
+            => Interlocked.Exchange(ref blockNext, 1);
+
+        public void ReleaseBuild()
+            => releaseBuild.TrySetResult();
+
+        public void BeforeBuild(
+            VbaDocumentAnalysisBuildContext context,
+            CancellationToken cancellationToken)
+        {
+            if (Interlocked.Exchange(ref blockNext, 0) == 0)
+            {
+                return;
+            }
+
+            BuildStarted.TrySetResult();
+            releaseBuild.Task.Wait(cancellationToken);
         }
     }
 }

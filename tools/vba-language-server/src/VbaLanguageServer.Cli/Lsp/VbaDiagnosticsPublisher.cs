@@ -1,4 +1,5 @@
 using VbaLanguageServer.Diagnostics;
+using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.Workspace;
 
 namespace VbaLanguageServer.Lsp;
@@ -120,19 +121,8 @@ internal sealed class VbaDiagnosticsPublisher
         var snapshot = workspace.GetDocumentDiagnosticsSnapshot(uri, cancellationToken);
         if (snapshot is null)
         {
-            var diskSourceFailure = workspace.GetDiskSourceFailure(
-                uri,
-                cancellationToken);
-            if (diskSourceFailure is not null)
+            if (EnqueueDiskSourceFailure(uri, cancellationToken))
             {
-                EnqueuePublication(
-                    diskSourceFailure.Uri,
-                    () => workspace.IsCurrentDiskSourceFailure(
-                        diskSourceFailure),
-                    publicationCancellationToken =>
-                        PublishDiskSourceFailureAsync(
-                            diskSourceFailure,
-                            publicationCancellationToken));
                 return Task.CompletedTask;
             }
 
@@ -148,6 +138,72 @@ internal sealed class VbaDiagnosticsPublisher
                 snapshot.ReservationToken),
             cancellationToken => PublishDiagnosticsAsync(snapshot, cancellationToken));
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Publishes the latest document and project diagnostics for every tracked
+    /// source in the project containing the active URI.
+    /// </summary>
+    public Task PublishProjectDiagnosticsAsync(
+        string activeUri,
+        CancellationToken cancellationToken)
+    {
+        var diskSourceFailureEnqueued = EnqueueDiskSourceFailure(
+            activeUri,
+            cancellationToken);
+        var snapshots = workspace.GetProjectDiagnosticsSnapshots(
+            activeUri,
+            cancellationToken);
+        if (snapshots is null)
+        {
+            return Task.CompletedTask;
+        }
+
+        if (snapshots.Count == 0)
+        {
+            return diskSourceFailureEnqueued
+                ? Task.CompletedTask
+                : PublishTrackedDiagnosticsAsync(activeUri, cancellationToken);
+        }
+
+        var batchOwnership = snapshots[0];
+        EnqueuePublications(
+            snapshots
+                .Select(snapshot => new DiagnosticsPublication(
+                    snapshot.Analysis.Uri,
+                    () => workspace.AreLatestDiagnosticsSnapshots(
+                        snapshot.ProjectOwnership,
+                        snapshot.ProjectSnapshotOwnership),
+                    publicationCancellationToken =>
+                        PublishDiagnosticsAsync(
+                            snapshot,
+                            publicationCancellationToken)))
+                .ToArray(),
+            () => workspace.AreLatestDiagnosticsSnapshots(
+                batchOwnership.ProjectOwnership,
+                batchOwnership.ProjectSnapshotOwnership));
+
+        return Task.CompletedTask;
+    }
+
+    private bool EnqueueDiskSourceFailure(
+        string uri,
+        CancellationToken cancellationToken)
+    {
+        var failure = workspace.GetDiskSourceFailure(uri, cancellationToken);
+        if (failure is null)
+        {
+            return false;
+        }
+
+        EnqueuePublication(
+            failure.Uri,
+            () => workspace.IsCurrentDiskSourceFailure(failure),
+            publicationCancellationToken =>
+                PublishDiskSourceFailureAsync(
+                    failure,
+                    publicationCancellationToken));
+        return true;
     }
 
     private Task PublishDiskSourceFailureAsync(
@@ -246,6 +302,11 @@ internal sealed class VbaDiagnosticsPublisher
         CancellationToken cancellationToken)
         => _ = PublishTrackedDiagnosticsAsync(uri, cancellationToken);
 
+    void IVbaProjectDiskReconciliationDiagnostics.EnqueueProjectDiagnostics(
+        string uri,
+        CancellationToken cancellationToken)
+        => _ = PublishProjectDiagnosticsAsync(uri, cancellationToken);
+
     void IVbaProjectDiskReconciliationDiagnostics.EnqueueEmptyDiagnostics(
         string uri,
         CancellationToken cancellationToken)
@@ -298,28 +359,41 @@ internal sealed class VbaDiagnosticsPublisher
     }
 
     private void OnDiskSourceDiagnosticsChanged(string uri)
-        => _ = PublishTrackedDiagnosticsAsync(
+    {
+        if (workspace.GetDiskSourceFailure(uri, CancellationToken.None) is null)
+        {
+            _ = PublishEmptyDiagnosticsAsync(
+                uri,
+                CancellationToken.None);
+        }
+
+        _ = PublishProjectDiagnosticsAsync(
             uri,
             CancellationToken.None);
+    }
 
     private Task PublishDiagnosticsAsync(
         VbaDocumentDiagnosticsSnapshot snapshot,
         CancellationToken cancellationToken)
     {
         var analysis = snapshot.Analysis;
+        var diagnostics = analysis.Diagnostics with
+        {
+            ProjectValidationDiagnostics = snapshot.ProjectValidationDiagnostics
+        };
         object parameters = snapshot.ClientVersion is { } version
             ? new
             {
                 uri = analysis.Uri,
                 version,
                 diagnostics = VbaLspFeatureProjection.CreateDiagnostics(
-                    analysis.Diagnostics.Diagnostics)
+                    diagnostics.Diagnostics)
             }
             : new
             {
                 uri = analysis.Uri,
                 diagnostics = VbaLspFeatureProjection.CreateDiagnostics(
-                    analysis.Diagnostics.Diagnostics)
+                    diagnostics.Diagnostics)
             };
         return transport.WriteNotificationAsync(
             "textDocument/publishDiagnostics",
@@ -340,57 +414,106 @@ internal sealed class VbaDiagnosticsPublisher
         string uri,
         Func<bool> isStillPublishable,
         Func<CancellationToken, Task> publish)
+        => EnqueuePublications(
+        [
+            new DiagnosticsPublication(uri, isStillPublishable, publish)
+        ]);
+
+    private void EnqueuePublications(
+        IReadOnlyList<DiagnosticsPublication> publications,
+        Func<bool>? isBatchStillPublishable = null)
     {
-        var revisionObserved = new TaskCompletionSource(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        long revision;
+        var reservations = new List<DiagnosticsPublicationReservation>(
+            publications.Count);
         lock (enqueueGate)
         {
+            if (isBatchStillPublishable is not null
+                && !isBatchStillPublishable())
+            {
+                return;
+            }
+
             VbaLatestOnlyBackgroundMailbox mailbox;
             lock (gate)
             {
                 mailbox = publicationMailbox
                     ?? throw new InvalidOperationException(
                         "The diagnostics scheduler must be attached before publication starts.");
-                latestPublishRevisions.TryGetValue(uri, out var previous);
-                revision = previous + 1;
-                latestPublishRevisions[uri] = revision;
+                foreach (var publication in publications)
+                {
+                    latestPublishRevisions.TryGetValue(
+                        publication.Uri,
+                        out var previous);
+                    var revision = previous + 1;
+                    latestPublishRevisions[publication.Uri] = revision;
+                    reservations.Add(new DiagnosticsPublicationReservation(
+                        publication,
+                        revision,
+                        new TaskCompletionSource(
+                            TaskCreationOptions.RunContinuationsAsynchronously)));
+                }
             }
 
-            mailbox.Post(
-                uri,
-                async cancellationToken =>
-                {
-                    await revisionObserved.Task.ConfigureAwait(false);
-                    if (!IsLatestPublishRevision(uri, revision)
-                        || !isStillPublishable())
+            foreach (var reservation in reservations)
+            {
+                mailbox.Post(
+                    reservation.Publication.Uri,
+                    async cancellationToken =>
                     {
-                        return;
-                    }
+                        await reservation.RevisionObserved.Task.ConfigureAwait(false);
+                        if (!IsLatestPublishRevision(
+                                reservation.Publication.Uri,
+                                reservation.Revision)
+                            || !reservation.Publication.IsStillPublishable())
+                        {
+                            return;
+                        }
 
-                    try
-                    {
-                        await publish(cancellationToken).ConfigureAwait(false);
-                    }
-                    catch (IOException)
-                    {
-                    }
-                    catch (ObjectDisposedException)
-                    {
-                    }
-                },
-                () => MarkPublishRevisionTerminal(uri, revision));
+                        try
+                        {
+                            await reservation.Publication.Publish(cancellationToken)
+                                .ConfigureAwait(false);
+                        }
+                        catch (IOException)
+                        {
+                        }
+                        catch (ObjectDisposedException)
+                        {
+                        }
+                    },
+                    () => MarkPublishRevisionTerminal(
+                        reservation.Publication.Uri,
+                        reservation.Revision));
+            }
         }
 
         try
         {
-            publicationObserver.AfterRevisionReserved(uri, revision);
+            foreach (var reservation in reservations)
+            {
+                publicationObserver.AfterRevisionReserved(
+                    reservation.Publication.Uri,
+                    reservation.Revision);
+            }
         }
         finally
         {
-            revisionObserved.TrySetResult();
+            foreach (var reservation in reservations)
+            {
+                reservation.RevisionObserved.TrySetResult();
+            }
         }
     }
+
+    private sealed record DiagnosticsPublication(
+        string Uri,
+        Func<bool> IsStillPublishable,
+        Func<CancellationToken, Task> Publish);
+
+    private sealed record DiagnosticsPublicationReservation(
+        DiagnosticsPublication Publication,
+        long Revision,
+        TaskCompletionSource RevisionObserved);
 
     private void MarkPublishRevisionTerminal(
         string uri,

@@ -2007,8 +2007,12 @@ internal static class VbaSyntaxTreeParser
             return VbaDeclarationVisibility.Public;
         }
 
-        if (visibility.Equals("Public", StringComparison.OrdinalIgnoreCase)
-            || visibility.Equals("Friend", StringComparison.OrdinalIgnoreCase))
+        if (visibility.Equals("Friend", StringComparison.OrdinalIgnoreCase))
+        {
+            return VbaDeclarationVisibility.Friend;
+        }
+
+        if (visibility.Equals("Public", StringComparison.OrdinalIgnoreCase))
         {
             return VbaDeclarationVisibility.Public;
         }

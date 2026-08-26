@@ -23,13 +23,15 @@ public sealed class VbaNameResolutionService
         VbaProjectReferenceSelection? referenceSelection,
         VbaProjectReferenceCatalogSet referenceCatalogs,
         IReadOnlyList<VbaSourceDefinition>? activeReferenceDefinitions = null)
-        : this(
+    {
+        candidates = new VbaNameCandidateInventory(
             documents,
             referenceSelection,
             referenceCatalogs,
-            activeReferenceDefinitions,
-            new VbaResolutionPolicy())
-    {
+            activeReferenceDefinitions
+                ?? referenceCatalogs.GetActiveDefinitions(referenceSelection));
+        resolutionPolicy = new VbaResolutionPolicy(
+            candidates.ConditionalFamilies);
     }
 
     internal VbaNameResolutionService(
@@ -78,7 +80,8 @@ public sealed class VbaNameResolutionService
     internal IReadOnlyList<VbaRankedDefinition> GetRankedCompletionDefinitions(
         string uri,
         VbaPosition position,
-        Func<VbaSourceDefinition, bool>? definitionFilter)
+        Func<VbaSourceDefinition, bool>? definitionFilter,
+        Func<VbaSourceDefinition, bool>? candidateDomainFilter = null)
     {
         var currentDocument = candidates.FindDocument(uri);
         if (currentDocument is null)
@@ -88,7 +91,8 @@ public sealed class VbaNameResolutionService
 
         return ResolveRankedCompletionCandidates(
                 GetUnqualifiedCandidates(currentDocument, position, includeLocals: true),
-                definitionFilter);
+                definitionFilter,
+                candidateDomainFilter: candidateDomainFilter);
     }
 
     /// <summary>
@@ -165,6 +169,28 @@ public sealed class VbaNameResolutionService
         => HasLocalQualifierShadow(currentDocument, position, qualifier)
             ? []
             : GetVisibleSourceModuleDefinitions(currentDocument, qualifier);
+
+    internal IReadOnlyList<VbaSourceDefinition>
+        GetResolvedSourceQualifiedCompletionDefinitions(
+            VbaSourceDocument currentDocument,
+            VbaPosition position,
+            string qualifier,
+            Func<VbaSourceDefinition, bool> candidateDomainFilter,
+            Func<VbaSourceDefinition, bool> definitionFilter)
+        => HasLocalQualifierShadow(currentDocument, position, qualifier)
+            ? []
+            : ResolveRankedCompletionCandidates(
+                    GetVisibleSourceModuleDefinitions(
+                            currentDocument,
+                            qualifier)
+                        .Select(definition => new VbaRankedDefinition(
+                            definition,
+                            VbaResolutionPolicy.CurrentModuleRank)),
+                    definitionFilter,
+                    preferEligibleRepresentative: true,
+                    candidateDomainFilter: candidateDomainFilter)
+                .Select(candidate => candidate.Definition)
+                .ToArray();
 
     /// <summary>
     /// Gets project-level definitions that can participate in document formatting.
@@ -272,7 +298,7 @@ public sealed class VbaNameResolutionService
             qualifier,
             identifier,
             preferredDefinition,
-            fallbackToUnfiltered).Definition;
+            fallbackToUnfiltered).Target?.SelectedDefinition;
 
     private VbaNameResolutionOutcome ResolvePreferredOutcomeCore(
         string uri,
@@ -329,7 +355,7 @@ public sealed class VbaNameResolutionService
             .Where(candidate => resolutionPolicy.IsReferenceTarget(candidate.Definition))
             .Where(candidate => candidate.Definition.Kind
                 != VbaSourceDefinitionKind.TypeMember)
-            .Where(candidate => candidate.Visibility == VbaSourceDefinitionVisibility.Public))
+            .Where(candidate => candidate.Visibility.IsProjectVisible()))
         {
             yield return new VbaRankedDefinition(candidate.Definition, VbaResolutionPolicy.ProjectRank);
         }
@@ -351,7 +377,7 @@ public sealed class VbaNameResolutionService
             var allowPrivate = SameUri(currentDocument.Uri, candidate.Uri);
             if (resolutionPolicy.IsReferenceTarget(candidate.Definition)
                 && candidate.Definition.Kind != VbaSourceDefinitionKind.TypeMember
-                && (allowPrivate || candidate.Visibility == VbaSourceDefinitionVisibility.Public))
+                && (allowPrivate || candidate.Visibility.IsProjectVisible()))
             {
                 yield return new VbaRankedDefinition(candidate.Definition, VbaResolutionPolicy.CurrentModuleRank);
             }
@@ -395,7 +421,7 @@ public sealed class VbaNameResolutionService
         return candidates.GetSourceCandidates(qualifier)
             .Where(candidate => !SameUri(candidate.Uri, currentDocument.Uri))
             .Where(candidate => resolutionPolicy.IsReferenceTarget(candidate.Definition))
-            .Any(candidate => candidate.Visibility == VbaSourceDefinitionVisibility.Public);
+            .Any(candidate => candidate.Visibility.IsProjectVisible());
     }
 
     private bool HasLocalQualifierShadow(
@@ -414,7 +440,7 @@ public sealed class VbaNameResolutionService
         var definitions = candidates.GetSourceCandidatesByModule(qualifier)
             .Where(candidate => resolutionPolicy.IsReferenceTarget(candidate.Definition))
             .Where(candidate => SameUri(currentDocument.Uri, candidate.Uri)
-                || candidate.Visibility == VbaSourceDefinitionVisibility.Public)
+                || candidate.Visibility.IsProjectVisible())
             .Select(candidate => candidate.Definition)
             .ToArray();
         return definitions;
@@ -429,19 +455,62 @@ public sealed class VbaNameResolutionService
 
     private IReadOnlyList<VbaRankedDefinition> ResolveRankedCompletionCandidates(
         IEnumerable<VbaRankedDefinition> candidates,
-        Func<VbaSourceDefinition, bool>? definitionFilter = null)
+        Func<VbaSourceDefinition, bool>? definitionFilter = null,
+        bool preferEligibleRepresentative = false,
+        Func<VbaSourceDefinition, bool>? candidateDomainFilter = null)
     {
         return candidates
             .GroupBy(candidate => candidate.Definition.Name, StringComparer.OrdinalIgnoreCase)
             .Select(group =>
             {
-                var bestRank = group.Min(candidate => candidate.Rank);
-                var definition = definitionFilter is null
-                ? ResolveRankedCandidates(group)
-                : ResolveBestRankCandidates(
-                    group,
-                    definitionFilter,
-                    fallbackToUnfiltered: false);
+                var domainCandidates = candidateDomainFilter is null
+                    ? group.ToArray()
+                    : group.Where(candidate => candidateDomainFilter(
+                            candidate.Definition))
+                        .ToArray();
+                if (domainCandidates.Length == 0)
+                {
+                    return null;
+                }
+
+                var bestRank = domainCandidates.Min(candidate => candidate.Rank);
+                var outcome = resolutionPolicy.ResolveRankedCandidatesOutcome(
+                    domainCandidates,
+                    this.candidates.ReferenceSelection);
+                if (outcome.Target is null)
+                {
+                    return null;
+                }
+
+                VbaSourceDefinition? definition;
+                if (definitionFilter is null)
+                {
+                    definition = outcome.Target.SelectedDefinition;
+                }
+                else
+                {
+                    var eligibleOutcome = resolutionPolicy
+                            .ResolveRankedCandidatesOutcome(
+                            domainCandidates
+                                .Where(candidate =>
+                                    definitionFilter(candidate.Definition))
+                                .Where(candidate => resolutionPolicy
+                                    .CreateNameTarget(candidate.Definition)
+                                    .Identity == outcome.Target.Identity),
+                            this.candidates.ReferenceSelection);
+                    var preferEligiblePropertyAccessor =
+                        outcome.Target is VbaPropertyNameTarget propertyTarget
+                        && propertyTarget.AccessorTargets.Any(
+                            target => target.IsConditionalFamily);
+                    definition = eligibleOutcome.Target is null
+                        ? null
+                        : preferEligibleRepresentative
+                            || preferEligiblePropertyAccessor
+                            || outcome.Target.IsConditionalFamily
+                            || eligibleOutcome.Target.IsConditionalFamily
+                                ? eligibleOutcome.Target.SelectedDefinition
+                                : outcome.Target.SelectedDefinition;
+                }
                 return definition is null
                     ? null
                     : new VbaRankedDefinition(definition, bestRank);
@@ -461,7 +530,7 @@ public sealed class VbaNameResolutionService
         => ResolveBestRankCandidatesOutcome(
             candidates,
             definitionFilter,
-            fallbackToUnfiltered).Definition;
+            fallbackToUnfiltered).Target?.SelectedDefinition;
 
     private VbaNameResolutionOutcome ResolveBestRankCandidatesOutcome(
         IEnumerable<VbaRankedDefinition> candidates,
@@ -493,7 +562,7 @@ public sealed class VbaNameResolutionService
         VbaTypeReference typeReference)
         => ResolveTypeDefinitionOutcome(
             currentDocument,
-            typeReference).Definition;
+            typeReference).Target?.SelectedDefinition;
 
     internal VbaNameResolutionOutcome ResolveTypeDefinitionOutcome(
         VbaSourceDocument currentDocument,
@@ -561,7 +630,7 @@ public sealed class VbaNameResolutionService
                     .Where(candidate => candidate.Definition.Kind is not (
                         VbaSourceDefinitionKind.Class or VbaSourceDefinitionKind.Form))
                     .Where(candidate => SameUri(candidate.Uri, currentDocument.Uri)
-                        || candidate.Visibility == VbaSourceDefinitionVisibility.Public)
+                        || candidate.Visibility.IsProjectVisible())
                     .Select(candidate => new VbaRankedDefinition(
                         candidate.Definition,
                         VbaResolutionPolicy.ReferenceRank))
@@ -588,7 +657,7 @@ public sealed class VbaNameResolutionService
         visibleDefinitions.AddRange(candidates.GetSourceCandidates(requestedName: null)
             .Where(candidate => !SameUri(candidate.Uri, currentDocument.Uri))
             .Where(candidate => resolutionPolicy.IsTypeDefinition(candidate.Definition))
-            .Where(candidate => candidate.Visibility == VbaSourceDefinitionVisibility.Public)
+            .Where(candidate => candidate.Visibility.IsProjectVisible())
             .Select(candidate => new VbaRankedDefinition(
                 candidate.Definition,
                 VbaResolutionPolicy.ProjectRank)));
@@ -665,12 +734,14 @@ public sealed class VbaNameResolutionService
         var sourceDefinitions = definitions
             .Where(definition => definition.Identity.Origin != VbaDefinitionOrigin.ProjectReference)
             .ToArray();
-        if (sourceDefinitions.Length == 1)
+        var logicalSourceDefinitions = candidates.ConditionalFamilies
+            .Coalesce(sourceDefinitions);
+        if (logicalSourceDefinitions.Count == 1)
         {
-            return sourceDefinitions[0];
+            return logicalSourceDefinitions[0];
         }
 
-        return sourceDefinitions.Length > 1
+        return logicalSourceDefinitions.Count > 1
             ? null
             : ResolveReferenceCandidates(definitions);
     }
@@ -684,7 +755,9 @@ public sealed class VbaNameResolutionService
             : candidates.GetCanonicalReferenceQualifier(definition.ModuleName, qualifier);
 
     private VbaSourceDefinition? ResolveReferenceTypeDefinition(string qualifier, string typeName)
-        => ResolveReferenceTypeDefinitionOutcome(qualifier, typeName).Definition;
+        => ResolveReferenceTypeDefinitionOutcome(
+            qualifier,
+            typeName).Target?.SelectedDefinition;
 
     private VbaNameResolutionOutcome ResolveReferenceTypeDefinitionOutcome(
         string qualifier,
@@ -700,7 +773,7 @@ public sealed class VbaNameResolutionService
         => ResolveSourceTypeDefinitionOutcome(
             currentDocument,
             typeName,
-            qualifier).Definition;
+            qualifier).Target?.SelectedDefinition;
 
     private VbaNameResolutionOutcome ResolveSourceTypeDefinitionOutcome(
         VbaSourceDocument currentDocument,
@@ -711,7 +784,7 @@ public sealed class VbaNameResolutionService
             .Where(candidate => resolutionPolicy.IsTypeDefinition(candidate.Definition))
             .Where(candidate => qualifier is null || SameName(candidate.ModuleName, qualifier))
             .Where(candidate => SameUri(candidate.Uri, currentDocument.Uri)
-                || candidate.Visibility == VbaSourceDefinitionVisibility.Public)
+                || candidate.Visibility.IsProjectVisible())
             .Select(candidate => new VbaRankedDefinition(
                 candidate.Definition,
                 SameUri(candidate.Uri, currentDocument.Uri)
@@ -754,12 +827,13 @@ public sealed class VbaNameResolutionService
             || (definition.ParentTypeName is null
                 && resolutionPolicy.IsTypeDefinition(definition));
 
-    private static VbaSourceDefinition? ResolveMemberCandidateGroup(
+    private VbaSourceDefinition? ResolveMemberCandidateGroup(
         IEnumerable<VbaSourceDefinition> definitions)
-    {
-        var coalesced = VbaPropertyAccessorCoalescing.Coalesce(definitions);
-        return coalesced.Count == 1 ? coalesced[0] : null;
-    }
+        => resolutionPolicy.ResolveRankedCandidates(
+            definitions.Select(definition => new VbaRankedDefinition(
+                definition,
+                VbaResolutionPolicy.CurrentModuleRank)),
+            candidates.ReferenceSelection);
 
     private IEnumerable<VbaNameCandidate> GetMemberCandidates(
         VbaSourceDocument currentDocument,
@@ -779,16 +853,23 @@ public sealed class VbaNameResolutionService
             return [];
         }
 
-        var ownerCandidates = owner.Kind is VbaSourceDefinitionKind.Type
-                or VbaSourceDefinitionKind.Enum
-            ? candidates.GetSourceCandidatesByParentType(owner.Name)
-            : candidates.GetSourceCandidatesByModule(owner.Name);
-        return ownerCandidates
-            .Where(candidate => SameUri(candidate.Uri, owner.Uri))
+        var ownerVariants = candidates.ConditionalFamilies
+            .GetLogicalDefinitions(owner);
+        return ownerVariants
+            .SelectMany(ownerVariant =>
+            {
+                var ownerCandidates = ownerVariant.Kind is VbaSourceDefinitionKind.Type
+                        or VbaSourceDefinitionKind.Enum
+                    ? candidates.GetSourceCandidatesByParentType(ownerVariant.Name)
+                    : candidates.GetSourceCandidatesByModule(ownerVariant.Name);
+                return ownerCandidates.Where(candidate =>
+                    SameUri(candidate.Uri, ownerVariant.Uri));
+            })
+            .DistinctBy(candidate => candidate.Definition.Identity)
             .Where(candidate => resolutionPolicy.IsReferenceTarget(
                 candidate.Definition))
             .Where(candidate => SameUri(candidate.Uri, currentDocument.Uri)
-                || candidate.Visibility == VbaSourceDefinitionVisibility.Public);
+                || candidate.Visibility.IsProjectVisible());
     }
 
     private IEnumerable<VbaNameCandidate> GetMemberCandidates(
@@ -803,7 +884,7 @@ public sealed class VbaNameResolutionService
                 .Where(candidate => resolutionPolicy.IsReferenceTarget(
                     candidate.Definition))
                 .Where(candidate => SameUri(candidate.Uri, currentDocument.Uri)
-                    || candidate.Visibility == VbaSourceDefinitionVisibility.Public);
+                    || candidate.Visibility.IsProjectVisible());
 
     private static bool MatchesRequestedName(VbaNameCandidate candidate, string? requestedName)
         => requestedName is null || SameName(candidate.Name, requestedName);
@@ -879,6 +960,7 @@ internal sealed class VbaNameCandidateInventory
             .Where(candidate => candidate.ParentTypeName is not null)
             .ToLookup(candidate => candidate.ParentTypeName!, StringComparer.OrdinalIgnoreCase);
         activeReferenceQualifiers = referenceCatalogs.GetActiveQualifierAliases(referenceSelection);
+        ConditionalFamilies = new VbaConditionalDeclarationFamilyIndex(documents);
         var qualifiedReferenceDefinitions = activeReferenceQualifiers
             .Select(candidate => candidate.Qualifier)
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -900,6 +982,8 @@ internal sealed class VbaNameCandidateInventory
     }
 
     public VbaProjectReferenceSelection? ReferenceSelection { get; }
+
+    public VbaConditionalDeclarationFamilyIndex ConditionalFamilies { get; }
 
     public bool HasReferenceSelection => referenceCandidates.Count > 0 || activeReferenceQualifiers.Count > 0;
 

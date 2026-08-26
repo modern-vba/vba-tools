@@ -87,6 +87,11 @@ public enum VbaSourceDefinitionVisibility
     Public,
 
     /// <summary>
+    /// Visible throughout the current VBA project.
+    /// </summary>
+    Friend,
+
+    /// <summary>
     /// Visible only inside the declaring module.
     /// </summary>
     Private,
@@ -95,6 +100,13 @@ public enum VbaSourceDefinitionVisibility
     /// Visible only inside the declaring procedure.
     /// </summary>
     Local
+}
+
+internal static class VbaSourceDefinitionVisibilityFacts
+{
+    public static bool IsProjectVisible(this VbaSourceDefinitionVisibility visibility)
+        => visibility is VbaSourceDefinitionVisibility.Public
+            or VbaSourceDefinitionVisibility.Friend;
 }
 
 /// <summary>
@@ -324,6 +336,7 @@ public readonly struct VbaDefinitionIdentity : IEquatable<VbaDefinitionIdentity>
 /// <param name="PropertyAccessorKind">The source accessor kind, or null for a logical or reference property.</param>
 /// <param name="IsArray">Whether the source declaration carries a VBA array marker.</param>
 /// <param name="ReferenceGlobalExposure">The explicit public root exposure for a reference definition.</param>
+/// <param name="ConditionalCompilationPath">The declaration's structural conditional-compilation branch path, or null when ownership is indeterminate.</param>
 public sealed record VbaSourceDefinition(
     VbaDefinitionIdentity Identity,
     VbaDefinitionLocation Location,
@@ -343,7 +356,8 @@ public sealed record VbaSourceDefinition(
     bool IsCreatable = false,
     VbaPropertyAccessorKind? PropertyAccessorKind = null,
     bool IsArray = false,
-    ReferenceDefinitionGlobalExposure ReferenceGlobalExposure = ReferenceDefinitionGlobalExposure.None)
+    ReferenceDefinitionGlobalExposure ReferenceGlobalExposure = ReferenceDefinitionGlobalExposure.None,
+    VbaConditionalCompilationBranchPath? ConditionalCompilationPath = null)
 {
     /// <summary>
     /// Gets the editor-facing definition URI.
@@ -433,6 +447,18 @@ public sealed record VbaCallableSignature(
 public sealed record VbaSignatureHelp(VbaCallableSignature Signature, int ActiveParameter);
 
 /// <summary>
+/// Represents one editor-neutral Hover result and every physical declaration
+/// retained by its logical semantic target.
+/// </summary>
+/// <param name="CanonicalName">The stable presentation name for the logical target.</param>
+/// <param name="Definitions">The physical declarations retained for presentation.</param>
+/// <param name="IsConditionalFamily">Whether the target is a conditional declaration family.</param>
+internal sealed record VbaHoverResult(
+    string CanonicalName,
+    IReadOnlyList<VbaSourceDefinition> Definitions,
+    bool IsConditionalFamily);
+
+/// <summary>
 /// Identifies the semantic origin of a completed editor-neutral completion candidate.
 /// </summary>
 public enum VbaCompletionCandidateKind
@@ -482,13 +508,15 @@ public enum VbaCompletionCandidateKind
 /// <param name="FilterText">The text used to filter the candidate.</param>
 /// <param name="Definition">The admitted source or project-reference definition.</param>
 /// <param name="TextEdit">The explicit replacement edit, when syntax supplied a replacement range.</param>
+/// <param name="IsConditionalFamily">Whether the candidate represents a conditional declaration family.</param>
 public sealed record VbaCompletionCandidate(
     string Label,
     VbaCompletionCandidateKind Kind,
     string? InsertText = null,
     string? FilterText = null,
     VbaSourceDefinition? Definition = null,
-    VbaTextEdit? TextEdit = null)
+    VbaTextEdit? TextEdit = null,
+    bool IsConditionalFamily = false)
 {
     /// <summary>
     /// Gets the request-relative name-resolution rank used by editor projection.
@@ -625,7 +653,7 @@ internal static class VbaSourceDocumentProjector
         var moduleDefinition = CreateModuleDefinition(uri, syntaxTree.Module);
         definitions.Add(moduleDefinition);
         definitions.AddRange(syntaxTree.Module.Declarations.Select(declaration =>
-            CreateSourceDefinition(uri, moduleDefinition.Name, declaration)));
+            CreateSourceDefinition(uri, moduleDefinition.Name, syntaxTree, declaration)));
 
         return CreateProjectedDocument(
             uri,
@@ -671,7 +699,11 @@ internal static class VbaSourceDocumentProjector
             definitions.Add(
                 reusableDefinitions.TryGetValue(declaration, out var definition)
                     ? definition
-                    : CreateSourceDefinition(uri, moduleDefinition.Name, declaration));
+                    : CreateSourceDefinition(
+                        uri,
+                        moduleDefinition.Name,
+                        syntaxTree,
+                        declaration));
         }
 
         return CreateProjectedDocument(
@@ -757,6 +789,7 @@ internal static class VbaSourceDocumentProjector
                     definition,
                     uri,
                     candidateModuleDefinition.Name,
+                    previousSyntaxTree,
                     declaration))
             {
                 return false;
@@ -807,6 +840,7 @@ internal static class VbaSourceDocumentProjector
         VbaSourceDefinition definition,
         string uri,
         string moduleName,
+        VbaSyntaxTree syntaxTree,
         VbaDeclarationSyntax declaration)
         => definition.Identity.Origin == VbaDefinitionOrigin.Source
             && uri.Equals(definition.Identity.SourceUri, StringComparison.Ordinal)
@@ -815,7 +849,10 @@ internal static class VbaSourceDocumentProjector
             && definition.ModuleName.Equals(moduleName, StringComparison.Ordinal)
             && definition.Kind == MapDeclarationKind(declaration.Kind)
             && definition.Visibility == MapVisibility(declaration.Visibility)
-            && RangeMatches(definition.Range, declaration.Range);
+            && RangeMatches(definition.Range, declaration.Range)
+            && Equals(
+                definition.ConditionalCompilationPath,
+                GetConditionalCompilationPath(syntaxTree, declaration));
 
     private static bool RangeMatches(VbaRange definitionRange, VbaSyntaxRange syntaxRange)
         => definitionRange.Start.Line == syntaxRange.Start.Line
@@ -849,12 +886,14 @@ internal static class VbaSourceDocumentProjector
             MapModuleKind(module.Kind),
             VbaSourceDefinitionVisibility.Public,
             module.Identity.Name,
-            IsCreatable: module.Kind is VbaModuleKind.ClassModule or VbaModuleKind.FormModule);
+            IsCreatable: module.Kind is VbaModuleKind.ClassModule or VbaModuleKind.FormModule,
+            ConditionalCompilationPath: VbaConditionalCompilationBranchPath.Root);
     }
 
     private static VbaSourceDefinition CreateSourceDefinition(
         string uri,
         string moduleName,
+        VbaSyntaxTree syntaxTree,
         VbaDeclarationSyntax declaration)
     {
         var range = MapRange(declaration.Range);
@@ -875,8 +914,22 @@ internal static class VbaSourceDocumentProjector
             DeclarationLabel: declaration.DeclarationLabel,
             PropertyAccess: MapPropertyAccess(declaration.PropertyAccessorKind),
             PropertyAccessorKind: declaration.PropertyAccessorKind,
-            IsArray: declaration.IsArray);
+            IsArray: declaration.IsArray,
+            ConditionalCompilationPath: GetConditionalCompilationPath(
+                syntaxTree,
+                declaration));
     }
+
+    private static VbaConditionalCompilationBranchPath? GetConditionalCompilationPath(
+        VbaSyntaxTree syntaxTree,
+        VbaDeclarationSyntax declaration)
+        => VbaConditionalCompilationBranchFacts.TryGetPath(
+            syntaxTree,
+            declaration.Range,
+            requireCompleteStructure: true,
+            out var path)
+                ? path
+                : null;
 
     private static VbaSourceDefinitionKind MapModuleKind(VbaModuleKind kind)
         => kind switch
@@ -906,6 +959,7 @@ internal static class VbaSourceDocumentProjector
         => visibility switch
         {
             VbaDeclarationVisibility.Public => VbaSourceDefinitionVisibility.Public,
+            VbaDeclarationVisibility.Friend => VbaSourceDefinitionVisibility.Friend,
             VbaDeclarationVisibility.Local => VbaSourceDefinitionVisibility.Local,
             _ => VbaSourceDefinitionVisibility.Private
         };
