@@ -5,24 +5,6 @@ namespace VbaDev.Infrastructure.Workbooks;
 
 internal static class HostClassGeneratedSignatureParser
 {
-    private static readonly IReadOnlyDictionary<string, string> IntrinsicTypes =
-        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["Boolean"] = "Boolean",
-            ["Byte"] = "Byte",
-            ["Currency"] = "Currency",
-            ["Date"] = "Date",
-            ["Double"] = "Double",
-            ["Integer"] = "Integer",
-            ["Long"] = "Long",
-            ["LongLong"] = "LongLong",
-            ["LongPtr"] = "LongPtr",
-            ["Object"] = "Object",
-            ["Single"] = "Single",
-            ["String"] = "String",
-            ["Variant"] = "Variant"
-        };
-
     public static HostEventSignature Parse(
         string eventName,
         string procedureName,
@@ -30,8 +12,15 @@ internal static class HostClassGeneratedSignatureParser
         bool authoringAvailable,
         bool existingHandlerRecognizable)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(eventName);
-        ArgumentException.ThrowIfNullOrWhiteSpace(procedureName);
+        ArgumentException.ThrowIfNullOrEmpty(eventName);
+        ArgumentNullException.ThrowIfNull(procedureName);
+        if (!VbaIdentifier.IsIdentifier(procedureName))
+        {
+            throw new ArgumentException(
+                "The generated procedure name must be an exact VBA identifier.",
+                nameof(procedureName));
+        }
+
         ArgumentNullException.ThrowIfNull(generatedSource);
         var tree = VbaSyntaxTree.ParseModule(
             $"vba-dev://host-class/{Uri.EscapeDataString(procedureName)}",
@@ -88,12 +77,14 @@ internal static class HostClassGeneratedSignatureParser
         }
 
         if (typeReference.Qualifier is null &&
-            IntrinsicTypes.TryGetValue(typeReference.Name, out var canonicalName))
+            VbaLanguageVocabulary.TryGetCanonicalTypeName(
+                typeReference.Name,
+                out var canonicalName))
         {
             return new IntrinsicHostEventTypeReference(canonicalName);
         }
 
-        var displayName = string.IsNullOrWhiteSpace(typeReference.Qualifier)
+        var displayName = typeReference.Qualifier is null
             ? typeReference.Name
             : $"{typeReference.Qualifier}.{typeReference.Name}";
         return new UnresolvedHostEventTypeReference(displayName);

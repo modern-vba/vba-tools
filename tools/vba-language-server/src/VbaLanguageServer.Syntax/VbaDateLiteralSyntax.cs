@@ -363,7 +363,7 @@ internal static class VbaDateLiteralSyntax
     }
 
     private static bool IsWhitespace(char value)
-        => value is ' ' or '\t' || char.IsWhiteSpace(value);
+        => VbaIdentifier.IsWhitespace(value);
 
     private readonly record struct DateComponent(int Value, bool IsMonthName);
 }

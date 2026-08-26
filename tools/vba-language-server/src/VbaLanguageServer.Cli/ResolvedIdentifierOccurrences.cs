@@ -109,13 +109,15 @@ internal sealed class VbaResolvedIdentifierOccurrenceIndex
     {
         var occurrences = new List<VbaResolvedIdentifierOccurrence>();
         var syntaxTree = document.SyntaxTree ?? VbaSyntaxTree.ParseModule(document.Uri, document.Text);
-        foreach (var token in syntaxTree.TokenStream.Tokens.Where(token => token.Kind == VbaTokenKind.Identifier))
+        foreach (var token in syntaxTree.TokenStream.Tokens.Where(token =>
+            VbaIdentifier.IsIdentifier(token.Text)))
         {
             cancellationToken.ThrowIfCancellationRequested();
             var positionSyntax = syntaxTree.GetPositionSyntax(
                 token.Range.Start.Line,
                 token.Range.Start.Character);
-            if (positionSyntax.Region != VbaPositionRegion.Code)
+            if (positionSyntax.Region != VbaPositionRegion.Code
+                || positionSyntax.Identifier?.IsKeyword != false)
             {
                 continue;
             }

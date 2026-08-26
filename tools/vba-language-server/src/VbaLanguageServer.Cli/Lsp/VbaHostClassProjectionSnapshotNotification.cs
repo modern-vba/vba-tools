@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using VbaLanguageServer.SourceModel;
+using VbaLanguageServer.Syntax;
 using VbaLanguageServer.Workspace;
 
 namespace VbaLanguageServer.Lsp;
@@ -217,7 +218,7 @@ public sealed class VbaHostClassProjectionSnapshotHandler(
             || !HasExactProperties(
                 identityObject,
                 new HashSet<string> { "name", "kind" })
-            || !TryGetNonemptyString(identityObject["name"], out var name)
+            || !TryGetIdentifier(identityObject["name"], out var name)
             || !TryGetString(identityObject["kind"], out var kind))
         {
             return false;
@@ -251,11 +252,11 @@ public sealed class VbaHostClassProjectionSnapshotHandler(
         };
         if (value is not JsonObject projectionObject
             || !HasOnlyProperties(projectionObject, allowed)
-            || !TryGetNonemptyString(
+            || !TryGetIntrinsicSourceName(
                 projectionObject["intrinsicEventSourceName"],
                 out var intrinsicEventSourceName)
             || projectionObject["events"] is not JsonArray eventsNode
-            || !TryParseEvents(eventsNode, out var events)
+            || !TryParseEvents(eventsNode, intrinsicEventSourceName, out var events)
             || !TryParseOptionalBaseTypeProvenance(
                 projectionObject,
                 out var baseTypeProvenance))
@@ -272,13 +273,14 @@ public sealed class VbaHostClassProjectionSnapshotHandler(
 
     private static bool TryParseEvents(
         JsonArray values,
+        string intrinsicEventSourceName,
         out IReadOnlyList<VbaHostEventSignature> events)
     {
         var parsed = new List<VbaHostEventSignature>();
         var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var value in values)
         {
-            if (!TryParseEvent(value, out var hostEvent)
+            if (!TryParseEvent(value, intrinsicEventSourceName, out var hostEvent)
                 || !names.Add(hostEvent.Name))
             {
                 events = [];
@@ -294,6 +296,7 @@ public sealed class VbaHostClassProjectionSnapshotHandler(
 
     private static bool TryParseEvent(
         JsonNode? value,
+        string intrinsicEventSourceName,
         out VbaHostEventSignature hostEvent)
     {
         hostEvent = default!;
@@ -307,7 +310,7 @@ public sealed class VbaHostClassProjectionSnapshotHandler(
         };
         if (value is not JsonObject eventObject
             || !HasOnlyProperties(eventObject, allowed)
-            || !TryGetNonemptyString(eventObject["name"], out var name)
+            || !TryGetExactNonemptyString(eventObject["name"], out var name)
             || eventObject["parameters"] is not JsonArray parametersNode
             || !TryParseParameters(parametersNode, out var parameters)
             || !TryGetOptionalString(
@@ -324,6 +327,12 @@ public sealed class VbaHostClassProjectionSnapshotHandler(
             return false;
         }
 
+        if ((authoringAvailable || existingHandlerRecognizable)
+            && !CanAuthorEvent(intrinsicEventSourceName, name))
+        {
+            return false;
+        }
+
         hostEvent = new VbaHostEventSignature(
             name,
             parameters,
@@ -331,6 +340,18 @@ public sealed class VbaHostClassProjectionSnapshotHandler(
             authoringAvailable,
             existingHandlerRecognizable);
         return true;
+    }
+
+    private static bool CanAuthorEvent(string intrinsicEventSourceName, string eventName)
+    {
+        if (eventName.EnumerateRunes().Take(256).Count() > 255
+            || !VbaIdentifier.IsLexIdentifier(eventName))
+        {
+            return false;
+        }
+
+        var procedureName = $"{intrinsicEventSourceName}_{eventName}";
+        return procedureName.Length <= 255 && VbaIdentifier.IsIdentifier(procedureName);
     }
 
     private static bool TryParseParameters(
@@ -370,7 +391,7 @@ public sealed class VbaHostClassProjectionSnapshotHandler(
                     "optional",
                     "paramArray"
                 })
-            || !TryGetNonemptyString(parameterObject["name"], out var name)
+            || !TryGetExactNonemptyString(parameterObject["name"], out var name)
             || !TryParseParameterType(
                 parameterObject["type"],
                 out var type)
@@ -425,7 +446,9 @@ public sealed class VbaHostClassProjectionSnapshotHandler(
             if (!HasExactProperties(
                     typeObject,
                     new HashSet<string> { "kind", "name" })
-                || !TryGetNonemptyString(typeObject["name"], out var name))
+                || !TryGetCanonicalIntrinsicTypeName(
+                    typeObject["name"],
+                    out var name))
             {
                 return false;
             }
@@ -439,7 +462,7 @@ public sealed class VbaHostClassProjectionSnapshotHandler(
             if (!HasExactProperties(
                     typeObject,
                     new HashSet<string> { "kind", "displayName" })
-                || !TryGetNonemptyString(
+                || !TryGetExactNonemptyString(
                     typeObject["displayName"],
                     out var displayName))
             {
@@ -518,7 +541,7 @@ public sealed class VbaHostClassProjectionSnapshotHandler(
         }
 
         if (!HasExactProperties(value, expected)
-            || !TryGetNonemptyString(value["name"], out var name)
+            || !TryGetExactNonemptyString(value["name"], out var name)
             || !TryGetNonemptyString(value["libraryGuid"], out var libraryGuid)
             || !Guid.TryParseExact(libraryGuid, "D", out _)
             || !TryGetNonnegativeInt32(
@@ -589,6 +612,30 @@ public sealed class VbaHostClassProjectionSnapshotHandler(
     private static bool TryGetNonemptyString(JsonNode? node, out string value)
         => TryGetString(node, out value)
             && !string.IsNullOrWhiteSpace(value);
+
+    private static bool TryGetExactNonemptyString(JsonNode? node, out string value)
+        => TryGetString(node, out value)
+            && value.Length > 0
+            && !value.Contains('\r', StringComparison.Ordinal)
+            && !value.Contains('\n', StringComparison.Ordinal)
+            && !VbaIdentifier.IsWhitespaceOnly(value);
+
+    private static bool TryGetIdentifier(JsonNode? node, out string value)
+        => TryGetString(node, out value)
+            && VbaIdentifier.IsIdentifier(value);
+
+    private static bool TryGetCanonicalIntrinsicTypeName(
+        JsonNode? node,
+        out string value)
+    {
+        value = string.Empty;
+        return TryGetString(node, out var candidate)
+            && VbaLanguageVocabulary.TryGetCanonicalTypeName(candidate, out value);
+    }
+
+    private static bool TryGetIntrinsicSourceName(JsonNode? node, out string value)
+        => TryGetIdentifier(node, out value)
+            && value.EnumerateRunes().Take(32).Count() <= 31;
 
     private static bool TryGetCanonicalAbsolutePath(
         JsonNode? node,

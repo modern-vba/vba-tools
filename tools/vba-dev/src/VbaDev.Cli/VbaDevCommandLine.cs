@@ -1016,7 +1016,7 @@ public sealed class VbaDevCommandLine
     {
         var moduleName = parseResult.GetValue(options.Module);
         var procedureName = parseResult.GetValue(options.Procedure);
-        if (!string.IsNullOrWhiteSpace(procedureName) && string.IsNullOrWhiteSpace(moduleName))
+        if (!string.IsNullOrEmpty(procedureName) && string.IsNullOrEmpty(moduleName))
         {
             return Task.FromResult(CommandResult.UsageError("--procedure requires --module."));
         }
@@ -1055,8 +1055,8 @@ public sealed class VbaDevCommandLine
                             format,
                             !parseResult.GetValue(options.NoBuild),
                             new WorkbookTestSelector(
-                                string.IsNullOrWhiteSpace(moduleName) ? null : moduleName,
-                                string.IsNullOrWhiteSpace(procedureName) ? null : procedureName),
+                                string.IsNullOrEmpty(moduleName) ? null : moduleName,
+                                string.IsNullOrEmpty(procedureName) ? null : procedureName),
                             executionTimeout,
                             !hasSourceSnapshot
                                 ? null

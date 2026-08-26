@@ -113,7 +113,7 @@ public sealed class VbaConditionalCompilationEnvironment
                     nameof(globalConstants));
             }
 
-            if (string.IsNullOrWhiteSpace(constant.Key) || !constants.TryAdd(constant.Key, constant.Value))
+            if (!IsIdentifierName(constant.Key) || !constants.TryAdd(constant.Key, constant.Value))
             {
                 throw new ArgumentException(
                     $"Conditional-compilation global constant '{constant.Key}' is invalid or duplicated.",
@@ -124,7 +124,7 @@ public sealed class VbaConditionalCompilationEnvironment
         var builtIns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var name in builtInConstantNames ?? [])
         {
-            if (string.IsNullOrWhiteSpace(name)
+            if (!IsIdentifierName(name)
                 || !builtIns.Add(name)
                 || !constants.ContainsKey(name))
             {
@@ -138,6 +138,9 @@ public sealed class VbaConditionalCompilationEnvironment
         this.builtInConstantNames = builtIns;
         SupportsLongLong = supportsLongLong;
     }
+
+    private static bool IsIdentifierName(string value)
+        => value.Length is >= 1 and <= 255 && VbaIdentifier.IsIdentifier(value);
 
     /// <summary>
     /// Gets whether the verified compiler context supports the VBA LongLong subtype.

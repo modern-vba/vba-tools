@@ -328,6 +328,12 @@ internal sealed class VbaLspRequestExecution
                     cancellationToken,
                     Captured,
                     Direct),
+            "vba/moduleIdentityMetadata" =>
+                CaptureModuleIdentityMetadataRequest(
+                    parameters,
+                    cancellationToken,
+                    Captured,
+                    Direct),
             "textDocument/semanticTokens/full" =>
                 CaptureTextDocumentRequest(
                     parameters,
@@ -496,6 +502,48 @@ internal sealed class VbaLspRequestExecution
         });
     }
 
+    private static CapturedRequest CaptureModuleIdentityMetadataRequest(
+        JsonNode? parameters,
+        CancellationToken cancellationToken,
+        Func<Func<CancellationToken, RequestOutcome>, CapturedRequest> captured,
+        Func<RequestOutcome, CapturedRequest> direct)
+    {
+        if (!TryCreateModuleIdentityMetadataRequest(
+            parameters,
+            cancellationToken,
+            out var request))
+        {
+            return direct(RequestOutcome.InvalidParams());
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return captured(executionToken =>
+        {
+            var sources = new List<ModuleIdentityMetadataSourceResult>(request.Sources.Count);
+            foreach (var source in request.Sources)
+            {
+                executionToken.ThrowIfCancellationRequested();
+                var metadata = VbaModuleIdentityMetadataReader.Read(
+                    source.Text,
+                    VbaModuleIdentitySourceKind.ObjectModule);
+                sources.Add(new ModuleIdentityMetadataSourceResult(
+                    source.SourceUri,
+                    source.Kind,
+                    metadata.State switch
+                    {
+                        VbaModuleIdentityMetadataState.Missing => "missing",
+                        VbaModuleIdentityMetadataState.Invalid => "invalid",
+                        VbaModuleIdentityMetadataState.Authoritative => "authoritative",
+                        _ => throw new InvalidOperationException(
+                            $"Unknown ModuleIdentity metadata state '{metadata.State}'.")
+                    },
+                    metadata.Name));
+            }
+
+            return RequestOutcome.Success(new ModuleIdentityMetadataBatchResult(sources));
+        });
+    }
+
     private VbaSemanticInventory CaptureSemanticInventory(
         string uri,
         CancellationToken cancellationToken)
@@ -585,8 +633,7 @@ internal sealed class VbaLspRequestExecution
         request = default!;
         if (!TryCreatePositionRequest(parameters, out var position)
             || parameters is not JsonObject parameterObject
-            || !TryGetString(parameterObject["newName"], out var newName)
-            || string.IsNullOrWhiteSpace(newName))
+            || !TryGetString(parameterObject["newName"], out var newName))
         {
             return false;
         }
@@ -665,6 +712,42 @@ internal sealed class VbaLspRequestExecution
         return true;
     }
 
+    private static bool TryCreateModuleIdentityMetadataRequest(
+        JsonNode? parameters,
+        CancellationToken cancellationToken,
+        out ModuleIdentityMetadataBatchRequest request)
+    {
+        request = default!;
+        if (parameters is not JsonObject parameterObject
+            || parameterObject["sources"] is not JsonArray sourceNodes)
+        {
+            return false;
+        }
+
+        var sources = new List<ModuleIdentityMetadataSourceRequest>(sourceNodes.Count);
+        foreach (var sourceNode in sourceNodes)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (sourceNode is not JsonObject source
+                || !TryGetString(source["sourceUri"], out var sourceUri)
+                || string.IsNullOrWhiteSpace(sourceUri)
+                || !TryGetString(source["kind"], out var kind)
+                || kind is not "form" and not "document"
+                || !TryGetString(source["text"], out var text))
+            {
+                return false;
+            }
+
+            sources.Add(new ModuleIdentityMetadataSourceRequest(
+                sourceUri,
+                kind,
+                text));
+        }
+
+        request = new ModuleIdentityMetadataBatchRequest(sources);
+        return true;
+    }
+
     private static bool TryGetString(JsonNode? node, out string value)
     {
         value = "";
@@ -713,6 +796,23 @@ internal sealed class VbaLspRequestExecution
         int DocumentVersion,
         BlockSkeletonInsertionPosition Position,
         VbaIndentationStyle IndentationStyle);
+
+    private sealed record ModuleIdentityMetadataBatchRequest(
+        IReadOnlyList<ModuleIdentityMetadataSourceRequest> Sources);
+
+    private sealed record ModuleIdentityMetadataSourceRequest(
+        string SourceUri,
+        string Kind,
+        string Text);
+
+    private sealed record ModuleIdentityMetadataBatchResult(
+        IReadOnlyList<ModuleIdentityMetadataSourceResult> Sources);
+
+    private sealed record ModuleIdentityMetadataSourceResult(
+        string SourceUri,
+        string Kind,
+        string State,
+        string? Name);
 
     internal sealed record CapturedRequest(
         JsonNode? ResponseId,

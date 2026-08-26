@@ -31,6 +31,7 @@ import './blockSkeletonInsertion.test';
 import './extensionHost/configuration.test';
 import './nativeLineBreakText.test';
 import './hostClassProjectionLifecycle.test';
+import './hostClassSourceMetadata.test';
 import './hostClassSourceAssociation.test';
 import './hostClassProjectionWorkspace.test';
 import './hostClassProjectionStatus.test';

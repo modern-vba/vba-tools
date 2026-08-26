@@ -118,6 +118,7 @@ internal readonly record struct VbaInteractiveReadPolicy(
             "textDocument/references"
                 or "textDocument/rename"
                 or "textDocument/formatting"
+                or "vba/moduleIdentityMetadata"
                 => new(VbaInteractiveWorkClass.Bulk, Concurrent: true),
             "textDocument/diagnostic"
                 or "workspace/diagnostic"

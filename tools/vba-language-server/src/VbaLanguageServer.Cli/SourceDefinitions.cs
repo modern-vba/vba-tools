@@ -191,7 +191,11 @@ public readonly struct VbaDefinitionIdentity : IEquatable<VbaDefinitionIdentity>
     public static VbaDefinitionIdentity ForSource(string uri, string name, VbaRange declarationRange)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(uri);
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(name);
+        if (name.Length == 0)
+        {
+            throw new ArgumentException("The source definition name cannot be empty.", nameof(name));
+        }
         ArgumentNullException.ThrowIfNull(declarationRange);
         return new VbaDefinitionIdentity(
             VbaDefinitionOrigin.Source,
@@ -213,10 +217,19 @@ public readonly struct VbaDefinitionIdentity : IEquatable<VbaDefinitionIdentity>
         string name)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(referenceName);
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        if (parentTypeName is not null)
+        ArgumentNullException.ThrowIfNull(name);
+        if (name.Length == 0)
         {
-            ArgumentException.ThrowIfNullOrWhiteSpace(parentTypeName);
+            throw new ArgumentException(
+                "The project-reference definition name cannot be empty.",
+                nameof(name));
+        }
+
+        if (parentTypeName is not null && parentTypeName.Length == 0)
+        {
+            throw new ArgumentException(
+                "The project-reference parent type name cannot be empty.",
+                nameof(parentTypeName));
         }
 
         return new VbaDefinitionIdentity(

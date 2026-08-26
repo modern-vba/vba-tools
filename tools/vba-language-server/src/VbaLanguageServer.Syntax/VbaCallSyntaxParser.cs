@@ -134,6 +134,10 @@ internal static class VbaCallSyntaxParser
         if (!TryGetStatementCallee(significant, out var calleeStart, out var calleeEnd)
             || calleeEnd + 1 >= significant.Count
             || significant[calleeEnd + 1].Text is "=" or "("
+            || !HasWhitespaceBetween(
+                sourceText.Text,
+                significant[calleeEnd].Range.End.Offset,
+                significant[calleeEnd + 1].Range.Start.Offset)
             || IsExcludedStatementFormCall(significant, calleeStart, calleeEnd))
         {
             return;
@@ -500,8 +504,8 @@ internal static class VbaCallSyntaxParser
             start -= 2;
         }
 
-        if (tokens[end].Kind == VbaTokenKind.Keyword
-            && start == end
+        if (start == end
+            && (start == 0 || !IsDot(tokens[start - 1]))
             && !VbaLanguageVocabulary.CanBeBareCallTarget(tokens[end].Text))
         {
             return false;
@@ -631,7 +635,8 @@ internal static class VbaCallSyntaxParser
             start++;
         }
 
-        if (start >= tokens.Count || tokens[start].Kind != VbaTokenKind.Identifier)
+        if (start >= tokens.Count
+            || !VbaLanguageVocabulary.CanBeBareCallTarget(tokens[start].Text))
         {
             return false;
         }
@@ -671,7 +676,7 @@ internal static class VbaCallSyntaxParser
     {
         for (var offset = startOffset; offset < endOffset && offset < source.Length; offset++)
         {
-            if (char.IsWhiteSpace(source[offset]))
+            if (VbaIdentifier.IsWhitespace(source[offset]))
             {
                 return true;
             }

@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Text;
 using VbaLanguageServer.Syntax;
 
 namespace VbaDebugAdapter.Debugging;
@@ -136,9 +137,8 @@ public sealed class BreakpointSourceMapper : IBreakpointSourceMapper
             StringComparer.OrdinalIgnoreCase);
 
     private static bool IsValidModuleIdentity(string name)
-        => !string.IsNullOrWhiteSpace(name) &&
-           char.IsLetter(name[0]) &&
-           name.All(character => char.IsLetterOrDigit(character) || character == '_');
+        => name.EnumerateRunes().Count() is > 0 and <= 31
+            && VbaIdentifier.IsIdentifier(name);
 
     private static string DescribeInvalidLocation(VbaCodeModuleLineProjection line)
         => line.ExecutionKind switch

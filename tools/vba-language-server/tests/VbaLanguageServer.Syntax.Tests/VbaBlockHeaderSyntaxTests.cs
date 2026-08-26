@@ -33,6 +33,31 @@ public sealed class VbaBlockHeaderSyntaxTests
             header.LeadingWhitespace);
     }
 
+    [Fact]
+    public void Complete_header_uses_exact_MsVbal_leading_whitespace()
+    {
+        const string source = "\u0019Public\u0019Sub\u0019Run()";
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(tree, 0, source.Length);
+
+        Assert.NotNull(header);
+        Assert.Equal(VbaBlockHeaderKind.Sub, header.Kind);
+        Assert.Equal("\u0019", header.LeadingWhitespace);
+    }
+
+    [Fact]
+    public void Complete_header_accepts_exact_MsVbal_trailing_whitespace()
+    {
+        const string source = "Public Sub Run()\u0019";
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+
+        var header = VbaBlockHeaderSyntax.FindAtPosition(tree, 0, source.Length);
+
+        Assert.NotNull(header);
+        Assert.Equal(VbaBlockHeaderKind.Sub, header.Kind);
+    }
+
     [Theory]
     [InlineData("Enum", "End Enum")]
     [InlineData("Type", "End Type")]

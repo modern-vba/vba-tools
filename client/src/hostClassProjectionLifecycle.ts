@@ -388,7 +388,10 @@ export class HostClassProjectionLifecycle {
       return undefined;
     }
 
-    state.sourceCandidates = sources.map((source) => ({ ...source }));
+    state.sourceCandidates = sources.map((source) => ({
+      ...source,
+      moduleIdentity: { ...source.moduleIdentity }
+    }));
     if (!state.hasProjection) {
       return undefined;
     }
@@ -1457,7 +1460,7 @@ function parseHostClassEntry(value: unknown): ParsedHostClassEntry | undefined {
   if (!isRecord(value) ||
       !isRecord(value.identity) ||
       !hasOnlyProperties(value.identity, ['name', 'kind']) ||
-      !isNonemptyString(value.identity.name) ||
+      !isExactNonemptyString(value.identity.name) ||
       (value.identity.kind !== 'form' && value.identity.kind !== 'document')) {
     return undefined;
   }
@@ -1487,7 +1490,7 @@ function parseHostClassEntry(value: unknown): ParsedHostClassEntry | undefined {
         'events',
         'baseTypeProvenance'
       ]) ||
-      !isNonemptyString(value.intrinsicEventSourceName) ||
+      !isExactNonemptyString(value.intrinsicEventSourceName) ||
       !Array.isArray(value.events)) {
     return undefined;
   }
@@ -1531,7 +1534,7 @@ function parseHostEventSignature(value: unknown): HostEventSignature | undefined
         'authoringAvailable',
         'existingHandlerRecognizable'
       ]) ||
-      !isNonemptyString(value.name) ||
+      !isExactNonemptyString(value.name) ||
       !Array.isArray(value.parameters) ||
       (Object.hasOwn(value, 'documentation') && typeof value.documentation !== 'string') ||
       typeof value.authoringAvailable !== 'boolean' ||
@@ -1569,7 +1572,7 @@ function parseHostEventParameter(value: unknown): HostEventParameter | undefined
         'optional',
         'paramArray'
       ]) ||
-      !isNonemptyString(value.name) ||
+      !isExactNonemptyString(value.name) ||
       (value.passing !== 'byVal' && value.passing !== 'byRef') ||
       (value.arrayShape !== 'scalar' && value.arrayShape !== 'array') ||
       typeof value.optional !== 'boolean' ||
@@ -1603,7 +1606,7 @@ function parseHostEventParameterType(value: unknown): HostEventParameterType | u
 
   if (value.kind === 'unresolved') {
     return hasOnlyProperties(value, ['kind', 'displayName']) &&
-      isNonemptyString(value.displayName)
+      isExactNonemptyString(value.displayName)
       ? { kind: 'unresolved', displayName: value.displayName }
       : undefined;
   }
@@ -1617,7 +1620,7 @@ function parseHostEventParameterType(value: unknown): HostEventParameterType | u
         'minorVersion',
         'lcid'
       ]) ||
-      !isNonemptyString(value.name) ||
+      !isExactNonemptyString(value.name) ||
       !isGuid(value.libraryGuid) ||
       !isNonnegativeInteger(value.majorVersion) ||
       !isNonnegativeInteger(value.minorVersion) ||
@@ -1644,7 +1647,7 @@ function parseBaseTypeProvenance(value: unknown): HostClassBaseTypeProvenance | 
         'minorVersion',
         'lcid'
       ]) ||
-      !isNonemptyString(value.name) ||
+      !isExactNonemptyString(value.name) ||
       !isGuid(value.libraryGuid) ||
       !isNonnegativeInteger(value.majorVersion) ||
       !isNonnegativeInteger(value.minorVersion) ||
@@ -1764,6 +1767,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNonemptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isExactNonemptyString(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length === 0) {
+    return false;
+  }
+
+  for (const character of value) {
+    if (character !== ' '
+      && character !== '\t'
+      && character !== '\r'
+      && character !== '\n') {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function hasOnlyProperties(

@@ -134,6 +134,93 @@ public sealed class VbaCodeModuleProjectionTests
     }
 
     [Fact]
+    public void Cp2IdentifierOnlyLineIsAnExecutableCandidateRatherThanBlank()
+    {
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "\u00a0",
+            "End Sub"
+        ]);
+
+        var projection = CreateProjection("Worker.bas", source);
+
+        Assert.Equal(
+            VbaPhysicalLineExecutionKind.ExecutableCandidate,
+            Line(projection, 2).ExecutionKind);
+    }
+
+    [Fact]
+    public void ApostropheCommentClassificationUsesExactMsVbalWhitespace()
+    {
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "\u0019'comment",
+            "\u00A0'comment",
+            "End Sub"
+        ]);
+
+        var projection = CreateProjection("Worker.bas", source);
+
+        Assert.Equal(VbaPhysicalLineExecutionKind.Comment, Line(projection, 2).ExecutionKind);
+        Assert.Equal(
+            VbaPhysicalLineExecutionKind.ExecutableCandidate,
+            Line(projection, 3).ExecutionKind);
+    }
+
+    [Fact]
+    public void NonReservedContextualIdentifierLabelProjectsAsLabelOnly()
+    {
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "Object:",
+            "End Sub"
+        ]);
+
+        var projection = CreateProjection("Worker.bas", source);
+
+        Assert.Equal(VbaPhysicalLineExecutionKind.LabelOnly, Line(projection, 2).ExecutionKind);
+    }
+
+    [Fact]
+    public void NonReservedContextualBareCallProjectsAsExecutable()
+    {
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Caller()",
+            "    Object",
+            "End Sub",
+            "Public Sub Object()",
+            "End Sub"
+        ]);
+
+        var projection = CreateProjection("Worker.bas", source);
+
+        Assert.Equal(
+            VbaPhysicalLineExecutionKind.ExecutableCandidate,
+            Line(projection, 2).ExecutionKind);
+    }
+
+    [Fact]
+    public void ReservedIntrinsicCallProductionsRemainExecutableCandidates()
+    {
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    Abs value",
+            "    Len value",
+            "End Sub"
+        ]);
+
+        var projection = CreateProjection("Worker.bas", source);
+
+        Assert.Equal(VbaPhysicalLineExecutionKind.ExecutableCandidate, Line(projection, 2).ExecutionKind);
+        Assert.Equal(VbaPhysicalLineExecutionKind.ExecutableCandidate, Line(projection, 3).ExecutionKind);
+    }
+
+    [Fact]
     public void ContinuedStatementsKeepTheHeadExecutableAndRejectContinuationLines()
     {
         var source = string.Join('\n', [

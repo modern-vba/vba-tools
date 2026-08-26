@@ -100,7 +100,7 @@ public sealed class VbaSourceText
                 ? spacesByLength[length] ??= new string(' ', length)
                 : source[startOffset..offset];
             lines.Add(new VbaSourceLine(line, lineText, startOffset, offset));
-            blankLines.Add(containsOnlySpaces || lineSpan.Trim().IsEmpty);
+            blankLines.Add(containsOnlySpaces || VbaIdentifier.IsWhitespaceOnly(lineSpan));
             if (offset >= source.Length)
             {
                 break;
@@ -176,10 +176,8 @@ public sealed class VbaSourceText
             source[changedLine.StartOffset..changedLine.EndOffset],
             changedLine.StartOffset,
             changedLine.EndOffset);
-        updatedBlankLines[changedLineIndex] = source
-            .AsSpan(changedLine.StartOffset, changedLine.EndOffset - changedLine.StartOffset)
-            .Trim()
-            .IsEmpty;
+        updatedBlankLines[changedLineIndex] = VbaIdentifier.IsWhitespaceOnly(source
+            .AsSpan(changedLine.StartOffset, changedLine.EndOffset - changedLine.StartOffset));
         return new VbaSourceText(
             source,
             updatedLines,
@@ -319,9 +317,11 @@ public sealed class VbaSourceText
     /// Determines whether a line ends with a VBA line-continuation marker.
     /// </summary>
     /// <param name="line">The source line to inspect.</param>
-    /// <returns>True when the trimmed line ends with an underscore.</returns>
+    /// <returns>True when the line ends with WSC followed immediately by an underscore.</returns>
     public static bool HasLineContinuation(string line)
-        => line.TrimEnd().EndsWith("_", StringComparison.Ordinal);
+        => line.Length >= 2
+            && line[^1] == '_'
+            && VbaIdentifier.IsWhitespace(line[^2]);
 
     /// <summary>
     /// Removes a trailing VBA line-continuation marker from one line.
@@ -329,27 +329,22 @@ public sealed class VbaSourceText
     /// <param name="line">The source line to transform.</param>
     /// <returns>The line without the continuation marker, or the original line when none is present.</returns>
     public static string RemoveLineContinuation(string line)
-    {
-        var trimmed = line.TrimEnd();
-        return trimmed.EndsWith("_", StringComparison.Ordinal)
-            ? trimmed[..^1]
-            : line;
-    }
+        => HasLineContinuation(line) ? line[..^1] : line;
 
     /// <summary>
     /// Determines whether a character can start a VBA identifier.
     /// </summary>
     /// <param name="value">The character to inspect.</param>
-    /// <returns>True for ASCII letters and underscore.</returns>
+    /// <returns>True when any MS-VBAL lex-identifier form accepts the initial character.</returns>
     public static bool IsIdentifierStart(char value)
-        => char.IsAsciiLetter(value) || value == '_';
+        => VbaIdentifier.IsInitialCharacter(value);
 
     /// <summary>
     /// Determines whether a character can continue a VBA identifier.
     /// </summary>
     /// <param name="value">The character to inspect.</param>
-    /// <returns>True for ASCII letters, digits, and underscore.</returns>
+    /// <returns>True when any MS-VBAL lex-identifier form accepts the subsequent character.</returns>
     public static bool IsIdentifierCharacter(char value)
-        => char.IsAsciiLetterOrDigit(value) || value == '_';
+        => VbaIdentifier.IsWordCharacter(value);
 
 }

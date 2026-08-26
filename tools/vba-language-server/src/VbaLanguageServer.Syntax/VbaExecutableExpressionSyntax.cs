@@ -381,14 +381,7 @@ internal static class VbaExecutableExpressionSyntax
                 return ParseDateIntrinsic();
             }
 
-            if (token.Kind == VbaTokenKind.Keyword
-                && VbaLanguageVocabulary.CanBeBareCallTarget(token.Text))
-            {
-                index++;
-                return ParsePostfix(rejectScalarTypeCharacter: rejectScalarTypeCharacter);
-            }
-
-            if (VbaIdentifierSyntaxFacts.IsValidDeclaredName(token))
+            if (IsCallableExpressionName(token))
             {
                 index++;
                 return ParsePostfix(
@@ -837,6 +830,12 @@ internal static class VbaExecutableExpressionSyntax
                     || Matches(token, "Empty")
                     || Matches(token, "Null")
                     || Matches(token, "Nothing"));
+
+        private static bool IsCallableExpressionName(VbaToken token)
+            => VbaIdentifierSyntaxFacts.IsValidDeclaredName(token)
+                || VbaIdentifier.IsReservedIdentifier(token.Text)
+                    && VbaStandardLibrarySyntaxFacts.ClassifyGlobalMember(token.Text)
+                        != VbaStandardLibraryMemberReceiverClassification.Unknown;
 
         private static bool IsMemberName(VbaToken token)
             => token.Kind is VbaTokenKind.Identifier or VbaTokenKind.Keyword;

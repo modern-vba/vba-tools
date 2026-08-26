@@ -109,10 +109,12 @@ public sealed class VbaSyntaxTreePreprocessorTests
                 && diagnostic.Message.Contains("cannot follow '#Else'", StringComparison.Ordinal));
     }
 
-    [Fact]
-    public void ParserReportsAMalformedConditionalDirectivePrefix()
+    [Theory]
+    [InlineData("#Ifx VBA7 Then")]
+    [InlineData("#If日本 Then")]
+    public void ParserReportsAMalformedConditionalDirectivePrefix(string directive)
     {
-        const string source = "#Ifx VBA7 Then\nPublic Sub Run()";
+        var source = directive + "\nPublic Sub Run()";
 
         var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.bas", source);
 
@@ -133,6 +135,49 @@ public sealed class VbaSyntaxTreePreprocessorTests
             tree.Diagnostics,
             diagnostic => diagnostic.Code == "syntax.malformedPreprocessorDirective"
                 && diagnostic.Range.Start.Line == 0);
+    }
+
+    [Fact]
+    public void ParserUsesMsVbalWhitespaceAfterThePreprocessorMarker()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "#\u0019If True Then\n#End If");
+
+        Assert.DoesNotContain(
+            tree.Diagnostics,
+            diagnostic => diagnostic.Code.StartsWith(
+                "syntax.malformedPreprocessor",
+                StringComparison.Ordinal));
+        Assert.Single(tree.Module.PreprocessorBlocks);
+    }
+
+    [Fact]
+    public void ParserDoesNotTreatACodePageIdentifierCharacterAsEndIfWhitespace()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "#If True Then\n#End\u00A0If");
+
+        Assert.Contains(
+            tree.Diagnostics,
+            diagnostic => diagnostic.Code == "syntax.malformedPreprocessorDirective"
+                && diagnostic.Range.Start.Line == 1);
+        Assert.Null(Assert.Single(tree.Module.PreprocessorBlocks).EndDirective);
+    }
+
+    [Fact]
+    public void ParserDoesNotTrimACodePageIdentifierCharacterAfterEndIf()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "#If True Then\n#End If\u00A0");
+
+        Assert.Contains(
+            tree.Diagnostics,
+            diagnostic => diagnostic.Code == "syntax.malformedPreprocessorDirective"
+                && diagnostic.Range.Start.Line == 1);
+        Assert.Null(Assert.Single(tree.Module.PreprocessorBlocks).EndDirective);
     }
 
     [Fact]

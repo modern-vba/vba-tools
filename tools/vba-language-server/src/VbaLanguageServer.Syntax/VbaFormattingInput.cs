@@ -1,5 +1,3 @@
-using System.Text.RegularExpressions;
-
 namespace VbaLanguageServer.Syntax;
 
 /// <summary>
@@ -70,8 +68,8 @@ public sealed record VbaFormattingInput(
             var range = sourceText.RangeForLine(line, 0, line.Text.Length);
             var isFormDesigner = IsLineInRange(formDesignerRange, line.LineNumber);
             var codeText = VbaSourceText.StripApostropheComment(line.Text);
-            var trimmed = codeText.TrimStart();
-            var isBlankOrComment = string.IsNullOrWhiteSpace(trimmed);
+            var trimmed = VbaIdentifier.TrimStartWhitespace(codeText);
+            var isBlankOrComment = trimmed.Length == 0;
             var isIgnored = IsFormattingIgnoredCodeLine(trimmed);
             var isContinuationLine = inContinuation && !isFormDesigner && !isBlankOrComment && !isIgnored;
             var depth = inContinuation ? continuationDepth : blockStack.Count;
@@ -168,8 +166,19 @@ public sealed record VbaFormattingInput(
             && (line != range.End.Line || range.End.Character > 0);
 
     private static bool IsFormattingIgnoredCodeLine(string trimmedLine)
-        => Regex.IsMatch(trimmedLine, "^Attribute\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)
-            || Regex.IsMatch(trimmedLine, "^Option\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)
-            || trimmedLine.StartsWith("#", StringComparison.Ordinal);
+    {
+        if (trimmedLine.StartsWith("#", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        var firstToken = VbaTokenStream.FromText(trimmedLine).Tokens.FirstOrDefault(
+            token => token.Kind is not VbaTokenKind.Whitespace
+                and not VbaTokenKind.NewLine
+                and not VbaTokenKind.Comment);
+        return firstToken?.Kind == VbaTokenKind.Keyword
+            && (firstToken.Text.Equals("Attribute", StringComparison.OrdinalIgnoreCase)
+                || firstToken.Text.Equals("Option", StringComparison.OrdinalIgnoreCase));
+    }
 
 }

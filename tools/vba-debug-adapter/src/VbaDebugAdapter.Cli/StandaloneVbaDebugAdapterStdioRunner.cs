@@ -971,8 +971,8 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
             throw new DebugSetupException(
                 "The VBA launch debug workbook name must be a path-free .xlsm file name.");
         }
-        var moduleName = OptionalString(arguments, "module");
-        var procedureName = OptionalString(arguments, "procedure");
+        var moduleName = OptionalExactString(arguments, "module");
+        var procedureName = OptionalExactString(arguments, "procedure");
         if ((moduleName is null) != (procedureName is null))
         {
             throw new DebugSetupException(
@@ -1502,6 +1502,21 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
         }
         if (property.ValueKind != JsonValueKind.String ||
             string.IsNullOrWhiteSpace(property.GetString()))
+        {
+            throw new DebugSetupException(
+                $"The VBA launch request property '{propertyName}' must be a non-empty string.");
+        }
+        return property.GetString();
+    }
+
+    private static string? OptionalExactString(JsonElement value, string propertyName)
+    {
+        if (!value.TryGetProperty(propertyName, out var property))
+        {
+            return null;
+        }
+        if (property.ValueKind != JsonValueKind.String
+            || string.IsNullOrEmpty(property.GetString()))
         {
             throw new DebugSetupException(
                 $"The VBA launch request property '{propertyName}' must be a non-empty string.");

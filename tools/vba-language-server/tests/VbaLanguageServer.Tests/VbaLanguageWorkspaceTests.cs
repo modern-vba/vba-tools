@@ -610,6 +610,51 @@ public sealed class VbaLanguageWorkspaceTests
             }))!;
 
             Assert.False(handler.TryApply(invalid));
+            var invalidIntrinsicType = JsonNode.Parse(JsonSerializer.Serialize(new
+            {
+                schemaVersion = 1,
+                revision = 2,
+                project = Path.GetFullPath(projectRoot),
+                document = "Book1",
+                sourceTemplate,
+                state = "present",
+                classEnumerationComplete = true,
+                classes = new object[]
+                {
+                    new
+                    {
+                        identity = new { name = "Sheet1", kind = "document" },
+                        authority = "current",
+                        projection = new
+                        {
+                            intrinsicEventSourceName = "Worksheet",
+                            events = new object[]
+                            {
+                                new
+                                {
+                                    name = "Change",
+                                    parameters = new object[]
+                                    {
+                                        new
+                                        {
+                                            name = "Target",
+                                            type = new { kind = "intrinsic", name = "Widget" },
+                                            passing = "byVal",
+                                            arrayShape = "scalar",
+                                            optional = false,
+                                            paramArray = false
+                                        }
+                                    },
+                                    authoringAvailable = true,
+                                    existingHandlerRecognizable = true
+                                }
+                            }
+                        }
+                    }
+                }
+            }))!;
+
+            Assert.False(handler.TryApply(invalidIntrinsicType));
             Assert.Equal(
                 1,
                 workspace.CreateProjectSnapshot(projectUri)
@@ -1096,12 +1141,16 @@ public sealed class VbaLanguageWorkspaceTests
     }
 
     [Fact]
-    public void Host_class_snapshot_preserves_type_library_provenance()
+    public void Host_class_snapshot_preserves_cp2_identifiers_foreign_names_and_type_library_provenance()
     {
         var projectRoot = Directory.CreateTempSubdirectory("vba-ls-host-typelib-").FullName;
         try
         {
             const string excelGuid = "00020813-0000-0000-c000-000000000046";
+            const string cp2Name = "\u00a0";
+            const string foreignEventName = "Before-Open";
+            const string foreignName = "Widget-2";
+            const string foreignParameterName = "Arg-1";
             WriteProjectManifest(projectRoot);
             var projectUri = ToFileUri(
                 Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
@@ -1125,14 +1174,14 @@ public sealed class VbaLanguageWorkspaceTests
                 {
                     new
                     {
-                        identity = new { name = "Sheet1", kind = "document" },
+                        identity = new { name = cp2Name, kind = "document" },
                         authority = "current",
                         projection = new
                         {
-                            intrinsicEventSourceName = "Worksheet",
+                            intrinsicEventSourceName = cp2Name,
                             baseTypeProvenance = new
                             {
-                                name = "Worksheet",
+                                name = foreignName,
                                 libraryGuid = excelGuid,
                                 majorVersion = 1,
                                 minorVersion = 9,
@@ -1142,16 +1191,16 @@ public sealed class VbaLanguageWorkspaceTests
                             {
                                 new
                                 {
-                                    name = "SelectionChange",
+                                    name = foreignEventName,
                                     parameters = new object[]
                                     {
                                         new
                                         {
-                                            name = "Target",
+                                            name = foreignParameterName,
                                             type = new
                                             {
                                                 kind = "typeLib",
-                                                name = "Range",
+                                                name = foreignName,
                                                 libraryGuid = excelGuid,
                                                 majorVersion = 1,
                                                 minorVersion = 9,
@@ -1163,8 +1212,8 @@ public sealed class VbaLanguageWorkspaceTests
                                             paramArray = false
                                         }
                                     },
-                                    authoringAvailable = true,
-                                    existingHandlerRecognizable = true
+                                    authoringAvailable = false,
+                                    existingHandlerRecognizable = false
                                 }
                             }
                         }
@@ -1180,19 +1229,94 @@ public sealed class VbaLanguageWorkspaceTests
                 Assert.Single(snapshot.Classes));
             Assert.NotNull(entry.Projection.BaseTypeProvenance);
             var provenance = entry.Projection.BaseTypeProvenance;
+            var hostEvent = Assert.Single(entry.Projection.Events);
+            var parameter = Assert.Single(hostEvent.Parameters);
             var parameterType = Assert.IsType<VbaTypeLibraryHostEventParameterType>(
-                Assert.Single(Assert.Single(entry.Projection.Events).Parameters).Type);
+                parameter.Type);
 
-            Assert.Equal("Worksheet", provenance.Name);
+            Assert.Equal(cp2Name, entry.Identity.Name);
+            Assert.Equal(cp2Name, entry.Projection.IntrinsicEventSourceName);
+            Assert.Equal(foreignEventName, hostEvent.Name);
+            Assert.Equal(foreignParameterName, parameter.Name);
+            Assert.Equal(foreignName, provenance.Name);
             Assert.Equal(excelGuid, provenance.LibraryGuid);
             Assert.Equal(1, provenance.MajorVersion);
             Assert.Equal(9, provenance.MinorVersion);
             Assert.Equal(0, provenance.Lcid);
-            Assert.Equal("Range", parameterType.Name);
+            Assert.Equal(foreignName, parameterType.Name);
             Assert.Equal(excelGuid, parameterType.LibraryGuid);
             Assert.Equal(1, parameterType.MajorVersion);
             Assert.Equal(9, parameterType.MinorVersion);
             Assert.Equal(0, parameterType.Lcid);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Host_class_snapshot_rejects_inconsistent_authoring_for_an_oversized_composite_event_name()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-host-event-name-").FullName;
+        try
+        {
+            var eventName = new string('A', 247);
+            WriteProjectManifest(projectRoot);
+            var projectUri = ToFileUri(
+                Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
+            var sourceTemplate = Path.GetFullPath(
+                Path.Combine(projectRoot, "src", "Book1", "Book1.xlsm"));
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.CreateBundled()));
+            workspace.UpdateDocument(
+                projectUri,
+                "Attribute VB_Name = \"ProjectA\"\nPublic Sub RunA()\nEnd Sub\n");
+            _ = workspace.CreateProjectSnapshot(projectUri);
+            var handler = new VbaHostClassProjectionSnapshotHandler(workspace);
+
+            JsonNode CreatePayload(bool authoringAvailable) => JsonNode.Parse(JsonSerializer.Serialize(new
+            {
+                schemaVersion = 1,
+                revision = 1,
+                project = Path.GetFullPath(projectRoot),
+                document = "Book1",
+                sourceTemplate,
+                state = "present",
+                classEnumerationComplete = true,
+                classes = new object[]
+                {
+                    new
+                    {
+                        identity = new { name = "Sheet1", kind = "document" },
+                        authority = "current",
+                        projection = new
+                        {
+                            intrinsicEventSourceName = "Worksheet",
+                            events = new object[]
+                            {
+                                new
+                                {
+                                    name = eventName,
+                                    parameters = Array.Empty<object>(),
+                                    authoringAvailable,
+                                    existingHandlerRecognizable = false
+                                }
+                            }
+                        }
+                    }
+                }
+            }))!;
+
+            Assert.False(handler.TryApply(CreatePayload(authoringAvailable: true)));
+            Assert.True(handler.TryApply(CreatePayload(authoringAvailable: false)));
+            var snapshot = workspace.CreateProjectSnapshot(projectUri)
+                .SemanticInventory.HostClassProjectionSnapshot;
+            var entry = Assert.IsType<VbaCurrentHostClassProjectionEntry>(
+                Assert.Single(snapshot!.Classes));
+            Assert.Equal(
+                eventName,
+                Assert.Single(entry.Projection.Events).Name);
         }
         finally
         {

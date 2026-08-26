@@ -6,6 +6,100 @@ namespace VbaLanguageServer.Syntax.Tests;
 public sealed class VbaTokenStreamTests
 {
     [Fact]
+    public void TokenStreamClassifiesJapaneseProcedureNameAsOneIdentifier()
+    {
+        var stream = VbaTokenStream.FromText("Public Sub 集計()\nEnd Sub");
+
+        Assert.Contains(
+            stream.Tokens,
+            token => token.Kind == VbaTokenKind.Identifier && token.Text == "集計");
+    }
+
+    [Fact]
+    public void TokenStreamTreatsCp2NoBreakSpaceAsIdentifierCharacterNotWhitespace()
+    {
+        var stream = VbaTokenStream.FromText("\u00a0value = 1");
+
+        Assert.Contains(
+            stream.Tokens,
+            token => token.Kind == VbaTokenKind.Identifier && token.Text == "\u00a0value");
+    }
+
+    [Fact]
+    public void TokenStreamDoesNotSplitOneMixedFormCandidateIntoAdjacentIdentifiers()
+    {
+        var stream = VbaTokenStream.FromText("亜ㄱ");
+
+        var token = Assert.Single(stream.Tokens);
+        Assert.Equal(VbaTokenKind.Punctuation, token.Kind);
+        Assert.Equal("亜ㄱ", token.Text);
+    }
+
+    [Fact]
+    public void TokenStreamDoesNotExposeAReservedSuffixInsideAnInvalidWordCandidate()
+    {
+        var stream = VbaTokenStream.FromText("_If");
+
+        Assert.DoesNotContain(
+            stream.Tokens,
+            token => token.Kind == VbaTokenKind.Keyword && token.Text == "If");
+        Assert.Contains(
+            stream.Tokens,
+            token => token.Kind == VbaTokenKind.Punctuation && token.Text == "_If");
+    }
+
+    [Fact]
+    public void TokenStreamKeepsTypedSuffixAndForeignNameSyntaxOutsideTheBaseIdentifier()
+    {
+        var tokens = VbaTokenStream.FromText("Name$ [Name]").Tokens
+            .Where(token => token.Kind != VbaTokenKind.Whitespace)
+            .ToArray();
+
+        Assert.Collection(
+            tokens,
+            token => Assert.Equal((VbaTokenKind.Identifier, "Name"), (token.Kind, token.Text)),
+            token => Assert.Equal((VbaTokenKind.Punctuation, "$"), (token.Kind, token.Text)),
+            token => Assert.Equal((VbaTokenKind.Punctuation, "["), (token.Kind, token.Text)),
+            token => Assert.Equal((VbaTokenKind.Identifier, "Name"), (token.Kind, token.Text)),
+            token => Assert.Equal((VbaTokenKind.Punctuation, "]"), (token.Kind, token.Text)));
+    }
+
+    [Theory]
+    [InlineData("\u0019", true)]
+    [InlineData("\u000b", false)]
+    public void TokenStreamUsesMsVbalWhitespaceForExplicitLineContinuations(
+        string separator,
+        bool expected)
+    {
+        var stream = VbaTokenStream.FromText($"value{separator}_\n nextValue");
+
+        Assert.Equal(
+            expected,
+            stream.Tokens.Any(token => token.Kind == VbaTokenKind.LineContinuation));
+    }
+
+    [Fact]
+    public void TokenStreamRequiresTheLineTerminatorImmediatelyAfterTheContinuationMarker()
+    {
+        var stream = VbaTokenStream.FromText("value _ \nnextValue");
+
+        Assert.DoesNotContain(
+            stream.Tokens,
+            token => token.Kind == VbaTokenKind.LineContinuation);
+    }
+
+    [Fact]
+    public void TokenStreamUsesMsVbalWhitespaceForDirectiveLineContinuations()
+    {
+        var stream = VbaTokenStream.FromText("#If True Then\u3000_\nDebug.Print\n#End If");
+
+        Assert.Contains(
+            stream.Tokens,
+            token => token.Kind == VbaTokenKind.PreprocessorDirective
+                && token.Text == "#If True Then\u3000_\nDebug.Print");
+    }
+
+    [Fact]
     public void TokenStreamClassifiesCompleteSourceForLexicalHighlighting()
     {
         var source = string.Join('\n', [

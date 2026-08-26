@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Text;
 using VbaLanguageServer.Syntax;
 
 namespace VbaDebugAdapter.Debugging;
@@ -57,12 +58,17 @@ public sealed class DebugLaunchRequestResolver
                 $"expected {DebugSourceSnapshot.CurrentSchemaVersion}.");
         }
 
-        var hasModule = !string.IsNullOrWhiteSpace(moduleName);
-        var hasProcedure = !string.IsNullOrWhiteSpace(procedureName);
+        var hasModule = moduleName is not null;
+        var hasProcedure = procedureName is not null;
         if (hasModule != hasProcedure)
         {
             throw new DebugSetupException(
                 "The VBA launch request must specify 'module' and 'procedure' together.");
+        }
+        if (hasModule)
+        {
+            ValidateExplicitIdentifier("module", moduleName!, maximumLength: 31);
+            ValidateExplicitIdentifier("procedure", procedureName!, maximumLength: 255);
         }
 
         ValidateSnapshot(sourceSnapshot);
@@ -162,6 +168,20 @@ public sealed class DebugLaunchRequestResolver
                 $"Debug source snapshot path must be a safe descendant: '{relativePath}'.");
         }
         return portablePath;
+    }
+
+    private static void ValidateExplicitIdentifier(
+        string fieldName,
+        string value,
+        int maximumLength)
+    {
+        if (!VbaIdentifier.IsIdentifier(value)
+            || value.EnumerateRunes().Take(maximumLength + 1).Count() > maximumLength)
+        {
+            throw new DebugSetupException(
+                $"The VBA launch request '{fieldName}' must be an exact MS-VBAL IDENTIFIER " +
+                $"between 1 and {maximumLength} characters.");
+        }
     }
 
     private static void ValidateTargetUniquenessAndEligibility(

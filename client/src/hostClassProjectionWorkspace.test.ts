@@ -89,6 +89,52 @@ test('HostClass workspace activation resolves every manifest document to canonic
   );
 });
 
+test('HostClass workspace reevaluates every active source association without reactivation', async () => {
+  const manifestPath = path.resolve('workspace', 'Project', 'vba-project.json');
+  const activations: HostClassProjectionContext[] = [];
+  const associationSources: string[][] = [];
+  const collectedDocuments: string[] = [];
+  const workspace = new HostClassProjectionWorkspace({
+    lifecycle: createRecordingLifecycle({ activations, associationSources }),
+    findProjectManifests: async () => [manifestPath],
+    readManifestText: async () => createManifest({
+      BookB: {
+        sourcePath: 'src/BookB',
+        templatePath: 'templates/BookB.xlsm'
+      },
+      BookA: {
+        sourcePath: 'src/BookA',
+        templatePath: 'templates/BookA.xlsm'
+      }
+    }, 'BookA'),
+    collectHostClassSources: async (document) => {
+      collectedDocuments.push(document.context.document);
+      return [{
+        sourceUri: `file:///workspace/Project/src/${document.context.document}/Form.frm`,
+        kind: 'form',
+        moduleIdentity: {
+          state: 'authoritative',
+          name: `${document.context.document}Form`
+        }
+      }];
+    }
+  });
+  await workspace.activate();
+  activations.length = 0;
+  associationSources.length = 0;
+  collectedDocuments.length = 0;
+
+  await workspace.reevaluateAllSourceAssociations();
+
+  assert.deepEqual(collectedDocuments, ['BookA', 'BookB']);
+  assert.deepEqual(associationSources, [[
+    'file:///workspace/Project/src/BookA/Form.frm'
+  ], [
+    'file:///workspace/Project/src/BookB/Form.frm'
+  ]]);
+  assert.deepEqual(activations, []);
+});
+
 test('HostClass workspace-folder reconciliation activates additions and removes departures once', async () => {
   const firstManifest = path.resolve('workspace', 'First', 'vba-project.json');
   const secondManifest = path.resolve('workspace', 'Second', 'vba-project.json');
@@ -593,7 +639,7 @@ test('HostClass workspace source changes only reevaluate associations in the own
       return [{
         sourceUri,
         kind: 'form',
-        text: 'Attribute VB_Name = "InvoiceForm"\n'
+        moduleIdentity: { state: 'authoritative', name: 'InvoiceForm' }
       }];
     }
   });

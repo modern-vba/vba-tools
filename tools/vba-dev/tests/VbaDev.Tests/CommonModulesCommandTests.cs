@@ -83,6 +83,37 @@ public sealed class CommonModulesCommandTests
     }
 
     [Fact]
+    public void AddPreservesAnExactCodePageCommonModuleIdentity()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = CreateProjectWithCommonModules(temp, "Project");
+        var commonRepo = Path.Combine(temp.Path, "common_modules_repo");
+        WriteManifest(commonRepo, ("\u00A0.bas", "optional", ""));
+        WriteModule(commonRepo, "\u00A0.bas", "Attribute VB_Name = \"\u00A0\"\r\n");
+        var application = CommandLineTestFactory.Create(projectRoot);
+
+        var result = application.Run(["common-module", "add", "\u00A0"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.StandardError);
+        var installedPath = Path.Combine(
+            projectRoot,
+            "src",
+            "Book1",
+            "common-modules",
+            "\u00A0.bas");
+        Assert.True(File.Exists(installedPath));
+        Assert.Equal(
+            "Attribute VB_Name = \"\u00A0\"\r\n",
+            File.ReadAllText(installedPath));
+        var manifest = new JsonProjectManifestStore().Load(
+            Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
+        Assert.Equal(
+            [new InstalledCommonModule("\u00A0", "\u00A0.bas", Requested: true, TestOnly: false)],
+            manifest.Documents["Book1"].CommonModules);
+    }
+
+    [Fact]
     public void AddFlattensRepositoryDirectoriesWhenCopyingToCommonModulesDirectory()
     {
         using var temp = TempDirectory.Create();

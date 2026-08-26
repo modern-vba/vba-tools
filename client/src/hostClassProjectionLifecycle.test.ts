@@ -1150,14 +1150,14 @@ test('HostClass source reassociation clears repaired metadata without inspection
     {
       sourceUri: 'file:///C:/work/Invoices/src/InvoiceForm.frm',
       kind: 'form',
-      text: 'VERSION 5.00\n'
+      moduleIdentity: { state: 'missing' }
     }
   ]);
   const repaired = lifecycle.reevaluateSourceAssociations(context, [
     {
       sourceUri: 'file:///C:/work/Invoices/src/InvoiceForm.frm',
       kind: 'form',
-      text: 'Attribute VB_Name = "InvoiceForm"\n'
+      moduleIdentity: { state: 'authoritative', name: 'InvoiceForm' }
     }
   ]);
 
@@ -1204,13 +1204,18 @@ test('HostClass source candidates observed during initial inspection associate w
 
   lifecycle.activateDocument(context);
   await started;
+  const moduleIdentity = {
+    state: 'authoritative' as const,
+    name: 'InvoiceForm'
+  };
   const beforeProjection = lifecycle.reevaluateSourceAssociations(context, [
     {
       sourceUri: 'file:///C:/work/Invoices/src/Book1/InvoiceForm.frm',
       kind: 'form',
-      text: 'Attribute VB_Name = "InvoiceForm"\n'
+      moduleIdentity
     }
   ]);
+  moduleIdentity.name = 'MutatedAfterObservation';
   complete?.({
     exitCode: 0,
     stdout: JSON.stringify({
@@ -2173,13 +2178,305 @@ test('HostClass lifecycle reports complete source-association failure detail', a
   lifecycle.reevaluateSourceAssociations(context, [{
     sourceUri: 'file:///C:/work/Invoices/src/Book1/InvoiceForm.frm',
     kind: 'form',
-    text: 'VERSION 5.00\r\n'
+    moduleIdentity: { state: 'missing' }
   }]);
 
   const last = transitions.at(-1);
   assert.equal(last?.kind, 'sourceAssociationChanged');
   assert.equal(last?.associationFailureCount, 1);
   assert.equal(last?.associationResult?.failures[0]?.reason, 'attributeVbNameMissing');
+});
+
+test('HostClass lifecycle preserves exact code-page class and intrinsic source identities', async () => {
+  const context = {
+    project: String.raw`C:\work\Invoices`,
+    document: 'Book1',
+    sourceTemplate: String.raw`C:\work\Invoices\src\Book1\Book1.xlsm`
+  };
+  const notifications: unknown[] = [];
+  const lifecycle = new HostClassProjectionLifecycle({
+    runHostClassList: async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        schemaVersion: '1.0',
+        ...context,
+        classEnumerationComplete: true,
+        complete: true,
+        classes: [{
+          identity: { name: '\u00A0', kind: 'document' },
+          status: 'resolved',
+          intrinsicEventSourceName: '\u00A0',
+          events: [],
+          baseTypeProvenance: {
+            name: '\u00A0',
+            libraryGuid: '00020813-0000-0000-C000-000000000046',
+            majorVersion: 1,
+            minorVersion: 9,
+            lcid: 0
+          }
+        }],
+        diagnostics: [],
+        warnings: []
+      }),
+      stderr: '',
+      cancelled: false
+    }),
+    sendNotification: async (_method, parameters) => {
+      notifications.push(parameters);
+    }
+  });
+
+  lifecycle.activateDocument(context);
+  await lifecycle.flush();
+
+  const snapshot = notifications[0] as {
+    classes: readonly {
+      identity: { name: string };
+      projection: {
+        intrinsicEventSourceName: string;
+        baseTypeProvenance: { name: string };
+      };
+    }[];
+  };
+  assert.equal(snapshot.classes[0]?.identity.name, '\u00A0');
+  assert.equal(snapshot.classes[0]?.projection.intrinsicEventSourceName, '\u00A0');
+  assert.equal(snapshot.classes[0]?.projection.baseTypeProvenance.name, '\u00A0');
+});
+
+test('HostClass lifecycle preserves an exact code-page Event name', async () => {
+  const context = {
+    project: String.raw`C:\work\Invoices`,
+    document: 'Book1',
+    sourceTemplate: String.raw`C:\work\Invoices\src\Book1\Book1.xlsm`
+  };
+  const notifications: unknown[] = [];
+  const lifecycle = new HostClassProjectionLifecycle({
+    runHostClassList: async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        schemaVersion: '1.0',
+        ...context,
+        classEnumerationComplete: true,
+        complete: true,
+        classes: [{
+          identity: { name: 'Sheet1', kind: 'document' },
+          status: 'resolved',
+          intrinsicEventSourceName: 'Worksheet',
+          events: [{
+            name: '\u00A0',
+            parameters: [],
+            authoringAvailable: true,
+            existingHandlerRecognizable: true
+          }]
+        }],
+        diagnostics: [],
+        warnings: []
+      }),
+      stderr: '',
+      cancelled: false
+    }),
+    sendNotification: async (_method, parameters) => {
+      notifications.push(parameters);
+    }
+  });
+
+  lifecycle.activateDocument(context);
+  await lifecycle.flush();
+
+  const snapshot = notifications[0] as {
+    classes: readonly { projection: { events: readonly { name: string }[] } }[];
+  };
+  assert.equal(snapshot.classes[0]?.projection.events[0]?.name, '\u00A0');
+});
+
+test('HostClass lifecycle preserves an exact code-page Event parameter name', async () => {
+  const context = {
+    project: String.raw`C:\work\Invoices`,
+    document: 'Book1',
+    sourceTemplate: String.raw`C:\work\Invoices\src\Book1\Book1.xlsm`
+  };
+  const notifications: unknown[] = [];
+  const lifecycle = new HostClassProjectionLifecycle({
+    runHostClassList: async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        schemaVersion: '1.0',
+        ...context,
+        classEnumerationComplete: true,
+        complete: true,
+        classes: [{
+          identity: { name: 'Sheet1', kind: 'document' },
+          status: 'resolved',
+          intrinsicEventSourceName: 'Worksheet',
+          events: [{
+            name: 'Changed',
+            parameters: [{
+              name: '\u00A0',
+              type: { kind: 'intrinsic', name: 'String' },
+              passing: 'byVal',
+              arrayShape: 'scalar',
+              optional: false,
+              paramArray: false
+            }],
+            authoringAvailable: true,
+            existingHandlerRecognizable: true
+          }]
+        }],
+        diagnostics: [],
+        warnings: []
+      }),
+      stderr: '',
+      cancelled: false
+    }),
+    sendNotification: async (_method, parameters) => {
+      notifications.push(parameters);
+    }
+  });
+
+  lifecycle.activateDocument(context);
+  await lifecycle.flush();
+
+  const snapshot = notifications[0] as {
+    classes: readonly {
+      projection: { events: readonly { parameters: readonly { name: string }[] }[] };
+    }[];
+  };
+  assert.equal(snapshot.classes[0]?.projection.events[0]?.parameters[0]?.name, '\u00A0');
+});
+
+test('HostClass lifecycle preserves an exact code-page TypeLib parameter type name', async () => {
+  const context = {
+    project: String.raw`C:\work\Invoices`,
+    document: 'Book1',
+    sourceTemplate: String.raw`C:\work\Invoices\src\Book1\Book1.xlsm`
+  };
+  const notifications: unknown[] = [];
+  const lifecycle = new HostClassProjectionLifecycle({
+    runHostClassList: async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        schemaVersion: '1.0',
+        ...context,
+        classEnumerationComplete: true,
+        complete: true,
+        classes: [{
+          identity: { name: 'Sheet1', kind: 'document' },
+          status: 'resolved',
+          intrinsicEventSourceName: 'Worksheet',
+          events: [{
+            name: 'Changed',
+            parameters: [{
+              name: 'value',
+              type: {
+                kind: 'typeLib',
+                name: '\u00A0',
+                libraryGuid: '00020813-0000-0000-C000-000000000046',
+                majorVersion: 1,
+                minorVersion: 9,
+                lcid: 0
+              },
+              passing: 'byVal',
+              arrayShape: 'scalar',
+              optional: false,
+              paramArray: false
+            }],
+            authoringAvailable: true,
+            existingHandlerRecognizable: true
+          }]
+        }],
+        diagnostics: [],
+        warnings: []
+      }),
+      stderr: '',
+      cancelled: false
+    }),
+    sendNotification: async (_method, parameters) => {
+      notifications.push(parameters);
+    }
+  });
+
+  lifecycle.activateDocument(context);
+  await lifecycle.flush();
+
+  const snapshot = notifications[0] as {
+    classes: readonly {
+      projection: {
+        events: readonly {
+          parameters: readonly { type: { kind: string; name: string } }[];
+        }[];
+      };
+    }[];
+  };
+  assert.deepEqual(snapshot.classes[0]?.projection.events[0]?.parameters[0]?.type, {
+    kind: 'typeLib',
+    name: '\u00A0',
+    libraryGuid: '00020813-0000-0000-C000-000000000046',
+    majorVersion: 1,
+    minorVersion: 9,
+    lcid: 0
+  });
+});
+
+test('HostClass lifecycle preserves an exact unresolved parameter type display name', async () => {
+  const context = {
+    project: String.raw`C:\work\Invoices`,
+    document: 'Book1',
+    sourceTemplate: String.raw`C:\work\Invoices\src\Book1\Book1.xlsm`
+  };
+  const notifications: unknown[] = [];
+  const lifecycle = new HostClassProjectionLifecycle({
+    runHostClassList: async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        schemaVersion: '1.0',
+        ...context,
+        classEnumerationComplete: true,
+        complete: true,
+        classes: [{
+          identity: { name: 'Sheet1', kind: 'document' },
+          status: 'resolved',
+          intrinsicEventSourceName: 'Worksheet',
+          events: [{
+            name: 'Changed',
+            parameters: [{
+              name: 'value',
+              type: { kind: 'unresolved', displayName: '\u00A0' },
+              passing: 'byVal',
+              arrayShape: 'scalar',
+              optional: false,
+              paramArray: false
+            }],
+            authoringAvailable: false,
+            existingHandlerRecognizable: false
+          }]
+        }],
+        diagnostics: [],
+        warnings: []
+      }),
+      stderr: '',
+      cancelled: false
+    }),
+    sendNotification: async (_method, parameters) => {
+      notifications.push(parameters);
+    }
+  });
+
+  lifecycle.activateDocument(context);
+  await lifecycle.flush();
+
+  const snapshot = notifications[0] as {
+    classes: readonly {
+      projection: {
+        events: readonly {
+          parameters: readonly { type: { kind: string; displayName: string } }[];
+        }[];
+      };
+    }[];
+  };
+  assert.deepEqual(snapshot.classes[0]?.projection.events[0]?.parameters[0]?.type, {
+    kind: 'unresolved',
+    displayName: '\u00A0'
+  });
 });
 
 test('HostClass invalid nested Event schema preserves the complete prior snapshot', async () => {

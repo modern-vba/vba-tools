@@ -5,6 +5,7 @@ using System.Text;
 using System.Xml.Linq;
 using OpenMcdf;
 using VbaDebugAdapter.Debugging;
+using VbaLanguageServer.Syntax;
 
 namespace VbaDebugAdapter.Infrastructure;
 
@@ -406,9 +407,8 @@ public sealed class OpenXmlDebugCompilationSettingsReader
         }
 
         private static bool IsVbaIdentifier(string value)
-            => value.Length != 0
-               && char.IsLetter(value[0])
-               && value.Skip(1).All(character => char.IsLetterOrDigit(character) || character == '_');
+            => value.Length <= 255
+                && VbaIdentifier.IsIdentifier(value);
 
         private static bool TryParseProjectConstantValue(string text, out short value)
         {

@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace VbaLanguageServer.Syntax;
@@ -8,48 +9,80 @@ namespace VbaLanguageServer.Syntax;
 internal static class VbaSyntaxTreeParser
 {
     private static readonly Regex AttributePattern = new(
-        "^\\s*Attribute\\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*(?<value>.+?)\\s*$",
+        "^" + VbaIdentifier.RegexWhitespace + "*"
+        + "Attribute" + VbaIdentifier.RegexWhitespace + "+"
+        + "(?<name>(?>" + VbaIdentifier.RegexIdentifierCandidate + "))"
+        + VbaIdentifier.RegexWhitespace + "*=" + VbaIdentifier.RegexWhitespace + "*"
+        + "(?<value>.+?)" + VbaIdentifier.RegexWhitespace + "*$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex OptionPattern = new(
-        "^\\s*Option\\b.*$",
+        "^" + VbaIdentifier.RegexWhitespace + "*Option"
+        + "(?:" + VbaIdentifier.RegexWhitespace + "+.*)?"
+        + VbaIdentifier.RegexWhitespace + "*$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex ProcedurePattern = new(
-        "^\\s*(?:(?<visibility>Public|Private|Friend|Global)\\s+)?(?:(?<static>Static)\\s+)?(?:(?<kind>Sub|Function)|Property\\s+(?<propertyKind>Get|Let|Set))\\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\\s*(?:\\((?<parameters>.*)\\))?",
+        "^" + VbaIdentifier.RegexWhitespace + "*"
+        + "(?:(?<visibility>Public|Private|Friend|Global)" + VbaIdentifier.RegexWhitespace + "+)?"
+        + "(?:(?<static>Static)" + VbaIdentifier.RegexWhitespace + "+)?"
+        + "(?:(?<kind>Sub|Function)|Property" + VbaIdentifier.RegexWhitespace + "+(?<propertyKind>Get|Let|Set))"
+        + VbaIdentifier.RegexWhitespace + "+"
+        + "(?<name>(?>" + VbaIdentifier.RegexIdentifierCandidate + "))"
+        + VbaIdentifier.RegexWhitespace + "*(?:\\((?<parameters>.*)\\))?",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex DeclarePattern = new(
-        "^\\s*(?:(?<visibility>Public|Private)\\s+)?Declare\\s+(?:PtrSafe\\s+)?(?<kind>Sub|Function)\\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\\s+Lib\\s+\"[^\"]+\"(?:\\s+Alias\\s+\"[^\"]+\")?\\s*(?:\\((?<parameters>.*)\\))?",
+        "^" + VbaIdentifier.RegexWhitespace + "*"
+        + "(?:(?<visibility>Public|Private)" + VbaIdentifier.RegexWhitespace + "+)?"
+        + "Declare" + VbaIdentifier.RegexWhitespace + "+"
+        + "(?:PtrSafe" + VbaIdentifier.RegexWhitespace + "+)?"
+        + "(?<kind>Sub|Function)" + VbaIdentifier.RegexWhitespace + "+"
+        + "(?<name>(?>" + VbaIdentifier.RegexIdentifierCandidate + "))"
+        + VbaIdentifier.RegexWhitespace + "+Lib" + VbaIdentifier.RegexWhitespace + "+\"[^\"]+\""
+        + "(?:" + VbaIdentifier.RegexWhitespace + "+Alias" + VbaIdentifier.RegexWhitespace + "+\"[^\"]+\")?"
+        + VbaIdentifier.RegexWhitespace + "*(?:\\((?<parameters>.*)\\))?",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex EventPattern = new(
-        "^\\s*(?:(?<visibility>Public|Private|Friend)\\s+)?Event\\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\\s*(?:\\((?<parameters>.*)\\))?",
+        "^" + VbaIdentifier.RegexWhitespace + "*"
+        + "(?:(?<visibility>Public|Private|Friend)" + VbaIdentifier.RegexWhitespace + "+)?"
+        + "Event" + VbaIdentifier.RegexWhitespace + "+"
+        + "(?<name>(?>" + VbaIdentifier.RegexIdentifierCandidate + "))"
+        + VbaIdentifier.RegexWhitespace + "*(?:\\((?<parameters>.*)\\))?",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex EnumPattern = new(
-        "^\\s*(?:(?<visibility>Public|Private|Friend)\\s+)?Enum\\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\\b",
+        "^" + VbaIdentifier.RegexWhitespace + "*"
+        + "(?:(?<visibility>Public|Private|Friend)" + VbaIdentifier.RegexWhitespace + "+)?"
+        + "Enum" + VbaIdentifier.RegexWhitespace + "+"
+        + "(?<name>(?>" + VbaIdentifier.RegexIdentifierCandidate + "))",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex TypePattern = new(
-        "^\\s*(?:(?<visibility>Public|Private|Friend)\\s+)?Type\\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\\b",
+        "^" + VbaIdentifier.RegexWhitespace + "*"
+        + "(?:(?<visibility>Public|Private|Friend)" + VbaIdentifier.RegexWhitespace + "+)?"
+        + "Type" + VbaIdentifier.RegexWhitespace + "+"
+        + "(?<name>(?>" + VbaIdentifier.RegexIdentifierCandidate + "))",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex ConstPattern = new(
-        "^\\s*(?:(?<visibility>Public|Private|Friend|Global)\\s+)?Const\\s+(?<declarations>.+)$",
+        "^" + VbaIdentifier.RegexWhitespace + "*"
+        + "(?:(?<visibility>Public|Private|Friend|Global)" + VbaIdentifier.RegexWhitespace + "+)?"
+        + "Const" + VbaIdentifier.RegexWhitespace + "+(?<declarations>.+)$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex ModuleVariablePattern = new(
-        "^\\s*(?<visibility>Public|Private|Friend|Global|Dim)\\s+(?<declarations>.+)$",
+        "^" + VbaIdentifier.RegexWhitespace + "*"
+        + "(?<visibility>Public|Private|Friend|Global|Dim)"
+        + VbaIdentifier.RegexWhitespace + "+(?<declarations>.+)$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex LocalVariablePattern = new(
-        "^\\s*(?:Dim|(?<static>Static))\\s+(?<declarations>.+)$",
+        "^" + VbaIdentifier.RegexWhitespace + "*"
+        + "(?:Dim|(?<static>Static))"
+        + VbaIdentifier.RegexWhitespace + "+(?<declarations>.+)$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-
-    private static readonly Regex IdentifierPattern = new(
-        "[A-Za-z_][A-Za-z0-9_]*",
-        RegexOptions.CultureInvariant);
 
     /// <summary>
     /// Parses one module source document.
@@ -183,14 +216,14 @@ internal static class VbaSyntaxTreeParser
             }
 
             var line = sourceText.Lines[index];
-            if (!line.Text.AsSpan().TrimStart().StartsWith(
+            if (!VbaIdentifier.TrimStartWhitespace(line.Text).StartsWith(
                 "Attribute",
                 StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
 
-            var match = AttributePattern.Match(line.Text);
+            var match = MatchLexIdentifier(AttributePattern, line.Text);
             if (!match.Success)
             {
                 continue;
@@ -198,7 +231,7 @@ internal static class VbaSyntaxTreeParser
 
             var nameGroup = match.Groups["name"];
             var valueGroup = match.Groups["value"];
-            var rawValue = valueGroup.Value.Trim();
+            var rawValue = VbaIdentifier.TrimWhitespace(valueGroup.Value);
             var value = UnquoteAttributeValue(rawValue);
             var valueOffsetInGroup = valueGroup.Value.IndexOf(value, StringComparison.Ordinal);
             var valueStartCharacter = valueGroup.Index + Math.Max(0, valueOffsetInGroup);
@@ -224,7 +257,7 @@ internal static class VbaSyntaxTreeParser
             }
 
             var line = sourceText.Lines[index];
-            if (!line.Text.AsSpan().TrimStart().StartsWith(
+            if (!VbaIdentifier.TrimStartWhitespace(line.Text).StartsWith(
                 "Option",
                 StringComparison.OrdinalIgnoreCase))
             {
@@ -237,7 +270,7 @@ internal static class VbaSyntaxTreeParser
                 continue;
             }
 
-            var text = match.Value.Trim();
+            var text = VbaIdentifier.TrimWhitespace(match.Value);
             var startCharacter = line.Text.IndexOf(text, StringComparison.Ordinal);
             options.Add(new VbaModuleOptionSyntax(
                 text,
@@ -259,20 +292,23 @@ internal static class VbaSyntaxTreeParser
             codeStartLine);
         foreach (var statement in CreateLogicalStatements(sourceText, codeStartLine))
         {
-            var trimmed = statement.Text.TrimStart();
-            if (string.IsNullOrWhiteSpace(trimmed)
-                || AttributePattern.IsMatch(trimmed)
+            var trimmed = VbaIdentifier.TrimStartWhitespace(statement.Text);
+            if (VbaIdentifier.IsWhitespaceOnly(trimmed)
+                || MatchLexIdentifier(AttributePattern, trimmed).Success
                 || OptionPattern.IsMatch(trimmed)
                 || trimmed.StartsWith("#", StringComparison.Ordinal))
             {
                 continue;
             }
 
-            if (trimmed.StartsWith("With ", StringComparison.OrdinalIgnoreCase))
+            const string withKeyword = "With";
+            if (trimmed.Length > withKeyword.Length
+                && trimmed.StartsWith(withKeyword, StringComparison.OrdinalIgnoreCase)
+                && VbaIdentifier.IsWhitespace(trimmed[withKeyword.Length]))
             {
                 expressions.Add(new VbaExpressionSyntax(
                     VbaExpressionKind.WithReceiver,
-                    trimmed["With ".Length..].Trim(),
+                    VbaIdentifier.TrimWhitespace(trimmed[withKeyword.Length..]),
                     statement.Range,
                     statement.IsContinued));
             }
@@ -426,12 +462,12 @@ internal static class VbaSyntaxTreeParser
             }
 
             var codeLine = VbaSourceText.StripApostropheComment(line.Text);
-            if (string.IsNullOrWhiteSpace(codeLine))
+            if (VbaIdentifier.IsWhitespaceOnly(codeLine))
             {
                 continue;
             }
 
-            var declareMatch = DeclarePattern.Match(codeLine);
+            var declareMatch = MatchIdentifier(DeclarePattern, codeLine);
             if (declareMatch.Success)
             {
                 var declaration = CreateCallableDeclaration(
@@ -456,7 +492,7 @@ internal static class VbaSyntaxTreeParser
                 continue;
             }
 
-            var eventMatch = EventPattern.Match(codeLine);
+            var eventMatch = MatchIdentifier(EventPattern, codeLine);
             if (eventMatch.Success)
             {
                 var documentation = ParseDocumentationComment(sourceText.Lines, lineIndex);
@@ -487,7 +523,7 @@ internal static class VbaSyntaxTreeParser
                 continue;
             }
 
-            var enumMatch = EnumPattern.Match(codeLine);
+            var enumMatch = MatchIdentifier(EnumPattern, codeLine);
             if (enumMatch.Success)
             {
                 var visibility = GetVisibility(enumMatch.Groups["visibility"].Value, defaultPublic: true);
@@ -520,7 +556,7 @@ internal static class VbaSyntaxTreeParser
                 continue;
             }
 
-            var typeMatch = TypePattern.Match(codeLine);
+            var typeMatch = MatchIdentifier(TypePattern, codeLine);
             if (typeMatch.Success)
             {
                 var visibility = GetVisibility(typeMatch.Groups["visibility"].Value, defaultPublic: true);
@@ -573,11 +609,11 @@ internal static class VbaSyntaxTreeParser
                 continue;
             }
 
-            var procedureMatch = ProcedurePattern.Match(codeLine);
+            var procedureMatch = MatchIdentifier(ProcedurePattern, codeLine);
             if (procedureMatch.Success)
             {
                 var procedureStatement = CreateLogicalStatement(sourceText, lineIndex);
-                procedureMatch = ProcedurePattern.Match(procedureStatement.Text);
+                procedureMatch = MatchIdentifier(ProcedurePattern, procedureStatement.Text);
                 var declaration = CreateCallableDeclaration(
                     sourceText,
                     procedureMatch,
@@ -664,10 +700,10 @@ internal static class VbaSyntaxTreeParser
                 continue;
             }
 
-            if (string.IsNullOrWhiteSpace(codeLine)
-                || AttributePattern.IsMatch(codeLine)
+            if (VbaIdentifier.IsWhitespaceOnly(codeLine)
+                || MatchLexIdentifier(AttributePattern, codeLine).Success
                 || OptionPattern.IsMatch(codeLine)
-                || codeLine.TrimStart().StartsWith("#", StringComparison.Ordinal))
+                || VbaIdentifier.TrimStartWhitespace(codeLine).StartsWith("#", StringComparison.Ordinal))
             {
                 inLogicalContinuation = hasValidLineContinuation;
                 continue;
@@ -675,13 +711,13 @@ internal static class VbaSyntaxTreeParser
 
             var statementText = line.Text;
             var statementRange = CreateLineRange(line);
-            var trimmed = codeLine.TrimStart();
+            var trimmed = VbaIdentifier.TrimStartWhitespace(codeLine);
             if (hasValidLineContinuation)
             {
                 var logicalStatement = CreateLogicalStatement(sourceText, lineIndex);
                 statementText = logicalStatement.Text;
                 statementRange = logicalStatement.Range;
-                trimmed = logicalStatement.Text.TrimStart();
+                trimmed = VbaIdentifier.TrimStartWhitespace(logicalStatement.Text);
             }
 
             if (IsMalformedDeclarationHeader(trimmed))
@@ -710,7 +746,9 @@ internal static class VbaSyntaxTreeParser
                 continue;
             }
 
-            var statementKind = VbaBlockSyntaxFacts.ClassifyStatement(trimmed, ProcedurePattern.IsMatch(trimmed));
+            var statementKind = VbaBlockSyntaxFacts.ClassifyStatement(
+                trimmed,
+                MatchIdentifier(ProcedurePattern, trimmed).Success);
             statements.Add(new VbaStatementSyntax(
                 statementKind,
                 statementText,
@@ -794,7 +832,8 @@ internal static class VbaSyntaxTreeParser
 
         var codePart = line.Text[..commentStart];
         var underscoreIndex = codePart.LastIndexOf('_');
-        if (underscoreIndex >= 0 && codePart.TrimEnd().EndsWith('_'))
+        if (underscoreIndex >= 0
+            && VbaIdentifier.TrimEndWhitespace(codePart).EndsWith('_'))
         {
             yield return new VbaSyntaxDiagnostic(
                 "syntax.invalidTrailingCommentContinuation",
@@ -878,15 +917,40 @@ internal static class VbaSyntaxTreeParser
 
     private static bool IsMalformedDeclarationHeader(string trimmedLine)
     {
-        if (!Regex.IsMatch(
-            trimmedLine,
-            "^(Public\\s+|Private\\s+|Friend\\s+|Global\\s+)?(Static\\s+)?(Sub|Function|Property)\\b",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+        var tokens = VbaTokenStream.FromText(trimmedLine).Tokens
+            .Where(token => token.Kind is not VbaTokenKind.Whitespace
+                and not VbaTokenKind.NewLine
+                and not VbaTokenKind.LineContinuation
+                and not VbaTokenKind.Comment)
+            .ToArray();
+        var index = 0;
+        if (index < tokens.Length
+            && tokens[index].Kind == VbaTokenKind.Keyword
+            && (tokens[index].Text.Equals("Public", StringComparison.OrdinalIgnoreCase)
+                || tokens[index].Text.Equals("Private", StringComparison.OrdinalIgnoreCase)
+                || tokens[index].Text.Equals("Friend", StringComparison.OrdinalIgnoreCase)
+                || tokens[index].Text.Equals("Global", StringComparison.OrdinalIgnoreCase)))
+        {
+            index++;
+        }
+
+        if (index < tokens.Length
+            && tokens[index].Kind == VbaTokenKind.Keyword
+            && tokens[index].Text.Equals("Static", StringComparison.OrdinalIgnoreCase))
+        {
+            index++;
+        }
+
+        if (index >= tokens.Length
+            || tokens[index].Kind != VbaTokenKind.Keyword
+            || !tokens[index].Text.Equals("Sub", StringComparison.OrdinalIgnoreCase)
+                && !tokens[index].Text.Equals("Function", StringComparison.OrdinalIgnoreCase)
+                && !tokens[index].Text.Equals("Property", StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
 
-        return !ProcedurePattern.IsMatch(trimmedLine);
+        return !MatchIdentifier(ProcedurePattern, trimmedLine).Success;
     }
 
     private static VbaCallableDeclarationSyntax CreateCallableDeclaration(
@@ -900,7 +964,12 @@ internal static class VbaSyntaxTreeParser
     {
         var name = match.Groups["name"].Value;
         var documentation = ParseDocumentationComment(sourceText.Lines, lineIndex);
-        var parameters = ParseParameterSyntax(sourceText, match, line, documentation);
+        var parameters = ParseParameterSyntax(
+            sourceText,
+            match,
+            line,
+            documentation,
+            allowAnyTypeReference: isExternal);
         var typeReference = ParseReturnTypeReference(match, line.Text);
         var signature = CreateSignature(name, parameters, typeReference, documentation);
         var kind = match.Groups["kind"].Success && !match.Groups["propertyKind"].Success
@@ -1079,24 +1148,29 @@ internal static class VbaSyntaxTreeParser
         {
             var line = sourceText.Lines[lineIndex];
             var codeLine = VbaSourceText.StripApostropheComment(line.Text);
-            var match = IdentifierPattern.Match(codeLine);
-            if (!match.Success)
+            var nameToken = VbaTokenStream.FromText(codeLine).Tokens.FirstOrDefault(
+                token => token.Kind is not VbaTokenKind.Whitespace
+                    and not VbaTokenKind.LineContinuation);
+            if (nameToken is null || !VbaIdentifierSyntaxFacts.IsValidDeclaredName(nameToken))
             {
                 continue;
             }
 
             var typeReference = ParseTypeReference(line.Text);
-            var isArray = IsArrayParameter(codeLine, match.Value);
+            var isArray = IsArrayParameter(codeLine, nameToken.Text);
             declarations.Add(new VbaDeclarationSyntax(
-                match.Value,
+                nameToken.Text,
                 kind,
                 visibility,
-                sourceText.RangeForLine(line, match.Index, match.Index + match.Length),
+                sourceText.RangeForLine(
+                    line,
+                    nameToken.Range.Start.Offset,
+                    nameToken.Range.End.Offset),
                 lineIndex,
                 TypeReference: typeReference,
                 DeclarationLabel: CreateValueDeclarationLabel(
                     kind,
-                    match.Value,
+                    nameToken.Text,
                     typeReference,
                     isArray: isArray),
                 IsArray: isArray));
@@ -1152,19 +1226,14 @@ internal static class VbaSyntaxTreeParser
         foreach (var segment in SplitDeclarationSegments(declarationsGroup.Value))
         {
             var segmentStart = declarationsGroup.Index + segment.Start;
-            var nameMatch = Regex.Match(
-                segment.Text,
-                "^\\s*(?:WithEvents\\s+)?(?<name>[A-Za-z_][A-Za-z0-9_]*)\\b",
-                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-            if (!nameMatch.Success)
+            if (!TryReadDeclaredName(segment.Text, out var nameToken, out var hasWithEventsModifier))
             {
                 continue;
             }
 
-            var name = nameMatch.Groups["name"].Value;
-            var nameStart = segmentStart + nameMatch.Groups["name"].Index;
-            var isWithEvents = isWithEventsDefault
-                || Regex.IsMatch(segment.Text, "\\bWithEvents\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            var name = nameToken.Text;
+            var nameStart = segmentStart + nameToken.Range.Start.Offset;
+            var isWithEvents = isWithEventsDefault || hasWithEventsModifier;
             var isArray = IsArrayParameter(segment.Text, name);
             var typeReference = ParseTypeReference(segment.Text);
             declarations.Add(new VbaDeclarationSyntax(
@@ -1192,14 +1261,50 @@ internal static class VbaSyntaxTreeParser
         return declarations;
     }
 
+    private static bool TryReadDeclaredName(
+        string text,
+        out VbaToken nameToken,
+        out bool hasWithEventsModifier)
+    {
+        hasWithEventsModifier = false;
+        foreach (var token in VbaTokenStream.FromText(text).Tokens)
+        {
+            if (token.Kind == VbaTokenKind.Whitespace)
+            {
+                continue;
+            }
+
+            if (!hasWithEventsModifier
+                && token.Kind == VbaTokenKind.Keyword
+                && token.Text.Equals("WithEvents", StringComparison.OrdinalIgnoreCase))
+            {
+                hasWithEventsModifier = true;
+                continue;
+            }
+
+            if (VbaIdentifierSyntaxFacts.IsValidDeclaredName(token))
+            {
+                nameToken = token;
+                return true;
+            }
+
+            break;
+        }
+
+        nameToken = null!;
+        return false;
+    }
+
     private static IReadOnlyList<VbaCallableParameterSyntax> ParseParameterSyntax(
         VbaSourceText sourceText,
         Match match,
         VbaSourceLine line,
-        DocumentationComment? documentation)
+        DocumentationComment? documentation,
+        bool allowAnyTypeReference = false)
     {
         var parametersGroup = match.Groups["parameters"];
-        if (!parametersGroup.Success || string.IsNullOrWhiteSpace(parametersGroup.Value))
+        if (!parametersGroup.Success
+            || VbaIdentifier.IsWhitespaceOnly(parametersGroup.Value))
         {
             return [];
         }
@@ -1221,7 +1326,7 @@ internal static class VbaSyntaxTreeParser
                 documentation?.ParameterDocs.TryGetValue(name, out var parameterDocumentation) == true
                     ? parameterDocumentation
                     : null,
-                ParseTypeReference(segment.Text),
+                ParseTypeReference(segment.Text, allowAnyTypeReference),
                 IsOptionalParameter(segment.Text),
                 IsByRefParameter(segment.Text),
                 IsParamArrayParameter(segment.Text),
@@ -1237,7 +1342,8 @@ internal static class VbaSyntaxTreeParser
         DocumentationComment? documentation)
     {
         var parametersGroup = match.Groups["parameters"];
-        if (!parametersGroup.Success || string.IsNullOrWhiteSpace(parametersGroup.Value))
+        if (!parametersGroup.Success
+            || VbaIdentifier.IsWhitespaceOnly(parametersGroup.Value))
         {
             return [];
         }
@@ -1277,7 +1383,7 @@ internal static class VbaSyntaxTreeParser
     {
         var returnTypeName = returnTypeReference?.Name;
         var label = $"{name}({string.Join(", ", parameters.Select(CreateSignatureParameterLabel))})";
-        if (!string.IsNullOrWhiteSpace(returnTypeName))
+        if (!string.IsNullOrEmpty(returnTypeName))
         {
             label = $"{label} As {returnTypeName}";
         }
@@ -1405,28 +1511,63 @@ internal static class VbaSyntaxTreeParser
         };
 
     private static bool IsOptionalParameter(string text)
-        => Regex.IsMatch(
-            text,
-            "^\\s*Optional\\b",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        => HasParameterModifier(text, "Optional");
 
     private static bool IsByRefParameter(string text)
-        => !Regex.IsMatch(
-            text,
-            "\\bByVal\\b",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        => !HasParameterModifier(text, "ByVal");
 
     private static bool IsParamArrayParameter(string text)
-        => Regex.IsMatch(
-            text,
-            "^\\s*ParamArray\\b",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        => HasParameterModifier(text, "ParamArray");
+
+    private static bool HasParameterModifier(string text, string modifier)
+    {
+        foreach (var token in VbaTokenStream.FromText(text).Tokens)
+        {
+            if (token.Kind == VbaTokenKind.Whitespace)
+            {
+                continue;
+            }
+
+            if (token.Kind == VbaTokenKind.Keyword
+                && (token.Text.Equals("ByVal", StringComparison.OrdinalIgnoreCase)
+                    || token.Text.Equals("ByRef", StringComparison.OrdinalIgnoreCase)
+                    || token.Text.Equals("Optional", StringComparison.OrdinalIgnoreCase)
+                    || token.Text.Equals("ParamArray", StringComparison.OrdinalIgnoreCase)))
+            {
+                if (token.Text.Equals(modifier, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+
+                continue;
+            }
+
+            break;
+        }
+
+        return false;
+    }
 
     private static bool IsArrayParameter(string text, string name)
-        => Regex.IsMatch(
-            text,
-            $"\\b{Regex.Escape(name)}\\s*\\(",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    {
+        var tokens = VbaTokenStream.FromText(text).Tokens
+            .Where(token => token.Kind is not VbaTokenKind.Whitespace
+                and not VbaTokenKind.NewLine
+                and not VbaTokenKind.Comment)
+            .ToArray();
+        for (var index = 0; index + 1 < tokens.Length; index++)
+        {
+            if (VbaIdentifierSyntaxFacts.IsValidDeclaredName(tokens[index])
+                && tokens[index].Text.Equals(name, StringComparison.Ordinal)
+                && tokens[index + 1].Kind == VbaTokenKind.Punctuation
+                && tokens[index + 1].Text == "(")
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     private static IReadOnlyList<DeclarationSegment> SplitDeclarationSegments(string text)
     {
@@ -1484,7 +1625,7 @@ internal static class VbaSyntaxTreeParser
         var startLine = declarationLine;
         for (var lineIndex = declarationLine - 1; lineIndex >= 0; lineIndex--)
         {
-            var trimmed = lines[lineIndex].Text.TrimStart();
+            var trimmed = VbaIdentifier.TrimStartWhitespace(lines[lineIndex].Text);
             if (!trimmed.StartsWith("'*", StringComparison.Ordinal))
             {
                 break;
@@ -1502,7 +1643,7 @@ internal static class VbaSyntaxTreeParser
         var documentationStartLine = FindDocumentationCommentStartLine(lines, declarationLine);
         for (var lineIndex = declarationLine - 1; lineIndex >= documentationStartLine; lineIndex--)
         {
-            var trimmed = lines[lineIndex].Text.TrimStart();
+            var trimmed = VbaIdentifier.TrimStartWhitespace(lines[lineIndex].Text);
             rawLines.Push(trimmed[2..].TrimStart());
         }
 
@@ -1706,13 +1847,26 @@ internal static class VbaSyntaxTreeParser
 
     private static string? ParseParameterName(string parameter)
     {
-        var normalized = Regex.Replace(
-            parameter,
-            "\\b(ByVal|ByRef|Optional|ParamArray)\\b",
-            "",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-        var match = IdentifierPattern.Match(normalized);
-        return match.Success ? match.Value : null;
+        foreach (var token in VbaTokenStream.FromText(parameter).Tokens)
+        {
+            if (token.Kind == VbaTokenKind.Whitespace)
+            {
+                continue;
+            }
+
+            if (token.Kind == VbaTokenKind.Keyword
+                && (token.Text.Equals("ByVal", StringComparison.OrdinalIgnoreCase)
+                    || token.Text.Equals("ByRef", StringComparison.OrdinalIgnoreCase)
+                    || token.Text.Equals("Optional", StringComparison.OrdinalIgnoreCase)
+                    || token.Text.Equals("ParamArray", StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            return VbaIdentifierSyntaxFacts.IsValidDeclaredName(token) ? token.Text : null;
+        }
+
+        return null;
     }
 
     private static VbaTypeReferenceSyntax? ParseReturnTypeReference(Match match, string line)
@@ -1727,38 +1881,69 @@ internal static class VbaSyntaxTreeParser
     }
 
     private static VbaTypeReferenceSyntax? ParseReturnTypeReference(string text)
-    {
-        var match = Regex.Match(
-            text,
-            "\\)\\s+As\\s+(?<new>New\\s+)?(?:(?<qualifier>[A-Za-z_][A-Za-z0-9_]*)\\.)?(?<type>[A-Za-z_][A-Za-z0-9_]*)\\b",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-        return CreateTypeReference(match);
-    }
+        => ParseTypeReferenceAfterAs(text);
 
-    private static VbaTypeReferenceSyntax? ParseTypeReference(string text)
-    {
-        var match = Regex.Match(
-            text,
-            "\\bAs\\s+(?<new>New\\s+)?(?:(?<qualifier>[A-Za-z_][A-Za-z0-9_]*)\\.)?(?<type>[A-Za-z_][A-Za-z0-9_]*)\\b",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-        return CreateTypeReference(match);
-    }
+    private static VbaTypeReferenceSyntax? ParseTypeReference(
+        string text,
+        bool allowAnyTypeReference = false)
+        => ParseTypeReferenceAfterAs(text, allowAnyTypeReference);
 
-    private static VbaTypeReferenceSyntax? CreateTypeReference(Match match)
+    private static VbaTypeReferenceSyntax? ParseTypeReferenceAfterAs(
+        string text,
+        bool allowAnyTypeReference = false)
     {
-        if (!match.Success)
+        var tokens = VbaTokenStream.FromText(text).Tokens
+            .Where(token => token.Kind is not VbaTokenKind.Whitespace
+                and not VbaTokenKind.NewLine
+                and not VbaTokenKind.LineContinuation
+                and not VbaTokenKind.Comment)
+            .ToArray();
+        var asIndex = Array.FindIndex(tokens, token =>
+            token.Text.Equals("As", StringComparison.OrdinalIgnoreCase));
+        if (asIndex < 0 || asIndex + 1 >= tokens.Length)
         {
             return null;
         }
 
-        var qualifier = match.Groups["qualifier"].Success
-            ? match.Groups["qualifier"].Value
-            : null;
+        var index = asIndex + 1;
+        var isNew = tokens[index].Text.Equals("New", StringComparison.OrdinalIgnoreCase);
+        if (isNew && ++index >= tokens.Length)
+        {
+            return null;
+        }
+
+        if (!IsTypeReferenceName(tokens[index], allowAnyTypeReference))
+        {
+            return null;
+        }
+
+        var name = tokens[index].Text;
+        string? qualifier = null;
+        if (index + 2 < tokens.Length
+            && tokens[index + 1].Text == "."
+            && VbaIdentifier.IsIdentifier(name)
+            && IsTypeReferenceName(tokens[index + 2], allowAnyTypeReference: false))
+        {
+            qualifier = name;
+            name = tokens[index + 2].Text;
+        }
+
         return new VbaTypeReferenceSyntax(
-            match.Groups["type"].Value,
+            name,
             qualifier,
-            match.Groups["new"].Success);
+            isNew);
     }
+
+    private static bool IsTypeReferenceName(
+        VbaToken token,
+        bool allowAnyTypeReference)
+        => token.Kind is VbaTokenKind.Identifier or VbaTokenKind.Keyword
+            && (VbaIdentifier.IsIdentifier(token.Text)
+                || VbaLanguageVocabulary.TypeNames.Contains(
+                    token.Text,
+                    StringComparer.OrdinalIgnoreCase)
+                || (allowAnyTypeReference
+                    && token.Text.Equals("Any", StringComparison.OrdinalIgnoreCase)));
 
     private static int FindBlockEndLine(
         VbaSourceText sourceText,
@@ -1769,7 +1954,10 @@ internal static class VbaSyntaxTreeParser
     {
         var lines = sourceText.Lines;
         var pattern = new Regex(
-            $"^\\s*End\\s+{Regex.Escape(keyword)}\\b",
+            "^" + VbaIdentifier.RegexWhitespace + "*"
+            + "End" + VbaIdentifier.RegexWhitespace + "+"
+            + Regex.Escape(keyword)
+            + "(?=$|" + VbaIdentifier.RegexWhitespace + "|:)",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         if (!VbaConditionalCompilationBranchFacts.TryGetStructuralPath(
                 preprocessorBlocks,
@@ -1828,24 +2016,46 @@ internal static class VbaSyntaxTreeParser
 
     private static bool IsModuleVariableDeclaration(string codeLine)
     {
-        var afterVisibility = Regex.Replace(
-            codeLine.TrimStart(),
-            "^(Public|Private|Friend|Global|Dim)\\s+",
-            "",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-        return !Regex.IsMatch(
-            afterVisibility,
-            "^(Static\\s+)?(Sub|Function|Property)\\b|^Declare\\b|^Const\\b|^Event\\b|^Enum\\b|^Type\\b",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        var tokens = VbaTokenStream.FromText(codeLine).Tokens
+            .Where(token => token.Kind is not VbaTokenKind.Whitespace
+                and not VbaTokenKind.NewLine
+                and not VbaTokenKind.LineContinuation
+                and not VbaTokenKind.Comment)
+            .ToArray();
+        if (tokens.Length < 2)
+        {
+            return false;
+        }
+
+        var index = 1;
+        if (tokens[index].Text.Equals("Static", StringComparison.OrdinalIgnoreCase))
+        {
+            index++;
+        }
+
+        if (index >= tokens.Length)
+        {
+            return true;
+        }
+
+        return !tokens[index].Text.Equals("Sub", StringComparison.OrdinalIgnoreCase)
+            && !tokens[index].Text.Equals("Function", StringComparison.OrdinalIgnoreCase)
+            && !tokens[index].Text.Equals("Property", StringComparison.OrdinalIgnoreCase)
+            && !tokens[index].Text.Equals("Declare", StringComparison.OrdinalIgnoreCase)
+            && !tokens[index].Text.Equals("Const", StringComparison.OrdinalIgnoreCase)
+            && !tokens[index].Text.Equals("Event", StringComparison.OrdinalIgnoreCase)
+            && !tokens[index].Text.Equals("Enum", StringComparison.OrdinalIgnoreCase)
+            && !tokens[index].Text.Equals("Type", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsWithEventsVariableDeclaration(string codeLine)
-        => Regex.IsMatch(codeLine, "\\bWithEvents\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        => VbaTokenStream.FromText(codeLine).Tokens.Any(token =>
+            token.Text.Equals("WithEvents", StringComparison.OrdinalIgnoreCase));
 
     private static int SkipWhitespace(string text, int startIndex)
     {
         var index = startIndex;
-        while (index < text.Length && char.IsWhiteSpace(text[index]))
+        while (index < text.Length && VbaIdentifier.IsWhitespace(text[index]))
         {
             index++;
         }
@@ -1855,19 +2065,62 @@ internal static class VbaSyntaxTreeParser
 
     private static int ReadIdentifierEnd(string text, int startIndex)
     {
-        var index = startIndex;
-        if (index >= text.Length || !VbaSourceText.IsIdentifierStart(text[index]))
+        if (startIndex >= text.Length)
         {
             return startIndex;
         }
 
-        index++;
-        while (index < text.Length && VbaSourceText.IsIdentifierCharacter(text[index]))
+        var candidateLength = VbaIdentifier.ReadCandidateLength(
+            text.AsSpan(startIndex),
+            out _);
+        return candidateLength > 0
+            && VbaIdentifier.IsIdentifier(text.Substring(startIndex, candidateLength))
+                ? startIndex + candidateLength
+                : startIndex;
+    }
+
+    private static Match MatchIdentifier(Regex pattern, string text, string groupName = "name")
+    {
+        var match = pattern.Match(text);
+        return match.Success
+            && VbaIdentifierSyntaxFacts.IsValidDeclaredName(match.Groups[groupName].Value)
+            && HasDeclaredNameBoundary(text, match.Groups[groupName])
+            ? match
+            : Match.Empty;
+    }
+
+    private static bool HasDeclaredNameBoundary(string text, Group group)
+    {
+        var boundary = group.Index + group.Length;
+        if (boundary >= text.Length)
         {
-            index++;
+            return true;
         }
 
-        return index;
+        if (IsDeclaredNameTailBoundary(text[boundary]))
+        {
+            return true;
+        }
+
+        if (text[boundary] is not ('$' or '%' or '&' or '^' or '!' or '#' or '@'))
+        {
+            return false;
+        }
+
+        boundary++;
+        return boundary >= text.Length || IsDeclaredNameTailBoundary(text[boundary]);
+    }
+
+    private static bool IsDeclaredNameTailBoundary(char value)
+        => VbaIdentifier.IsWhitespace(value) || value is '(' or ':';
+
+    private static Match MatchLexIdentifier(Regex pattern, string text, string groupName = "name")
+    {
+        var match = pattern.Match(text);
+        return match.Success
+            && VbaIdentifier.IsLexIdentifier(match.Groups[groupName].Value)
+            ? match
+            : Match.Empty;
     }
 
     private static bool StartsWithKeyword(string text, int startIndex, string keyword)
@@ -1901,9 +2154,10 @@ internal static class VbaSyntaxTreeParser
 
     private static bool IsRemCommentLine(string line)
     {
-        var trimmed = line.TrimStart();
-        return trimmed.Equals("Rem", StringComparison.OrdinalIgnoreCase)
-            || trimmed.StartsWith("Rem ", StringComparison.OrdinalIgnoreCase);
+        var trimmed = VbaIdentifier.TrimStartWhitespace(line);
+        return trimmed.StartsWith("Rem", StringComparison.OrdinalIgnoreCase)
+            && (trimmed.Length == "Rem".Length
+                || VbaIdentifier.IsWhitespace(trimmed["Rem".Length]));
     }
 
     private static VbaModuleIdentitySyntax CreateIdentity(
@@ -1914,7 +2168,7 @@ internal static class VbaSyntaxTreeParser
     {
         var nameAttribute = attributes.FirstOrDefault(attribute =>
             attribute.Name.Equals("VB_Name", StringComparison.OrdinalIgnoreCase));
-        if (nameAttribute is not null)
+        if (nameAttribute is not null && IsValidModuleIdentity(nameAttribute.Value))
         {
             return new VbaModuleIdentitySyntax(nameAttribute.Value, nameAttribute.ValueRange);
         }
@@ -1925,9 +2179,13 @@ internal static class VbaSyntaxTreeParser
             new VbaSyntaxRange(sourceText.StartPosition, sourceText.StartPosition));
     }
 
+    private static bool IsValidModuleIdentity(string value)
+        => VbaIdentifier.IsIdentifier(value)
+            && value.EnumerateRunes().Take(32).Count() <= 31;
+
     private static VbaSourceLine? FindAttributeNameLine(VbaSourceText sourceText)
         => sourceText.Lines.FirstOrDefault(line =>
-            AttributePattern.Match(line.Text) is { Success: true } match
+            MatchLexIdentifier(AttributePattern, line.Text) is { Success: true } match
             && match.Groups["name"].Value.Equals("VB_Name", StringComparison.OrdinalIgnoreCase));
 
     private static string UnquoteAttributeValue(string value)

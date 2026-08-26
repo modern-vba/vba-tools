@@ -110,9 +110,7 @@ public sealed record VbaBlockBoundarySyntax(
 
         var firstLine = source.Lines[firstPhysicalLine];
         var finalLine = source.Lines[finalPhysicalLine];
-        var leadingWhitespaceLength = firstLine.Text
-            .TakeWhile(value => value is ' ' or '\t')
-            .Count();
+        var leadingWhitespaceLength = CountLeadingWhitespace(firstLine.Text);
         return new VbaBlockBoundarySyntax(
             role,
             branchKind,
@@ -183,8 +181,32 @@ public sealed record VbaBlockBoundarySyntax(
 
     private static bool HasOnlyLeadingWhitespace(VbaSourceLine line, VbaToken firstToken)
         => firstToken.Range.Start.Character <= line.Text.Length
-            && line.Text.AsSpan(0, firstToken.Range.Start.Character)
-                .IndexOfAnyExcept(' ', '\t') < 0;
+            && ContainsOnlyWhitespace(
+                line.Text.AsSpan(0, firstToken.Range.Start.Character));
+
+    private static int CountLeadingWhitespace(string text)
+    {
+        var length = 0;
+        while (length < text.Length && VbaIdentifier.IsWhitespace(text[length]))
+        {
+            length++;
+        }
+
+        return length;
+    }
+
+    private static bool ContainsOnlyWhitespace(ReadOnlySpan<char> text)
+    {
+        foreach (var value in text)
+        {
+            if (!VbaIdentifier.IsWhitespace(value))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
 
     private static bool HasOnlyTrailingSpacesOrApostropheComment(
         VbaSourceLine line,
@@ -192,7 +214,7 @@ public sealed record VbaBlockBoundarySyntax(
     {
         var code = VbaSourceText.StripApostropheComment(line.Text);
         return finalToken.Range.End.Character <= code.Length
-            && code.AsSpan(finalToken.Range.End.Character).Trim().Length == 0;
+            && ContainsOnlyWhitespace(code.AsSpan(finalToken.Range.End.Character));
     }
 
     private static bool Matches(VbaToken token, string text)

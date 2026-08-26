@@ -10,6 +10,17 @@ namespace VbaDev.Tests;
 
 public sealed class ExcelComHostClassInspectionAutomationTests
 {
+    [Theory]
+    [InlineData("CDecl")]
+    [InlineData("Run$")]
+    public void HostClassIdentityRejectsNamesThatAreNotExactVbaIdentifiers(string name)
+    {
+        var error = Assert.Throws<InvalidOperationException>(
+            () => new HostClassIdentity(name, HostClassComponentKind.Document));
+
+        Assert.Contains("VBA IDENTIFIER", error.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task PublishesOnlyAfterPrivateCopyInspectionOwnedProcessReleaseAndWorkspaceDeletion()
     {

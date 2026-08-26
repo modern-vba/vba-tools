@@ -435,7 +435,7 @@ public sealed class VbaNameResolutionService
         VbaSourceDocument currentDocument,
         VbaTypeReference typeReference)
     {
-        if (!string.IsNullOrWhiteSpace(typeReference.Qualifier))
+        if (!string.IsNullOrEmpty(typeReference.Qualifier))
         {
             return candidates.HasSourceModule(typeReference.Qualifier)
                 ? ResolveSourceTypeDefinition(currentDocument, typeReference.Name, typeReference.Qualifier)
@@ -453,7 +453,7 @@ public sealed class VbaNameResolutionService
         string owningReferenceName,
         VbaTypeReference typeReference)
     {
-        var definitions = string.IsNullOrWhiteSpace(typeReference.Qualifier)
+        var definitions = string.IsNullOrEmpty(typeReference.Qualifier)
             ? candidates.GetReferenceCandidates(typeReference.Name)
                 .Where(candidate => SameName(candidate.ModuleName, owningReferenceName))
                 .Select(candidate => candidate.Definition)
@@ -476,7 +476,7 @@ public sealed class VbaNameResolutionService
         VbaSourceDocument currentDocument,
         string? qualifier = null)
     {
-        if (!string.IsNullOrWhiteSpace(qualifier))
+        if (!string.IsNullOrEmpty(qualifier))
         {
             if (candidates.HasSourceModule(qualifier))
             {

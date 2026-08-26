@@ -1,5 +1,3 @@
-using System.Text.RegularExpressions;
-
 namespace VbaLanguageServer.Syntax;
 
 /// <summary>
@@ -39,24 +37,28 @@ internal static class VbaBlockSyntaxFacts
 
     public static string? GetFormattingBranchTerminator(string trimmedLine)
     {
-        if (IsMatch(trimmedLine, "^(Else|ElseIf)\\b"))
+        var tokens = SignificantTokens(trimmedLine);
+        if (Matches(tokens, 0, "Else") || Matches(tokens, 0, "ElseIf"))
         {
             return "End If";
         }
 
-        return IsMatch(trimmedLine, "^Case\\b") ? "End Select" : null;
+        return Matches(tokens, 0, "Case") ? "End Select" : null;
     }
 
     public static string? GetStatementCloseTerminator(string trimmedLine)
-        => IsMatch(trimmedLine, "^End\\s+Sub\\b") ? "End Sub"
-            : IsMatch(trimmedLine, "^End\\s+Function\\b") ? "End Function"
-            : IsMatch(trimmedLine, "^End\\s+Property\\b") ? "End Property"
-            : IsMatch(trimmedLine, "^End\\s+If\\b") ? "End If"
-            : IsMatch(trimmedLine, "^End\\s+With\\b") ? "End With"
-            : IsMatch(trimmedLine, "^End\\s+Select\\b") ? "End Select"
-            : IsMatch(trimmedLine, "^Next\\b") ? "Next"
-            : IsMatch(trimmedLine, "^Loop\\b") ? "Loop"
+    {
+        var tokens = SignificantTokens(trimmedLine);
+        return Matches(tokens, 0, "End") && Matches(tokens, 1, "Sub") ? "End Sub"
+            : Matches(tokens, 0, "End") && Matches(tokens, 1, "Function") ? "End Function"
+            : Matches(tokens, 0, "End") && Matches(tokens, 1, "Property") ? "End Property"
+            : Matches(tokens, 0, "End") && Matches(tokens, 1, "If") ? "End If"
+            : Matches(tokens, 0, "End") && Matches(tokens, 1, "With") ? "End With"
+            : Matches(tokens, 0, "End") && Matches(tokens, 1, "Select") ? "End Select"
+            : Matches(tokens, 0, "Next") ? "Next"
+            : Matches(tokens, 0, "Loop") ? "Loop"
             : null;
+    }
 
     public static VbaStatementKind ClassifyStatement(string trimmedLine, bool isProcedureHeader)
     {
@@ -65,27 +67,28 @@ internal static class VbaBlockSyntaxFacts
             return VbaStatementKind.ProcedureBody;
         }
 
-        if (IsMatch(trimmedLine, "^If\\b.*\\bThen\\s*$"))
+        var tokens = SignificantTokens(trimmedLine);
+        if (Matches(tokens, 0, "If") && Matches(tokens, tokens.Count - 1, "Then"))
         {
             return VbaStatementKind.IfBlock;
         }
 
-        if (IsMatch(trimmedLine, "^With\\b"))
+        if (Matches(tokens, 0, "With"))
         {
             return VbaStatementKind.WithBlock;
         }
 
-        if (IsMatch(trimmedLine, "^Select\\s+Case\\b"))
+        if (Matches(tokens, 0, "Select") && Matches(tokens, 1, "Case"))
         {
             return VbaStatementKind.SelectBlock;
         }
 
-        if (IsMatch(trimmedLine, "^For\\b"))
+        if (Matches(tokens, 0, "For"))
         {
             return VbaStatementKind.ForBlock;
         }
 
-        if (IsMatch(trimmedLine, "^Do\\b"))
+        if (Matches(tokens, 0, "Do"))
         {
             return VbaStatementKind.DoLoopBlock;
         }
@@ -95,13 +98,12 @@ internal static class VbaBlockSyntaxFacts
             return VbaStatementKind.Malformed;
         }
 
-        if (Regex.IsMatch(trimmedLine, "^[A-Za-z_][A-Za-z0-9_]*\\s*=", RegexOptions.CultureInvariant))
+        if (StartsWithIdentifierAssignment(trimmedLine))
         {
             return VbaStatementKind.Assignment;
         }
 
-        if (IsMatch(trimmedLine, "^(Call\\s+)?[A-Za-z_][A-Za-z0-9_]*(?:\\.|\\b)")
-            || trimmedLine.StartsWith(".", StringComparison.Ordinal))
+        if (StartsWithCallTarget(trimmedLine))
         {
             return VbaStatementKind.Call;
         }
@@ -122,35 +124,125 @@ internal static class VbaBlockSyntaxFacts
         };
 
     private static string? GetProcedureOpenTerminator(string trimmedLine)
-        => IsMatch(trimmedLine, "^((Public|Private|Friend|Global)\\s+)?(Static\\s+)?Sub\\b") ? "End Sub"
-            : IsMatch(trimmedLine, "^((Public|Private|Friend|Global)\\s+)?(Static\\s+)?Function\\b") ? "End Function"
-            : IsMatch(trimmedLine, "^((Public|Private|Friend|Global)\\s+)?(Static\\s+)?Property\\b") ? "End Property"
+    {
+        var tokens = SignificantTokens(trimmedLine);
+        var index = 0;
+        if (MatchesAny(tokens, index, "Public", "Private", "Friend", "Global"))
+        {
+            index++;
+        }
+
+        if (Matches(tokens, index, "Static"))
+        {
+            index++;
+        }
+
+        return Matches(tokens, index, "Sub") ? "End Sub"
+            : Matches(tokens, index, "Function") ? "End Function"
+            : Matches(tokens, index, "Property") ? "End Property"
             : null;
+    }
 
     private static string? GetStructuredStatementOpenTerminator(string trimmedLine)
-        => IsMatch(trimmedLine, "^If\\b.*\\bThen\\s*$") ? "End If"
-            : IsMatch(trimmedLine, "^Select\\s+Case\\b") ? "End Select"
-            : IsMatch(trimmedLine, "^With\\b") ? "End With"
-            : IsMatch(trimmedLine, "^For\\b") && !IsMatch(trimmedLine, ":\\s*Next\\b") ? "Next"
-            : IsMatch(trimmedLine, "^Do\\b") && !IsMatch(trimmedLine, ":\\s*Loop\\b") ? "Loop"
+    {
+        var tokens = SignificantTokens(trimmedLine);
+        return Matches(tokens, 0, "If") && Matches(tokens, tokens.Count - 1, "Then") ? "End If"
+            : Matches(tokens, 0, "Select") && Matches(tokens, 1, "Case") ? "End Select"
+            : Matches(tokens, 0, "With") ? "End With"
+            : Matches(tokens, 0, "For") && !ContainsColonWord(tokens, "Next") ? "Next"
+            : Matches(tokens, 0, "Do") && !ContainsColonWord(tokens, "Loop") ? "Loop"
             : null;
+    }
 
     private static string? GetFormattingDeclarationOpenTerminator(string trimmedLine)
-        => IsMatch(trimmedLine, "^((Public|Private|Friend)\\s+)?Enum\\b") ? "End Enum"
-            : IsMatch(trimmedLine, "^((Public|Private|Friend)\\s+)?Type\\b") ? "End Type"
+    {
+        var tokens = SignificantTokens(trimmedLine);
+        var index = MatchesAny(tokens, 0, "Public", "Private", "Friend") ? 1 : 0;
+        return Matches(tokens, index, "Enum") ? "End Enum"
+            : Matches(tokens, index, "Type") ? "End Type"
             : null;
+    }
 
     private static string? GetFormattingDeclarationCloseTerminator(string trimmedLine)
-        => IsMatch(trimmedLine, "^End\\s+Enum\\b") ? "End Enum"
-            : IsMatch(trimmedLine, "^End\\s+Type\\b") ? "End Type"
+    {
+        var tokens = SignificantTokens(trimmedLine);
+        return Matches(tokens, 0, "End") && Matches(tokens, 1, "Enum") ? "End Enum"
+            : Matches(tokens, 0, "End") && Matches(tokens, 1, "Type") ? "End Type"
             : null;
+    }
 
     private static string? GetWhileOpenTerminator(string trimmedLine)
-        => IsMatch(trimmedLine, "^While\\b") ? "Wend" : null;
+        => Matches(SignificantTokens(trimmedLine), 0, "While") ? "Wend" : null;
 
     private static string? GetWhileCloseTerminator(string trimmedLine)
-        => IsMatch(trimmedLine, "^Wend\\b") ? "Wend" : null;
+        => Matches(SignificantTokens(trimmedLine), 0, "Wend") ? "Wend" : null;
 
-    private static bool IsMatch(string text, string pattern)
-        => Regex.IsMatch(text, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static bool StartsWithIdentifierAssignment(string text)
+    {
+        var tokens = SignificantTokens(text);
+        return tokens.Count >= 2
+            && VbaIdentifier.IsIdentifier(tokens[0].Text)
+            && tokens[1].Text == "=";
+    }
+
+    private static bool StartsWithCallTarget(string text)
+    {
+        var tokens = SignificantTokens(text);
+        if (tokens.Count == 0)
+        {
+            return false;
+        }
+
+        var index = tokens[0].Text.Equals("Call", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
+        if (index >= tokens.Count)
+        {
+            return false;
+        }
+
+        if (tokens[index].Text == ".")
+        {
+            return true;
+        }
+
+        var target = tokens[index];
+        var isWordToken = target.Kind is VbaTokenKind.Identifier or VbaTokenKind.Keyword;
+        var isQualified = index + 1 < tokens.Count && tokens[index + 1].Text == ".";
+        var isExplicitQualifiedRoot = target.Text.Equals("Me", StringComparison.OrdinalIgnoreCase)
+            || target.Text.Equals("Debug", StringComparison.OrdinalIgnoreCase);
+        return isWordToken
+            && (VbaLanguageVocabulary.CanBeBareCallTarget(target.Text)
+                || isQualified && isExplicitQualifiedRoot);
+    }
+
+    private static IReadOnlyList<VbaToken> SignificantTokens(string text)
+        => VbaTokenStream.FromText(text).Tokens
+            .Where(token => token.Kind is not VbaTokenKind.Whitespace
+                and not VbaTokenKind.NewLine
+                and not VbaTokenKind.Comment
+                and not VbaTokenKind.LineContinuation)
+            .ToArray();
+
+    private static bool ContainsColonWord(IReadOnlyList<VbaToken> tokens, string word)
+    {
+        for (var index = 0; index + 1 < tokens.Count; index++)
+        {
+            if (tokens[index].Text == ":" && Matches(tokens, index + 1, word))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool Matches(IReadOnlyList<VbaToken> tokens, int index, string word)
+        => index >= 0
+            && index < tokens.Count
+            && tokens[index].Text.Equals(word, StringComparison.OrdinalIgnoreCase);
+
+    private static bool MatchesAny(
+        IReadOnlyList<VbaToken> tokens,
+        int index,
+        params string[] words)
+        => words.Any(word => Matches(tokens, index, word));
 }

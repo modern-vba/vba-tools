@@ -9,7 +9,7 @@ internal static class VbaPreprocessorParser
 {
     internal static string GetNormalizedDirectiveBody(string directiveText)
     {
-        var trimmed = directiveText.TrimStart();
+        var trimmed = VbaIdentifier.TrimStartWhitespace(directiveText);
         return NormalizeDirectiveBody(GetDirectiveBody(trimmed));
     }
 
@@ -207,7 +207,7 @@ internal static class VbaPreprocessorParser
     {
         directive = default!;
         malformedDirectiveDiagnostic = null;
-        var trimmed = token.Text.TrimStart();
+        var trimmed = VbaIdentifier.TrimStartWhitespace(token.Text);
         if (!trimmed.StartsWith("#", StringComparison.Ordinal))
         {
             return false;
@@ -276,7 +276,7 @@ internal static class VbaPreprocessorParser
     private static string GetDirectiveBody(string text)
     {
         var index = 1;
-        while (index < text.Length && char.IsWhiteSpace(text[index]))
+        while (index < text.Length && VbaIdentifier.IsWhitespace(text[index]))
         {
             index++;
         }
@@ -321,7 +321,7 @@ internal static class VbaPreprocessorParser
             }
 
             var code = line.Text[..commentStart];
-            if (code.TrimEnd().EndsWith("_", StringComparison.Ordinal))
+            if (VbaIdentifier.TrimEndWhitespace(code).EndsWith("_", StringComparison.Ordinal))
             {
                 return true;
             }
@@ -348,8 +348,7 @@ internal static class VbaPreprocessorParser
 
         if (text.StartsWith("EndIf", StringComparison.OrdinalIgnoreCase)
             || text.StartsWith("End", StringComparison.OrdinalIgnoreCase)
-                && text["End".Length..]
-                    .TrimStart()
+                && VbaIdentifier.TrimStartWhitespace(text["End".Length..])
                     .StartsWith("If", StringComparison.OrdinalIgnoreCase))
         {
             kind = VbaPreprocessorDirectiveKind.EndIf;
@@ -381,7 +380,7 @@ internal static class VbaPreprocessorParser
 
     private static bool IsEndIfDirective(string text)
     {
-        var core = RemoveTrailingComment(text).TrimEnd();
+        var core = VbaIdentifier.TrimEndWhitespace(RemoveTrailingComment(text));
         if (StartsWithDirectiveWord(core, "EndIf"))
         {
             return true;
@@ -392,7 +391,7 @@ internal static class VbaPreprocessorParser
             return false;
         }
 
-        var remainder = core["End".Length..].TrimStart();
+        var remainder = VbaIdentifier.TrimStartWhitespace(core["End".Length..]);
         return StartsWithDirectiveWord(remainder, "If");
     }
 
@@ -400,7 +399,7 @@ internal static class VbaPreprocessorParser
         VbaPreprocessorDirectiveKind kind,
         string text)
     {
-        var core = RemoveTrailingComment(text).TrimEnd();
+        var core = VbaIdentifier.TrimEndWhitespace(RemoveTrailingComment(text));
         return kind switch
         {
             VbaPreprocessorDirectiveKind.If =>
@@ -412,7 +411,7 @@ internal static class VbaPreprocessorParser
             VbaPreprocessorDirectiveKind.EndIf =>
                 core.Equals("EndIf", StringComparison.OrdinalIgnoreCase)
                 || StartsWithDirectiveWord(core, "End")
-                    && core["End".Length..].Trim()
+                    && VbaIdentifier.TrimWhitespace(core["End".Length..])
                         .Equals("If", StringComparison.OrdinalIgnoreCase),
             _ => false
         };
@@ -483,7 +482,7 @@ internal static class VbaPreprocessorParser
             || text.StartsWith("End", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsIdentifierCharacter(char value)
-        => char.IsAsciiLetterOrDigit(value) || value == '_';
+        => VbaIdentifier.IsWordCharacter(value);
 
     private static VbaSyntaxDiagnostic CreateMalformedPreprocessorDiagnostic(
         VbaPreprocessorDirectiveSyntax directive,

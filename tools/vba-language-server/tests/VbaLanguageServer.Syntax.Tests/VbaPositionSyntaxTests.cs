@@ -135,6 +135,42 @@ public sealed class VbaPositionSyntaxTests
     }
 
     [Fact]
+    public void PositionSyntaxTreatsU0019AsTrailingLayoutWhitespace()
+    {
+        var source = "Public Sub Run()\n    GoTo\u0019\nEnd Sub";
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.bas", source);
+
+        var position = tree.GetPositionSyntax(1, "    GoTo\u0019".Length);
+
+        Assert.Equal(VbaCompletionExpectation.LabelName, position.CompletionExpectation);
+        Assert.True(position.LabelReference?.IsIncomplete);
+    }
+
+    [Fact]
+    public void PositionSyntaxDoesNotAdmitAReservedIdentifierAsAStatementStarter()
+    {
+        const string source = "Public Sub Run()\n    CDecl\nEnd Sub";
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.bas", source);
+
+        var position = tree.GetPositionSyntax(1, "    CDecl".Length);
+
+        Assert.Equal(VbaCompletionExpectation.None, position.CompletionExpectation);
+        Assert.True(position.Identifier?.IsKeyword);
+    }
+
+    [Fact]
+    public void PositionSyntaxAdmitsANonReservedContextualIdentifierAsAStatementStarter()
+    {
+        const string source = "Public Sub Run()\n    Object\nEnd Sub";
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.bas", source);
+
+        var position = tree.GetPositionSyntax(1, "    Object".Length);
+
+        Assert.Equal(VbaCompletionExpectation.ProcedureStatement, position.CompletionExpectation);
+        Assert.False(position.Identifier?.IsKeyword);
+    }
+
+    [Fact]
     public void PositionSyntaxPreservesExpectationsForPartialArgumentsAndStatementTransitions()
     {
         var source = string.Join('\n', [

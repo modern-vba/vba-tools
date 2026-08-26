@@ -5,6 +5,14 @@ namespace VbaLanguageServer.Syntax.Tests;
 
 public sealed class VbaLexicalFactsTests
 {
+    [Fact]
+    public void IntrinsicTypeLookupReturnsCanonicalVocabularyCasing()
+    {
+        Assert.True(VbaLanguageVocabulary.TryGetCanonicalTypeName("sTrInG", out var name));
+        Assert.Equal("String", name);
+        Assert.False(VbaLanguageVocabulary.TryGetCanonicalTypeName("Widget", out _));
+    }
+
     [Theory]
     [InlineData("")]
     [InlineData(" \t ")]
@@ -13,9 +21,17 @@ public sealed class VbaLexicalFactsTests
     [InlineData("Rem")]
     [InlineData("  rEm existing comment")]
     [InlineData("Rem first: app.Work")]
+    [InlineData("Rem\tcomment")]
     public void Blank_or_comment_only_line_recognizes_supported_boundary_trivia(string line)
     {
         Assert.True(VbaLexicalFacts.IsBlankOrCommentOnlyLine(line));
+    }
+
+    [Fact]
+    public void RemCommentRecognizesExactMsVbalWhitespace()
+    {
+        Assert.True(VbaLexicalFacts.IsBlankOrCommentOnlyLine("\u0019Rem\u0019comment"));
+        Assert.False(VbaLexicalFacts.IsBlankOrCommentOnlyLine("Rem\u00A0comment"));
     }
 
     [Theory]
@@ -29,7 +45,6 @@ public sealed class VbaLexicalFactsTests
     [InlineData("Remember = True")]
     [InlineData("Rem: Debug.Print 1")]
     [InlineData("Rem\"unterminated")]
-    [InlineData("Rem\tcomment")]
     [InlineData("#If VBA7 Then ' comment")]
     [InlineData("_ ' comment")]
     public void Blank_or_comment_only_line_rejects_code_bearing_lines(string line)

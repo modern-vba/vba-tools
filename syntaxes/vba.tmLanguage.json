@@ -39,7 +39,7 @@
   "repository": {
     "documentation-comment": {
       "name": "comment.block.documentation.vba",
-      "match": "^\\s*'\\*.*$"
+      "match": "^[\\t\\u0019 \\u1680\\u180E\\u2000-\\u200A\\u202F\\u205F\\u3000]*'\\*.*$"
     },
     "comment": {
       "name": "comment.line.apostrophe.vba",
@@ -58,27 +58,27 @@
     },
     "attribute": {
       "name": "meta.attribute.vba",
-      "match": "(?i)^\\s*Attribute\\s+VB_Name\\b"
+      "match": "(?i)^[\\t\\u0019 \\u1680\\u180E\\u2000-\\u200A\\u202F\\u205F\\u3000]*Attribute[\\t\\u0019 \\u1680\\u180E\\u2000-\\u200A\\u202F\\u205F\\u3000]+VB_Name(?![A-Za-z0-9_\\u0080-\\uFFFF])"
     },
     "intrinsic-type": {
       "name": "storage.type.intrinsic.vba",
-      "match": "(?i)\\b(?:String|Long|Integer|Boolean|Variant|Object|Date|Double|Single|Currency|Byte|Decimal|LongLong|LongPtr|PtrSafe)\\b"
+      "match": "(?i)(?<![A-Za-z0-9_\\u0080-\\uFFFF])(?:String|Long|Integer|Boolean|Variant|Object|Date|Double|Single|Currency|Byte|Decimal|LongLong|LongPtr|PtrSafe)(?![A-Za-z0-9_\\u0080-\\uFFFF])"
     },
     "language-constant": {
       "name": "constant.language.vba",
-      "match": "(?i)\\b(?:True|False|Nothing|Null|Empty)\\b"
+      "match": "(?i)(?<![A-Za-z0-9_\\u0080-\\uFFFF])(?:True|False|Nothing|Null|Empty)(?![A-Za-z0-9_\\u0080-\\uFFFF])"
     },
     "declaration-end-keyword": {
       "name": "keyword.vba",
-      "match": "(?i)\\bEnd\\s+(?:Sub|Function|Property)\\b"
+      "match": "(?i)(?<![A-Za-z0-9_\\u0080-\\uFFFF])End[\\t\\u0019 \\u1680\\u180E\\u2000-\\u200A\\u202F\\u205F\\u3000]+(?:Sub|Function|Property)(?![A-Za-z0-9_\\u0080-\\uFFFF])"
     },
     "control-keyword": {
       "name": "keyword.control.vba",
-      "match": "(?i)\\b(?:End(?!\\s+(?:Sub|Function|Property)\\b)|If|Then|Else|ElseIf|For|Each|In|Next|Do|Loop|While|Wend|Select|Case|With|Exit)\\b"
+      "match": "(?i)(?<![A-Za-z0-9_\\u0080-\\uFFFF])(?:End(?![\\t\\u0019 \\u1680\\u180E\\u2000-\\u200A\\u202F\\u205F\\u3000]+(?:Sub|Function|Property)(?![A-Za-z0-9_\\u0080-\\uFFFF]))|If|Then|Else|ElseIf|For|Each|In|Next|Do|Loop|While|Wend|Select|Case|With|Exit)(?![A-Za-z0-9_\\u0080-\\uFFFF])"
     },
     "keyword": {
       "name": "keyword.vba",
-      "match": "(?i)\\b(?:Public|Private|Friend|Global|Dim|Static|Const|Sub|Function|Property|Get|Let|Set|Enum|Type|Event|RaiseEvent|Implements|Option|Explicit|Base|Module|As|ByVal|ByRef|Optional|ParamArray|Call|New|Declare|PtrSafe|Lib|Alias|WithEvents)\\b"
+      "match": "(?i)(?<![A-Za-z0-9_\\u0080-\\uFFFF])(?:Public|Private|Friend|Global|Dim|Static|Const|Sub|Function|Property|Get|Let|Set|Enum|Type|Event|RaiseEvent|Implements|Option|Explicit|Base|Module|As|ByVal|ByRef|Optional|ParamArray|Call|New|Declare|PtrSafe|Lib|Alias|WithEvents)(?![A-Za-z0-9_\\u0080-\\uFFFF])"
     },
     "number": {
       "name": "constant.numeric.vba",

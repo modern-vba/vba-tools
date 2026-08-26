@@ -1007,6 +1007,57 @@ public sealed class VbaDebugAdapterCliSurfaceTests
     }
 
     [Fact]
+    public async Task StandaloneLaunchPreservesCodePageSelectorsThatDotNetTreatsAsWhitespace()
+    {
+        const string selector = "\u00A0";
+        var probe = new RecordingVbaDevCapabilitiesProbe(
+            new VbaDevCapabilitiesProbeResult(
+                0,
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
+                string.Empty));
+        var launchService = new RecordingDebugLaunchService();
+        var commandLine = VbaDebugAdapterCommandLine.Create(
+            new StandaloneVbaDebugAdapterStdioRunner(launchService),
+            probe);
+        var launchArguments = CreateValidLaunchArguments();
+        launchArguments["module"] = selector;
+        launchArguments["procedure"] = selector;
+        using var standardInput = CreateDapInput(
+            new
+            {
+                seq = 1,
+                type = "request",
+                command = "launch",
+                arguments = launchArguments
+            },
+            new
+            {
+                seq = 2,
+                type = "request",
+                command = "configurationDone",
+                arguments = new { }
+            });
+        using var standardOutput = new MemoryStream();
+        using var standardError = new MemoryStream();
+
+        var exitCode = await commandLine.InvokeAsync(
+            [
+                "--stdio",
+                "--vba-dev", Path.GetFullPath("vba-dev.exe"),
+                "--session", "0123456789abcdef0123456789abcdef"
+            ],
+            standardInput,
+            standardOutput,
+            standardError,
+            CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        var invocation = Assert.Single(launchService.Invocations);
+        Assert.Equal(selector, invocation.Request.ModuleName);
+        Assert.Equal(selector, invocation.Request.ProcedureName);
+    }
+
+    [Fact]
     public async Task StandaloneLaunchAcceptsAStrictRestartPreparationBinding()
     {
         var probe = new RecordingVbaDevCapabilitiesProbe(

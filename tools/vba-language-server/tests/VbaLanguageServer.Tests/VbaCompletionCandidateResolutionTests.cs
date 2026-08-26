@@ -655,13 +655,8 @@ public sealed class VbaCompletionCandidateResolutionTests
     [Fact]
     public void IntrinsicKeywordCallsUseResolvedArgumentAvailability()
     {
-        var intrinsics = IntrinsicKeywordSources();
-        var stringCall = Complete(
-            IntrinsicKeywordCallSource("    result = String(|)"),
-            additionalSources: intrinsics);
-        var dateCall = Complete(
-            IntrinsicKeywordCallSource("    result = Date(|)"),
-            additionalSources: intrinsics);
+        var stringCall = Complete(IntrinsicKeywordCallSource("    result = String(|)"));
+        var dateCall = Complete(IntrinsicKeywordCallSource("    result = Date(|)"));
 
         Assert.Contains(stringCall.Candidates, candidate => candidate.Label == "LocalValue");
         Assert.Contains(stringCall.Candidates, candidate => candidate.Label == "Number");
@@ -674,9 +669,7 @@ public sealed class VbaCompletionCandidateResolutionTests
     [InlineData("    result = Date(1 + |)")]
     public void IntrinsicKeywordCallOperandsCannotBypassResolvedArity(string statement)
     {
-        var result = Complete(
-            IntrinsicKeywordCallSource(statement),
-            additionalSources: IntrinsicKeywordSources());
+        var result = Complete(IntrinsicKeywordCallSource(statement));
 
         Assert.Empty(result.Candidates);
     }
@@ -956,18 +949,6 @@ public sealed class VbaCompletionCandidateResolutionTests
             statement,
             "End Sub"
         ]);
-
-    private static IReadOnlyDictionary<string, string> IntrinsicKeywordSources()
-        => new Dictionary<string, string>
-        {
-            ["file:///C:/work/Intrinsics.bas"] = string.Join('\n', [
-                "Attribute VB_Name = \"Intrinsics\"",
-                "Public Function String(ByVal Number As Long, ByVal Character As Variant) As String",
-                "End Function",
-                "Public Function Date() As Date",
-                "End Function"
-            ])
-        };
 
     private static string PropertyContextSource(string statement)
         => string.Join('\n', [

@@ -176,6 +176,17 @@ export class HostClassProjectionWorkspace {
     });
   }
 
+  public reevaluateAllSourceAssociations(): Promise<void> {
+    if (this.shutdownRequested) {
+      return Promise.resolve();
+    }
+    return this.enqueue(async () => {
+      for (const document of [...this.documents.values()].sort(compareDocuments)) {
+        await this.collectAndReevaluate(document);
+      }
+    });
+  }
+
   public getActiveDocuments(): readonly HostClassProjectionWorkspaceDocument[] {
     return [...this.documents.values()].sort(compareDocuments);
   }

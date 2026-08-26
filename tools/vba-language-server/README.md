@@ -74,6 +74,48 @@ Run language-server tests:
 dotnet test tools/vba-language-server/tests/VbaLanguageServer.Tests/VbaLanguageServer.Tests.csproj -m:1 -p:UseSharedCompilation=false
 ```
 
+### Identifier conformance data
+
+`VbaIdentifier` is the lexical authority for VBA names. Its generated Unicode
+membership data implements [MS-VBAL 2.4, published 2025-05-20](https://learn.microsoft.com/openspecs/microsoft_general_purpose_programming_languages/ms-vbal/),
+using only the forward `MBTABLE` and `DBCSTABLE` mappings in the Unicode
+Consortium's [Microsoft WindowsBestFit archive](https://www.unicode.org/Public/MAPPINGS/VENDORS/MICSFT/WindowsBestFit/).
+
+Generation requires these 14 source files from that archive:
+
+```text
+bestfit874.txt
+bestfit932.txt
+bestfit936.txt
+bestfit949.txt
+bestfit950.txt
+bestfit1250.txt
+bestfit1251.txt
+bestfit1252.txt
+bestfit1253.txt
+bestfit1254.txt
+bestfit1255.txt
+bestfit1256.txt
+bestfit1257.txt
+bestfit1258.txt
+```
+
+The generator pins the SHA-256 digest of every source file and fails before
+generation when any digest differs. Regenerate the checked-in data with:
+
+```text
+powershell.exe -NoProfile -File tools\vba-language-server\scripts\Generate-VbaIdentifierConformanceData.ps1 -MappingDirectory <path-to-WindowsBestFit>
+```
+
+Verify that the checked-in file is current without rewriting it with:
+
+```text
+powershell.exe -NoProfile -File tools\vba-language-server\scripts\Generate-VbaIdentifierConformanceData.ps1 -MappingDirectory <path-to-WindowsBestFit> -Check
+```
+
+The TextMate grammar is a conservative editor fallback and is not another VBA
+identifier authority. Parser-backed language features use `VbaIdentifier`.
+
 Publish the Windows executable into the extension bundle layout:
 
 ```text

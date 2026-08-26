@@ -314,7 +314,7 @@ public sealed record VbaCodeModuleProjection(
             return VbaPhysicalLineExecutionKind.Continuation;
         }
 
-        if (string.IsNullOrWhiteSpace(line.Text))
+        if (VbaIdentifier.TrimStartWhitespace(line.Text).Length == 0)
         {
             return VbaPhysicalLineExecutionKind.Blank;
         }
@@ -441,7 +441,7 @@ public sealed record VbaCodeModuleProjection(
 
     private static bool IsCommentOnly(string text, IReadOnlyList<VbaToken> tokens)
     {
-        var trimmed = text.TrimStart();
+        var trimmed = VbaIdentifier.TrimStartWhitespace(text);
         return trimmed.StartsWith("'", StringComparison.Ordinal)
             || StartsWithWord(tokens, "Rem");
     }
@@ -524,6 +524,7 @@ public sealed record VbaCodeModuleProjection(
                 tokens,
                 "Call",
                 "Case",
+                "Close",
                 "Debug",
                 "Do",
                 "Else",
@@ -541,6 +542,9 @@ public sealed record VbaCodeModuleProjection(
                 "Loop",
                 "Next",
                 "On",
+                "Open",
+                "Print",
+                "Put",
                 "RaiseEvent",
                 "ReDim",
                 "Resume",
@@ -553,7 +557,7 @@ public sealed record VbaCodeModuleProjection(
                 "With")
             || (moduleKind is VbaModuleKind.ClassModule or VbaModuleKind.FormModule
                 && IsWord(tokens[0], "Me"))
-            || tokens[0].Kind == VbaTokenKind.Identifier
+            || VbaLanguageVocabulary.CanBeBareCallTarget(tokens[0].Text)
             || IsWord(tokens[0], ".");
     }
 
@@ -577,7 +581,7 @@ public sealed record VbaCodeModuleProjection(
     }
 
     private static bool IsLabelToken(VbaToken token)
-        => token.Kind is VbaTokenKind.Identifier or VbaTokenKind.NumericLiteral;
+        => token.Kind == VbaTokenKind.NumericLiteral || VbaIdentifier.IsIdentifier(token.Text);
 
     private static IReadOnlyList<VbaToken> SignificantTokens(IReadOnlyList<VbaToken> tokens)
         => tokens

@@ -49,6 +49,15 @@ public sealed class VbaSourceTextTests
     }
 
     [Fact]
+    public void SourceTextBlankClassificationUsesExactMsVbalWhitespace()
+    {
+        var sourceText = VbaSourceText.From("\u00a0\n\u0019");
+
+        Assert.False(sourceText.IsBlankLine(0));
+        Assert.True(sourceText.IsBlankLine(1));
+    }
+
+    [Fact]
     public void Incremental_source_coordinates_refresh_changed_line_blank_classification()
     {
         var previous = VbaSourceText.From("First\nValue\nLast");

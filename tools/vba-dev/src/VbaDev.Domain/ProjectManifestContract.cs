@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using VbaLanguageServer.Syntax;
 
 namespace VbaDev.Domain;
 
@@ -293,9 +294,15 @@ public static class ProjectManifestValidator
                 throw new VbaProjectManifestException($"Document '{name}' contains a null CommonModules entry: {manifestName}");
             }
 
-            if (string.IsNullOrWhiteSpace(commonModule.Name))
+            if (string.IsNullOrEmpty(commonModule.Name))
             {
                 throw new VbaProjectManifestException($"Document '{name}' contains an empty CommonModules name: {manifestName}");
+            }
+
+            if (!VbaIdentifier.IsIdentifier(commonModule.Name)
+                || commonModule.Name.EnumerateRunes().Count() > 31)
+            {
+                throw new VbaProjectManifestException($"Document '{name}' contains invalid CommonModules name '{commonModule.Name}': {manifestName}");
             }
 
             if (string.IsNullOrWhiteSpace(commonModule.ModuleFile))

@@ -1,6 +1,7 @@
 using VbaDev.App.Projects;
 using VbaDev.App.Workbooks;
 using VbaDev.Domain;
+using VbaLanguageServer.Syntax;
 
 namespace VbaDev.App.Build;
 
@@ -11,13 +12,6 @@ public sealed class WorkbookSourcePlanner
 {
     private const int PublishMarkerScanLineLimit = 32;
     private const string PublishExclusionMarker = "'#ExcludePublish";
-    private static readonly char[] VbaWhitespaceCharacters =
-    [
-        '\u0009', '\u0019', '\u0020', '\u1680',
-        '\u2000', '\u2001', '\u2002', '\u2003', '\u2004', '\u2005',
-        '\u2006', '\u2007', '\u2008', '\u2009', '\u200a',
-        '\u202f', '\u205f', '\u3000'
-    ];
     private readonly Func<int> getActiveCodePage;
 
     /// <summary>
@@ -150,7 +144,7 @@ public sealed class WorkbookSourcePlanner
             .Split(["\r\n", "\n", "\r"], StringSplitOptions.None)
             .Take(PublishMarkerScanLineLimit))
         {
-            if (line.TrimStart(VbaWhitespaceCharacters)
+            if (VbaIdentifier.TrimStartWhitespace(line)
                 .StartsWith(PublishExclusionMarker, StringComparison.OrdinalIgnoreCase))
             {
                 return null;

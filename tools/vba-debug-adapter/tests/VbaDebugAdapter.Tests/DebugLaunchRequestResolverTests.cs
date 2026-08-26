@@ -52,6 +52,95 @@ public sealed class DebugLaunchRequestResolverTests
     }
 
     [Fact]
+    public void ExplicitTargetPreservesACodePageIdentifierThatDotNetTreatsAsWhitespace()
+    {
+        const string moduleName = "\u00A0";
+        const string procedureName = "集計";
+        var snapshot = new DebugSourceSnapshot(
+            DebugSourceSnapshot.CurrentSchemaVersion,
+            [
+                new DebugSourceFileSnapshot(
+                    "CodePage.bas",
+                    "file:///C:/persistent/CodePage.bas",
+                    $"Attribute VB_Name = \"{moduleName}\"\r\n" +
+                    $"Public Sub {procedureName}()\r\nEnd Sub\r\n")
+            ],
+            ActiveSource: null);
+
+        var request = new DebugLaunchRequestResolver().Resolve(
+            snapshot,
+            moduleName,
+            procedureName);
+
+        Assert.Equal(moduleName, request.Target.ModuleName);
+        Assert.Equal(procedureName, request.Target.ProcedureName);
+    }
+
+    [Fact]
+    public void ExplicitTargetPreservesACodePageProcedureThatDotNetTreatsAsWhitespace()
+    {
+        const string procedureName = "\u00A0";
+        var snapshot = Snapshot(
+            ".bas",
+            "Attribute VB_Name = \"DebugModule\"\r\n" +
+            $"Public Sub {procedureName}()\r\nEnd Sub\r\n");
+
+        var request = new DebugLaunchRequestResolver().Resolve(
+            snapshot,
+            "DebugModule",
+            procedureName);
+
+        Assert.Equal(procedureName, request.Target.ProcedureName);
+    }
+
+    [Fact]
+    public void ExplicitTargetRejectsNamesOutsideTheSharedIdentifierAuthority()
+    {
+        var snapshot = Snapshot(
+            ".bas",
+            "Attribute VB_Name = \"DebugModule\"\r\n" +
+            "Public Sub RunTarget()\r\nEnd Sub\r\n");
+        var invalidNames = new[]
+        {
+            "Bad Name",
+            "CDecl",
+            "Name$",
+            "亜ㄱ"
+        };
+
+        foreach (var invalidName in invalidNames)
+        {
+            var moduleError = Assert.Throws<DebugSetupException>(() =>
+                new DebugLaunchRequestResolver().Resolve(
+                    snapshot,
+                    invalidName,
+                    "RunTarget"));
+            var procedureError = Assert.Throws<DebugSetupException>(() =>
+                new DebugLaunchRequestResolver().Resolve(
+                    snapshot,
+                    "DebugModule",
+                    invalidName));
+
+            Assert.Contains("IDENTIFIER", moduleError.Message, StringComparison.Ordinal);
+            Assert.Contains("IDENTIFIER", procedureError.Message, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void ExplicitEmptyTargetIsInvalidInsteadOfMeaningOmitted()
+    {
+        var snapshot = Snapshot(
+            ".bas",
+            "Attribute VB_Name = \"DebugModule\"\r\n" +
+            "Public Sub RunTarget()\r\nEnd Sub\r\n");
+
+        var error = Assert.Throws<DebugSetupException>(() =>
+            new DebugLaunchRequestResolver().Resolve(snapshot, "", ""));
+
+        Assert.Contains("IDENTIFIER", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ImplicitPublicSubInAnOptionPrivateStandardModuleIsEligible()
     {
         const string sourceUri = "file:///C:/persistent/DebugModule.bas";

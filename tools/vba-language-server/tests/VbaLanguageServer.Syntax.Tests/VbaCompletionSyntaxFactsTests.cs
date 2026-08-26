@@ -122,8 +122,35 @@ public sealed class VbaCompletionSyntaxFactsTests
                 "Public Sub Run()",
                 "CodeLabel:",
                 "End Sub"
-            ]));
+        ]));
         Assert.Equal("CodeLabel", Assert.Single(form.Module.LineLabels).Name);
+    }
+
+    [Fact]
+    public void NumericLabelsUseExactMsVbalLeadingWhitespace()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Public Sub Run()\n\u0019100 value = 1\nEnd Sub");
+
+        var label = Assert.Single(tree.Module.LineLabels);
+        Assert.Equal("100", label.Name);
+        Assert.True(label.IsNumeric);
+    }
+
+    [Fact]
+    public void ParserTreatsANonReservedContextualWordAsAnIdentifierLabel()
+    {
+        var source = string.Join('\n', [
+            "Public Sub Run()",
+            "Object:",
+            "    GoTo Object",
+            "End Sub"
+        ]);
+
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.bas", source);
+
+        Assert.Equal("Object", Assert.Single(tree.Module.LineLabels).Name);
     }
 
     [Fact]

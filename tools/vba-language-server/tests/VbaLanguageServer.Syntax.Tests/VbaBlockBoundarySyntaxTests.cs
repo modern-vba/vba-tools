@@ -37,6 +37,23 @@ public sealed class VbaBlockBoundarySyntaxTests
     }
 
     [Fact]
+    public void Strict_if_closer_uses_exact_MsVbal_leading_whitespace()
+    {
+        const string source = "\u0019End\u0019If";
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+
+        var boundary = VbaBlockBoundarySyntax.FindAtFirstPhysicalLine(
+            tree,
+            firstPhysicalLine: 0,
+            VbaBlockKind.If,
+            expectedTerminator: "End If");
+
+        Assert.NotNull(boundary);
+        Assert.Equal(VbaBlockBoundaryRole.Closer, boundary.Role);
+        Assert.Equal("\u0019", boundary.LeadingWhitespace);
+    }
+
+    [Fact]
     public void Strict_if_closer_requires_the_exact_terminator_shape()
     {
         const string source = "    End If   ' keep";
@@ -51,6 +68,22 @@ public sealed class VbaBlockBoundarySyntaxTests
         Assert.NotNull(boundary);
         Assert.Equal(VbaBlockBoundaryRole.Closer, boundary.Role);
         Assert.Null(boundary.BranchKind);
+    }
+
+    [Fact]
+    public void Strict_if_closer_accepts_exact_MsVbal_trailing_whitespace()
+    {
+        const string source = "End If\u0019";
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+
+        var boundary = VbaBlockBoundarySyntax.FindAtFirstPhysicalLine(
+            tree,
+            firstPhysicalLine: 0,
+            VbaBlockKind.If,
+            expectedTerminator: "End If");
+
+        Assert.NotNull(boundary);
+        Assert.Equal(VbaBlockBoundaryRole.Closer, boundary.Role);
     }
 
     [Fact]

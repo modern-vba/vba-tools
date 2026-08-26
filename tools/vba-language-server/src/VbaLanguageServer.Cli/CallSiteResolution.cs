@@ -95,6 +95,14 @@ internal sealed class VbaCallSiteResolution
                 out var definition)
             || definition is null)
         {
+            if (TryCreateStandardLibrarySignature(callSite, out var intrinsicSignature))
+            {
+                return AnalyzeResolvedArguments(
+                    definition: null,
+                    intrinsicSignature,
+                    callSite);
+            }
+
             var hasPriorNamedArgument = GetPriorArguments(callSite)
                 .Any(argument => argument.Name is not null);
             return new VbaCallArgumentAvailability(
@@ -390,6 +398,64 @@ internal sealed class VbaCallSiteResolution
         return true;
     }
 
+    private static bool TryCreateStandardLibrarySignature(
+        VbaCallSiteSyntax callSite,
+        out VbaCallableSignature signature)
+    {
+        var segments = callSite.Callee.Segments;
+        VbaStandardLibraryPotentialReceiverMemberSyntaxFact? member = null;
+        if (segments.Count == 1)
+        {
+            VbaStandardLibrarySyntaxFacts.TryGetGlobalPotentialReceiverMember(
+                segments[0].Name,
+                out member!);
+        }
+        else if (segments.Count == 2
+            && segments[0].Name.Equals("VBA", StringComparison.OrdinalIgnoreCase))
+        {
+            VbaStandardLibrarySyntaxFacts.TryGetGlobalPotentialReceiverMember(
+                segments[1].Name,
+                out member!);
+        }
+        else if (segments.Count == 2)
+        {
+            VbaStandardLibrarySyntaxFacts.TryGetOwnedPotentialReceiverMember(
+                segments[0].Name,
+                segments[1].Name,
+                out member!);
+        }
+        else if (segments.Count == 3
+            && segments[0].Name.Equals("VBA", StringComparison.OrdinalIgnoreCase))
+        {
+            VbaStandardLibrarySyntaxFacts.TryGetOwnedPotentialReceiverMember(
+                segments[1].Name,
+                segments[2].Name,
+                out member!);
+        }
+
+        if (member is null)
+        {
+            signature = null!;
+            return false;
+        }
+
+        var parameters = member.Parameters
+            .Select(parameter => new VbaCallableParameter(
+                parameter.Name,
+                IsOptional: parameter.IsOptional,
+                IsParamArray: parameter.IsParamArray))
+            .ToArray();
+        signature = new VbaCallableSignature(
+            $"{member.MemberName}({string.Join(", ", parameters.Select(parameter => parameter.Name))})",
+            parameters,
+            CallableKind: member.Kind == VbaStandardLibraryPotentialReceiverMemberKind.Function
+                ? VbaCallableKind.Function
+                : VbaCallableKind.Property,
+            SupportsNamedArguments: member.Kind ==
+                VbaStandardLibraryPotentialReceiverMemberKind.Function);
+        return true;
+    }
+
     private static int GetActiveSignatureParameter(
         VbaCallableSignature signature,
         VbaCallSiteSyntax callSite)
@@ -412,7 +478,7 @@ internal sealed class VbaCallSiteResolution
     }
 
     private static VbaCallArgumentAvailability AnalyzeResolvedArguments(
-        VbaSourceDefinition definition,
+        VbaSourceDefinition? definition,
         VbaCallableSignature signature,
         VbaCallSiteSyntax callSite)
     {
@@ -470,7 +536,7 @@ internal sealed class VbaCallSiteResolution
         var allowsPositionalExpression = !hasNamedArgument
             && nextPositionalParameter < parameters.Count;
         var canOfferNamedArguments = signature.SupportsNamedArguments
-            && definition.Kind != VbaSourceDefinitionKind.Event
+            && definition?.Kind != VbaSourceDefinitionKind.Event
             && signature.CallableKind != VbaCallableKind.Event;
         var remainingNamedParameters = canOfferNamedArguments
             ? parameters
@@ -523,7 +589,7 @@ internal sealed class VbaCallSiteResolution
     }
 
     private static VbaCallArgumentAvailability Invalid(
-        VbaSourceDefinition definition,
+        VbaSourceDefinition? definition,
         VbaCallableSignature signature)
         => new(definition, signature, false, []);
 }

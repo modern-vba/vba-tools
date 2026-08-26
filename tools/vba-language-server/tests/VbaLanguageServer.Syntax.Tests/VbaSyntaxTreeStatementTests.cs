@@ -42,6 +42,90 @@ public sealed class VbaSyntaxTreeStatementTests
     }
 
     [Fact]
+    public void ParserClassifiesAJapaneseIdentifierAssignment()
+    {
+        var source = string.Join('\n', [
+            "Public Sub Run()",
+            "    集計結果 = 1",
+            "End Sub"
+        ]);
+
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.bas", source);
+
+        Assert.Contains(
+            tree.Module.Statements,
+            statement => statement.Kind == VbaStatementKind.Assignment
+                && statement.Text.Trim() == "集計結果 = 1");
+    }
+
+    [Fact]
+    public void ParserClassifiesACallToAJapaneseIdentifier()
+    {
+        var source = string.Join('\n', [
+            "Public Sub Run()",
+            "    集計 1",
+            "End Sub"
+        ]);
+
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.bas", source);
+
+        Assert.Contains(
+            tree.Module.Statements,
+            statement => statement.Kind == VbaStatementKind.Call
+                && statement.Text.Trim() == "集計 1");
+    }
+
+    [Fact]
+    public void ParserDoesNotTreatACompleteCp2IdentifierAsBlank()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Public Sub Run()\n\u00A0\nEnd Sub");
+
+        Assert.Contains(
+            tree.Module.Statements,
+            statement => statement.Kind == VbaStatementKind.Call
+                && statement.Text == "\u00A0");
+    }
+
+    [Fact]
+    public void ParserClassifiesANonReservedContextualWordAsABareCallTarget()
+    {
+        var source = string.Join('\n', [
+            "Public Sub Caller()",
+            "    Object",
+            "End Sub",
+            "Public Sub Object()",
+            "End Sub"
+        ]);
+
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.bas", source);
+
+        Assert.Contains(
+            tree.Module.Statements,
+            statement => statement.Kind == VbaStatementKind.Call
+                && statement.Text.Trim() == "Object");
+    }
+
+    [Fact]
+    public void Cp2IdentifierCharactersDoNotCreateKeywordBlockBoundaries()
+    {
+        var source = string.Join('\n', [
+            "Public Sub Run()",
+            "    If\u00a0Then",
+            "End Sub"
+        ]);
+
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.bas", source);
+
+        Assert.DoesNotContain(tree.Module.Statements, statement => statement.Kind == VbaStatementKind.IfBlock);
+        Assert.DoesNotContain(tree.Module.Blocks, block => block.Kind == VbaBlockKind.If);
+        Assert.DoesNotContain(
+            tree.Diagnostics,
+            diagnostic => diagnostic.Message.Contains("End If", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public void ParserReportsRecoveryDiagnosticsAndKeepsMalformedStatementRanges()
     {
         var source = string.Join('\n', [
@@ -72,6 +156,78 @@ public sealed class VbaSyntaxTreeStatementTests
         var malformed = Assert.Single(tree.Module.Statements, statement => statement.Kind == VbaStatementKind.Malformed && statement.Text.Trim() == "@");
         Assert.Equal(4, malformed.Range.Start.Line);
         Assert.True(malformed.Range.End.Character > malformed.Range.Start.Character);
+    }
+
+    [Fact]
+    public void ParserUsesExactMsVbalWhitespaceAtARemCommentBoundary()
+    {
+        var wscTree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Wsc.bas",
+            "Public Sub Run()\n    Rem\u0019\"comment\nEnd Sub");
+        var codePageTree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/CodePage.bas",
+            "Public Sub Run()\n    Rem\u00A0\"unterminated\nEnd Sub");
+
+        Assert.DoesNotContain(
+            wscTree.Diagnostics,
+            diagnostic => diagnostic.Code == "syntax.unterminatedStringLiteral");
+        Assert.Contains(
+            codePageTree.Diagnostics,
+            diagnostic => diagnostic.Code == "syntax.unterminatedStringLiteral");
+    }
+
+    [Fact]
+    public void TrailingCommentContinuationUsesExactMsVbalWhitespace()
+    {
+        var wscTree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Wsc.bas",
+            "Public Sub Run()\n    ReadValue _\u0019'comment\nEnd Sub");
+        var codePageTree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/CodePage.bas",
+            "Public Sub Run()\n    ReadValue _\u00A0'comment\nEnd Sub");
+
+        Assert.Contains(
+            wscTree.Diagnostics,
+            diagnostic => diagnostic.Code == "syntax.invalidTrailingCommentContinuation");
+        Assert.DoesNotContain(
+            codePageTree.Diagnostics,
+            diagnostic => diagnostic.Code == "syntax.invalidTrailingCommentContinuation");
+    }
+
+    [Fact]
+    public void RaiseEventDoesNotTreatAReservedIdentifierAsAnEventName()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Public Sub Run()\n    RaiseEvent CDecl value\nEnd Sub");
+
+        Assert.DoesNotContain(
+            tree.Diagnostics,
+            diagnostic => diagnostic.Code == "syntax.raiseEventArgumentListRequiresParentheses");
+    }
+
+    [Fact]
+    public void RaiseEventDoesNotTreatAMixedCodePageCandidateAsAnEventName()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Public Sub Run()\n    RaiseEvent 亜ㄱ value\nEnd Sub");
+
+        Assert.DoesNotContain(
+            tree.Diagnostics,
+            diagnostic => diagnostic.Code == "syntax.raiseEventArgumentListRequiresParentheses");
+    }
+
+    [Fact]
+    public void RaiseEventDoesNotTreatGenericUnicodeWhitespaceAsLayout()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Public Sub Run()\n\u000bRaiseEvent Changed value\nEnd Sub");
+
+        Assert.DoesNotContain(
+            tree.Diagnostics,
+            diagnostic => diagnostic.Code == "syntax.raiseEventArgumentListRequiresParentheses");
     }
 
     [Fact]

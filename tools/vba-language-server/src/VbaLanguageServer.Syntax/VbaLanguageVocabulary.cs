@@ -5,9 +5,6 @@ namespace VbaLanguageServer.Syntax;
 /// </summary>
 public static class VbaLanguageVocabulary
 {
-    private static readonly IReadOnlySet<string> BareCallableKeywords =
-        new HashSet<string>(["Date", "String"], StringComparer.OrdinalIgnoreCase);
-
     /// <summary>
     /// Maps known VBA vocabulary words to their canonical source formatting spelling.
     /// </summary>
@@ -206,6 +203,18 @@ public static class VbaLanguageVocabulary
     ]);
 
     /// <summary>
+    /// Resolves a case-insensitive intrinsic VBA type spelling to canonical casing.
+    /// </summary>
+    public static bool TryGetCanonicalTypeName(string value, out string canonicalName)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        canonicalName = TypeNames.FirstOrDefault(
+            candidate => candidate.Equals(value, StringComparison.OrdinalIgnoreCase))
+            ?? string.Empty;
+        return canonicalName.Length != 0;
+    }
+
+    /// <summary>
     /// Determines whether a value is known fixed VBA language vocabulary.
     /// </summary>
     /// <param name="value">The candidate word.</param>
@@ -221,7 +230,8 @@ public static class VbaLanguageVocabulary
     /// True for identifiers and callable intrinsic keywords; false for grouping syntax words.
     /// </returns>
     public static bool CanBeBareCallTarget(string value)
-        => !IsKeyword(value) || BareCallableKeywords.Contains(value);
+        => VbaIdentifier.IsIdentifier(value)
+            || VbaStandardLibrarySyntaxFacts.IsGlobalCallableMember(value);
 
     private static IReadOnlyList<string> CreateOrderedWords(IEnumerable<string> words)
         => Array.AsReadOnly(words

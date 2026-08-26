@@ -32,6 +32,42 @@ public sealed class VbaConditionalCompilationEvaluatorTests
     }
 
     [Fact]
+    public void EvaluationAcceptsACp2IdentifierAsAnExactGlobalConstantName()
+    {
+        const string source = "#If \u00a0 Then\n"
+            + "Public Sub Enabled()\n"
+            + "End Sub\n"
+            + "#End If";
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+        var environment = new VbaConditionalCompilationEnvironment(
+            new Dictionary<string, VbaConditionalCompilationValue>
+            {
+                ["\u00a0"] = VbaConditionalCompilationValue.FromBoolean(true)
+            });
+
+        var evaluation = VbaConditionalCompilationEvaluator.Evaluate(tree, environment);
+
+        Assert.True(evaluation.Succeeded);
+        Assert.True(evaluation.IsActive(PathFor(tree, "Enabled")));
+    }
+
+    [Theory]
+    [InlineData("Bad Name")]
+    [InlineData("Name$")]
+    [InlineData("[Name]")]
+    [InlineData("CDecl")]
+    [InlineData("亜ㄱ")]
+    public void EnvironmentRejectsNamesThatAreNotCompleteIdentifiers(string name)
+    {
+        var constants = new Dictionary<string, VbaConditionalCompilationValue>
+        {
+            [name] = VbaConditionalCompilationValue.FromBoolean(true)
+        };
+
+        Assert.Throws<ArgumentException>(() => new VbaConditionalCompilationEnvironment(constants));
+    }
+
+    [Fact]
     public void Module_local_const_shadows_a_project_global_constant()
     {
         const string source = "#Const Feature = True\n"

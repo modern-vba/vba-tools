@@ -18,7 +18,7 @@ public static class VbaLexicalFacts
     /// </summary>
     public static bool IsBlankOrCommentOnlyLine(string line)
     {
-        if (line.All(character => character is ' ' or '\t'))
+        if (line.All(VbaIdentifier.IsWhitespace))
         {
             return true;
         }
@@ -101,6 +101,6 @@ public static class VbaLexicalFacts
 
         var tokenEnd = token.Range.End.Character;
         return tokenEnd == line.Length
-            || (tokenEnd < line.Length && line[tokenEnd] == ' ');
+            || (tokenEnd < line.Length && VbaIdentifier.IsWhitespace(line[tokenEnd]));
     }
 }

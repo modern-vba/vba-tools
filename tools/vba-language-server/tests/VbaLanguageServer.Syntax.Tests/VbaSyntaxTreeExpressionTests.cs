@@ -6,6 +6,19 @@ namespace VbaLanguageServer.Syntax.Tests;
 public sealed class VbaSyntaxTreeExpressionTests
 {
     [Fact]
+    public void WithReceiverUsesExactMsVbalWhitespaceAndPreservesTheIdentifier()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Public Sub Run()\n    With\u0019\u00a0\n    End With\nEnd Sub");
+
+        var receiver = Assert.Single(
+            tree.Module.Expressions,
+            expression => expression.Kind == VbaExpressionKind.WithReceiver);
+        Assert.Equal("\u00a0", receiver.Text);
+    }
+
+    [Fact]
     public void ParserEmitsExpressionsAndArgumentLists()
     {
         var source = string.Join('\n', [
@@ -140,6 +153,63 @@ public sealed class VbaSyntaxTreeExpressionTests
         Assert.Equal(
             callLine.IndexOf("1", StringComparison.Ordinal),
             call.Arguments[0].Range.Start.Character);
+    }
+
+    [Fact]
+    public void ParserModelsAStatementCallToANonReservedContextualIdentifier()
+    {
+        var source = string.Join('\n', [
+            "Public Sub Caller()",
+            "    Object 1",
+            "End Sub",
+            "Public Sub Object(ByVal value As Long)",
+            "End Sub"
+        ]);
+
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.bas", source);
+
+        var call = Assert.Single(
+            tree.Module.ArgumentLists,
+            argumentList => argumentList.Callee == "Object");
+        Assert.Equal("1", Assert.Single(call.Arguments).Text);
+    }
+
+    [Fact]
+    public void ParserDoesNotUseLexerTokenKindAsBareCallAuthority()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Public Sub Caller()\n    CDecl 1\nEnd Sub");
+
+        Assert.DoesNotContain(
+            tree.Module.ArgumentLists,
+            argumentList => argumentList.Callee == "CDecl");
+    }
+
+    [Fact]
+    public void ParserUsesMsVbalWhitespaceBetweenAStatementCalleeAndItsArguments()
+    {
+        var source = string.Join('\n', [
+            "Public Sub Caller()",
+            "    集計\u00191",
+            "End Sub",
+            "Public Sub 集計(ByVal value As Long)",
+            "End Sub"
+        ]);
+
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.bas", source);
+
+        var call = Assert.Single(
+            tree.Module.ArgumentLists,
+            argumentList => argumentList.Callee == "集計");
+        Assert.Equal("1", Assert.Single(call.Arguments).Text);
+
+        var nonWscTree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Public Sub Caller()\n    集計\u000B1\nEnd Sub");
+        Assert.DoesNotContain(
+            nonWscTree.Module.ArgumentLists,
+            argumentList => argumentList.Callee == "集計");
     }
 
     [Theory]

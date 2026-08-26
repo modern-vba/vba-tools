@@ -59,6 +59,34 @@ public sealed class HostClassGeneratedSignatureTests
     }
 
     [Fact]
+    public void PreservesAnExactCodePageEventName()
+    {
+        var signature = HostClassGeneratedSignatureParser.Parse(
+            "\u00A0",
+            "Host_\u00A0",
+            "Private Sub Host_\u00A0()\r\nEnd Sub\r\n",
+            authoringAvailable: true,
+            existingHandlerRecognizable: true);
+
+        Assert.Equal("\u00A0", signature.Name);
+    }
+
+    [Fact]
+    public void PreservesAnExactCodePageTypeQualifier()
+    {
+        var signature = HostClassGeneratedSignatureParser.Parse(
+            "Changed",
+            "Host_Changed",
+            "Private Sub Host_Changed(ByVal value As \u00A0.Widget)\r\nEnd Sub\r\n",
+            authoringAvailable: true,
+            existingHandlerRecognizable: true);
+
+        var parameter = Assert.Single(signature.Parameters);
+        var type = Assert.IsType<UnresolvedHostEventTypeReference>(parameter.Type);
+        Assert.Equal("\u00A0.Widget", type.DisplayName);
+    }
+
+    [Fact]
     public void TypeLibCallableTypeDisagreementRejectsTheCompleteObservation()
     {
         var generated = HostClassGeneratedSignatureParser.Parse(

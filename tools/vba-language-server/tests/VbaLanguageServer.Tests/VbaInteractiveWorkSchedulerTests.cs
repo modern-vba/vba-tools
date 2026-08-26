@@ -10,6 +10,15 @@ namespace VbaLanguageServer.Tests;
 
 public sealed class VbaInteractiveWorkSchedulerTests
 {
+    [Fact]
+    public void Module_identity_metadata_batch_is_a_concurrent_bulk_read()
+    {
+        var policy = VbaInteractiveReadPolicy.ForMethod("vba/moduleIdentityMetadata");
+
+        Assert.Equal(VbaInteractiveWorkClass.Bulk, policy.WorkClass);
+        Assert.True(policy.Concurrent);
+    }
+
     private readonly ITestOutputHelper output;
 
     public VbaInteractiveWorkSchedulerTests(ITestOutputHelper output)

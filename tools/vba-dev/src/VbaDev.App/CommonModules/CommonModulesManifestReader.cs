@@ -1,3 +1,5 @@
+using VbaLanguageServer.Syntax;
+
 namespace VbaDev.App.CommonModules;
 
 /// <summary>
@@ -52,9 +54,9 @@ public sealed class CommonModulesManifestReader
             }
 
             entries.Add(new CommonModuleManifestEntry(
-                columns[0].Trim(),
-                SplitList(columns[1]),
-                SplitList(columns[2])));
+                VbaIdentifier.TrimWhitespace(columns[0]),
+                SplitMetadataList(columns[1]),
+                SplitModuleFileList(columns[2])));
         }
 
         if (!headerSeen)
@@ -71,7 +73,7 @@ public sealed class CommonModulesManifestReader
         var byFileName = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var entry in entries)
         {
-            if (string.IsNullOrWhiteSpace(entry.ModuleFile))
+            if (string.IsNullOrEmpty(entry.ModuleFile))
             {
                 throw new CommonModulesManifestException("CommonModules manifest contains an empty ModuleFile value.");
             }
@@ -94,8 +96,17 @@ public sealed class CommonModulesManifestReader
         }
     }
 
-    private static IReadOnlyList<string> SplitList(string value)
+    private static IReadOnlyList<string> SplitMetadataList(string value)
         => string.IsNullOrWhiteSpace(value)
             ? []
             : value.Split(',').Select(item => item.Trim()).Where(item => item.Length > 0).ToArray();
+
+    private static IReadOnlyList<string> SplitModuleFileList(string value)
+        => VbaIdentifier.IsWhitespaceOnly(value)
+            ? []
+            : value
+                .Split(',')
+                .Select(VbaIdentifier.TrimWhitespace)
+                .Where(item => item.Length > 0)
+                .ToArray();
 }

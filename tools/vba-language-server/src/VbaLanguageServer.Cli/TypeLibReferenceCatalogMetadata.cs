@@ -1,6 +1,8 @@
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
 using System.Runtime.Versioning;
+using System.Text;
+using VbaLanguageServer.Syntax;
 
 namespace VbaLanguageServer.SourceModel;
 
@@ -76,12 +78,12 @@ public static class TypeLibReferenceCatalogBuilder
     public static VbaProjectReferenceCatalog Build(string referenceName, TypeLibCatalogMetadata metadata)
     {
         var aliases = new[] { metadata.QualifierAlias, CreateQualifierAlias(referenceName) }
-            .Where(alias => !string.IsNullOrWhiteSpace(alias))
+            .Where(alias => IsSingleLineForeignIdentifier(alias))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
         var definitions = new List<VbaProjectReferenceDefinition>();
 
-        foreach (var type in metadata.Types.Where(type => !string.IsNullOrWhiteSpace(type.Name)))
+        foreach (var type in metadata.Types.Where(type => !string.IsNullOrEmpty(type.Name)))
         {
             if (!type.IsBrowsable && !type.IsApplicationObject)
             {
@@ -98,7 +100,7 @@ public static class TypeLibReferenceCatalogBuilder
                     IsCreatable: type.IsCreatable));
             }
 
-            foreach (var member in type.Members.Where(member => !string.IsNullOrWhiteSpace(member.Name)))
+            foreach (var member in type.Members.Where(member => !string.IsNullOrEmpty(member.Name)))
             {
                 definitions.Add(new VbaProjectReferenceDefinition(
                     referenceName,
@@ -124,6 +126,11 @@ public static class TypeLibReferenceCatalogBuilder
             : type.Kind is VbaSourceDefinitionKind.Module or VbaSourceDefinitionKind.Enum
                 ? ReferenceDefinitionGlobalExposure.LibraryGlobal
                 : ReferenceDefinitionGlobalExposure.None;
+
+    private static bool IsSingleLineForeignIdentifier(string? value)
+        => !string.IsNullOrEmpty(value)
+            && !value.Contains('\r')
+            && !value.Contains('\n');
 
     private static IReadOnlyList<VbaProjectReferenceDefinition> DeduplicateDefinitions(
         IReadOnlyList<VbaProjectReferenceDefinition> definitions)
@@ -173,12 +180,25 @@ public static class TypeLibReferenceCatalogBuilder
             : ReferenceDefinitionGlobalExposure.None;
     }
 
-    private static string CreateQualifierAlias(string referenceName)
+    internal static string CreateQualifierAlias(string referenceName)
     {
-        var chars = referenceName
-            .Where(character => char.IsAsciiLetterOrDigit(character) || character == '_')
-            .ToArray();
-        return chars.Length == 0 ? referenceName : new string(chars);
+        if (VbaIdentifier.IsIdentifier(referenceName))
+        {
+            return referenceName;
+        }
+
+        var alias = new StringBuilder(referenceName.Length);
+        foreach (var rune in referenceName.EnumerateRunes())
+        {
+            var candidate = string.Concat(alias.ToString(), rune.ToString());
+            if (VbaIdentifier.IsLexIdentifier(candidate))
+            {
+                alias.Append(rune.ToString());
+            }
+        }
+
+        var value = alias.Length == 0 ? "Library" : alias.ToString();
+        return VbaIdentifier.IsReservedIdentifier(value) ? $"Library_{value}" : value;
     }
 }
 
@@ -188,6 +208,21 @@ public static class TypeLibReferenceCatalogBuilder
 public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataReader
 {
     private const int TypeDocumentationMemberId = -1;
+    private readonly Func<VbaProjectReferenceCatalogIdentity, ITypeLib>? typeLibLoader;
+
+    /// <summary>
+    /// Creates a reader backed by the Windows COM TypeLib loader.
+    /// </summary>
+    public ComTypeLibCatalogMetadataReader()
+    {
+    }
+
+    internal ComTypeLibCatalogMetadataReader(
+        Func<VbaProjectReferenceCatalogIdentity, ITypeLib> typeLibLoader)
+    {
+        this.typeLibLoader = typeLibLoader
+            ?? throw new ArgumentNullException(nameof(typeLibLoader));
+    }
 
     /// <summary>
     /// Reads TypeLib metadata for a resolved catalog identity.
@@ -196,6 +231,11 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
     /// <returns>The TypeLib metadata.</returns>
     public TypeLibCatalogMetadata ReadMetadata(VbaProjectReferenceCatalogIdentity identity)
     {
+        if (typeLibLoader is not null)
+        {
+            return ReadLoadedMetadata(identity, typeLibLoader(identity));
+        }
+
         if (!OperatingSystem.IsWindows())
         {
             return new TypeLibCatalogMetadata(CreateFallbackQualifier(identity.ReferenceName), []);
@@ -208,6 +248,13 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
     private static TypeLibCatalogMetadata ReadWindowsMetadata(VbaProjectReferenceCatalogIdentity identity)
     {
         var typeLib = LoadWindowsTypeLib(identity);
+        return ReadLoadedMetadata(identity, typeLib);
+    }
+
+    private static TypeLibCatalogMetadata ReadLoadedMetadata(
+        VbaProjectReferenceCatalogIdentity identity,
+        ITypeLib typeLib)
+    {
         typeLib.GetDocumentation(TypeDocumentationMemberId, out var libraryName, out _, out _, out _);
 
         var typeInfos = ReadTypeInfos(typeLib);
@@ -223,7 +270,7 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
 
         types.AddRange(ReadCoClassForwardedMembers(typeInfos));
         return new TypeLibCatalogMetadata(
-            string.IsNullOrWhiteSpace(libraryName) ? CreateFallbackQualifier(identity.ReferenceName) : libraryName,
+            string.IsNullOrEmpty(libraryName) ? CreateFallbackQualifier(identity.ReferenceName) : libraryName,
             types);
     }
 
@@ -267,7 +314,6 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
         }
     }
 
-    [SupportedOSPlatform("windows")]
     private static IReadOnlyList<ITypeInfo> ReadTypeInfos(ITypeLib typeLib)
     {
         var typeInfos = new List<ITypeInfo>();
@@ -281,7 +327,6 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
         return typeInfos;
     }
 
-    [SupportedOSPlatform("windows")]
     private static TypeLibCatalogType? ReadType(ITypeInfo typeInfo, bool allowHiddenType = false)
     {
         var attrPointer = IntPtr.Zero;
@@ -298,7 +343,7 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
             }
 
             typeInfo.GetDocumentation(TypeDocumentationMemberId, out var typeName, out var documentation, out _, out _);
-            if (string.IsNullOrWhiteSpace(typeName) || !TryMapTypeKind(attr.typekind, out var definitionKind))
+            if (string.IsNullOrEmpty(typeName) || !TryMapTypeKind(attr.typekind, out var definitionKind))
             {
                 return null;
             }
@@ -324,7 +369,6 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
         }
     }
 
-    [SupportedOSPlatform("windows")]
     private static IReadOnlyList<TypeLibCatalogType> ReadCoClassForwardedMembers(IReadOnlyList<ITypeInfo> typeInfos)
     {
         var forwardedTypes = new List<TypeLibCatalogType>();
@@ -345,7 +389,7 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
                 }
 
                 coClassInfo.GetDocumentation(TypeDocumentationMemberId, out var coClassName, out _, out _, out _);
-                if (string.IsNullOrWhiteSpace(coClassName))
+                if (string.IsNullOrEmpty(coClassName))
                 {
                     continue;
                 }
@@ -399,7 +443,6 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
         return forwardedTypes;
     }
 
-    [SupportedOSPlatform("windows")]
     private static IReadOnlyList<TypeLibCatalogMember> ReadVariableMembers(
         ITypeInfo typeInfo,
         TYPEATTR attr,
@@ -420,7 +463,7 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
                 }
 
                 typeInfo.GetDocumentation(varDesc.memid, out var memberName, out var documentation, out _, out _);
-                if (string.IsNullOrWhiteSpace(memberName))
+                if (string.IsNullOrEmpty(memberName))
                 {
                     continue;
                 }
@@ -450,7 +493,6 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
         return members;
     }
 
-    [SupportedOSPlatform("windows")]
     private static IReadOnlyList<TypeLibCatalogMember> ReadFunctionMembers(
         ITypeInfo typeInfo,
         TYPEATTR attr,
@@ -471,7 +513,7 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
 
                 var names = GetNames(typeInfo, funcDesc.memid, funcDesc.cParams + 1);
                 var memberName = names.FirstOrDefault();
-                if (string.IsNullOrWhiteSpace(memberName))
+                if (string.IsNullOrEmpty(memberName))
                 {
                     continue;
                 }
@@ -517,7 +559,6 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
         return members;
     }
 
-    [SupportedOSPlatform("windows")]
     private static IReadOnlyList<VbaCallableParameter> ReadParameters(
         ITypeInfo typeInfo,
         FUNCDESC funcDesc,
@@ -550,7 +591,7 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
                 continue;
             }
 
-            var parameterName = index < names.Count && !string.IsNullOrWhiteSpace(names[index])
+            var parameterName = index < names.Count && !string.IsNullOrEmpty(names[index])
                 ? names[index]
                 : $"Arg{parameters.Count + 1}";
             var isOptional = (element.desc.paramdesc.wParamFlags & PARAMFLAG.PARAMFLAG_FOPT) != 0
@@ -568,12 +609,11 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
         return parameters;
     }
 
-    [SupportedOSPlatform("windows")]
     private static string[] GetNames(ITypeInfo typeInfo, int memberId, int maxNames)
     {
         var names = new string[Math.Max(1, maxNames)];
         typeInfo.GetNames(memberId, names, names.Length, out var count);
-        return names.Take(count).Where(name => !string.IsNullOrWhiteSpace(name)).ToArray();
+        return names.Take(count).ToArray();
     }
 
     private static VbaCallableSignature CreateSignature(
@@ -692,7 +732,6 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
             && IsArrayType(nestedType);
     }
 
-    [SupportedOSPlatform("windows")]
     private static VbaTypeReference? ToTypeReference(ITypeInfo typeInfo, TYPEDESC typeDesc)
     {
         var varType = (VarEnum)typeDesc.vt;
@@ -728,7 +767,6 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
         };
     }
 
-    [SupportedOSPlatform("windows")]
     private static VbaTypeReference? ToNestedTypeReference(ITypeInfo typeInfo, TYPEDESC typeDesc)
     {
         if (!TryGetNestedTypeDescription(typeDesc, out var nested))
@@ -751,7 +789,6 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
         return true;
     }
 
-    [SupportedOSPlatform("windows")]
     private static VbaTypeReference? ToUserDefinedTypeReference(ITypeInfo typeInfo, TYPEDESC typeDesc)
     {
         try
@@ -759,7 +796,7 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
             var hrefType = unchecked((int)typeDesc.lpValue.ToInt64());
             typeInfo.GetRefTypeInfo(hrefType, out var referencedTypeInfo);
             referencedTypeInfo.GetDocumentation(TypeDocumentationMemberId, out var name, out _, out _, out _);
-            return string.IsNullOrWhiteSpace(name) ? null : new VbaTypeReference(name);
+            return string.IsNullOrEmpty(name) ? null : new VbaTypeReference(name);
         }
         catch (COMException)
         {
@@ -814,12 +851,7 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
         => string.IsNullOrWhiteSpace(value) ? null : value;
 
     private static string CreateFallbackQualifier(string referenceName)
-    {
-        var chars = referenceName
-            .Where(character => char.IsAsciiLetterOrDigit(character) || character == '_')
-            .ToArray();
-        return chars.Length == 0 ? referenceName : new string(chars);
-    }
+        => TypeLibReferenceCatalogBuilder.CreateQualifierAlias(referenceName);
 
     [DllImport("oleaut32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
     private static extern void LoadTypeLibEx(

@@ -134,6 +134,28 @@ public sealed class VbaSemanticTokenTests
     }
 
     [Fact]
+    public void SemanticTokensRetainAContextualWordUsedAsAnIdentifier()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Function Property() As Long",
+            "    Property = 1",
+            "End Function"
+        ]);
+        var index = VbaSemanticInventoryFixture.Create(
+            new Dictionary<string, string> { [uri] = text });
+
+        var propertyTokens = index.GetSemanticTokens(uri)
+            .Where(token => token.Text == "Property")
+            .ToArray();
+
+        Assert.Equal(2, propertyTokens.Length);
+        Assert.Contains(propertyTokens, token => token.TokenModifiers.Contains("declaration"));
+        Assert.Contains(propertyTokens, token => !token.TokenModifiers.Contains("declaration"));
+    }
+
+    [Fact]
     public void SemanticTokensSkipCrLfDocumentationCommentIdentifiersThatMatchActiveReferences()
     {
         const string uri = "file:///C:/work/Worker.bas";

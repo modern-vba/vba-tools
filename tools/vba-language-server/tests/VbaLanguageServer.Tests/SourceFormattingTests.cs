@@ -70,6 +70,55 @@ public sealed class SourceFormattingTests
     }
 
     [Fact]
+    public void FormatDocumentDoesNotSplitAnAttributePrefixAtACodePageIdentifierCharacter()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        const string source = "attribute\u00A0VB_Name = \"Worker\"";
+        var index = VbaSemanticInventoryFixture.Create(
+            new Dictionary<string, string> { [uri] = source });
+
+        var edit = index.FormatDocument(
+            uri,
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.Equal(source, edit?.NewText ?? source);
+    }
+
+    [Fact]
+    public void FormatDocumentRecognizesExactMsVbalWhitespaceInAttributeMetadata()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        const string source = "attribute\u0019vb_name = \"Worker\"";
+        const string expected = "Attribute\u0019VB_Name = \"Worker\"";
+        var index = VbaSemanticInventoryFixture.Create(
+            new Dictionary<string, string> { [uri] = source });
+
+        var edit = index.FormatDocument(
+            uri,
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.NotNull(edit);
+        Assert.Equal(expected, edit.NewText);
+    }
+
+    [Fact]
+    public void FormatDocumentDoesNotSplitALongerAttributeNameAtAnIdentifierBoundary()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        const string source = "attribute vb_name注文 = \"Worker\"";
+        const string expected = "Attribute vb_name注文 = \"Worker\"";
+        var index = VbaSemanticInventoryFixture.Create(
+            new Dictionary<string, string> { [uri] = source });
+
+        var edit = index.FormatDocument(
+            uri,
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.NotNull(edit);
+        Assert.Equal(expected, edit.NewText);
+    }
+
+    [Fact]
     public void FormatDocumentUsesDeterministicDominantLineEndingForMixedInput()
     {
         const string uri = "file:///C:/work/Worker.bas";
@@ -566,6 +615,54 @@ public sealed class SourceFormattingTests
     }
 
     [Fact]
+    public void FormatDocumentPreservesALeadingCp2IdentifierCharacter()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var source = string.Join('\n', [
+            "public sub Run()",
+            "\u00a0 = 1",
+            "end sub"
+        ]);
+        var expected = string.Join('\n', [
+            "Public Sub Run()",
+            "    \u00a0 = 1",
+            "End Sub"
+        ]);
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string> { [uri] = source });
+
+        var edit = index.FormatDocument(
+            uri,
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.NotNull(edit);
+        Assert.Equal(expected, edit.NewText);
+    }
+
+    [Fact]
+    public void FormatDocumentUsesDeclarationCasingForAContextualIdentifier()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var source = string.Join('\n', [
+            "public sub oBjEcT()",
+            "object",
+            "end sub"
+        ]);
+        var expected = string.Join('\n', [
+            "Public Sub oBjEcT()",
+            "    oBjEcT",
+            "End Sub"
+        ]);
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string> { [uri] = source });
+
+        var edit = index.FormatDocument(
+            uri,
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.NotNull(edit);
+        Assert.Equal(expected, edit.NewText);
+    }
+
+    [Fact]
     public void FormatDocumentKeepsLineLabelsAtColumnZero()
     {
         const string uri = "file:///C:/work/Worker.bas";
@@ -594,6 +691,34 @@ public sealed class SourceFormattingTests
         var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string> { [uri] = source });
 
         var edit = index.FormatDocument(uri, VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.NotNull(edit);
+        Assert.Equal(expected, edit.NewText);
+    }
+
+    [Fact]
+    public void FormatDocumentKeepsAJapaneseIdentifierLabelAtColumnZero()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var source = string.Join('\n', [
+            "public sub Run()",
+            "if true then",
+            "終了:",
+            "end if",
+            "end sub"
+        ]);
+        var expected = string.Join('\n', [
+            "Public Sub Run()",
+            "    If True Then",
+            "終了:",
+            "    End If",
+            "End Sub"
+        ]);
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string> { [uri] = source });
+
+        var edit = index.FormatDocument(
+            uri,
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
 
         Assert.NotNull(edit);
         Assert.Equal(expected, edit.NewText);

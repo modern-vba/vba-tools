@@ -66,6 +66,14 @@ public sealed class VbaExecutableExpressionSyntaxTests
         Assert.True(IsComplete("Date >= #1/1/2020# And Len(String(2, \"x\")) > 0"));
     }
 
+    [Fact]
+    public void DateLiteralUsesExactMsVbalWhitespace()
+    {
+        Assert.True(IsComplete("#1/1/2020\u001912:30#"));
+        Assert.False(IsComplete("#1/1/2020\u00A012:30#"));
+        Assert.False(IsComplete("#1/1/2020\u000B12:30#"));
+    }
+
     [Theory]
     [InlineData("String")]
     [InlineData("String()")]

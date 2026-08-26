@@ -36,7 +36,7 @@ internal static class VbaLexer
                 continue;
             }
 
-            if (char.IsWhiteSpace(state.Current))
+            if (VbaIdentifier.IsWhitespace(state.Current))
             {
                 tokens.Add(ReadWhitespace(state));
                 continue;
@@ -78,9 +78,14 @@ internal static class VbaLexer
                 continue;
             }
 
-            if (IsIdentifierStart(state.Current))
+            var identifierLength = VbaIdentifier.ReadCandidateLength(
+                state.Source.AsSpan(state.Position.Offset),
+                out var identifierForms);
+            if (identifierLength > 0)
             {
-                tokens.Add(ReadIdentifierOrKeyword(state));
+                tokens.Add(identifierForms == VbaIdentifierForm.None
+                    ? ReadFixedLength(state, VbaTokenKind.Punctuation, identifierLength)
+                    : ReadIdentifierOrKeyword(state, identifierLength));
                 continue;
             }
 
@@ -119,7 +124,7 @@ internal static class VbaLexer
     {
         var start = state.Position;
         var containsOnlySpaces = true;
-        while (!state.IsAtEnd && char.IsWhiteSpace(state.Current) && state.Current is not '\r' and not '\n')
+        while (!state.IsAtEnd && VbaIdentifier.IsWhitespace(state.Current))
         {
             if (state.Current == ' ')
             {
@@ -208,16 +213,9 @@ internal static class VbaLexer
             return false;
         }
 
-        var continuationOffset = endOffset - 1;
-        while (continuationOffset >= startOffset
-            && source[continuationOffset] is ' ' or '\t')
-        {
-            continuationOffset--;
-        }
-
-        return continuationOffset > startOffset
-            && source[continuationOffset] == '_'
-            && source[continuationOffset - 1] is ' ' or '\t';
+        return endOffset - startOffset >= 2
+            && source[endOffset - 1] == '_'
+            && VbaIdentifier.IsWhitespace(source[endOffset - 2]);
     }
 
     private static VbaToken ReadStringLiteral(LexerState state)
@@ -286,11 +284,10 @@ internal static class VbaLexer
         return CreateToken(state, VbaTokenKind.NumericLiteral, start);
     }
 
-    private static VbaToken ReadIdentifierOrKeyword(LexerState state)
+    private static VbaToken ReadIdentifierOrKeyword(LexerState state, int identifierLength)
     {
         var start = state.Position;
-        state.Advance();
-        while (!state.IsAtEnd && IsIdentifierCharacter(state.Current))
+        for (var index = 0; index < identifierLength; index++)
         {
             state.Advance();
         }
@@ -357,7 +354,7 @@ internal static class VbaLexer
                 return true;
             }
 
-            if (!char.IsWhiteSpace(current))
+            if (!VbaIdentifier.IsWhitespace(current))
             {
                 return false;
             }
@@ -368,38 +365,14 @@ internal static class VbaLexer
 
     private static bool IsLineContinuation(LexerState state)
     {
-        if (state.Position.Offset == 0 || !char.IsWhiteSpace(state.Source[state.Position.Offset - 1]))
+        if (state.Position.Offset == 0
+            || !VbaIdentifier.IsWhitespace(state.Source[state.Position.Offset - 1]))
         {
             return false;
         }
 
-        for (var offset = state.Position.Offset + 1; offset < state.Source.Length; offset++)
-        {
-            var current = state.Source[offset];
-            if (current is '\r' or '\n')
-            {
-                return true;
-            }
-
-            if (current == '\'')
-            {
-                return true;
-            }
-
-            if (!char.IsWhiteSpace(current))
-            {
-                return false;
-            }
-        }
-
-        return true;
+        return state.Peek(1) is '\r' or '\n';
     }
-
-    private static bool IsIdentifierStart(char value)
-        => char.IsAsciiLetter(value) || value == '_';
-
-    private static bool IsIdentifierCharacter(char value)
-        => char.IsAsciiLetterOrDigit(value) || value == '_';
 
     private sealed class LexerState
     {

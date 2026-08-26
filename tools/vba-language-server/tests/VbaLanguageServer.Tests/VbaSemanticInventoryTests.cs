@@ -99,6 +99,82 @@ public sealed class VbaSemanticInventoryTests
     }
 
     [Fact]
+    public void Inventory_rename_accepts_an_exact_japanese_identifier()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var sourceDocuments = CreateSourceDocuments(new Dictionary<string, string>
+        {
+            [uri] = "Attribute VB_Name = \"Worker\"\n"
+                + "Public Function BuildValue() As Long\n"
+                + "    BuildValue = 1\n"
+                + "End Function"
+        });
+        var inventory = VbaSemanticInventory.Create(sourceDocuments);
+
+        var renamePlan = Assert.IsType<VbaRenamePlan>(inventory.CreateRenamePlan(
+            uri,
+            1,
+            "Public Function ".Length,
+            "集計結果"));
+
+        Assert.All(
+            renamePlan.Changes.SelectMany(change => change.Value),
+            edit => Assert.Equal("集計結果", edit.NewText));
+    }
+
+    [Fact]
+    public void InventoryRenameRejectsInvalidExactUntrimmedNames()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var sourceDocuments = CreateSourceDocuments(new Dictionary<string, string>
+        {
+            [uri] = "Public Sub Run()\nEnd Sub"
+        });
+        var inventory = VbaSemanticInventory.Create(sourceDocuments);
+        string[] invalidNames =
+        [
+            "",
+            " Run",
+            "Run ",
+            "Run$",
+            "[Run]",
+            "CDecl",
+            "亜ㄱ",
+            new('A', 256)
+        ];
+
+        Assert.All(
+            invalidNames,
+            name => Assert.Null(inventory.CreateRenamePlan(
+                uri,
+                0,
+                "Public Sub ".Length,
+                name)));
+    }
+
+    [Fact]
+    public void InventoryRenameAcceptsAnIdentifierAtThe255CharacterLimit()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var sourceDocuments = CreateSourceDocuments(new Dictionary<string, string>
+        {
+            [uri] = "Public Sub Run()\nEnd Sub"
+        });
+        var inventory = VbaSemanticInventory.Create(sourceDocuments);
+        var newName = new string('A', 255);
+
+        var renamePlan = Assert.IsType<VbaRenamePlan>(inventory.CreateRenamePlan(
+            uri,
+            0,
+            "Public Sub ".Length,
+            newName));
+
+        Assert.All(
+            renamePlan.Changes.SelectMany(change => change.Value),
+            edit => Assert.Equal(newName, edit.NewText));
+    }
+
+    [Fact]
     public void Inventory_does_not_expose_legacy_definition_maps()
     {
         const string uri = "file:///C:/work/Inventory.bas";

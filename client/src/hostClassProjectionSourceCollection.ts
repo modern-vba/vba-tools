@@ -1,5 +1,12 @@
 import * as path from 'node:path';
 
+import {
+  HostClassSourceCandidate,
+  HostClassSourceText,
+  ModuleIdentityMetadataLanguageClient,
+  resolveHostClassSourceMetadata
+} from './hostClassSourceMetadata';
+
 export interface HostClassProjectionDiskFormSource {
   readonly filePath: string;
   readonly sourceUri: string;
@@ -12,18 +19,13 @@ export interface HostClassProjectionOpenFormSource {
   readonly text: string;
 }
 
-export interface HostClassProjectionFormSourceCandidate {
-  readonly sourceUri: string;
-  readonly kind: 'form';
-  readonly text: string;
-}
-
 export async function collectHostClassProjectionFormSources(
   sourceSetPath: string,
   diskSources: readonly HostClassProjectionDiskFormSource[],
   openSources: readonly HostClassProjectionOpenFormSource[],
-  readDiskText: (source: HostClassProjectionDiskFormSource) => Promise<string>
-): Promise<readonly HostClassProjectionFormSourceCandidate[]> {
+  readDiskText: (source: HostClassProjectionDiskFormSource) => Promise<string>,
+  languageClient: ModuleIdentityMetadataLanguageClient
+): Promise<readonly HostClassSourceCandidate[]> {
   const merged = new Map<string, {
     readonly filePath: string;
     readonly sourceUri: string;
@@ -60,11 +62,14 @@ export async function collectHostClassProjectionFormSources(
   const sorted = [...merged.values()].sort((left, right) =>
     comparePaths(left.filePath, right.filePath)
   );
-  return Promise.all(sorted.map(async (source) => ({
+  const sources: readonly HostClassSourceText[] = await Promise.all(sorted.map(async (source) => ({
     sourceUri: source.sourceUri,
     kind: 'form' as const,
     text: source.openText ?? await readDiskText(source.diskSource!)
   })));
+  return sources.length === 0
+    ? []
+    : resolveHostClassSourceMetadata(languageClient, sources);
 }
 
 function comparePaths(left: string, right: string): number {

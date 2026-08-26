@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using VbaLanguageServer.Syntax;
 
 namespace VbaDebugAdapter.Debugging;
 
@@ -44,7 +45,8 @@ public sealed class DebugCompilationSettings
         var constants = new Dictionary<string, short>(StringComparer.OrdinalIgnoreCase);
         foreach (var constant in projectConstants)
         {
-            if (string.IsNullOrWhiteSpace(constant.Key)
+            if (constant.Key.Length is < 1 or > 255
+                || !VbaIdentifier.IsIdentifier(constant.Key)
                 || !constants.TryAdd(constant.Key, constant.Value))
             {
                 throw new ArgumentException(

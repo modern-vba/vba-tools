@@ -190,7 +190,7 @@ function isInstalledCommonModule(value: unknown): boolean {
   if (!isRecord(value) ||
       !hasOnlyProperties(value, ['name', 'moduleFile', 'requested', 'testOnly']) ||
       typeof value.name !== 'string' ||
-      value.name.trim().length === 0 ||
+      value.name.length === 0 ||
       typeof value.moduleFile !== 'string' ||
       typeof value.requested !== 'boolean' ||
       typeof value.testOnly !== 'boolean') {

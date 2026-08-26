@@ -647,6 +647,7 @@ test('VBA TextMate grammar has lexical scopes for representative VBA fixtures', 
   assertPatternMatches(patterns, 'keyword.control.vba', 'select case value');
   assertPatternMatches(patterns, 'keyword.control.vba', 'End With');
   assertPatternMatches(patterns, 'keyword.control.vba', 'End Select');
+  assertPatternDoesNotMatch(patterns, 'keyword.control.vba', 'If亜 = 1');
   assertPatternDoesNotMatch(patterns, 'keyword.control.vba', 'End Sub');
   assertPatternDoesNotMatch(patterns, 'keyword.control.vba', 'End Function');
   assertPatternDoesNotMatch(patterns, 'keyword.control.vba', 'End Property');
@@ -674,6 +675,9 @@ test('VBA TextMate grammar has lexical scopes for representative VBA fixtures', 
   assertPatternMatches(patterns, 'constant.numeric.vba', 'value = &HFF');
   assertPatternMatches(patterns, 'keyword.operator.vba', 'If left_value <> right_value Then');
   assertPatternMatches(patterns, 'meta.attribute.vba', 'Attribute VB_Name = "Module1"');
+  assertPatternMatches(patterns, 'meta.attribute.vba', 'Attribute\u3000VB_Name = "Module1"');
+  assertPatternDoesNotMatch(patterns, 'meta.attribute.vba', 'Attribute\u00A0VB_Name = "Module1"');
+  assertPatternDoesNotMatch(patterns, 'meta.attribute.vba', 'Attribute VB_Name注文 = "Module1"');
 });
 
 function readPackageJson<T>(): T {

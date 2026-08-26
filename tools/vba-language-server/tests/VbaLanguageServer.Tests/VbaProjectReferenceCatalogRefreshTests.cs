@@ -858,6 +858,98 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
     }
 
     [Fact]
+    public void TypeLibCatalogBuilderPreservesExactCodePageTypeAndMemberNames()
+    {
+        const string referenceName = "Generated Library";
+        var catalog = TypeLibReferenceCatalogBuilder.Build(
+            referenceName,
+            new TypeLibCatalogMetadata(
+                "Generated",
+                [
+                    new TypeLibCatalogType(
+                        "\u00a0",
+                        VbaSourceDefinitionKind.Class,
+                        null,
+                        [new TypeLibCatalogMember("\u00a0", VbaSourceDefinitionKind.Property, null)])
+                ]));
+        var selection = VbaProjectReferenceSelection.Create(
+            ProjectDocument.ExcelKind,
+            [new VbaProjectReference(referenceName)]);
+
+        var definitions = VbaProjectReferenceCatalogSet.Empty
+            .WithCatalog(catalog)
+            .GetActiveDefinitions(selection);
+
+        Assert.Contains(definitions, definition =>
+            definition.Name == "\u00a0"
+            && definition.Kind == VbaSourceDefinitionKind.Class);
+        Assert.Contains(definitions, definition =>
+            definition.Name == "\u00a0"
+            && definition.Kind == VbaSourceDefinitionKind.Property
+            && definition.ParentTypeName == "\u00a0");
+    }
+
+    [Fact]
+    public void TypeLibCatalogBuilderPreservesAnExactCodePageQualifierAlias()
+    {
+        const string referenceName = "Generated Library";
+        var catalog = TypeLibReferenceCatalogBuilder.Build(
+            referenceName,
+            new TypeLibCatalogMetadata(
+                "\u00a0",
+                [new TypeLibCatalogType("Target", VbaSourceDefinitionKind.Class, null, [])]));
+        var selection = VbaProjectReferenceSelection.Create(
+            ProjectDocument.ExcelKind,
+            [new VbaProjectReference(referenceName)]);
+
+        var definitions = VbaProjectReferenceCatalogSet.Empty
+            .WithCatalog(catalog)
+            .GetQualifiedDefinitions(selection, "\u00a0");
+
+        Assert.Contains(definitions, definition => definition.Name == "Target");
+    }
+
+    [Fact]
+    public void TypeLibCatalogBuilderPreservesAForeignQualifierAlias()
+    {
+        const string referenceName = "Generated Library";
+        var catalog = TypeLibReferenceCatalogBuilder.Build(
+            referenceName,
+            new TypeLibCatalogMetadata(
+                "Generated-2",
+                [new TypeLibCatalogType("Target", VbaSourceDefinitionKind.Class, null, [])]));
+        var selection = VbaProjectReferenceSelection.Create(
+            ProjectDocument.ExcelKind,
+            [new VbaProjectReference(referenceName)]);
+
+        var definitions = VbaProjectReferenceCatalogSet.Empty
+            .WithCatalog(catalog)
+            .GetQualifiedDefinitions(selection, "Generated-2");
+
+        Assert.Contains(definitions, definition => definition.Name == "Target");
+    }
+
+    [Fact]
+    public void TypeLibCatalogBuilderCreatesAMultilingualIdentifierQualifierAlias()
+    {
+        const string referenceName = "日本 2";
+        var catalog = TypeLibReferenceCatalogBuilder.Build(
+            referenceName,
+            new TypeLibCatalogMetadata(
+                string.Empty,
+                [new TypeLibCatalogType("Target", VbaSourceDefinitionKind.Class, null, [])]));
+        var selection = VbaProjectReferenceSelection.Create(
+            ProjectDocument.ExcelKind,
+            [new VbaProjectReference(referenceName)]);
+
+        var definitions = VbaProjectReferenceCatalogSet.Empty
+            .WithCatalog(catalog)
+            .GetQualifiedDefinitions(selection, "日本2");
+
+        Assert.Contains(definitions, definition => definition.Name == "Target");
+    }
+
+    [Fact]
     public void TypeLibCatalogBuilderUsesExplicitBindingMetadataForGlobalExposure()
     {
         var catalog = TypeLibReferenceCatalogBuilder.Build(

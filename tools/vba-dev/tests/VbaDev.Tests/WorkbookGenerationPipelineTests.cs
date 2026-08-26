@@ -613,6 +613,41 @@ public sealed class WorkbookGenerationPipelineTests
     }
 
     [Fact]
+    public async Task ExactCodePageRetainedComponentIdentityParticipatesInNamespaceConflicts()
+    {
+        using var temp = TempDirectory.Create();
+        var templatePath = Path.Combine(temp.Path, "Template.xlsm");
+        var targetPath = Path.Combine(temp.Path, "Book1.xlsm");
+        var sourcePath = Path.Combine(temp.Path, "Incoming.bas");
+        File.WriteAllText(templatePath, "new-workbook", Encoding.UTF8);
+        File.WriteAllText(targetPath, "previous-workbook", Encoding.UTF8);
+        File.WriteAllText(
+            sourcePath,
+            "Attribute VB_Name = \"\u00A0\"\r\n",
+            new UTF8Encoding(false));
+        var events = new List<string>();
+        var automation = new RecordingWorkbookGenerationAutomation(events)
+        {
+            Modules = [new WorkbookModule("\u00A0", WorkbookModuleKind.Document)]
+        };
+        var pipeline = CreatePipeline(automation);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+            "Book1",
+            templatePath,
+            targetPath,
+            [],
+            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
+            WorkbookAutomationTimeouts.Default,
+            CancellationToken.None));
+
+        Assert.Contains("conflicts with retained component '\u00A0'", error.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("identity at index 0 is incomplete", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("verify", events);
+        Assert.DoesNotContain("save", events);
+    }
+
+    [Fact]
     public async Task ContainingProjectConflictUsesTheActualTemporaryWorkbookName()
     {
         using var temp = TempDirectory.Create();

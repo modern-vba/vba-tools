@@ -1,5 +1,3 @@
-using System.Text.RegularExpressions;
-
 namespace VbaLanguageServer.Syntax;
 
 /// <summary>
@@ -36,7 +34,7 @@ public sealed class VbaIndentationFormatting
             return text;
         }
 
-        if (line.IsBlankOrComment && string.IsNullOrWhiteSpace(text))
+        if (line.IsBlankOrComment && VbaIdentifier.TrimStartWhitespace(text).Length == 0)
         {
             return "";
         }
@@ -53,15 +51,27 @@ public sealed class VbaIndentationFormatting
 
         if (StartsWithLineLabel(line.TrimmedCodeText))
         {
-            return text.TrimStart();
+            return VbaIdentifier.TrimStartWhitespace(text);
         }
 
-        return $"{indentationStyle.CreateLeadingWhitespace(line.IndentationDepth)}{text.TrimStart()}";
+        return $"{indentationStyle.CreateLeadingWhitespace(line.IndentationDepth)}{VbaIdentifier.TrimStartWhitespace(text)}";
     }
 
     private static bool StartsWithLineLabel(string trimmedCodeText)
-        => Regex.IsMatch(
-            trimmedCodeText,
-            "^(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+)\\s*:",
-            RegexOptions.CultureInvariant);
+    {
+        var tokens = VbaTokenStream.FromText(trimmedCodeText).Tokens
+            .Where(token => token.Kind is not VbaTokenKind.Whitespace
+                and not VbaTokenKind.NewLine
+                and not VbaTokenKind.Comment)
+            .ToArray();
+        if (tokens.Length < 2 || tokens[1].Text != ":")
+        {
+            return false;
+        }
+
+        var label = tokens[0];
+        return VbaIdentifier.IsIdentifier(label.Text)
+            || (label.Kind == VbaTokenKind.NumericLiteral
+                && label.Text.All(char.IsAsciiDigit));
+    }
 }

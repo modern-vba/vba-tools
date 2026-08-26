@@ -262,8 +262,13 @@ internal sealed class VbaSourceFormatter
 
         codePart = Regex.Replace(
             codePart,
-            "^\\s*Attribute\\s+VB_Name",
-            match => match.Value[..^"Attribute VB_Name".Length] + "Attribute VB_Name",
+            "^(?<leading>" + VbaIdentifier.RegexWhitespace + "*)"
+                + "Attribute(?<separator>" + VbaIdentifier.RegexWhitespace + "+)"
+                + "VB_Name(?=$|" + VbaIdentifier.RegexWhitespace + "|=)",
+            match => match.Groups["leading"].Value
+                + "Attribute"
+                + match.Groups["separator"].Value
+                + "VB_Name",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
         var edits = new SourceFormattingEditCollector();

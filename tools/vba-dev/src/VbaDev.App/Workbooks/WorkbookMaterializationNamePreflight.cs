@@ -1,4 +1,5 @@
 using System.Text;
+using VbaLanguageServer.Syntax;
 
 namespace VbaDev.App.Workbooks;
 
@@ -101,7 +102,7 @@ public sealed class WorkbookMaterializationNamePreflight
         ArgumentNullException.ThrowIfNull(retainedModules);
         ArgumentNullException.ThrowIfNull(references);
         var findings = new List<string>();
-        var projectIdentityComplete = !string.IsNullOrWhiteSpace(projectName);
+        var projectIdentityComplete = IsCompleteVbaNamespaceName(projectName);
         if (!projectIdentityComplete)
         {
             findings.Add("The actual containing project identity is incomplete.");
@@ -111,7 +112,7 @@ public sealed class WorkbookMaterializationNamePreflight
             .Select((module, index) => new { Module = module, Index = index })
             .Where(item =>
             {
-                if (!string.IsNullOrWhiteSpace(item.Module.Name))
+                if (IsCompleteVbaNamespaceName(item.Module.Name))
                 {
                     return true;
                 }
@@ -125,7 +126,7 @@ public sealed class WorkbookMaterializationNamePreflight
         var completeReferences = references
             .Where(reference =>
             {
-                if (!string.IsNullOrWhiteSpace(reference.NamespaceName))
+                if (IsCompleteVbaNamespaceName(reference.NamespaceName))
                 {
                     return true;
                 }
@@ -216,6 +217,9 @@ public sealed class WorkbookMaterializationNamePreflight
     }
 
     private sealed record SourceIdentity(string Name, string SourcePath, int Index);
+
+    private static bool IsCompleteVbaNamespaceName(string? value)
+        => value is not null && VbaIdentifier.IsIdentifier(value);
 
     private sealed record InvalidSourceIdentity(string SourcePath, string? Failure, int Index);
 

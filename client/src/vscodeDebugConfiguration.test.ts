@@ -259,6 +259,29 @@ test('a saved launch narrows project and document and resolves an explicit proce
   });
 });
 
+test('a saved launch preserves exact code-page module and procedure selectors', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const manifestPath = path.join(projectRoot, 'vba-project.json');
+  const sourcePath = path.join(projectRoot, 'src', 'Book1', 'CodePage.bas');
+  const integration = createIntegration({
+    manifests: new Map([[manifestPath, manifestJson('BookProject', ['Book1'])]]),
+    sources: new Map([[sourcePath, 'Option Explicit\r\n']])
+  });
+
+  const configuration = await integration.resolveDebugConfiguration({
+    type: 'vba',
+    request: 'launch',
+    name: 'Saved code-page target',
+    project: projectRoot,
+    document: 'Book1',
+    module: '\u00A0',
+    procedure: '集計'
+  });
+
+  assert.equal(configuration.module, '\u00A0');
+  assert.equal(configuration.procedure, '集計');
+});
+
 test('a saved launch rejects module and procedure unless both selectors are supplied', async () => {
   const integration = createIntegration({
     manifests: new Map(),

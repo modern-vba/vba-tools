@@ -517,6 +517,106 @@ public sealed class TestCommandTests
     }
 
     [Fact]
+    public void TestForwardsAnExactCodePageModuleSelector()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(
+            root,
+            ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        var binPath = Path.Combine(root, "bin", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
+        File.WriteAllText(binPath, "bin", Encoding.UTF8);
+        var runner = new FakeWorkbookTestRunner(
+            new WorkbookTestResultRow("\u00A0", "Test_Passes", "OK", ""));
+        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
+
+        var result = application.Run(["test", "--no-build", "--module", "\u00A0"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal([new WorkbookTestSelector("\u00A0", null)], runner.Selectors);
+    }
+
+    [Theory]
+    [InlineData("--module", "CDecl")]
+    [InlineData("--procedure", "Test_Run$")]
+    public void TestRejectsSelectorsThatAreNotExactVbaIdentifiers(
+        string option,
+        string value)
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(
+            root,
+            ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        var binPath = Path.Combine(root, "bin", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
+        File.WriteAllText(binPath, "bin", Encoding.UTF8);
+        var runner = new FakeWorkbookTestRunner();
+        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
+        var arguments = option == "--module"
+            ? new[] { "test", "--no-build", option, value }
+            : new[] { "test", "--no-build", "--module", "Test_Module", option, value };
+
+        var result = application.Run(arguments);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("VBA IDENTIFIER", result.StandardError, StringComparison.Ordinal);
+        Assert.Empty(runner.Selectors);
+    }
+
+    [Fact]
+    public void TestRejectsAModuleSelectorLongerThan31Runes()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(
+            root,
+            ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        var binPath = Path.Combine(root, "bin", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
+        File.WriteAllText(binPath, "bin", Encoding.UTF8);
+        var runner = new FakeWorkbookTestRunner();
+        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
+
+        var result = application.Run(
+            ["test", "--no-build", "--module", new string('\u00A0', 32)]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("31 characters", result.StandardError, StringComparison.Ordinal);
+        Assert.Empty(runner.Selectors);
+    }
+
+    [Fact]
+    public void TestRejectsAProcedureSelectorLongerThan255Characters()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(
+            root,
+            ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        var binPath = Path.Combine(root, "bin", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
+        File.WriteAllText(binPath, "bin", Encoding.UTF8);
+        var runner = new FakeWorkbookTestRunner();
+        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
+
+        var result = application.Run(
+            [
+                "test",
+                "--no-build",
+                "--module",
+                "Test_Module",
+                "--procedure",
+                new string('A', 256)
+            ]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("255 characters", result.StandardError, StringComparison.Ordinal);
+        Assert.Empty(runner.Selectors);
+    }
+
+    [Fact]
     public void TestRejectsProcedureSelectorWithoutModuleSelector()
     {
         using var temp = TempDirectory.Create();

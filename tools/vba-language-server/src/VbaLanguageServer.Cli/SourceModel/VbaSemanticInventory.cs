@@ -1,4 +1,3 @@
-using System.Text.RegularExpressions;
 using VbaLanguageServer.Diagnostics;
 using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.Syntax;
@@ -300,8 +299,6 @@ public sealed class VbaSemanticInventory
         => Array.AsReadOnly(values.ToArray());
 
     private static bool IsIdentifierName(string value)
-        => Regex.IsMatch(
-            value,
-            "^[A-Za-z_][A-Za-z0-9_]*$",
-            RegexOptions.CultureInvariant);
+        => value.Length is > 0 and <= 255
+            && VbaIdentifier.IsIdentifier(value);
 }

@@ -9,6 +9,17 @@ internal interface IExcelComWorkbookTestSession
     IReadOnlyList<WorkbookTestResultRow> RunTests(WorkbookTestSelector selector);
 }
 
+internal interface IExcelComWorkbookTestBoundary : IDisposable
+{
+    string WorkbookName { get; }
+
+    void RunMacro(string entryPoint, IReadOnlyList<string?> arguments);
+
+    int GetLastResultRow();
+
+    string GetCellText(int row, int column);
+}
+
 /// <summary>
 /// Runs VBA unit tests inside Excel through COM automation.
 /// </summary>
@@ -67,61 +78,131 @@ public sealed class ExcelComWorkbookTestRunner : IWorkbookTestRunner
         ExcelComWorkbookSession session,
         WorkbookTestSelector selector)
     {
-        object? worksheetsObject = null;
-        object? sheetObject = null;
         try
         {
-            dynamic excel = session.ExcelObject;
-            dynamic workbook = session.WorkbookObject;
-            var entryPoint = $"'{workbook.Name}'!{UnitTestEntryPoint}";
-            if (!string.IsNullOrWhiteSpace(selector.ProcedureName))
-            {
-                excel.Run(entryPoint, selector.ModuleName, selector.ProcedureName);
-            }
-            else if (!string.IsNullOrWhiteSpace(selector.ModuleName))
-            {
-                excel.Run(entryPoint, selector.ModuleName);
-            }
-            else
-            {
-                excel.Run(entryPoint);
-            }
-
-            worksheetsObject = workbook.Worksheets;
-            dynamic worksheets = worksheetsObject;
-            sheetObject = worksheets(UnitTestSheetName);
-            return ReadResultRows(sheetObject);
+            using var boundary = new ExcelComWorkbookTestBoundary(session);
+            return RunTests(boundary, selector);
         }
         catch (COMException ex)
         {
             throw new InvalidOperationException(ex.Message, ex);
         }
-        finally
-        {
-            ComObjectReleaser.Release(sheetObject);
-            ComObjectReleaser.Release(worksheetsObject);
-        }
     }
 
-    private static IReadOnlyList<WorkbookTestResultRow> ReadResultRows(object sheetObject)
+    internal static IReadOnlyList<WorkbookTestResultRow> RunTests(
+        IExcelComWorkbookTestBoundary boundary,
+        WorkbookTestSelector selector)
     {
-        var lastRow = GetLastResultRow(sheetObject);
+        var entryPoint = $"'{boundary.WorkbookName}'!{UnitTestEntryPoint}";
+        if (!string.IsNullOrEmpty(selector.ProcedureName))
+        {
+            boundary.RunMacro(entryPoint, [selector.ModuleName, selector.ProcedureName]);
+        }
+        else if (!string.IsNullOrEmpty(selector.ModuleName))
+        {
+            boundary.RunMacro(entryPoint, [selector.ModuleName]);
+        }
+        else
+        {
+            boundary.RunMacro(entryPoint, []);
+        }
+
+        return ReadResultRows(boundary);
+    }
+
+    private static IReadOnlyList<WorkbookTestResultRow> ReadResultRows(
+        IExcelComWorkbookTestBoundary boundary)
+    {
+        var lastRow = boundary.GetLastResultRow();
         var results = new List<WorkbookTestResultRow>();
         for (var row = 2; row <= lastRow; row++)
         {
-            var category = GetCellText(sheetObject, row, 1);
-            var testName = GetCellText(sheetObject, row, 2);
-            var result = GetCellText(sheetObject, row, 3);
-            var message = GetCellText(sheetObject, row, 4);
-            if (string.IsNullOrWhiteSpace(category) && string.IsNullOrWhiteSpace(testName))
+            var category = boundary.GetCellText(row, 1);
+            var testName = boundary.GetCellText(row, 2);
+            var result = boundary.GetCellText(row, 3);
+            var message = boundary.GetCellText(row, 4);
+            if (string.IsNullOrEmpty(category) && string.IsNullOrEmpty(testName))
             {
                 continue;
+            }
+
+            try
+            {
+                _ = new WorkbookTestSelector(category, testName);
+            }
+            catch (InvalidOperationException exception)
+            {
+                throw new InvalidDataException(
+                    $"Workbook test result row {row} has an invalid identity: {exception.Message}",
+                    exception);
             }
 
             results.Add(new WorkbookTestResultRow(category, testName, result, message));
         }
 
         return results;
+    }
+
+    private sealed class ExcelComWorkbookTestBoundary(
+        ExcelComWorkbookSession session) : IExcelComWorkbookTestBoundary
+    {
+        private object? worksheetsObject;
+        private object? sheetObject;
+
+        public string WorkbookName
+        {
+            get
+            {
+                dynamic workbook = session.WorkbookObject;
+                return Convert.ToString(workbook.Name) ?? string.Empty;
+            }
+        }
+
+        public void RunMacro(string entryPoint, IReadOnlyList<string?> arguments)
+        {
+            dynamic excel = session.ExcelObject;
+            switch (arguments.Count)
+            {
+                case 0:
+                    excel.Run(entryPoint);
+                    return;
+                case 1:
+                    excel.Run(entryPoint, arguments[0]);
+                    return;
+                case 2:
+                    excel.Run(entryPoint, arguments[0], arguments[1]);
+                    return;
+                default:
+                    throw new InvalidOperationException(
+                        $"Unsupported UnitTestMain argument count: {arguments.Count}.");
+            }
+        }
+
+        public int GetLastResultRow()
+            => ExcelComWorkbookTestRunner.GetLastResultRow(GetSheet());
+
+        public string GetCellText(int row, int column)
+            => ExcelComWorkbookTestRunner.GetCellText(GetSheet(), row, column);
+
+        public void Dispose()
+        {
+            ComObjectReleaser.Release(sheetObject);
+            ComObjectReleaser.Release(worksheetsObject);
+        }
+
+        private object GetSheet()
+        {
+            if (sheetObject is not null)
+            {
+                return sheetObject;
+            }
+
+            dynamic workbook = session.WorkbookObject;
+            worksheetsObject = workbook.Worksheets;
+            dynamic worksheets = worksheetsObject;
+            sheetObject = worksheets(UnitTestSheetName);
+            return sheetObject;
+        }
     }
 
     private static int GetLastResultRow(object sheetObject)

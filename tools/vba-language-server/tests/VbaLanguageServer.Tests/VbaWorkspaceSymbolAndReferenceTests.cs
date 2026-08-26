@@ -264,6 +264,98 @@ public sealed class VbaWorkspaceSymbolAndReferenceTests
     }
 
     [Fact]
+    public void JapaneseIdentifierUsesOneAuthorityAcrossEditorFeatures()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Function 集計結果() As Long",
+            "    集計結果 = 1",
+            "End Function",
+            "Public Sub Run()",
+            "    集計結果",
+            "    集",
+            "End Sub"
+        ]);
+        var index = VbaSemanticInventoryFixture.Create(
+            new Dictionary<string, string> { [uri] = text });
+
+        var definition = Assert.IsType<VbaSourceDefinition>(index.ResolveSourceDefinition(
+            uri,
+            5,
+            "    ".Length));
+        var completion = Assert.Single(
+            index.GetCompletionResult(uri, 6, "    集".Length).Definitions,
+            candidate => candidate.Name == "集計結果");
+        var references = index.FindReferences(uri, 1, "Public Function ".Length);
+        var rename = Assert.IsType<VbaRenamePlan>(index.CreateRenamePlan(
+            uri,
+            1,
+            "Public Function ".Length,
+            "集計値"));
+        var semanticLocations = index.GetSemanticTokens(uri)
+            .Where(token => token.Text == "集計結果")
+            .Select(token => LocationKey(uri, token.Range))
+            .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var referenceLocations = references
+            .Select(reference => LocationKey(reference.Uri, reference.Range))
+            .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var renameLocations = rename.Changes[uri]
+            .Select(edit => LocationKey(uri, edit.Range))
+            .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        Assert.Equal(definition.Identity, completion.Identity);
+        Assert.Equal(3, referenceLocations.Length);
+        Assert.Equal(referenceLocations, semanticLocations);
+        Assert.Equal(referenceLocations, renameLocations);
+    }
+
+    [Fact]
+    public void Contextual_vocabulary_identifiers_share_navigation_and_rename_occurrences()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Function Object() As Long",
+            "    Object = 1",
+            "End Function"
+        ]);
+        var index = VbaSemanticInventoryFixture.Create(
+            new Dictionary<string, string> { [uri] = text });
+
+        var references = index.FindReferences(uri, 1, "Public Function ".Length);
+        var renamePlan = Assert.IsType<VbaRenamePlan>(index.CreateRenamePlan(
+            uri,
+            1,
+            "Public Function ".Length,
+            "ResultObject"));
+
+        Assert.Equal(2, references.Count);
+        Assert.Equal(2, renamePlan.Changes[uri].Count);
+    }
+
+    [Fact]
+    public void Cp2_whitespace_category_identifiers_remain_source_definitions()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Function \u00a0() As Long",
+            "    \u00a0 = 1",
+            "End Function"
+        ]);
+
+        var index = VbaSemanticInventoryFixture.Create(
+            new Dictionary<string, string> { [uri] = text });
+
+        Assert.Contains(index.GetWorkspaceSymbols(""), symbol => symbol.Name == "\u00a0");
+        Assert.Equal(2, index.FindReferences(uri, 1, "Public Function ".Length).Count);
+    }
+
+    [Fact]
     public async Task SemanticOccurrenceFeaturesRemainStableDuringConcurrentFirstUse()
     {
         const string uri = "file:///C:/work/Worker.bas";

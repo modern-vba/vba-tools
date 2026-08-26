@@ -2,6 +2,7 @@ using System.Text;
 using VbaDev.App.Projects;
 using VbaDev.App.Workbooks;
 using VbaDev.Domain;
+using VbaLanguageServer.Syntax;
 
 namespace VbaDev.App.CommonModules;
 
@@ -53,8 +54,8 @@ public sealed class CommonModulesInstallationTransaction
     public string Add(ResolvedProjectContext context, IReadOnlyList<string> requestedModules, bool force)
     {
         var normalizedRequestedModules = requestedModules
-            .Select(module => module.Trim())
-            .Where(module => !string.IsNullOrWhiteSpace(module))
+            .Select(VbaIdentifier.TrimWhitespace)
+            .Where(module => module.Length > 0)
             .ToArray();
         if (normalizedRequestedModules.Length == 0)
         {

@@ -5,13 +5,18 @@ import * as path from 'node:path';
 import {
   CommonModulesCommandOptions,
   appendFormattedCommonModulesList,
+  parseCommonModuleNamesInput,
   parseCommonModulesList,
   runCommonModulesAddCommand,
   runCommonModulesListCommand,
   runCommonModulesUpdateCommand
 } from './commonModulesCommand';
 
-test('CommonModules add command invokes CLI add and list with explicit project root', async () => {
+test('CommonModules prompt parsing uses exact MS-VBAL whitespace and preserves CP2 names', () => {
+  assert.deepEqual(parseCommonModuleNamesInput('\u00A0\u3000Feature'), ['\u00A0', 'Feature']);
+});
+
+test('CommonModules add command preserves exact CP2 names through the CLI boundary', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const calls: Array<{ file: string; args: readonly string[] }> = [];
   const output: string[] = [];
@@ -35,14 +40,14 @@ test('CommonModules add command invokes CLI add and list with explicit project r
         return 'Copied Feature.bas\n';
       }
     }),
-    ['Feature']
+    ['Feature', '\u00A0']
   );
 
   assert.ok(result);
   assert.equal(result.projectRoot, projectRoot);
   assert.deepEqual(calls.map((call) => call.args), [
     ['capabilities', '--format', 'json'],
-    ['common-module', 'add', 'Feature', '--project', projectRoot],
+    ['common-module', 'add', 'Feature', '\u00A0', '--project', projectRoot],
     ['common-module', 'list', '--project', projectRoot, '--format', 'json']
   ]);
   assert.deepEqual(result.commonModulesList?.commonModules, [

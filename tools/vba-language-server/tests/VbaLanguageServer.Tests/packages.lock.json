@@ -102,7 +102,10 @@
         }
       },
       "vbadev.domain": {
-        "type": "Project"
+        "type": "Project",
+        "dependencies": {
+          "VbaLanguageServer.Syntax": "[1.0.0, )"
+        }
       },
       "vbalanguageserver.syntax": {
         "type": "Project"

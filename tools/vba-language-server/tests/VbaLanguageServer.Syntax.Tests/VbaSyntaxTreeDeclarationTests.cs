@@ -6,6 +6,407 @@ namespace VbaLanguageServer.Syntax.Tests;
 public sealed class VbaSyntaxTreeDeclarationTests
 {
     [Fact]
+    public void ParserRepresentsJapaneseProcedureDeclarations()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Public Sub 集計()\nEnd Sub");
+
+        var callable = Assert.Single(tree.Module.CallableDeclarations);
+        Assert.Equal("集計", callable.Name);
+    }
+
+    [Theory]
+    [InlineData("Public Sub Foo'comment")]
+    [InlineData("Public Sub Foo: End Sub")]
+    public void ParserStopsProcedureNamesAtVbaTokenBoundaries(string declarationLine)
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            declarationLine + "\nEnd Sub");
+
+        var callable = Assert.Single(tree.Module.CallableDeclarations);
+        Assert.Equal("Foo", callable.Name);
+        Assert.Equal(11, callable.Range.Start.Character);
+        Assert.Equal(14, callable.Range.End.Character);
+    }
+
+    [Fact]
+    public void ParserRepresentsJapaneseParameterDeclarations()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Public Sub Run(ByVal 値 As Long)\nEnd Sub");
+
+        var parameter = Assert.Single(
+            tree.Module.Declarations,
+            declaration => declaration.Kind == VbaDeclarationKind.Parameter);
+        Assert.Equal("値", parameter.Name);
+    }
+
+    [Fact]
+    public void ParserPreservesACodePageParameterThatDotNetTreatsAsWhitespace()
+    {
+        const string parameterName = "\u00A0";
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            $"Public Sub Run({parameterName})\nEnd Sub");
+
+        var callable = Assert.Single(tree.Module.CallableDeclarations);
+        Assert.Equal(parameterName, Assert.Single(callable.Parameters).Name);
+        Assert.Contains(tree.Module.Declarations, declaration =>
+            declaration.Kind == VbaDeclarationKind.Parameter
+            && declaration.Name == parameterName);
+    }
+
+    [Fact]
+    public void ParameterModifiersDoNotSplitACompleteCodePageIdentifier()
+    {
+        const string parameterName = "ByVal\u00A0value";
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            $"Public Sub Run({parameterName} As Long)\nEnd Sub");
+
+        var parameter = Assert.Single(
+            Assert.Single(tree.Module.CallableDeclarations).Parameters);
+        Assert.Equal(parameterName, parameter.Name);
+        Assert.True(parameter.IsByRef);
+    }
+
+    [Fact]
+    public void ArrayParameterRecognitionPreservesAnExactCodePageIdentifier()
+    {
+        const string parameterName = "\u00A0";
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            $"Public Sub Run({parameterName}() As Long)\nEnd Sub");
+
+        var parameter = Assert.Single(
+            Assert.Single(tree.Module.CallableDeclarations).Parameters);
+        Assert.Equal(parameterName, parameter.Name);
+        Assert.True(parameter.IsArray);
+    }
+
+    [Fact]
+    public void ParserRejectsCompleteReservedProductionNamesForParameters()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Public Sub Run(ByVal CDecl As Long)\nEnd Sub");
+
+        Assert.DoesNotContain(
+            tree.Module.Declarations,
+            declaration => declaration.Kind == VbaDeclarationKind.Parameter
+                && declaration.Name == "CDecl");
+    }
+
+    [Fact]
+    public void ParserRejectsAProcedureNameLongerThan255Characters()
+    {
+        var name = new string('A', 256);
+
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            $"Public Sub {name}()\nEnd Sub");
+
+        Assert.DoesNotContain(
+            tree.Module.CallableDeclarations,
+            declaration => declaration.Name == name);
+    }
+
+    [Fact]
+    public void ReservedProcedureNameDoesNotBecomeAProcedureBodyStatement()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Public Sub CDecl()\nEnd Sub");
+
+        Assert.DoesNotContain(
+            tree.Module.Statements,
+            statement => statement.Kind == VbaStatementKind.ProcedureBody);
+        Assert.Contains(
+            tree.Diagnostics,
+            diagnostic => diagnostic.Code == "syntax.malformedDeclarationHeader");
+    }
+
+    [Fact]
+    public void MalformedDeclarationDetectionUsesExactMsVbalWhitespace()
+    {
+        var unicode50Whitespace = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Public\u180eSub");
+        var cp2IdentifierCharacter = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Public\u00a0Sub");
+        var punctuationBoundary = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Public Sub(");
+
+        Assert.Contains(
+            unicode50Whitespace.Diagnostics,
+            diagnostic => diagnostic.Code == "syntax.malformedDeclarationHeader");
+        Assert.DoesNotContain(
+            cp2IdentifierCharacter.Diagnostics,
+            diagnostic => diagnostic.Code == "syntax.malformedDeclarationHeader");
+        Assert.Contains(
+            punctuationBoundary.Diagnostics,
+            diagnostic => diagnostic.Code == "syntax.malformedDeclarationHeader");
+    }
+
+    [Theory]
+    [InlineData("Public Sub Run-Now()")]
+    [InlineData("Public Sub Run=Now")]
+    public void ParserRejectsPunctuationAfterAValidProcedureNamePrefix(string header)
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            $"{header}\nEnd Sub");
+
+        Assert.DoesNotContain(
+            tree.Module.CallableDeclarations,
+            declaration => declaration.Name == "Run");
+        Assert.Contains(
+            tree.Diagnostics,
+            diagnostic => diagnostic.Code == "syntax.malformedDeclarationHeader");
+    }
+
+    [Fact]
+    public void ParserRepresentsJapaneseVariableDeclarations()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Public Sub Run()\n    Dim 値 As Long\nEnd Sub");
+
+        var variable = Assert.Single(
+            tree.Module.Declarations,
+            declaration => declaration.Kind == VbaDeclarationKind.Variable);
+        Assert.Equal("値", variable.Name);
+    }
+
+    [Fact]
+    public void ModuleVariableClassificationPreservesNonWhitespaceIdentifierCharacters()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Public Static\u00a0Sub");
+
+        var variable = Assert.Single(
+            tree.Module.Declarations,
+            declaration => declaration.Kind == VbaDeclarationKind.Variable);
+        Assert.Equal("Static\u00a0Sub", variable.Name);
+    }
+
+    [Fact]
+    public void WithEventsRecognitionUsesWholeIdentifierTokens()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Public WithEvents\u00a0source As Class1");
+
+        var variable = Assert.Single(
+            tree.Module.Declarations,
+            declaration => declaration.Kind == VbaDeclarationKind.Variable);
+        Assert.Equal("WithEvents\u00a0source", variable.Name);
+        Assert.False(variable.IsWithEvents);
+    }
+
+    [Fact]
+    public void ConstDeclarationsUseExactMsVbalWhitespaceBoundaries()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Const\u0019値 = 1\nConst\u00A0偽 = 2");
+
+        Assert.Contains(tree.Module.Declarations, declaration =>
+            declaration.Kind == VbaDeclarationKind.Constant && declaration.Name == "値");
+        Assert.DoesNotContain(tree.Module.Declarations, declaration =>
+            declaration.Kind == VbaDeclarationKind.Constant && declaration.Name == "偽");
+    }
+
+    [Fact]
+    public void ParserRepresentsJapaneseEventDeclarations()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.cls",
+            "Public Event 保存完了(ByVal 値 As Long)");
+
+        var eventDeclaration = Assert.Single(
+            tree.Module.Declarations,
+            declaration => declaration.Kind == VbaDeclarationKind.Event);
+        Assert.Equal("保存完了", eventDeclaration.Name);
+    }
+
+    [Fact]
+    public void ParserRepresentsJapaneseEnumDeclarations()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Public Enum 状態\n"
+            + "    待機中 = 0\n"
+            + "End Enum");
+
+        Assert.Contains(tree.Module.Declarations, declaration =>
+            declaration.Kind == VbaDeclarationKind.Enum && declaration.Name == "状態");
+    }
+
+    [Fact]
+    public void ParserRepresentsJapaneseEnumMembers()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Public Enum State\n"
+            + "    待機中 = 0\n"
+            + "End Enum");
+
+        Assert.Contains(tree.Module.Declarations, declaration =>
+            declaration.Kind == VbaDeclarationKind.EnumMember && declaration.Name == "待機中");
+    }
+
+    [Fact]
+    public void ParserUsesOnlyMsVbalWhitespaceForEnumTerminators()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Public Enum State\n"
+            + "    First = 0\n"
+            + "End\u00a0Enum\n"
+            + "    Second = 1\n"
+            + "End\u0019Enum");
+
+        Assert.Contains(tree.Module.Declarations, declaration =>
+            declaration.Kind == VbaDeclarationKind.EnumMember && declaration.Name == "Second");
+    }
+
+    [Fact]
+    public void ParserRejectsCompleteReservedProductionNamesForEnumMembers()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Public Enum State\n"
+            + "    CDecl = 0\n"
+            + "End Enum");
+
+        Assert.DoesNotContain(tree.Module.Declarations, declaration =>
+            declaration.Kind == VbaDeclarationKind.EnumMember && declaration.Name == "CDecl");
+    }
+
+    [Fact]
+    public void ParserRepresentsJapaneseTypeDeclarations()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Public Type 顧客情報\n"
+            + "    Id As Long\n"
+            + "End Type");
+
+        Assert.Contains(tree.Module.Declarations, declaration =>
+            declaration.Kind == VbaDeclarationKind.Type && declaration.Name == "顧客情報");
+    }
+
+    [Fact]
+    public void ParserRepresentsJapaneseTypeReferences()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Private currentCustomer As 顧客情報");
+
+        var declaration = Assert.Single(
+            tree.Module.Declarations,
+            candidate => candidate.Kind == VbaDeclarationKind.Variable);
+        Assert.Equal("顧客情報", declaration.TypeReference?.Name);
+    }
+
+    [Fact]
+    public void CallableSignaturePreservesAnExactCodePageTypeName()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Public Function Build() As \u00a0\nEnd Function");
+
+        var callable = Assert.Single(tree.Module.CallableDeclarations);
+        Assert.Equal("\u00a0", callable.TypeReference?.Name);
+        Assert.Equal("Build() As \u00a0", callable.Signature.Label);
+    }
+
+    [Fact]
+    public void ParserDoesNotTreatAnUnrelatedReservedWordAsATypeReference()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Private value As If");
+
+        var declaration = Assert.Single(
+            tree.Module.Declarations,
+            candidate => candidate.Kind == VbaDeclarationKind.Variable);
+        Assert.Null(declaration.TypeReference);
+    }
+
+    [Fact]
+    public void ParserDoesNotTreatAnyAsAnOrdinaryParameterTypeReference()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Public Sub Run(value As Any)\nEnd Sub");
+
+        var callable = Assert.Single(tree.Module.CallableDeclarations);
+        var parameter = Assert.Single(callable.Parameters);
+        Assert.Equal("value", parameter.Name);
+        Assert.Null(parameter.TypeReference);
+    }
+
+    [Fact]
+    public void ParserRepresentsJapaneseExternalDeclareNames()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Public Declare PtrSafe Function 時刻取得 Lib \"kernel32\" () As Long");
+
+        var callable = Assert.Single(tree.Module.CallableDeclarations);
+        Assert.Equal("時刻取得", callable.Name);
+        Assert.True(callable.IsExternal);
+    }
+
+    [Fact]
+    public void ParserTreatsAnyAsAnExternalProcedureParameterTypeReference()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Public Declare Sub Run Lib \"sample\" (value As Any)");
+
+        var callable = Assert.Single(tree.Module.CallableDeclarations);
+        Assert.True(callable.IsExternal);
+        var parameter = Assert.Single(callable.Parameters);
+        Assert.Equal("Any", parameter.TypeReference?.Name);
+    }
+
+    [Fact]
+    public void ParserUsesMsVbalWhitespaceWhenJoiningMultilineJapaneseDeclarations()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Public Sub 集計(ByVal 値 As String,\u0019_\n"
+            + "    ByVal 件数 As Long)\n"
+            + "End Sub");
+
+        var declaration = Assert.Single(tree.Module.CallableDeclarations);
+        Assert.Equal(["値", "件数"], declaration.Parameters.Select(parameter => parameter.Name));
+    }
+
+    [Fact]
+    public void ParserDoesNotUseGenericUnicodeWhitespaceForDeclarationContinuations()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Public Sub Run(ByVal firstValue As String,\u000b_\n"
+            + "    ByVal secondValue As Long)\n"
+            + "End Sub");
+
+        Assert.DoesNotContain(
+            tree.Module.CallableDeclarations,
+            declaration => declaration.Parameters.Any(parameter => parameter.Name == "secondValue"));
+    }
+
+    [Fact]
     public void Parser_treats_a_global_sub_as_a_public_callable_in_a_standard_module()
     {
         const string source = "Global Sub Run()\nEnd Sub";
@@ -99,6 +500,26 @@ public sealed class VbaSyntaxTreeDeclarationTests
             declaration.Name == "DisplayName"
             && declaration.Kind == VbaDeclarationKind.Property
             && declaration.IsStatic);
+    }
+
+    [Theory]
+    [InlineData("\u180E", true)]
+    [InlineData("\u00A0", false)]
+    public void DocumentationCommentsUseExactMsVbalWhitespace(
+        string prefix,
+        bool expectedDocumentation)
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            $"{prefix}'* Exact whitespace documentation.\nPublic Sub Run()\nEnd Sub");
+
+        var declaration = Assert.Single(
+            tree.Module.CallableDeclarations,
+            candidate => candidate.Name == "Run");
+
+        Assert.Equal(
+            expectedDocumentation ? "Exact whitespace documentation." : null,
+            declaration.Documentation);
     }
 
     [Fact]

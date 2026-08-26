@@ -43,6 +43,25 @@ public sealed class BreakpointSourceMapperTests
     }
 
     [Fact]
+    public void ModuleIdentityUsesTheSharedForwardMappingIdentifierAuthority()
+    {
+        var sourcePath = Path.GetFullPath(Path.Combine("DebugProject", "Japanese.bas"));
+        var source = string.Join('\n',
+        [
+            "Attribute VB_Name = \"A・\"",
+            "Public Sub RunTarget()",
+            "    value = 1",
+            "End Sub"
+        ]);
+
+        var mapped = new BreakpointSourceMapper().Map(
+            Snapshot(sourcePath, source),
+            new DebugSourceBreakpoint(SourceUri(sourcePath), EditorLine: 2));
+
+        Assert.Equal("A・", mapped.ModuleName);
+    }
+
+    [Fact]
     public void AProcedureAttributeIsExcludedByTheSharedSyntaxProjection()
     {
         var sourcePath = Path.GetFullPath(Path.Combine("DebugProject", "DebugModule.bas"));

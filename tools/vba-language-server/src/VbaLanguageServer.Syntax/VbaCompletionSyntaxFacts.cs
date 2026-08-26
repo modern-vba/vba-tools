@@ -228,7 +228,7 @@ internal static class VbaCompletionSyntaxFactsParser
             var labelToken = tokens[0];
             var isIdentifierLabel = statement.EndsWithColon
                 && tokens.Count == 1
-                && labelToken.Kind == VbaTokenKind.Identifier;
+                && VbaIdentifier.IsIdentifier(labelToken.Text);
             var isNumericLabel = labelToken.Kind == VbaTokenKind.NumericLiteral
                 && labelToken.Text.All(char.IsDigit)
                 && IsFirstCodeTokenOnPhysicalLine(sourceText, labelToken);
@@ -561,7 +561,15 @@ internal static class VbaCompletionSyntaxFactsParser
     {
         var line = sourceText.Lines[token.Range.Start.Line];
         var before = line.Text.AsSpan(0, token.Range.Start.Character);
-        return before.Trim().Length == 0;
+        foreach (var value in before)
+        {
+            if (!VbaIdentifier.IsWhitespace(value))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static bool Matches(IReadOnlyList<VbaToken> tokens, int index, string text)

@@ -107,6 +107,17 @@ internal static class VbaStandardLibrarySyntaxFacts
     private static readonly IReadOnlyList<VbaStandardLibraryPotentialReceiverMemberSyntaxFact>
         PotentialReceiverMemberFacts = CreatePotentialReceiverMemberFacts();
 
+    private static readonly IReadOnlySet<string> GlobalCallableMemberNames =
+        new HashSet<string>(
+            FixedReturnMemberFacts
+                .Select(member => member.MemberName)
+                .Concat(NonReceiverMemberFacts
+                    .Where(member => member.DeclaredTypeCategory ==
+                        VbaStandardLibraryDeclaredTypeCategory.NoValue)
+                    .Select(member => member.MemberName))
+                .Concat(PotentialReceiverMemberFacts.Select(member => member.MemberName)),
+            StringComparer.OrdinalIgnoreCase);
+
     private static readonly IReadOnlyDictionary<string, VbaStandardLibraryMemberSyntaxFact>
         GlobalNonReceiverMembersByName = NonReceiverMemberFacts
             .ToDictionary(
@@ -195,6 +206,9 @@ internal static class VbaStandardLibrarySyntaxFacts
             ? VbaStandardLibraryMemberReceiverClassification.PotentialReceiver
             : VbaStandardLibraryMemberReceiverClassification.Unknown;
     }
+
+    public static bool IsGlobalCallableMember(string memberName)
+        => GlobalCallableMemberNames.Contains(memberName);
 
     public static bool TryGetGlobalPotentialReceiverMember(
         string memberName,

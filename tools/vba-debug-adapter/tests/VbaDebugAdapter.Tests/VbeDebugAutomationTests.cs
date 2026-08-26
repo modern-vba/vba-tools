@@ -313,6 +313,42 @@ public sealed class VbeDebugAutomationTests
     }
 
     [Fact]
+    public async Task SetNativeBreakpointsAcceptsACodePageModuleIdentityThatDotNetTreatsAsWhitespace()
+    {
+        const string moduleName = "\u00A0";
+        using var temp = TempDirectory.Create();
+        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
+        File.WriteAllText(workbookPath, "test workbook placeholder");
+        var events = new List<string>();
+        var model = FakeVbeModel.Create(
+            workbookPath,
+            events,
+            componentName: moduleName,
+            componentLookupName: moduleName);
+        var process = new FakeDebugOwnedProcess(
+            22368,
+            new DateTime(2026, 7, 21, 11, 3, 0, DateTimeKind.Local));
+        var automation = new VbeDebugAutomation(
+            new FakeExcelDebugApplicationFactory(model.Excel),
+            new FakeDebugExcelProcessApi(process.Id, process),
+            new FakeDebugWindowActivator(events),
+            new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
+        var sourceMap = CreateSourceMap() with { ModuleName = moduleName };
+        var breakpoint = new VbeBreakpoint(
+            new DebugSourceBreakpoint(Path.Combine(temp.Path, "CodePage.bas"), 10),
+            sourceMap,
+            9);
+
+        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None);
+        await session.SetNativeBreakpointsAsync([breakpoint], CancellationToken.None);
+
+        Assert.Contains("execute:51", events);
+        process.Exit(0);
+        await session.Completion;
+    }
+
+    [Fact]
     public async Task SetNativeBreakpointsFailsBeforeToggleWhenTheComponentKindDoesNotMatch()
     {
         using var temp = TempDirectory.Create();

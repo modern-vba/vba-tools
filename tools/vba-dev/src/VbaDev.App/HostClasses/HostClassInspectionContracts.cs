@@ -1,3 +1,6 @@
+using System.Text;
+using VbaLanguageServer.Syntax;
+
 namespace VbaDev.App.HostClasses;
 
 /// <summary>
@@ -59,7 +62,36 @@ public abstract record HostClassInspectionEntry(HostClassIdentity Identity);
 /// <summary>
 /// Identifies one intrinsic class inside the selected project document.
 /// </summary>
-public sealed record HostClassIdentity(string Name, HostClassComponentKind Kind);
+public sealed record HostClassIdentity
+{
+    /// <summary>Creates one exact intrinsic VBA class identity.</summary>
+    public HostClassIdentity(string name, HostClassComponentKind kind)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        if (!VbaIdentifier.IsIdentifier(name)
+            || name.EnumerateRunes().Take(32).Count() > 31)
+        {
+            throw new InvalidOperationException(
+                "Host-class name must be an exact VBA IDENTIFIER of 1 to 31 characters.");
+        }
+
+        Name = name;
+        Kind = kind;
+    }
+
+    /// <summary>Gets the exact VBA class name.</summary>
+    public string Name { get; }
+
+    /// <summary>Gets the intrinsic component kind.</summary>
+    public HostClassComponentKind Kind { get; }
+
+    /// <summary>Deconstructs this identity for positional callers.</summary>
+    public void Deconstruct(out string name, out HostClassComponentKind kind)
+    {
+        name = Name;
+        kind = Kind;
+    }
+}
 
 /// <summary>
 /// Identifies the intrinsic VBComponent kinds projected by this command.

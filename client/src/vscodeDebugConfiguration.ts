@@ -99,8 +99,8 @@ export async function resolveVbaDebugConfiguration(
   throwIfDebugCancellationRequested(cancellationToken);
   const normalizedConfiguration = normalizeVbaDebugConfiguration(configuration);
   const activeEditor = host.getActiveEditor();
-  const explicitModule = optionalNonEmptyString(normalizedConfiguration.module);
-  const explicitProcedure = optionalNonEmptyString(normalizedConfiguration.procedure);
+  const explicitModule = optionalExactNonEmptyString(normalizedConfiguration.module);
+  const explicitProcedure = optionalExactNonEmptyString(normalizedConfiguration.procedure);
 
   const hasExplicitTarget = explicitModule !== undefined && explicitProcedure !== undefined;
   if (!hasExplicitTarget && (!activeEditor || !isExportedVbaSource(activeEditor.uriPath))) {
@@ -508,8 +508,8 @@ function validateExplicitProcedurePair(configuration: VbaDebugConfiguration): vo
     || (
       moduleWasSupplied
       && (
-        optionalNonEmptyString(configuration.module) === undefined
-        || optionalNonEmptyString(configuration.procedure) === undefined
+        optionalExactNonEmptyString(configuration.module) === undefined
+        || optionalExactNonEmptyString(configuration.procedure) === undefined
       )
     )
   ) {
@@ -723,6 +723,23 @@ function optionalNonEmptyString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0
     ? value
     : undefined;
+}
+
+function optionalExactNonEmptyString(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.length === 0) {
+    return undefined;
+  }
+
+  for (const character of value) {
+    if (character !== ' '
+      && character !== '\t'
+      && character !== '\r'
+      && character !== '\n') {
+      return value;
+    }
+  }
+
+  return undefined;
 }
 
 function isExportedVbaSource(filePath: string): boolean {

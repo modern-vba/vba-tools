@@ -191,9 +191,7 @@ internal static class HostClassTypeLibEventSurfaceReader
                 classTypeInfo.ReleaseTypeAttr(classAttributePointer);
             }
 
-            var baseType = TryReadTypeProvenance(defaultInterfaceTypeInfo);
-            var events = ReadEvents(sourceTypeInfo);
-            return new HostClassTypeLibEventSurface(baseType, events);
+            return ReadResolvedTypeInfos(sourceTypeInfo, defaultInterfaceTypeInfo);
         }
         finally
         {
@@ -201,6 +199,16 @@ internal static class HostClassTypeLibEventSurfaceReader
             ReleaseComReference(defaultInterfaceTypeInfo);
             ReleaseComReference(classTypeInfo);
         }
+    }
+
+    internal static HostClassTypeLibEventSurface ReadResolvedTypeInfos(
+        ITypeInfo sourceTypeInfo,
+        ITypeInfo? defaultInterfaceTypeInfo)
+    {
+        ArgumentNullException.ThrowIfNull(sourceTypeInfo);
+        return new HostClassTypeLibEventSurface(
+            TryReadTypeProvenance(defaultInterfaceTypeInfo),
+            ReadEvents(sourceTypeInfo));
     }
 
     private static ITypeInfo ReadClassTypeInfo(object runtimeHostObject)
@@ -462,7 +470,7 @@ internal static class HostClassTypeLibEventSurfaceReader
                         function.memid,
                         function.cParams + 1);
                     var eventName = names.FirstOrDefault();
-                    if (string.IsNullOrWhiteSpace(eventName))
+                    if (string.IsNullOrEmpty(eventName))
                     {
                         throw new InvalidOperationException(
                             $"The default source interface member at index {index} has no name.");
@@ -550,7 +558,7 @@ internal static class HostClassTypeLibEventSurfaceReader
             var parameterName = index < names.Count
                 ? names[index]
                 : null;
-            if (string.IsNullOrWhiteSpace(parameterName))
+            if (string.IsNullOrEmpty(parameterName))
             {
                 throw new InvalidOperationException(
                     $"The TypeLib Event parameter at ordinal {index} has no name.");
@@ -775,7 +783,7 @@ internal static class HostClassTypeLibEventSurfaceReader
                 out _,
                 out _,
                 out _);
-            if (string.IsNullOrWhiteSpace(name))
+            if (string.IsNullOrEmpty(name))
             {
                 return null;
             }
@@ -816,7 +824,7 @@ internal static class HostClassTypeLibEventSurfaceReader
                 out _,
                 out _,
                 out _);
-            if (string.IsNullOrWhiteSpace(name))
+            if (string.IsNullOrEmpty(name))
             {
                 throw new InvalidOperationException("TypeLib metadata has no type name.");
             }

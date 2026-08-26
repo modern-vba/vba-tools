@@ -365,6 +365,27 @@ public sealed class VbeImportSourceSetTests
     }
 
     [Fact]
+    public void AcceptsEveryAllowedForwardJapaneseMappingInModuleIdentity()
+    {
+        using var temp = TempDirectory.Create();
+        var sourcePath = Path.Combine(temp.Path, "JapaneseForwardMapping.bas");
+        File.WriteAllText(
+            sourcePath,
+            "Attribute VB_Name = \"A・\"\r\n",
+            new UTF8Encoding(false));
+
+        using var sourceSet = VbeImportSourceSet.Create(
+            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
+            activeCodePage: 65001);
+
+        new WorkbookMaterializationNamePreflight()
+            .ValidateSourcePhase(sourceSet.SourceFiles);
+        Assert.Equal(
+            "A・",
+            Assert.Single(sourceSet.SourceFiles).ImportVerification.ComponentName);
+    }
+
+    [Fact]
     public void RejectsReservedIdentifierAsModuleIdentity()
     {
         using var temp = TempDirectory.Create();

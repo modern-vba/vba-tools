@@ -341,7 +341,9 @@ internal sealed class VbaSemanticResolution
         IReadOnlySet<string> declarationRanges,
         IReadOnlyDictionary<VbaRange, string> canonicalNamesByRange)
     {
-        if (VbaLanguageVocabulary.CanonicalKeywords.TryGetValue(occurrence.Name, out var keyword))
+        var isContextualIdentifier = VbaIdentifier.IsIdentifier(occurrence.Name);
+        if (!isContextualIdentifier
+            && VbaLanguageVocabulary.CanonicalKeywords.TryGetValue(occurrence.Name, out var keyword))
         {
             return keyword;
         }
@@ -390,7 +392,15 @@ internal sealed class VbaSemanticResolution
             new VbaPosition(lineIndex, occurrence.Start),
             qualifier: null,
             occurrence.Name);
-        return definition?.Name;
+        if (definition is not null)
+        {
+            return definition.Name;
+        }
+
+        return isContextualIdentifier
+            && VbaLanguageVocabulary.CanonicalKeywords.TryGetValue(occurrence.Name, out keyword)
+                ? keyword
+                : null;
     }
 
     private bool TryGetMemberCompletionDefinitions(

@@ -41,6 +41,75 @@ public sealed class VbaSyntaxTreeModuleTests
         Assert.Empty(classTree.Diagnostics);
     }
 
+    [Theory]
+    [InlineData("CDecl")]
+    [InlineData("亜ㄱ")]
+    [InlineData("Name$")]
+    [InlineData("[Name]")]
+    public void InvalidVbNameDoesNotBecomeTheAuthoritativeModuleIdentity(string name)
+    {
+        var source = $"Attribute VB_Name = \"{name}\"";
+
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.bas", source);
+
+        Assert.Equal("Worker", tree.Module.Identity.Name);
+        Assert.Equal(tree.SourceText.StartPosition, tree.Module.Identity.Range.Start);
+        Assert.Equal(tree.SourceText.StartPosition, tree.Module.Identity.Range.End);
+    }
+
+    [Fact]
+    public void VbNameUsesSharedMultilingualIdentifierRecognitionAndThe31RuneLimit()
+    {
+        var valid = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Attribute VB_Name = \"集計\"");
+        var overLength = new string('A', 32);
+        var invalid = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            $"Attribute VB_Name = \"{overLength}\"");
+
+        Assert.Equal("集計", valid.Module.Identity.Name);
+        Assert.Equal("Worker", invalid.Module.Identity.Name);
+    }
+
+    [Fact]
+    public void AttributeMetadataUsesExactMsVbalWhitespaceBoundaries()
+    {
+        var wscTree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Attribute\u0019VB_Name\u0019=\u0019\"集計\"");
+        var codePageTree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Attribute\u00A0VB_Name = \"Spoofed\"");
+
+        Assert.Equal("集計", wscTree.Module.Identity.Name);
+        Assert.Equal("Worker", codePageTree.Module.Identity.Name);
+        Assert.Empty(codePageTree.Module.Attributes);
+    }
+
+    [Fact]
+    public void ParserUsesSharedIdentifierAuthorityForAttributeNames()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Attribute \u00A0 = \"value\"\nAttribute 亜ㄱ = \"mixed\"");
+
+        var attribute = Assert.Single(tree.Module.Attributes);
+        Assert.Equal("\u00A0", attribute.Name);
+        Assert.Equal("value", attribute.Value);
+    }
+
+    [Fact]
+    public void OptionMetadataUsesExactMsVbalWhitespaceBoundaries()
+    {
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            "Option\u0019Explicit\nOption\u00A0Private Module");
+
+        var option = Assert.Single(tree.Module.Options);
+        Assert.Equal("Option\u0019Explicit", option.Text);
+    }
+
     [Fact]
     public void ParserPreservesFormDesignerBlockAndParsesCodeSectionNormally()
     {

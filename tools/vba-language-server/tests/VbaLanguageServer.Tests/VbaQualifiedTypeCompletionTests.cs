@@ -101,4 +101,51 @@ public sealed class VbaQualifiedTypeCompletionTests
         Assert.Equal(VbaDefinitionOrigin.Source, resolved.Identity.Origin);
         Assert.Equal(LegacyModuleUri, resolved.Uri);
     }
+
+    [Fact]
+    public void ExactCodePageModuleQualifierScopesCompletionAndDefinition()
+    {
+        const string qualifiedModuleUri = "file:///C:/work/CodePage.bas";
+        var mainSource = string.Join('\n', [
+            "Attribute VB_Name = \"Main\"",
+            "Public Type MainOnly",
+            "    Value As Long",
+            "End Type",
+            "Public Type SharedType",
+            "    Value As Long",
+            "End Type",
+            "Public Sub Probe()",
+            "    Dim candidate As \u00a0.",
+            "    Dim concrete As \u00a0.SharedType",
+            "End Sub"
+        ]);
+        var qualifiedModuleSource = string.Join('\n', [
+            "Attribute VB_Name = \"\u00a0\"",
+            "Public Type QualifiedOnly",
+            "    Value As Long",
+            "End Type",
+            "Public Type SharedType",
+            "    Value As Long",
+            "End Type"
+        ]);
+        var index = VbaSemanticInventoryFixture.Create(new Dictionary<string, string>
+        {
+            [MainUri] = mainSource,
+            [qualifiedModuleUri] = qualifiedModuleSource
+        });
+
+        var completion = index.GetCompletionResult(
+            MainUri,
+            8,
+            "    Dim candidate As \u00a0.".Length);
+        var resolved = Assert.IsType<VbaSourceDefinition>(index.ResolveSourceDefinition(
+            MainUri,
+            9,
+            "    Dim concrete As \u00a0.".Length));
+
+        Assert.Equal(
+            ["QualifiedOnly", "SharedType"],
+            completion.Candidates.Select(candidate => candidate.Label).OrderBy(label => label));
+        Assert.Equal(qualifiedModuleUri, resolved.Uri);
+    }
 }

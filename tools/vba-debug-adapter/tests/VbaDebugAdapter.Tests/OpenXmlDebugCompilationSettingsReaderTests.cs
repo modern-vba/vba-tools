@@ -245,6 +245,7 @@ public sealed class OpenXmlDebugCompilationSettingsReaderTests
     [Theory]
     [InlineData("Feature = 1 : feature = 2", "duplicated")]
     [InlineData("vBa7 = 1", "built-in")]
+    [InlineData("CDecl = 1", "malformed")]
     [InlineData("Feature=1", "malformed")]
     [InlineData("Feature = +1", "malformed")]
     public void ReadRejectsAmbiguousOrMalformedProjectConstants(

@@ -122,6 +122,7 @@ public sealed class BuildCommandTests
         var outputPath = Path.Combine(temp.CreateDirectory("session"), "Book1.xlsm");
         File.WriteAllText(outputPath, "previous-output", Encoding.UTF8);
         var automation = new FakeWorkbookBuildAutomation();
+        automation.AdoptedReferenceNamespaces["Snapshot Reference"] = "SnapshotReference";
         var application = CommandLineTestFactory.Create(
             root,
             workbookBuildAutomation: automation,
@@ -1015,6 +1016,7 @@ public sealed class BuildCommandTests
         CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
         var automation = new FakeWorkbookBuildAutomation(new WorkbookModule("Standard1", WorkbookModuleKind.StandardModule));
         automation.References.Add(new WorkbookReference("Unlisted Library", IsRemovable: true, NamespaceName: "UnlistedLibrary"));
+        automation.AdoptedReferenceNamespaces["Microsoft Scripting Runtime"] = "Scripting";
         var resolver = new FakeVbaProjectReferenceResolver(
             new ResolvedVbaProjectReference("Microsoft Scripting Runtime", "{420B2830-E718-11CF-893D-00A0C9054228}", 1, 0));
         var application = CommandLineTestFactory.Create(
@@ -1049,6 +1051,7 @@ public sealed class BuildCommandTests
         var automation = new FakeWorkbookBuildAutomation(new WorkbookModule("Standard1", WorkbookModuleKind.StandardModule));
         automation.References.Add(new WorkbookReference("OLE Automation", IsRemovable: false, NamespaceName: "stdole"));
         automation.References.Add(new WorkbookReference("Unlisted Library", IsRemovable: true, NamespaceName: "UnlistedLibrary"));
+        automation.AdoptedReferenceNamespaces["Microsoft Scripting Runtime"] = "Scripting";
         var resolver = new FakeVbaProjectReferenceResolver(
             new ResolvedVbaProjectReference("OLE Automation", "{00020430-0000-0000-C000-000000000046}", 1, 0),
             new ResolvedVbaProjectReference("OLE Automation", "{00020430-0000-0000-C000-000000000046}", 2, 0),
@@ -1244,6 +1247,9 @@ internal sealed class FakeWorkbookBuildAutomation : IWorkbookBuildAutomation
 
     public List<WorkbookReference> References { get; } = [];
 
+    public Dictionary<string, string> AdoptedReferenceNamespaces { get; } =
+        new(StringComparer.OrdinalIgnoreCase);
+
     public int VerifyCalls { get; private set; }
 
     public int SaveCalls { get; private set; }
@@ -1316,7 +1322,13 @@ internal sealed class FakeWorkbookBuildAutomation : IWorkbookBuildAutomation
 
         public void AddReference(ResolvedVbaProjectReference reference)
         {
-            owner.References.Add(new WorkbookReference(reference.Name, IsRemovable: true, NamespaceName: reference.Name));
+            owner.AdoptedReferenceNamespaces.TryGetValue(
+                reference.Name,
+                out var namespaceName);
+            owner.References.Add(new WorkbookReference(
+                reference.Name,
+                IsRemovable: true,
+                NamespaceName: namespaceName));
             owner.Events.Add($"add-ref:{reference.Name}");
         }
 

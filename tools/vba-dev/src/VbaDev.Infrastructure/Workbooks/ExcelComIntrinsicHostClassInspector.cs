@@ -1,7 +1,9 @@
 using System.Runtime.InteropServices;
 using System.Reflection;
+using System.Text;
 using Microsoft.CSharp.RuntimeBinder;
 using VbaDev.App.HostClasses;
+using VbaLanguageServer.Syntax;
 
 namespace VbaDev.Infrastructure.Workbooks;
 
@@ -103,7 +105,7 @@ internal static class ExcelComIntrinsicHostClassInspector
                 .Where(candidate => !controlNames.Contains(candidate.Name))
                 .ToArray();
             if (intrinsicCandidates.Length != 1 ||
-                string.IsNullOrWhiteSpace(intrinsicCandidates[0].Name))
+                !IsIntrinsicSourceName(intrinsicCandidates[0].Name))
             {
                 throw new InvalidOperationException(
                     $"VBE exposed {intrinsicCandidates.Length} intrinsic Object-box candidates instead of one (items: [{string.Join(", ", objectItems.Select(item => $"'{item}'"))}]; controls: [{string.Join(", ", controlNames.Select(item => $"'{item}'"))}]).");
@@ -128,7 +130,8 @@ internal static class ExcelComIntrinsicHostClassInspector
 
             var authoringEventNames = new HashSet<string>(
                 StringComparer.OrdinalIgnoreCase);
-            foreach (var seedEventName in typeLibSurface.Events.Keys)
+            foreach (var seedEventName in typeLibSurface.Events.Keys.Where(
+                         eventName => CanAuthorEvent(intrinsicSourceName, eventName)))
             {
                 try
                 {
@@ -168,7 +171,9 @@ internal static class ExcelComIntrinsicHostClassInspector
                         processId);
                     foreach (var candidate in VbeCodeWindowNavigation
                                  .ReadProcedureItems(navigation)
-                                 .Where(IsSafeVbaIdentifier))
+                                 .Where(candidate => CanAuthorEvent(
+                                     intrinsicSourceName,
+                                     candidate)))
                     {
                         authoringEventNames.Add(candidate);
                     }
@@ -200,6 +205,18 @@ internal static class ExcelComIntrinsicHostClassInspector
             foreach (var eventName in structuralEventNames)
             {
                 phase = InspectionPhase.Signature;
+                if (!CanAuthorEvent(intrinsicSourceName, eventName))
+                {
+                    var structuralOnlyEvent = typeLibSurface.Events[eventName];
+                    events.Add(new HostEventSignature(
+                        eventName,
+                        structuralOnlyEvent.Parameters,
+                        structuralOnlyEvent.Documentation,
+                        AuthoringAvailable: false,
+                        ExistingHandlerRecognizable: false));
+                    continue;
+                }
+
                 var beforeLineCount = (int)codeModule.CountOfLines;
                 var procedureName = $"{intrinsicSourceName}_{eventName}";
                 string probeSource;
@@ -531,14 +548,13 @@ internal static class ExcelComIntrinsicHostClassInspector
         string intrinsicSourceName,
         HostClassTypeLibEvent structuralEvent)
     {
-        if (!IsSafeVbaIdentifier(intrinsicSourceName) ||
-            !IsSafeVbaIdentifier(structuralEvent.Name))
+        var procedureName = $"{intrinsicSourceName}_{structuralEvent.Name}";
+        if (!IsSafeVbaIdentifier(procedureName))
         {
             throw new InvalidOperationException(
                 "The structural Event probe name is not a safe VBA identifier.");
         }
 
-        var procedureName = $"{intrinsicSourceName}_{structuralEvent.Name}";
         if (structuralEvent.Parameters.Count == 0)
         {
             return $"Private Sub {procedureName}()\r\n\r\nEnd Sub\r\n";
@@ -602,35 +618,53 @@ internal static class ExcelComIntrinsicHostClassInspector
 
     private static string RenderProbeType(HostEventTypeReference type)
     {
-        var name = type switch
+        return type switch
         {
-            IntrinsicHostEventTypeReference intrinsic => intrinsic.Name,
-            TypeLibHostEventTypeReference typeLib => typeLib.Name,
+            IntrinsicHostEventTypeReference intrinsic
+                when VbaLanguageVocabulary.TryGetCanonicalTypeName(
+                    intrinsic.Name,
+                    out var canonicalName) => canonicalName,
+            TypeLibHostEventTypeReference typeLib =>
+                RenderTypeLibProbeTypeName(typeLib.Name),
             UnresolvedHostEventTypeReference => throw new InvalidOperationException(
                 "An unresolved TypeLib Event type cannot be rendered for recognition probing."),
             _ => throw new InvalidOperationException(
                 $"Unsupported host Event type reference '{type.GetType().Name}'.")
         };
+    }
 
-        return IsSafeVbaIdentifier(name)
-            ? name
-            : throw new InvalidOperationException(
-                $"Structural Event probe type '{name}' is not a safe VBA identifier.");
+    internal static string RenderTypeLibProbeTypeName(string name)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        if (name.Length == 0 || name.Contains('\r') || name.Contains('\n'))
+        {
+            throw new InvalidOperationException(
+                "A TypeLib probe type requires a nonempty, line-local unrestricted name.");
+        }
+
+        return VbaIdentifier.IsIdentifier(name) ? name : $"[{name}]";
     }
 
     private static bool IsSafeVbaIdentifier(string value)
-    {
-        if (value.Length is 0 or > 255 || !IsAsciiIdentifierStart(value[0]))
-        {
-            return false;
-        }
+        => value.Length is > 0 and <= 255
+            && VbaIdentifier.IsIdentifier(value);
 
-        return value.Skip(1).All(character =>
-            IsAsciiIdentifierStart(character) || char.IsAsciiDigit(character));
-    }
+    internal static bool IsIntrinsicSourceName(string? value)
+        => value is not null
+            && VbaIdentifier.IsIdentifier(value)
+            && value.EnumerateRunes().Count() <= 31;
 
-    private static bool IsAsciiIdentifierStart(char character)
-        => character is '_' or >= 'A' and <= 'Z' or >= 'a' and <= 'z';
+    internal static bool IsAuthoringEventName(string value)
+        => value.EnumerateRunes().Count() is > 0 and <= 255
+            && VbaIdentifier.IsLexIdentifier(value);
+
+    internal static bool CanAuthorEvent(string intrinsicSourceName, string eventName)
+        => IsIntrinsicSourceName(intrinsicSourceName)
+            && IsAuthoringEventName(eventName)
+            && IsSafeVbaIdentifier($"{intrinsicSourceName}_{eventName}");
+
+    internal static bool IsObservedControlName(string? value)
+        => value is not null && VbaIdentifier.IsIdentifier(value);
 
     private static object BindRuntimeHostObject(
         dynamic workbook,
@@ -765,7 +799,7 @@ internal static class ExcelComIntrinsicHostClassInspector
                 controlObject = controls.Item(index);
                 dynamic control = controlObject;
                 var name = Convert.ToString(control.Name);
-                if (!string.IsNullOrWhiteSpace(name))
+                if (IsObservedControlName(name))
                 {
                     names.Add(name);
                 }

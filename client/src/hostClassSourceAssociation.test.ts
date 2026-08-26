@@ -4,6 +4,24 @@ import assert from 'node:assert/strict';
 import { HostClassProjectionSnapshotEntry } from './hostClassProjectionLifecycle';
 import { associateHostClassSources } from './hostClassSourceAssociation';
 
+test('HostClass association rejects parser-owned invalid module identity metadata', () => {
+  const result = associateHostClassSources([{
+    sourceUri: 'file:///C:/work/Invoices/src/CDecl.frm',
+    kind: 'form',
+    moduleIdentity: { state: 'invalid' }
+  }], [{
+    identity: { name: 'CDecl', kind: 'form' },
+    authority: 'current',
+    projection: {
+      intrinsicEventSourceName: 'UserForm',
+      events: []
+    }
+  }]);
+
+  assert.deepEqual(result.associations, []);
+  assert.equal(result.failures[0]?.reason, 'attributeVbNameInvalid');
+});
+
 test('HostClass source association uses explicit VB_Name case-insensitively instead of file name', () => {
   const classes: readonly HostClassProjectionSnapshotEntry[] = [
     {
@@ -24,7 +42,7 @@ test('HostClass source association uses explicit VB_Name case-insensitively inst
       {
         sourceUri: 'file:///C:/work/Invoices/src/Unrelated.frm',
         kind: 'form',
-        text: 'VERSION 5.00\nATTRIBUTE vb_name = "invoiceform"\n'
+        moduleIdentity: { state: 'authoritative', name: 'invoiceform' }
       }
     ],
     classes
@@ -60,15 +78,7 @@ test('HostClass form association uses the last valid class-header VB_Name record
   const result = associateHostClassSources([{
     sourceUri: 'file:///C:/work/Invoices/src/InvoiceForm.frm',
     kind: 'form',
-    text: [
-      'VERSION 5.00',
-      'Begin VB.UserForm InvoiceForm',
-      'End',
-      'Attribute VB_Name = "ShadowedForm"',
-      'Attribute VB_Name = "InvoiceForm"',
-      'Option Explicit',
-      ''
-    ].join('\n')
+    moduleIdentity: { state: 'authoritative', name: 'InvoiceForm' }
   }], classes);
 
   assert.deepEqual(result.associations.map((association) => ({
@@ -94,15 +104,7 @@ test('HostClass form association rejects a misplaced body VB_Name record', () =>
   const result = associateHostClassSources([{
     sourceUri: 'file:///C:/work/Invoices/src/InvoiceForm.frm',
     kind: 'form',
-    text: [
-      'VERSION 5.00',
-      'Begin VB.UserForm InvoiceForm',
-      'End',
-      'Attribute VB_Exposed = False',
-      'Option Explicit',
-      'Attribute VB_Name = "InvoiceForm"',
-      ''
-    ].join('\n')
+    moduleIdentity: { state: 'invalid' }
   }], classes);
 
   assert.deepEqual(result.associations, []);
@@ -113,15 +115,7 @@ test('HostClass association closes the class header at a malformed class attribu
   const result = associateHostClassSources([{
     sourceUri: 'file:///C:/work/Invoices/src/InvoiceForm.frm',
     kind: 'form',
-    text: [
-      'VERSION 5.00',
-      'Begin VB.UserForm InvoiceForm',
-      'End',
-      'Attribute VB_Name = "ShadowedForm"',
-      'Attribute VB_Exposed = Maybe',
-      'Attribute VB_Name = "InvoiceForm"',
-      ''
-    ].join('\n')
+    moduleIdentity: { state: 'invalid' }
   }], [{
     identity: { name: 'InvoiceForm', kind: 'form' },
     authority: 'current',
@@ -139,7 +133,7 @@ test('HostClass association does not treat NBSP as Attribute grammar whitespace'
   const result = associateHostClassSources([{
     sourceUri: 'file:///C:/work/Invoices/src/InvoiceForm.frm',
     kind: 'form',
-    text: 'Attribute\u00a0VB_Name = "InvoiceForm"\n'
+    moduleIdentity: { state: 'invalid' }
   }], [{
     identity: { name: 'InvoiceForm', kind: 'form' },
     authority: 'current',
@@ -158,7 +152,7 @@ test('HostClass association preserves NBSP inside an explicit VB_Name value', ()
   const result = associateHostClassSources([{
     sourceUri: 'file:///C:/work/Invoices/src/InvoiceForm.frm',
     kind: 'form',
-    text: `Attribute VB_Name = "${name}"\n`
+    moduleIdentity: { state: 'authoritative', name }
   }], [{
     identity: { name, kind: 'form' },
     authority: 'current',
@@ -176,7 +170,7 @@ test('HostClass association accepts MS-VBAL ideographic layout whitespace', () =
   const result = associateHostClassSources([{
     sourceUri: 'file:///C:/work/Invoices/src/InvoiceForm.frm',
     kind: 'form',
-    text: 'Attribute\u3000VB_Name\u3000=\u3000"InvoiceForm"\n'
+    moduleIdentity: { state: 'authoritative', name: 'InvoiceForm' }
   }], [{
     identity: { name: 'InvoiceForm', kind: 'form' },
     authority: 'current',
@@ -194,7 +188,7 @@ test('HostClass association does not confuse a longer attribute identifier with 
   const result = associateHostClassSources([{
     sourceUri: 'file:///C:/work/Invoices/src/InvoiceForm.frm',
     kind: 'form',
-    text: 'Attribute VB_Name\u6ce8\u6587 = "InvoiceForm"\n'
+    moduleIdentity: { state: 'missing' }
   }], []);
 
   assert.deepEqual(result.associations, []);
@@ -205,13 +199,7 @@ test('HostClass document association uses the last valid class-header VB_Name re
   const result = associateHostClassSources([{
     sourceUri: 'file:///C:/work/Invoices/src/Sheet1.document',
     kind: 'document',
-    text: [
-      'Attribute VB_Name = "ShadowedSheet"',
-      'Attribute VB_Name = "Sheet1"',
-      'Attribute VB_PredeclaredId = True',
-      'Option Explicit',
-      ''
-    ].join('\n')
+    moduleIdentity: { state: 'authoritative', name: 'Sheet1' }
   }], [{
     identity: { name: 'Sheet1', kind: 'document' },
     authority: 'current',
@@ -245,7 +233,7 @@ test('HostClass source association reports a same-name incompatible component ki
       {
         sourceUri: 'file:///C:/work/Invoices/src/Sheet1.frm',
         kind: 'form',
-        text: 'Attribute VB_Name = "sheet1"\n'
+        moduleIdentity: { state: 'authoritative', name: 'sheet1' }
       }
     ],
     classes
@@ -276,7 +264,7 @@ test('HostClass incomplete enumeration leaves an absent source identity indeterm
       {
         sourceUri: 'file:///C:/work/Invoices/src/InvoiceForm.frm',
         kind: 'form',
-        text: 'Attribute VB_Name = "InvoiceForm"\n'
+        moduleIdentity: { state: 'authoritative', name: 'InvoiceForm' }
       }
     ],
     [],

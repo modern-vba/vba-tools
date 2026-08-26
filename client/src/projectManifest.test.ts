@@ -146,6 +146,21 @@ test('ProjectManifest adapter rejects an invalid CommonModules entry', () => {
   assert.equal(parseProjectManifest(readProjectManifestFixture('invalid-unknown-common-module-property.json')), undefined);
 });
 
+test('ProjectManifest adapter preserves an exact CP2 CommonModule identity', () => {
+  const manifest = JSON.parse(
+    readProjectManifestFixture('document-source-set.json')) as {
+      documents: Record<string, { commonModules: unknown[] }>;
+    };
+  manifest.documents.Book1!.commonModules = [{
+    name: '\u00A0',
+    moduleFile: '\u00A0.bas',
+    requested: true,
+    testOnly: false
+  }];
+
+  assert.notEqual(parseProjectManifest(JSON.stringify(manifest)), undefined);
+});
+
 test('ProjectManifest adapter rejects an unknown command-default property', () => {
   assert.equal(parseProjectManifest(readProjectManifestFixture('invalid-unknown-command-default-property.json')), undefined);
 });

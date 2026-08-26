@@ -6,6 +6,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace VbaDebugAdapter.Infrastructure;
 
@@ -1108,10 +1109,12 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             foreach (var breakpoint in breakpoints)
             {
                 var sourceMap = breakpoint.SourceMap;
-                if (string.IsNullOrWhiteSpace(sourceMap.ModuleName))
+                if (string.IsNullOrEmpty(sourceMap.ModuleName)
+                    || !VbaIdentifier.IsIdentifier(sourceMap.ModuleName)
+                    || sourceMap.ModuleName.EnumerateRunes().Take(32).Count() > 31)
                 {
                     throw new DebugSetupException(
-                        "A native VBE breakpoint source map has no module identity.");
+                        "A native VBE breakpoint source map has no valid module identity.");
                 }
 
                 if (sourceMap.CodeLines.IsDefault)

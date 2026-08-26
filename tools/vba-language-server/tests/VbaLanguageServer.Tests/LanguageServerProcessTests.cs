@@ -3328,7 +3328,22 @@ public sealed class LanguageServerProcessTests
         Assert.Contains(edits, edit => edit.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32() == 3);
         Assert.Contains(edits, edit => edit.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32() == 7);
 
-        var stringRename = await SendPositionRequestAsync(process, 3,
+        var cp2Rename = await SendPositionRequestAsync(process, 3,
+            "textDocument/rename",
+            uri,
+            text,
+            "BuildValue",
+            0,
+            new { newName = "\u00a0" });
+        var cp2Edits = cp2Rename
+            .GetProperty("result")
+            .GetProperty("changes")
+            .GetProperty(uri)
+            .EnumerateArray()
+            .ToArray();
+        Assert.All(cp2Edits, edit => Assert.Equal("\u00a0", edit.GetProperty("newText").GetString()));
+
+        var stringRename = await SendPositionRequestAsync(process, 4,
             "textDocument/rename",
             uri,
             text,
@@ -3337,7 +3352,7 @@ public sealed class LanguageServerProcessTests
             new { newName = "IgnoredValue" });
         Assert.Equal(JsonValueKind.Null, stringRename.GetProperty("result").ValueKind);
 
-        await process.ShutdownAsync(4);
+        await process.ShutdownAsync(5);
     }
 
     [Fact]

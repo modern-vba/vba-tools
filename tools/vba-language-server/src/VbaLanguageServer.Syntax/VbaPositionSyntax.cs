@@ -146,8 +146,7 @@ public sealed record VbaMemberAccessSyntax(
     /// </summary>
     public bool AllowsCallTargetSyntax
         => Target is { } target
-            && (!target.IsKeyword
-                || IsLeadingDot
+            && (IsLeadingDot
                 || TargetSegmentIndex > 0
                 || VbaLanguageVocabulary.CanBeBareCallTarget(target.Name));
 }
@@ -584,14 +583,21 @@ internal sealed class VbaPositionSyntaxIndex
     private VbaPositionIdentifierSyntax? FindIdentifier(
         StatementSpan statement,
         VbaSyntaxPosition position)
-        => statement.SignificantTokens
-            .Where(IsNameToken)
-            .Where(token => token.Range.Start.Line == position.Line)
-            .Where(token => token.Range.Start.Character <= position.Character)
-            .Where(token => position.Character <= token.Range.End.Character)
-            .OrderByDescending(token => token.Range.Start.Offset)
-            .Select(ToIdentifier)
+    {
+        var match = statement.SignificantTokens
+            .Select((token, index) => new { token, index })
+            .Where(item => IsNameToken(item.token))
+            .Where(item => item.token.Range.Start.Line == position.Line)
+            .Where(item => item.token.Range.Start.Character <= position.Character)
+            .Where(item => position.Character <= item.token.Range.End.Character)
+            .OrderByDescending(item => item.token.Range.Start.Offset)
             .FirstOrDefault();
+        return match is null
+            ? null
+            : ToIdentifier(
+                match.token,
+                IsContextualGrammarKeyword(statement.SignificantTokens, match.index));
+    }
 
     private VbaMemberAccessSyntax? TryGetMemberAccess(
         StatementSpan statement,
@@ -662,7 +668,7 @@ internal sealed class VbaPositionSyntaxIndex
                 .Skip(start)
                 .Take(end - start + 1)
                 .Where(IsNameToken)
-                .Select(ToIdentifier)
+                .Select(token => ToIdentifier(token))
                 .ToArray();
             var targetIndex = significant
                 .Skip(start)
@@ -712,7 +718,7 @@ internal sealed class VbaPositionSyntaxIndex
             .Skip(chainStart)
             .Take(anchorIndex - chainStart + 1)
             .Where(IsNameToken)
-            .Select(ToIdentifier)
+            .Select(token => ToIdentifier(token))
             .ToArray();
         return new VbaMemberAccessSyntax(
             chainSegments,
@@ -2545,7 +2551,7 @@ internal sealed class VbaPositionSyntaxIndex
         {
             return isVocabularyPrefix
                 || (expectation == VbaCompletionExpectation.ProcedureStatement
-                    && token.Kind == VbaTokenKind.Identifier);
+                    && VbaLanguageVocabulary.CanBeBareCallTarget(token.Text));
         }
 
         return false;
@@ -2811,7 +2817,7 @@ internal sealed class VbaPositionSyntaxIndex
         }
 
         var end = Math.Min(position.Offset, sourceText.Text.Length);
-        return sourceText.Text[token.Range.End.Offset..end].Any(char.IsWhiteSpace);
+        return sourceText.Text[token.Range.End.Offset..end].Any(VbaIdentifier.IsWhitespace);
     }
 
     private static bool IsKeywordOperator(VbaToken token)
@@ -3201,8 +3207,84 @@ internal sealed class VbaPositionSyntaxIndex
         => IsNameToken(token)
             && token.Text.Equals(text, StringComparison.OrdinalIgnoreCase);
 
-    private static VbaPositionIdentifierSyntax ToIdentifier(VbaToken token)
-        => new(token.Text, token.Range, token.Kind == VbaTokenKind.Keyword);
+    private static bool IsContextualGrammarKeyword(
+        IReadOnlyList<VbaToken> tokens,
+        int index)
+    {
+        var token = tokens[index];
+        if (tokens.Count > 0
+            && (IsWord(tokens[0], "Option") || IsWord(tokens[0], "Attribute")))
+        {
+            return index > 0;
+        }
+
+        if (IsWord(token, "Object")
+            && index > 0
+            && (IsWord(tokens[index - 1], "As")
+                || IsWord(tokens[index - 1], "New")
+                || IsWord(tokens[index - 1], "Is")))
+        {
+            return true;
+        }
+
+        if (IsWord(token, "Property"))
+        {
+            if (index > 0 && IsWord(tokens[index - 1], "End"))
+            {
+                return true;
+            }
+
+            var keywordIndex = 0;
+            while (keywordIndex < tokens.Count
+                && (IsWord(tokens[keywordIndex], "Public")
+                    || IsWord(tokens[keywordIndex], "Private")
+                    || IsWord(tokens[keywordIndex], "Friend")
+                    || IsWord(tokens[keywordIndex], "Global")
+                    || IsWord(tokens[keywordIndex], "Static")))
+            {
+                keywordIndex++;
+            }
+
+            return index == keywordIndex
+                && index + 1 < tokens.Count
+                && (IsWord(tokens[index + 1], "Get")
+                    || IsWord(tokens[index + 1], "Let")
+                    || IsWord(tokens[index + 1], "Set"));
+        }
+
+        var declareIndex = tokens.Count > 0
+            && (IsWord(tokens[0], "Public")
+                || IsWord(tokens[0], "Private"))
+                ? 1
+                : 0;
+        if (declareIndex >= tokens.Count || !IsWord(tokens[declareIndex], "Declare"))
+        {
+            return false;
+        }
+
+        if (IsWord(token, "PtrSafe"))
+        {
+            return index == declareIndex + 1;
+        }
+
+        var callableKindIndex = declareIndex + 1;
+        if (callableKindIndex < tokens.Count
+            && IsWord(tokens[callableKindIndex], "PtrSafe"))
+        {
+            callableKindIndex++;
+        }
+
+        return index > callableKindIndex + 1
+            && (IsWord(token, "Lib") || IsWord(token, "Alias"));
+    }
+
+    private static VbaPositionIdentifierSyntax ToIdentifier(
+        VbaToken token,
+        bool isContextualGrammarKeyword = false)
+        => new(
+            token.Text,
+            token.Range,
+            isContextualGrammarKeyword || VbaIdentifier.IsReservedIdentifier(token.Text));
 
     private sealed record StatementSpan(
         int StartOffset,

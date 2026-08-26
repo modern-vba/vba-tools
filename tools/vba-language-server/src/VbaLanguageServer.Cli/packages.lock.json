@@ -9,7 +9,10 @@
         "contentHash": "dVbSXGIFNR5nZcv2tOLoWI+a9T4jtFd77IYjuND+QVe360qWgAF7H0WtoopYhRw/+SgpGUTyrkrh+65+ClNnfw=="
       },
       "vbadev.domain": {
-        "type": "Project"
+        "type": "Project",
+        "dependencies": {
+          "VbaLanguageServer.Syntax": "[1.0.0, )"
+        }
       },
       "vbalanguageserver.syntax": {
         "type": "Project"

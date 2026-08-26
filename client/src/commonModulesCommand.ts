@@ -22,21 +22,31 @@ export interface CommonModulesCommandResult {
   commonModulesList?: CommonModulesList | undefined;
 }
 
+// MS-VBAL WSC, followed by the UI input protocol's line terminators. U+00A0 is
+// intentionally absent because it is a valid CP2 identifier character.
+const commonModuleNameSeparator =
+  /[\u0009\u0019\u0020\u1680\u180E\u2000-\u200A\u202F\u205F\u3000\r\n]+/;
+
+export function parseCommonModuleNamesInput(value: string): readonly string[] {
+  return value
+    .split(commonModuleNameSeparator)
+    .filter((moduleName) => moduleName.length > 0);
+}
+
 export async function runCommonModulesAddCommand(
   options: CommonModulesCommandOptions,
   moduleNames: readonly string[]
 ): Promise<CommonModulesCommandResult | undefined> {
-  const normalizedModuleNames = moduleNames
-    .map((moduleName) => moduleName.trim())
+  const exactModuleNames = moduleNames
     .filter((moduleName) => moduleName.length > 0);
-  if (normalizedModuleNames.length === 0) {
+  if (exactModuleNames.length === 0) {
     return undefined;
   }
 
   return runCommonModulesMutatingCommand(options, [
     'common-module',
     'add',
-    ...normalizedModuleNames
+    ...exactModuleNames
   ]);
 }
 

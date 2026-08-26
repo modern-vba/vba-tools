@@ -32,6 +32,7 @@ import {
 } from './doctorCommand';
 import {
   CommonModulesToolCommand,
+  parseCommonModuleNamesInput,
   runCommonModulesAddCommand,
   runCommonModulesListCommand,
   runCommonModulesUpdateCommand
@@ -96,6 +97,7 @@ import {
 import {
   collectHostClassProjectionFormSources
 } from './hostClassProjectionSourceCollection';
+import type { HostClassSourceCandidate } from './hostClassSourceMetadata';
 import {
   runHostClassProjectionRefreshCommand
 } from './hostClassProjectionRefreshCommand';
@@ -575,7 +577,10 @@ export async function activate(context: ExtensionContext): Promise<void> {
       reportError: (error) => outputChannel?.appendLine(
         `VBA Tools could not synchronize vba-project.json: ${error instanceof Error ? error.message : String(error)}`
       ),
-      onDidSynchronizeLanguageClient: () => lifecycle.replayDesiredSnapshots()
+      onDidSynchronizeLanguageClient: async () => {
+        await lifecycle.replayDesiredSnapshots();
+        await hostWorkspace.reevaluateAllSourceAssociations();
+      }
     });
   } catch (error) {
     void window.showWarningMessage(error instanceof Error ? error.message : String(error));
@@ -1068,10 +1073,7 @@ async function promptForCommonModuleNames(): Promise<readonly string[] | undefin
     return undefined;
   }
 
-  const moduleNames = value
-    .split(/\s+/)
-    .map((moduleName) => moduleName.trim())
-    .filter((moduleName) => moduleName.length > 0);
+  const moduleNames = parseCommonModuleNamesInput(value);
 
   return moduleNames.length > 0 ? moduleNames : undefined;
 }
@@ -1238,11 +1240,7 @@ async function readHostClassManifestText(
 
 async function collectHostClassProjectionSources(
   document: HostClassProjectionWorkspaceDocument
-): Promise<readonly {
-  readonly sourceUri: string;
-  readonly kind: 'form';
-  readonly text: string;
-}[]> {
+): Promise<readonly HostClassSourceCandidate[]> {
   const uris = await workspace.findFiles(
     new RelativePattern(document.sourceSetPath, '**/*.frm'),
     null
@@ -1261,7 +1259,16 @@ async function collectHostClassProjectionSources(
     })),
     async (source) => decodeVbaSourceFileText(
       await workspace.fs.readFile(Uri.file(source.filePath))
-    )
+    ),
+    {
+      sendRequest: (method, parameters) => {
+        const languageClient = client;
+        if (languageClient === undefined || languageClient.state !== State.Running) {
+          throw new Error('The VBA language client is not running.');
+        }
+        return languageClient.sendRequest<unknown>(method, parameters);
+      }
+    }
   );
 }
 
