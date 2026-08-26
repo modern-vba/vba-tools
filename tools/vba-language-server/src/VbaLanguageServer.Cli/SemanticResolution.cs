@@ -281,6 +281,17 @@ internal sealed class VbaSemanticResolution
             return eventDefinition;
         }
 
+        var position = new VbaPosition(line, character);
+        var declaredDefinition = currentDocument.Definitions.FirstOrDefault(
+            definition => Contains(definition.Range, position)
+                && definition.Name.Equals(
+                    identifier.Name,
+                    StringComparison.OrdinalIgnoreCase));
+        if (declaredDefinition is not null)
+        {
+            return declaredDefinition;
+        }
+
         if (TryResolveMemberDefinition(
             currentDocument,
             line,
@@ -299,6 +310,67 @@ internal sealed class VbaSemanticResolution
                 qualifier: null,
                 identifier.Name)
             : nameResolution.ResolvePreferred(
+                uri,
+                new VbaPosition(line, character),
+                qualifier,
+                identifier.Name,
+                definition => !nameResolution.IsTypeDefinition(definition));
+    }
+
+    internal VbaNameResolutionOutcome ClassifySourceDefinition(
+        string uri,
+        int line,
+        int character)
+    {
+        var resolved = ResolveSourceDefinition(uri, line, character);
+        if (resolved is not null)
+        {
+            return VbaNameResolutionOutcome.Resolved(resolved);
+        }
+
+        var currentDocument = definitionCandidates.FindDocument(uri);
+        if (currentDocument is null)
+        {
+            return VbaNameResolutionOutcome.AnalysisIncomplete;
+        }
+
+        var positionSyntax = GetSyntaxTree(currentDocument)
+            .GetPositionSyntax(line, character);
+        var identifier = positionSyntax.Identifier;
+        if (positionSyntax.Region != VbaPositionRegion.Code
+            || identifier is null)
+        {
+            return VbaNameResolutionOutcome.NonSemantic;
+        }
+
+        if (positionSyntax.TypeReference is not null
+            && typeResolution.TryClassifyTypeReferenceDefinition(
+                currentDocument,
+                positionSyntax.TypeReference,
+                identifier,
+                out var typeOutcome))
+        {
+            return typeOutcome;
+        }
+
+        if (TryResolveWithEventsHandler(
+            currentDocument,
+            identifier.Name,
+            out _))
+        {
+            return VbaNameResolutionOutcome.AnalysisIncomplete;
+        }
+
+        var qualifier = GetImmediateQualifier(
+            positionSyntax.MemberAccess,
+            identifier);
+        return qualifier is null
+            ? nameResolution.ResolveValueOutcome(
+                uri,
+                new VbaPosition(line, character),
+                qualifier: null,
+                identifier.Name)
+            : nameResolution.ResolvePreferredOutcome(
                 uri,
                 new VbaPosition(line, character),
                 qualifier,
@@ -985,7 +1057,18 @@ internal sealed class VbaSemanticResolution
     private static bool Contains(VbaSyntaxRange range, VbaSyntaxPosition position)
         => Compare(range.Start, position) <= 0 && Compare(position, range.End) <= 0;
 
+    private static bool Contains(VbaRange range, VbaPosition position)
+        => Compare(range.Start, position) <= 0 && Compare(position, range.End) <= 0;
+
     private static int Compare(VbaSyntaxPosition left, VbaSyntaxPosition right)
+    {
+        var lineComparison = left.Line.CompareTo(right.Line);
+        return lineComparison != 0
+            ? lineComparison
+            : left.Character.CompareTo(right.Character);
+    }
+
+    private static int Compare(VbaPosition left, VbaPosition right)
     {
         var lineComparison = left.Line.CompareTo(right.Line);
         return lineComparison != 0

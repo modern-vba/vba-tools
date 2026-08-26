@@ -550,13 +550,42 @@ public sealed record VbaDefinitionLocation(string Uri, VbaRange Range);
 public sealed record VbaTextEdit(VbaRange Range, string NewText);
 
 /// <summary>
+/// Represents the exact semantic occurrence offered by Prepare Rename.
+/// </summary>
+/// <param name="Range">The occurrence range under the request cursor.</param>
+/// <param name="Placeholder">The target declaration's canonical name.</param>
+public sealed record VbaPrepareRenameResult(
+    VbaRange Range,
+    string Placeholder);
+
+internal sealed record VbaPrepareRenameOutcome(
+    VbaPrepareRenameResult? Result,
+    VbaRenameFailure? Failure);
+
+/// <summary>
 /// Represents a validated rename operation and its resulting edits.
 /// </summary>
-/// <param name="TargetRange">The range that should be highlighted for prepareRename.</param>
+/// <param name="TargetRange">The captured target declaration range used to identify the plan.</param>
 /// <param name="Changes">The source edits keyed by document URI.</param>
 public sealed record VbaRenamePlan(
     VbaRange TargetRange,
     IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> Changes);
+
+internal sealed record VbaRenameFailure(
+    string Reason,
+    string Message,
+    IReadOnlyList<VbaRenameConflict>? Conflicts = null,
+    string? Condition = null);
+
+internal sealed record VbaRenameConflict(
+    string CollisionKind,
+    string Name,
+    string Uri,
+    VbaRange Range);
+
+internal sealed record VbaRenameResult(
+    VbaRenamePlan? Plan,
+    VbaRenameFailure? Failure);
 
 /// <summary>
 /// Represents a workspace symbol projected from a source definition.

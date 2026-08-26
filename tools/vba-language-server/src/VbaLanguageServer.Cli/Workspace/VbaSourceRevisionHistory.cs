@@ -8,9 +8,17 @@ namespace VbaLanguageServer.Workspace;
 internal sealed class VbaSourceRevisionHistory
 {
     private readonly object gate = new();
+    private readonly bool retainOnlyWhileCapturesActive;
     private readonly Dictionary<string, SourceRevision> revisions =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly SortedDictionary<long, int> activeWatermarks = [];
+
+    public VbaSourceRevisionHistory(
+        bool retainOnlyWhileCapturesActive = false)
+    {
+        this.retainOnlyWhileCapturesActive =
+            retainOnlyWhileCapturesActive;
+    }
 
     public int Count
     {
@@ -40,6 +48,12 @@ internal sealed class VbaSourceRevisionHistory
         var key = CreateIdentityKey(uri);
         lock (gate)
         {
+            if (retainOnlyWhileCapturesActive
+                && activeWatermarks.Count == 0)
+            {
+                return;
+            }
+
             revisions[key] = new SourceRevision(uri, revision);
         }
     }

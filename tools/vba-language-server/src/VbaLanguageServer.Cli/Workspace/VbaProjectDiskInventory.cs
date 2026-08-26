@@ -184,6 +184,11 @@ internal interface IVbaProjectDiskObservationSource
 /// </summary>
 internal interface IVbaProjectDiskInventory : IVbaProjectDiskObservationSource
 {
+    bool ContainsSource(
+        VbaProjectResolution resolution,
+        string sourceUri,
+        IReadOnlyDictionary<string, bool> manifestBarrierOverrides);
+
     VbaProjectDiskColdSourceCapture CaptureColdSources(
         VbaProjectResolution resolution,
         IReadOnlyCollection<string> candidateSourceUris,
@@ -240,6 +245,19 @@ internal sealed class VbaFileSystemProjectDiskInventory
         ArgumentNullException.ThrowIfNull(sourceDecoding);
         this.fileSystem = fileSystem;
         this.sourceDecoding = sourceDecoding;
+    }
+
+    public bool ContainsSource(
+        VbaProjectResolution resolution,
+        string sourceUri,
+        IReadOnlyDictionary<string, bool> manifestBarrierOverrides)
+    {
+        var sourcePath = VbaProjectResolver.TryGetLocalPath(sourceUri);
+        return sourcePath is not null
+            && new SourceOwnership(
+                resolution,
+                fileSystem,
+                manifestBarrierOverrides).ContainsSource(sourcePath);
     }
 
     internal int Count

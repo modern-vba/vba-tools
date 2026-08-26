@@ -68,6 +68,27 @@ internal sealed class VbaResolvedIdentifierOccurrenceIndex
             ? matchingOccurrences
             : [];
 
+    public IReadOnlyList<VbaResolvedIdentifierOccurrence> GetAll(
+        CancellationToken cancellationToken = default)
+    {
+        var occurrences = new List<VbaResolvedIdentifierOccurrence>();
+        foreach (var cache in documentOccurrenceCaches)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            occurrences.AddRange(cache.Occurrences.Get(
+                token => ResolveDocumentOccurrences(cache.Document, token),
+                cancellationToken).Occurrences);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return occurrences
+            .Distinct(VbaResolvedIdentifierOccurrenceComparer.Instance)
+            .OrderBy(occurrence => occurrence.Uri, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(occurrence => occurrence.Range.Start.Line)
+            .ThenBy(occurrence => occurrence.Range.Start.Character)
+            .ToArray();
+    }
+
     private VbaResolvedDocumentOccurrenceSet? GetDocumentOccurrenceSet(
         string uri,
         CancellationToken cancellationToken)

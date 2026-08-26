@@ -157,6 +157,10 @@ internal sealed class VbaLspRequestExecution
         {
             outcome = RequestOutcome.Error(-32603, "Internal error");
         }
+        finally
+        {
+            captured.Dispose();
+        }
 
         releaseCancellationOwnership?.Invoke();
         if (outcome.ErrorCode is int errorCode)
@@ -165,6 +169,7 @@ internal sealed class VbaLspRequestExecution
                 captured.ResponseId,
                 errorCode,
                 outcome.ErrorMessage!,
+                outcome.ErrorData,
                 responseCancellationToken);
             return;
         }
@@ -297,17 +302,9 @@ internal sealed class VbaLspRequestExecution
                     Captured,
                     Direct),
             "textDocument/prepareRename" =>
-                CapturePositionRequest(
+                CapturePrepareRenameRequest(
                     parameters,
                     cancellationToken,
-                    (request, inventory, token) =>
-                    {
-                        token.ThrowIfCancellationRequested();
-                        return inventory.PrepareRename(
-                            request.Uri,
-                            request.Line,
-                            request.Character);
-                    },
                     Captured,
                     Direct),
             "textDocument/rename" =>
@@ -394,6 +391,35 @@ internal sealed class VbaLspRequestExecution
         });
     }
 
+    private CapturedRequest CapturePrepareRenameRequest(
+        JsonNode? parameters,
+        CancellationToken cancellationToken,
+        Func<Func<CancellationToken, RequestOutcome>, CapturedRequest> captured,
+        Func<RequestOutcome, CapturedRequest> direct)
+    {
+        if (!TryCreatePositionRequest(parameters, out var request))
+        {
+            return direct(RequestOutcome.InvalidParams());
+        }
+
+        var inventory = CaptureSemanticInventory(request.Uri, cancellationToken);
+        return captured(executionToken =>
+        {
+            executionToken.ThrowIfCancellationRequested();
+            var prepare = inventory.CreatePrepareRenameOutcome(
+                request.Uri,
+                request.Line,
+                request.Character);
+            executionToken.ThrowIfCancellationRequested();
+            return prepare.Failure is null
+                ? RequestOutcome.Success(prepare.Result)
+                : RequestOutcome.Error(
+                    -32803,
+                    prepare.Failure.Message,
+                    CreateRenameFailureData(prepare.Failure));
+        });
+    }
+
     private CapturedRequest CaptureWorkspaceSymbolRequest(
         JsonNode? parameters,
         CancellationToken cancellationToken,
@@ -432,20 +458,105 @@ internal sealed class VbaLspRequestExecution
             return direct(RequestOutcome.InvalidParams());
         }
 
-        var inventory = CaptureSemanticInventory(request.Uri, cancellationToken);
+        var nameFailure = VbaSemanticInventory.ValidateRenameName(
+            request.NewName);
+        if (nameFailure is not null)
+        {
+            return direct(RequestOutcome.Error(
+                -32803,
+                nameFailure.Message,
+                CreateRenameFailureData(nameFailure)));
+        }
+
+        var renameCapture = workspace.CaptureRenameProjectSnapshot(
+            request.Uri,
+            cancellationToken);
         return captured(executionToken =>
         {
-            executionToken.ThrowIfCancellationRequested();
-            var renamePlan = inventory.CreateRenamePlan(
-                request.Uri,
-                request.Line,
-                request.Character,
-                request.NewName,
-                executionToken);
-            executionToken.ThrowIfCancellationRequested();
-            return RequestOutcome.Success(
-                VbaLspFeatureProjection.CreateWorkspaceEdit(renamePlan?.Changes));
-        });
+            using (renameCapture)
+            {
+                executionToken.ThrowIfCancellationRequested();
+                var rename = renameCapture.SemanticInventory.CreateRenameResult(
+                    request.Uri,
+                    request.Line,
+                    request.Character,
+                    request.NewName,
+                    executionToken);
+                executionToken.ThrowIfCancellationRequested();
+                if (renameCapture.HasParticipatingSourceChanged())
+                {
+                    var failure = new VbaRenameFailure(
+                        "resourceOperationConflict",
+                        "A participating source changed while Rename was "
+                        + "being prepared. Retry Rename against the latest "
+                        + "project snapshot.",
+                        Condition: "sourceChanged");
+                    return RequestOutcome.Error(
+                        -32803,
+                        failure.Message,
+                        CreateRenameFailureData(failure));
+                }
+
+                if (rename.Failure?.Reason == "invalidName")
+                {
+                    return RequestOutcome.Error(
+                        -32803,
+                        rename.Failure.Message,
+                        CreateRenameFailureData(rename.Failure));
+                }
+
+                if (rename.Plan is null && rename.Failure is null)
+                {
+                    return RequestOutcome.Success(null);
+                }
+
+                if (renameCapture.AnalysisFailureMessage is not null)
+                {
+                    var failure = new VbaRenameFailure(
+                        "analysisIncomplete",
+                        renameCapture.AnalysisFailureMessage);
+                    return RequestOutcome.Error(
+                        -32803,
+                        failure.Message,
+                        CreateRenameFailureData(failure));
+                }
+
+                if (rename.Failure is not null)
+                {
+                    return RequestOutcome.Error(
+                        -32803,
+                        rename.Failure.Message,
+                        CreateRenameFailureData(rename.Failure));
+                }
+
+                return RequestOutcome.Success(
+                    VbaLspFeatureProjection.CreateWorkspaceEdit(
+                        rename.Plan?.Changes));
+            }
+        }) with
+        {
+            Cleanup = renameCapture.Dispose
+        };
+    }
+
+    private static IReadOnlyDictionary<string, object?> CreateRenameFailureData(
+        VbaRenameFailure failure)
+    {
+        var data = new Dictionary<string, object?>
+        {
+            ["reason"] = failure.Reason
+        };
+        if (failure.Conflicts is not null)
+        {
+            data["conflicts"] = failure.Conflicts;
+        }
+
+        if (failure.Condition is not null)
+        {
+            data["condition"] = failure.Condition;
+        }
+
+        return data;
     }
 
     private CapturedRequest CaptureFormattingRequest(
@@ -819,8 +930,18 @@ internal sealed class VbaLspRequestExecution
         VbaLspRequestId? RequestId,
         string Method,
         Func<CancellationToken, RequestOutcome> Execute,
-        bool UseExecutionGate)
+        bool UseExecutionGate) : IDisposable
     {
+        private Action? cleanup;
+
+        public Action? Cleanup
+        {
+            init => cleanup = value;
+        }
+
+        public void Dispose()
+            => Interlocked.Exchange(ref cleanup, null)?.Invoke();
+
         public static CapturedRequest Direct(
             JsonNode? responseId,
             string method,
@@ -835,11 +956,20 @@ internal sealed class VbaLspRequestExecution
                 useExecutionGate);
     }
 
-    internal sealed record RequestOutcome(object? Result, int? ErrorCode, string? ErrorMessage)
+    internal sealed record RequestOutcome(
+        object? Result,
+        int? ErrorCode,
+        string? ErrorMessage,
+        object? ErrorData)
     {
-        public static RequestOutcome Success(object? result) => new(result, null, null);
+        public static RequestOutcome Success(object? result)
+            => new(result, null, null, null);
 
-        public static RequestOutcome Error(int code, string message) => new(null, code, message);
+        public static RequestOutcome Error(
+            int code,
+            string message,
+            object? data = null)
+            => new(null, code, message, data);
 
         public static RequestOutcome InvalidParams() => Error(-32602, "Invalid params");
     }

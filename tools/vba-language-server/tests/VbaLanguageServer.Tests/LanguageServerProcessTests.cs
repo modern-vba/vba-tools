@@ -1035,7 +1035,14 @@ public sealed class LanguageServerProcessTests
             uri,
             text,
             "vbCrLf");
-        Assert.Equal(JsonValueKind.Null, prepareRename.GetProperty("result").ValueKind);
+        var prepareError = prepareRename.GetProperty("error");
+        Assert.Equal(-32803, prepareError.GetProperty("code").GetInt32());
+        Assert.Equal(
+            "notRenameTarget",
+            prepareError
+                .GetProperty("data")
+                .GetProperty("reason")
+                .GetString());
 
         var definition = await SendPositionRequestAsync(
             process,
@@ -1059,7 +1066,14 @@ public sealed class LanguageServerProcessTests
             "vbCrLf",
             0,
             new { newName = "lineBreak" });
-        Assert.Equal(JsonValueKind.Null, rename.GetProperty("result").ValueKind);
+        var renameError = rename.GetProperty("error");
+        Assert.Equal(-32803, renameError.GetProperty("code").GetInt32());
+        Assert.Equal(
+            "notRenameTarget",
+            renameError
+                .GetProperty("data")
+                .GetProperty("reason")
+                .GetString());
 
         await process.ShutdownAsync(9);
     }
@@ -1076,12 +1090,10 @@ public sealed class LanguageServerProcessTests
             "Option Explicit",
             "Public Sub Run()",
             "    Dim vbCrLf As String",
-            "    vbCrLf = \"shadow\"",
+            "    vbcrlf = \"shadow\"",
             "End Sub"
         ]);
         await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
-        var usageOffset = text.LastIndexOf("vbCrLf", StringComparison.Ordinal)
-            - text.IndexOf("vbCrLf", StringComparison.Ordinal);
 
         var definition = await SendPositionRequestAsync(
             process,
@@ -1089,8 +1101,7 @@ public sealed class LanguageServerProcessTests
             "textDocument/definition",
             uri,
             text,
-            "vbCrLf",
-            usageOffset);
+            "vbcrlf");
         var location = definition.GetProperty("result");
         Assert.Equal(uri, location.GetProperty("uri").GetString());
         Assert.Equal(
@@ -1103,14 +1114,31 @@ public sealed class LanguageServerProcessTests
             "textDocument/prepareRename",
             uri,
             text,
-            "vbCrLf",
-            usageOffset);
+            "vbcrlf");
+        var prepareResult = prepareRename.GetProperty("result");
         Assert.Equal(
-            3,
-            prepareRename
-                .GetProperty("result")
+            "vbCrLf",
+            prepareResult.GetProperty("placeholder").GetString());
+        Assert.Equal(
+            4,
+            prepareResult
+                .GetProperty("range")
                 .GetProperty("start")
                 .GetProperty("line")
+                .GetInt32());
+        Assert.Equal(
+            "    ".Length,
+            prepareResult
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("character")
+                .GetInt32());
+        Assert.Equal(
+            "    vbCrLf".Length,
+            prepareResult
+                .GetProperty("range")
+                .GetProperty("end")
+                .GetProperty("character")
                 .GetInt32());
 
         var rename = await SendPositionRequestAsync(
@@ -1119,8 +1147,8 @@ public sealed class LanguageServerProcessTests
             "textDocument/rename",
             uri,
             text,
-            "vbCrLf",
-            usageOffset,
+            "vbcrlf",
+            0,
             new { newName = "sourceLineBreak" });
         var edits = rename
             .GetProperty("result")
@@ -3306,6 +3334,8 @@ public sealed class LanguageServerProcessTests
             "    BuildValue",
             "    Debug.Print \"BuildValue\"",
             "' BuildValue remains a comment.",
+            "    Rem BuildValue remains a comment.",
+            "'* @details BuildValue remains documentation.",
             "End Sub"
         ]);
         await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
@@ -3343,16 +3373,1242 @@ public sealed class LanguageServerProcessTests
             .ToArray();
         Assert.All(cp2Edits, edit => Assert.Equal("\u00a0", edit.GetProperty("newText").GetString()));
 
-        var stringRename = await SendPositionRequestAsync(process, 4,
+        var invalidRename = await SendPositionRequestAsync(process, 4,
+            "textDocument/rename",
+            uri,
+            text,
+            "BuildValue",
+            0,
+            new { newName = " BuildValue" });
+        var invalidError = invalidRename.GetProperty("error");
+        Assert.Equal(-32803, invalidError.GetProperty("code").GetInt32());
+        Assert.Contains(
+            "valid VBA identifier",
+            invalidError.GetProperty("message").GetString(),
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(
+            "invalidName",
+            invalidError
+                .GetProperty("data")
+                .GetProperty("reason")
+                .GetString());
+
+        var unchangedRename = await SendPositionRequestAsync(process, 5,
+            "textDocument/rename",
+            uri,
+            text,
+            "BuildValue",
+            0,
+            new { newName = "BuildValue" });
+        Assert.Equal(
+            JsonValueKind.Null,
+            unchangedRename.GetProperty("result").ValueKind);
+
+        var caseOnlyRename = await SendPositionRequestAsync(process, 6,
+            "textDocument/rename",
+            uri,
+            text,
+            "BuildValue",
+            0,
+            new { newName = "buildvalue" });
+        var caseOnlyEdits = caseOnlyRename
+            .GetProperty("result")
+            .GetProperty("changes")
+            .GetProperty(uri)
+            .EnumerateArray()
+            .ToArray();
+        Assert.Equal(2, caseOnlyEdits.Length);
+        Assert.All(
+            caseOnlyEdits,
+            edit => Assert.Equal(
+                "buildvalue",
+                edit.GetProperty("newText").GetString()));
+
+        var stringRename = await SendPositionRequestAsync(process, 7,
             "textDocument/rename",
             uri,
             text,
             "\"BuildValue\"",
             1,
             new { newName = "IgnoredValue" });
-        Assert.Equal(JsonValueKind.Null, stringRename.GetProperty("result").ValueKind);
+        var stringError = stringRename.GetProperty("error");
+        Assert.Equal(-32803, stringError.GetProperty("code").GetInt32());
+        Assert.Contains(
+            "rename target",
+            stringError.GetProperty("message").GetString(),
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(
+            "notRenameTarget",
+            stringError
+                .GetProperty("data")
+                .GetProperty("reason")
+                .GetString());
 
-        await process.ShutdownAsync(5);
+        var stringPrepare = await SendPositionRequestAsync(process, 8,
+            "textDocument/prepareRename",
+            uri,
+            text,
+            "\"BuildValue\"",
+            1);
+        Assert.Equal(
+            JsonValueKind.Null,
+            stringPrepare.GetProperty("result").ValueKind);
+
+        var malformedRename = await process.SendRequestAsync(9,
+            "textDocument/rename",
+            new
+            {
+                textDocument = new { uri },
+                position = new { line = 3, character = "Public Function ".Length },
+                newName = 42
+            });
+        Assert.Equal(
+            -32602,
+            malformedRename
+                .GetProperty("error")
+                .GetProperty("code")
+                .GetInt32());
+
+        await process.ShutdownAsync(10);
+    }
+
+    [Fact]
+    public async Task Server_renames_complementary_property_accessors_atomically()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/Properties.cls";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Properties\"",
+            "Public Property Get Value() As Variant",
+            "End Property",
+            "Public Property Let Value(ByVal assigned As Variant)",
+            "End Property",
+            "Public Property Set Value(ByVal assigned As Object)",
+            "End Property",
+            "Public Sub Run()",
+            "    Dim current As Variant",
+            "    current = Value",
+            "    Value = current",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            uri,
+            text,
+            "Value",
+            0,
+            new { newName = "ResultValue" });
+        var edits = rename
+            .GetProperty("result")
+            .GetProperty("changes")
+            .GetProperty(uri)
+            .EnumerateArray()
+            .ToArray();
+        var editedLines = edits
+            .Select(edit => edit
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32())
+            .ToArray();
+
+        Assert.Equal([1, 3, 5, 9, 10], editedLines);
+        Assert.All(
+            edits,
+            edit => Assert.Equal(
+                "ResultValue",
+                edit.GetProperty("newText").GetString()));
+
+        var setRename = await SendPositionRequestAsync(
+            process,
+            3,
+            "textDocument/rename",
+            uri,
+            text,
+            "Value",
+            2,
+            new { newName = "OtherValue" });
+        var setEditedLines = setRename
+            .GetProperty("result")
+            .GetProperty("changes")
+            .GetProperty(uri)
+            .EnumerateArray()
+            .Select(edit => edit
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32())
+            .ToArray();
+        Assert.Equal([1, 3, 5, 9, 10], setEditedLines);
+
+        await process.ShutdownAsync(4);
+    }
+
+    [Fact]
+    public async Task Server_uses_canonical_property_family_casing_from_a_setter()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/PropertyCasing.cls";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"PropertyCasing\"",
+            "Public Property Get Value() As Variant",
+            "End Property",
+            "Public Property Let VALUE(ByVal assigned As Variant)",
+            "End Property",
+            "Public Property Set VALUE(ByVal assigned As Object)",
+            "End Property",
+            "Public Sub Run()",
+            "    Dim current As Variant",
+            "    current = Value",
+            "    Value = current",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var prepare = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/prepareRename",
+            uri,
+            text,
+            "Property Set VALUE",
+            "Property Set ".Length);
+        var prepareResult = prepare.GetProperty("result");
+        Assert.Equal(
+            5,
+            prepareResult
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32());
+        Assert.Equal(
+            "Value",
+            prepareResult.GetProperty("placeholder").GetString());
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            3,
+            "textDocument/rename",
+            uri,
+            text,
+            "Property Set VALUE",
+            "Property Set ".Length,
+            new { newName = "VALUE" });
+        Assert.True(
+            rename.TryGetProperty("result", out var result),
+            rename.ToString());
+        var edits = result
+            .GetProperty("changes")
+            .GetProperty(uri)
+            .EnumerateArray()
+            .ToArray();
+
+        Assert.Equal(
+            [1, 3, 5, 9, 10],
+            edits.Select(edit => edit
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32()));
+        Assert.All(edits, edit => Assert.Equal(
+            "VALUE",
+            edit.GetProperty("newText").GetString()));
+
+        await process.ShutdownAsync(4);
+    }
+
+    [Fact]
+    public async Task Server_rejects_duplicate_property_accessors_as_a_collision()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/DuplicateProperty.cls";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"DuplicateProperty\"",
+            "Public Property Get Value() As Variant",
+            "End Property",
+            "Public Property Get Value() As Variant",
+            "End Property",
+            "Public Property Let Value(ByVal assigned As Variant)",
+            "End Property",
+            "Public Property Set Value(ByVal assigned As Object)",
+            "End Property"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            uri,
+            text,
+            "Value",
+            0,
+            new { newName = "Renamed" });
+        var error = rename.GetProperty("error");
+        var conflict = Assert.Single(error
+            .GetProperty("data")
+            .GetProperty("conflicts")
+            .EnumerateArray());
+
+        Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+        Assert.Equal(
+            "sameScopeCollision",
+            error.GetProperty("data").GetProperty("reason").GetString());
+        Assert.Equal(
+            3,
+            conflict.GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32());
+        Assert.False(rename.TryGetProperty("result", out _));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_rejects_an_underscore_in_an_event_rename_name()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/EventNames.cls";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"EventNames\"",
+            "Public Event Saved()",
+            "Public Sub Fire()",
+            "    RaiseEvent Saved",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            uri,
+            text,
+            "Saved",
+            0,
+            new { newName = "Bad_Name" });
+        var error = rename.GetProperty("error");
+
+        Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+        Assert.Equal(
+            "invalidName",
+            error.GetProperty("data").GetProperty("reason").GetString());
+        Assert.False(rename.TryGetProperty("result", out _));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_rejects_an_unchanged_underscore_event_name()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/RecoveredEventName.cls";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"RecoveredEventName\"",
+            "Public Event Bad_Name()",
+            "Public Sub Fire()",
+            "    RaiseEvent Bad_Name",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            uri,
+            text,
+            "Bad_Name",
+            0,
+            new { newName = "Bad_Name" });
+        var error = rename.GetProperty("error");
+
+        Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+        Assert.Equal(
+            "invalidName",
+            error.GetProperty("data").GetProperty("reason").GetString());
+        Assert.False(rename.TryGetProperty("result", out _));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_rejects_a_rename_that_would_capture_a_target_reference()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string libraryUri = "file:///C:/work/Library.bas";
+        var libraryText = string.Join('\n', [
+            "Attribute VB_Name = \"Library\"",
+            "Public Function BuildValue() As Long",
+            "    BuildValue = 1",
+            "End Function"
+        ]);
+        const string callerUri = "file:///C:/work/Caller.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"Caller\"",
+            "Public Sub Run()",
+            "    Dim CreateValue As Long",
+            "    Debug.Print BuildValue",
+            "    Debug.Print CreateValue",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(libraryUri, libraryText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            callerUri,
+            callerText,
+            "BuildValue",
+            0,
+            new { newName = "CreateValue" });
+        var error = rename.GetProperty("error");
+
+        Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+        Assert.Equal(
+            "resolutionChanged",
+            error.GetProperty("data").GetProperty("reason").GetString());
+        Assert.Contains(
+            "binding",
+            error.GetProperty("message").GetString(),
+            StringComparison.OrdinalIgnoreCase);
+        Assert.False(rename.TryGetProperty("result", out _));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_reports_every_same_scope_rename_collision_in_source_order()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/Collisions.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"Collisions\"",
+            "Public Sub Run(ByVal Taken As Long)",
+            "    Dim Original As Long",
+            "    Dim Taken As Long",
+            "    Debug.Print Original",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            uri,
+            text,
+            "Original",
+            0,
+            new { newName = "Taken" });
+        var error = rename.GetProperty("error");
+        var conflicts = error
+            .GetProperty("data")
+            .GetProperty("conflicts")
+            .EnumerateArray()
+            .ToArray();
+
+        Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+        Assert.Equal(
+            "sameScopeCollision",
+            error.GetProperty("data").GetProperty("reason").GetString());
+        Assert.Equal(2, conflicts.Length);
+        Assert.Equal(
+            [1, 3],
+            conflicts.Select(conflict => conflict
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32()));
+        Assert.All(conflicts, conflict =>
+        {
+            Assert.Equal(
+                "sourceDeclaration",
+                conflict.GetProperty("collisionKind").GetString());
+            Assert.Equal("Taken", conflict.GetProperty("name").GetString());
+            Assert.Equal(uri, conflict.GetProperty("uri").GetString());
+        });
+        Assert.False(rename.TryGetProperty("result", out _));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_rejects_a_procedure_rename_to_its_local_name()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ProcedureLocalCollision.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ProcedureLocalCollision\"",
+            "Public Function BuildValue() As Long",
+            "    Dim Taken As Long",
+            "    BuildValue = Taken",
+            "End Function"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            uri,
+            text,
+            "BuildValue",
+            0,
+            new { newName = "Taken" });
+        var error = rename.GetProperty("error");
+        var conflict = Assert.Single(error
+            .GetProperty("data")
+            .GetProperty("conflicts")
+            .EnumerateArray());
+
+        Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+        Assert.Equal(
+            "sameScopeCollision",
+            error.GetProperty("data").GetProperty("reason").GetString());
+        Assert.Equal(
+            2,
+            conflict.GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32());
+        Assert.False(rename.TryGetProperty("result", out _));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_rejects_a_procedure_rename_to_a_module_enum_member()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ProcedureEnumCollision.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ProcedureEnumCollision\"",
+            "Public Enum Choice",
+            "    Taken",
+            "End Enum",
+            "Public Function BuildValue() As Long",
+            "    BuildValue = 1",
+            "End Function"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            uri,
+            text,
+            "BuildValue",
+            0,
+            new { newName = "Taken" });
+        var error = rename.GetProperty("error");
+        var conflict = Assert.Single(error
+            .GetProperty("data")
+            .GetProperty("conflicts")
+            .EnumerateArray());
+
+        Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+        Assert.Equal(
+            "sameScopeCollision",
+            error.GetProperty("data").GetProperty("reason").GetString());
+        Assert.Equal(
+            2,
+            conflict.GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32());
+        Assert.False(rename.TryGetProperty("result", out _));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_rejects_a_public_enum_rename_to_a_project_public_type()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string enumUri = "file:///C:/work/ProjectEnum.bas";
+        var enumText = string.Join('\n', [
+            "Attribute VB_Name = \"ProjectEnum\"",
+            "Public Enum Original",
+            "    FirstValue",
+            "End Enum"
+        ]);
+        const string typeUri = "file:///C:/work/ProjectType.bas";
+        var typeText = string.Join('\n', [
+            "Attribute VB_Name = \"ProjectType\"",
+            "Public Type Taken",
+            "    Value As Long",
+            "End Type"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(enumUri, enumText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(typeUri, typeText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            enumUri,
+            enumText,
+            "Original",
+            0,
+            new { newName = "Taken" });
+        var error = rename.GetProperty("error");
+        var conflict = Assert.Single(error
+            .GetProperty("data")
+            .GetProperty("conflicts")
+            .EnumerateArray());
+
+        Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+        Assert.Equal(
+            "sameScopeCollision",
+            error.GetProperty("data").GetProperty("reason").GetString());
+        Assert.Equal(typeUri, conflict.GetProperty("uri").GetString());
+        Assert.Equal(
+            1,
+            conflict.GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32());
+        Assert.False(rename.TryGetProperty("result", out _));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_allows_a_sub_rename_to_a_local_name_in_its_body()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/SubLocalNonCollision.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"SubLocalNonCollision\"",
+            "Public Sub Original()",
+            "    Dim Taken As Long",
+            "    Debug.Print Taken",
+            "End Sub",
+            "Public Sub Invoke()",
+            "    Original",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            uri,
+            text,
+            "Original",
+            0,
+            new { newName = "Taken" });
+        var edits = rename
+            .GetProperty("result")
+            .GetProperty("changes")
+            .GetProperty(uri)
+            .EnumerateArray()
+            .ToArray();
+
+        Assert.Equal(
+            [1, 6],
+            edits.Select(edit => edit
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32()));
+        Assert.All(edits, edit => Assert.Equal(
+            "Taken",
+            edit.GetProperty("newText").GetString()));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_allows_a_function_rename_to_an_enum_type_name()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/FunctionEnumTypeNonCollision.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"FunctionEnumTypeNonCollision\"",
+            "Public Enum Taken",
+            "    FirstValue",
+            "End Enum",
+            "Public Function Original() As Long",
+            "    Original = 1",
+            "End Function",
+            "Public Sub Invoke()",
+            "    Debug.Print Original",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            uri,
+            text,
+            "Original",
+            0,
+            new { newName = "Taken" });
+        Assert.True(
+            rename.TryGetProperty("result", out var result),
+            rename.ToString());
+        var edits = result
+            .GetProperty("changes")
+            .GetProperty(uri)
+            .EnumerateArray()
+            .ToArray();
+
+        Assert.Equal(
+            [4, 5, 8],
+            edits.Select(edit => edit
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32()));
+        Assert.All(edits, edit => Assert.Equal(
+            "Taken",
+            edit.GetProperty("newText").GetString()));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_allows_the_same_member_name_in_different_udts()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/UdtMemberScopes.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"UdtMemberScopes\"",
+            "Private Type UFirst",
+            "    Original As Long",
+            "End Type",
+            "Private Type USecond",
+            "    Taken As Long",
+            "End Type",
+            "Public Sub Invoke()",
+            "    Dim recordValue As UFirst",
+            "    Dim sink As Long",
+            "    sink = recordValue.Original",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            uri,
+            text,
+            "Original",
+            0,
+            new { newName = "Taken" });
+        Assert.True(
+            rename.TryGetProperty("result", out var result),
+            rename.ToString());
+        var edits = result
+            .GetProperty("changes")
+            .GetProperty(uri)
+            .EnumerateArray()
+            .ToArray();
+
+        Assert.Equal(
+            [2, 10],
+            edits.Select(edit => edit
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32()));
+        Assert.All(edits, edit => Assert.Equal(
+            "Taken",
+            edit.GetProperty("newText").GetString()));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_rejects_the_same_member_name_in_one_udt()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/UdtMemberCollision.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"UdtMemberCollision\"",
+            "Private Type Record",
+            "    Original As Long",
+            "    Taken As Long",
+            "End Type"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            uri,
+            text,
+            "Original",
+            0,
+            new { newName = "Taken" });
+        var error = rename.GetProperty("error");
+        var conflict = Assert.Single(error
+            .GetProperty("data")
+            .GetProperty("conflicts")
+            .EnumerateArray());
+
+        Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+        Assert.Equal(
+            "sameScopeCollision",
+            error.GetProperty("data").GetProperty("reason").GetString());
+        Assert.Equal(uri, conflict.GetProperty("uri").GetString());
+        Assert.Equal(
+            3,
+            conflict.GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32());
+        Assert.False(rename.TryGetProperty("result", out _));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_does_not_rename_an_unqualified_udt_member_name()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/UdtMemberQualification.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"UdtMemberQualification\"",
+            "Private Type Record",
+            "    Original As Long",
+            "End Type",
+            "Public Sub Run()",
+            "    Dim sink As Long",
+            "    Original = 1",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            uri,
+            text,
+            "Original",
+            0,
+            new { newName = "Renamed" });
+        Assert.True(
+            rename.TryGetProperty("result", out var result),
+            rename.ToString());
+        var edit = Assert.Single(result
+            .GetProperty("changes")
+            .GetProperty(uri)
+            .EnumerateArray());
+
+        Assert.Equal(
+            2,
+            edit.GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32());
+        Assert.Equal("Renamed", edit.GetProperty("newText").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_keeps_udt_members_bound_when_a_class_has_the_same_name()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string classUri = "file:///C:/work/Customer.cls";
+        var classText = string.Join('\n', [
+            "Attribute VB_Name = \"Customer\"",
+            "Public Function ClassMethod() As Long",
+            "    ClassMethod = 1",
+            "End Function"
+        ]);
+        const string moduleUri = "file:///C:/work/UdtOwner.bas";
+        var moduleText = string.Join('\n', [
+            "Attribute VB_Name = \"UdtOwner\"",
+            "Private Type Customer",
+            "    Field As Long",
+            "End Type",
+            "Public Sub Run()",
+            "    Dim item As Customer",
+            "    Dim sink As Long",
+            "    sink = item.Field",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(classUri, classText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(moduleUri, moduleText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            moduleUri,
+            moduleText,
+            "Field",
+            0,
+            new { newName = "ClassMethod" });
+        Assert.True(
+            rename.TryGetProperty("result", out var result),
+            rename.ToString());
+        var edits = result
+            .GetProperty("changes")
+            .GetProperty(moduleUri)
+            .EnumerateArray()
+            .ToArray();
+
+        Assert.Equal(
+            [2, 7],
+            edits.Select(edit => edit
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32()));
+        Assert.All(edits, edit => Assert.Equal(
+            "ClassMethod",
+            edit.GetProperty("newText").GetString()));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_preserves_preexisting_unresolved_occurrences_during_rename()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string libraryUri = "file:///C:/work/Library.bas";
+        var libraryText = string.Join('\n', [
+            "Attribute VB_Name = \"Library\"",
+            "Public Function BuildValue() As Long",
+            "    BuildValue = 1",
+            "End Function"
+        ]);
+        const string callerUri = "file:///C:/work/Caller.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"Caller\"",
+            "Public Sub Run()",
+            "    Debug.Print Library.BuildValue",
+            "    Debug.Print CreateValue",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(libraryUri, libraryText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            callerUri,
+            callerText,
+            "BuildValue",
+            0,
+            new { newName = "CreateValue" });
+        var error = rename.GetProperty("error");
+
+        Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+        Assert.Equal(
+            "resolutionChanged",
+            error.GetProperty("data").GetProperty("reason").GetString());
+        Assert.Contains(
+            "classification",
+            error.GetProperty("message").GetString(),
+            StringComparison.OrdinalIgnoreCase);
+        Assert.False(rename.TryGetProperty("result", out _));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_allows_qualified_rename_with_a_same_named_other_module_member()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string firstUri = "file:///C:/work/First.bas";
+        var firstText = string.Join('\n', [
+            "Attribute VB_Name = \"First\"",
+            "Public Function BuildValue() As Long",
+            "    BuildValue = 1",
+            "End Function"
+        ]);
+        const string secondUri = "file:///C:/work/Second.bas";
+        var secondText = string.Join('\n', [
+            "Attribute VB_Name = \"Second\"",
+            "Public Function CreateValue() As Long",
+            "    CreateValue = 2",
+            "End Function"
+        ]);
+        const string callerUri = "file:///C:/work/Caller.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"Caller\"",
+            "Public Sub Run()",
+            "    Debug.Print First.BuildValue",
+            "    Debug.Print Second.CreateValue",
+            "    Debug.Print Unknown.BuildValue",
+            "End Sub"
+        ]);
+        const string brokenUri = "file:///C:/work/Broken.bas";
+        var brokenText = string.Join('\n', [
+            "Attribute VB_Name = \"Broken\"",
+            "Public Sub Broken(",
+            "    MissingName"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(firstUri, firstText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(secondUri, secondText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(brokenUri, brokenText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            callerUri,
+            callerText,
+            "BuildValue",
+            0,
+            new { newName = "CreateValue" });
+        var changes = rename.GetProperty("result").GetProperty("changes");
+
+        Assert.True(changes.TryGetProperty(firstUri, out var firstEdits));
+        Assert.True(changes.TryGetProperty(callerUri, out var callerEdits));
+        Assert.False(changes.TryGetProperty(secondUri, out _));
+        Assert.False(changes.TryGetProperty(brokenUri, out _));
+        Assert.Equal(2, firstEdits.GetArrayLength());
+        Assert.Single(callerEdits.EnumerateArray());
+        Assert.All(
+            firstEdits.EnumerateArray().Concat(callerEdits.EnumerateArray()),
+            edit => Assert.Equal(
+                "CreateValue",
+                edit.GetProperty("newText").GetString()));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_preserves_an_affected_preexisting_ambiguous_classification()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string targetUri = "file:///C:/work/Target.bas";
+        var targetText = string.Join('\n', [
+            "Attribute VB_Name = \"Target\"",
+            "Public Function BuildValue() As Long",
+            "    BuildValue = 1",
+            "End Function"
+        ]);
+        const string firstOtherUri = "file:///C:/work/FirstOther.bas";
+        var firstOtherText = string.Join('\n', [
+            "Attribute VB_Name = \"FirstOther\"",
+            "Public Function CreateValue() As Long",
+            "End Function"
+        ]);
+        const string secondOtherUri = "file:///C:/work/SecondOther.bas";
+        var secondOtherText = string.Join('\n', [
+            "Attribute VB_Name = \"SecondOther\"",
+            "Public Function CreateValue() As Long",
+            "End Function"
+        ]);
+        const string callerUri = "file:///C:/work/Caller.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"Caller\"",
+            "Public Sub Run()",
+            "    Debug.Print Target.BuildValue",
+            "    Debug.Print CreateValue",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(targetUri, targetText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(firstOtherUri, firstOtherText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(secondOtherUri, secondOtherText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            callerUri,
+            callerText,
+            "BuildValue",
+            0,
+            new { newName = "CreateValue" });
+        var changes = rename.GetProperty("result").GetProperty("changes");
+
+        Assert.True(changes.TryGetProperty(targetUri, out _));
+        Assert.True(changes.TryGetProperty(callerUri, out _));
+        Assert.False(changes.TryGetProperty(firstOtherUri, out _));
+        Assert.False(changes.TryGetProperty(secondOtherUri, out _));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_reports_analysis_incomplete_for_an_ambiguous_rename_target()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string firstUri = "file:///C:/work/First.bas";
+        const string firstText =
+            "Attribute VB_Name = \"First\"\n"
+            + "Public Function SharedValue() As Long\n"
+            + "End Function";
+        const string secondUri = "file:///C:/work/Second.bas";
+        const string secondText =
+            "Attribute VB_Name = \"Second\"\n"
+            + "Public Function SharedValue() As Long\n"
+            + "End Function";
+        const string callerUri = "file:///C:/work/Caller.bas";
+        const string callerText =
+            "Attribute VB_Name = \"Caller\"\n"
+            + "Public Sub Run()\n"
+            + "    Debug.Print SharedValue\n"
+            + "End Sub";
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(firstUri, firstText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(secondUri, secondText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var prepare = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/prepareRename",
+            callerUri,
+            callerText,
+            "SharedValue");
+        var prepareError = prepare.GetProperty("error");
+        Assert.Equal(-32803, prepareError.GetProperty("code").GetInt32());
+        Assert.Equal(
+            "analysisIncomplete",
+            prepareError
+                .GetProperty("data")
+                .GetProperty("reason")
+                .GetString());
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            3,
+            "textDocument/rename",
+            callerUri,
+            callerText,
+            "SharedValue",
+            0,
+            new { newName = "RenamedValue" });
+        var renameError = rename.GetProperty("error");
+        Assert.Equal(-32803, renameError.GetProperty("code").GetInt32());
+        Assert.Equal(
+            "analysisIncomplete",
+            renameError
+                .GetProperty("data")
+                .GetProperty("reason")
+                .GetString());
+
+        await process.ShutdownAsync(4);
     }
 
     [Fact]

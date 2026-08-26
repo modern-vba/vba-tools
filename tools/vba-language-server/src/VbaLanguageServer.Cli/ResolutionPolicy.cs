@@ -31,11 +31,18 @@ internal sealed class VbaResolutionPolicy
     public VbaSourceDefinition? ResolveRankedCandidates(
         IEnumerable<VbaRankedDefinition> candidates,
         VbaProjectReferenceSelection? referenceSelection)
+        => ResolveRankedCandidatesOutcome(
+            candidates,
+            referenceSelection).Definition;
+
+    public VbaNameResolutionOutcome ResolveRankedCandidatesOutcome(
+        IEnumerable<VbaRankedDefinition> candidates,
+        VbaProjectReferenceSelection? referenceSelection)
     {
         var rankedCandidates = candidates.ToArray();
         if (rankedCandidates.Length == 0)
         {
-            return null;
+            return VbaNameResolutionOutcome.Unresolved;
         }
 
         var bestRank = rankedCandidates.Min(candidate => candidate.Rank);
@@ -46,7 +53,7 @@ internal sealed class VbaResolutionPolicy
             bestCandidates.Select(candidate => candidate.Definition));
         if (bestDefinitions.Count == 1)
         {
-            return bestDefinitions[0];
+            return VbaNameResolutionOutcome.Resolved(bestDefinitions[0]);
         }
 
         if (bestRank == ReferenceRank && referenceSelection?.MainVbaProjectReference is not null)
@@ -58,11 +65,12 @@ internal sealed class VbaResolutionPolicy
                 .ToArray();
             if (mainReferenceCandidates.Length == 1)
             {
-                return mainReferenceCandidates[0];
+                return VbaNameResolutionOutcome.Resolved(
+                    mainReferenceCandidates[0]);
             }
         }
 
-        return null;
+        return VbaNameResolutionOutcome.Ambiguous;
     }
 
     public VbaSourceDefinition? ResolveReferenceCandidates(
@@ -81,3 +89,33 @@ internal sealed class VbaResolutionPolicy
 /// <param name="Definition">The candidate definition.</param>
 /// <param name="Rank">The lower numeric precedence rank.</param>
 internal sealed record VbaRankedDefinition(VbaSourceDefinition Definition, int Rank);
+
+internal enum VbaNameResolutionKind
+{
+    Resolved,
+    Unresolved,
+    Ambiguous,
+    AnalysisIncomplete,
+    NonSemantic
+}
+
+internal sealed record VbaNameResolutionOutcome(
+    VbaNameResolutionKind Kind,
+    VbaSourceDefinition? Definition)
+{
+    public static VbaNameResolutionOutcome Unresolved { get; } =
+        new(VbaNameResolutionKind.Unresolved, Definition: null);
+
+    public static VbaNameResolutionOutcome Ambiguous { get; } =
+        new(VbaNameResolutionKind.Ambiguous, Definition: null);
+
+    public static VbaNameResolutionOutcome AnalysisIncomplete { get; } =
+        new(VbaNameResolutionKind.AnalysisIncomplete, Definition: null);
+
+    public static VbaNameResolutionOutcome NonSemantic { get; } =
+        new(VbaNameResolutionKind.NonSemantic, Definition: null);
+
+    public static VbaNameResolutionOutcome Resolved(
+        VbaSourceDefinition definition)
+        => new(VbaNameResolutionKind.Resolved, definition);
+}

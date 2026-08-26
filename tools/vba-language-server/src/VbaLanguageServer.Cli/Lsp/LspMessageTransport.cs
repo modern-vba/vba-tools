@@ -93,7 +93,42 @@ internal sealed class LspMessageTransport
         int code,
         string message,
         CancellationToken cancellationToken)
+        => WriteErrorResponseAsync(
+            idNode,
+            code,
+            message,
+            data: null,
+            cancellationToken);
+
+    /// <summary>
+    /// Writes a JSON-RPC error response with structured error data.
+    /// </summary>
+    /// <param name="idNode">The request id node to echo.</param>
+    /// <param name="code">The JSON-RPC error code.</param>
+    /// <param name="message">The JSON-RPC error message.</param>
+    /// <param name="data">The structured error data.</param>
+    /// <param name="cancellationToken">A cancellation token for the write.</param>
+    public Task WriteErrorResponseAsync(
+        JsonNode? idNode,
+        int code,
+        string message,
+        object? data,
+        CancellationToken cancellationToken)
     {
+        if (data is null)
+        {
+            return WriteMessageAsync(new
+            {
+                jsonrpc = "2.0",
+                id = idNode,
+                error = new
+                {
+                    code,
+                    message
+                }
+            }, cancellationToken);
+        }
+
         return WriteMessageAsync(new
         {
             jsonrpc = "2.0",
@@ -101,7 +136,8 @@ internal sealed class LspMessageTransport
             error = new
             {
                 code,
-                message
+                message,
+                data
             }
         }, cancellationToken);
     }

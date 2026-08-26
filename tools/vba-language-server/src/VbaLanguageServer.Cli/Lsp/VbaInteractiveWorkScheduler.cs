@@ -599,7 +599,10 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
                         executeAsync(
                             snapshot,
                             executeCancellationToken,
-                            releaseCancellationOwnership));
+                            releaseCancellationOwnership),
+                    snapshot is IDisposable disposable
+                        ? disposable.Dispose
+                        : null);
             },
             coalescingKey: null,
             requestId,
@@ -1324,6 +1327,7 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
         }
         finally
         {
+            work.CapturedRead?.Dispose();
             var completedAt = Stopwatch.GetTimestamp();
             RecordCompletion(new VbaInteractiveWorkCompletionTiming(
                 work.InputSequence,
@@ -1511,6 +1515,7 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
         bool cancelled,
         Exception? failure)
     {
+        work.CapturedRead?.Dispose();
         var completedAt = Stopwatch.GetTimestamp();
         RecordCompletion(new VbaInteractiveWorkCompletionTiming(
             work.InputSequence,
@@ -1821,6 +1826,21 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
         Task Execution,
         VbaInteractiveWorkClass WorkClass);
 
-    private sealed record VbaInteractiveCapturedRead(
-        Func<CancellationToken, Action, Task> ExecuteAsync);
+    private sealed class VbaInteractiveCapturedRead : IDisposable
+    {
+        private Action? cleanup;
+
+        public VbaInteractiveCapturedRead(
+            Func<CancellationToken, Action, Task> executeAsync,
+            Action? cleanup = null)
+        {
+            ExecuteAsync = executeAsync;
+            this.cleanup = cleanup;
+        }
+
+        public Func<CancellationToken, Action, Task> ExecuteAsync { get; }
+
+        public void Dispose()
+            => Interlocked.Exchange(ref cleanup, null)?.Invoke();
+    }
 }

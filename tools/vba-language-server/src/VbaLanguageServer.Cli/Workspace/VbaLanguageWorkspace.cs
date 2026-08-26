@@ -25,6 +25,10 @@ public sealed record VbaProjectSnapshot(
 
     internal IReadOnlySet<string> ExistingOpenSourcePaths { get; init; } =
         new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    internal IReadOnlyDictionary<string, bool> ManifestBarrierOverrides
+        { get; init; } = new Dictionary<string, bool>(
+            StringComparer.OrdinalIgnoreCase);
 }
 
 /// <summary>
@@ -40,6 +44,8 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         diskSourceFailures = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> excludedSourceUris = new(StringComparer.OrdinalIgnoreCase);
     private readonly VbaSourceRevisionHistory sourceRevisionHistory = new();
+    private readonly VbaSourceRevisionHistory renameSourceRevisionHistory =
+        new(retainOnlyWhileCapturesActive: true);
     private readonly IVbaProjectDiskInventory diskInventory;
     private readonly VbaProjectSourceDocumentCache diskDocumentCache;
     private readonly VbaProjectSnapshotProvider snapshotProvider;
@@ -49,6 +55,7 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
     private long nextDocumentLifecycleEpoch;
     private long nextDocumentReservationToken;
     private long workspaceVersion;
+    private long renameSourceVersion;
 
     internal event Action<string>? DiskSourceDiagnosticsChanged;
 
@@ -159,6 +166,17 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
             lock (gate)
             {
                 return sourceRevisionHistory.Count;
+            }
+        }
+    }
+
+    internal int RetainedRenameSourceRevisionCount
+    {
+        get
+        {
+            lock (gate)
+            {
+                return renameSourceRevisionHistory.Count;
             }
         }
     }
@@ -969,6 +987,62 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         CancellationToken cancellationToken)
         => CreateProjectSnapshot(activeUri, cancellationToken).SemanticInventory;
 
+    VbaRenameProjectSnapshotCapture
+        IVbaInteractiveWorkspaceCapture.CaptureRenameProjectSnapshot(
+            string activeUri,
+            CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        WorkspaceProjectSnapshotCapture capture;
+        IDisposable workspaceRevisionLease;
+        IDisposable renameRevisionLease;
+        long capturedRenameSourceVersion;
+        lock (gate)
+        {
+            capture = CaptureProjectSnapshotState(includeActiveUris: false);
+            workspaceRevisionLease = sourceRevisionHistory.BeginCapture(
+                capture.WorkspaceState.Version);
+            capturedRenameSourceVersion = renameSourceVersion;
+            renameRevisionLease = renameSourceRevisionHistory.BeginCapture(
+                capturedRenameSourceVersion);
+        }
+
+        try
+        {
+            using (capture.RevisionCapture)
+            {
+                var snapshot = snapshotProvider.CreateProjectSnapshot(
+                    activeUri,
+                    capture.WorkspaceState,
+                    cancellationToken);
+                ApplyColdDiskSourceDiagnostics(snapshot);
+                var sourceUris = snapshot.SourceDocuments.Keys.ToArray();
+                return new VbaRenameProjectSnapshotCapture(
+                    snapshot.SemanticInventory,
+                    () => HasRenameSourceChangedSince(
+                        snapshot.Resolution,
+                        activeUri,
+                        capturedRenameSourceVersion,
+                        sourceUris,
+                        snapshot.ManifestBarrierOverrides),
+                    new CombinedRevisionLease(
+                        workspaceRevisionLease,
+                        renameRevisionLease),
+                    snapshot.DiskSourceFailures.Count == 0
+                        ? null
+                        : "Rename cannot prove binding preservation because "
+                            + "one or more project sources could not be read.");
+            }
+        }
+        catch
+        {
+            capture.RevisionCapture.Dispose();
+            workspaceRevisionLease.Dispose();
+            renameRevisionLease.Dispose();
+            throw;
+        }
+    }
+
     IReadOnlyList<VbaSemanticInventory>
         IVbaInteractiveWorkspaceCapture.CaptureWorkspaceSemanticInventories(
             CancellationToken cancellationToken)
@@ -982,6 +1056,36 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
             int expectedVersion,
             CancellationToken cancellationToken)
         => GetDocumentSnapshot(uri, expectedVersion, cancellationToken);
+
+    private bool HasRenameSourceChangedSince(
+        VbaProjectResolution resolution,
+        string activeUri,
+        long capturedRenameSourceVersion,
+        IReadOnlyList<string> sourceUris,
+        IReadOnlyDictionary<string, bool> manifestBarrierOverrides)
+    {
+        foreach (var (sourceUri, revision) in
+            renameSourceRevisionHistory.CaptureEntries())
+        {
+            if (revision <= capturedRenameSourceVersion)
+            {
+                continue;
+            }
+
+            if (diskInventory.ContainsSource(
+                    resolution,
+                    sourceUri,
+                    manifestBarrierOverrides)
+                || SameDocumentIdentity(activeUri, sourceUri)
+                || sourceUris.Any(candidate =>
+                    SameDocumentIdentity(candidate, sourceUri)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     private VbaWorkspaceSnapshotState CopyWorkspaceState()
     {
@@ -1215,6 +1319,7 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         long lifecycleEpoch,
         VbaDocumentAnalysis? previousAnalysis)
     {
+        MarkRenameSourceChanged(uri);
         var existingKey = FindAcceptedRevisionKey(uri);
         if (existingKey is not null)
         {
@@ -1389,7 +1494,8 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
     }
 
     private bool RecordDiskSourceFailure(
-        VbaProjectDiskSourceFailure failure)
+        VbaProjectDiskSourceFailure failure,
+        bool participatesInRenameFence = true)
     {
         lock (gate)
         {
@@ -1429,7 +1535,9 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
             }
 
             diskSourceFailures[failure.Uri] = failure;
-            MarkWorkspaceChanged(failure.Uri);
+            MarkWorkspaceChanged(
+                failure.Uri,
+                participatesInRenameFence);
             return true;
         }
     }
@@ -1463,7 +1571,9 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
 
         foreach (var failure in snapshot.DiskSourceFailures)
         {
-            if (RecordDiskSourceFailure(failure))
+            if (RecordDiskSourceFailure(
+                failure,
+                participatesInRenameFence: false))
             {
                 changedUris.Add(failure.Uri);
             }
@@ -1532,12 +1642,24 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         }
     }
 
-    private void MarkWorkspaceChanged(string uri)
+    private void MarkWorkspaceChanged(
+        string uri,
+        bool participatesInRenameFence = true)
     {
         workspaceVersion++;
         workspaceSnapshotState = null;
         sourceRevisionHistory.Record(uri, workspaceVersion);
+        if (participatesInRenameFence)
+        {
+            MarkRenameSourceChanged(uri);
+        }
         snapshotProvider.InvalidateSource(uri, workspaceVersion);
+    }
+
+    private void MarkRenameSourceChanged(string uri)
+    {
+        renameSourceVersion++;
+        renameSourceRevisionHistory.Record(uri, renameSourceVersion);
     }
 
     private IReadOnlyList<string> CaptureTrackedDocumentUris()
@@ -1577,6 +1699,20 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         VbaWorkspaceSnapshotState WorkspaceState,
         IReadOnlyList<string> ActiveUris,
         IDisposable RevisionCapture);
+
+    private sealed class CombinedRevisionLease(
+        IDisposable first,
+        IDisposable second) : IDisposable
+    {
+        private IDisposable? firstLease = first;
+        private IDisposable? secondLease = second;
+
+        public void Dispose()
+        {
+            Interlocked.Exchange(ref firstLease, null)?.Dispose();
+            Interlocked.Exchange(ref secondLease, null)?.Dispose();
+        }
+    }
 
     private enum WorkspaceDocumentAuthority
     {

@@ -3,7 +3,10 @@ using VbaLanguageServer.Syntax;
 
 namespace VbaLanguageServer.SourceModel;
 
-internal sealed record VbaResolvedType(string Name, string? ReferenceName);
+internal sealed record VbaResolvedType(
+    string Name,
+    string? ReferenceName,
+    VbaSourceDefinition? SourceDefinition);
 
 /// <summary>
 /// Propagates resolved VBA types through expressions and member chains.
@@ -215,6 +218,27 @@ internal sealed class VbaTypeResolution
         return true;
     }
 
+    public bool TryClassifyTypeReferenceDefinition(
+        VbaSourceDocument currentDocument,
+        VbaPositionTypeReferenceSyntax typeReference,
+        VbaPositionIdentifierSyntax identifier,
+        out VbaNameResolutionOutcome outcome)
+    {
+        if (typeReference.Name is null
+            || typeReference.Name.Range != identifier.Range)
+        {
+            outcome = VbaNameResolutionOutcome.AnalysisIncomplete;
+            return false;
+        }
+
+        outcome = nameResolution.ResolveTypeDefinitionOutcome(
+            currentDocument,
+            new VbaTypeReference(
+                typeReference.Name.Name,
+                typeReference.Qualifier?.Name));
+        return true;
+    }
+
     public bool TryResolveTypeReferenceDefinition(
         VbaSourceDocument currentDocument,
         VbaTypeReference typeReference,
@@ -225,16 +249,18 @@ internal sealed class VbaTypeResolution
     }
 
     public IReadOnlyList<VbaSourceDefinition> GetMembersOfType(VbaSourceDocument currentDocument, VbaResolvedType resolvedType)
-        => nameResolution.GetMembersOfType(currentDocument, resolvedType.Name, resolvedType.ReferenceName);
+        => nameResolution.GetMembersOfType(currentDocument, resolvedType);
 
     public VbaSourceDefinition? ResolveMember(VbaSourceDocument currentDocument, VbaResolvedType resolvedType, string memberName)
-        => nameResolution.ResolveMember(currentDocument, resolvedType.Name, resolvedType.ReferenceName, memberName);
+        => nameResolution.ResolveMember(
+            currentDocument,
+            resolvedType,
+            memberName);
 
     public VbaSourceDefinition? ResolveEvent(VbaSourceDocument currentDocument, VbaResolvedType resolvedType, string eventName)
         => nameResolution.ResolveMember(
             currentDocument,
-            resolvedType.Name,
-            resolvedType.ReferenceName,
+            resolvedType,
             eventName,
             VbaSourceDefinitionKind.Event);
 
@@ -286,5 +312,8 @@ internal sealed class VbaTypeResolution
             definition.Name,
             definition.Identity.Origin == VbaDefinitionOrigin.ProjectReference
                 ? definition.ModuleName
-                : null);
+                : null,
+            definition.Identity.Origin == VbaDefinitionOrigin.ProjectReference
+                ? null
+                : definition);
 }

@@ -334,7 +334,11 @@ internal sealed class VbaProjectSnapshotProvider
                 inventorySnapshot.Failures,
                 inventorySnapshot.ExistingOpenSourcePaths,
                 capture.ReferenceCatalogState.CatalogSet,
-                capture.HostClassProjectionState.Snapshot);
+                capture.HostClassProjectionState.Snapshot) with
+            {
+                ManifestBarrierOverrides =
+                    capture.ManifestBarriers.Overrides
+            };
             buildObserver.BeforeStore(workspaceState.Version, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             StoreCachedSnapshot(

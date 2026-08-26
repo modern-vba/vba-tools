@@ -15,6 +15,15 @@ public interface IVbaInteractiveWorkspaceCapture
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Captures the immutable semantic input and source-revision fence used by Rename.
+    /// </summary>
+    VbaRenameProjectSnapshotCapture CaptureRenameProjectSnapshot(
+        string activeUri,
+        CancellationToken cancellationToken = default)
+        => VbaRenameProjectSnapshotCapture.CreateStable(
+            CaptureProjectSemanticInventory(activeUri, cancellationToken));
+
+    /// <summary>
     /// Captures one semantic inventory for every distinct tracked project scope.
     /// </summary>
     IReadOnlyList<VbaSemanticInventory> CaptureWorkspaceSemanticInventories(
@@ -27,4 +36,43 @@ public interface IVbaInteractiveWorkspaceCapture
         string uri,
         int expectedVersion,
         CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// Retains one Rename request's immutable semantic snapshot and freshness fence.
+/// </summary>
+public sealed class VbaRenameProjectSnapshotCapture : IDisposable
+{
+    private readonly Func<bool> hasParticipatingSourceChanged;
+    private IDisposable? revisionLease;
+
+    internal VbaRenameProjectSnapshotCapture(
+        VbaSemanticInventory semanticInventory,
+        Func<bool> hasParticipatingSourceChanged,
+        IDisposable? revisionLease,
+        string? analysisFailureMessage = null)
+    {
+        SemanticInventory = semanticInventory;
+        this.hasParticipatingSourceChanged = hasParticipatingSourceChanged;
+        this.revisionLease = revisionLease;
+        AnalysisFailureMessage = analysisFailureMessage;
+    }
+
+    /// <summary>
+    /// Gets the immutable semantic inventory captured at request start.
+    /// </summary>
+    public VbaSemanticInventory SemanticInventory { get; }
+
+    internal string? AnalysisFailureMessage { get; }
+
+    internal bool HasParticipatingSourceChanged()
+        => hasParticipatingSourceChanged();
+
+    internal static VbaRenameProjectSnapshotCapture CreateStable(
+        VbaSemanticInventory semanticInventory)
+        => new(semanticInventory, static () => false, revisionLease: null);
+
+    /// <inheritdoc />
+    public void Dispose()
+        => Interlocked.Exchange(ref revisionLease, null)?.Dispose();
 }

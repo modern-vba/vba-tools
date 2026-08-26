@@ -547,7 +547,8 @@ internal static class VbaSyntaxTreeParser
                     lineIndex + 1,
                     endLine,
                     VbaDeclarationKind.EnumMember,
-                    visibility);
+                    visibility,
+                    enumMatch.Groups["name"].Value);
                 members.Add(new VbaModuleMemberSyntax(
                     enumMatch.Groups["name"].Value,
                     VbaDeclarationKind.Enum,
@@ -580,7 +581,8 @@ internal static class VbaSyntaxTreeParser
                     lineIndex + 1,
                     endLine,
                     VbaDeclarationKind.TypeMember,
-                    visibility);
+                    visibility,
+                    typeMatch.Groups["name"].Value);
                 members.Add(new VbaModuleMemberSyntax(
                     typeMatch.Groups["name"].Value,
                     VbaDeclarationKind.Type,
@@ -1142,7 +1144,8 @@ internal static class VbaSyntaxTreeParser
         int startLine,
         int endLine,
         VbaDeclarationKind kind,
-        VbaDeclarationVisibility visibility)
+        VbaDeclarationVisibility visibility,
+        string parentTypeName)
     {
         for (var lineIndex = startLine; lineIndex < endLine; lineIndex++)
         {
@@ -1173,6 +1176,7 @@ internal static class VbaSyntaxTreeParser
                     nameToken.Text,
                     typeReference,
                     isArray: isArray),
+                ParentTypeName: parentTypeName,
                 IsArray: isArray));
         }
     }
