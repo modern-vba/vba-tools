@@ -6953,6 +6953,1114 @@ public sealed class LanguageServerProcessTests
     }
 
     [Fact]
+    public async Task Server_keeps_a_mixed_conditional_RaiseEvent_family_Event_only()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalEventAndSubFamily.cls";
+        const string statementLine = "    RaiseEvent Saved(";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalEventAndSubFamily\"",
+            "#If EVENT_CONFIGURATION Then",
+            "Public Event Saved(ByVal x As Long)",
+            "#Else",
+            "Public Sub Saved(ByVal y As String)",
+            "End Sub",
+            "#End If",
+            "Public Sub Fire()",
+            statementLine,
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            statementLine,
+            "    RaiseEvent Saved(".Length);
+        var signature = Assert.Single(response
+            .GetProperty("result")
+            .GetProperty("signatures")
+            .EnumerateArray());
+        Assert.Equal(
+            "Event Saved(x As Long) [#If]",
+            signature.GetProperty("label").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_resolves_an_incomplete_RaiseEvent_target_definition()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/IncompleteRaiseEventDefinition.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IncompleteRaiseEventDefinition\"",
+            "Public Event Saved(ByVal Value As Long)",
+            "Public Sub Fire()",
+            "    RaiseEvent Saved(",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var definition = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/definition",
+            uri,
+            text,
+            "RaiseEvent Saved(",
+            "RaiseEvent S".Length);
+        var location = definition.GetProperty("result");
+        Assert.Equal(uri, location.GetProperty("uri").GetString());
+        Assert.Equal(
+            2,
+            location.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32());
+
+        var references = await SendPositionRequestAsync(
+            process,
+            3,
+            "textDocument/references",
+            uri,
+            text,
+            "RaiseEvent Saved(",
+            "RaiseEvent S".Length);
+        Assert.Equal(
+            [2, 4],
+            references
+                .GetProperty("result")
+                .EnumerateArray()
+                .Select(reference => reference
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32()));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            4,
+            "textDocument/rename",
+            uri,
+            text,
+            "RaiseEvent Saved(",
+            "RaiseEvent S".Length,
+            new { newName = "Changed" });
+        var edits = rename
+            .GetProperty("result")
+            .GetProperty("changes")
+            .GetProperty(uri)
+            .EnumerateArray()
+            .ToArray();
+        Assert.Equal(2, edits.Length);
+        Assert.All(edits, edit => Assert.Equal("Changed", edit.GetProperty("newText").GetString()));
+
+        await process.ShutdownAsync(5);
+    }
+
+    [Fact]
+    public async Task Server_reports_an_Event_declaration_in_a_standard_module()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/StandardEvents.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"StandardEvents\"",
+            "Event Saved()"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "syntax.eventDeclarationNotAllowedInModule");
+        Assert.Equal(
+            "Event declarations are allowed only at module level in a class module.",
+            diagnostic.GetProperty("message").GetString());
+        Assert.Equal(1, diagnostic.GetProperty("severity").GetInt32());
+        var range = diagnostic.GetProperty("range");
+        Assert.Equal(1, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(0, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(1, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal("Event".Length, range.GetProperty("end").GetProperty("character").GetInt32());
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_reports_an_Event_declaration_inside_a_class_procedure()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/NestedEvent.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"NestedEvent\"",
+            "Public Sub Run()",
+            "    Event Saved()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "syntax.eventDeclarationNotAllowedInModule");
+        var range = diagnostic.GetProperty("range");
+        Assert.Equal(3, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(4, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(3, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(4 + "Event".Length, range.GetProperty("end").GetProperty("character").GetInt32());
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Theory]
+    [InlineData("Private")]
+    [InlineData("Friend")]
+    public async Task Server_reports_a_nonpublic_Event_visibility(string visibility)
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/InvalidEventVisibility.cls";
+        var eventLine = $"{visibility} Event Saved()";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"InvalidEventVisibility\"",
+            eventLine
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "syntax.eventVisibilityNotAllowed");
+        Assert.Equal(
+            "Event declarations can only be Public.",
+            diagnostic.GetProperty("message").GetString());
+        var range = diagnostic.GetProperty("range");
+        Assert.Equal(2, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(0, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(2, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(visibility.Length, range.GetProperty("end").GetProperty("character").GetInt32());
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_reports_an_Event_name_containing_an_underscore()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/InvalidEventName.cls";
+        const string eventName = "Saved_Item";
+        const string eventLine = "Public Event " + eventName + "()";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"InvalidEventName\"",
+            eventLine
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "syntax.eventNameCannotContainUnderscore");
+        Assert.Equal(
+            "Event name cannot contain an underscore.",
+            diagnostic.GetProperty("message").GetString());
+        var range = diagnostic.GetProperty("range");
+        var nameStart = eventLine.IndexOf(eventName, StringComparison.Ordinal);
+        Assert.Equal(2, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(nameStart, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(2, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(nameStart + eventName.Length, range.GetProperty("end").GetProperty("character").GetInt32());
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_reports_an_optional_Event_parameter()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/OptionalEventParameter.cls";
+        const string eventLine = "Public Event Saved(Optional ByVal Message As String)";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"OptionalEventParameter\"",
+            eventLine
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "syntax.eventOptionalParameterNotAllowed");
+        Assert.Equal(
+            "Event parameters cannot be Optional.",
+            diagnostic.GetProperty("message").GetString());
+        var range = diagnostic.GetProperty("range");
+        var optionalStart = eventLine.IndexOf("Optional", StringComparison.Ordinal);
+        Assert.Equal(2, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(optionalStart, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(2, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(optionalStart + "Optional".Length, range.GetProperty("end").GetProperty("character").GetInt32());
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_reports_a_ParamArray_Event_parameter()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ParamArrayEventParameter.cls";
+        const string eventLine = "Public Event Saved(ParamArray Values() As Variant)";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ParamArrayEventParameter\"",
+            eventLine
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "syntax.eventParamArrayParameterNotAllowed");
+        Assert.Equal(
+            "Event parameters cannot be ParamArray.",
+            diagnostic.GetProperty("message").GetString());
+        var range = diagnostic.GetProperty("range");
+        var paramArrayStart = eventLine.IndexOf("ParamArray", StringComparison.Ordinal);
+        Assert.Equal(2, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(paramArrayStart, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(2, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(paramArrayStart + "ParamArray".Length, range.GetProperty("end").GetProperty("character").GetInt32());
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_reports_RaiseEvent_inside_a_standard_module_procedure()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/InvalidRaiseEventPlacement.bas";
+        const string statementLine = "    RaiseEvent Saved";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"InvalidRaiseEventPlacement\"",
+            "Public Sub Run()",
+            statementLine,
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostics = notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray()
+            .ToArray();
+        var diagnostic = Assert.Single(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "syntax.raiseEventStatementNotAllowedHere");
+        Assert.Equal(
+            "RaiseEvent statements are allowed only inside a procedure in a class module.",
+            diagnostic.GetProperty("message").GetString());
+        var range = diagnostic.GetProperty("range");
+        var keywordStart = statementLine.IndexOf("RaiseEvent", StringComparison.Ordinal);
+        Assert.Equal(2, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(keywordStart, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(2, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(keywordStart + "RaiseEvent".Length, range.GetProperty("end").GetProperty("character").GetInt32());
+        Assert.DoesNotContain(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                is "validation.raiseEventTargetNotDeclaredInEnclosingModule"
+                or "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_does_not_treat_RaiseEvent_inside_Rem_comments_as_a_statement()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/CommentedRaiseEvent.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"CommentedRaiseEvent\"",
+            "Rem RaiseEvent Saved",
+            "Private value As Long: Rem RaiseEvent Saved",
+            "Public Sub Run()",
+            "    Rem RaiseEvent Saved",
+            "    Debug.Print 1: Rem RaiseEvent Saved",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostics = notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray()
+            .ToArray();
+
+        Assert.DoesNotContain(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString() is { } code
+                && code.Contains("raiseEvent", StringComparison.OrdinalIgnoreCase));
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Theory]
+    [InlineData("Rem comment _")]
+    [InlineData("Private value As Long: Rem comment _")]
+    public async Task Server_does_not_continue_a_Rem_comment_into_the_following_Event(
+        string commentLine)
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/CommentBeforeEvent.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"CommentBeforeEvent\"",
+            commentLine,
+            "Public Event Saved()",
+            "Public Sub Fire()",
+            "    RaiseEvent Saved",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.raiseEventTargetNotDeclaredInEnclosingModule");
+
+        var definition = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/definition",
+            uri,
+            text,
+            "RaiseEvent Saved",
+            "RaiseEvent S".Length);
+        var location = definition.GetProperty("result");
+        Assert.Equal(uri, location.GetProperty("uri").GetString());
+        Assert.Equal(
+            3,
+            location.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_does_not_continue_an_inline_Rem_comment_into_a_following_procedure()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/CommentBeforeProcedure.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"CommentBeforeProcedure\"",
+            "Public Event Saved()",
+            "Private value As Long: Rem comment _",
+            "Public Sub Fire()",
+            "    RaiseEvent Saved",
+            "    Debug.Print 1: Rem comment _",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                is "syntax.unexpectedStatementBoundaryToken"
+                    or "syntax.missingBlockTerminator"
+                    or "syntax.raiseEventStatementNotAllowedHere"
+                    or "validation.raiseEventTargetNotDeclaredInEnclosingModule");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_treats_Rem_after_a_numeric_line_label_as_a_comment()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/NumericLabelRem.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"NumericLabelRem\"",
+            "Public Sub Run()",
+            "10 Rem RaiseEvent Saved _",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                is "syntax.raiseEventStatementNotAllowedHere"
+                    or "syntax.missingBlockTerminator"
+                    or "validation.raiseEventTargetNotDeclaredInEnclosingModule"
+                    or "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_excludes_a_numeric_label_Rem_comment_from_Event_editor_features()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/NumericLabelEventComment.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"NumericLabelEventComment\"",
+            "Public Event Saved()",
+            "Public Sub Fire()",
+            "10 Rem RaiseEvent Saved",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var definition = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/definition",
+            uri,
+            text,
+            "10 Rem RaiseEvent Saved",
+            "10 Rem RaiseEvent S".Length);
+        Assert.Equal(JsonValueKind.Null, definition.GetProperty("result").ValueKind);
+
+        var completion = await SendPositionRequestAsync(
+            process,
+            3,
+            "textDocument/completion",
+            uri,
+            text,
+            "10 Rem RaiseEvent Saved",
+            "10 Rem RaiseEvent ".Length);
+        Assert.DoesNotContain(
+            completion.GetProperty("result").EnumerateArray(),
+            candidate => candidate.GetProperty("label").GetString() == "Saved");
+
+        var references = await SendPositionRequestAsync(
+            process,
+            4,
+            "textDocument/references",
+            uri,
+            text,
+            "Public Event Saved",
+            "Public Event S".Length);
+        Assert.Equal(
+            [2],
+            references
+                .GetProperty("result")
+                .EnumerateArray()
+                .Select(reference => reference
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32()));
+
+        await process.ShutdownAsync(5);
+    }
+
+    [Fact]
+    public async Task Server_accepts_a_zero_argument_RaiseEvent_before_a_colon_statement()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ColonAfterRaiseEvent.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ColonAfterRaiseEvent\"",
+            "Public Event Saved()",
+            "Public Sub Fire()",
+            "    RaiseEvent Saved: Debug.Print 1",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostics = notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray()
+            .ToArray();
+        Assert.DoesNotContain(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "syntax.raiseEventArgumentListRequiresParentheses");
+        Assert.DoesNotContain(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_reports_parenthesis_free_RaiseEvent_arguments_before_a_colon_once()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ColonAfterRaiseEventArgument.cls";
+        const string statementLine = "    RaiseEvent Saved 1: Debug.Print 2";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ColonAfterRaiseEventArgument\"",
+            "Public Event Saved(ByVal value As Long)",
+            "Public Sub Fire()",
+            statementLine,
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "syntax.raiseEventArgumentListRequiresParentheses");
+        var range = diagnostic.GetProperty("range");
+        var argumentStart = statementLine.IndexOf("1:", StringComparison.Ordinal);
+        Assert.Equal(4, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(argumentStart, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(4, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(argumentStart + 1, range.GetProperty("end").GetProperty("character").GetInt32());
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_rejects_RaiseEvent_after_a_procedure_terminator_on_the_same_line()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/RaiseEventAfterTerminator.cls";
+        const string terminatorLine = "End Sub: RaiseEvent Saved";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"RaiseEventAfterTerminator\"",
+            "Public Event Saved()",
+            "Public Sub Fire()",
+            terminatorLine
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostics = notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray()
+            .ToArray();
+        var diagnostic = Assert.Single(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "syntax.raiseEventStatementNotAllowedHere");
+        var keywordStart = terminatorLine.IndexOf("RaiseEvent", StringComparison.Ordinal);
+        var range = diagnostic.GetProperty("range");
+        Assert.Equal(4, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(keywordStart, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(4, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(keywordStart + "RaiseEvent".Length, range.GetProperty("end").GetProperty("character").GetInt32());
+        Assert.DoesNotContain(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                is "validation.raiseEventTargetNotDeclaredInEnclosingModule"
+                or "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_recognizes_a_callable_terminator_after_another_colon_terminator()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/RaiseEventAfterMultipleTerminators.cls";
+        const string terminatorLine = "    End If: End Sub: RaiseEvent Saved";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"RaiseEventAfterMultipleTerminators\"",
+            "Public Event Saved()",
+            "Public Sub Fire()",
+            "    If True Then",
+            terminatorLine
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostics = notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray()
+            .ToArray();
+        var diagnostic = Assert.Single(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "syntax.raiseEventStatementNotAllowedHere");
+        var keywordStart = terminatorLine.IndexOf("RaiseEvent", StringComparison.Ordinal);
+        var range = diagnostic.GetProperty("range");
+        Assert.Equal(5, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(keywordStart, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(5, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(keywordStart + "RaiseEvent".Length, range.GetProperty("end").GetProperty("character").GetInt32());
+        Assert.DoesNotContain(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                is "syntax.missingBlockTerminator"
+                    or "validation.raiseEventTargetNotDeclaredInEnclosingModule"
+                    or "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_rejects_RaiseEvent_in_an_external_Declare_colon_tail()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/DeclareTailRaiseEvent.cls";
+        const string statementLine =
+            "Private Declare Sub Native Lib \"x\": RaiseEvent Saved";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"DeclareTailRaiseEvent\"",
+            "Public Event Saved()",
+            statementLine
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostics = notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray()
+            .ToArray();
+        var diagnostic = Assert.Single(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "syntax.raiseEventStatementNotAllowedHere");
+        var range = diagnostic.GetProperty("range");
+        var keywordStart = statementLine.IndexOf("RaiseEvent", StringComparison.Ordinal);
+        Assert.Equal(3, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(keywordStart, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(3, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(keywordStart + "RaiseEvent".Length, range.GetProperty("end").GetProperty("character").GetInt32());
+        Assert.DoesNotContain(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                is "validation.raiseEventTargetNotDeclaredInEnclosingModule"
+                or "validation.incompatibleCallArgumentList");
+
+        var definition = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/definition",
+            uri,
+            text,
+            "RaiseEvent Saved",
+            "RaiseEvent S".Length);
+        Assert.Equal(JsonValueKind.Null, definition.GetProperty("result").ValueKind);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_does_not_extend_a_bare_RaiseEvent_across_an_uncontinued_line()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/BareRaiseEventBoundary.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"BareRaiseEventBoundary\"",
+            "Public Sub Run()",
+            "    RaiseEvent",
+            "    Foo 1",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostics = notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray()
+            .ToArray();
+        Assert.DoesNotContain(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "syntax.raiseEventArgumentListRequiresParentheses"
+                && candidate.GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32() == 4);
+        Assert.DoesNotContain(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                is "validation.raiseEventTargetNotDeclaredInEnclosingModule"
+                or "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_reports_a_missing_RaiseEvent_target_in_the_enclosing_class()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/MissingRaiseEventTarget.cls";
+        const string statementLine = "    RaiseEvent Missing";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"MissingRaiseEventTarget\"",
+            "Public Sub Run()",
+            statementLine,
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostics = notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray()
+            .ToArray();
+        var diagnostic = Assert.Single(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.raiseEventTargetNotDeclaredInEnclosingModule");
+        Assert.Equal(
+            "RaiseEvent target must be an Event declared in the enclosing class module.",
+            diagnostic.GetProperty("message").GetString());
+        var range = diagnostic.GetProperty("range");
+        var targetStart = statementLine.IndexOf("Missing", StringComparison.Ordinal);
+        Assert.Equal(3, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(targetStart, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(3, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(targetStart + "Missing".Length, range.GetProperty("end").GetProperty("character").GetInt32());
+        Assert.DoesNotContain(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        Assert.DoesNotContain(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "syntax.raiseEventOmittedArgumentNotAllowed");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Theory]
+    [InlineData("()", "syntax.raiseEventEmptyArgumentListNotAllowed")]
+    [InlineData("(Name:=1)", "syntax.raiseEventNamedArgumentNotAllowed")]
+    [InlineData("(,)", "syntax.raiseEventOmittedArgumentNotAllowed")]
+    [InlineData(" 1", "syntax.raiseEventArgumentListRequiresParentheses")]
+    public async Task Server_reports_a_missing_RaiseEvent_target_despite_an_invalid_list_shape(
+        string suffix,
+        string shapeDiagnosticCode)
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/MissingRaiseEventTargetWithList.cls";
+        var statementLine = $"    RaiseEvent Missing{suffix}";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"MissingRaiseEventTargetWithList\"",
+            "Public Sub Run()",
+            statementLine,
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostics = notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray()
+            .ToArray();
+        Assert.Contains(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString() == shapeDiagnosticCode);
+        var targetDiagnostic = Assert.Single(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.raiseEventTargetNotDeclaredInEnclosingModule");
+        var targetRange = targetDiagnostic.GetProperty("range");
+        var targetStart = statementLine.IndexOf("Missing", StringComparison.Ordinal);
+        Assert.Equal(3, targetRange.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(targetStart, targetRange.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(3, targetRange.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(targetStart + "Missing".Length, targetRange.GetProperty("end").GetProperty("character").GetInt32());
+        Assert.DoesNotContain(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Theory]
+    [InlineData("(")]
+    [InlineData("(1 +)")]
+    [InlineData("( ' TODO")]
+    public async Task Server_reports_a_missing_RaiseEvent_target_during_an_incomplete_call(
+        string suffix)
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/IncompleteMissingRaiseEventTarget.cls";
+        var statementLine = $"    RaiseEvent Missing{suffix}";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IncompleteMissingRaiseEventTarget\"",
+            "Public Sub Run()",
+            statementLine,
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostics = notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray()
+            .ToArray();
+        var diagnostic = Assert.Single(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.raiseEventTargetNotDeclaredInEnclosingModule");
+        var range = diagnostic.GetProperty("range");
+        var targetStart = statementLine.IndexOf("Missing", StringComparison.Ordinal);
+        Assert.Equal(3, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(targetStart, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(3, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(targetStart + "Missing".Length, range.GetProperty("end").GetProperty("character").GetInt32());
+        Assert.DoesNotContain(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_reports_one_missing_target_for_the_owning_incomplete_RaiseEvent()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/MultipleIncompleteRaiseEventTargets.cls";
+        const string statementLine = "    RaiseEvent Saved: RaiseEvent Missing(";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"MultipleIncompleteRaiseEventTargets\"",
+            "Public Event Saved()",
+            "Public Sub Run()",
+            statementLine,
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostics = notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray()
+            .ToArray();
+        var diagnostic = Assert.Single(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.raiseEventTargetNotDeclaredInEnclosingModule");
+        var range = diagnostic.GetProperty("range");
+        var targetStart = statementLine.LastIndexOf("Missing", StringComparison.Ordinal);
+        Assert.Equal(4, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(targetStart, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(4, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(targetStart + "Missing".Length, range.GetProperty("end").GetProperty("character").GetInt32());
+        Assert.DoesNotContain(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_does_not_manufacture_an_Event_from_a_continuation_tail()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ContinuationTailEvent.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ContinuationTailEvent\"",
+            "Private value As _",
+            "    Event Saved()",
+            "Public Sub Run()",
+            "    RaiseEvent Saved",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostics = notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray()
+            .ToArray();
+        Assert.Contains(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.raiseEventTargetNotDeclaredInEnclosingModule");
+
+        var completion = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/completion",
+            uri,
+            text,
+            "RaiseEvent Saved",
+            "RaiseEvent Saved".Length);
+        Assert.DoesNotContain(
+            completion.GetProperty("result").EnumerateArray(),
+            candidate => candidate.GetProperty("label").GetString() == "Saved");
+
+        var definition = await SendPositionRequestAsync(
+            process,
+            3,
+            "textDocument/definition",
+            uri,
+            text,
+            "RaiseEvent Saved",
+            "RaiseEvent S".Length);
+        Assert.Equal(JsonValueKind.Null, definition.GetProperty("result").ValueKind);
+
+        await process.ShutdownAsync(4);
+    }
+
+    [Fact]
     public async Task Server_excludes_an_invalid_optional_Event_variant_from_RaiseEvent_signature_help()
     {
         await using var process = await LanguageServerProcessHarness.StartAsync();
@@ -9599,6 +10707,83 @@ public sealed class LanguageServerProcessTests
                 == "validation.incompatibleCallArgumentList");
 
         await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_accepts_a_RaiseEvent_when_any_valid_conditional_signature_matches()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalMixedRaiseEvent.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalMixedRaiseEvent\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Event Saved(ByVal Value As Long)",
+            "#ElseIf SECOND_CONFIGURATION Then",
+            "Public Event Saved(ByVal Value As Long, ByVal Retry As Long)",
+            "#Else",
+            "Private Event Saved(ByVal Value As Long)",
+            "#End If",
+            "Public Sub Run()",
+            "    RaiseEvent Saved(1)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostics = notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray()
+            .ToArray();
+        Assert.Contains(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "syntax.eventVisibilityNotAllowed");
+        Assert.DoesNotContain(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_does_not_complete_members_from_a_RaiseEvent_result()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/RaiseEventResult.cls";
+        const string statementLine = "    RaiseEvent Saved(1).";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"RaiseEventResult\"",
+            "Public Event Saved(ByVal Value As Long)",
+            "Public Sub Run()",
+            statementLine,
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri },
+                position = new { line = 4, character = statementLine.Length }
+            });
+
+        Assert.Empty(completion.GetProperty("result").EnumerateArray());
+
+        await process.ShutdownAsync(3);
     }
 
     [Fact]

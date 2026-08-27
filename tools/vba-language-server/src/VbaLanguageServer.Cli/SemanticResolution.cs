@@ -271,8 +271,10 @@ internal sealed class VbaSemanticResolution
                     positionSyntax,
                     visibleDefinitions),
             VbaCompletionExpectation.EventName =>
-                CreateDefinitionCandidates(currentDocument.Definitions
-                    .Where(definition => definition.Kind == VbaSourceDefinitionKind.Event)),
+                HasRaiseEventPlacementDiagnostic(syntaxTree, line, character)
+                    ? []
+                    : CreateDefinitionCandidates(currentDocument.Definitions
+                        .Where(definition => definition.IsEventNameCompletionEligible)),
             VbaCompletionExpectation.LabelName =>
                 CreateLabelCandidates(syntaxTree, positionSyntax),
             _ => []
@@ -408,11 +410,42 @@ internal sealed class VbaSemanticResolution
                 : resolutionPolicy.CreateNameTarget(typeDefinition);
         }
 
-        if (TryResolveWithEventsHandler(currentDocument, identifier.Name, out var eventDefinition))
+        if (positionSyntax.CompletionExpectation == VbaCompletionExpectation.EventName)
         {
-            return eventDefinition is null
-                ? null
-                : resolutionPolicy.CreateNameTarget(eventDefinition);
+            var argumentList = syntaxTree.Module.ArgumentLists.SingleOrDefault(candidate =>
+                candidate.CalleeRange == identifier.Range);
+            if (argumentList is not null)
+            {
+                if (!callSiteResolution.TryResolveRaiseEventTarget(
+                    currentDocument,
+                    argumentList,
+                    out var raiseEventTarget)
+                    || HasRaiseEventPlacementDiagnostic(syntaxTree, argumentList))
+                {
+                    return null;
+                }
+
+                return raiseEventTarget;
+            }
+
+            var sourceLine = syntaxTree.SourceText.Lines[identifier.Range.End.Line];
+            var callPositionSyntax = syntaxTree.GetPositionSyntax(
+                identifier.Range.End.Line,
+                Math.Min(
+                    sourceLine.Text.Length,
+                    identifier.Range.End.Character + 1));
+            if (!callSiteResolution.TryResolveRaiseEventTarget(
+                    currentDocument,
+                    callPositionSyntax.CallSite,
+                    out var incompleteRaiseEventTarget)
+                || HasRaiseEventPlacementDiagnostic(
+                    syntaxTree,
+                    identifier.Range.Start.Offset))
+            {
+                return null;
+            }
+
+            return incompleteRaiseEventTarget;
         }
 
         var position = new VbaPosition(line, character);
@@ -421,6 +454,18 @@ internal sealed class VbaSemanticResolution
                 && definition.Name.Equals(
                     identifier.Name,
                     StringComparison.OrdinalIgnoreCase));
+        if (declaredDefinition?.Kind == VbaSourceDefinitionKind.Event)
+        {
+            return resolutionPolicy.CreateNameTarget(declaredDefinition);
+        }
+
+        if (TryResolveWithEventsHandler(currentDocument, identifier.Name, out var eventDefinition))
+        {
+            return eventDefinition is null
+                ? null
+                : resolutionPolicy.CreateNameTarget(eventDefinition);
+        }
+
         if (declaredDefinition is not null)
         {
             return resolutionPolicy.CreateNameTarget(declaredDefinition);
@@ -466,6 +511,51 @@ internal sealed class VbaSemanticResolution
                 requestedWriteAccessorKind,
                 outcome.Target)
             : outcome.Target;
+    }
+
+    private static bool HasRaiseEventPlacementDiagnostic(
+        VbaSyntaxTree syntaxTree,
+        VbaArgumentListSyntax argumentList)
+    {
+        var calleeRange = argumentList.CalleeRange;
+        if (calleeRange is null)
+        {
+            return true;
+        }
+
+        return HasRaiseEventPlacementDiagnostic(
+            syntaxTree,
+            calleeRange.Start.Offset);
+    }
+
+    private static bool HasRaiseEventPlacementDiagnostic(
+        VbaSyntaxTree syntaxTree,
+        int line,
+        int character)
+    {
+        if (line < 0 || line >= syntaxTree.SourceText.Lines.Count)
+        {
+            return true;
+        }
+
+        var sourceLine = syntaxTree.SourceText.Lines[line];
+        var offset = sourceLine.StartOffset
+            + Math.Clamp(character, 0, sourceLine.Text.Length);
+        return HasRaiseEventPlacementDiagnostic(syntaxTree, offset);
+    }
+
+    private static bool HasRaiseEventPlacementDiagnostic(
+        VbaSyntaxTree syntaxTree,
+        int beforeOffset)
+    {
+        var raiseEventKeyword = syntaxTree.TokenStream.Tokens.LastOrDefault(token =>
+            token.Kind == VbaTokenKind.Keyword
+            && token.Text.Equals("RaiseEvent", StringComparison.OrdinalIgnoreCase)
+            && token.Range.End.Offset <= beforeOffset);
+        return raiseEventKeyword is null
+            || syntaxTree.Diagnostics.Any(diagnostic =>
+                diagnostic.Code == "syntax.raiseEventStatementNotAllowedHere"
+                && diagnostic.Range == raiseEventKeyword.Range);
     }
 
     private static VbaResolvedNameTarget? RetargetConditionalPropertyAccessor(
@@ -616,7 +706,14 @@ internal sealed class VbaSemanticResolution
             return null;
         }
 
-        var positionSyntax = GetSyntaxTree(currentDocument).GetPositionSyntax(line, character);
+        var syntaxTree = GetSyntaxTree(currentDocument);
+        var positionSyntax = syntaxTree.GetPositionSyntax(line, character);
+        if (callSiteResolution.IsRaiseEventCall(currentDocument, positionSyntax.CallSite)
+            && HasRaiseEventPlacementDiagnostic(syntaxTree, line, character))
+        {
+            return null;
+        }
+
         return callSiteResolution.GetSignatureHelp(
             currentDocument,
             line,
@@ -642,10 +739,19 @@ internal sealed class VbaSemanticResolution
         }
 
         VbaResolvedNameTarget? target;
-        if (!callSiteResolution.TryResolveRaiseEventTarget(
+        var isRaiseEvent = callSiteResolution.TryResolveRaiseEventTarget(
                 currentDocument,
                 argumentList,
-                out target))
+                out target);
+        if (isRaiseEvent
+            && HasRaiseEventPlacementDiagnostic(
+                GetSyntaxTree(currentDocument),
+                argumentList))
+        {
+            return null;
+        }
+
+        if (!isRaiseEvent)
         {
             target = ResolveSourceTarget(
                 uri,
@@ -668,6 +774,42 @@ internal sealed class VbaSemanticResolution
             currentDocument,
             argumentList,
             target);
+    }
+
+    internal bool TryResolveRaiseEventTarget(
+        string uri,
+        VbaArgumentListSyntax argumentList,
+        out VbaResolvedNameTarget? target)
+    {
+        var currentDocument = definitionCandidates.FindDocument(uri);
+        if (currentDocument is null)
+        {
+            target = null;
+            return false;
+        }
+
+        return callSiteResolution.TryResolveRaiseEventTarget(
+            currentDocument,
+            argumentList,
+            out target);
+    }
+
+    internal bool TryResolveRaiseEventTarget(
+        string uri,
+        VbaCallSiteSyntax? callSite,
+        out VbaResolvedNameTarget? target)
+    {
+        var currentDocument = definitionCandidates.FindDocument(uri);
+        if (currentDocument is null)
+        {
+            target = null;
+            return false;
+        }
+
+        return callSiteResolution.TryResolveRaiseEventTarget(
+            currentDocument,
+            callSite,
+            out target);
     }
 
     private static bool IsCallableResultAssignment(

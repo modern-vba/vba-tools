@@ -150,6 +150,10 @@ public sealed record VbaModuleMemberSyntax(
 /// <param name="CallableKind">The callable kind keyword used in rich signature labels.</param>
 /// <param name="PropertyAccessorKind">The declared Property accessor kind.</param>
 /// <param name="IsArray">Whether the declared name carries a VBA array marker.</param>
+/// <param name="IsInvalidEventPlacement">Whether an Event declaration was recovered from a nested non-module declaration context.</param>
+/// <param name="HasCompleteEventSignatureShape">Whether an Event declaration retains complete physical signature evidence.</param>
+/// <param name="HasOptionalEventParameter">Whether the written Event parameter list contains Optional.</param>
+/// <param name="HasParamArrayEventParameter">Whether the written Event parameter list contains ParamArray.</param>
 public sealed record VbaDeclarationSyntax(
     string Name,
     VbaDeclarationKind Kind,
@@ -168,7 +172,11 @@ public sealed record VbaDeclarationSyntax(
     string? DeclarationLabel = null,
     string? CallableKind = null,
     VbaPropertyAccessorKind? PropertyAccessorKind = null,
-    bool IsArray = false);
+    bool IsArray = false,
+    bool IsInvalidEventPlacement = false,
+    bool HasCompleteEventSignatureShape = false,
+    bool HasOptionalEventParameter = false,
+    bool HasParamArrayEventParameter = false);
 
 /// <summary>
 /// Represents a parsed callable declaration and its full source block.
@@ -249,6 +257,7 @@ public sealed record VbaCallableSignatureSyntax(
 /// <param name="IsByRef">Whether the parameter is effectively passed ByRef.</param>
 /// <param name="IsParamArray">Whether the parameter is declared ParamArray.</param>
 /// <param name="IsArray">Whether the parameter name carries a VBA array marker.</param>
+/// <param name="Range">The source range of the parameter name, when source-backed.</param>
 public sealed record VbaCallableParameterInfoSyntax(
     string Name,
     string? Documentation = null,
@@ -256,4 +265,5 @@ public sealed record VbaCallableParameterInfoSyntax(
     VbaTypeReferenceSyntax? TypeReference = null,
     bool IsByRef = true,
     bool IsParamArray = false,
-    bool IsArray = false);
+    bool IsArray = false,
+    VbaSyntaxRange? Range = null);

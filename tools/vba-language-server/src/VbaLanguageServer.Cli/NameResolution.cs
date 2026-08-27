@@ -759,6 +759,8 @@ public sealed class VbaNameResolutionService
         var matchingCandidates = GetMemberCandidates(currentDocument, resolvedType)
             .Where(candidate => SameName(candidate.Name, memberName))
             .Where(candidate => requiredKind is null || candidate.Definition.Kind == requiredKind)
+            .Where(candidate => requiredKind != VbaSourceDefinitionKind.Event
+                || candidate.Definition.IsEventNameProjectionEligible)
             .Select(candidate => candidate.Definition)
             .ToArray();
         return resolutionPolicy.ResolveRankedCandidatesOutcome(

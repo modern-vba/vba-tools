@@ -163,19 +163,17 @@ public static class VbaDocumentValidationDiagnosticCollector
 
         foreach (var declaration in tree.Module.Declarations.Where(declaration => declaration.Kind == VbaDeclarationKind.Event))
         {
-            var parameters = tree.Module.Declarations
-                .Where(parameter => parameter.Kind == VbaDeclarationKind.Parameter
-                    && parameter.ParentProcedureName is null
-                    && parameter.LineIndex == declaration.LineIndex)
-                .ToArray();
-            if (parameters.Length < 2)
+            var parameters = declaration.Signature?.Parameters ?? [];
+            if (parameters.Count < 2)
             {
                 continue;
             }
 
             AddDuplicateCallableParameterDiagnostics(
                 diagnostics,
-                parameters.Select(parameter => new NamedSyntax(parameter.Name, parameter.Range)));
+                parameters
+                    .Where(parameter => parameter.Range is not null)
+                    .Select(parameter => new NamedSyntax(parameter.Name, parameter.Range!)));
         }
 
         foreach (var argumentList in tree.Module.ArgumentLists)

@@ -1,10 +1,10 @@
 namespace VbaLanguageServer.Syntax;
 
 /// <summary>
-/// Represents one physical line split into code and apostrophe-comment portions.
+/// Represents one physical line split into code and comment portions.
 /// </summary>
-/// <param name="CodePart">The line portion before an apostrophe comment.</param>
-/// <param name="CommentPart">The apostrophe comment portion, or an empty string.</param>
+/// <param name="CodePart">The line portion before an apostrophe or Rem comment.</param>
+/// <param name="CommentPart">The apostrophe or Rem comment portion, or an empty string.</param>
 public sealed record VbaCodeLineParts(string CodePart, string CommentPart);
 
 /// <summary>
@@ -40,6 +40,15 @@ public static class VbaLexicalFacts
     }
 
     /// <summary>
+    /// Determines whether a character position is within an apostrophe or Rem comment.
+    /// </summary>
+    public static bool IsPositionInComment(string line, int character)
+    {
+        var commentStart = FindCommentStart(line);
+        return commentStart >= 0 && character >= commentStart;
+    }
+
+    /// <summary>
     /// Finds identifier occurrences in the code portion of a physical line.
     /// </summary>
     public static IEnumerable<VbaIdentifierOccurrence> FindCodeIdentifierOccurrences(string line)
@@ -65,20 +74,67 @@ public static class VbaLexicalFacts
     }
 
     /// <summary>
-    /// Splits one physical line into code and apostrophe-comment portions.
+    /// Splits one physical line into code and apostrophe or Rem comment portions.
     /// </summary>
     public static VbaCodeLineParts SplitCodeAndComment(string line)
     {
-        var commentStart = VbaTokenStream.FromText(line)
-            .Tokens
-            .FirstOrDefault(token => token.Kind == VbaTokenKind.Comment)
-            ?.Range
-            .Start
-            .Character
-            ?? -1;
+        var commentStart = FindCommentStart(line);
         return commentStart < 0
             ? new VbaCodeLineParts(line, "")
             : new VbaCodeLineParts(line[..commentStart], line[commentStart..]);
+    }
+
+    private static int FindCommentStart(string line)
+    {
+        var tokens = VbaTokenStream.FromText(line).Tokens;
+        var isStatementStart = true;
+        var isFirstSignificantToken = true;
+        foreach (var token in tokens)
+        {
+            if (token.Kind is VbaTokenKind.Whitespace or VbaTokenKind.NewLine)
+            {
+                continue;
+            }
+
+            if (token.Kind == VbaTokenKind.Comment
+                || (isStatementStart && IsRemCommentStart(token, line)))
+            {
+                return token.Range.Start.Character;
+            }
+
+            if (isFirstSignificantToken && IsNumericLineLabel(token, line))
+            {
+                isFirstSignificantToken = false;
+                continue;
+            }
+
+            isStatementStart = token.Kind == VbaTokenKind.Punctuation
+                && token.Text == ":";
+            isFirstSignificantToken = false;
+        }
+
+        return -1;
+    }
+
+    private static bool IsNumericLineLabel(VbaToken token, string line)
+    {
+        var tokenEnd = token.Range.End.Character;
+        return token.Kind == VbaTokenKind.NumericLiteral
+            && token.Text.All(character => character is >= '0' and <= '9')
+            && tokenEnd < line.Length
+            && VbaIdentifier.IsWhitespace(line[tokenEnd]);
+    }
+
+    private static bool IsRemCommentStart(VbaToken token, string line)
+    {
+        if (!token.Text.Equals("Rem", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var tokenEnd = token.Range.End.Character;
+        return tokenEnd == line.Length
+            || (tokenEnd < line.Length && VbaIdentifier.IsWhitespace(line[tokenEnd]));
     }
 
     private static bool IsRemCommentStart(

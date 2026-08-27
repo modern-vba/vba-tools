@@ -150,6 +150,19 @@ internal static class VbaSyntaxTreeParser
             parsedMembers.CallableDeclarations,
             parsedPreprocessor.Blocks,
             codeStartLine);
+        diagnostics.AddRange(CollectEventDeclarationDiagnostics(
+            physicalAnalysisSourceText,
+            tokenStream,
+            kind,
+            parsedMembers.CallableDeclarations,
+            parsedMembers.Members,
+            codeStartLine));
+        diagnostics.AddRange(CollectRaiseEventPlacementDiagnostics(
+            physicalAnalysisSourceText,
+            tokenStream,
+            kind,
+            parsedMembers.CallableDeclarations,
+            codeStartLine));
         diagnostics.AddRange(parsedStatements.Diagnostics);
         foreach (var diagnostic in CollectRaiseEventArgumentListDiagnostics(
             tokenStream,
@@ -184,15 +197,194 @@ internal static class VbaSyntaxTreeParser
         return new VbaSyntaxTree(uri, sourceText, tokenStream, module, diagnostics);
     }
 
+    private static IEnumerable<VbaSyntaxDiagnostic> CollectEventDeclarationDiagnostics(
+        VbaSourceText sourceText,
+        VbaTokenStream tokenStream,
+        VbaModuleKind moduleKind,
+        IReadOnlyList<VbaCallableDeclarationSyntax> callableDeclarations,
+        IReadOnlyList<VbaModuleMemberSyntax> members,
+        int codeStartLine)
+    {
+        foreach (var statement in CreateLogicalStatements(sourceText, codeStartLine))
+        {
+            var eventMatch = MatchIdentifier(EventPattern, statement.Text);
+            if (!eventMatch.Success)
+            {
+                continue;
+            }
+
+            var name = eventMatch.Groups["name"];
+            var nameRange = RangeFromLogicalSpan(
+                statement,
+                name.Index,
+                name.Index + name.Length);
+            var isInsideProcedure = callableDeclarations.Any(callable =>
+                callable.BlockRange.Start.Offset < statement.Range.Start.Offset
+                && statement.Range.Start.Offset < callable.BlockRange.End.Offset);
+            var isInsideTypeDeclaration = members.Any(member =>
+                member.Kind is VbaDeclarationKind.Enum or VbaDeclarationKind.Type
+                && member.BlockRange.Start.Offset < statement.Range.Start.Offset
+                && statement.Range.Start.Offset < member.BlockRange.End.Offset);
+            var hasInvalidPlacement = moduleKind is not (
+                    VbaModuleKind.ClassModule or VbaModuleKind.FormModule)
+                || isInsideProcedure
+                || isInsideTypeDeclaration;
+            if (hasInvalidPlacement)
+            {
+                var eventToken = tokenStream.Tokens.LastOrDefault(token =>
+                    statement.Range.Start.Offset <= token.Range.Start.Offset
+                    && token.Range.End.Offset <= nameRange.Start.Offset
+                    && token.Text.Equals("Event", StringComparison.OrdinalIgnoreCase));
+                if (eventToken is not null)
+                {
+                    yield return new VbaSyntaxDiagnostic(
+                        "syntax.eventDeclarationNotAllowedInModule",
+                        "Event declarations are allowed only at module level in a class module.",
+                        eventToken.Range);
+                }
+            }
+
+            var visibility = eventMatch.Groups["visibility"];
+            if (visibility.Success
+                && (visibility.Value.Equals("Private", StringComparison.OrdinalIgnoreCase)
+                    || visibility.Value.Equals("Friend", StringComparison.OrdinalIgnoreCase)))
+            {
+                yield return new VbaSyntaxDiagnostic(
+                    "syntax.eventVisibilityNotAllowed",
+                    "Event declarations can only be Public.",
+                    RangeFromLogicalSpan(
+                        statement,
+                        visibility.Index,
+                        visibility.Index + visibility.Length));
+            }
+
+            if (name.Value.Contains('_'))
+            {
+                yield return new VbaSyntaxDiagnostic(
+                    "syntax.eventNameCannotContainUnderscore",
+                    "Event name cannot contain an underscore.",
+                    nameRange);
+            }
+
+            var parameters = eventMatch.Groups["parameters"];
+            if (!TryGetEventParameterSpan(
+                    eventMatch,
+                    statement.Text,
+                    out var parameterStart,
+                    out var parameterEnd))
+            {
+                continue;
+            }
+
+            var parametersRange = RangeFromLogicalSpan(
+                statement,
+                parameterStart,
+                parameterEnd);
+            foreach (var token in tokenStream.Tokens.Where(token =>
+                         parametersRange.Start.Offset <= token.Range.Start.Offset
+                         && token.Range.End.Offset <= parametersRange.End.Offset
+                         && token.Kind == VbaTokenKind.Keyword
+                         && (token.Text.Equals("Optional", StringComparison.OrdinalIgnoreCase)
+                             || token.Text.Equals("ParamArray", StringComparison.OrdinalIgnoreCase))))
+            {
+                var isOptional = token.Text.Equals(
+                    "Optional",
+                    StringComparison.OrdinalIgnoreCase);
+                yield return new VbaSyntaxDiagnostic(
+                    isOptional
+                        ? "syntax.eventOptionalParameterNotAllowed"
+                        : "syntax.eventParamArrayParameterNotAllowed",
+                    isOptional
+                        ? "Event parameters cannot be Optional."
+                        : "Event parameters cannot be ParamArray.",
+                    token.Range);
+            }
+        }
+    }
+
+    private static IEnumerable<VbaSyntaxDiagnostic> CollectRaiseEventPlacementDiagnostics(
+        VbaSourceText sourceText,
+        VbaTokenStream tokenStream,
+        VbaModuleKind moduleKind,
+        IReadOnlyList<VbaCallableDeclarationSyntax> callableDeclarations,
+        int codeStartLine)
+    {
+        foreach (var token in tokenStream.Tokens.Where(token =>
+                     token.Range.Start.Line >= codeStartLine
+                     && token.Kind == VbaTokenKind.Keyword
+                     && token.Text.Equals("RaiseEvent", StringComparison.OrdinalIgnoreCase)))
+        {
+            if (VbaLexicalFacts.IsPositionInComment(
+                    sourceText.Lines[token.Range.Start.Line].Text,
+                    token.Range.Start.Character))
+            {
+                continue;
+            }
+
+            var isInsideProcedure = callableDeclarations.Any(callable =>
+                IsInsideCallableBlock(sourceText, callable, token));
+            if (moduleKind is VbaModuleKind.ClassModule or VbaModuleKind.FormModule
+                && isInsideProcedure)
+            {
+                continue;
+            }
+
+            yield return new VbaSyntaxDiagnostic(
+                "syntax.raiseEventStatementNotAllowedHere",
+                "RaiseEvent statements are allowed only inside a procedure in a class module.",
+                token.Range);
+        }
+    }
+
+    private static bool IsInsideCallableBlock(
+        VbaSourceText sourceText,
+        VbaCallableDeclarationSyntax callable,
+        VbaToken token)
+    {
+        var declarationKeyword = callable.DeclarationKeyword;
+        if (callable.IsExternal
+            || declarationKeyword is null
+            || callable.BlockRange.Start.Offset >= token.Range.Start.Offset
+            || token.Range.End.Offset > callable.BlockRange.End.Offset)
+        {
+            return false;
+        }
+
+        if (token.Range.Start.Line != callable.BlockRange.End.Line)
+        {
+            return true;
+        }
+
+        var line = sourceText.Lines[token.Range.Start.Line];
+        var prefix = line.Text[..token.Range.Start.Character];
+        return !ContainsBlockTerminatorStatement(
+            prefix,
+            declarationKeyword);
+    }
+
     private static IEnumerable<VbaSyntaxDiagnostic> CollectRaiseEventArgumentListDiagnostics(
         VbaTokenStream tokenStream,
         IReadOnlyList<VbaArgumentListSyntax> argumentLists)
     {
         foreach (var argumentList in argumentLists)
         {
-            if (argumentList.Form != VbaCallSyntaxForm.Parenthesized
-                || !IsRaiseEventArgumentList(tokenStream, argumentList))
+            if (!IsRaiseEventArgumentList(tokenStream, argumentList))
             {
+                continue;
+            }
+
+            if (argumentList.Form != VbaCallSyntaxForm.Parenthesized)
+            {
+                if (argumentList.Arguments.Count > 0)
+                {
+                    yield return new VbaSyntaxDiagnostic(
+                        "syntax.raiseEventArgumentListRequiresParentheses",
+                        "RaiseEvent arguments must be enclosed in parentheses.",
+                        new VbaSyntaxRange(
+                            argumentList.Arguments[0].Range.Start,
+                            argumentList.Range.End));
+                }
+
                 continue;
             }
 
@@ -242,17 +434,77 @@ internal static class VbaSyntaxTreeParser
             return false;
         }
 
-        var precedingToken = tokenStream.Tokens
-            .Where(token => token.Range.End.Offset <= calleeRange.Start.Offset)
-            .Where(token => token.Kind is not (
-                VbaTokenKind.Whitespace
-                or VbaTokenKind.NewLine
-                or VbaTokenKind.LineContinuation
-                or VbaTokenKind.Comment))
-            .LastOrDefault();
+        var precedingToken = FindPrecedingTokenInLogicalStatement(
+            tokenStream.Tokens,
+            calleeRange.Start.Offset);
         return precedingToken?.Text.Equals(
             "RaiseEvent",
             StringComparison.OrdinalIgnoreCase) == true;
+    }
+
+    private static VbaToken? FindPrecedingTokenInLogicalStatement(
+        IReadOnlyList<VbaToken> tokens,
+        int offset)
+    {
+        var lower = 0;
+        var upper = tokens.Count;
+        while (lower < upper)
+        {
+            var middle = lower + ((upper - lower) / 2);
+            if (tokens[middle].Range.Start.Offset < offset)
+            {
+                lower = middle + 1;
+            }
+            else
+            {
+                upper = middle;
+            }
+        }
+
+        for (var index = lower - 1; index >= 0; index--)
+        {
+            var token = tokens[index];
+            if (token.Range.End.Offset > offset
+                || token.Kind == VbaTokenKind.Whitespace)
+            {
+                continue;
+            }
+
+            if (token.Kind == VbaTokenKind.Comment)
+            {
+                return null;
+            }
+
+            if (token.Kind == VbaTokenKind.NewLine)
+            {
+                index--;
+                while (index >= 0 && tokens[index].Kind == VbaTokenKind.Whitespace)
+                {
+                    index--;
+                }
+
+                if (index >= 0 && tokens[index].Kind == VbaTokenKind.LineContinuation)
+                {
+                    continue;
+                }
+
+                return null;
+            }
+
+            if (token.Kind == VbaTokenKind.LineContinuation)
+            {
+                continue;
+            }
+
+            if (token.Kind == VbaTokenKind.Punctuation && token.Text == ":")
+            {
+                return null;
+            }
+
+            return token;
+        }
+
+        return null;
     }
 
     private static VbaSourceText MaskPreprocessorDirectives(
@@ -460,8 +712,10 @@ internal static class VbaSyntaxTreeParser
         {
             var line = sourceText.Lines[lineIndex];
             endLine = line;
-            var codeText = VbaSourceText.StripApostropheComment(line.Text);
-            var hasContinuation = VbaSourceText.HasLineContinuation(codeText);
+            var codeText = VbaLexicalFacts.SplitCodeAndComment(line.Text).CodePart;
+            var hasContinuation = VbaSourceText.HasLineContinuation(codeText)
+                && !CollectLineContinuationDiagnostics(line).Any(diagnostic =>
+                    diagnostic.Code == "syntax.invalidTrailingCommentContinuation");
             var part = hasContinuation ? VbaSourceText.RemoveLineContinuation(codeText) : codeText;
             for (var character = 0; character < part.Length; character++)
             {
@@ -576,34 +830,28 @@ internal static class VbaSyntaxTreeParser
                 continue;
             }
 
-            var eventMatch = MatchIdentifier(EventPattern, codeLine);
-            if (eventMatch.Success)
+            if (!IsLogicalContinuationTail(sourceText, lineIndex)
+                && TryCreateEventSourceDeclaration(
+                    sourceText,
+                    lineIndex,
+                    parentProcedureName: null,
+                    parentProcedureRange: null,
+                    isInvalidEventPlacement: false,
+                    out var eventDeclaration,
+                    out var eventParameters,
+                    out var eventStatement))
             {
-                var documentation = ParseDocumentationComment(sourceText.Lines, lineIndex);
-                var name = eventMatch.Groups["name"].Value;
-                var parameters = ParseParameterSyntax(sourceText, eventMatch, line, documentation);
-                members.Add(CreateSingleLineMember(
-                    sourceText,
-                    eventMatch,
-                    "name",
+                members.Add(new VbaModuleMemberSyntax(
+                    eventDeclaration.Name,
                     VbaDeclarationKind.Event,
-                    line));
-                declarations.Add(CreateDeclaration(
-                    sourceText,
-                    eventMatch,
-                    "name",
-                    VbaDeclarationKind.Event,
-                    GetVisibility(eventMatch.Groups["visibility"].Value, defaultPublic: true),
-                    line,
-                    documentation: documentation?.HoverText,
-                    signature: CreateSignature(name, parameters, null, documentation),
-                    declarationLabel: CreateDeclarationLabel("Event", name, parameters),
-                    callableKind: "Event"));
-                foreach (var parameter in parameters)
+                    eventStatement.Range));
+                declarations.Add(eventDeclaration);
+                foreach (var parameter in eventParameters)
                 {
                     declarations.Add(CreateParameterDeclaration(parameter, parameter.Range.Start.Line));
                 }
 
+                lineIndex = eventStatement.Range.End.Line;
                 continue;
             }
 
@@ -633,6 +881,13 @@ internal static class VbaSyntaxTreeParser
                     VbaDeclarationKind.EnumMember,
                     visibility,
                     enumMatch.Groups["name"].Value);
+                AddRecoveredEventDeclarations(
+                    sourceText,
+                    declarations,
+                    lineIndex + 1,
+                    endLine,
+                    parentProcedureName: null,
+                    parentProcedureRange: null);
                 members.Add(new VbaModuleMemberSyntax(
                     enumMatch.Groups["name"].Value,
                     VbaDeclarationKind.Enum,
@@ -667,6 +922,13 @@ internal static class VbaSyntaxTreeParser
                     VbaDeclarationKind.TypeMember,
                     visibility,
                     typeMatch.Groups["name"].Value);
+                AddRecoveredEventDeclarations(
+                    sourceText,
+                    declarations,
+                    lineIndex + 1,
+                    endLine,
+                    parentProcedureName: null,
+                    parentProcedureRange: null);
                 members.Add(new VbaModuleMemberSyntax(
                     typeMatch.Groups["name"].Value,
                     VbaDeclarationKind.Type,
@@ -730,6 +992,13 @@ internal static class VbaSyntaxTreeParser
                     declaration.BlockRange.End.Line,
                     declaration.Name,
                     declaration.BlockRange);
+                AddRecoveredEventDeclarations(
+                    sourceText,
+                    declarations,
+                    declaration.LineIndex + 1,
+                    declaration.BlockRange.End.Line,
+                    declaration.Name,
+                    declaration.BlockRange);
                 lineIndex = declaration.BlockRange.End.Line;
                 continue;
             }
@@ -776,7 +1045,7 @@ internal static class VbaSyntaxTreeParser
             diagnostics.AddRange(CollectStringDiagnostics(line));
             diagnostics.AddRange(CollectRaiseEventDiagnostics(line));
 
-            var codeLine = VbaSourceText.StripApostropheComment(line.Text);
+            var codeLine = VbaLexicalFacts.SplitCodeAndComment(line.Text).CodePart;
             var hasValidLineContinuation = VbaSourceText.HasLineContinuation(codeLine)
                 && !lineContinuationDiagnostics.Any(diagnostic =>
                     diagnostic.Code == "syntax.invalidTrailingCommentContinuation");
@@ -817,7 +1086,7 @@ internal static class VbaSyntaxTreeParser
                 continue;
             }
 
-            if (TryCloseBlock(trimmed, blockStack, out var unexpectedClose))
+            if (TryCloseLeadingBlocks(trimmed, blockStack, out var unexpectedClose))
             {
                 if (unexpectedClose is not null)
                 {
@@ -896,6 +1165,17 @@ internal static class VbaSyntaxTreeParser
 
         var argumentStart = SkipWhitespace(codeLine, eventNameEnd);
         if (argumentStart >= codeLine.Length)
+        {
+            yield break;
+        }
+
+        if (codeLine[argumentStart] == ':')
+        {
+            yield break;
+        }
+
+        if (codeLine[argumentStart] == '_'
+            && VbaSourceText.HasLineContinuation(codeLine))
         {
             yield break;
         }
@@ -1020,12 +1300,63 @@ internal static class VbaSyntaxTreeParser
             yield break;
         }
 
+        var statementEnd = FindRaiseEventStatementEnd(codeLine, argumentStart);
+        while (statementEnd > argumentStart
+            && VbaIdentifier.IsWhitespace(codeLine[statementEnd - 1]))
+        {
+            statementEnd--;
+        }
+
         yield return new VbaSyntaxDiagnostic(
             "syntax.raiseEventArgumentListRequiresParentheses",
             "RaiseEvent arguments must be enclosed in parentheses.",
             new VbaSyntaxRange(
                 new VbaSyntaxPosition(line.LineNumber, argumentStart, line.StartOffset + argumentStart),
-                new VbaSyntaxPosition(line.LineNumber, codeLine.Length, line.StartOffset + codeLine.Length)));
+                new VbaSyntaxPosition(line.LineNumber, statementEnd, line.StartOffset + statementEnd)));
+    }
+
+    private static int FindRaiseEventStatementEnd(string codeLine, int argumentStart)
+    {
+        var inString = false;
+        var parenthesisDepth = 0;
+        for (var index = argumentStart; index < codeLine.Length; index++)
+        {
+            if (codeLine[index] == '"')
+            {
+                if (inString
+                    && index + 1 < codeLine.Length
+                    && codeLine[index + 1] == '"')
+                {
+                    index++;
+                    continue;
+                }
+
+                inString = !inString;
+                continue;
+            }
+
+            if (inString)
+            {
+                continue;
+            }
+
+            if (codeLine[index] == '(')
+            {
+                parenthesisDepth++;
+            }
+            else if (codeLine[index] == ')' && parenthesisDepth > 0)
+            {
+                parenthesisDepth--;
+            }
+            else if (codeLine[index] == ':'
+                && parenthesisDepth == 0
+                && (index + 1 >= codeLine.Length || codeLine[index + 1] != '='))
+            {
+                return index;
+            }
+        }
+
+        return codeLine.Length;
     }
 
     private static int FindRaiseEventArgumentListEnd(string codeLine, int argumentStart)
@@ -1233,6 +1564,89 @@ internal static class VbaSyntaxTreeParser
         return true;
     }
 
+    private static bool TryCloseLeadingBlocks(
+        string codeLine,
+        Stack<BlockFrame> blockStack,
+        out string? unexpectedClose)
+    {
+        unexpectedClose = null;
+        var closedAny = false;
+        foreach (var statement in SplitColonSeparatedStatements(codeLine))
+        {
+            var trimmedStatement = VbaIdentifier.TrimStartWhitespace(statement);
+            if (VbaIdentifier.IsWhitespaceOnly(trimmedStatement))
+            {
+                continue;
+            }
+
+            if (!TryCloseBlock(trimmedStatement, blockStack, out var statementUnexpectedClose))
+            {
+                break;
+            }
+
+            closedAny = true;
+            unexpectedClose ??= statementUnexpectedClose;
+        }
+
+        return closedAny;
+    }
+
+    private static bool ContainsBlockTerminatorStatement(string line, string keyword)
+        => SplitColonSeparatedStatements(line).Any(statement =>
+            IsBlockTerminatorStatement(statement, keyword));
+
+    private static bool IsBlockTerminatorStatement(string statement, string keyword)
+    {
+        var tokens = VbaTokenStream.FromText(statement).Tokens
+            .Where(token => token.Kind is not VbaTokenKind.Whitespace
+                and not VbaTokenKind.NewLine
+                and not VbaTokenKind.LineContinuation
+                and not VbaTokenKind.Comment)
+            .ToArray();
+        return tokens.Length >= 2
+            && tokens[0].Text.Equals("End", StringComparison.OrdinalIgnoreCase)
+            && tokens[1].Text.Equals(keyword, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static IEnumerable<string> SplitColonSeparatedStatements(string line)
+    {
+        var codeLine = VbaLexicalFacts.SplitCodeAndComment(line).CodePart;
+        var tokens = VbaTokenStream.FromText(codeLine).Tokens;
+        var statementStart = 0;
+        for (var tokenIndex = 0; tokenIndex < tokens.Count; tokenIndex++)
+        {
+            var token = tokens[tokenIndex];
+            if (token.Kind != VbaTokenKind.Punctuation
+                || token.Text != ":"
+                || IsNamedArgumentColon(tokens, tokenIndex))
+            {
+                continue;
+            }
+
+            yield return codeLine[statementStart..token.Range.Start.Character];
+            statementStart = token.Range.End.Character;
+        }
+
+        yield return codeLine[statementStart..];
+    }
+
+    private static bool IsNamedArgumentColon(
+        IReadOnlyList<VbaToken> tokens,
+        int colonTokenIndex)
+    {
+        for (var tokenIndex = colonTokenIndex + 1; tokenIndex < tokens.Count; tokenIndex++)
+        {
+            if (tokens[tokenIndex].Kind is VbaTokenKind.Whitespace or VbaTokenKind.NewLine)
+            {
+                continue;
+            }
+
+            return tokens[tokenIndex].Text == "=";
+        }
+
+        return false;
+    }
+
     private static bool IsMalformedDeclarationHeader(string trimmedLine)
     {
         var tokens = VbaTokenStream.FromText(trimmedLine).Tokens
@@ -1421,7 +1835,8 @@ internal static class VbaSyntaxTreeParser
         bool isExternal = false,
         bool isStatic = false,
         string? declarationLabel = null,
-        string? callableKind = null)
+        string? callableKind = null,
+        bool isInvalidEventPlacement = false)
     {
         var name = match.Groups[groupName].Value;
         return new VbaDeclarationSyntax(
@@ -1440,7 +1855,8 @@ internal static class VbaSyntaxTreeParser
             IsExternal: isExternal,
             IsStatic: isStatic,
             DeclarationLabel: declarationLabel,
-            CallableKind: callableKind);
+            CallableKind: callableKind,
+            IsInvalidEventPlacement: isInvalidEventPlacement);
     }
 
     private static VbaModuleMemberSyntax CreateSingleLineMember(
@@ -1530,6 +1946,196 @@ internal static class VbaSyntaxTreeParser
                 declarations.Add(declaration);
             }
         }
+    }
+
+    private static void AddRecoveredEventDeclarations(
+        VbaSourceText sourceText,
+        ICollection<VbaDeclarationSyntax> declarations,
+        int startLine,
+        int endLine,
+        string? parentProcedureName,
+        VbaSyntaxRange? parentProcedureRange)
+    {
+        for (var lineIndex = startLine; lineIndex < endLine; lineIndex++)
+        {
+            if (IsLogicalContinuationTail(sourceText, lineIndex)
+                || !TryCreateEventSourceDeclaration(
+                    sourceText,
+                    lineIndex,
+                    parentProcedureName,
+                    parentProcedureRange,
+                    isInvalidEventPlacement: true,
+                    out var declaration,
+                    out _,
+                    out var statement))
+            {
+                continue;
+            }
+
+            declarations.Add(declaration);
+            lineIndex = statement.Range.End.Line;
+        }
+    }
+
+    private static bool IsLogicalContinuationTail(
+        VbaSourceText sourceText,
+        int lineIndex)
+    {
+        if (lineIndex <= 0)
+        {
+            return false;
+        }
+
+        var precedingLine = sourceText.Lines[lineIndex - 1];
+        var precedingCode = VbaLexicalFacts.SplitCodeAndComment(precedingLine.Text).CodePart;
+        return VbaSourceText.HasLineContinuation(precedingCode)
+            && !CollectLineContinuationDiagnostics(precedingLine).Any(diagnostic =>
+                diagnostic.Code == "syntax.invalidTrailingCommentContinuation");
+    }
+
+    private static bool TryCreateEventSourceDeclaration(
+        VbaSourceText sourceText,
+        int lineIndex,
+        string? parentProcedureName,
+        VbaSyntaxRange? parentProcedureRange,
+        bool isInvalidEventPlacement,
+        out VbaDeclarationSyntax declaration,
+        out IReadOnlyList<VbaCallableParameterSyntax> parameters,
+        out LogicalStatement statement)
+    {
+        statement = CreateLogicalStatement(sourceText, lineIndex);
+        var eventMatch = MatchIdentifier(EventPattern, statement.Text);
+        if (!eventMatch.Success)
+        {
+            declaration = null!;
+            parameters = [];
+            return false;
+        }
+
+        var documentation = ParseDocumentationComment(sourceText.Lines, lineIndex);
+        var name = eventMatch.Groups["name"].Value;
+        parameters = ParseParameterSyntax(eventMatch, statement, documentation);
+        var nameGroup = eventMatch.Groups["name"];
+        declaration = new VbaDeclarationSyntax(
+            name,
+            VbaDeclarationKind.Event,
+            GetVisibility(eventMatch.Groups["visibility"].Value, defaultPublic: true),
+            RangeFromLogicalSpan(
+                statement,
+                nameGroup.Index,
+                nameGroup.Index + nameGroup.Length),
+            lineIndex,
+            Documentation: documentation?.HoverText,
+            Signature: CreateSignature(name, parameters, null, documentation),
+            ParentProcedureName: parentProcedureName,
+            ParentProcedureRange: parentProcedureRange,
+            DeclarationLabel: CreateDeclarationLabel("Event", name, parameters),
+            CallableKind: "Event",
+            IsInvalidEventPlacement: isInvalidEventPlacement,
+            HasCompleteEventSignatureShape: HasCompleteEventSignatureShape(
+                statement.Text,
+                name),
+            HasOptionalEventParameter: HasEventParameterModifier(
+                eventMatch,
+                statement.Text,
+                "Optional"),
+            HasParamArrayEventParameter: HasEventParameterModifier(
+                eventMatch,
+                statement.Text,
+                "ParamArray"));
+        return true;
+    }
+
+    private static bool HasEventParameterModifier(
+        Match eventMatch,
+        string statementText,
+        string modifier)
+    {
+        if (!TryGetEventParameterSpan(
+                eventMatch,
+                statementText,
+                out var parameterStart,
+                out var parameterEnd))
+        {
+            return false;
+        }
+
+        return VbaTokenStream.FromText(statementText[parameterStart..parameterEnd]).Tokens.Any(token =>
+            token.Kind == VbaTokenKind.Keyword
+            && token.Text.Equals(modifier, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool TryGetEventParameterSpan(
+        Match eventMatch,
+        string statementText,
+        out int parameterStart,
+        out int parameterEnd)
+    {
+        var parameters = eventMatch.Groups["parameters"];
+        if (parameters.Success)
+        {
+            parameterStart = parameters.Index;
+            parameterEnd = parameters.Index + parameters.Length;
+            return true;
+        }
+
+        var name = eventMatch.Groups["name"];
+        var openParenthesis = statementText.IndexOf(
+            '(',
+            name.Index + name.Length);
+        if (openParenthesis >= 0)
+        {
+            parameterStart = openParenthesis + 1;
+            parameterEnd = statementText.Length;
+            return true;
+        }
+
+        parameterStart = 0;
+        parameterEnd = 0;
+        return false;
+    }
+
+    private static bool HasCompleteEventSignatureShape(
+        string statementText,
+        string eventName)
+    {
+        var tokens = VbaTokenStream.FromText(statementText).Tokens
+            .Where(token => token.Kind is not VbaTokenKind.Whitespace
+                and not VbaTokenKind.NewLine
+                and not VbaTokenKind.Comment
+                and not VbaTokenKind.LineContinuation)
+            .ToArray();
+        var eventIndex = tokens.Length > 0
+                && tokens[0].Text.Equals("Event", StringComparison.OrdinalIgnoreCase)
+            ? 0
+            : tokens.Length > 1
+                && (tokens[0].Text.Equals("Public", StringComparison.OrdinalIgnoreCase)
+                    || tokens[0].Text.Equals("Private", StringComparison.OrdinalIgnoreCase)
+                    || tokens[0].Text.Equals("Friend", StringComparison.OrdinalIgnoreCase))
+                && tokens[1].Text.Equals("Event", StringComparison.OrdinalIgnoreCase)
+                    ? 1
+                    : -1;
+        var nameIndex = eventIndex + 1;
+        if (eventIndex < 0
+            || nameIndex >= tokens.Length
+            || !tokens[nameIndex].Text.Equals(eventName, StringComparison.OrdinalIgnoreCase)
+            || nameIndex + 1 >= tokens.Length
+            || tokens[nameIndex + 1].Text != "(")
+        {
+            return false;
+        }
+
+        var openParenthesis = nameIndex + 1;
+        var closeParenthesis = VbaBlockHeaderSyntax.FindMatchingCloseParenthesis(
+            tokens,
+            openParenthesis);
+        return closeParenthesis == tokens.Length - 1
+            && VbaBlockHeaderSyntax.HasCompleteParameterList(
+                tokens,
+                openParenthesis + 1,
+                closeParenthesis,
+                forbiddenParameterName: null,
+                allowAnyTypeReference: false);
     }
 
     private static IReadOnlyList<VbaDeclarationSyntax> ParseVariableLikeDeclarations(
@@ -1636,13 +2242,14 @@ internal static class VbaSyntaxTreeParser
         var parameters = new List<VbaCallableParameterSyntax>();
         foreach (var segment in SplitDeclarationSegments(parametersGroup.Value))
         {
-            var name = ParseParameterName(segment.Text);
-            if (name is null)
+            var nameToken = ParseParameterNameToken(segment.Text);
+            if (nameToken is null)
             {
                 continue;
             }
 
-            var nameOffset = segment.Text.IndexOf(name, StringComparison.Ordinal);
+            var name = nameToken.Text;
+            var nameOffset = nameToken.Range.Start.Character;
             var start = parametersGroup.Index + segment.Start + nameOffset;
             parameters.Add(new VbaCallableParameterSyntax(
                 name,
@@ -1678,13 +2285,14 @@ internal static class VbaSyntaxTreeParser
         var parameters = new List<VbaCallableParameterSyntax>();
         foreach (var segment in SplitDeclarationSegments(parametersGroup.Value))
         {
-            var name = ParseParameterName(segment.Text);
-            if (name is null)
+            var nameToken = ParseParameterNameToken(segment.Text);
+            if (nameToken is null)
             {
                 continue;
             }
 
-            var nameOffset = segment.Text.IndexOf(name, StringComparison.Ordinal);
+            var name = nameToken.Text;
+            var nameOffset = nameToken.Range.Start.Character;
             var start = parametersGroup.Index + segment.Start + nameOffset;
             parameters.Add(new VbaCallableParameterSyntax(
                 name,
@@ -1741,7 +2349,8 @@ internal static class VbaSyntaxTreeParser
                     parameter.TypeReference,
                     parameter.IsByRef,
                     parameter.IsParamArray,
-                    parameter.IsArray))
+                    parameter.IsArray,
+                    parameter.Range))
                 .ToArray(),
             documentationLines.Count == 0 ? null : string.Join('\n', documentationLines));
     }
@@ -2183,7 +2792,7 @@ internal static class VbaSyntaxTreeParser
         }
     }
 
-    private static string? ParseParameterName(string parameter)
+    private static VbaToken? ParseParameterNameToken(string parameter)
     {
         foreach (var token in VbaTokenStream.FromText(parameter).Tokens)
         {
@@ -2201,7 +2810,7 @@ internal static class VbaSyntaxTreeParser
                 continue;
             }
 
-            return VbaIdentifierSyntaxFacts.IsValidDeclaredName(token) ? token.Text : null;
+            return VbaIdentifierSyntaxFacts.IsValidDeclaredName(token) ? token : null;
         }
 
         return null;
@@ -2330,12 +2939,6 @@ internal static class VbaSyntaxTreeParser
         IReadOnlyList<VbaPreprocessorBlockSyntax> preprocessorBlocks)
     {
         var lines = sourceText.Lines;
-        var pattern = new Regex(
-            "^" + VbaIdentifier.RegexWhitespace + "*"
-            + "End" + VbaIdentifier.RegexWhitespace + "+"
-            + Regex.Escape(keyword)
-            + "(?=$|" + VbaIdentifier.RegexWhitespace + "|:)",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         if (!VbaConditionalCompilationBranchFacts.TryGetStructuralPath(
                 preprocessorBlocks,
                 CreateLineRange(lines[headerLine]),
@@ -2353,7 +2956,7 @@ internal static class VbaSyntaxTreeParser
             : Math.Max(headerLine, closingDirective.Range.Start.Line - 1);
         for (var lineIndex = startLine; lineIndex <= searchEndLine; lineIndex++)
         {
-            if (pattern.IsMatch(VbaSourceText.StripApostropheComment(lines[lineIndex].Text))
+            if (ContainsBlockTerminatorStatement(lines[lineIndex].Text, keyword)
                 && VbaConditionalCompilationBranchFacts.TryGetStructuralPath(
                     preprocessorBlocks,
                     CreateLineRange(lines[lineIndex]),

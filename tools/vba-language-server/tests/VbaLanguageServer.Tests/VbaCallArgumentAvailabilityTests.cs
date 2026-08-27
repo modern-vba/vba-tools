@@ -189,6 +189,98 @@ public sealed class VbaCallArgumentAvailabilityTests
     }
 
     [Fact]
+    public void PlacementInvalidRaiseEventHasNoCallableOrSignatureMapping()
+    {
+        const string uri = "file:///C:/work/Worker.cls";
+        const string callLine = "RaiseEvent Saved(";
+        var lines = new[]
+        {
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Public Event Saved()",
+            callLine
+        };
+        var syntaxTree = VbaSyntaxTree.ParseModule(uri, string.Join('\n', lines));
+        var document = VbaSourceDocumentProjector.Project(uri, syntaxTree);
+        var nameResolution = new VbaNameResolutionService(
+            [document],
+            referenceSelection: null,
+            VbaProjectReferenceCatalogSet.Empty);
+        var callSiteResolution = new VbaCallSiteResolution(
+            nameResolution,
+            new VbaMemberChainResolution(new VbaTypeResolution(nameResolution)),
+            new VbaResolutionPolicy());
+        var positionSyntax = syntaxTree.GetPositionSyntax(3, callLine.Length);
+
+        var availability = callSiteResolution.GetCallArgumentAvailability(
+            document,
+            3,
+            callLine.Length,
+            positionSyntax);
+
+        Assert.Null(availability.CallableDefinition);
+        Assert.Null(availability.Signature);
+        Assert.False(availability.AllowsPositionalExpression);
+        Assert.Empty(availability.RemainingNamedParameters);
+    }
+
+    [Fact]
+    public void CompleteRaiseEventMapsEveryValidVariantAndRetainsRecoveredEvidence()
+    {
+        const string uri = "file:///C:/work/Worker.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Event Saved(ByVal Value As Long)",
+            "#ElseIf SECOND_CONFIGURATION Then",
+            "Public Event Saved(ByVal Value As Long, ByVal Retry As Long)",
+            "#Else",
+            "Private Event Saved(ByVal Value As Long)",
+            "#End If",
+            "Public Sub Run()",
+            "    RaiseEvent Saved(1)",
+            "End Sub"
+        ]);
+        var syntaxTree = VbaSyntaxTree.ParseModule(uri, text);
+        var document = VbaSourceDocumentProjector.Project(uri, syntaxTree);
+        var nameResolution = new VbaNameResolutionService(
+            [document],
+            referenceSelection: null,
+            VbaProjectReferenceCatalogSet.Empty);
+        var callSiteResolution = new VbaCallSiteResolution(
+            nameResolution,
+            new VbaMemberChainResolution(new VbaTypeResolution(nameResolution)),
+            new VbaResolutionPolicy());
+        var argumentList = Assert.Single(
+            syntaxTree.Module.ArgumentLists,
+            candidate => candidate.CalleeRange?.Start.Line == 10);
+
+        Assert.True(callSiteResolution.TryResolveRaiseEventTarget(
+            document,
+            argumentList,
+            out var target));
+        var compatibility = callSiteResolution.AnalyzeCompleteCall(
+            document,
+            argumentList,
+            Assert.IsAssignableFrom<VbaResolvedNameTarget>(target));
+        var variants = compatibility.Variants
+            .OrderBy(variant => variant.Definition.Range.Start.Line)
+            .ToArray();
+
+        Assert.Equal(3, variants.Length);
+        Assert.Empty(Assert.IsType<VbaCompleteCallArgumentMapping>(variants[0].Mapping)
+            .MissingRequiredParameterIndexes);
+        Assert.Equal(
+            [1],
+            Assert.IsType<VbaCompleteCallArgumentMapping>(variants[1].Mapping)
+                .MissingRequiredParameterIndexes);
+        Assert.Null(variants[2].Signature);
+        Assert.Null(variants[2].Mapping);
+        Assert.Equal(VbaCallCompatibilityState.Indeterminate, variants[2].State);
+    }
+
+    [Fact]
     public void ReferenceCallableNeverOffersNamedArgumentsWhenSupportIsUnknown()
     {
         const string referenceName = "Generated Library";

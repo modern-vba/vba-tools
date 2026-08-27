@@ -1483,6 +1483,123 @@ public sealed class VbaSemanticResolutionTests
     }
 
     [Fact]
+    public void SignatureHelpRejectsAModuleLevelRaiseEventStatement()
+    {
+        const string uri = "file:///C:/work/Worker.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Public Event Saved(ByVal Name As String)",
+            "RaiseEvent Saved("
+        ]);
+        var index = BuildIndex(uri, text);
+
+        var signatureHelp = index.GetSignatureHelp(
+            uri,
+            3,
+            "RaiseEvent Saved(".Length);
+
+        Assert.Null(signatureHelp);
+    }
+
+    [Fact]
+    public void SignatureHelpUsesAValidContinuedEventDeclaration()
+    {
+        const string uri = "file:///C:/work/Worker.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Public Event Saved( _",
+            "    ByVal Name As String, _",
+            "    ByVal Count As Long)",
+            "Public Sub Run()",
+            "    RaiseEvent Saved(",
+            "End Sub"
+        ]);
+        var index = BuildIndex(uri, text);
+
+        var signatureHelp = index.GetSignatureHelp(
+            uri,
+            6,
+            "    RaiseEvent Saved(".Length);
+
+        Assert.Equal(
+            "Event Saved(Name As String, Count As Long)",
+            signatureHelp?.Signature.Label);
+    }
+
+    [Fact]
+    public void SignatureHelpRejectsAnEventJoinedThroughAnInvalidContinuation()
+    {
+        const string uri = "file:///C:/work/Worker.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Public Event Saved( _' invalid trailing comment",
+            "    ByVal Value As Long)",
+            "Public Sub Run()",
+            "    RaiseEvent Saved(",
+            "End Sub"
+        ]);
+        var index = BuildIndex(uri, text);
+
+        var signatureHelp = index.GetSignatureHelp(
+            uri,
+            5,
+            "    RaiseEvent Saved(".Length);
+        var definition = index.ResolveSourceDefinition(
+            uri,
+            2,
+            "Public Event ".Length);
+
+        Assert.Contains(
+            VbaSyntaxDiagnostics.Collect(text, uri),
+            diagnostic => diagnostic.Code == "syntax.invalidTrailingCommentContinuation");
+        Assert.Equal(
+            VbaEventRecoveryReason.MissingOrInvalidSignature,
+            definition?.EventRecoveryReasons);
+        Assert.Null(definition?.Signature);
+        Assert.Null(signatureHelp);
+    }
+
+    [Fact]
+    public void SignatureHelpRetainsAndRanksEveryConditionalEventSignature()
+    {
+        const string uri = "file:///C:/work/Worker.cls";
+        const string callLine = "    RaiseEvent Saved(1, ";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "#If VBA7 Then",
+            "Public Event Saved(ByVal Value As Long, ByVal Retry As Long)",
+            "#Else",
+            "Public Event Saved(ByVal Message As String)",
+            "#End If",
+            "Public Sub Run()",
+            callLine,
+            "End Sub"
+        ]);
+        var index = BuildIndex(uri, text);
+
+        var signatureHelp = Assert.IsType<VbaSignatureHelp>(index.GetSignatureHelp(
+            uri,
+            8,
+            callLine.Length));
+
+        Assert.Equal(
+            [
+                "Event Saved(Value As Long, Retry As Long) [#If]",
+                "Event Saved(Message As String) [#If]"
+            ],
+            signatureHelp.Signatures.Select(signature => signature.DisplayLabel).ToArray());
+        Assert.Equal(
+            [1, null],
+            signatureHelp.Signatures.Select(signature => signature.ActiveParameter).ToArray());
+        Assert.Equal(0, signatureHelp.ActiveSignature);
+        Assert.Equal(1, signatureHelp.ActiveParameter);
+    }
+
+    [Fact]
     public void SignatureHelpRetainsContextIncompatibleWriteOnlyPropertyTargets()
     {
         const string uri = "file:///C:/work/Worker.cls";

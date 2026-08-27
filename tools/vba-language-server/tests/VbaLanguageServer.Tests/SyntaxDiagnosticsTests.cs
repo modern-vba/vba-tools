@@ -201,7 +201,10 @@ public sealed class SyntaxDiagnosticsTests
             sourceLines.Add(terminatorLine);
         }
 
-        var diagnostic = Assert.Single(VbaDocumentDiagnostics.Collect(string.Join('\n', sourceLines), "Worker.bas"));
+        var uri = declarationLine.Contains(" Event ", StringComparison.Ordinal)
+            ? "Worker.cls"
+            : "Worker.bas";
+        var diagnostic = Assert.Single(VbaDocumentDiagnostics.Collect(string.Join('\n', sourceLines), uri));
 
         Assert.Equal("validation.duplicateCallableParameterName", diagnostic.Code);
         Assert.Equal(
@@ -209,6 +212,192 @@ public sealed class SyntaxDiagnosticsTests
                 new VbaPosition(1, declarationLine.LastIndexOf("VALUE", StringComparison.Ordinal)),
                 new VbaPosition(1, declarationLine.LastIndexOf("VALUE", StringComparison.Ordinal) + "VALUE".Length)),
             diagnostic.Range);
+    }
+
+    [Fact]
+    public void Document_diagnostics_report_duplicate_continued_Event_parameter_names()
+    {
+        const string duplicateLine = "    ByVal Val As String)";
+        var source = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Public Event Saved( _",
+            "    ByVal Val As Long, _",
+            duplicateLine
+        ]);
+
+        var diagnostic = Assert.Single(VbaDocumentDiagnostics.Collect(source, "Worker.cls"));
+
+        Assert.Equal("validation.duplicateCallableParameterName", diagnostic.Code);
+        Assert.Equal(
+            new VbaRange(
+                new VbaPosition(4, duplicateLine.LastIndexOf("Val", StringComparison.Ordinal)),
+                new VbaPosition(
+                    4,
+                    duplicateLine.LastIndexOf("Val", StringComparison.Ordinal) + "Val".Length)),
+            diagnostic.Range);
+    }
+
+    [Fact]
+    public void ContinuedEventOptionalParameterIsDiagnosed()
+    {
+        const string modifierLine = "    Optional ByVal message As String)";
+        var source = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Public Event Saved( _",
+            modifierLine
+        ]);
+
+        var diagnostic = Assert.Single(VbaSyntaxDiagnostics.Collect(source, "Worker.cls"));
+
+        Assert.Equal("syntax.eventOptionalParameterNotAllowed", diagnostic.Code);
+        Assert.Equal("Event parameters cannot be Optional.", diagnostic.Message);
+        Assert.Equal(
+            new VbaRange(
+                new VbaPosition(3, modifierLine.IndexOf("Optional", StringComparison.Ordinal)),
+                new VbaPosition(
+                    3,
+                    modifierLine.IndexOf("Optional", StringComparison.Ordinal) + "Optional".Length)),
+            diagnostic.Range);
+    }
+
+    [Fact]
+    public void ContinuedEventParamArrayParameterIsDiagnosed()
+    {
+        const string modifierLine = "    ParamArray values() As Variant)";
+        var source = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Public Event Saved( _",
+            modifierLine
+        ]);
+
+        var diagnostic = Assert.Single(VbaSyntaxDiagnostics.Collect(source, "Worker.cls"));
+
+        Assert.Equal("syntax.eventParamArrayParameterNotAllowed", diagnostic.Code);
+        Assert.Equal("Event parameters cannot be ParamArray.", diagnostic.Message);
+        Assert.Equal(
+            new VbaRange(
+                new VbaPosition(3, modifierLine.IndexOf("ParamArray", StringComparison.Ordinal)),
+                new VbaPosition(
+                    3,
+                    modifierLine.IndexOf("ParamArray", StringComparison.Ordinal) + "ParamArray".Length)),
+            diagnostic.Range);
+    }
+
+    [Fact]
+    public void EventPlacementAndVisibilityDiagnosticsAreIndependent()
+    {
+        const string declarationLine = "Private Event Saved()";
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            declarationLine
+        ]);
+
+        var diagnostics = VbaSyntaxDiagnostics.Collect(source, "Worker.bas")
+            .Where(diagnostic => diagnostic.Code.StartsWith("syntax.event", StringComparison.Ordinal))
+            .ToArray();
+
+        Assert.Equal(
+            [
+                "syntax.eventDeclarationNotAllowedInModule",
+                "syntax.eventVisibilityNotAllowed"
+            ],
+            diagnostics.Select(diagnostic => diagnostic.Code).ToArray());
+        Assert.Equal(
+            new VbaRange(new VbaPosition(1, 8), new VbaPosition(1, 13)),
+            diagnostics[0].Range);
+        Assert.Equal(
+            new VbaRange(new VbaPosition(1, 0), new VbaPosition(1, 7)),
+            diagnostics[1].Range);
+    }
+
+    [Fact]
+    public void EventOptionalAndParamArrayDiagnosticsAreIndependent()
+    {
+        const string declarationLine =
+            "Public Event Saved(Optional ByVal value As Variant, ParamArray values() As Variant)";
+        var source = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            declarationLine
+        ]);
+
+        var diagnostics = VbaSyntaxDiagnostics.Collect(source, "Worker.cls")
+            .Where(diagnostic => diagnostic.Code.StartsWith("syntax.event", StringComparison.Ordinal))
+            .ToArray();
+
+        Assert.Equal(
+            [
+                "syntax.eventOptionalParameterNotAllowed",
+                "syntax.eventParamArrayParameterNotAllowed"
+            ],
+            diagnostics.Select(diagnostic => diagnostic.Code).ToArray());
+        Assert.Equal(
+            declarationLine.IndexOf("Optional", StringComparison.Ordinal),
+            diagnostics[0].Range.Start.Character);
+        Assert.Equal(
+            declarationLine.IndexOf("ParamArray", StringComparison.Ordinal),
+            diagnostics[1].Range.Start.Character);
+    }
+
+    [Fact]
+    public void ModuleLevelRaiseEventIsDiagnosedOverItsKeyword()
+    {
+        const string statementLine = "    RaiseEvent Saved";
+        var source = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Public Event Saved()",
+            statementLine
+        ]);
+
+        var diagnostic = Assert.Single(
+            VbaSyntaxDiagnostics.Collect(source, "Worker.cls"),
+            candidate => candidate.Code == "syntax.raiseEventStatementNotAllowedHere");
+
+        Assert.Equal(
+            new VbaRange(
+                new VbaPosition(3, statementLine.IndexOf("RaiseEvent", StringComparison.Ordinal)),
+                new VbaPosition(
+                    3,
+                    statementLine.IndexOf("RaiseEvent", StringComparison.Ordinal) + "RaiseEvent".Length)),
+            diagnostic.Range);
+    }
+
+    [Fact]
+    public void NamedAndOmittedRaiseEventArgumentsAreDiagnosedIndependently()
+    {
+        const string statementLine = "    RaiseEvent Saved(Name:=1, ,)";
+        var source = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Public Event Saved(ByVal Name As Long, ByVal Value As Long)",
+            "Public Sub Run()",
+            statementLine,
+            "End Sub"
+        ]);
+
+        var diagnostics = VbaSyntaxDiagnostics.Collect(source, "Worker.cls");
+        var named = Assert.Single(
+            diagnostics,
+            diagnostic => diagnostic.Code == "syntax.raiseEventNamedArgumentNotAllowed");
+        var omitted = Assert.Single(
+            diagnostics,
+            diagnostic => diagnostic.Code == "syntax.raiseEventOmittedArgumentNotAllowed");
+
+        var nameStart = statementLine.IndexOf("Name:=", StringComparison.Ordinal);
+        Assert.Equal(
+            new VbaRange(
+                new VbaPosition(4, nameStart),
+                new VbaPosition(4, nameStart + "Name:=".Length)),
+            named.Range);
+        Assert.Equal(
+            new VbaRange(
+                new VbaPosition(4, statementLine.IndexOf('(')),
+                new VbaPosition(4, statementLine.Length)),
+            omitted.Range);
     }
 
     [Fact]
@@ -518,7 +707,7 @@ public sealed class SyntaxDiagnosticsTests
             "End Sub"
         ]);
 
-        var diagnostic = Assert.Single(VbaSyntaxDiagnostics.Collect(source, "Worker.bas"));
+        var diagnostic = Assert.Single(VbaSyntaxDiagnostics.Collect(source, "Worker.cls"));
 
         Assert.Equal("syntax.raiseEventArgumentListRequiresParentheses", diagnostic.Code);
         Assert.Equal("RaiseEvent arguments must be enclosed in parentheses.", diagnostic.Message);
@@ -543,13 +732,64 @@ public sealed class SyntaxDiagnosticsTests
             "End Sub"
         ]);
 
-        var diagnostic = Assert.Single(VbaSyntaxDiagnostics.Collect(source, "Worker.bas"));
+        var diagnostic = Assert.Single(VbaSyntaxDiagnostics.Collect(source, "Worker.cls"));
 
         Assert.Equal("syntax.raiseEventArgumentListRequiresParentheses", diagnostic.Code);
         Assert.Equal(
             new VbaRange(
                 new VbaPosition(3, invalidLine.IndexOf("\"ok\", 1", StringComparison.Ordinal)),
                 new VbaPosition(3, invalidLine.Length)),
+            diagnostic.Range);
+    }
+
+    [Theory]
+    [InlineData("    If True Then RaiseEvent Saved 1&")]
+    [InlineData("    Debug.Print 1: RaiseEvent Saved 1&")]
+    public void Diagnostics_reject_parenthesis_free_raise_event_arguments_in_statement_tails(
+        string invalidLine)
+    {
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Event Saved(ByVal value As Long)",
+            "Public Sub Run()",
+            invalidLine,
+            "End Sub"
+        ]);
+
+        var diagnostic = Assert.Single(
+            VbaSyntaxDiagnostics.Collect(source, "Worker.cls"),
+            candidate => candidate.Code
+                == "syntax.raiseEventArgumentListRequiresParentheses");
+
+        Assert.Equal(
+            new VbaRange(
+                new VbaPosition(3, invalidLine.LastIndexOf("1&", StringComparison.Ordinal)),
+                new VbaPosition(3, invalidLine.Length)),
+            diagnostic.Range);
+    }
+
+    [Fact]
+    public void Diagnostics_reject_a_continued_parenthesis_free_raise_event_argument_once()
+    {
+        const string argumentLine = "        1&";
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Event Saved(ByVal value As Long)",
+            "Public Sub Run()",
+            "    RaiseEvent Saved _",
+            argumentLine,
+            "End Sub"
+        ]);
+
+        var diagnostic = Assert.Single(
+            VbaSyntaxDiagnostics.Collect(source, "Worker.cls"),
+            candidate => candidate.Code
+                == "syntax.raiseEventArgumentListRequiresParentheses");
+
+        Assert.Equal(
+            new VbaRange(
+                new VbaPosition(4, argumentLine.IndexOf("1&", StringComparison.Ordinal)),
+                new VbaPosition(4, argumentLine.Length)),
             diagnostic.Range);
     }
 
@@ -568,7 +808,7 @@ public sealed class SyntaxDiagnosticsTests
         ]);
 
         Assert.DoesNotContain(
-            VbaSyntaxDiagnostics.Collect(source, "Worker.bas"),
+            VbaSyntaxDiagnostics.Collect(source, "Worker.cls"),
             diagnostic => diagnostic.Code == "syntax.raiseEventArgumentListRequiresParentheses");
     }
 

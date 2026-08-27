@@ -585,6 +585,13 @@ internal sealed class VbaPositionSyntaxIndex
             return VbaPositionRegion.Designer;
         }
 
+        if (VbaLexicalFacts.IsPositionInComment(
+                sourceText.Lines[position.Line].Text,
+                position.Character))
+        {
+            return VbaPositionRegion.Comment;
+        }
+
         var tokenIndex = FindTokenIndex(position.Offset);
         var token = tokenIndex >= 0 ? tokens[tokenIndex] : null;
         if (token is not null

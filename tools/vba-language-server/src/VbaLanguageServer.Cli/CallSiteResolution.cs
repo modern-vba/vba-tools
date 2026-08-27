@@ -297,7 +297,16 @@ internal sealed class VbaCallSiteResolution
         out VbaResolvedNameTarget? target)
     {
         var callSite = CreateCompleteCallSite(argumentList);
-        if (GetCallContext(currentDocument, callSite) != VbaCallContext.RaiseEvent)
+        return TryResolveRaiseEventTarget(currentDocument, callSite, out target);
+    }
+
+    internal bool TryResolveRaiseEventTarget(
+        VbaSourceDocument currentDocument,
+        VbaCallSiteSyntax? callSite,
+        out VbaResolvedNameTarget? target)
+    {
+        if (callSite is null
+            || GetCallContext(currentDocument, callSite) != VbaCallContext.RaiseEvent)
         {
             target = null;
             return false;
@@ -305,6 +314,28 @@ internal sealed class VbaCallSiteResolution
 
         target = ResolveCurrentDocumentEventTarget(currentDocument, callSite);
         return true;
+    }
+
+    internal bool IsRaiseEventCall(
+        VbaSourceDocument currentDocument,
+        VbaCallSiteSyntax? callSite)
+        => callSite is not null
+            && GetCallContext(currentDocument, callSite) == VbaCallContext.RaiseEvent;
+
+    private static bool HasRaiseEventPlacementDiagnostic(
+        VbaSourceDocument currentDocument,
+        VbaCallSiteSyntax callSite)
+    {
+        var syntaxTree = currentDocument.SyntaxTree
+            ?? VbaSyntaxTree.ParseModule(currentDocument.Uri, currentDocument.Text);
+        var raiseEventKeyword = syntaxTree.TokenStream.Tokens.LastOrDefault(token =>
+            token.Kind == VbaTokenKind.Keyword
+            && token.Text.Equals("RaiseEvent", StringComparison.OrdinalIgnoreCase)
+            && token.Range.End.Offset <= callSite.Callee.Range.Start.Offset);
+        return raiseEventKeyword is null
+            || syntaxTree.Diagnostics.Any(diagnostic =>
+                diagnostic.Code == "syntax.raiseEventStatementNotAllowedHere"
+                && diagnostic.Range == raiseEventKeyword.Range);
     }
 
     private VbaCompleteCallArgumentMapping ApplyCompleteTypeCompatibility(
@@ -1759,6 +1790,13 @@ internal sealed class VbaCallSiteResolution
             return VbaCallArgumentAvailability.None;
         }
 
+        var isRaiseEventCall = IsRaiseEventCall(currentDocument, callSite);
+        if (isRaiseEventCall
+            && HasRaiseEventPlacementDiagnostic(currentDocument, callSite))
+        {
+            return VbaCallArgumentAvailability.None;
+        }
+
         if (!TryResolveCallableNameTarget(
                 currentDocument,
                 line,
@@ -1768,6 +1806,17 @@ internal sealed class VbaCallSiteResolution
                 out var target)
             || target is null)
         {
+            if (isRaiseEventCall)
+            {
+                var raiseEventHasPriorNamedArgument = GetPriorArguments(callSite)
+                    .Any(argument => argument.Name is not null);
+                return new VbaCallArgumentAvailability(
+                    null,
+                    null,
+                    !raiseEventHasPriorNamedArgument,
+                    []);
+            }
+
             if (TryCreateStandardLibrarySignature(callSite, out var intrinsicSignature))
             {
                 return AnalyzeResolvedArguments(

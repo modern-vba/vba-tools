@@ -77,6 +77,48 @@ public enum VbaSourceDefinitionKind
 }
 
 /// <summary>
+/// Identifies the independent syntax reasons that keep an Event declaration in recovery.
+/// </summary>
+[Flags]
+public enum VbaEventRecoveryReason
+{
+    /// <summary>
+    /// The Event declaration has no known recovery reason.
+    /// </summary>
+    None = 0,
+
+    /// <summary>
+    /// The Event is outside module level in a class-module code section.
+    /// </summary>
+    InvalidPlacement = 1 << 0,
+
+    /// <summary>
+    /// The Event has an explicitly invalid visibility modifier.
+    /// </summary>
+    InvalidVisibility = 1 << 1,
+
+    /// <summary>
+    /// The Event identifier is invalid for an Event declaration.
+    /// </summary>
+    InvalidName = 1 << 2,
+
+    /// <summary>
+    /// An Event parameter is declared Optional.
+    /// </summary>
+    OptionalParameter = 1 << 3,
+
+    /// <summary>
+    /// An Event parameter is declared ParamArray.
+    /// </summary>
+    ParamArrayParameter = 1 << 4,
+
+    /// <summary>
+    /// The written declaration lacks complete callable-signature evidence.
+    /// </summary>
+    MissingOrInvalidSignature = 1 << 5
+}
+
+/// <summary>
 /// Represents the visibility scope of a source definition.
 /// </summary>
 public enum VbaSourceDefinitionVisibility
@@ -337,6 +379,7 @@ public readonly struct VbaDefinitionIdentity : IEquatable<VbaDefinitionIdentity>
 /// <param name="IsArray">Whether the source declaration carries a VBA array marker.</param>
 /// <param name="ReferenceGlobalExposure">The explicit public root exposure for a reference definition.</param>
 /// <param name="ConditionalCompilationPath">The declaration's structural conditional-compilation branch path, or null when ownership is indeterminate.</param>
+/// <param name="EventRecoveryReasons">The independent recovery reasons retained for a source Event declaration.</param>
 public sealed record VbaSourceDefinition(
     VbaDefinitionIdentity Identity,
     VbaDefinitionLocation Location,
@@ -357,7 +400,8 @@ public sealed record VbaSourceDefinition(
     VbaPropertyAccessorKind? PropertyAccessorKind = null,
     bool IsArray = false,
     ReferenceDefinitionGlobalExposure ReferenceGlobalExposure = ReferenceDefinitionGlobalExposure.None,
-    VbaConditionalCompilationBranchPath? ConditionalCompilationPath = null)
+    VbaConditionalCompilationBranchPath? ConditionalCompilationPath = null,
+    VbaEventRecoveryReason EventRecoveryReasons = VbaEventRecoveryReason.None)
 {
     /// <summary>
     /// Gets the editor-facing definition URI.
@@ -368,6 +412,28 @@ public sealed record VbaSourceDefinition(
     /// Gets the editor-facing definition range.
     /// </summary>
     public VbaRange Range => Location.Range;
+
+    /// <summary>
+    /// Gets whether this definition is a recovered Event declaration.
+    /// </summary>
+    public bool IsRecoveredEventDeclaration
+        => Kind == VbaSourceDefinitionKind.Event
+            && EventRecoveryReasons != VbaEventRecoveryReason.None;
+
+    /// <summary>
+    /// Gets whether this Event name can participate in name-authoring and handler surfaces.
+    /// </summary>
+    public bool IsEventNameProjectionEligible
+        => Kind == VbaSourceDefinitionKind.Event
+            && (EventRecoveryReasons
+                & (VbaEventRecoveryReason.InvalidPlacement
+                    | VbaEventRecoveryReason.InvalidVisibility
+                    | VbaEventRecoveryReason.InvalidName)) == 0;
+
+    /// <summary>
+    /// Gets whether this Event name can be offered by RaiseEvent completion.
+    /// </summary>
+    public bool IsEventNameCompletionEligible => IsEventNameProjectionEligible;
 }
 
 /// <summary>
@@ -899,6 +965,8 @@ internal static class VbaSourceDocumentProjector
             && definition.Kind == MapDeclarationKind(declaration.Kind)
             && definition.Visibility == MapVisibility(declaration.Visibility)
             && RangeMatches(definition.Range, declaration.Range)
+            && definition.EventRecoveryReasons
+                == GetEventRecoveryReasons(syntaxTree, declaration)
             && Equals(
                 definition.ConditionalCompilationPath,
                 GetConditionalCompilationPath(syntaxTree, declaration));
@@ -946,6 +1014,7 @@ internal static class VbaSourceDocumentProjector
         VbaDeclarationSyntax declaration)
     {
         var range = MapRange(declaration.Range);
+        var eventRecoveryReasons = GetEventRecoveryReasons(syntaxTree, declaration);
         return new VbaSourceDefinition(
             Identity: VbaDefinitionIdentity.ForSource(uri, declaration.Name, range),
             Location: new VbaDefinitionLocation(uri, range),
@@ -969,7 +1038,56 @@ internal static class VbaSourceDocumentProjector
             IsArray: declaration.IsArray,
             ConditionalCompilationPath: GetConditionalCompilationPath(
                 syntaxTree,
-                declaration));
+                declaration),
+            EventRecoveryReasons: eventRecoveryReasons);
+    }
+
+    private static VbaEventRecoveryReason GetEventRecoveryReasons(
+        VbaSyntaxTree syntaxTree,
+        VbaDeclarationSyntax declaration)
+    {
+        if (declaration.Kind != VbaDeclarationKind.Event)
+        {
+            return VbaEventRecoveryReason.None;
+        }
+
+        var reasons = VbaEventRecoveryReason.None;
+        if (syntaxTree.Module.Kind is not (
+                VbaModuleKind.ClassModule or VbaModuleKind.FormModule)
+            || declaration.ParentProcedureName is not null
+            || declaration.IsInvalidEventPlacement)
+        {
+            reasons |= VbaEventRecoveryReason.InvalidPlacement;
+        }
+
+        if (declaration.Visibility != VbaDeclarationVisibility.Public)
+        {
+            reasons |= VbaEventRecoveryReason.InvalidVisibility;
+        }
+
+        if (declaration.Name.Contains("_", StringComparison.Ordinal)
+            || !VbaIdentifier.IsLexIdentifier(declaration.Name))
+        {
+            reasons |= VbaEventRecoveryReason.InvalidName;
+        }
+
+        if (declaration.HasOptionalEventParameter)
+        {
+            reasons |= VbaEventRecoveryReason.OptionalParameter;
+        }
+
+        if (declaration.HasParamArrayEventParameter)
+        {
+            reasons |= VbaEventRecoveryReason.ParamArrayParameter;
+        }
+
+        if (declaration.Signature is null
+            || !declaration.HasCompleteEventSignatureShape)
+        {
+            reasons |= VbaEventRecoveryReason.MissingOrInvalidSignature;
+        }
+
+        return reasons;
     }
 
     private static VbaConditionalCompilationBranchPath? GetConditionalCompilationPath(
@@ -1079,9 +1197,7 @@ internal static class VbaSourceDocumentProjector
                     out _);
         }
 
-        if (declaration.Kind != VbaDeclarationKind.Event
-            || declaration.LineIndex < 0
-            || declaration.LineIndex >= syntaxTree.SourceText.Lines.Count)
+        if (declaration.Kind != VbaDeclarationKind.Event)
         {
             return false;
         }
@@ -1089,6 +1205,7 @@ internal static class VbaSourceDocumentProjector
         if (syntaxTree.Module.Kind is not (
                 VbaModuleKind.ClassModule or VbaModuleKind.FormModule)
             || declaration.ParentProcedureName is not null
+            || declaration.IsInvalidEventPlacement
             || declaration.Visibility != VbaDeclarationVisibility.Public
             || declaration.Name.Contains("_", StringComparison.Ordinal)
             || !VbaIdentifier.IsLexIdentifier(declaration.Name)
@@ -1099,55 +1216,7 @@ internal static class VbaSourceDocumentProjector
             return false;
         }
 
-        return HasValidStandaloneEventShape(
-            GetSignificantTokens(
-                syntaxTree.SourceText.Lines[declaration.LineIndex].Text),
-            declaration);
-    }
-
-    private static bool HasValidStandaloneEventShape(
-        IReadOnlyList<VbaToken> tokens,
-        VbaDeclarationSyntax declaration)
-    {
-        var eventIndex = tokens.Count > 0
-                && tokens[0].Text.Equals("Event", StringComparison.OrdinalIgnoreCase)
-            ? 0
-            : tokens.Count > 1
-                && tokens[0].Text.Equals("Public", StringComparison.OrdinalIgnoreCase)
-                && tokens[1].Text.Equals("Event", StringComparison.OrdinalIgnoreCase)
-                    ? 1
-                    : -1;
-        var nameIndex = eventIndex + 1;
-        if (eventIndex < 0
-            || nameIndex >= tokens.Count
-            || !tokens[nameIndex].Text.Equals(
-                declaration.Name,
-                StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        if (nameIndex + 1 == tokens.Count)
-        {
-            return false;
-        }
-
-        var openParenthesis = nameIndex + 1;
-        if (tokens[openParenthesis].Text != "(")
-        {
-            return false;
-        }
-
-        var closeParenthesis = VbaBlockHeaderSyntax.FindMatchingCloseParenthesis(
-            tokens,
-            openParenthesis);
-        return closeParenthesis == tokens.Count - 1
-            && VbaBlockHeaderSyntax.HasCompleteParameterList(
-                tokens,
-                openParenthesis + 1,
-                closeParenthesis,
-                forbiddenParameterName: null,
-                allowAnyTypeReference: false);
+        return declaration.HasCompleteEventSignatureShape;
     }
 
     private static IReadOnlyList<VbaToken> GetSignificantTokens(string text)

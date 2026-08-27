@@ -794,8 +794,33 @@ internal sealed class VbaProjectValidationDiagnosticIndex
                 ?? VbaSyntaxTree.ParseModule(document.Uri, document.Text);
             foreach (var argumentList in syntaxTree.Module.ArgumentLists)
             {
-                if (argumentList.IsIncomplete
-                    || HasSpecificCallShapeDiagnostic(syntaxTree, argumentList))
+                var isRaiseEventCall = IsRaiseEventCall(syntaxTree, argumentList);
+                if (isRaiseEventCall
+                        && HasRaiseEventPlacementDiagnostic(syntaxTree, argumentList))
+                {
+                    continue;
+                }
+
+                if (isRaiseEventCall
+                    && semanticResolution.TryResolveRaiseEventTarget(
+                        document.Uri,
+                        argumentList,
+                        out var raiseEventTarget)
+                    && raiseEventTarget is null)
+                {
+                    AddRaiseEventTargetDiagnostic(
+                        diagnostics,
+                        document.Uri,
+                        ToRange(GetRaiseEventTargetRange(syntaxTree, argumentList)));
+                    continue;
+                }
+
+                if (argumentList.IsIncomplete)
+                {
+                    continue;
+                }
+
+                if (HasSpecificCallShapeDiagnostic(syntaxTree, argumentList))
                 {
                     continue;
                 }
@@ -825,6 +850,55 @@ internal sealed class VbaProjectValidationDiagnosticIndex
                         compatibility,
                         argumentList)));
             }
+
+            foreach (var raiseEventKeyword in syntaxTree.TokenStream.Tokens.Where(token =>
+                         token.Kind == VbaTokenKind.Keyword
+                         && token.Text.Equals("RaiseEvent", StringComparison.OrdinalIgnoreCase)))
+            {
+                var sourceLine = syntaxTree.SourceText.Lines[raiseEventKeyword.Range.Start.Line];
+                if (VbaLexicalFacts.IsPositionInComment(
+                        sourceLine.Text,
+                        raiseEventKeyword.Range.Start.Character)
+                    || syntaxTree.Diagnostics.Any(diagnostic =>
+                        diagnostic.Code == "syntax.raiseEventStatementNotAllowedHere"
+                        && diagnostic.Range == raiseEventKeyword.Range))
+                {
+                    continue;
+                }
+
+                var codeLine = VbaIdentifier.TrimEndWhitespace(
+                    VbaLexicalFacts.SplitCodeAndComment(sourceLine.Text).CodePart);
+                var callSite = syntaxTree.GetPositionSyntax(
+                    sourceLine.LineNumber,
+                    codeLine.Length).CallSite;
+                var targetSyntax = callSite?.Callee.Target;
+                var owningRaiseEventKeyword = targetSyntax is null
+                    ? null
+                    : FindPrecedingTokenInLogicalStatement(
+                        syntaxTree.TokenStream.Tokens,
+                        targetSyntax.Range.Start.Offset);
+                if (targetSyntax is null
+                    || owningRaiseEventKeyword?.Range != raiseEventKeyword.Range
+                    || !owningRaiseEventKeyword.Text.Equals(
+                        "RaiseEvent",
+                        StringComparison.OrdinalIgnoreCase)
+                    || targetSyntax.Range.Start.Offset <= raiseEventKeyword.Range.End.Offset
+                    || syntaxTree.Module.ArgumentLists.Any(argumentList =>
+                        argumentList.CalleeRange == targetSyntax.Range)
+                    || !semanticResolution.TryResolveRaiseEventTarget(
+                        document.Uri,
+                        callSite,
+                        out var raiseEventTarget)
+                    || raiseEventTarget is not null)
+                {
+                    continue;
+                }
+
+                AddRaiseEventTargetDiagnostic(
+                    diagnostics,
+                    document.Uri,
+                    ToRange(targetSyntax.Range));
+            }
         }
 
         diagnosticsByUri = diagnostics.ToDictionary(
@@ -839,6 +913,23 @@ internal sealed class VbaProjectValidationDiagnosticIndex
             ? diagnostics
             : [];
 
+    private static void AddRaiseEventTargetDiagnostic(
+        IDictionary<string, List<VbaProjectValidationDiagnostic>> diagnostics,
+        string uri,
+        VbaRange range)
+    {
+        if (!diagnostics.TryGetValue(uri, out var documentDiagnostics))
+        {
+            documentDiagnostics = [];
+            diagnostics.Add(uri, documentDiagnostics);
+        }
+
+        documentDiagnostics.Add(new VbaProjectValidationDiagnostic(
+            "validation.raiseEventTargetNotDeclaredInEnclosingModule",
+            "RaiseEvent target must be an Event declared in the enclosing class module.",
+            range));
+    }
+
     private static bool IsProvenCollision(
         VbaConditionalCompilationBranchPath left,
         VbaConditionalCompilationBranchPath right)
@@ -851,6 +942,11 @@ internal sealed class VbaProjectValidationDiagnosticIndex
         VbaSyntaxTree syntaxTree,
         VbaArgumentListSyntax argumentList)
     {
+        if (HasRaiseEventPlacementDiagnostic(syntaxTree, argumentList))
+        {
+            return true;
+        }
+
         if (IsRaiseEventCall(syntaxTree, argumentList)
             && syntaxTree.Diagnostics.Any(diagnostic =>
                 diagnostic.Code is "syntax.raiseEventArgumentListRequiresParentheses"
@@ -889,26 +985,111 @@ internal sealed class VbaProjectValidationDiagnosticIndex
         return false;
     }
 
+    private static bool HasRaiseEventPlacementDiagnostic(
+        VbaSyntaxTree syntaxTree,
+        VbaArgumentListSyntax argumentList)
+    {
+        var raiseEventKeyword = FindRaiseEventKeyword(syntaxTree, argumentList);
+        return raiseEventKeyword is not null
+            && syntaxTree.Diagnostics.Any(diagnostic =>
+                diagnostic.Code == "syntax.raiseEventStatementNotAllowedHere"
+                && diagnostic.Range == raiseEventKeyword.Range);
+    }
+
     private static bool IsRaiseEventCall(
+        VbaSyntaxTree syntaxTree,
+        VbaArgumentListSyntax argumentList)
+        => FindRaiseEventKeyword(syntaxTree, argumentList) is not null;
+
+    private static VbaToken? FindRaiseEventKeyword(
         VbaSyntaxTree syntaxTree,
         VbaArgumentListSyntax argumentList)
     {
         if (argumentList.CalleeRange is not { } calleeRange)
         {
-            return false;
+            return null;
         }
 
-        var precedingToken = syntaxTree.TokenStream.Tokens
-            .Where(token => token.Range.End.Offset <= calleeRange.Start.Offset)
-            .Where(token => token.Kind is not (
-                VbaTokenKind.Whitespace
-                or VbaTokenKind.NewLine
-                or VbaTokenKind.LineContinuation
-                or VbaTokenKind.Comment))
-            .LastOrDefault();
+        if (VbaLexicalFacts.IsPositionInComment(
+                syntaxTree.SourceText.Lines[calleeRange.Start.Line].Text,
+                calleeRange.Start.Character))
+        {
+            return null;
+        }
+
+        var precedingToken = FindPrecedingTokenInLogicalStatement(
+            syntaxTree.TokenStream.Tokens,
+            calleeRange.Start.Offset);
         return precedingToken?.Text.Equals(
-            "RaiseEvent",
-            StringComparison.OrdinalIgnoreCase) == true;
+                "RaiseEvent",
+                StringComparison.OrdinalIgnoreCase) == true
+            ? precedingToken
+            : null;
+    }
+
+    private static VbaToken? FindPrecedingTokenInLogicalStatement(
+        IReadOnlyList<VbaToken> tokens,
+        int offset)
+    {
+        var lower = 0;
+        var upper = tokens.Count;
+        while (lower < upper)
+        {
+            var middle = lower + ((upper - lower) / 2);
+            if (tokens[middle].Range.Start.Offset < offset)
+            {
+                lower = middle + 1;
+            }
+            else
+            {
+                upper = middle;
+            }
+        }
+
+        for (var index = lower - 1; index >= 0; index--)
+        {
+            var token = tokens[index];
+            if (token.Range.End.Offset > offset
+                || token.Kind == VbaTokenKind.Whitespace)
+            {
+                continue;
+            }
+
+            if (token.Kind == VbaTokenKind.Comment)
+            {
+                return null;
+            }
+
+            if (token.Kind == VbaTokenKind.NewLine)
+            {
+                index--;
+                while (index >= 0 && tokens[index].Kind == VbaTokenKind.Whitespace)
+                {
+                    index--;
+                }
+
+                if (index >= 0 && tokens[index].Kind == VbaTokenKind.LineContinuation)
+                {
+                    continue;
+                }
+
+                return null;
+            }
+
+            if (token.Kind == VbaTokenKind.LineContinuation)
+            {
+                continue;
+            }
+
+            if (token.Kind == VbaTokenKind.Punctuation && token.Text == ":")
+            {
+                return null;
+            }
+
+            return token;
+        }
+
+        return null;
     }
 
     private static VbaRange ToRange(VbaSyntaxRange range)
@@ -929,6 +1110,19 @@ internal sealed class VbaProjectValidationDiagnosticIndex
                 : argumentList.Range;
         }
 
+        var calleeRange = argumentList.CalleeRange ?? argumentList.Range;
+        return syntaxTree.TokenStream.Tokens
+            .Where(token => calleeRange.Start.Offset <= token.Range.Start.Offset
+                && token.Range.End.Offset <= calleeRange.End.Offset)
+            .LastOrDefault(token => token.Kind is VbaTokenKind.Identifier or VbaTokenKind.Keyword)
+            ?.Range
+            ?? calleeRange;
+    }
+
+    private static VbaSyntaxRange GetRaiseEventTargetRange(
+        VbaSyntaxTree syntaxTree,
+        VbaArgumentListSyntax argumentList)
+    {
         var calleeRange = argumentList.CalleeRange ?? argumentList.Range;
         return syntaxTree.TokenStream.Tokens
             .Where(token => calleeRange.Start.Offset <= token.Range.Start.Offset

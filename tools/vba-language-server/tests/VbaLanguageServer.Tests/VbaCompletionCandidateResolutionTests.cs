@@ -1,3 +1,4 @@
+using VbaLanguageServer.Diagnostics;
 using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.SourceModel;
 using Xunit;
@@ -484,11 +485,155 @@ public sealed class VbaCompletionCandidateResolutionTests
                     "Attribute VB_Name = \"Other\"",
                     "Public Event ForeignEvent()"
                 ])
-            });
+            },
+            mainUri: "file:///C:/work/Main.cls");
 
         Assert.Equal(["Saved", "Updated"], DefinitionLabels(result));
         Assert.All(result.Candidates, candidate =>
             Assert.Equal(VbaCompletionCandidateKind.Definition, candidate.Kind));
+    }
+
+    [Fact]
+    public void RaiseEventNameCompletionIgnoresReferenceEvents()
+    {
+        var result = Complete(
+            EventAndLabelSource("    RaiseEvent |"),
+            CreateReference(
+                new VbaProjectReferenceDefinition(
+                    LegacyReferenceName,
+                    "ForeignEvent",
+                    VbaSourceDefinitionKind.Event,
+                    Signature: new VbaCallableSignature(
+                        "Event ForeignEvent()",
+                        [],
+                        CallableKind: VbaCallableKind.Event),
+                    GlobalExposure: ReferenceDefinitionGlobalExposure.LibraryGlobal)),
+            mainUri: "file:///C:/work/Main.cls");
+
+        Assert.Equal(["Saved", "Updated"], DefinitionLabels(result));
+        Assert.DoesNotContain(result.Candidates, candidate => candidate.Label == "ForeignEvent");
+    }
+
+    [Fact]
+    public void RaiseEventCompletionExcludesNameAndVisibilityRecoveryButKeepsParameterRecovery()
+    {
+        var result = Complete(
+            string.Join('\n', [
+                "VERSION 1.0 CLASS",
+                "Attribute VB_Name = \"Worker\"",
+                "Public Event Saved()",
+                "Private Event Hidden()",
+                "Public Event Bad_Name()",
+                "Public Event OptionalEvent(Optional ByVal Value As Long)",
+                "Public Event ParamArrayEvent(ParamArray Values() As Variant)",
+                "Public Sub Run()",
+                "    RaiseEvent |",
+                "End Sub"
+            ]),
+            mainUri: "file:///C:/work/Worker.cls");
+
+        Assert.Equal(
+            ["OptionalEvent", "ParamArrayEvent", "Saved"],
+            DefinitionLabels(result));
+    }
+
+    [Fact]
+    public void RaiseEventCompletionExcludesPlacementRecoveredEvents()
+    {
+        var result = Complete(
+            string.Join('\n', [
+                "VERSION 1.0 CLASS",
+                "Attribute VB_Name = \"Worker\"",
+                "Public Sub Broken()",
+                "    Event Nested()",
+                "End Sub",
+                "Public Sub Run()",
+                "    RaiseEvent |",
+                "End Sub"
+            ]),
+            mainUri: "file:///C:/work/Worker.cls");
+
+        Assert.DoesNotContain(
+            result.Candidates,
+            candidate => candidate.Label == "Nested");
+    }
+
+    [Fact]
+    public void RaiseEventCompletionRequiresAdmittedProcedurePlacement()
+    {
+        var result = Complete(
+            string.Join('\n', [
+                "VERSION 1.0 CLASS",
+                "Attribute VB_Name = \"Worker\"",
+                "Public Event Saved()",
+                "RaiseEvent |"
+            ]),
+            mainUri: "file:///C:/work/Worker.cls");
+
+        Assert.Empty(result.Candidates);
+    }
+
+    [Fact]
+    public void PlacementInvalidRaiseEventArgumentsReturnNoCompletion()
+    {
+        var result = Complete(
+            string.Join('\n', [
+                "VERSION 1.0 CLASS",
+                "Attribute VB_Name = \"Worker\"",
+                "Public Event Saved()",
+                "Private LocalValue As Long",
+                "RaiseEvent Saved(|)"
+            ]),
+            mainUri: "file:///C:/work/Worker.cls");
+
+        Assert.Empty(result.Candidates);
+    }
+
+    [Fact]
+    public void TargetlessRaiseEventDoesNotUseIntrinsicCallArgumentMetadata()
+    {
+        var result = Complete(
+            string.Join('\n', [
+                "VERSION 1.0 CLASS",
+                "Attribute VB_Name = \"Worker\"",
+                "Public Sub Run()",
+                "    Dim LocalValue As Long",
+                "    RaiseEvent DateSerial(|)",
+                "End Sub"
+            ]),
+            mainUri: "file:///C:/work/Worker.cls");
+
+        Assert.DoesNotContain(
+            result.Candidates,
+            candidate => candidate.Kind == VbaCompletionCandidateKind.NamedArgument);
+        Assert.DoesNotContain(
+            result.Candidates,
+            candidate => candidate.Label is "Year" or "Month" or "Day");
+    }
+
+    [Fact]
+    public void RaiseEventCompletionRetainsEligibleEventsForAPartialName()
+    {
+        var result = Complete(
+            string.Join('\n', [
+                "VERSION 1.0 CLASS",
+                "Attribute VB_Name = \"Worker\"",
+                "Public Event Saved()",
+                "Public Event Updated()",
+                "Public Sub Run()",
+                "    RaiseEvent Sa|",
+                "End Sub"
+            ]),
+            mainUri: "file:///C:/work/Worker.cls");
+
+        Assert.Equal(["Saved", "Updated"], DefinitionLabels(result));
+        var saved = Assert.Single(result.Candidates, candidate => candidate.Label == "Saved");
+        Assert.Equal("Saved", saved.TextEdit?.NewText);
+        Assert.Equal(
+            new VbaRange(
+                new VbaPosition(5, "    RaiseEvent ".Length),
+                new VbaPosition(5, "    RaiseEvent Sa".Length)),
+            saved.TextEdit?.Range);
     }
 
     [Theory]
