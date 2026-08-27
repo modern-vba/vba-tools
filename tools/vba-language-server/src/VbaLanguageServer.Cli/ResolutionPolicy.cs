@@ -137,6 +137,10 @@ internal sealed record VbaPropertyNameTargetIdentity(
     string OwnerKey)
     : VbaResolvedNameTargetIdentity;
 
+internal sealed record VbaWithEventsEventNameTargetIdentity(
+    VbaDefinitionIdentity HandlerIdentity)
+    : VbaResolvedNameTargetIdentity;
+
 internal abstract class VbaResolvedNameTarget
 {
     public abstract VbaResolvedNameTargetIdentity Identity { get; }
@@ -196,6 +200,60 @@ internal sealed class VbaConditionalFamilyNameTarget : VbaResolvedNameTarget
         => Family.Variants;
 
     public override bool IsConditionalFamily => true;
+}
+
+internal sealed class VbaWithEventsEventNameTarget : VbaResolvedNameTarget
+{
+    private readonly IReadOnlyList<VbaSourceDefinition> physicalDefinitions;
+
+    public VbaWithEventsEventNameTarget(
+        VbaSourceDefinition handler,
+        string eventName,
+        IReadOnlyList<VbaResolvedNameTarget> eventTargets,
+        bool isConditionalBinding)
+    {
+        EventTargets = eventTargets
+            .DistinctBy(target => target.Identity)
+            .OrderBy(target => target.SelectedDefinition.Uri, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(target => target.SelectedDefinition.Uri, StringComparer.Ordinal)
+            .ThenBy(target => target.SelectedDefinition.Range.Start.Line)
+            .ThenBy(target => target.SelectedDefinition.Range.Start.Character)
+            .ToArray();
+        if (EventTargets.Count == 0)
+        {
+            throw new ArgumentException(
+                "A WithEvents Event target requires at least one resolved Event.",
+                nameof(eventTargets));
+        }
+
+        Identity = new VbaWithEventsEventNameTargetIdentity(handler.Identity);
+        CanonicalName = eventName;
+        IsConditionalFamily = isConditionalBinding
+            || EventTargets.Count > 1
+            || EventTargets.Any(target => target.IsConditionalFamily);
+        SelectedDefinition = EventTargets[0].SelectedDefinition;
+        physicalDefinitions = EventTargets
+            .SelectMany(target => target.PhysicalDefinitions)
+            .DistinctBy(definition => definition.Identity)
+            .OrderBy(definition => definition.Uri, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(definition => definition.Uri, StringComparer.Ordinal)
+            .ThenBy(definition => definition.Range.Start.Line)
+            .ThenBy(definition => definition.Range.Start.Character)
+            .ToArray();
+    }
+
+    public IReadOnlyList<VbaResolvedNameTarget> EventTargets { get; }
+
+    public override VbaResolvedNameTargetIdentity Identity { get; }
+
+    public override string CanonicalName { get; }
+
+    public override VbaSourceDefinition SelectedDefinition { get; }
+
+    public override IReadOnlyList<VbaSourceDefinition> PhysicalDefinitions
+        => physicalDefinitions;
+
+    public override bool IsConditionalFamily { get; }
 }
 
 internal sealed class VbaPropertyNameTarget : VbaResolvedNameTarget

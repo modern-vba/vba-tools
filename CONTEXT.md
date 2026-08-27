@@ -1090,7 +1090,10 @@ one implemented interface whose flags contain both `IMPLTYPEFLAG_FDEFAULT` and
 non-default `FSOURCE` interface is ignored even when it is the only source
 interface, and `FDEFAULTVTABLE` alone is not a fallback. When the same
 implemented interface also carries `FDEFAULTVTABLE`, it is still read once
-through its `FDEFAULT | FSOURCE` identity.
+through its `FDEFAULT | FSOURCE` identity. Before default-source selection,
+every retained implemented-interface association must have a nonempty identity
+and raw `TKIND_INTERFACE` or `TKIND_DISPATCH` category. Missing or different raw
+kind is `indeterminate`, and those members are not forwarded as coclass Events.
 
 The aggregate retains raw coclass and interface `TYPEFLAGS`, callable-member
 `FUNCFLAGS`, member identity and signatures, and completeness so it can expose
@@ -1100,9 +1103,25 @@ separate `TypeLibStructuralEventSurface`,
 with no default source interface, or with a structurally empty default source,
 has an authoritative empty structural surface and therefore supports
 `invalidNoEvents`. More than one default source interface violates the TypeLib
-contract and is `indeterminate`; unreadable, missing, stale, or incomplete
-type, implemented-interface, flag, identity, member, or completeness metadata
-is likewise `indeterminate` rather than empty. Creatability is independent.
+contract and is `indeterminate`; unreadable, missing, stale, or incomplete type
+identity or flags, or implemented-interface association-set identity, flags, or
+completeness metadata, is likewise `indeterminate` rather than empty and
+retains no callable. Only after those facts conclusively identify exactly one
+default source may an incomplete callable surface retain an individually
+complete callable for positive existing-handler recognition. The structural
+surface and type eligibility remain indeterminate, an absent suffix remains
+indeterminate rather than `notEvent`, and the retained association has
+`externalTypeLibAdvisory` authority. It cannot authorize a type or handler
+diagnostic. A complete callable requires complete raw member metadata, a
+non-null signature, and an ordered parameter collection with structurally
+readable elements and present type identities. An incomplete member is excluded
+from that positive partial projection without discarding a complete sibling.
+Duplicate case-insensitive member names coalesce only
+when their raw member identity, flags, callable kind, result type, and complete
+ordered parameter contract agree; conflicting contracts are `indeterminate`.
+Signature labels, parameter names, display labels, and documentation are
+presentation metadata and do not determine that identity. Creatability is
+independent.
 _Avoid_: all-FSOURCE union, sole-source fallback, flattened Class inference, browser-visible Event list
 
 **TypeLibStructuralEventSurface**:
@@ -2002,7 +2021,9 @@ module-level placement in a class-module code section and the complete shape
 type-declaration character, and an explicit `As` type. Its separate
 `WithEventsTypeEligibility` determines whether it participates in Event binding.
 `Public`, `Private`, or `Dim` may introduce the containing module declaration
-without changing those rules. In a comma-separated declaration, `WithEvents`
+without changing those rules. An additional `Static` modifier is not part of
+the admitted shape; the ordinary variable is recovered while the written
+`WithEvents` receives the placement diagnostic. In a comma-separated declaration, `WithEvents`
 belongs only to the declarator on which it is written and never propagates to a
 sibling. For example, in
 `Private WithEvents publisher As Publisher, other As Publisher, WithEvents app As Excel.Application`,
@@ -2051,7 +2072,11 @@ specific, accessible, non-enclosing class has a complete authoritative
 structural Event surface with no valid Event. `indeterminate` means the type is
 unresolved or ambiguous, the applicable catalog or `HostClassEventSurface` is
 missing, stale, or incomplete, or only `RecoveredEventDeclaration` evidence is
-available. Creatability is neither required nor disqualifying. Assignment
+available. A declaration whose own conditional-compilation ownership is
+incomplete is also `indeterminate`. A source class's Event surface remains
+incomplete when any recovered, unnamed malformed, or conditionally unowned
+Event evidence exists, even when another valid named Event is available for
+positive navigation. Creatability is neither required nor disqualifying. Assignment
 compatibility and `Implements` compatibility do not establish eligibility. The
 four conclusive-invalid states are mutually exclusive and use the precedence
 `invalidEnclosingClass`, `invalidNotClass`, `invalidInaccessibleType`, then
@@ -2059,7 +2084,12 @@ four conclusive-invalid states are mutually exclusive and use the precedence
 Definition, References, Hover, Type Resolution, and Rename, but contribute no
 `WithEventsEventBindingSet` entry, handler diagnostic, or dependent Rename
 relationship of their own. An `indeterminate` declaration is not recovered: it
-contributes one `indeterminate` binding entry before suffix lookup. That entry
+normally contributes one `indeterminate` binding entry before suffix lookup. A
+partial compatibility `TypeLibEventSurface` is the narrow exception: an exact
+member retained in `TypeLibExistingHandlerRecognitionSurface` may contribute a
+resolved `externalTypeLibAdvisory` association, while any unknown suffix still
+contributes `indeterminate`. Type eligibility remains `indeterminate` in both
+cases. That evidence
 suppresses aggregate handler diagnostics and prevents
 `HandlerEventRenameConvergence`; when no entry resolves and the declaration name
 therefore remains an `indeterminateCandidate`, an upstream variable Rename fails
@@ -2108,8 +2138,12 @@ offer. An intrinsic form or document suffix follows `HostEventShadowing`: an
 unguarded valid source Event supplies only its source target, while a guarded
 source Event family and a same-name projected host Event remain separate
 configuration-dependent targets without branch-coverage proof. A declaration
-whose type eligibility is
-`indeterminate` contributes one `indeterminate` entry before suffix lookup.
+whose type eligibility is `indeterminate` normally contributes one
+`indeterminate` entry before suffix lookup. When a partial compatibility
+TypeLib catalog retains an individually complete member of one uniquely
+identified default source, that exact suffix may instead contribute a resolved
+`externalTypeLibAdvisory` entry; a missing suffix remains `indeterminate`, and
+the declaration's type eligibility does not become `eligible`.
 Every recovered or conclusive-invalid declaration is excluded entirely rather
 than becoming `notWithEvents`, `notEvent`, or `indeterminate`.
 A nonconditional variable or complete conditional family enters this analysis
@@ -2483,7 +2517,9 @@ through `Get`, `Let`, or `Set`. Its stable message is
 does not diagnose from only some possible compilation configurations. Any
 `externalTypeLibAdvisory` or `lastKnownGoodHostAdvisory` association also
 suppresses it; external TypeLib behavior is advisory, and stale host evidence
-cannot establish current compile behavior.
+cannot establish current compile behavior. Incomplete conditional-compilation
+ownership of the candidate declaration likewise suppresses the diagnostic
+without removing its safe positive navigation associations.
 Visibility and initial or trailing `Static` do not participate. Each physical
 Property accessor is diagnosed independently. A
 `nonSubProcedureAssociation` candidate does not enter
@@ -2504,7 +2540,9 @@ contains only conclusively incompatible signatures under
 `resolved` `WithEventsEventBindingSet` entries, no
 `RecoveredEventDeclaration`, and wholly `sourceDeclared` or
 `currentHostProjected` targets; an intrinsic handler requires its one target to
-be `currentHostProjected`. Any `notWithEvents`, `notEvent`, or `indeterminate`
+be `currentHostProjected`. The handler declaration's own
+conditional-compilation ownership must also be complete. Any `notWithEvents`,
+`notEvent`, or `indeterminate`
 binding entry, compatible or indeterminate signature, recovered declaration,
 `externalTypeLibAdvisory`, or `lastKnownGoodHostAdvisory` evidence suppresses
 the diagnostic for that physical handler variant. Advisory signatures remain
@@ -3842,10 +3880,10 @@ Dev: "Can a `WithEvents` declarator be an array, use `As New`, use a type-declar
 Domain Expert: "No. Require `WithEvents IDENTIFIER As class-type-name`. Publish independent declarator-local `syntax.withEventsArrayNotAllowed`, `syntax.withEventsNewNotAllowed`, `syntax.withEventsTypeDeclarationCharacterNotAllowed`, and `syntax.withEventsTypeRequired` diagnostics over the complete array designator, exact `New`, exact suffix character, and either the identifier or type-less `As`, respectively. Retain every present violation. Recover the ordinary variable definition and surviving type metadata, but let that declarator establish no Event binding or dependent Rename of its own. A conditional-family sibling whose `WithEventsTypeEligibility` is `eligible` can still establish family-wide dependent edits. Do not inherit a type or `WithEvents` state from a comma-separated sibling."
 
 Dev: "What declared types are valid for a syntactically admitted `WithEvents` variable?"
-Domain Expert: "Classify each declarator independently with `WithEventsTypeEligibility` after ordinary Type Resolution. A valid type is a specific VBA-accessible class other than the enclosing class whose authoritative complete structural Event surface contains at least one valid Event. Conclusively invalid enclosing, non-class, inaccessible-class, and no-Event types receive exactly one of `validation.withEventsTypeCannotBeEnclosingClass`, `validation.withEventsTypeMustBeClass`, `validation.withEventsTypeMustBeAccessible`, or `validation.withEventsTypeMustExposeEvents` over the complete type reference, in that precedence. Preserve ordinary variable features but exclude that variant from Event binding and dependent Rename of its own. Unresolved, ambiguous, stale, missing, or incomplete Event evidence is `indeterminate`, receives no type diagnostic, and enters the binding set before suffix lookup. It suppresses aggregate handler diagnostics and Event-Rename convergence; an indeterminate-only handler candidate also makes upstream variable Rename fail with `analysisIncomplete`, while mixed resolved evidence keeps its existing safe projections. Creatability is neither required nor disqualifying, and `Implements` compatibility does not prove Event-source eligibility."
+Domain Expert: "Classify each declarator independently with `WithEventsTypeEligibility` after ordinary Type Resolution. A valid type is a specific VBA-accessible class other than the enclosing class whose authoritative complete structural Event surface contains at least one valid Event. Conclusively invalid enclosing, non-class, inaccessible-class, and no-Event types receive exactly one of `validation.withEventsTypeCannotBeEnclosingClass`, `validation.withEventsTypeMustBeClass`, `validation.withEventsTypeMustBeAccessible`, or `validation.withEventsTypeMustExposeEvents` over the complete type reference, in that precedence. Preserve ordinary variable features but exclude that variant from Event binding and dependent Rename of its own. Unresolved, ambiguous, stale, missing, or incomplete Event evidence is `indeterminate`, receives no type diagnostic, and normally enters the binding set before suffix lookup. A partial compatibility TypeLib catalog may retain an individually complete member from one uniquely identified default source as an `externalTypeLibAdvisory` association for that exact suffix; type eligibility and every unknown suffix remain `indeterminate`. This evidence suppresses aggregate handler diagnostics and Event-Rename convergence; an indeterminate-only handler candidate also makes upstream variable Rename fail with `analysisIncomplete`, while mixed resolved evidence keeps its existing safe projections. Creatability is neither required nor disqualifying, and `Implements` compatibility does not prove Event-source eligibility."
 
 Dev: "Which TypeLib interfaces supply Events for an external `WithEvents` class?"
-Domain Expert: "Require the declared external type to be a `TKIND_COCLASS` and derive its `TypeLibEventSurface` only from exactly one implemented interface carrying both `FDEFAULT` and `FSOURCE`. Ignore non-default `FSOURCE` interfaces without falling back even when only one exists; `FDEFAULTVTABLE` alone is not a substitute. Preserve every callable default-source member and its `FUNCFLAGS`, then derive separate structural, authoring, and existing-handler-recognition projections. A complete coclass with no default source or a structurally empty source produces `invalidNoEvents`. Multiple default sources or missing, unreadable, stale, or incomplete association metadata are `indeterminate`. A directly declared interface or dispinterface is `invalidNotClass`, and its methods are never reclassified as Events merely because another coclass uses that interface."
+Domain Expert: "Require the declared external type to be a `TKIND_COCLASS` and derive its `TypeLibEventSurface` only from exactly one implemented interface carrying both `FDEFAULT` and `FSOURCE`. Ignore non-default `FSOURCE` interfaces without falling back even when only one exists; `FDEFAULTVTABLE` alone is not a substitute. Preserve every callable default-source member and its `FUNCFLAGS`, then derive separate structural, authoring, and existing-handler-recognition projections. A complete coclass with no default source or a structurally empty source produces `invalidNoEvents`. Multiple default sources or missing, unreadable, stale, or incomplete type or implemented-interface association-set identity, flags, or completeness metadata are `indeterminate` and retain no callable. Only after complete association metadata identifies exactly one default source may an incomplete callable surface retain an individually complete known member for positive advisory existing-handler recognition; it proves neither type eligibility nor a negative suffix result. A directly declared interface or dispinterface is `invalidNotClass`, and its methods are never reclassified as Events merely because another coclass uses that interface."
 
 Dev: "Can a `.frm` file or a module named `ThisWorkbook` establish built-in host Events?"
 Domain Expert: "No. An intrinsic form or document class uses `HostClassEventSurface`, which combines its valid source Event declarations with a complete, current `HostClassProjection` under `HostEventShadowing`. File extensions and module names never substitute for that projection. Missing, stale, or incomplete projection evidence is `indeterminate`, not `invalidNoEvents`, and an intrinsic module handler remains separate from `WithEvents` binding."

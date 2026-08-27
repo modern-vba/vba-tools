@@ -15,6 +15,7 @@ internal sealed class VbaSemanticResolution
     private readonly VbaTypeResolution typeResolution;
     private readonly VbaMemberChainResolution memberChainResolution;
     private readonly VbaCallSiteResolution callSiteResolution;
+    private readonly VbaWithEventsSemanticModel withEventsSemantics;
 
     /// <summary>
     /// Creates the semantic resolution service.
@@ -33,11 +34,29 @@ internal sealed class VbaSemanticResolution
             resolutionPolicy);
         typeResolution = new VbaTypeResolution(nameResolution);
         memberChainResolution = new VbaMemberChainResolution(typeResolution);
+        withEventsSemantics = new VbaWithEventsSemanticModel(nameResolution);
         callSiteResolution = new VbaCallSiteResolution(
             nameResolution,
             memberChainResolution,
             resolutionPolicy);
     }
+
+    internal VbaWithEventsTypeEligibility? GetWithEventsTypeEligibility(
+        VbaSourceDocument currentDocument,
+        VbaSourceDefinition variable)
+        => withEventsSemantics.ClassifyType(currentDocument, variable);
+
+    internal bool HasIndeterminateConditionalCompilationOwnership(
+        VbaSourceDefinition definition)
+        => nameResolution
+            .HasIndeterminateConditionalCompilationOwnership(definition);
+
+    internal VbaEventHandlerCompatibility AnalyzeWithEventsHandlerCompatibility(
+        VbaSourceDocument currentDocument,
+        VbaWithEventsHandlerAnalysis handlerAnalysis)
+        => withEventsSemantics.AnalyzeHandlerCompatibility(
+            currentDocument,
+            handlerAnalysis);
 
     /// <summary>
     /// Gets completion definitions visible at a position, including member completions when a receiver resolves.
@@ -459,11 +478,28 @@ internal sealed class VbaSemanticResolution
             return resolutionPolicy.CreateNameTarget(declaredDefinition);
         }
 
-        if (TryResolveWithEventsHandler(currentDocument, identifier.Name, out var eventDefinition))
+        if (declaredDefinition is not null
+            && TryResolveWithEventsHandler(
+                currentDocument,
+                declaredDefinition,
+                out var variableTarget,
+                out var eventTarget,
+                out var decomposition))
         {
-            return eventDefinition is null
-                ? null
-                : resolutionPolicy.CreateNameTarget(eventDefinition);
+            var identifierOffset = character - declaredDefinition.Range.Start.Character;
+            if (line == declaredDefinition.Range.Start.Line
+                && identifierOffset < decomposition.VariableName.Length)
+            {
+                return variableTarget;
+            }
+
+            if (line == declaredDefinition.Range.Start.Line
+                && identifierOffset > decomposition.VariableName.Length)
+            {
+                return eventTarget;
+            }
+
+            return resolutionPolicy.CreateNameTarget(declaredDefinition);
         }
 
         if (declaredDefinition is not null)
@@ -662,10 +698,19 @@ internal sealed class VbaSemanticResolution
             return typeOutcome;
         }
 
-        if (TryResolveWithEventsHandler(
-            currentDocument,
-            identifier.Name,
-            out _))
+        var position = new VbaPosition(line, character);
+        var declaredDefinition = currentDocument.Definitions.FirstOrDefault(
+            definition => Contains(definition.Range, position)
+                && definition.Name.Equals(
+                    identifier.Name,
+                    StringComparison.OrdinalIgnoreCase));
+        if (declaredDefinition is not null
+            && TryResolveWithEventsHandler(
+                currentDocument,
+                declaredDefinition,
+                out _,
+                out _,
+                out _))
         {
             return VbaNameResolutionOutcome.AnalysisIncomplete;
         }
@@ -707,6 +752,17 @@ internal sealed class VbaSemanticResolution
         }
 
         var syntaxTree = GetSyntaxTree(currentDocument);
+        var handlerSignatureHelp = TryGetWithEventsHandlerSignatureHelp(
+            currentDocument,
+            syntaxTree,
+            line,
+            character,
+            retriggerIdentity);
+        if (handlerSignatureHelp is not null)
+        {
+            return handlerSignatureHelp;
+        }
+
         var positionSyntax = syntaxTree.GetPositionSyntax(line, character);
         if (callSiteResolution.IsRaiseEventCall(currentDocument, positionSyntax.CallSite)
             && HasRaiseEventPlacementDiagnostic(syntaxTree, line, character))
@@ -720,6 +776,103 @@ internal sealed class VbaSemanticResolution
             character,
             positionSyntax,
             retriggerIdentity);
+    }
+
+    private VbaSignatureHelp? TryGetWithEventsHandlerSignatureHelp(
+        VbaSourceDocument currentDocument,
+        VbaSyntaxTree syntaxTree,
+        int line,
+        int character,
+        VbaSignaturePresentationIdentity? retriggerIdentity)
+    {
+        var position = new VbaSyntaxPosition(line, character, 0);
+        var callable = syntaxTree.Module.CallableDeclarations.FirstOrDefault(
+            candidate => candidate.ParameterListRange is { } parameterListRange
+                && Contains(parameterListRange, position));
+        if (callable is null)
+        {
+            return null;
+        }
+
+        var handler = currentDocument.Definitions.FirstOrDefault(definition =>
+            definition.Kind is VbaSourceDefinitionKind.Procedure
+                or VbaSourceDefinitionKind.Property
+            && definition.Range.Start.Line == callable.Range.Start.Line
+            && definition.Name.Equals(
+                callable.Name,
+                StringComparison.OrdinalIgnoreCase)
+            && definition.PropertyAccessorKind == callable.PropertyAccessorKind);
+        if (handler is null)
+        {
+            return null;
+        }
+
+        var analysis = AnalyzeWithEventsHandler(currentDocument, handler);
+        var signatureSet = analysis?.BindingSet.ResolvedEventSignatures;
+        if (signatureSet is null)
+        {
+            return null;
+        }
+
+        var handlerParameterIndex = GetHandlerParameterIndex(callable, position);
+        var variants = signatureSet.Contracts
+            .Where(contract => contract.Signature is not null)
+            .Select(contract => new VbaSignatureHelpVariant(
+                contract.Signature!,
+                handlerParameterIndex is int parameterIndex
+                        && parameterIndex < contract.Signature!.Parameters.Count
+                    ? parameterIndex
+                    : null,
+                contract.IsConditionalContract))
+            .ToArray();
+        if (variants.Length == 0)
+        {
+            return null;
+        }
+
+        var activeSignature = 0;
+        if (retriggerIdentity is not null)
+        {
+            var retainedIndex = Array.FindIndex(
+                variants,
+                variant => variant.PresentationIdentity.Matches(retriggerIdentity));
+            if (retainedIndex >= 0)
+            {
+                activeSignature = retainedIndex;
+            }
+        }
+
+        var activeVariant = variants[activeSignature];
+        return new VbaSignatureHelp(
+            activeVariant.Signature,
+            activeVariant.ActiveParameter,
+            variants,
+            activeSignature);
+    }
+
+    private static int? GetHandlerParameterIndex(
+        VbaCallableDeclarationSyntax callable,
+        VbaSyntaxPosition position)
+    {
+        if (callable.Parameters.Count == 0)
+        {
+            return null;
+        }
+
+        for (var index = 0; index < callable.Parameters.Count; index++)
+        {
+            if (Contains(callable.Parameters[index].Range, position))
+            {
+                return index;
+            }
+
+            if (Compare(position, callable.Parameters[index].Range.Start) < 0)
+            {
+                return index;
+            }
+        }
+
+        return callable.Parameters.Count - 1;
     }
 
     internal VbaConditionalCallCompatibility? AnalyzeCompleteCall(
@@ -1608,6 +1761,7 @@ internal sealed class VbaSemanticResolution
         VbaSourceDocument currentDocument,
         string? qualifier)
         => nameResolution.GetRankedVisibleTypeDefinitions(currentDocument, qualifier)
+            .Where(candidate => candidate.Definition.IsAuthoringAvailable)
             .GroupBy(candidate => candidate.Definition.Name, StringComparer.OrdinalIgnoreCase)
             .Select(group =>
             {
@@ -1664,33 +1818,295 @@ internal sealed class VbaSemanticResolution
 
     private bool TryResolveWithEventsHandler(
         VbaSourceDocument currentDocument,
-        string handlerName,
-        out VbaSourceDefinition? eventDefinition)
+        VbaSourceDefinition handler,
+        out VbaResolvedNameTarget variableTarget,
+        out VbaWithEventsEventNameTarget? eventTarget,
+        out VbaWithEventsHandlerNameDecomposition decomposition)
     {
-        eventDefinition = null;
-        foreach (var variable in currentDocument.Definitions
-            .Where(definition => definition.IsWithEvents)
-            .Where(definition => definition.TypeReference is not null)
-            .OrderByDescending(definition => definition.Name.Length))
+        var analysis = AnalyzeWithEventsHandler(currentDocument, handler);
+        if (analysis is null
+            || analysis.Recognition
+                == VbaWithEventsHandlerRecognition.OrdinaryProcedure)
         {
-            var prefix = $"{variable.Name}_";
-            if (!handlerName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            variableTarget = default!;
+            eventTarget = null;
+            decomposition = default!;
+            return false;
+        }
+
+        variableTarget = analysis.BindingSet.VariableTarget;
+        eventTarget = analysis.EventTarget;
+        decomposition = analysis.Decomposition;
+        return true;
+    }
+
+    internal VbaWithEventsHandlerAnalysis? AnalyzeWithEventsHandler(
+        VbaSourceDocument currentDocument,
+        VbaSourceDefinition handler)
+    {
+        if (handler.Kind is not (
+                VbaSourceDefinitionKind.Procedure or VbaSourceDefinitionKind.Property)
+            || !VbaWithEventsHandlerNameDecomposition.TryCreate(
+                handler.Name,
+                out var parsedDecomposition))
+        {
+            return null;
+        }
+
+        var variableName = parsedDecomposition.VariableName;
+        var eventName = parsedDecomposition.EventName;
+
+        var moduleDefinition = currentDocument.Definitions.FirstOrDefault(definition =>
+            definition.Identity.Origin == VbaDefinitionOrigin.Source
+            && definition.Name.Equals(
+                currentDocument.ModuleName,
+                StringComparison.OrdinalIgnoreCase)
+            && definition.Kind is VbaSourceDefinitionKind.Class or VbaSourceDefinitionKind.Form);
+        if (moduleDefinition is null)
+        {
+            return null;
+        }
+
+        var variableOutcome = nameResolution
+            .ResolveCurrentDocumentModuleVariableOutcome(
+                currentDocument,
+                variableName);
+        if (variableOutcome.Kind != VbaNameResolutionKind.Resolved
+            || variableOutcome.Target is null)
+        {
+            return null;
+        }
+
+        var variableTarget = variableOutcome.Target;
+        var entries = new List<VbaWithEventsEventBindingEntry>();
+        var hasAdmittedWithEventsVariant = false;
+        foreach (var variable in variableTarget.PhysicalDefinitions.Where(definition =>
+            definition.Kind == VbaSourceDefinitionKind.Variable
+            && definition.ParentProcedureName is null
+            && definition.Uri.Equals(
+                currentDocument.Uri,
+                StringComparison.OrdinalIgnoreCase)))
+        {
+            if (variable.IsRecoveredWithEventsVariableDeclaration)
             {
                 continue;
             }
 
-            var eventName = handlerName[prefix.Length..];
-            if (!typeResolution.TryResolveTypeReference(currentDocument, variable.TypeReference!, out var receiverType))
+            if (!variable.IsWithEvents)
             {
-                return true;
+                entries.Add(new VbaWithEventsEventBindingEntry(
+                    variable,
+                    VbaWithEventsEventBindingStatus.NotWithEvents));
+                continue;
             }
 
-            eventDefinition = memberChainResolution.ResolveEvent(currentDocument, receiverType, eventName);
-            return true;
+            var eligibility = withEventsSemantics.ClassifyType(
+                currentDocument,
+                variable);
+            if (eligibility is null
+                || eligibility.Kind is VbaWithEventsTypeEligibilityKind.InvalidEnclosingClass
+                    or VbaWithEventsTypeEligibilityKind.InvalidNotClass
+                    or VbaWithEventsTypeEligibilityKind.InvalidInaccessibleType
+                    or VbaWithEventsTypeEligibilityKind.InvalidNoEvents)
+            {
+                continue;
+            }
+
+            hasAdmittedWithEventsVariant = true;
+
+            if (variable.TypeReference is null
+                || !typeResolution.TryResolveTypeReference(
+                    currentDocument,
+                    variable.TypeReference,
+                    out var receiverType))
+            {
+                entries.Add(new VbaWithEventsEventBindingEntry(
+                    variable,
+                    VbaWithEventsEventBindingStatus.Indeterminate));
+                continue;
+            }
+
+            const int restrictedTypeFlag = 0x200;
+            var hasKnownPartialTypeLibEvent =
+                eligibility.Kind == VbaWithEventsTypeEligibilityKind.Indeterminate
+                && eligibility.TypeLibEventSurface is
+                {
+                    State: VbaTypeLibEventSurfaceState.Partial,
+                    RawTypeKind: TypeLibCatalogRawTypeKind.CoClass
+                } partialSurface
+                && (partialSurface.TypeFlags & restrictedTypeFlag) == 0
+                && partialSurface.ExistingHandlerRecognitionEvents.Any(member =>
+                    member.Name.Equals(
+                        eventName,
+                        StringComparison.OrdinalIgnoreCase));
+            var hasKnownIndeterminateSourceEvent =
+                eligibility.Kind == VbaWithEventsTypeEligibilityKind.Indeterminate
+                && receiverType.SourceDefinition?.Identity.Origin
+                    == VbaDefinitionOrigin.Source
+                && nameResolution
+                    .GetPhysicalMembersOfType(receiverType)
+                    .Any(member =>
+                        member.Kind == VbaSourceDefinitionKind.Event
+                        && member.Name.Equals(
+                            eventName,
+                            StringComparison.OrdinalIgnoreCase)
+                        && !member.IsRecoveredEventDeclaration
+                        && (nameResolution
+                                .HasIndeterminateConditionalCompilationOwnership(
+                                    member)
+                            || nameResolution
+                                .HasIncompleteSourceEventSurfaceEvidence(
+                                    member.Uri)));
+            if (eligibility.Kind == VbaWithEventsTypeEligibilityKind.Indeterminate
+                && !hasKnownPartialTypeLibEvent
+                && !hasKnownIndeterminateSourceEvent)
+            {
+                entries.Add(new VbaWithEventsEventBindingEntry(
+                    variable,
+                    VbaWithEventsEventBindingStatus.Indeterminate));
+                continue;
+            }
+
+            if (eligibility.TypeLibEventSurface is not null
+                && !eligibility.TypeLibEventSurface.ExistingHandlerRecognitionEvents.Any(member =>
+                    member.Name.Equals(
+                        eventName,
+                        StringComparison.OrdinalIgnoreCase)))
+            {
+                entries.Add(new VbaWithEventsEventBindingEntry(
+                    variable,
+                    eligibility.Kind == VbaWithEventsTypeEligibilityKind.Indeterminate
+                        ? VbaWithEventsEventBindingStatus.Indeterminate
+                        : VbaWithEventsEventBindingStatus.NotEvent));
+                continue;
+            }
+
+            var outcome = nameResolution.ResolveMemberOutcome(
+                currentDocument,
+                receiverType,
+                eventName,
+                VbaSourceDefinitionKind.Event);
+            if (outcome.Kind == VbaNameResolutionKind.Resolved)
+            {
+                if (outcome.Target is not null)
+                {
+                    var eventContracts = CreateResolvedEventContracts(
+                        outcome.Target,
+                        variableTarget.IsConditionalFamily);
+                    entries.Add(new VbaWithEventsEventBindingEntry(
+                        variable,
+                        VbaWithEventsEventBindingStatus.Resolved,
+                        outcome.Target,
+                        eventContracts.Contracts,
+                        eventContracts.HasRecoveredEventEvidence));
+                }
+
+                continue;
+            }
+
+            if (outcome.Kind is VbaNameResolutionKind.Ambiguous
+                or VbaNameResolutionKind.AnalysisIncomplete)
+            {
+                entries.Add(new VbaWithEventsEventBindingEntry(
+                    variable,
+                    VbaWithEventsEventBindingStatus.Indeterminate));
+                continue;
+            }
+
+            entries.Add(new VbaWithEventsEventBindingEntry(
+                variable,
+                eligibility.Kind == VbaWithEventsTypeEligibilityKind.Indeterminate
+                    ? VbaWithEventsEventBindingStatus.Indeterminate
+                    : VbaWithEventsEventBindingStatus.NotEvent));
         }
 
-        return false;
+        if (!hasAdmittedWithEventsVariant)
+        {
+            return null;
+        }
+
+        var bindingSet = new VbaWithEventsEventBindingSet(
+            variableTarget,
+            entries);
+        var resolvedEventTargets = bindingSet.ResolvedEntries
+            .Select(entry => entry.EventTarget)
+            .Where(target => target is not null)
+            .Select(target => target!)
+            .ToArray();
+        var eventTarget = resolvedEventTargets.Length == 0
+            ? null
+            : new VbaWithEventsEventNameTarget(
+                handler,
+                eventName,
+                resolvedEventTargets,
+                variableTarget.IsConditionalFamily);
+        var recognition = bindingSet.ResolvedEntries.Count > 0
+            ? handler.CallableKind == VbaCallableKind.Sub
+                ? VbaWithEventsHandlerRecognition.ResolvedHandler
+                : VbaWithEventsHandlerRecognition.NonSubProcedureAssociation
+            : entries.Any(entry =>
+                entry.Status == VbaWithEventsEventBindingStatus.Indeterminate)
+                ? VbaWithEventsHandlerRecognition.IndeterminateCandidate
+                : VbaWithEventsHandlerRecognition.OrdinaryProcedure;
+
+        return new VbaWithEventsHandlerAnalysis(
+            handler,
+            parsedDecomposition,
+            bindingSet,
+            recognition,
+            eventTarget);
     }
+
+    private (
+        IReadOnlyList<VbaResolvedEventContract> Contracts,
+        bool HasRecoveredEventEvidence) CreateResolvedEventContracts(
+            VbaResolvedNameTarget eventTarget,
+            bool isConditionalBinding)
+    {
+        var eventDefinitions = eventTarget.PhysicalDefinitions
+            .Where(definition => definition.Kind == VbaSourceDefinitionKind.Event)
+            .DistinctBy(definition => definition.Identity)
+            .OrderBy(definition => definition.Uri, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(definition => definition.Uri, StringComparer.Ordinal)
+            .ThenBy(definition => definition.Range.Start.Line)
+            .ThenBy(definition => definition.Range.Start.Character)
+            .ThenBy(definition => definition.Range.End.Line)
+            .ThenBy(definition => definition.Range.End.Character)
+            .ToArray();
+        return (
+            eventDefinitions
+                .Where(definition => !definition.IsRecoveredEventDeclaration)
+                .Select(definition => new VbaResolvedEventContract(
+                    new VbaDefinitionEventContractIdentity(definition.Identity),
+                    definition.Name,
+                    definition.Signature,
+                    definition.Documentation,
+                    GetEventHandlerValidationAuthority(definition),
+                    isConditionalBinding
+                        || definition.ConditionalCompilationPath is { IsEmpty: false },
+                    definition.IsAuthoringAvailable,
+                    Definition: definition,
+                    NavigableLocation:
+                        definition.Identity.Origin == VbaDefinitionOrigin.Source
+                        ? definition.Location
+                        : null,
+                    ParameterTypeEvidence:
+                        withEventsSemantics.GetParameterTypeEvidence(definition)))
+                .ToArray(),
+            eventDefinitions.Any(definition =>
+                definition.IsRecoveredEventDeclaration
+                || nameResolution
+                    .HasIndeterminateConditionalCompilationOwnership(
+                        definition)
+                || nameResolution
+                    .HasIncompleteSourceEventSurfaceEvidence(definition.Uri)));
+    }
+
+    private static VbaEventHandlerValidationAuthority
+        GetEventHandlerValidationAuthority(VbaSourceDefinition eventDefinition)
+        => eventDefinition.Identity.Origin == VbaDefinitionOrigin.ProjectReference
+            ? VbaEventHandlerValidationAuthority.ExternalTypeLibAdvisory
+            : VbaEventHandlerValidationAuthority.SourceDeclared;
 
     private bool TryGetMemberChainCanonicalName(
         VbaPositionSyntax positionSyntax,

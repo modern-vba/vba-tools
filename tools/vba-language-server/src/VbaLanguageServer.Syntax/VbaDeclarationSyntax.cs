@@ -104,6 +104,19 @@ public enum VbaDeclarationVisibility
 }
 
 /// <summary>
+/// Identifies the keyword that introduces a parsed variable declaration.
+/// </summary>
+public enum VbaVariableDeclarationIntroducer
+{
+    Public,
+    Private,
+    Dim,
+    Friend,
+    Global,
+    Static
+}
+
+/// <summary>
 /// Represents an explicit VBA type annotation.
 /// </summary>
 /// <param name="Name">The type name segment.</param>
@@ -154,6 +167,14 @@ public sealed record VbaModuleMemberSyntax(
 /// <param name="HasCompleteEventSignatureShape">Whether an Event declaration retains complete physical signature evidence.</param>
 /// <param name="HasOptionalEventParameter">Whether the written Event parameter list contains Optional.</param>
 /// <param name="HasParamArrayEventParameter">Whether the written Event parameter list contains ParamArray.</param>
+/// <param name="WithEventsKeywordRange">The written WithEvents keyword range for this individual declarator.</param>
+/// <param name="VariableDeclarationIntroducer">The keyword that introduces this variable declaration.</param>
+/// <param name="WithEventsArrayDesignatorRange">The complete array designator written on a WithEvents declarator.</param>
+/// <param name="WithEventsNewKeywordRange">The New keyword written in a WithEvents declarator's As clause.</param>
+/// <param name="WithEventsTypeDeclarationCharacterRange">The type-declaration character written on a WithEvents identifier.</param>
+/// <param name="WithEventsTypeRequiredRange">The identifier or type-less As keyword selected when an explicit type is missing.</param>
+/// <param name="WithEventsTypeReferenceRange">The complete explicit type reference written by a WithEvents declarator.</param>
+/// <param name="HasRecognizableWithEventsDeclaratorShape">Whether the declarator contains only the recognized WithEvents shape and its independently diagnosed restrictions.</param>
 public sealed record VbaDeclarationSyntax(
     string Name,
     VbaDeclarationKind Kind,
@@ -176,7 +197,15 @@ public sealed record VbaDeclarationSyntax(
     bool IsInvalidEventPlacement = false,
     bool HasCompleteEventSignatureShape = false,
     bool HasOptionalEventParameter = false,
-    bool HasParamArrayEventParameter = false);
+    bool HasParamArrayEventParameter = false,
+    VbaSyntaxRange? WithEventsKeywordRange = null,
+    VbaVariableDeclarationIntroducer? VariableDeclarationIntroducer = null,
+    VbaSyntaxRange? WithEventsArrayDesignatorRange = null,
+    VbaSyntaxRange? WithEventsNewKeywordRange = null,
+    VbaSyntaxRange? WithEventsTypeDeclarationCharacterRange = null,
+    VbaSyntaxRange? WithEventsTypeRequiredRange = null,
+    VbaSyntaxRange? WithEventsTypeReferenceRange = null,
+    bool HasRecognizableWithEventsDeclaratorShape = true);
 
 /// <summary>
 /// Represents a parsed callable declaration and its full source block.
@@ -197,6 +226,8 @@ public sealed record VbaDeclarationSyntax(
 /// <param name="DeclarationKeyword">The callable keyword used by editor-facing declaration labels.</param>
 /// <param name="PropertyAccessorKind">The declared Property accessor kind.</param>
 /// <param name="VisibilityKeyword">The exact callable visibility keyword, or an empty string when implicit.</param>
+/// <param name="DeclarationKeywordRange">The complete source range of Function, Sub, or Property accessor keywords.</param>
+/// <param name="ParameterListRange">The complete parenthesized parameter-list range, or null when omitted.</param>
 public sealed record VbaCallableDeclarationSyntax(
     string Name,
     VbaDeclarationKind Kind,
@@ -213,7 +244,9 @@ public sealed record VbaCallableDeclarationSyntax(
     bool IsStatic = false,
     string? DeclarationKeyword = null,
     VbaPropertyAccessorKind? PropertyAccessorKind = null,
-    string? VisibilityKeyword = null);
+    string? VisibilityKeyword = null,
+    VbaSyntaxRange? DeclarationKeywordRange = null,
+    VbaSyntaxRange? ParameterListRange = null);
 
 /// <summary>
 /// Represents one parsed parameter in a callable declaration.

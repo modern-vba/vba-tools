@@ -37,6 +37,7 @@ public enum ReferenceDefinitionGlobalExposure
 /// <param name="PropertyAccess">The supported property operations, or Unknown when unavailable.</param>
 /// <param name="IsCreatable">Whether the type can be used as the target of a New expression.</param>
 /// <param name="GlobalExposure">The definition's explicit public root exposure.</param>
+/// <param name="IsAuthoringAvailable">Whether ordinary completion may offer this definition.</param>
 public sealed record VbaProjectReferenceDefinition(
     string ReferenceName,
     string Name,
@@ -47,7 +48,8 @@ public sealed record VbaProjectReferenceDefinition(
     VbaTypeReference? TypeReference = null,
     VbaPropertyAccess PropertyAccess = VbaPropertyAccess.Unknown,
     bool IsCreatable = false,
-    ReferenceDefinitionGlobalExposure GlobalExposure = ReferenceDefinitionGlobalExposure.None);
+    ReferenceDefinitionGlobalExposure GlobalExposure = ReferenceDefinitionGlobalExposure.None,
+    bool IsAuthoringAvailable = true);
 
 /// <summary>
 /// Contains reference-catalog definitions and qualifier aliases for one VBA project reference.
@@ -58,7 +60,40 @@ public sealed record VbaProjectReferenceDefinition(
 public sealed record VbaProjectReferenceCatalog(
     string ReferenceName,
     IReadOnlyList<string> QualifierAliases,
-    IReadOnlyList<VbaProjectReferenceDefinition> Definitions);
+    IReadOnlyList<VbaProjectReferenceDefinition> Definitions,
+    IReadOnlyList<TypeLibCatalogType>? TypeLibTypes = null);
+
+internal enum VbaTypeLibEventSurfaceState
+{
+    Complete,
+    Partial,
+    Indeterminate
+}
+
+internal sealed record VbaTypeLibEventSurface(
+    VbaTypeLibEventSurfaceState State,
+    TypeLibCatalogRawTypeKind? RawTypeKind,
+    int TypeFlags,
+    IReadOnlyList<TypeLibCatalogMember> StructuralEvents,
+    IReadOnlyList<TypeLibCatalogMember>? PartialExistingHandlerRecognitionEvents = null)
+{
+    public IReadOnlyList<TypeLibCatalogMember> AuthoringEvents
+        => State == VbaTypeLibEventSurfaceState.Complete
+            ? StructuralEvents
+            .Where(TypeLibCatalogMemberFacts.IsAuthoringAvailable)
+            .ToArray()
+            : [];
+
+    public IReadOnlyList<TypeLibCatalogMember> ExistingHandlerRecognitionEvents
+        => PartialExistingHandlerRecognitionEvents ?? StructuralEvents;
+
+    public static VbaTypeLibEventSurface Indeterminate { get; } =
+        new(
+            VbaTypeLibEventSurfaceState.Indeterminate,
+            RawTypeKind: null,
+            TypeFlags: 0,
+            StructuralEvents: []);
+}
 
 /// <summary>
 /// Stores available VBA project reference catalogs and projects them into source-model definitions.
@@ -301,6 +336,48 @@ public sealed class VbaProjectReferenceCatalogSet
                             SupportsNamedArguments: true),
                         ParentTypeName: "Application",
                         GlobalExposure: ReferenceDefinitionGlobalExposure.MainHostGlobal)
+                ],
+                [
+                    new TypeLibCatalogType(
+                        "Application",
+                        VbaSourceDefinitionKind.Class,
+                        "Represents the Microsoft Excel application.",
+                        Members: [],
+                        IsCreatable: true,
+                        IsApplicationObject: true,
+                        Metadata: new TypeLibCatalogTypeMetadata(
+                            TypeLibCatalogRawTypeKind.CoClass,
+                            TypeFlags: 0,
+                            ImplementedInterfaces:
+                            [
+                                new TypeLibCatalogImplementedInterface(
+                                    "AppEvents",
+                                    TypeFlags: 0,
+                                    ImplementationFlags: 0x1 | 0x2,
+                                    CallableMembers:
+                                    [
+                                        new TypeLibCatalogMember(
+                                            "WorkbookOpen",
+                                            VbaSourceDefinitionKind.Event,
+                                            "Occurs when a workbook is opened.",
+                                            new VbaCallableSignature(
+                                                "WorkbookOpen(Wb)",
+                                                [
+                                                    new VbaCallableParameter(
+                                                        "Wb",
+                                                        "The opened workbook.")
+                                                ],
+                                                "Occurs when a workbook is opened.",
+                                                CallableKind: VbaCallableKind.Event,
+                                                SupportsNamedArguments: true),
+                                             Metadata: new TypeLibCatalogCallableMetadata(
+                                                 MemberId: 1,
+                                                 FunctionFlags: 0))
+                                    ],
+                                    RawTypeKind:
+                                        TypeLibCatalogRawTypeKind.Dispatch,
+                                    IsComplete: false)
+                            ]))
                 ]),
             new VbaProjectReferenceCatalog(
                 "Microsoft Scripting Runtime",
@@ -483,6 +560,214 @@ public sealed class VbaProjectReferenceCatalogSet
                 Qualifier: alias)))
             .ToArray();
 
+    internal VbaTypeLibEventSurface GetTypeLibEventSurface(
+        string referenceName,
+        string typeName)
+    {
+        if (!catalogs.TryGetValue(referenceName, out var catalog)
+            || catalog.TypeLibTypes is null
+            || catalog.TypeLibTypes.Any(type =>
+                type is null || string.IsNullOrEmpty(type.Name)))
+        {
+            return VbaTypeLibEventSurface.Indeterminate;
+        }
+
+        var matchingTypes = catalog.TypeLibTypes
+            .Where(type => type.Name.Equals(
+                typeName,
+                StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        if (matchingTypes.Length != 1
+            || matchingTypes[0].Metadata is null)
+        {
+            return VbaTypeLibEventSurface.Indeterminate;
+        }
+
+        var metadata = matchingTypes[0].Metadata!;
+        if (!metadata.IsComplete
+            || metadata.ImplementedInterfaces is null
+            || metadata.ImplementedInterfaces.Any(implemented =>
+                implemented is null
+                || string.IsNullOrEmpty(implemented.Name)
+                || implemented.RawTypeKind is not (
+                    TypeLibCatalogRawTypeKind.Interface
+                        or TypeLibCatalogRawTypeKind.Dispatch)))
+        {
+            return VbaTypeLibEventSurface.Indeterminate;
+        }
+
+        if (metadata.RawTypeKind != TypeLibCatalogRawTypeKind.CoClass)
+        {
+            return new VbaTypeLibEventSurface(
+                VbaTypeLibEventSurfaceState.Complete,
+                metadata.RawTypeKind,
+                metadata.TypeFlags,
+                StructuralEvents: []);
+        }
+
+        const int defaultSourceFlags = 0x1 | 0x2;
+        var defaultSources = metadata.ImplementedInterfaces
+            .Where(implemented =>
+                (implemented.ImplementationFlags & defaultSourceFlags)
+                    == defaultSourceFlags)
+            .ToArray();
+        if (defaultSources.Length > 1)
+        {
+            return VbaTypeLibEventSurface.Indeterminate;
+        }
+
+        if (defaultSources.Length == 0)
+        {
+            return new VbaTypeLibEventSurface(
+                VbaTypeLibEventSurfaceState.Complete,
+                metadata.RawTypeKind,
+                metadata.TypeFlags,
+                StructuralEvents: []);
+        }
+
+        var defaultSource = defaultSources[0];
+        if (defaultSource.RawTypeKind is not (
+                TypeLibCatalogRawTypeKind.Interface
+                    or TypeLibCatalogRawTypeKind.Dispatch))
+        {
+            return VbaTypeLibEventSurface.Indeterminate;
+        }
+
+        if (string.IsNullOrEmpty(defaultSource.Name)
+            || defaultSource.CallableMembers is null)
+        {
+            return VbaTypeLibEventSurface.Indeterminate;
+        }
+
+        var completeCallableMembers = defaultSource.CallableMembers
+            .Where(IsCompleteTypeLibCallable)
+            .ToArray();
+        var hasIncompleteCallableEvidence = !defaultSource.IsComplete
+            || completeCallableMembers.Length
+                != defaultSource.CallableMembers.Count;
+        var callableGroups = completeCallableMembers
+            .GroupBy(member => member.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (callableGroups.Any(group => group
+            .Skip(1)
+            .Any(member => !HaveEquivalentTypeLibCallableContracts(
+                group.First(),
+                member))))
+        {
+            return VbaTypeLibEventSurface.Indeterminate;
+        }
+
+        var callableMembers = callableGroups
+            .Select(group => group.First())
+            .ToArray();
+        if (hasIncompleteCallableEvidence)
+        {
+            return new VbaTypeLibEventSurface(
+                callableMembers.Length == 0
+                    ? VbaTypeLibEventSurfaceState.Indeterminate
+                    : VbaTypeLibEventSurfaceState.Partial,
+                metadata.RawTypeKind,
+                metadata.TypeFlags,
+                StructuralEvents: [],
+                PartialExistingHandlerRecognitionEvents: callableMembers);
+        }
+
+        return new VbaTypeLibEventSurface(
+            VbaTypeLibEventSurfaceState.Complete,
+            metadata.RawTypeKind,
+            metadata.TypeFlags,
+            callableMembers);
+    }
+
+    private static bool IsCompleteTypeLibCallable(TypeLibCatalogMember? member)
+        => member is not null
+            && !string.IsNullOrEmpty(member.Name)
+            && member.Metadata?.IsComplete == true
+            && member.Signature is { Parameters: { } parameters }
+            && HasCompleteTypeReference(member.TypeReference)
+            && parameters.All(parameter =>
+                parameter is not null
+                && HasCompleteTypeReference(parameter.TypeReference));
+
+    private static bool HasCompleteTypeReference(VbaTypeReference? typeReference)
+        => typeReference is null || !string.IsNullOrEmpty(typeReference.Name);
+
+    private static bool HaveEquivalentTypeLibCallableContracts(
+        TypeLibCatalogMember left,
+        TypeLibCatalogMember right)
+        => HaveEquivalentTypeLibCallableMetadata(left.Metadata, right.Metadata)
+            && left.Kind == right.Kind
+            && HaveEquivalentTypeReferences(left.TypeReference, right.TypeReference)
+            && HaveEquivalentTypeLibCallableSignatures(left.Signature, right.Signature);
+
+    private static bool HaveEquivalentTypeLibCallableMetadata(
+        TypeLibCatalogCallableMetadata? left,
+        TypeLibCatalogCallableMetadata? right)
+    {
+        if (left is null || right is null)
+        {
+            return left is null && right is null;
+        }
+
+        return left.MemberId == right.MemberId
+            && left.FunctionFlags == right.FunctionFlags
+            && left.IsComplete == right.IsComplete;
+    }
+
+    private static bool HaveEquivalentTypeLibCallableSignatures(
+        VbaCallableSignature? left,
+        VbaCallableSignature? right)
+    {
+        if (left is null || right is null)
+        {
+            return left is null && right is null;
+        }
+
+        if (left.CallableKind != right.CallableKind
+            || left.Parameters is null
+            || right.Parameters is null
+            || left.Parameters.Count != right.Parameters.Count)
+        {
+            return false;
+        }
+
+        for (var index = 0; index < left.Parameters.Count; index++)
+        {
+            var leftParameter = left.Parameters[index];
+            var rightParameter = right.Parameters[index];
+            if (leftParameter is null
+                || rightParameter is null
+                || leftParameter.IsOptional != rightParameter.IsOptional
+                || leftParameter.IsByRef != rightParameter.IsByRef
+                || leftParameter.IsParamArray != rightParameter.IsParamArray
+                || leftParameter.IsArray != rightParameter.IsArray
+                || !HaveEquivalentTypeReferences(
+                    leftParameter.TypeReference,
+                    rightParameter.TypeReference))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool HaveEquivalentTypeReferences(
+        VbaTypeReference? left,
+        VbaTypeReference? right)
+    {
+        if (left is null || right is null)
+        {
+            return left is null && right is null;
+        }
+
+        return left.Name.Equals(right.Name, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(
+                left.Qualifier,
+                right.Qualifier,
+                StringComparison.OrdinalIgnoreCase);
+    }
+
     private IEnumerable<VbaProjectReferenceDefinition> GetActiveReferenceDefinitions(VbaProjectReferenceSelection? selection)
         => GetActiveCatalogs(selection).SelectMany(catalog => catalog.Catalog.Definitions);
 
@@ -538,7 +823,9 @@ public sealed class VbaProjectReferenceCatalogSet
             DeclarationLabel: CreateDeclarationLabel(definition, signature),
             PropertyAccess: definition.PropertyAccess,
             IsCreatable: definition.IsCreatable,
-            ReferenceGlobalExposure: definition.GlobalExposure);
+            ReferenceGlobalExposure: definition.GlobalExposure,
+            CallableKind: signature?.CallableKind,
+            IsAuthoringAvailable: definition.IsAuthoringAvailable);
     }
 
     private static VbaCallableSignature? CreateSourceSignature(VbaProjectReferenceDefinition definition)

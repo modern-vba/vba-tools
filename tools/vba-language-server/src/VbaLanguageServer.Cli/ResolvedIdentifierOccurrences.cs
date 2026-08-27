@@ -152,17 +152,53 @@ internal sealed class VbaResolvedIdentifierOccurrenceIndex
                 continue;
             }
 
-            var occurrence = new VbaIdentifierOccurrence(
-                token.Text,
-                token.Range.Start.Character,
-                token.Range.End.Character);
-            occurrences.Add(new VbaResolvedIdentifierOccurrence(
+            var separatorIndex = token.Text.LastIndexOf('_');
+            if (separatorIndex > 0 && separatorIndex < token.Text.Length - 1)
+            {
+                var separatorTarget = resolveSourceTarget(
+                    document.Uri,
+                    token.Range.Start.Line,
+                    token.Range.Start.Character + separatorIndex);
+                if (separatorTarget is not null
+                    && separatorTarget.Identity != target.Identity)
+                {
+                    AddOccurrence(
+                        occurrences,
+                        document.Uri,
+                        token.Text[..separatorIndex],
+                        token.Range.Start.Line,
+                        token.Range.Start.Character,
+                        token.Range.Start.Character + separatorIndex,
+                        target);
+
+                    var suffixTarget = resolveSourceTarget(
+                        document.Uri,
+                        token.Range.Start.Line,
+                        token.Range.Start.Character + separatorIndex + 1);
+                    if (suffixTarget is not null)
+                    {
+                        AddTargetOccurrences(
+                            occurrences,
+                            document.Uri,
+                            token.Text[(separatorIndex + 1)..],
+                            token.Range.Start.Line,
+                            token.Range.Start.Character + separatorIndex + 1,
+                            token.Range.End.Character,
+                            suffixTarget);
+                    }
+
+                    continue;
+                }
+            }
+
+            AddOccurrence(
+                occurrences,
                 document.Uri,
-                occurrence,
-                new VbaRange(
-                    new VbaPosition(token.Range.Start.Line, token.Range.Start.Character),
-                    new VbaPosition(token.Range.End.Line, token.Range.End.Character)),
-                target));
+                token.Text,
+                token.Range.Start.Line,
+                token.Range.Start.Character,
+                token.Range.End.Character,
+                target);
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -177,6 +213,60 @@ internal sealed class VbaResolvedIdentifierOccurrenceIndex
                 group => group.Key,
                 group => group.First().Target.CanonicalName);
         return new VbaResolvedDocumentOccurrenceSet(resolvedOccurrences, canonicalNamesByRange);
+    }
+
+    private static void AddTargetOccurrences(
+        ICollection<VbaResolvedIdentifierOccurrence> occurrences,
+        string uri,
+        string name,
+        int line,
+        int startCharacter,
+        int endCharacter,
+        VbaResolvedNameTarget target)
+    {
+        if (target is VbaWithEventsEventNameTarget withEventsTarget)
+        {
+            foreach (var eventTarget in withEventsTarget.EventTargets)
+            {
+                AddOccurrence(
+                    occurrences,
+                    uri,
+                    name,
+                    line,
+                    startCharacter,
+                    endCharacter,
+                    eventTarget);
+            }
+
+            return;
+        }
+
+        AddOccurrence(
+            occurrences,
+            uri,
+            name,
+            line,
+            startCharacter,
+            endCharacter,
+            target);
+    }
+
+    private static void AddOccurrence(
+        ICollection<VbaResolvedIdentifierOccurrence> occurrences,
+        string uri,
+        string name,
+        int line,
+        int startCharacter,
+        int endCharacter,
+        VbaResolvedNameTarget target)
+    {
+        occurrences.Add(new VbaResolvedIdentifierOccurrence(
+            uri,
+            new VbaIdentifierOccurrence(name, startCharacter, endCharacter),
+            new VbaRange(
+                new VbaPosition(line, startCharacter),
+                new VbaPosition(line, endCharacter)),
+            target));
     }
 
     private static bool SameUri(string left, string right)

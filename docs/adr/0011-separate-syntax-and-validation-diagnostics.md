@@ -156,7 +156,9 @@ only `publisher` and `app` carry the modifier. `WithEvents` is syntactically
 admitted only at module level in a class-module code section, whether the
 containing declaration is introduced by `Public`, `Private`, or `Dim`. Class
 modules include `.cls` and `.frm` source and document-module source exported as
-`.cls`. A written `WithEvents` in a standard module or procedure body receives
+`.cls`. An additional `Static` modifier does not admit the declaration: the
+ordinary variable is recovered and the written `WithEvents` receives the same
+placement diagnostic. A written `WithEvents` in a standard module or procedure body receives
 one error-severity `syntax.withEventsDeclarationNotAllowedHere` diagnostic per
 offending declarator. Its range is exactly that declarator's `WithEvents`
 keyword and its stable message is
@@ -216,8 +218,11 @@ The syntactically admitted declarator remains a
 - `invalidNoEvents` means a specific accessible non-enclosing class has an
   authoritative, complete structural Event surface containing no valid Event.
 - `indeterminate` retains unresolved or ambiguous type resolution, a missing,
-  stale, or incomplete catalog or `HostClassEventSurface`, and evidence
-  consisting only of `RecoveredEventDeclaration`s.
+  stale, or incomplete catalog or `HostClassEventSurface`, incomplete
+  conditional-compilation ownership of the `WithEvents` declaration, and a
+  source Event surface containing any recovered, unnamed malformed, or
+  conditionally unowned Event evidence even when another named Event remains
+  available for positive navigation.
 
 Creatability is neither required nor disqualifying. Assignment compatibility
 and `Implements` compatibility do not establish Event-source eligibility. The
@@ -243,8 +248,13 @@ Definition, References, Hover, Type Resolution, and Rename but contributes no
 `WithEventsEventBindingSet` entry, handler diagnostic, or dependent Rename
 relationship of its own. It is not a
 `RecoveredWithEventsVariableDeclaration`, because its source syntax is admitted.
-An `indeterminate` declaration is likewise not recovered; it contributes one
-`indeterminate` binding entry before Event-suffix lookup. That entry suppresses
+An `indeterminate` declaration is likewise not recovered; it normally
+contributes one `indeterminate` binding entry before Event-suffix lookup. A
+partial compatibility TypeLib catalog is the narrow exception: an exact,
+individually complete member retained from one uniquely identified default
+source may contribute a resolved `externalTypeLibAdvisory` association, while
+an unknown suffix remains `indeterminate` and type eligibility remains
+`indeterminate`. This evidence still suppresses
 aggregate handler diagnostics and prevents `HandlerEventRenameConvergence`; an
 indeterminate-only handler candidate also makes upstream variable Rename fail
 with `analysisIncomplete`, while mixed resolved and indeterminate evidence
@@ -263,7 +273,10 @@ Exactly one coclass implemented interface whose flags contain both
 projected as Events. A non-default `FSOURCE` interface is not merged or used as
 a fallback even when it is the only source interface. `FDEFAULTVTABLE` alone is
 not a substitute; when the same interface also carries `FDEFAULT | FSOURCE`, it
-is projected once. The complete aggregate preserves coclass and interface
+is projected once. Before default-source selection, every retained association
+must have a nonempty identity and raw `TKIND_INTERFACE` or `TKIND_DISPATCH`
+category. Missing or different raw kind is indeterminate and is not forwarded
+as a coclass Event source. The complete aggregate preserves coclass and interface
 `TYPEFLAGS`, member `FUNCFLAGS`, identity, signatures, and completeness, then
 derives three distinct projections:
 
@@ -277,6 +290,24 @@ derives three distinct projections:
   suffix resolution of an already-written `WithEventsHandlerCandidate`, matching
   the VBE code-window association without claiming that VBE compile validates
   the external handler signature.
+
+A deliberately partial compatibility catalog is not an authoritative
+`TypeLibEventSurface` and cannot prove eligibility, ineligibility, or a negative
+Event lookup. It retains nothing unless complete type identity and flags plus a
+complete implemented-interface association set conclusively identify exactly
+one default source. Only an incomplete callable surface beyond that boundary
+may retain an individually complete member in the positive existing-handler
+recognition path. The retained contract is advisory, an absent suffix stays
+indeterminate, and no type or handler diagnostic follows from the partial
+catalog. A callable is complete only with complete raw member metadata, a
+non-null signature, and an ordered parameter collection whose elements and
+present type identities are structurally readable. An incomplete member is
+excluded from that positive partial projection without discarding a complete
+sibling. Duplicate case-insensitive member names coalesce only
+when their raw member identity, flags, callable kind, result type, and complete
+ordered parameter contract agree. A conflict is indeterminate; signature
+labels, parameter names, display labels, and documentation do not participate
+in semantic contract identity.
 
 In an empty or partially typed `Sub` declaration-name slot, the same-class
 `WithEvents` Event authoring surface admits a name-only
@@ -329,10 +360,15 @@ default source has an authoritative empty Event surface and is
 `invalidInaccessibleType`; `TYPEFLAG_FHIDDEN` affects discoverability but not
 explicit eligibility. More than one default source interface is malformed and
 therefore `indeterminate`, as is any missing, unreadable, stale, or incomplete
-raw type kind, type flag, implemented-interface identity, flag, member,
-function flag, or completeness metadata. Catalogs preserve those raw facts
-rather than deriving Event-source eligibility from a flattened editor-facing
-`Class` kind, browser visibility, or a union of every source interface.
+raw type kind, type flag, implemented-interface association-set identity, flag,
+association-target raw kind, or completeness metadata. Those failures retain no
+callable. After complete
+association metadata identifies exactly one default source, incomplete callable
+enumeration or callable metadata still leaves the structural surface
+`indeterminate` but may retain individually complete callables for positive
+existing-handler recognition. Catalogs preserve those raw facts rather than
+deriving Event-source eligibility from a flattened editor-facing `Class` kind,
+browser visibility, or a union of every source interface.
 
 For an intrinsic form or document class, the authoritative
 `HostClassEventSurface` combines valid source Event declarations owned by that
@@ -648,7 +684,9 @@ from `Property` through `Get`, `Let`, or `Set`. A `notWithEvents`, `notEvent`, o
 only some compilation configurations. Any `externalTypeLibAdvisory` or
 `lastKnownGoodHostAdvisory` association also suppresses it; external TypeLib
 behavior is advisory, and stale host evidence cannot establish current compile
-behavior. Each Property accessor is diagnosed
+behavior. Incomplete conditional-compilation ownership of the candidate
+declaration likewise suppresses the diagnostic while retaining safe positive
+navigation associations. Each Property accessor is diagnosed
 independently. Visibility and `Static` do not participate. The
 `nonSubProcedureAssociation` candidate never also receives
 `validation.incompatibleEventHandlerSignature`.
@@ -657,7 +695,8 @@ independently. Visibility and `Static` do not participate. The
 error-severity diagnostic for a syntactically complete
 `WithEventsHandlerDeclaration` or `IntrinsicHostHandlerDeclaration` only when
 its applicable target evidence and Event-signature compatibility are conclusive
-as specified below. A
+as specified below. Its own conditional-compilation ownership must also be
+complete. A
 nonconditional source Event, resolved TypeLib Event, or projected host Event
 contributes one signature, while a conditional Event family contributes every
 physical signature. The

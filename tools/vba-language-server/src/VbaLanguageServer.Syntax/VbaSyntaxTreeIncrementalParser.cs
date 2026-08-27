@@ -262,7 +262,13 @@ internal static class VbaSyntaxTreeIncrementalParser
                 .ToArray(),
             null,
             moduleContext.CodeStartLine,
-            currentSource.FullRange);
+            currentSource.FullRange)
+        {
+            IncompleteEventDeclarationRanges = parsedLocalTree.Module
+                .IncompleteEventDeclarationRanges
+                .Select(range => Shift(range, origin.Line, origin.Utf16Offset))
+                .ToArray()
+        };
         var tokens = parsedLocalTree.TokenStream.Tokens
             .Select(token => token with
             {
@@ -393,6 +399,14 @@ internal static class VbaSyntaxTreeIncrementalParser
                 block => block.Range,
                 static (block, shiftLineDelta, shiftOffsetDelta) =>
                     Shift(block, shiftLineDelta, shiftOffsetDelta),
+                oldRange,
+                newRange),
+            IncompleteEventDeclarationRanges = MergeByRange(
+                previousTree.Module.IncompleteEventDeclarationRanges,
+                parsedMemberTree.Module.IncompleteEventDeclarationRanges,
+                static range => range,
+                static (range, shiftLineDelta, shiftOffsetDelta) =>
+                    Shift(range, shiftLineDelta, shiftOffsetDelta),
                 oldRange,
                 newRange),
             Range = sourceText.FullRange
@@ -671,7 +685,31 @@ internal static class VbaSyntaxTreeIncrementalParser
             LineIndex = declaration.LineIndex + lineDelta,
             ParentProcedureRange = declaration.ParentProcedureRange is null
                 ? null
-                : Shift(declaration.ParentProcedureRange, lineDelta, offsetDelta)
+                : Shift(declaration.ParentProcedureRange, lineDelta, offsetDelta),
+            WithEventsKeywordRange = ShiftNullable(
+                declaration.WithEventsKeywordRange,
+                lineDelta,
+                offsetDelta),
+            WithEventsArrayDesignatorRange = ShiftNullable(
+                declaration.WithEventsArrayDesignatorRange,
+                lineDelta,
+                offsetDelta),
+            WithEventsNewKeywordRange = ShiftNullable(
+                declaration.WithEventsNewKeywordRange,
+                lineDelta,
+                offsetDelta),
+            WithEventsTypeDeclarationCharacterRange = ShiftNullable(
+                declaration.WithEventsTypeDeclarationCharacterRange,
+                lineDelta,
+                offsetDelta),
+            WithEventsTypeRequiredRange = ShiftNullable(
+                declaration.WithEventsTypeRequiredRange,
+                lineDelta,
+                offsetDelta),
+            WithEventsTypeReferenceRange = ShiftNullable(
+                declaration.WithEventsTypeReferenceRange,
+                lineDelta,
+                offsetDelta)
         };
 
     private static VbaCallableDeclarationSyntax Shift(
@@ -685,8 +723,22 @@ internal static class VbaSyntaxTreeIncrementalParser
             Parameters = declaration.Parameters
                 .Select(parameter => parameter with { Range = Shift(parameter.Range, lineDelta, offsetDelta) })
                 .ToArray(),
-            LineIndex = declaration.LineIndex + lineDelta
+            LineIndex = declaration.LineIndex + lineDelta,
+            DeclarationKeywordRange = ShiftNullable(
+                declaration.DeclarationKeywordRange,
+                lineDelta,
+                offsetDelta),
+            ParameterListRange = ShiftNullable(
+                declaration.ParameterListRange,
+                lineDelta,
+                offsetDelta)
         };
+
+    private static VbaSyntaxRange? ShiftNullable(
+        VbaSyntaxRange? range,
+        int lineDelta,
+        int offsetDelta)
+        => range is null ? null : Shift(range, lineDelta, offsetDelta);
 
     private static VbaArgumentListSyntax Shift(
         VbaArgumentListSyntax argumentList,

@@ -26,7 +26,8 @@ internal static class VbaSyntaxTreeParser
         "^" + VbaIdentifier.RegexWhitespace + "*"
         + "(?:(?<visibility>Public|Private|Friend|Global)" + VbaIdentifier.RegexWhitespace + "+)?"
         + "(?:(?<static>Static)" + VbaIdentifier.RegexWhitespace + "+)?"
-        + "(?:(?<kind>Sub|Function)|Property" + VbaIdentifier.RegexWhitespace + "+(?<propertyKind>Get|Let|Set))"
+        + "(?:(?<kind>Sub|Function)|(?<propertyDeclaration>Property"
+        + VbaIdentifier.RegexWhitespace + "+(?<propertyKind>Get|Let|Set)))"
         + VbaIdentifier.RegexWhitespace + "+"
         + "(?<name>(?>" + VbaIdentifier.RegexIdentifierCandidate + "))"
         + "(?<typeCharacter>[$%&^!#@])?"
@@ -54,6 +55,12 @@ internal static class VbaSyntaxTreeParser
         + VbaIdentifier.RegexWhitespace + "*(?:\\((?<parameters>.*)\\))?",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
+    private static readonly Regex EventDeclarationPrefixPattern = new(
+        "^" + VbaIdentifier.RegexWhitespace + "*"
+        + "(?:(?:Public|Private|Friend)" + VbaIdentifier.RegexWhitespace + "+)?"
+        + "Event(?=" + VbaIdentifier.RegexWhitespace + "|\\(|$)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
     private static readonly Regex EnumPattern = new(
         "^" + VbaIdentifier.RegexWhitespace + "*"
         + "(?:(?<visibility>Public|Private|Friend)" + VbaIdentifier.RegexWhitespace + "+)?"
@@ -77,13 +84,33 @@ internal static class VbaSyntaxTreeParser
     private static readonly Regex ModuleVariablePattern = new(
         "^" + VbaIdentifier.RegexWhitespace + "*"
         + "(?<visibility>Public|Private|Friend|Global|Dim)"
-        + VbaIdentifier.RegexWhitespace + "+(?<declarations>.+)$",
+        + VbaIdentifier.RegexWhitespace + "+"
+        + "(?:(?<static>Static)" + VbaIdentifier.RegexWhitespace + "+)?"
+        + "(?<declarations>.+)$",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static readonly Regex RecoveredModuleWithEventsVariablePattern = new(
+        "^" + VbaIdentifier.RegexWhitespace + "*"
+        + "(?:(?<static>Static)" + VbaIdentifier.RegexWhitespace + "+)?"
+        + "(?<declarations>(?=WithEvents" + VbaIdentifier.RegexWhitespace
+        + "+|.+," + VbaIdentifier.RegexWhitespace + "*WithEvents"
+        + VbaIdentifier.RegexWhitespace + "+).+)$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex LocalVariablePattern = new(
         "^" + VbaIdentifier.RegexWhitespace + "*"
         + "(?:Dim|(?<static>Static))"
         + VbaIdentifier.RegexWhitespace + "+(?<declarations>.+)$",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static readonly Regex RecoveredLocalVisibilityWithEventsVariablePattern = new(
+        "^" + VbaIdentifier.RegexWhitespace + "*"
+        + "(?<introducer>Public|Private|Friend|Global)"
+        + VbaIdentifier.RegexWhitespace + "+"
+        + "(?:(?<static>Static)" + VbaIdentifier.RegexWhitespace + "+)?"
+        + "(?<declarations>(?=WithEvents" + VbaIdentifier.RegexWhitespace
+        + "+|.+," + VbaIdentifier.RegexWhitespace + "*WithEvents"
+        + VbaIdentifier.RegexWhitespace + "+).+)$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     /// <summary>
@@ -157,6 +184,9 @@ internal static class VbaSyntaxTreeParser
             parsedMembers.CallableDeclarations,
             parsedMembers.Members,
             codeStartLine));
+        diagnostics.AddRange(CollectWithEventsDeclarationDiagnostics(
+            kind,
+            parsedMembers.Declarations));
         diagnostics.AddRange(CollectRaiseEventPlacementDiagnostics(
             physicalAnalysisSourceText,
             tokenStream,
@@ -193,8 +223,70 @@ internal static class VbaSyntaxTreeParser
             parsedPreprocessor.Blocks,
             designerBlock,
             codeStartLine,
-            sourceText.FullRange);
+            sourceText.FullRange)
+        {
+            IncompleteEventDeclarationRanges =
+                GetIncompleteEventDeclarationRanges(
+                    physicalAnalysisSourceText,
+                    codeStartLine)
+        };
         return new VbaSyntaxTree(uri, sourceText, tokenStream, module, diagnostics);
+    }
+
+    private static IEnumerable<VbaSyntaxDiagnostic> CollectWithEventsDeclarationDiagnostics(
+        VbaModuleKind moduleKind,
+        IReadOnlyList<VbaDeclarationSyntax> declarations)
+    {
+        foreach (var declaration in declarations.Where(declaration =>
+                     declaration.WithEventsKeywordRange is not null))
+        {
+            var placementAllowed = moduleKind is VbaModuleKind.ClassModule or VbaModuleKind.FormModule
+                && declaration.ParentProcedureName is null
+                && !declaration.IsStatic
+                && declaration.VariableDeclarationIntroducer is
+                    VbaVariableDeclarationIntroducer.Public
+                    or VbaVariableDeclarationIntroducer.Private
+                    or VbaVariableDeclarationIntroducer.Dim;
+            if (!placementAllowed)
+            {
+                yield return new VbaSyntaxDiagnostic(
+                    "syntax.withEventsDeclarationNotAllowedHere",
+                    "WithEvents variables are allowed only at module level in a class module.",
+                    declaration.WithEventsKeywordRange!);
+            }
+
+            if (declaration.WithEventsArrayDesignatorRange is { } arrayRange)
+            {
+                yield return new VbaSyntaxDiagnostic(
+                    "syntax.withEventsArrayNotAllowed",
+                    "WithEvents variables cannot be arrays.",
+                    arrayRange);
+            }
+
+            if (declaration.WithEventsNewKeywordRange is { } newRange)
+            {
+                yield return new VbaSyntaxDiagnostic(
+                    "syntax.withEventsNewNotAllowed",
+                    "New cannot be used with WithEvents.",
+                    newRange);
+            }
+
+            if (declaration.WithEventsTypeDeclarationCharacterRange is { } typeCharacterRange)
+            {
+                yield return new VbaSyntaxDiagnostic(
+                    "syntax.withEventsTypeDeclarationCharacterNotAllowed",
+                    "Type-declaration characters cannot be used with WithEvents.",
+                    typeCharacterRange);
+            }
+
+            if (declaration.WithEventsTypeRequiredRange is { } typeRequiredRange)
+            {
+                yield return new VbaSyntaxDiagnostic(
+                    "syntax.withEventsTypeRequired",
+                    "WithEvents variables require an explicit class type in an As clause.",
+                    typeRequiredRange);
+            }
+        }
     }
 
     private static IEnumerable<VbaSyntaxDiagnostic> CollectEventDeclarationDiagnostics(
@@ -700,6 +792,15 @@ internal static class VbaSyntaxTreeParser
         return statements;
     }
 
+    private static IReadOnlyList<VbaSyntaxRange> GetIncompleteEventDeclarationRanges(
+        VbaSourceText sourceText,
+        int codeStartLine)
+        => CreateLogicalStatements(sourceText, codeStartLine)
+            .Where(statement => EventDeclarationPrefixPattern.IsMatch(statement.Text)
+                && !MatchIdentifier(EventPattern, statement.Text).Success)
+            .Select(statement => statement.Range)
+            .ToArray();
+
     private static LogicalStatement CreateLogicalStatement(VbaSourceText sourceText, int startLineIndex)
     {
         var startLine = sourceText.Lines[startLineIndex];
@@ -1003,8 +1104,15 @@ internal static class VbaSyntaxTreeParser
                 continue;
             }
 
-            var variableMatch = ModuleVariablePattern.Match(codeLine);
-            if (variableMatch.Success && IsModuleVariableDeclaration(codeLine))
+            if (IsLogicalContinuationTail(sourceText, lineIndex))
+            {
+                continue;
+            }
+
+            var variableStatement = CreateLogicalStatement(sourceText, lineIndex);
+            var variableMatch = ModuleVariablePattern.Match(variableStatement.Text);
+            if (variableMatch.Success
+                && IsModuleVariableDeclaration(variableStatement.Text))
             {
                 var visibility = GetVisibility(variableMatch.Groups["visibility"].Value, defaultPublic: false);
                 foreach (var declaration in ParseVariableLikeDeclarations(
@@ -1013,11 +1121,48 @@ internal static class VbaSyntaxTreeParser
                     line,
                     VbaDeclarationKind.Variable,
                     visibility,
-                    isWithEventsDefault: IsWithEventsVariableDeclaration(codeLine)))
+                    variableDeclarationIntroducer: GetVariableDeclarationIntroducer(
+                        variableMatch.Groups["visibility"].Value),
+                    isStaticDefault: variableMatch.Groups["static"].Success,
+                    logicalStatement: variableStatement))
                 {
-                    members.Add(new VbaModuleMemberSyntax(declaration.Name, declaration.Kind, CreateLineRange(line)));
+                    members.Add(new VbaModuleMemberSyntax(
+                        declaration.Name,
+                        declaration.Kind,
+                        variableStatement.Range));
                     declarations.Add(declaration);
                 }
+
+                lineIndex = variableStatement.Range.End.Line;
+                continue;
+            }
+
+            var recoveredWithEventsMatch =
+                RecoveredModuleWithEventsVariablePattern.Match(variableStatement.Text);
+            if (recoveredWithEventsMatch.Success)
+            {
+                foreach (var declaration in ParseVariableLikeDeclarations(
+                    sourceText,
+                    recoveredWithEventsMatch.Groups["declarations"],
+                    line,
+                    VbaDeclarationKind.Variable,
+                    VbaDeclarationVisibility.Private,
+                    variableDeclarationIntroducer:
+                        recoveredWithEventsMatch.Groups["static"].Success
+                            ? VbaVariableDeclarationIntroducer.Static
+                            : null,
+                    isStaticDefault:
+                        recoveredWithEventsMatch.Groups["static"].Success,
+                    logicalStatement: variableStatement))
+                {
+                    members.Add(new VbaModuleMemberSyntax(
+                        declaration.Name,
+                        declaration.Kind,
+                        variableStatement.Range));
+                    declarations.Add(declaration);
+                }
+
+                lineIndex = variableStatement.Range.End.Line;
             }
         }
 
@@ -1737,7 +1882,21 @@ internal static class VbaSyntaxTreeParser
             IsStatic: isStatic,
             DeclarationKeyword: GetDeclarationKeyword(match),
             PropertyAccessorKind: GetPropertyAccessorKind(match),
-            VisibilityKeyword: match.Groups["visibility"].Value);
+            VisibilityKeyword: match.Groups["visibility"].Value,
+            DeclarationKeywordRange: CreateRange(
+                sourceText,
+                match,
+                match.Groups["kind"].Success
+                    ? "kind"
+                    : "propertyDeclaration",
+                line),
+            ParameterListRange: match.Groups["parameters"].Success
+                ? sourceText.RangeForLine(
+                    line,
+                    match.Groups["parameters"].Index - 1,
+                    match.Groups["parameters"].Index
+                        + match.Groups["parameters"].Length + 1)
+                : null);
     }
 
     private static VbaCallableDeclarationSyntax CreateCallableDeclaration(
@@ -1781,7 +1940,23 @@ internal static class VbaSyntaxTreeParser
             IsStatic: isStatic,
             DeclarationKeyword: GetDeclarationKeyword(match),
             PropertyAccessorKind: GetPropertyAccessorKind(match),
-            VisibilityKeyword: match.Groups["visibility"].Value);
+            VisibilityKeyword: match.Groups["visibility"].Value,
+            DeclarationKeywordRange: RangeFromLogicalSpan(
+                statement,
+                match.Groups["kind"].Success
+                    ? match.Groups["kind"].Index
+                    : match.Groups["propertyDeclaration"].Index,
+                match.Groups["kind"].Success
+                    ? match.Groups["kind"].Index + match.Groups["kind"].Length
+                    : match.Groups["propertyDeclaration"].Index
+                        + match.Groups["propertyDeclaration"].Length),
+            ParameterListRange: match.Groups["parameters"].Success
+                ? RangeFromLogicalSpan(
+                    statement,
+                    match.Groups["parameters"].Index - 1,
+                    match.Groups["parameters"].Index
+                        + match.Groups["parameters"].Length + 1)
+                : null);
     }
 
     private static VbaDeclarationSyntax CreateCallableSourceDeclaration(VbaCallableDeclarationSyntax declaration)
@@ -1926,11 +2101,29 @@ internal static class VbaSyntaxTreeParser
         for (var lineIndex = startLine; lineIndex < endLine; lineIndex++)
         {
             var line = sourceText.Lines[lineIndex];
-            var codeLine = VbaSourceText.StripApostropheComment(line.Text);
-            var match = LocalVariablePattern.Match(codeLine);
-            if (!match.Success)
+            if (IsLogicalContinuationTail(sourceText, lineIndex))
             {
                 continue;
+            }
+
+            var logicalStatement = CreateLogicalStatement(sourceText, lineIndex);
+            var codeLine = logicalStatement.Text;
+            var match = LocalVariablePattern.Match(codeLine);
+            var hasRecoveredOmittedIntroducer = false;
+            var hasRecoveredVisibilityIntroducer = false;
+            if (!match.Success)
+            {
+                match = RecoveredLocalVisibilityWithEventsVariablePattern.Match(codeLine);
+                hasRecoveredVisibilityIntroducer = match.Success;
+                if (!match.Success)
+                {
+                    match = RecoveredModuleWithEventsVariablePattern.Match(codeLine);
+                    hasRecoveredOmittedIntroducer = match.Success;
+                    if (!match.Success)
+                    {
+                        continue;
+                    }
+                }
             }
 
             foreach (var declaration in ParseVariableLikeDeclarations(
@@ -1941,10 +2134,22 @@ internal static class VbaSyntaxTreeParser
                 VbaDeclarationVisibility.Local,
                 parentProcedureName: parentProcedureName,
                 parentProcedureRange: parentProcedureRange,
-                isStaticDefault: match.Groups["static"].Success))
+                variableDeclarationIntroducer:
+                    match.Groups["static"].Success
+                        ? VbaVariableDeclarationIntroducer.Static
+                        : hasRecoveredOmittedIntroducer
+                            ? null
+                            : hasRecoveredVisibilityIntroducer
+                                ? GetVariableDeclarationIntroducer(
+                                    match.Groups["introducer"].Value)
+                                : VbaVariableDeclarationIntroducer.Dim,
+                isStaticDefault: match.Groups["static"].Success,
+                logicalStatement: logicalStatement))
             {
                 declarations.Add(declaration);
             }
+
+            lineIndex = logicalStatement.Range.End.Line;
         }
     }
 
@@ -2147,31 +2352,90 @@ internal static class VbaSyntaxTreeParser
         string? documentation = null,
         string? parentProcedureName = null,
         VbaSyntaxRange? parentProcedureRange = null,
-        bool isWithEventsDefault = false,
-        bool isStaticDefault = false)
+        VbaVariableDeclarationIntroducer? variableDeclarationIntroducer = null,
+        bool isStaticDefault = false,
+        LogicalStatement? logicalStatement = null)
     {
         var declarations = new List<VbaDeclarationSyntax>();
         foreach (var segment in SplitDeclarationSegments(declarationsGroup.Value))
         {
             var segmentStart = declarationsGroup.Index + segment.Start;
-            if (!TryReadDeclaredName(segment.Text, out var nameToken, out var hasWithEventsModifier))
+            if (!TryReadDeclaredName(segment.Text, out var nameToken, out var withEventsToken))
             {
                 continue;
             }
 
             var name = nameToken.Text;
             var nameStart = segmentStart + nameToken.Range.Start.Offset;
-            var isWithEvents = isWithEventsDefault || hasWithEventsModifier;
+            var isWithEvents = withEventsToken is not null;
             var isArray = IsArrayParameter(segment.Text, name);
             var typeReference = ParseTypeReference(
                 segment.Text,
                 declaredName: name);
+            var withEventsKeywordRange = withEventsToken is null
+                ? null
+                : MapVariableDeclarationSpan(
+                    sourceText,
+                    line,
+                    logicalStatement,
+                    segmentStart + withEventsToken.Range.Start.Offset,
+                    segmentStart + withEventsToken.Range.End.Offset);
+            var withEventsArrayDesignatorRange = withEventsToken is null
+                ? null
+                : GetArrayDesignatorRange(
+                    sourceText,
+                    line,
+                    segmentStart,
+                    segment.Text,
+                    name,
+                    logicalStatement);
+            var withEventsNewKeywordRange = withEventsToken is null
+                ? null
+                : GetAsNewKeywordRange(
+                    sourceText,
+                    line,
+                    segmentStart,
+                    segment.Text,
+                    name,
+                    logicalStatement);
+            var withEventsTypeDeclarationCharacterRange = withEventsToken is null
+                ? null
+                : GetTypeDeclarationCharacterRange(
+                    sourceText,
+                    line,
+                    segmentStart,
+                    segment.Text,
+                    name,
+                    logicalStatement);
+            var withEventsTypeRequiredRange = withEventsToken is null
+                ? null
+                : GetWithEventsTypeRequiredRange(
+                    sourceText,
+                    line,
+                    segmentStart,
+                    segment.Text,
+                    nameToken,
+                    logicalStatement);
+            var withEventsTypeReferenceRange = withEventsToken is null
+                ? null
+                : GetExplicitTypeReferenceRange(
+                    sourceText,
+                    line,
+                    segmentStart,
+                    segment.Text,
+                    name,
+                    logicalStatement);
             declarations.Add(new VbaDeclarationSyntax(
                 name,
                 kind,
                 visibility,
-                sourceText.RangeForLine(line, nameStart, nameStart + name.Length),
-                line.LineNumber,
+                MapVariableDeclarationSpan(
+                    sourceText,
+                    line,
+                    logicalStatement,
+                    nameStart,
+                    nameStart + name.Length),
+                logicalStatement?.Range.Start.Line ?? line.LineNumber,
                 Documentation: documentation,
                 DeclarationLabel: CreateValueDeclarationLabel(
                     kind,
@@ -2185,7 +2449,18 @@ internal static class VbaSyntaxTreeParser
                 TypeReference: typeReference,
                 IsWithEvents: isWithEvents,
                 IsStatic: isStaticDefault,
-                IsArray: isArray));
+                IsArray: isArray,
+                WithEventsKeywordRange: withEventsKeywordRange,
+                VariableDeclarationIntroducer: variableDeclarationIntroducer,
+                WithEventsArrayDesignatorRange: withEventsArrayDesignatorRange,
+                WithEventsNewKeywordRange: withEventsNewKeywordRange,
+                WithEventsTypeDeclarationCharacterRange: withEventsTypeDeclarationCharacterRange,
+                WithEventsTypeRequiredRange: withEventsTypeRequiredRange,
+                WithEventsTypeReferenceRange: withEventsTypeReferenceRange,
+                HasRecognizableWithEventsDeclaratorShape: withEventsToken is null
+                    || HasRecognizableWithEventsDeclaratorShape(
+                        segment.Text,
+                        nameToken)));
         }
 
         return declarations;
@@ -2194,9 +2469,9 @@ internal static class VbaSyntaxTreeParser
     private static bool TryReadDeclaredName(
         string text,
         out VbaToken nameToken,
-        out bool hasWithEventsModifier)
+        out VbaToken? withEventsToken)
     {
-        hasWithEventsModifier = false;
+        withEventsToken = null;
         foreach (var token in VbaTokenStream.FromText(text).Tokens)
         {
             if (token.Kind == VbaTokenKind.Whitespace)
@@ -2204,11 +2479,11 @@ internal static class VbaSyntaxTreeParser
                 continue;
             }
 
-            if (!hasWithEventsModifier
+            if (withEventsToken is null
                 && token.Kind == VbaTokenKind.Keyword
                 && token.Text.Equals("WithEvents", StringComparison.OrdinalIgnoreCase))
             {
-                hasWithEventsModifier = true;
+                withEventsToken = token;
                 continue;
             }
 
@@ -2514,6 +2789,355 @@ internal static class VbaSyntaxTreeParser
         }
 
         return false;
+    }
+
+    private static VbaSyntaxRange MapVariableDeclarationSpan(
+        VbaSourceText sourceText,
+        VbaSourceLine line,
+        LogicalStatement? logicalStatement,
+        int start,
+        int end)
+        => logicalStatement is null
+            ? sourceText.RangeForLine(line, start, end)
+            : RangeFromLogicalSpan(logicalStatement, start, end);
+
+    private static VbaSyntaxRange? GetArrayDesignatorRange(
+        VbaSourceText sourceText,
+        VbaSourceLine line,
+        int segmentStart,
+        string text,
+        string name,
+        LogicalStatement? logicalStatement)
+    {
+        var tokens = VbaTokenStream.FromText(text).Tokens
+            .Where(token => token.Kind is not VbaTokenKind.Whitespace
+                and not VbaTokenKind.NewLine
+                and not VbaTokenKind.LineContinuation
+                and not VbaTokenKind.Comment)
+            .ToArray();
+        for (var index = 0; index < tokens.Length; index++)
+        {
+            if (!VbaIdentifierSyntaxFacts.IsValidDeclaredName(tokens[index])
+                || !tokens[index].Text.Equals(name, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var openIndex = index + 1;
+            if (openIndex < tokens.Length
+                && tokens[index].Range.End.Offset == tokens[openIndex].Range.Start.Offset
+                && VbaLanguageVocabulary.TryGetTypeDeclarationCharacterTypeName(
+                    tokens[openIndex].Text,
+                    out _))
+            {
+                openIndex++;
+            }
+
+            if (openIndex >= tokens.Length || tokens[openIndex].Text != "(")
+            {
+                return null;
+            }
+
+            var matchingCloseIndex = VbaBlockHeaderSyntax.FindMatchingCloseParenthesis(
+                tokens,
+                openIndex);
+            if (matchingCloseIndex >= 0)
+            {
+                return MapVariableDeclarationSpan(
+                    sourceText,
+                    line,
+                    logicalStatement,
+                    segmentStart + tokens[openIndex].Range.Start.Offset,
+                    segmentStart + tokens[matchingCloseIndex].Range.End.Offset);
+            }
+
+            var depth = 0;
+            var recoveredEndOffset = tokens[openIndex].Range.End.Offset;
+            for (var closeIndex = openIndex; closeIndex < tokens.Length; closeIndex++)
+            {
+                if (tokens[closeIndex].Text == "(")
+                {
+                    depth++;
+                }
+                else if (tokens[closeIndex].Text == ")" && --depth == 0)
+                {
+                    return MapVariableDeclarationSpan(
+                        sourceText,
+                        line,
+                        logicalStatement,
+                        segmentStart + tokens[openIndex].Range.Start.Offset,
+                        segmentStart + tokens[closeIndex].Range.End.Offset);
+                }
+
+                if (closeIndex > openIndex
+                    && depth == 1
+                    && tokens[closeIndex].Kind == VbaTokenKind.Keyword
+                    && tokens[closeIndex].Text.Equals(
+                        "As",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    break;
+                }
+
+                recoveredEndOffset = tokens[closeIndex].Range.End.Offset;
+            }
+
+            return MapVariableDeclarationSpan(
+                sourceText,
+                line,
+                logicalStatement,
+                segmentStart + tokens[openIndex].Range.Start.Offset,
+                segmentStart + recoveredEndOffset);
+        }
+
+        return null;
+    }
+
+    private static VbaSyntaxRange? GetAsNewKeywordRange(
+        VbaSourceText sourceText,
+        VbaSourceLine line,
+        int segmentStart,
+        string text,
+        string declaredName,
+        LogicalStatement? logicalStatement)
+    {
+        var tokens = VbaTokenStream.FromText(text).Tokens
+            .Where(token => token.Kind is not VbaTokenKind.Whitespace
+                and not VbaTokenKind.NewLine
+                and not VbaTokenKind.LineContinuation
+                and not VbaTokenKind.Comment)
+            .ToArray();
+        var asIndex = FindTypeClauseAsIndex(tokens, declaredName);
+        if (asIndex < 0
+            || asIndex + 1 >= tokens.Length
+            || !tokens[asIndex + 1].Text.Equals(
+                "New",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var newToken = tokens[asIndex + 1];
+        return MapVariableDeclarationSpan(
+            sourceText,
+            line,
+            logicalStatement,
+            segmentStart + newToken.Range.Start.Offset,
+            segmentStart + newToken.Range.End.Offset);
+    }
+
+    private static VbaSyntaxRange? GetTypeDeclarationCharacterRange(
+        VbaSourceText sourceText,
+        VbaSourceLine line,
+        int segmentStart,
+        string text,
+        string name,
+        LogicalStatement? logicalStatement)
+    {
+        var tokens = VbaTokenStream.FromText(text).Tokens
+            .Where(token => token.Kind is not VbaTokenKind.Whitespace
+                and not VbaTokenKind.NewLine
+                and not VbaTokenKind.LineContinuation
+                and not VbaTokenKind.Comment)
+            .ToArray();
+        for (var index = 0; index + 1 < tokens.Length; index++)
+        {
+            var nameToken = tokens[index];
+            var typeCharacter = tokens[index + 1];
+            if (!nameToken.Text.Equals(name, StringComparison.Ordinal)
+                || nameToken.Range.End.Offset != typeCharacter.Range.Start.Offset
+                || !VbaLanguageVocabulary.TryGetTypeDeclarationCharacterTypeName(
+                    typeCharacter.Text,
+                    out _))
+            {
+                continue;
+            }
+
+            return MapVariableDeclarationSpan(
+                sourceText,
+                line,
+                logicalStatement,
+                segmentStart + typeCharacter.Range.Start.Offset,
+                segmentStart + typeCharacter.Range.End.Offset);
+        }
+
+        return null;
+    }
+
+    private static VbaSyntaxRange? GetWithEventsTypeRequiredRange(
+        VbaSourceText sourceText,
+        VbaSourceLine line,
+        int segmentStart,
+        string text,
+        VbaToken nameToken,
+        LogicalStatement? logicalStatement)
+    {
+        var tokens = VbaTokenStream.FromText(text).Tokens
+            .Where(token => token.Kind is not VbaTokenKind.Whitespace
+                and not VbaTokenKind.NewLine
+                and not VbaTokenKind.LineContinuation
+                and not VbaTokenKind.Comment)
+            .ToArray();
+        var asIndex = FindTypeClauseAsIndex(tokens, nameToken.Text);
+        if (asIndex >= 0
+            && ParseTypeReferenceAfterAs(
+                text,
+                declaredName: nameToken.Text) is not null)
+        {
+            return null;
+        }
+
+        var selectedRange = asIndex >= 0
+            ? tokens[asIndex].Range
+            : nameToken.Range;
+        return MapVariableDeclarationSpan(
+            sourceText,
+            line,
+            logicalStatement,
+            segmentStart + selectedRange.Start.Offset,
+            segmentStart + selectedRange.End.Offset);
+    }
+
+    private static bool HasRecognizableWithEventsDeclaratorShape(
+        string text,
+        VbaToken nameToken)
+    {
+        var tokens = VbaTokenStream.FromText(text).Tokens
+            .Where(token => token.Kind is not VbaTokenKind.Whitespace
+                and not VbaTokenKind.NewLine
+                and not VbaTokenKind.LineContinuation
+                and not VbaTokenKind.Comment)
+            .ToArray();
+        if (tokens.Length < 2
+            || !tokens[0].Text.Equals(
+                "WithEvents",
+                StringComparison.OrdinalIgnoreCase)
+            || tokens[1].Range != nameToken.Range)
+        {
+            return false;
+        }
+
+        var index = 2;
+        if (index < tokens.Length
+            && tokens[index].Range.Start.Offset == nameToken.Range.End.Offset
+            && VbaLanguageVocabulary.TryGetTypeDeclarationCharacterTypeName(
+                tokens[index].Text,
+                out _))
+        {
+            index++;
+        }
+
+        if (index < tokens.Length && tokens[index].Text == "(")
+        {
+            var closeIndex = VbaBlockHeaderSyntax.FindMatchingCloseParenthesis(
+                tokens,
+                index);
+            if (closeIndex >= 0)
+            {
+                index = closeIndex + 1;
+            }
+            else
+            {
+                var asIndex = Array.FindIndex(
+                    tokens,
+                    index + 1,
+                    token => token.Kind == VbaTokenKind.Keyword
+                        && token.Text.Equals(
+                            "As",
+                            StringComparison.OrdinalIgnoreCase));
+                if (asIndex < 0)
+                {
+                    return true;
+                }
+
+                index = asIndex;
+            }
+        }
+
+        if (index == tokens.Length)
+        {
+            return true;
+        }
+
+        if (!tokens[index].Text.Equals("As", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        index++;
+        if (index < tokens.Length
+            && tokens[index].Text.Equals("New", StringComparison.OrdinalIgnoreCase))
+        {
+            index++;
+        }
+
+        if (index == tokens.Length)
+        {
+            return true;
+        }
+
+        if (!IsTypeReferenceName(tokens[index], allowAnyTypeReference: false))
+        {
+            return index == tokens.Length - 1;
+        }
+
+        index++;
+        if (index + 1 < tokens.Length
+            && tokens[index].Text == "."
+            && IsTypeReferenceName(tokens[index + 1], allowAnyTypeReference: false))
+        {
+            index += 2;
+        }
+
+        return index == tokens.Length;
+    }
+
+    private static VbaSyntaxRange? GetExplicitTypeReferenceRange(
+        VbaSourceText sourceText,
+        VbaSourceLine line,
+        int segmentStart,
+        string text,
+        string declaredName,
+        LogicalStatement? logicalStatement)
+    {
+        var tokens = VbaTokenStream.FromText(text).Tokens
+            .Where(token => token.Kind is not VbaTokenKind.Whitespace
+                and not VbaTokenKind.NewLine
+                and not VbaTokenKind.LineContinuation
+                and not VbaTokenKind.Comment)
+            .ToArray();
+        var asIndex = FindTypeClauseAsIndex(tokens, declaredName);
+        if (asIndex < 0 || asIndex + 1 >= tokens.Length)
+        {
+            return null;
+        }
+
+        var typeIndex = asIndex + 1;
+        if (tokens[typeIndex].Text.Equals("New", StringComparison.OrdinalIgnoreCase)
+            && ++typeIndex >= tokens.Length)
+        {
+            return null;
+        }
+
+        if (!IsTypeReferenceName(tokens[typeIndex], allowAnyTypeReference: false))
+        {
+            return null;
+        }
+
+        var endIndex = typeIndex;
+        if (typeIndex + 2 < tokens.Length
+            && tokens[typeIndex + 1].Text == "."
+            && IsTypeReferenceName(tokens[typeIndex + 2], allowAnyTypeReference: false))
+        {
+            endIndex = typeIndex + 2;
+        }
+
+        return MapVariableDeclarationSpan(
+            sourceText,
+            line,
+            logicalStatement,
+            segmentStart + tokens[typeIndex].Range.Start.Offset,
+            segmentStart + tokens[endIndex].Range.End.Offset);
     }
 
     private static IReadOnlyList<DeclarationSegment> SplitDeclarationSegments(string text)
@@ -2836,7 +3460,7 @@ internal static class VbaSyntaxTreeParser
         string text,
         bool allowAnyTypeReference = false,
         string? declaredName = null)
-        => ParseTypeReferenceAfterAs(text, allowAnyTypeReference)
+        => ParseTypeReferenceAfterAs(text, allowAnyTypeReference, declaredName)
             ?? ParseTypeDeclarationCharacterReference(text, declaredName);
 
     private static VbaTypeReferenceSyntax? ParseTypeDeclarationCharacterReference(
@@ -2876,7 +3500,8 @@ internal static class VbaSyntaxTreeParser
 
     private static VbaTypeReferenceSyntax? ParseTypeReferenceAfterAs(
         string text,
-        bool allowAnyTypeReference = false)
+        bool allowAnyTypeReference = false,
+        string? declaredName = null)
     {
         var tokens = VbaTokenStream.FromText(text).Tokens
             .Where(token => token.Kind is not VbaTokenKind.Whitespace
@@ -2884,8 +3509,7 @@ internal static class VbaSyntaxTreeParser
                 and not VbaTokenKind.LineContinuation
                 and not VbaTokenKind.Comment)
             .ToArray();
-        var asIndex = Array.FindIndex(tokens, token =>
-            token.Text.Equals("As", StringComparison.OrdinalIgnoreCase));
+        var asIndex = FindTypeClauseAsIndex(tokens, declaredName);
         if (asIndex < 0 || asIndex + 1 >= tokens.Length)
         {
             return null;
@@ -2918,6 +3542,60 @@ internal static class VbaSyntaxTreeParser
             name,
             qualifier,
             isNew);
+    }
+
+    private static int FindTypeClauseAsIndex(
+        IReadOnlyList<VbaToken> tokens,
+        string? declaredName)
+    {
+        if (declaredName is null)
+        {
+            return tokens
+                .Select((token, index) => (token, index))
+                .Where(candidate => candidate.token.Text.Equals(
+                    "As",
+                    StringComparison.OrdinalIgnoreCase))
+                .Select(candidate => candidate.index)
+                .DefaultIfEmpty(-1)
+                .First();
+        }
+
+        var nameIndex = Enumerable.Range(0, tokens.Count).FirstOrDefault(
+            index => VbaIdentifierSyntaxFacts.IsValidDeclaredName(tokens[index])
+                && tokens[index].Text.Equals(declaredName, StringComparison.Ordinal),
+            -1);
+        if (nameIndex < 0)
+        {
+            return -1;
+        }
+
+        var index = nameIndex + 1;
+        if (index < tokens.Count
+            && tokens[nameIndex].Range.End.Offset == tokens[index].Range.Start.Offset
+            && VbaLanguageVocabulary.TryGetTypeDeclarationCharacterTypeName(
+                tokens[index].Text,
+                out _))
+        {
+            index++;
+        }
+
+        if (index < tokens.Count && tokens[index].Text == "(")
+        {
+            var closeIndex = VbaBlockHeaderSyntax.FindMatchingCloseParenthesis(
+                tokens,
+                index);
+            if (closeIndex < 0)
+            {
+                return -1;
+            }
+
+            index = closeIndex + 1;
+        }
+
+        return index < tokens.Count
+            && tokens[index].Text.Equals("As", StringComparison.OrdinalIgnoreCase)
+                ? index
+                : -1;
     }
 
     private static bool IsTypeReferenceName(
@@ -2998,6 +3676,19 @@ internal static class VbaSyntaxTreeParser
             : VbaDeclarationVisibility.Private;
     }
 
+    private static VbaVariableDeclarationIntroducer GetVariableDeclarationIntroducer(string value)
+        => value.ToUpperInvariant() switch
+        {
+            "PUBLIC" => VbaVariableDeclarationIntroducer.Public,
+            "PRIVATE" => VbaVariableDeclarationIntroducer.Private,
+            "DIM" => VbaVariableDeclarationIntroducer.Dim,
+            "FRIEND" => VbaVariableDeclarationIntroducer.Friend,
+            "GLOBAL" => VbaVariableDeclarationIntroducer.Global,
+            _ => throw new ArgumentException(
+                "Unsupported variable declaration introducer.",
+                nameof(value))
+        };
+
     private static bool IsModuleVariableDeclaration(string codeLine)
     {
         var tokens = VbaTokenStream.FromText(codeLine).Tokens
@@ -3031,10 +3722,6 @@ internal static class VbaSyntaxTreeParser
             && !tokens[index].Text.Equals("Enum", StringComparison.OrdinalIgnoreCase)
             && !tokens[index].Text.Equals("Type", StringComparison.OrdinalIgnoreCase);
     }
-
-    private static bool IsWithEventsVariableDeclaration(string codeLine)
-        => VbaTokenStream.FromText(codeLine).Tokens.Any(token =>
-            token.Text.Equals("WithEvents", StringComparison.OrdinalIgnoreCase));
 
     private static int SkipWhitespace(string text, int startIndex)
     {

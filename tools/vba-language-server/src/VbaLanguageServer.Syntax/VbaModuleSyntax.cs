@@ -37,7 +37,15 @@ public sealed record VbaModuleSyntax(
     IReadOnlyList<VbaPreprocessorBlockSyntax> PreprocessorBlocks,
     VbaFormDesignerBlock? FormDesignerBlock,
     int CodeStartLine,
-    VbaSyntaxRange Range);
+    VbaSyntaxRange Range)
+{
+    /// <summary>
+    /// Gets Event-like declaration ranges whose names could not be recovered.
+    /// These ranges make the source Event surface incomplete without creating
+    /// synthetic declarations or names.
+    /// </summary>
+    public IReadOnlyList<VbaSyntaxRange> IncompleteEventDeclarationRanges { get; init; } = [];
+}
 
 /// <summary>
 /// Represents the parsed module identity, usually from Attribute VB_Name.

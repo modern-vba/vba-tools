@@ -119,6 +119,48 @@ public enum VbaEventRecoveryReason
 }
 
 /// <summary>
+/// Identifies the independent syntax reasons that keep a WithEvents variable in recovery.
+/// </summary>
+[Flags]
+public enum VbaWithEventsRecoveryReason
+{
+    /// <summary>
+    /// The WithEvents variable has no known recovery reason.
+    /// </summary>
+    None = 0,
+
+    /// <summary>
+    /// The declaration is outside module level in a class-module code section.
+    /// </summary>
+    InvalidPlacement = 1 << 0,
+
+    /// <summary>
+    /// The WithEvents declarator includes an array designator.
+    /// </summary>
+    Array = 1 << 1,
+
+    /// <summary>
+    /// The WithEvents declarator uses As New.
+    /// </summary>
+    New = 1 << 2,
+
+    /// <summary>
+    /// The WithEvents identifier has a type-declaration character.
+    /// </summary>
+    TypeDeclarationCharacter = 1 << 3,
+
+    /// <summary>
+    /// The WithEvents declarator lacks an explicit As type.
+    /// </summary>
+    TypeRequired = 1 << 4,
+
+    /// <summary>
+    /// The declarator contains unexpected syntax outside the recognized WithEvents shape.
+    /// </summary>
+    MalformedDeclarator = 1 << 5
+}
+
+/// <summary>
 /// Represents the visibility scope of a source definition.
 /// </summary>
 public enum VbaSourceDefinitionVisibility
@@ -380,6 +422,10 @@ public readonly struct VbaDefinitionIdentity : IEquatable<VbaDefinitionIdentity>
 /// <param name="ReferenceGlobalExposure">The explicit public root exposure for a reference definition.</param>
 /// <param name="ConditionalCompilationPath">The declaration's structural conditional-compilation branch path, or null when ownership is indeterminate.</param>
 /// <param name="EventRecoveryReasons">The independent recovery reasons retained for a source Event declaration.</param>
+/// <param name="WithEventsRecoveryReasons">The independent recovery reasons retained for a WithEvents variable declaration.</param>
+/// <param name="TypeReferenceRange">The complete source range of an explicit declared type reference.</param>
+/// <param name="CallableKind">The written callable declaration kind, retained independently from signature completeness.</param>
+/// <param name="IsAuthoringAvailable">Whether ordinary completion may offer this definition.</param>
 public sealed record VbaSourceDefinition(
     VbaDefinitionIdentity Identity,
     VbaDefinitionLocation Location,
@@ -401,7 +447,11 @@ public sealed record VbaSourceDefinition(
     bool IsArray = false,
     ReferenceDefinitionGlobalExposure ReferenceGlobalExposure = ReferenceDefinitionGlobalExposure.None,
     VbaConditionalCompilationBranchPath? ConditionalCompilationPath = null,
-    VbaEventRecoveryReason EventRecoveryReasons = VbaEventRecoveryReason.None)
+    VbaEventRecoveryReason EventRecoveryReasons = VbaEventRecoveryReason.None,
+    VbaWithEventsRecoveryReason WithEventsRecoveryReasons = VbaWithEventsRecoveryReason.None,
+    VbaRange? TypeReferenceRange = null,
+    VbaCallableKind? CallableKind = null,
+    bool IsAuthoringAvailable = true)
 {
     /// <summary>
     /// Gets the editor-facing definition URI.
@@ -434,6 +484,14 @@ public sealed record VbaSourceDefinition(
     /// Gets whether this Event name can be offered by RaiseEvent completion.
     /// </summary>
     public bool IsEventNameCompletionEligible => IsEventNameProjectionEligible;
+
+    /// <summary>
+    /// Gets whether this variable retained a written but syntax-invalid WithEvents modifier.
+    /// </summary>
+    public bool IsRecoveredWithEventsVariableDeclaration
+        => Kind == VbaSourceDefinitionKind.Variable
+            && IsWithEvents
+            && WithEventsRecoveryReasons != VbaWithEventsRecoveryReason.None;
 }
 
 /// <summary>
@@ -965,8 +1023,18 @@ internal static class VbaSourceDocumentProjector
             && definition.Kind == MapDeclarationKind(declaration.Kind)
             && definition.Visibility == MapVisibility(declaration.Visibility)
             && RangeMatches(definition.Range, declaration.Range)
+            && definition.CallableKind == (declaration.CallableKind is null
+                ? null
+                : GetCallableKind(declaration))
             && definition.EventRecoveryReasons
                 == GetEventRecoveryReasons(syntaxTree, declaration)
+            && definition.WithEventsRecoveryReasons
+                == GetWithEventsRecoveryReasons(syntaxTree, declaration)
+            && Equals(
+                definition.TypeReferenceRange,
+                declaration.WithEventsTypeReferenceRange is null
+                    ? null
+                    : MapRange(declaration.WithEventsTypeReferenceRange))
             && Equals(
                 definition.ConditionalCompilationPath,
                 GetConditionalCompilationPath(syntaxTree, declaration));
@@ -1015,6 +1083,7 @@ internal static class VbaSourceDocumentProjector
     {
         var range = MapRange(declaration.Range);
         var eventRecoveryReasons = GetEventRecoveryReasons(syntaxTree, declaration);
+        var withEventsRecoveryReasons = GetWithEventsRecoveryReasons(syntaxTree, declaration);
         return new VbaSourceDefinition(
             Identity: VbaDefinitionIdentity.ForSource(uri, declaration.Name, range),
             Location: new VbaDefinitionLocation(uri, range),
@@ -1039,7 +1108,57 @@ internal static class VbaSourceDocumentProjector
             ConditionalCompilationPath: GetConditionalCompilationPath(
                 syntaxTree,
                 declaration),
-            EventRecoveryReasons: eventRecoveryReasons);
+            EventRecoveryReasons: eventRecoveryReasons,
+            WithEventsRecoveryReasons: withEventsRecoveryReasons,
+            TypeReferenceRange: declaration.WithEventsTypeReferenceRange is null
+                ? null
+                : MapRange(declaration.WithEventsTypeReferenceRange),
+            CallableKind: declaration.CallableKind is null
+                ? null
+                : GetCallableKind(declaration));
+    }
+
+    private static VbaWithEventsRecoveryReason GetWithEventsRecoveryReasons(
+        VbaSyntaxTree syntaxTree,
+        VbaDeclarationSyntax declaration)
+    {
+        if (!declaration.IsWithEvents
+            || declaration.WithEventsKeywordRange is not { } withEventsRange)
+        {
+            return VbaWithEventsRecoveryReason.None;
+        }
+
+        var reasons = syntaxTree.Diagnostics.Any(diagnostic =>
+                diagnostic.Code == "syntax.withEventsDeclarationNotAllowedHere"
+                && diagnostic.Range == withEventsRange)
+            ? VbaWithEventsRecoveryReason.InvalidPlacement
+            : VbaWithEventsRecoveryReason.None;
+        if (declaration.WithEventsArrayDesignatorRange is not null)
+        {
+            reasons |= VbaWithEventsRecoveryReason.Array;
+        }
+
+        if (declaration.WithEventsNewKeywordRange is not null)
+        {
+            reasons |= VbaWithEventsRecoveryReason.New;
+        }
+
+        if (declaration.WithEventsTypeDeclarationCharacterRange is not null)
+        {
+            reasons |= VbaWithEventsRecoveryReason.TypeDeclarationCharacter;
+        }
+
+        if (declaration.WithEventsTypeRequiredRange is not null)
+        {
+            reasons |= VbaWithEventsRecoveryReason.TypeRequired;
+        }
+
+        if (!declaration.HasRecognizableWithEventsDeclaratorShape)
+        {
+            reasons |= VbaWithEventsRecoveryReason.MalformedDeclarator;
+        }
+
+        return reasons;
     }
 
     private static VbaEventRecoveryReason GetEventRecoveryReasons(

@@ -792,6 +792,115 @@ internal sealed class VbaProjectValidationDiagnosticIndex
         {
             var syntaxTree = document.SyntaxTree
                 ?? VbaSyntaxTree.ParseModule(document.Uri, document.Text);
+            foreach (var variable in document.Definitions.Where(definition =>
+                         definition.IsWithEvents
+                         && !definition.IsRecoveredWithEventsVariableDeclaration))
+            {
+                var eligibility = semanticResolution.GetWithEventsTypeEligibility(
+                    document,
+                    variable);
+                var diagnostic = eligibility?.Kind switch
+                {
+                    VbaWithEventsTypeEligibilityKind.InvalidEnclosingClass =>
+                        new VbaProjectValidationDiagnostic(
+                            "validation.withEventsTypeCannotBeEnclosingClass",
+                            "A WithEvents variable cannot use its enclosing class as its declared type.",
+                            variable.TypeReferenceRange ?? variable.Range),
+                    VbaWithEventsTypeEligibilityKind.InvalidNotClass =>
+                        new VbaProjectValidationDiagnostic(
+                            "validation.withEventsTypeMustBeClass",
+                            "WithEvents variables must use a specific class type.",
+                            variable.TypeReferenceRange ?? variable.Range),
+                    VbaWithEventsTypeEligibilityKind.InvalidInaccessibleType =>
+                        new VbaProjectValidationDiagnostic(
+                            "validation.withEventsTypeMustBeAccessible",
+                            "The declared WithEvents class must be accessible to VBA.",
+                            variable.TypeReferenceRange ?? variable.Range),
+                    VbaWithEventsTypeEligibilityKind.InvalidNoEvents =>
+                        new VbaProjectValidationDiagnostic(
+                            "validation.withEventsTypeMustExposeEvents",
+                            "The declared WithEvents class must expose at least one Event.",
+                            variable.TypeReferenceRange ?? variable.Range),
+                    _ => null
+                };
+                if (diagnostic is null)
+                {
+                    continue;
+                }
+
+                AddProjectDiagnostic(
+                    diagnostics,
+                    document.Uri,
+                    diagnostic);
+            }
+
+            foreach (var handler in document.Definitions.Where(definition =>
+                         definition.Kind is VbaSourceDefinitionKind.Procedure
+                             or VbaSourceDefinitionKind.Property))
+            {
+                var analysis = semanticResolution.AnalyzeWithEventsHandler(
+                    document,
+                    handler);
+                if (analysis is null
+                    || semanticResolution
+                        .HasIndeterminateConditionalCompilationOwnership(
+                            handler)
+                    || !analysis.BindingSet.IsFullyDiagnosticAuthoritative)
+                {
+                    continue;
+                }
+
+                var callable = syntaxTree.Module.CallableDeclarations.FirstOrDefault(
+                    candidate => candidate.Range.Start.Line
+                            == handler.Range.Start.Line
+                        && candidate.Name.Equals(
+                            handler.Name,
+                            StringComparison.OrdinalIgnoreCase)
+                        && candidate.PropertyAccessorKind
+                            == handler.PropertyAccessorKind);
+                if (callable?.DeclarationKeywordRange is not { } keywordRange)
+                {
+                    continue;
+                }
+
+                if (analysis.Recognition
+                    == VbaWithEventsHandlerRecognition.NonSubProcedureAssociation)
+                {
+                    AddProjectDiagnostic(
+                        diagnostics,
+                        document.Uri,
+                        new VbaProjectValidationDiagnostic(
+                            "validation.eventHandlerMustBeSub",
+                            "Event handlers must be declared as Sub procedures.",
+                            ToRange(keywordRange)));
+                    continue;
+                }
+
+                if (analysis.Recognition
+                    != VbaWithEventsHandlerRecognition.ResolvedHandler)
+                {
+                    continue;
+                }
+
+                var compatibility = semanticResolution
+                    .AnalyzeWithEventsHandlerCompatibility(document, analysis);
+                if (!compatibility.ShouldReportDiagnostic)
+                {
+                    continue;
+                }
+
+                AddProjectDiagnostic(
+                    diagnostics,
+                    document.Uri,
+                    new VbaProjectValidationDiagnostic(
+                        "validation.incompatibleEventHandlerSignature",
+                        "Event handler signature does not match any available Event signature.",
+                        callable.ParameterListRange is { } parameterListRange
+                            ? ToRange(parameterListRange)
+                            : handler.Range,
+                        Details: compatibility.CreateDiagnosticDetails()));
+            }
+
             foreach (var argumentList in syntaxTree.Module.ArgumentLists)
             {
                 var isRaiseEventCall = IsRaiseEventCall(syntaxTree, argumentList);
@@ -928,6 +1037,20 @@ internal sealed class VbaProjectValidationDiagnosticIndex
             "validation.raiseEventTargetNotDeclaredInEnclosingModule",
             "RaiseEvent target must be an Event declared in the enclosing class module.",
             range));
+    }
+
+    private static void AddProjectDiagnostic(
+        IDictionary<string, List<VbaProjectValidationDiagnostic>> diagnostics,
+        string uri,
+        VbaProjectValidationDiagnostic diagnostic)
+    {
+        if (!diagnostics.TryGetValue(uri, out var documentDiagnostics))
+        {
+            documentDiagnostics = [];
+            diagnostics.Add(uri, documentDiagnostics);
+        }
+
+        documentDiagnostics.Add(diagnostic);
     }
 
     private static bool IsProvenCollision(

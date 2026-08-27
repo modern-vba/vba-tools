@@ -638,6 +638,8 @@ public sealed class VbaProjectReferenceCatalogCache
         {
             var selectedRevision = 0L;
             var selectedCatalogSet = catalogSet;
+            var selectedSources = new Dictionary<string, VbaProjectReferenceCatalogSource>(
+                VbaProjectReferenceName.Comparer);
             Dictionary<string, ScopedReferenceCatalogBinding>? scopeBindings = null;
             if (scopeKey is not null)
             {
@@ -646,6 +648,11 @@ public sealed class VbaProjectReferenceCatalogCache
             for (var index = 0; index < references.Count; index++)
             {
                 var referenceName = references[index].Name;
+                selectedSources[referenceName] = catalogSources.TryGetValue(
+                    referenceName,
+                    out var catalogSource)
+                    ? catalogSource
+                    : VbaProjectReferenceCatalogSource.Unavailable;
                 if (referenceChangeVersions.TryGetValue(
                     referenceName,
                     out var revision))
@@ -657,6 +664,7 @@ public sealed class VbaProjectReferenceCatalogCache
                     && scopeBindings.TryGetValue(referenceName, out var scopedBinding))
                 {
                     selectedCatalogSet = selectedCatalogSet.WithCatalog(scopedBinding.Catalog);
+                    selectedSources[referenceName] = scopedBinding.Source;
                     selectedRevision = Math.Max(
                         selectedRevision,
                         scopedBinding.ChangeVersion);
@@ -665,7 +673,8 @@ public sealed class VbaProjectReferenceCatalogCache
 
             return new VbaProjectReferenceCatalogSelectionState(
                 selectedCatalogSet,
-                selectedRevision);
+                selectedRevision,
+                selectedSources);
         }
     }
 
@@ -1196,7 +1205,8 @@ public sealed record VbaProjectReferenceCatalogCacheState(
 
 internal readonly record struct VbaProjectReferenceCatalogSelectionState(
     VbaProjectReferenceCatalogSet CatalogSet,
-    long Revision);
+    long Revision,
+    IReadOnlyDictionary<string, VbaProjectReferenceCatalogSource> Sources);
 
 /// <summary>
 /// Identifies where the active catalog for a reference came from.

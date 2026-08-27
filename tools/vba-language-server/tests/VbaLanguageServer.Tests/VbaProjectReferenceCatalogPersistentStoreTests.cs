@@ -8,6 +8,14 @@ namespace VbaLanguageServer.Tests;
 public sealed class VbaProjectReferenceCatalogPersistentStoreTests
 {
     [Fact]
+    public void TypeLibEventMetadataUsesANewGeneratorVersion()
+    {
+        Assert.Equal(
+            "typelib-catalog-v9",
+            VbaProjectReferenceCatalogPersistentStore.CurrentGeneratorVersion);
+    }
+
+    [Fact]
     public void PersistentStoreSavesAndLoadsGeneratedCatalogWithIdentityMetadata()
     {
         var cacheRoot = Directory.CreateTempSubdirectory("vba-ls-catalog-store-").FullName;

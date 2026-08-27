@@ -18,6 +18,8 @@ public sealed class VbaSemanticInventory
     private readonly VbaSourceFormatter sourceFormatter;
     private readonly VbaProjectReferenceSelection? referenceSelection;
     private readonly VbaProjectReferenceCatalogSet referenceCatalogs;
+    private readonly IReadOnlyDictionary<string, VbaProjectReferenceCatalogSource>
+        referenceCatalogSources;
     private readonly object semanticTokenCacheGate = new();
     private readonly Dictionary<string, IReadOnlyList<VbaSemanticToken>> semanticTokenCache =
         new(StringComparer.OrdinalIgnoreCase);
@@ -30,7 +32,9 @@ public sealed class VbaSemanticInventory
         VbaNameCandidateInventory definitionCandidates,
         VbaProjectReferenceSelection? referenceSelection,
         VbaProjectReferenceCatalogSet referenceCatalogs,
-        VbaHostClassProjectionSnapshot? hostClassProjectionSnapshot)
+        VbaHostClassProjectionSnapshot? hostClassProjectionSnapshot,
+        IReadOnlyDictionary<string, VbaProjectReferenceCatalogSource>
+            referenceCatalogSources)
     {
         this.sourceDocuments = sourceDocuments;
         this.definitionCandidates = definitionCandidates;
@@ -38,6 +42,7 @@ public sealed class VbaSemanticInventory
             definitionCandidates.ConditionalFamilies);
         this.referenceSelection = referenceSelection;
         this.referenceCatalogs = referenceCatalogs;
+        this.referenceCatalogSources = referenceCatalogSources;
         this.hostClassProjectionSnapshot = hostClassProjectionSnapshot;
         semanticResolution = new VbaSemanticResolution(
             definitionCandidates,
@@ -60,12 +65,20 @@ public sealed class VbaSemanticInventory
         IReadOnlyDictionary<string, VbaSourceDocument> sourceDocuments,
         VbaProjectReferenceSelection? referenceSelection = null,
         VbaProjectReferenceCatalogSet? referenceCatalogs = null,
-        VbaHostClassProjectionSnapshot? hostClassProjectionSnapshot = null)
+        VbaHostClassProjectionSnapshot? hostClassProjectionSnapshot = null,
+        IReadOnlyDictionary<string, VbaProjectReferenceCatalogSource>?
+            referenceCatalogSources = null)
     {
         var documents = FreezeList(
             sourceDocuments.Values.Select(CaptureDocument));
         var capturedReferenceSelection = CaptureReferenceSelection(referenceSelection);
         var catalogs = referenceCatalogs ?? VbaProjectReferenceCatalogSet.Empty;
+        var capturedCatalogSources = referenceCatalogSources is null
+            ? new Dictionary<string, VbaProjectReferenceCatalogSource>(
+                VbaProjectReferenceName.Comparer)
+            : new Dictionary<string, VbaProjectReferenceCatalogSource>(
+                referenceCatalogSources,
+                VbaProjectReferenceName.Comparer);
         var activeReferenceDefinitions = FreezeList(
             catalogs
                 .GetActiveDefinitions(capturedReferenceSelection)
@@ -74,13 +87,15 @@ public sealed class VbaSemanticInventory
             documents,
             capturedReferenceSelection,
             catalogs,
-            activeReferenceDefinitions);
+            activeReferenceDefinitions,
+            capturedCatalogSources);
         return new VbaSemanticInventory(
             documents,
             definitionCandidates,
             capturedReferenceSelection,
             catalogs,
-            hostClassProjectionSnapshot);
+            hostClassProjectionSnapshot,
+            capturedCatalogSources);
     }
 
     /// <summary>
@@ -130,9 +145,7 @@ public sealed class VbaSemanticInventory
         int character)
     {
         var target = ResolveSourceTarget(uri, line, character);
-        if (target is null
-            || target.SelectedDefinition.Identity.Origin
-                == VbaDefinitionOrigin.ProjectReference)
+        if (target is null)
         {
             return [];
         }
@@ -141,6 +154,8 @@ public sealed class VbaSemanticInventory
             ? GetLogicalNavigationDefinitions(target)
             : [target.SelectedDefinition];
         return definitions
+            .Where(variant => variant.Identity.Origin
+                == VbaDefinitionOrigin.Source)
             .Select(variant => variant.Location)
             .ToArray();
     }
@@ -161,9 +176,14 @@ public sealed class VbaSemanticInventory
         var declarationDefinitions = target is VbaPropertyNameTarget property
             ? property.Property.PropertyDefinitions
             : GetLogicalNavigationDefinitions(target);
-        var references = resolvedOccurrences.FindMatching(
-                target,
-                cancellationToken)
+        IReadOnlyList<VbaResolvedNameTarget> occurrenceTargets =
+            target is VbaWithEventsEventNameTarget withEventsTarget
+                ? withEventsTarget.EventTargets
+                : [target];
+        var references = occurrenceTargets
+            .SelectMany(occurrenceTarget => resolvedOccurrences.FindMatching(
+                occurrenceTarget,
+                cancellationToken))
             .Select(occurrence => new VbaDefinitionLocation(occurrence.Uri, occurrence.Range))
             .Concat(declarationDefinitions
                 .Where(definition => definition.Identity.Origin
@@ -1058,7 +1078,8 @@ public sealed class VbaSemanticInventory
             documents,
             referenceSelection,
             referenceCatalogs,
-            hostClassProjectionSnapshot);
+            hostClassProjectionSnapshot,
+            referenceCatalogSources);
     }
 
     private static VbaSourceDefinition? FindHypotheticalDefinition(

@@ -90,7 +90,8 @@ public sealed class VbaNameResolutionService
         }
 
         return ResolveRankedCompletionCandidates(
-                GetUnqualifiedCandidates(currentDocument, position, includeLocals: true),
+                GetUnqualifiedCandidates(currentDocument, position, includeLocals: true)
+                    .Where(candidate => candidate.Definition.IsAuthoringAvailable),
                 definitionFilter,
                 candidateDomainFilter: candidateDomainFilter);
     }
@@ -278,6 +279,22 @@ public sealed class VbaNameResolutionService
                     VbaResolutionPolicy.CurrentModuleRank)),
             candidates.ReferenceSelection);
     }
+
+    internal VbaNameResolutionOutcome ResolveCurrentDocumentModuleVariableOutcome(
+        VbaSourceDocument currentDocument,
+        string identifier)
+        => resolutionPolicy.ResolveRankedCandidatesOutcome(
+            currentDocument.Definitions
+                .Where(definition =>
+                    definition.Kind == VbaSourceDefinitionKind.Variable
+                    && definition.ParentProcedureName is null
+                    && definition.Name.Equals(
+                        identifier,
+                        StringComparison.OrdinalIgnoreCase))
+                .Select(definition => new VbaRankedDefinition(
+                    definition,
+                    VbaResolutionPolicy.CurrentModuleRank)),
+            candidates.ReferenceSelection);
 
     internal VbaSourceDefinition? ResolvePreferred(
         string uri,
@@ -582,6 +599,28 @@ public sealed class VbaNameResolutionService
     internal VbaSourceDocument? FindDocument(string uri)
         => candidates.FindDocument(uri);
 
+    internal bool HasIndeterminateConditionalCompilationOwnership(
+        VbaSourceDefinition definition)
+        => definition.Identity.Origin == VbaDefinitionOrigin.Source
+            && definition.ConditionalCompilationPath is null
+            && FindDocument(definition.Uri)?
+                .SyntaxTree?
+                .Diagnostics
+                .Any(diagnostic => diagnostic.Code.StartsWith(
+                    "syntax.malformedPreprocessor",
+                    StringComparison.Ordinal)) == true;
+
+    internal bool HasIncompleteSourceEventSurfaceEvidence(string uri)
+    {
+        var document = FindDocument(uri);
+        return document?.SyntaxTree?.Module.IncompleteEventDeclarationRanges.Count > 0
+            || document?.Definitions.Any(definition =>
+                definition.Kind == VbaSourceDefinitionKind.Event
+                && (definition.IsRecoveredEventDeclaration
+                    || HasIndeterminateConditionalCompilationOwnership(
+                        definition))) == true;
+    }
+
     internal VbaSourceDefinition? ResolveTypeDefinition(
         VbaSourceDocument currentDocument,
         VbaTypeReference typeReference)
@@ -718,6 +757,7 @@ public sealed class VbaNameResolutionService
         VbaResolvedType resolvedType)
     {
         return GetMemberCandidates(currentDocument, resolvedType)
+            .Where(candidate => candidate.Definition.IsAuthoringAvailable)
             .GroupBy(candidate => candidate.Name, StringComparer.OrdinalIgnoreCase)
             .Select(group => ResolveMemberCandidateGroup(group.Select(candidate => candidate.Definition)))
             .Where(definition => definition is not null)
@@ -726,11 +766,38 @@ public sealed class VbaNameResolutionService
             .ToArray();
     }
 
+    internal IReadOnlyList<VbaSourceDefinition> GetPhysicalMembersOfType(
+        VbaResolvedType resolvedType)
+    {
+        var owner = resolvedType.SourceDefinition;
+        if (resolvedType.ReferenceName is not null || owner is null)
+        {
+            return [];
+        }
+
+        return candidates.ConditionalFamilies
+            .GetLogicalDefinitions(owner)
+            .SelectMany(ownerVariant =>
+            {
+                var ownerCandidates = ownerVariant.Kind is VbaSourceDefinitionKind.Type
+                        or VbaSourceDefinitionKind.Enum
+                    ? candidates.GetSourceCandidatesByParentType(ownerVariant.Name)
+                    : candidates.GetSourceCandidatesByModule(ownerVariant.Name);
+                return ownerCandidates.Where(candidate =>
+                    SameUri(candidate.Uri, ownerVariant.Uri));
+            })
+            .Select(candidate => candidate.Definition)
+            .DistinctBy(definition => definition.Identity)
+            .Where(resolutionPolicy.IsReferenceTarget)
+            .ToArray();
+    }
+
     internal IReadOnlyList<VbaSourceDefinition> GetMembersOfType(
         VbaSourceDocument currentDocument,
         string typeName,
         string? referenceName)
         => GetMemberCandidates(currentDocument, typeName, referenceName)
+            .Where(candidate => candidate.Definition.IsAuthoringAvailable)
             .GroupBy(candidate => candidate.Name, StringComparer.OrdinalIgnoreCase)
             .Select(group => ResolveMemberCandidateGroup(
                 group.Select(candidate => candidate.Definition)))
@@ -821,6 +888,11 @@ public sealed class VbaNameResolutionService
 
     internal bool IsReferenceQualifierAmbiguous(string qualifier)
         => candidates.IsReferenceQualifierAmbiguous(qualifier);
+
+    internal VbaTypeLibEventSurface GetTypeLibEventSurface(
+        string referenceName,
+        string typeName)
+        => candidates.GetTypeLibEventSurface(referenceName, typeName);
 
     private VbaSourceDefinition? ResolveReferenceTypeDefinition(string qualifier, string typeName)
         => ResolveReferenceTypeDefinitionOutcome(
@@ -986,6 +1058,9 @@ public sealed class VbaNameResolutionService
 /// </summary>
 internal sealed class VbaNameCandidateInventory
 {
+    private readonly VbaProjectReferenceCatalogSet referenceCatalogs;
+    private readonly IReadOnlyDictionary<string, VbaProjectReferenceCatalogSource>
+        referenceCatalogSources;
     private readonly IReadOnlyList<(string ReferenceName, string Qualifier)> activeReferenceQualifiers;
     private readonly IReadOnlyList<VbaNameCandidate> sourceCandidates;
     private readonly IReadOnlyList<VbaNameCandidate> referenceCandidates;
@@ -1003,9 +1078,18 @@ internal sealed class VbaNameCandidateInventory
         IReadOnlyList<VbaSourceDocument> documents,
         VbaProjectReferenceSelection? referenceSelection,
         VbaProjectReferenceCatalogSet referenceCatalogs,
-        IReadOnlyList<VbaSourceDefinition> activeReferenceDefinitions)
+        IReadOnlyList<VbaSourceDefinition> activeReferenceDefinitions,
+        IReadOnlyDictionary<string, VbaProjectReferenceCatalogSource>?
+            referenceCatalogSources = null)
     {
         ReferenceSelection = referenceSelection;
+        this.referenceCatalogs = referenceCatalogs;
+        this.referenceCatalogSources = referenceCatalogSources is null
+            ? new Dictionary<string, VbaProjectReferenceCatalogSource>(
+                VbaProjectReferenceName.Comparer)
+            : new Dictionary<string, VbaProjectReferenceCatalogSource>(
+                referenceCatalogSources,
+                VbaProjectReferenceName.Comparer);
         documentsByUri = documents.ToLookup(
             document => document.Uri,
             StringComparer.OrdinalIgnoreCase);
@@ -1054,6 +1138,20 @@ internal sealed class VbaNameCandidateInventory
     public VbaConditionalDeclarationFamilyIndex ConditionalFamilies { get; }
 
     public bool HasReferenceSelection => referenceCandidates.Count > 0 || activeReferenceQualifiers.Count > 0;
+
+    internal VbaTypeLibEventSurface GetTypeLibEventSurface(
+        string referenceName,
+        string typeName)
+    {
+        if (referenceCatalogSources.TryGetValue(referenceName, out var source)
+            && source is VbaProjectReferenceCatalogSource.StalePersisted
+                or VbaProjectReferenceCatalogSource.Unavailable)
+        {
+            return VbaTypeLibEventSurface.Indeterminate;
+        }
+
+        return referenceCatalogs.GetTypeLibEventSurface(referenceName, typeName);
+    }
 
     public VbaSourceDocument? FindDocument(string uri)
         => documentsByUri[uri].FirstOrDefault();

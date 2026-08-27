@@ -382,6 +382,7 @@ internal sealed class VbaProjectSnapshotProvider
                 inventorySnapshot.Failures,
                 inventorySnapshot.ExistingOpenSourcePaths,
                 capture.ReferenceCatalogState.CatalogSet,
+                capture.ReferenceCatalogState.Sources,
                 capture.HostClassProjectionState.Snapshot) with
             {
                 ManifestBarrierOverrides =

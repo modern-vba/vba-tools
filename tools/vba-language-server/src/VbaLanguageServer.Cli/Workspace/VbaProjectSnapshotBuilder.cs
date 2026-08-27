@@ -55,6 +55,7 @@ internal sealed class VbaProjectSnapshotBuilder
         IReadOnlyList<VbaProjectDiskSourceFailure> diskSourceFailures,
         IReadOnlySet<string> existingOpenSourcePaths,
         VbaProjectReferenceCatalogSet referenceCatalogs,
+        IReadOnlyDictionary<string, VbaProjectReferenceCatalogSource> referenceCatalogSources,
         VbaHostClassProjectionSnapshot? hostClassProjectionSnapshot)
     {
         var scopedDocuments = scopedTrackedDocuments
@@ -71,7 +72,8 @@ internal sealed class VbaProjectSnapshotBuilder
             scopedSourceDocuments,
             manifestContext.ReferenceSelection,
             referenceCatalogs,
-            hostClassProjectionSnapshot);
+            hostClassProjectionSnapshot,
+            referenceCatalogSources);
 
         return new VbaProjectSnapshot(
             resolution,
