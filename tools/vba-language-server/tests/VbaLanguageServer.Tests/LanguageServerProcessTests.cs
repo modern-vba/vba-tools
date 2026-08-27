@@ -17217,10 +17217,453 @@ public sealed class LanguageServerProcessTests
         var text = string.Join('\n', [
             "Attribute VB_Name = \"ConditionalRename\"",
             "#If FIRST_CONFIGURATION Then",
-            "Public Function BuildValue() As String",
+            "Public Function BuildValue(ByRef key As Long) As String",
             "End Function",
             "#Else",
-            "Public Function buildvalue() As String",
+            "Public Function buildvalue(ByRef key As Long, Optional ByVal fallback As Long = 0) As String",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim keyValue As Long",
+            "    Debug.Print BuildValue(keyValue, keyValue)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var prepare = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/prepareRename",
+            uri,
+            text,
+            "    Debug.Print BuildValue(keyValue, keyValue)",
+            "    Debug.Print ".Length);
+        var prepareResult = prepare.GetProperty("result");
+        Assert.Equal(
+            "BuildValue",
+            prepareResult.GetProperty("placeholder").GetString());
+        Assert.Equal(
+            10,
+            prepareResult
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32());
+        Assert.Equal(
+            "    Debug.Print ".Length,
+            prepareResult
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("character")
+                .GetInt32());
+        Assert.Equal(
+            "    Debug.Print BuildValue".Length,
+            prepareResult
+                .GetProperty("range")
+                .GetProperty("end")
+                .GetProperty("character")
+                .GetInt32());
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            3,
+            "textDocument/rename",
+            uri,
+            text,
+            "    Debug.Print BuildValue(keyValue, keyValue)",
+            "    Debug.Print ".Length,
+            new { newName = "CreateValue" });
+        Assert.True(
+            rename.TryGetProperty("result", out var result),
+            rename.ToString());
+        var edits = result
+            .GetProperty("changes")
+            .GetProperty(uri)
+            .EnumerateArray()
+            .ToArray();
+
+        Assert.Equal(
+            [2, 5, 10],
+            edits.Select(edit => edit
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32()));
+        Assert.All(
+            edits,
+            edit => Assert.Equal(
+                "CreateValue",
+                edit.GetProperty("newText").GetString()));
+
+        await process.ShutdownAsync(4);
+    }
+
+    [Fact]
+    public async Task Server_renames_visibility_variants_from_separate_conditional_blocks_through_an_external_use()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string workerUri = "file:///C:/work/VisibilityWorker.cls";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"VisibilityWorker\"",
+            "#If PRIVATE_CONFIGURATION Then",
+            "Private Function buildValue() As Long",
+            "End Function",
+            "#End If",
+            "#If FRIEND_CONFIGURATION Then",
+            "Friend Function BuildValue() As Long",
+            "End Function",
+            "#End If",
+            "#If PUBLIC_CONFIGURATION Then",
+            "Public Function BUILDVALUE() As Long",
+            "End Function",
+            "#End If"
+        ]);
+        const string callerUri = "file:///C:/work/VisibilityCaller.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"VisibilityCaller\"",
+            "Public Sub Run()",
+            "    Dim worker As VisibilityWorker",
+            "    Set worker = New VisibilityWorker",
+            "    Debug.Print worker.BUILDVALUE()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var prepare = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/prepareRename",
+            callerUri,
+            callerText,
+            "    Debug.Print worker.BUILDVALUE()",
+            "    Debug.Print worker.".Length);
+        Assert.Equal(
+            "buildValue",
+            prepare
+                .GetProperty("result")
+                .GetProperty("placeholder")
+                .GetString());
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            3,
+            "textDocument/rename",
+            callerUri,
+            callerText,
+            "    Debug.Print worker.BUILDVALUE()",
+            "    Debug.Print worker.".Length,
+            new { newName = "CreateValue" });
+        Assert.True(
+            rename.TryGetProperty("result", out var renameResult),
+            rename.ToString());
+        var changes = renameResult.GetProperty("changes");
+        var workerEdits = changes
+            .GetProperty(workerUri)
+            .EnumerateArray()
+            .ToArray();
+        var callerEdit = Assert.Single(
+            changes.GetProperty(callerUri).EnumerateArray());
+
+        Assert.Equal(
+            [3, 7, 11],
+            workerEdits.Select(edit => edit
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32()));
+        Assert.Equal(
+            4,
+            callerEdit
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32());
+        Assert.All(
+            workerEdits.Append(callerEdit),
+            edit => Assert.Equal(
+                "CreateValue",
+                edit.GetProperty("newText").GetString()));
+
+        await process.ShutdownAsync(4);
+    }
+
+    [Fact]
+    public async Task Server_renames_a_one_variant_conditional_family()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/SingleVariantRename.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"SingleVariantRename\"",
+            "#If ENABLED Then",
+            "Public ResultValue As Long",
+            "#End If",
+            "Public Sub Run()",
+            "    Debug.Print ResultValue",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            uri,
+            text,
+            "    Debug.Print ResultValue",
+            "    Debug.Print ".Length,
+            new { newName = "CurrentValue" });
+        var edits = rename
+            .GetProperty("result")
+            .GetProperty("changes")
+            .GetProperty(uri)
+            .EnumerateArray()
+            .ToArray();
+
+        Assert.Equal(
+            [2, 5],
+            edits.Select(edit => edit
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32()));
+        Assert.All(
+            edits,
+            edit => Assert.Equal(
+                "CurrentValue",
+                edit.GetProperty("newText").GetString()));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_preserves_nested_branch_paths_while_renaming_the_family()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/NestedConditionalRename.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"NestedConditionalRename\"",
+            "#If OUTER_CONFIGURATION Then",
+            "#If INNER_CONFIGURATION Then",
+            "Public ResultValue As Long",
+            "#Else",
+            "Public resultvalue As Long",
+            "#End If",
+            "#Else",
+            "Public RESULTVALUE As Long",
+            "#End If",
+            "Public Sub Run()",
+            "    Debug.Print ResultValue",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            uri,
+            text,
+            "    Debug.Print ResultValue",
+            "    Debug.Print ".Length,
+            new { newName = "CurrentValue" });
+        var edits = rename
+            .GetProperty("result")
+            .GetProperty("changes")
+            .GetProperty(uri)
+            .EnumerateArray()
+            .ToArray();
+
+        Assert.Equal(
+            [3, 5, 8, 11],
+            edits.Select(edit => edit
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32()));
+        Assert.All(
+            edits,
+            edit => Assert.Equal(
+                "CurrentValue",
+                edit.GetProperty("newText").GetString()));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_rejects_a_rename_when_conditional_call_compatibility_is_indeterminate()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalRecoveredRename.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalRecoveredRename\"",
+            "#If INVALID_CONFIGURATION Then",
+            "Public Function ResolveValue(ByVal Key As String, ByVal key As Long) As String",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal Index As Long) As String",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As String",
+            "    result = ResolveValue(1)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            uri,
+            text,
+            "    result = ResolveValue(1)",
+            "    result = ".Length,
+            new { newName = "ComputeValue" });
+
+        Assert.False(rename.TryGetProperty("result", out _));
+        var error = rename.GetProperty("error");
+        Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+        Assert.Equal(
+            "analysisIncomplete",
+            error.GetProperty("data").GetProperty("reason").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_proves_conditional_call_compatibility_for_a_qualified_family_use()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string workerUri = "file:///C:/work/ConditionalWorker.bas";
+        var workerText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalWorker\"",
+            "#If INVALID_CONFIGURATION Then",
+            "Public Function ResolveValue(ByVal Key As String, ByVal key As Long) As String",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal Index As Long) As String",
+            "End Function",
+            "#End If"
+        ]);
+        const string callerUri = "file:///C:/work/ConditionalCaller.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalCaller\"",
+            "Public Sub Run()",
+            "    Debug.Print ConditionalWorker.ResolveValue(1)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            callerUri,
+            callerText,
+            "    Debug.Print ConditionalWorker.ResolveValue(1)",
+            "    Debug.Print ConditionalWorker.".Length,
+            new { newName = "ComputeValue" });
+
+        Assert.False(rename.TryGetProperty("result", out _));
+        var error = rename.GetProperty("error");
+        Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+        Assert.Equal(
+            "analysisIncomplete",
+            error.GetProperty("data").GetProperty("reason").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_prioritizes_a_conclusive_binding_change_over_incomplete_conditional_call_evidence()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalRenameCapture.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalRenameCapture\"",
+            "#If INVALID_CONFIGURATION Then",
+            "Public Function BuildValue(ByVal Key As String, ByVal key As Long) As String",
+            "End Function",
+            "#Else",
+            "Public Function buildvalue(ByVal Index As Long) As String",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Debug.Print BuildValue(1)",
+            "    Debug.Print Captured",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            uri,
+            text,
+            "    Debug.Print BuildValue(1)",
+            "    Debug.Print ".Length,
+            new { newName = "Captured" });
+
+        Assert.False(rename.TryGetProperty("result", out _));
+        var error = rename.GetProperty("error");
+        Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+        Assert.Equal(
+            "resolutionChanged",
+            error.GetProperty("data").GetProperty("reason").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_renames_conditional_function_result_assignments_as_non_call_occurrences()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalFunctionResultRename.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalFunctionResultRename\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function BuildValue() As Long",
+            "    BuildValue = 1",
+            "End Function",
+            "#Else",
+            "Public Function buildvalue() As Long",
+            "    buildvalue = 2",
             "End Function",
             "#End If",
             "Public Sub Run()",
@@ -17237,8 +17680,218 @@ public sealed class LanguageServerProcessTests
             "textDocument/rename",
             uri,
             text,
+            "    Debug.Print BuildValue()",
+            "    Debug.Print ".Length,
+            new { newName = "CreateValue" });
+        var edits = rename
+            .GetProperty("result")
+            .GetProperty("changes")
+            .GetProperty(uri)
+            .EnumerateArray()
+            .ToArray();
+
+        Assert.Equal(
+            [2, 3, 6, 7, 11],
+            edits.Select(edit => edit
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32()));
+        Assert.All(
+            edits,
+            edit => Assert.Equal(
+                "CreateValue",
+                edit.GetProperty("newText").GetString()));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_renames_conditional_array_families_without_treating_indexing_as_a_call()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalArrayRename.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalArrayRename\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Values(0 To 1) As Long",
+            "#Else",
+            "Public values(0 To 2) As Long",
+            "#End If",
+            "Public Sub Run()",
+            "    Debug.Print Values(0)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            uri,
+            text,
+            "    Debug.Print Values(0)",
+            "    Debug.Print ".Length,
+            new { newName = "Items" });
+        var edits = rename
+            .GetProperty("result")
+            .GetProperty("changes")
+            .GetProperty(uri)
+            .EnumerateArray()
+            .ToArray();
+
+        Assert.Equal(
+            [2, 4, 7],
+            edits.Select(edit => edit
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32()));
+        Assert.All(
+            edits,
+            edit => Assert.Equal(
+                "Items",
+                edit.GetProperty("newText").GetString()));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_rejects_a_rename_from_an_incompletely_recovered_conditional_family()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/MalformedConditionalRename.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"MalformedConditionalRename\"",
+            "#If VBA7 Then",
+            "Public Function BuildValue() As String",
+            "End Function",
+            "#Else",
+            "Public Function buildvalue() As String",
+            "End Function"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var prepare = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/prepareRename",
+            uri,
+            text,
+            "Public Function BuildValue",
+            "Public Function ".Length);
+        Assert.False(prepare.TryGetProperty("result", out _));
+        Assert.Equal(
+            "analysisIncomplete",
+            prepare
+                .GetProperty("error")
+                .GetProperty("data")
+                .GetProperty("reason")
+                .GetString());
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            3,
+            "textDocument/rename",
+            uri,
+            text,
             "Public Function BuildValue",
             "Public Function ".Length,
+            new { newName = "CreateValue" });
+        Assert.False(rename.TryGetProperty("result", out _));
+        var error = rename.GetProperty("error");
+        Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+        Assert.Equal(
+            "analysisIncomplete",
+            error.GetProperty("data").GetProperty("reason").GetString());
+
+        await process.ShutdownAsync(4);
+    }
+
+    [Fact]
+    public async Task Server_rejects_a_rename_when_a_conditional_family_sibling_is_incompletely_recovered()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/PartiallyRecoveredFamily.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"PartiallyRecoveredFamily\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function BuildValue() As Long",
+            "End Function",
+            "#End If",
+            "#If SECOND_CONFIGURATION Then",
+            "Public Function buildvalue() As Long",
+            "End Function"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            uri,
+            text,
+            "Public Function BuildValue",
+            "Public Function ".Length,
+            new { newName = "CreateValue" });
+        Assert.False(rename.TryGetProperty("result", out _));
+        Assert.Equal(
+            "analysisIncomplete",
+            rename
+                .GetProperty("error")
+                .GetProperty("data")
+                .GetProperty("reason")
+                .GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_does_not_reject_a_sound_family_for_an_unrelated_malformed_conditional()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/UnrelatedMalformedConditional.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"UnrelatedMalformedConditional\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function BuildValue() As Long",
+            "End Function",
+            "#Else",
+            "Public Function buildvalue() As Long",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Debug.Print BuildValue()",
+            "End Sub",
+            "#If UNRELATED_CONFIGURATION Then",
+            "Public OtherValue As Long"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            uri,
+            text,
+            "    Debug.Print BuildValue()",
+            "    Debug.Print ".Length,
             new { newName = "CreateValue" });
         Assert.True(
             rename.TryGetProperty("result", out var result),
@@ -17256,10 +17909,384 @@ public sealed class LanguageServerProcessTests
                 .GetProperty("start")
                 .GetProperty("line")
                 .GetInt32()));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_reports_a_collision_from_any_conditional_parent_family_variant()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string firstUri = "file:///C:/work/ConditionalPayloadA.bas";
+        var firstText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalPayloadA\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Type Payload",
+            "    Value As Long",
+            "    Taken As Long",
+            "End Type",
+            "#End If"
+        ]);
+        const string secondUri = "file:///C:/work/ConditionalPayloadB.bas";
+        var secondText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalPayloadB\"",
+            "#If SECOND_CONFIGURATION Then",
+            "Public Type payload",
+            "    value As Long",
+            "    Taken As Long",
+            "End Type",
+            "#End If"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(firstUri, firstText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(secondUri, secondText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            firstUri,
+            firstText,
+            "    Value As Long",
+            "    ".Length,
+            new { newName = "Taken" });
+        Assert.False(rename.TryGetProperty("result", out _));
+        var error = rename.GetProperty("error");
+        Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+        var data = error.GetProperty("data");
+        Assert.Equal(
+            "sameScopeCollision",
+            data.GetProperty("reason").GetString());
+        var conflicts = data
+            .GetProperty("conflicts")
+            .EnumerateArray()
+            .ToArray();
+        Assert.Equal(2, conflicts.Length);
+        Assert.Equal(
+            [(firstUri, 4), (secondUri, 4)],
+            conflicts.Select(conflict => (
+                conflict.GetProperty("uri").GetString(),
+                conflict
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32())));
+        Assert.All(
+            conflicts,
+            conflict => Assert.Equal(
+                "Taken",
+                conflict.GetProperty("name").GetString()));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_renames_every_physical_conditional_property_accessor_variant()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalPropertyRename.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalPropertyRename\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Property Get Value() As Long",
+            "End Property",
+            "#Else",
+            "Public Property Get VALUE() As Long",
+            "End Property",
+            "#End If",
+            "Public Sub Run()",
+            "    Debug.Print Value",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            uri,
+            text,
+            "Public Property Get Value",
+            "Public Property Get ".Length,
+            new { newName = "ResultValue" });
+        Assert.True(
+            rename.TryGetProperty("result", out var result),
+            rename.ToString());
+        var edits = result
+            .GetProperty("changes")
+            .GetProperty(uri)
+            .EnumerateArray()
+            .ToArray();
+
+        Assert.Equal(
+            [3, 6, 10],
+            edits.Select(edit => edit
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32()));
         Assert.All(
             edits,
             edit => Assert.Equal(
-                "CreateValue",
+                "ResultValue",
+                edit.GetProperty("newText").GetString()));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_case_renames_a_mixed_conditional_property_family_from_a_noncanonical_variant()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalRenameProperty.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalRenameProperty\"",
+            "#If FUNCTION_CONFIGURATION Then",
+            "Public Function Value() As Long",
+            "End Function",
+            "#End If",
+            "#If GET_CONFIGURATION Then",
+            "Public Property Get value() As Long",
+            "End Property",
+            "#End If",
+            "#If LET_CONFIGURATION Then",
+            "Public Property Let VALUE(ByVal assigned As Long)",
+            "End Property",
+            "#End If",
+            "Public Sub Run()",
+            "    Debug.Print Value",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var prepare = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/prepareRename",
+            uri,
+            text,
+            "Public Property Get value",
+            "Public Property Get ".Length);
+        var prepareResult = prepare.GetProperty("result");
+        Assert.Equal("Value", prepareResult.GetProperty("placeholder").GetString());
+        Assert.Equal(
+            7,
+            prepareResult
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32());
+        Assert.Equal(
+            "Public Property Get ".Length,
+            prepareResult
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("character")
+                .GetInt32());
+        Assert.Equal(
+            "Public Property Get value".Length,
+            prepareResult
+                .GetProperty("range")
+                .GetProperty("end")
+                .GetProperty("character")
+                .GetInt32());
+
+        var unchangedRename = await SendPositionRequestAsync(
+            process,
+            3,
+            "textDocument/rename",
+            uri,
+            text,
+            "Public Property Get value",
+            "Public Property Get ".Length,
+            new { newName = "Value" });
+        Assert.Equal(
+            JsonValueKind.Null,
+            unchangedRename.GetProperty("result").ValueKind);
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            4,
+            "textDocument/rename",
+            uri,
+            text,
+            "Public Property Get value",
+            "Public Property Get ".Length,
+            new { newName = "value" });
+        var edits = rename
+            .GetProperty("result")
+            .GetProperty("changes")
+            .GetProperty(uri)
+            .EnumerateArray()
+            .ToArray();
+
+        Assert.Equal(
+            [3, 7, 11, 15],
+            edits.Select(edit => edit
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32()));
+        Assert.All(
+            edits,
+            edit => Assert.Equal(
+                "value",
+                edit.GetProperty("newText").GetString()));
+
+        await process.ShutdownAsync(5);
+    }
+
+    [Fact]
+    public async Task Server_renames_the_complete_property_from_a_conditional_setter_use()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/MixedPropertyRename.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"MixedPropertyRename\"",
+            "Public Property Get value() As Long",
+            "End Property",
+            "#If FIRST_WRITE_CONFIGURATION Then",
+            "Public Property Let Value(ByVal firstAssigned As Long)",
+            "End Property",
+            "#Else",
+            "Public Property Let VALUE(ByVal secondAssigned As Long)",
+            "End Property",
+            "#End If",
+            "Public Sub Run()",
+            "    Value = 1",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var prepare = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/prepareRename",
+            uri,
+            text,
+            "    Value = 1",
+            "    ".Length);
+        var prepareResult = prepare.GetProperty("result");
+        Assert.Equal("value", prepareResult.GetProperty("placeholder").GetString());
+        Assert.Equal(
+            12,
+            prepareResult
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32());
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            3,
+            "textDocument/rename",
+            uri,
+            text,
+            "    Value = 1",
+            "    ".Length,
+            new { newName = "Amount" });
+        var edits = rename
+            .GetProperty("result")
+            .GetProperty("changes")
+            .GetProperty(uri)
+            .EnumerateArray()
+            .ToArray();
+
+        Assert.Equal(
+            [2, 5, 8, 12],
+            edits.Select(edit => edit
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32()));
+        Assert.All(
+            edits,
+            edit => Assert.Equal(
+                "Amount",
+                edit.GetProperty("newText").GetString()));
+
+        await process.ShutdownAsync(4);
+    }
+
+    [Fact]
+    public async Task Server_renames_get_let_and_every_conditional_set_variant_from_a_set_use()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalObjectPropertyRename.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalObjectPropertyRename\"",
+            "Public Property Get Value() As Variant",
+            "End Property",
+            "Public Property Let Value(ByVal assigned As Variant)",
+            "End Property",
+            "#If FIRST_OBJECT_CONFIGURATION Then",
+            "Public Property Set value(ByVal assigned As Object)",
+            "End Property",
+            "#Else",
+            "Public Property Set VALUE(ByVal assigned As Object)",
+            "End Property",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim assigned As Object",
+            "    Set Value = assigned",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            uri,
+            text,
+            "    Set Value = assigned",
+            "    Set ".Length,
+            new { newName = "CurrentValue" });
+        Assert.True(
+            rename.TryGetProperty("result", out var result),
+            rename.ToString());
+        var edits = result
+            .GetProperty("changes")
+            .GetProperty(uri)
+            .EnumerateArray()
+            .ToArray();
+
+        Assert.Equal(
+            [2, 4, 7, 10, 15],
+            edits.Select(edit => edit
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32()));
+        Assert.All(
+            edits,
+            edit => Assert.Equal(
+                "CurrentValue",
                 edit.GetProperty("newText").GetString()));
 
         await process.ShutdownAsync(3);

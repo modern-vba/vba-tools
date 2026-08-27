@@ -99,6 +99,109 @@ public sealed class VbaSemanticInventoryTests
     }
 
     [Fact]
+    public void Rename_plan_records_explicit_conditional_family_correspondence()
+    {
+        const string uri = "file:///C:/work/ConditionalCorrespondence.bas";
+        var sourceDocuments = CreateSourceDocuments(new Dictionary<string, string>
+        {
+            [uri] =
+                """
+                Attribute VB_Name = "ConditionalCorrespondence"
+                #If FIRST_CONFIGURATION Then
+                Public Function BuildValue() As Long
+                End Function
+                #Else
+                Public Function buildvalue(ByVal Key As String) As Long
+                End Function
+                #End If
+                Public Sub Run()
+                    Debug.Print BuildValue()
+                End Sub
+                """
+        });
+        var inventory = VbaSemanticInventory.Create(sourceDocuments);
+
+        var rename = inventory.CreateRenameResult(
+            uri,
+            9,
+            "    Debug.Print ".Length,
+            "CreateValue");
+        Assert.Null(rename.Failure);
+        var plan = Assert.IsType<VbaRenamePlan>(rename.Plan);
+        var correspondence = Assert.IsType<VbaRenameTargetCorrespondence>(
+            plan.TargetCorrespondence);
+
+        Assert.Equal("BuildValue", correspondence.BeforeTarget.CanonicalName);
+        Assert.Equal("CreateValue", correspondence.AfterTarget.CanonicalName);
+        Assert.Equal(
+            [2, 5],
+            correspondence.PhysicalDefinitions.Select(pair =>
+                pair.BeforeDefinition.Range.Start.Line));
+        Assert.Equal(
+            [2, 5],
+            correspondence.PhysicalDefinitions.Select(pair =>
+                pair.AfterDefinition.Range.Start.Line));
+        Assert.All(
+            correspondence.PhysicalDefinitions,
+            pair =>
+            {
+                Assert.NotEqual(
+                    pair.BeforeDefinition.Identity,
+                    pair.AfterDefinition.Identity);
+                Assert.Equal(
+                    pair.BeforeDefinition.Kind,
+                    pair.AfterDefinition.Kind);
+                Assert.Equal(
+                    pair.BeforeDefinition.PropertyAccessorKind,
+                    pair.AfterDefinition.PropertyAccessorKind);
+                Assert.Equal(
+                    pair.BeforeDefinition.ConditionalCompilationPath!
+                        .Branches.Count,
+                    pair.AfterDefinition.ConditionalCompilationPath!
+                        .Branches.Count);
+            });
+        var laterVariant = correspondence.PhysicalDefinitions[1];
+        var beforeBranch = Assert.Single(
+            laterVariant.BeforeDefinition.ConditionalCompilationPath!.Branches);
+        var afterBranch = Assert.Single(
+            laterVariant.AfterDefinition.ConditionalCompilationPath!.Branches);
+        Assert.Equal(beforeBranch.IfDirectiveOffset, afterBranch.IfDirectiveOffset);
+        Assert.Equal(
+            beforeBranch.BranchDirectiveOffset + 1,
+            afterBranch.BranchDirectiveOffset);
+        var callCompatibility = Assert.Single(
+            correspondence.CallCompatibilities);
+        Assert.Equal(uri, callCompatibility.Uri);
+        Assert.Equal(
+            [
+                VbaCallCompatibilityState.Applicable,
+                VbaCallCompatibilityState.Inapplicable
+            ],
+            callCompatibility.Variants.Select(variant =>
+                variant.BeforeState));
+        Assert.All(
+            callCompatibility.Variants,
+            variant => Assert.Equal(
+                variant.BeforeState,
+                variant.AfterState));
+        Assert.Equal(
+            [2, 5, 9],
+            correspondence.OccurrenceTargets.Select(occurrence =>
+                occurrence.BeforeRange.Start.Line));
+        Assert.All(
+            correspondence.OccurrenceTargets,
+            occurrence =>
+            {
+                Assert.Equal(2, occurrence.PossibleDefinitions.Count);
+                Assert.Equal(
+                    occurrence.PossibleDefinitions.Select(pair =>
+                        pair.BeforeDefinition.Range.Start.Line),
+                    occurrence.PossibleDefinitions.Select(pair =>
+                        pair.AfterDefinition.Range.Start.Line));
+            });
+    }
+
+    [Fact]
     public void Inventory_rename_accepts_an_exact_japanese_identifier()
     {
         const string uri = "file:///C:/work/Worker.bas";

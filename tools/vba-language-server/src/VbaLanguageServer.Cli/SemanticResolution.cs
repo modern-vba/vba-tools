@@ -1299,7 +1299,7 @@ internal sealed class VbaSemanticResolution
             out target);
     }
 
-    private static bool IsCallableResultAssignment(
+    internal static bool IsCallableResultAssignment(
         VbaSourceDocument currentDocument,
         VbaArgumentListSyntax argumentList,
         VbaSyntaxRange calleeRange)

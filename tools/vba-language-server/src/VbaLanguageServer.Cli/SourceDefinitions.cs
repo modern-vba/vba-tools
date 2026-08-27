@@ -876,7 +876,49 @@ internal sealed record VbaPrepareRenameOutcome(
 /// <param name="Changes">The source edits keyed by document URI.</param>
 public sealed record VbaRenamePlan(
     VbaRange TargetRange,
-    IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> Changes);
+    IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> Changes)
+{
+    internal VbaRenameTargetCorrespondence? TargetCorrespondence { get; init; }
+}
+
+internal sealed record VbaRenamePhysicalDefinitionCorrespondence(
+    VbaSourceDefinition BeforeDefinition,
+    VbaSourceDefinition AfterDefinition);
+
+internal sealed record VbaRenameCallVariantCorrespondence(
+    VbaRenamePhysicalDefinitionCorrespondence Definition,
+    VbaCallCompatibilityState BeforeState,
+    VbaCallCompatibilityState AfterState);
+
+internal sealed record VbaRenameCallCompatibilityCorrespondence(
+    string Uri,
+    VbaRange BeforeRange,
+    VbaRange AfterRange,
+    VbaCallContext BeforeContext,
+    VbaCallContext AfterContext,
+    IReadOnlyList<VbaRenameCallVariantCorrespondence> Variants);
+
+internal sealed record VbaRenameOccurrenceTargetCorrespondence(
+    string Uri,
+    VbaRange BeforeRange,
+    VbaRange AfterRange,
+    VbaResolvedNameTarget BeforeTarget,
+    VbaResolvedNameTarget AfterTarget,
+    IReadOnlyList<VbaRenamePhysicalDefinitionCorrespondence>
+        PossibleDefinitions);
+
+internal sealed record VbaRenameTargetCorrespondence(
+    VbaResolvedNameTarget BeforeTarget,
+    VbaResolvedNameTarget AfterTarget,
+    IReadOnlyList<VbaRenamePhysicalDefinitionCorrespondence>
+        PhysicalDefinitions)
+{
+    public IReadOnlyList<VbaRenameCallCompatibilityCorrespondence>
+        CallCompatibilities { get; init; } = [];
+
+    public IReadOnlyList<VbaRenameOccurrenceTargetCorrespondence>
+        OccurrenceTargets { get; init; } = [];
+}
 
 internal sealed record VbaRenameFailure(
     string Reason,

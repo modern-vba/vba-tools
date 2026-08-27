@@ -511,6 +511,15 @@ public sealed class VbaSemanticInventory
                     + "a source-owned Rename target."));
         }
 
+        if (HasIndeterminateConditionalFamilyCoverage(target))
+        {
+            return new VbaPrepareRenameOutcome(
+                Result: null,
+                AnalysisIncomplete(
+                    "Prepare Rename could not establish the target's "
+                    + "complete conditional declaration family."));
+        }
+
         target = GetLogicalRenameTarget(target);
 
         return new VbaPrepareRenameOutcome(
@@ -660,6 +669,15 @@ public sealed class VbaSemanticInventory
                     + "the requested position."));
         }
 
+        if (HasIndeterminateConditionalFamilyCoverage(target))
+        {
+            return new VbaRenameResult(
+                Plan: null,
+                AnalysisIncomplete(
+                    "Rename could not establish the target's complete "
+                    + "conditional declaration family."));
+        }
+
         target = GetLogicalRenameTarget(target);
 
         var targetNameFailure = ValidateRenameTargetName(target, newName);
@@ -750,7 +768,8 @@ public sealed class VbaSemanticInventory
             target,
             targetOccurrences,
             changes,
-            cancellationToken);
+            cancellationToken,
+            out var targetCorrespondence);
         if (proofFailure is not null)
         {
             return new VbaRenameResult(Plan: null, proofFailure);
@@ -759,7 +778,10 @@ public sealed class VbaSemanticInventory
         return new VbaRenameResult(
             changes.Count == 0
                 ? null
-                : new VbaRenamePlan(target.Range, changes),
+                : new VbaRenamePlan(target.Range, changes)
+                {
+                    TargetCorrespondence = targetCorrespondence
+                },
             Failure: null);
     }
 
@@ -804,6 +826,21 @@ public sealed class VbaSemanticInventory
             .ToArray();
     }
 
+    private bool HasIndeterminateConditionalFamilyCoverage(
+        VbaSourceDefinition target)
+    {
+        var knownTargetDefinitions = GetLogicalRenameTargetDefinitions(target);
+        return sourceDocuments
+            .SelectMany(document => document.Definitions)
+            .Where(candidate => candidate.Name.Equals(
+                target.Name,
+                StringComparison.OrdinalIgnoreCase))
+            .Where(semanticResolution
+                .HasIndeterminateConditionalCompilationOwnership)
+            .Any(candidate => knownTargetDefinitions.Any(definition =>
+                IsSameDeclarationScope(definition, candidate)));
+    }
+
     private VbaSourceDefinition GetLogicalRenameTarget(
         VbaSourceDefinition target)
     {
@@ -814,9 +851,12 @@ public sealed class VbaSemanticInventory
         }
 
         var logicalTarget = resolutionPolicy.CreateNameTarget(target);
+        var canonicalName = logicalTarget is VbaPropertyNameTarget propertyTarget
+            ? propertyTarget.Property.CanonicalName
+            : logicalTarget.CanonicalName;
         return definitions.FirstOrDefault(definition => string.Equals(
                 definition.Name,
-                logicalTarget.CanonicalName,
+                canonicalName,
                 StringComparison.Ordinal))
             ?? definitions[0];
     }
@@ -830,22 +870,27 @@ public sealed class VbaSemanticInventory
         }
 
         var candidates = GetPropertyFamilyCandidates(target);
-        if (candidates.Length <= 1
-            || VbaPropertyAccessorCoalescing.Coalesce(candidates).Count == 1)
+        var logicalCandidates = definitionCandidates.ConditionalFamilies
+            .Coalesce(candidates);
+        if (logicalCandidates.Count <= 1
+            || VbaPropertyAccessorCoalescing
+                .Coalesce(logicalCandidates).Count == 1)
         {
             return [];
         }
 
-        var repeatedAccessorCandidates = candidates
+        var repeatedAccessorCandidates = logicalCandidates
             .GroupBy(candidate => candidate.PropertyAccessorKind)
             .Where(group => group.Count() > 1)
             .SelectMany(group => group)
             .ToArray();
         var conflicts = repeatedAccessorCandidates.Length > 0
             ? repeatedAccessorCandidates
-            : candidates;
+            : logicalCandidates;
         return conflicts
-            .Where(candidate => candidate.Identity != target.Identity)
+            .Where(candidate => !AreMembersOfSameRenameTarget(
+                target,
+                candidate))
             .OrderBy(candidate => candidate.Uri, StringComparer.OrdinalIgnoreCase)
             .ThenBy(candidate => candidate.Range.Start.Line)
             .ThenBy(candidate => candidate.Range.Start.Character)
@@ -860,18 +905,10 @@ public sealed class VbaSemanticInventory
     private IReadOnlyList<VbaSourceDefinition> GetLogicalRenameTargetDefinitions(
         VbaSourceDefinition target)
     {
-        if (target.Kind != VbaSourceDefinitionKind.Property)
-        {
-            var logicalTarget = resolutionPolicy.CreateNameTarget(target);
-            return logicalTarget.IsConditionalFamily
-                ? logicalTarget.PhysicalDefinitions
-                : [target];
-        }
-
-        var candidates = GetPropertyFamilyCandidates(target);
-        return VbaPropertyAccessorCoalescing.Coalesce(candidates).Count == 1
-            ? candidates
-            : [target];
+        var logicalTarget = resolutionPolicy.CreateNameTarget(target);
+        return logicalTarget is VbaPropertyNameTarget propertyTarget
+            ? propertyTarget.Property.UnifiedPhysicalDefinitions
+            : logicalTarget.PhysicalDefinitions;
     }
 
     private VbaSourceDefinition[] GetPropertyFamilyCandidates(
@@ -898,6 +935,13 @@ public sealed class VbaSemanticInventory
         VbaSourceDefinition candidate)
     {
         if (IsProjectNamespaceCollision(target, candidate))
+        {
+            return true;
+        }
+
+        if (definitionCandidates.ConditionalFamilies.HaveSameLogicalMemberScope(
+            target,
+            candidate))
         {
             return true;
         }
@@ -1057,8 +1101,10 @@ public sealed class VbaSemanticInventory
         VbaSourceDefinition target,
         IReadOnlyList<VbaResolvedIdentifierOccurrence> targetOccurrences,
         IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        out VbaRenameTargetCorrespondence? targetCorrespondence)
     {
+        targetCorrespondence = null;
         cancellationToken.ThrowIfCancellationRequested();
         if (targetOccurrences.Count == 0)
         {
@@ -1082,31 +1128,84 @@ public sealed class VbaSemanticInventory
                 "Rename could not establish the renamed target declaration.");
         }
 
+        var correspondenceFailure = TryCreateTargetCorrespondence(
+            hypothetical,
+            target,
+            hypotheticalTarget,
+            changes,
+            newName,
+            out targetCorrespondence);
+        if (correspondenceFailure is not null)
+        {
+            return correspondenceFailure;
+        }
+
+        if (targetCorrespondence is null)
+        {
+            return AnalysisIncomplete(
+                "Rename could not retain the target correspondence proof.");
+        }
+
         var targetRanges = targetOccurrences
             .Select(occurrence => CreateOccurrenceKey(occurrence.Uri, occurrence.Range))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var occurrenceTargetCorrespondences = new List<
+            VbaRenameOccurrenceTargetCorrespondence>(targetOccurrences.Count);
         foreach (var occurrence in targetOccurrences)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var mappedRange = MapRange(occurrence.Uri, occurrence.Range, changes);
-            var postDefinition = IsDeclarationOccurrence(occurrence)
-                ? FindHypotheticalDefinition(
+            VbaResolvedNameTarget? postTarget;
+            if (IsDeclarationOccurrence(occurrence))
+            {
+                var postDefinition = FindHypotheticalDefinition(
                     hypothetical,
                     occurrence.Target.SelectedDefinition,
                     changes,
-                    newName)
-                : hypothetical.ResolveSourceDefinition(
+                    newName);
+                postTarget = postDefinition is null
+                    ? null
+                    : hypothetical.resolutionPolicy.CreateNameTarget(
+                        postDefinition);
+            }
+            else
+            {
+                postTarget = hypothetical.ResolveSourceTarget(
                     occurrence.Uri,
                     mappedRange.Start.Line,
                     mappedRange.Start.Character);
+            }
+
             if (!AreLogicalDefinitionsEquivalent(
                 hypothetical,
-                postDefinition,
+                postTarget?.SelectedDefinition,
                 hypotheticalTarget))
             {
                 return ResolutionChanged(
                     "Rename would change the binding of a target occurrence.");
             }
+
+            if (postTarget is null)
+            {
+                return AnalysisIncomplete(
+                    "Rename could not establish a target occurrence "
+                    + "correspondence.");
+            }
+
+            var occurrenceCorrespondenceFailure =
+                TryCreateOccurrenceTargetCorrespondence(
+                    occurrence,
+                    mappedRange,
+                    postTarget,
+                    targetCorrespondence,
+                    out var occurrenceTargetCorrespondence);
+            if (occurrenceCorrespondenceFailure is not null)
+            {
+                return occurrenceCorrespondenceFailure;
+            }
+
+            occurrenceTargetCorrespondences.Add(
+                occurrenceTargetCorrespondence!);
         }
 
         foreach (var occurrence in resolvedOccurrences.GetAll(cancellationToken))
@@ -1194,7 +1293,487 @@ public sealed class VbaSemanticInventory
             }
         }
 
+        var callCompatibilityFailure =
+            ProveConditionalCallCompatibilitiesArePreserved(
+                hypothetical,
+                targetOccurrences,
+                changes,
+                targetCorrespondence,
+                cancellationToken,
+                out var callCompatibilities);
+        if (callCompatibilityFailure is not null)
+        {
+            return callCompatibilityFailure;
+        }
+
+        targetCorrespondence = targetCorrespondence with
+        {
+            CallCompatibilities = callCompatibilities,
+            OccurrenceTargets = Array.AsReadOnly(
+                occurrenceTargetCorrespondences.ToArray())
+        };
+
         return null;
+    }
+
+    private static VbaRenameFailure?
+        TryCreateOccurrenceTargetCorrespondence(
+            VbaResolvedIdentifierOccurrence occurrence,
+            VbaRange mappedRange,
+            VbaResolvedNameTarget postTarget,
+            VbaRenameTargetCorrespondence targetCorrespondence,
+            out VbaRenameOccurrenceTargetCorrespondence? correspondence)
+    {
+        correspondence = null;
+        var definitionCorrespondence = targetCorrespondence
+            .PhysicalDefinitions
+            .ToDictionary(pair => pair.BeforeDefinition.Identity);
+        var possibleDefinitions = new List<
+            VbaRenamePhysicalDefinitionCorrespondence>(
+                occurrence.Target.PhysicalDefinitions.Count);
+        foreach (var definition in occurrence.Target.PhysicalDefinitions)
+        {
+            if (!definitionCorrespondence.TryGetValue(
+                    definition.Identity,
+                    out var definitionPair))
+            {
+                return AnalysisIncomplete(
+                    "Rename could not compare a target occurrence's "
+                    + "possible definitions completely.");
+            }
+
+            possibleDefinitions.Add(definitionPair);
+        }
+
+        var expectedAfterIdentities = possibleDefinitions
+            .Select(pair => pair.AfterDefinition.Identity)
+            .ToHashSet();
+        var actualAfterIdentities = postTarget.PhysicalDefinitions
+            .Select(definition => definition.Identity)
+            .ToHashSet();
+        if (possibleDefinitions.Count == 0
+            || expectedAfterIdentities.Count != possibleDefinitions.Count
+            || actualAfterIdentities.Count
+                != postTarget.PhysicalDefinitions.Count)
+        {
+            return AnalysisIncomplete(
+                "Rename could not establish one-to-one target occurrence "
+                + "possible-definition correspondence.");
+        }
+
+        if (!expectedAfterIdentities.SetEquals(actualAfterIdentities)
+            || occurrence.Target.IsConditionalFamily
+                != postTarget.IsConditionalFamily)
+        {
+            return ResolutionChanged(
+                "Rename would change a target occurrence's possible "
+                + "definitions.");
+        }
+
+        correspondence = new VbaRenameOccurrenceTargetCorrespondence(
+            occurrence.Uri,
+            occurrence.Range,
+            mappedRange,
+            occurrence.Target,
+            postTarget,
+            Array.AsReadOnly(possibleDefinitions.ToArray()));
+        return null;
+    }
+
+    private VbaRenameFailure?
+        ProveConditionalCallCompatibilitiesArePreserved(
+            VbaSemanticInventory hypothetical,
+            IReadOnlyList<VbaResolvedIdentifierOccurrence> targetOccurrences,
+            IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+            VbaRenameTargetCorrespondence targetCorrespondence,
+            CancellationToken cancellationToken,
+            out IReadOnlyList<VbaRenameCallCompatibilityCorrespondence>
+                callCompatibilities)
+    {
+        callCompatibilities = [];
+        if (!targetCorrespondence.PhysicalDefinitions.Any(pair =>
+                pair.BeforeDefinition.ConditionalCompilationPath is
+                    { IsEmpty: false }))
+        {
+            return null;
+        }
+
+        if (!targetCorrespondence.PhysicalDefinitions.Any(pair =>
+                pair.BeforeDefinition.Kind is
+                    VbaSourceDefinitionKind.Procedure
+                    or VbaSourceDefinitionKind.Property
+                    or VbaSourceDefinitionKind.Event))
+        {
+            return null;
+        }
+
+        var definitionCorrespondence = targetCorrespondence
+            .PhysicalDefinitions
+            .ToDictionary(pair => pair.BeforeDefinition.Identity);
+        var postDefinitionIdentities = targetCorrespondence
+            .PhysicalDefinitions
+            .Select(pair => pair.AfterDefinition.Identity)
+            .ToHashSet();
+        var results = new List<VbaRenameCallCompatibilityCorrespondence>();
+        foreach (var occurrence in targetOccurrences)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var beforeDocument = definitionCandidates.FindDocument(
+                occurrence.Uri);
+            if (beforeDocument is null)
+            {
+                return AnalysisIncomplete(
+                    "Rename could not inspect a target call occurrence.");
+            }
+
+            var beforeSyntaxTree = beforeDocument.SyntaxTree
+                ?? VbaSyntaxTree.ParseModule(
+                    beforeDocument.Uri,
+                    beforeDocument.Text);
+            var beforeCalls = beforeSyntaxTree.Module.ArgumentLists
+                .Where(argumentList => argumentList.CalleeRange is { } range
+                    && IsTerminalCalleeIdentifier(
+                        range,
+                        occurrence.Range))
+                .ToArray();
+            if (beforeCalls.Length == 0)
+            {
+                continue;
+            }
+
+            if (beforeCalls.Length != 1)
+            {
+                return AnalysisIncomplete(
+                    "Rename could not identify one complete target call.");
+            }
+
+            var beforeCall = beforeCalls[0];
+            var beforeCompatibility = semanticResolution.AnalyzeCompleteCall(
+                occurrence.Uri,
+                beforeCall);
+            var beforeIsResultAssignment =
+                VbaSemanticResolution.IsCallableResultAssignment(
+                    beforeDocument,
+                    beforeCall,
+                    beforeCall.CalleeRange!);
+
+            var beforeRange = ToRange(beforeCall.Range);
+            var mappedRange = MapRange(
+                occurrence.Uri,
+                beforeRange,
+                changes);
+            var mappedCalleeRange = MapRange(
+                occurrence.Uri,
+                ToRange(beforeCall.CalleeRange!),
+                changes);
+            var afterDocument = hypothetical.definitionCandidates.FindDocument(
+                occurrence.Uri);
+            if (afterDocument is null)
+            {
+                return AnalysisIncomplete(
+                    "Rename could not inspect the hypothetical target call.");
+            }
+
+            var afterSyntaxTree = afterDocument.SyntaxTree
+                ?? VbaSyntaxTree.ParseModule(
+                    afterDocument.Uri,
+                    afterDocument.Text);
+            var afterCalls = afterSyntaxTree.Module.ArgumentLists
+                .Where(argumentList => argumentList.Form == beforeCall.Form)
+                .Where(argumentList => argumentList.CalleeRange is { } range
+                    && ToRange(range) == mappedCalleeRange)
+                .Where(argumentList => ToRange(argumentList.Range)
+                    == mappedRange)
+                .ToArray();
+            if (afterCalls.Length != 1)
+            {
+                return AnalysisIncomplete(
+                    "Rename could not establish the hypothetical target "
+                    + "call correspondence.");
+            }
+
+            var afterCall = afterCalls[0];
+            var afterCompatibility = hypothetical.semanticResolution
+                .AnalyzeCompleteCall(occurrence.Uri, afterCall);
+            var afterIsResultAssignment =
+                VbaSemanticResolution.IsCallableResultAssignment(
+                    afterDocument,
+                    afterCall,
+                    afterCall.CalleeRange!);
+            if (beforeIsResultAssignment != afterIsResultAssignment)
+            {
+                return ResolutionChanged(
+                    "Rename would change a target occurrence's callable "
+                    + "result role.");
+            }
+
+            if (beforeIsResultAssignment)
+            {
+                continue;
+            }
+
+            if (beforeCompatibility is null || afterCompatibility is null)
+            {
+                return AnalysisIncomplete(
+                    "Rename could not classify a target call "
+                    + "completely.");
+            }
+
+            var beforeVariants = beforeCompatibility.Variants
+                .Where(variant => definitionCorrespondence.ContainsKey(
+                    variant.Definition.Identity))
+                .ToArray();
+            if (beforeVariants.Length == 0)
+            {
+                return AnalysisIncomplete(
+                    "Rename could not relate a target call to its physical "
+                    + "declarations.");
+            }
+
+            if (beforeCompatibility.Context != afterCompatibility.Context)
+            {
+                return ResolutionChanged(
+                    "Rename would change a target call's invocation context.");
+            }
+
+            var afterVariants = afterCompatibility.Variants
+                .Where(variant => postDefinitionIdentities.Contains(
+                    variant.Definition.Identity))
+                .ToArray();
+            var expectedAfterIdentities = beforeVariants
+                .Select(variant => definitionCorrespondence[
+                    variant.Definition.Identity].AfterDefinition.Identity)
+                .ToHashSet();
+            var actualAfterIdentities = afterVariants
+                .Select(variant => variant.Definition.Identity)
+                .ToHashSet();
+            if (expectedAfterIdentities.Count != beforeVariants.Length
+                || actualAfterIdentities.Count != afterVariants.Length)
+            {
+                return AnalysisIncomplete(
+                    "Rename could not establish one-to-one target call "
+                    + "variant correspondence.");
+            }
+
+            if (!expectedAfterIdentities.SetEquals(actualAfterIdentities))
+            {
+                return ResolutionChanged(
+                    "Rename would change a target call's possible "
+                    + "declaration set.");
+            }
+
+            var variantResults = new List<
+                VbaRenameCallVariantCorrespondence>(beforeVariants.Length);
+            foreach (var beforeVariant in beforeVariants)
+            {
+                var definitionPair = definitionCorrespondence[
+                    beforeVariant.Definition.Identity];
+                var matchingAfterVariants = afterVariants
+                    .Where(variant => variant.Definition.Identity
+                        == definitionPair.AfterDefinition.Identity)
+                    .ToArray();
+                if (matchingAfterVariants.Length != 1)
+                {
+                    return AnalysisIncomplete(
+                        "Rename could not establish one target call variant "
+                        + "correspondence.");
+                }
+
+                var afterVariant = matchingAfterVariants[0];
+                if (beforeVariant.State != afterVariant.State)
+                {
+                    return ResolutionChanged(
+                        "Rename would change a target call's conditional "
+                        + "compatibility.");
+                }
+
+                variantResults.Add(new VbaRenameCallVariantCorrespondence(
+                    definitionPair,
+                    beforeVariant.State,
+                    afterVariant.State));
+            }
+
+            if (variantResults.Any(result =>
+                    result.BeforeState == VbaCallCompatibilityState.Indeterminate
+                    || result.AfterState
+                        == VbaCallCompatibilityState.Indeterminate))
+            {
+                return AnalysisIncomplete(
+                    "Rename could not compare a target call's conditional "
+                    + "compatibility completely.");
+            }
+
+            results.Add(new VbaRenameCallCompatibilityCorrespondence(
+                occurrence.Uri,
+                beforeRange,
+                mappedRange,
+                beforeCompatibility.Context,
+                afterCompatibility.Context,
+                Array.AsReadOnly(variantResults.ToArray())));
+        }
+
+        callCompatibilities = Array.AsReadOnly(results.ToArray());
+        return null;
+    }
+
+    private static bool IsTerminalCalleeIdentifier(
+        VbaSyntaxRange calleeRange,
+        VbaRange identifierRange)
+    {
+        var callee = ToRange(calleeRange);
+        return callee.End == identifierRange.End
+            && IsAtOrAfter(identifierRange.Start, callee.Start);
+    }
+
+    private VbaRenameFailure? TryCreateTargetCorrespondence(
+        VbaSemanticInventory hypothetical,
+        VbaSourceDefinition beforeDefinition,
+        VbaSourceDefinition afterDefinition,
+        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        string newName,
+        out VbaRenameTargetCorrespondence? correspondence)
+    {
+        correspondence = null;
+        var beforeTarget = resolutionPolicy.CreateNameTarget(beforeDefinition);
+        var afterTarget = hypothetical.resolutionPolicy.CreateNameTarget(
+            afterDefinition);
+        var beforePhysicalDefinitions = GetLogicalRenameTargetDefinitions(
+            beforeDefinition);
+        var afterPhysicalDefinitions = hypothetical
+            .GetLogicalRenameTargetDefinitions(afterDefinition);
+        var physicalCorrespondence = new List<
+            VbaRenamePhysicalDefinitionCorrespondence>(
+                beforePhysicalDefinitions.Count);
+        foreach (var physicalBefore in beforePhysicalDefinitions)
+        {
+            var physicalAfter = FindHypotheticalDefinition(
+                hypothetical,
+                physicalBefore,
+                changes,
+                newName);
+            if (physicalAfter is null)
+            {
+                return AnalysisIncomplete(
+                    "Rename could not establish complete physical target "
+                    + "correspondence.");
+            }
+
+            if (!physicalBefore.Uri.Equals(
+                    physicalAfter.Uri,
+                    StringComparison.OrdinalIgnoreCase)
+                || physicalBefore.Kind != physicalAfter.Kind
+                || physicalBefore.PropertyAccessorKind
+                    != physicalAfter.PropertyAccessorKind
+                || physicalBefore.Visibility != physicalAfter.Visibility
+                || !AreConditionalCompilationPathsCorrespondent(
+                    physicalBefore,
+                    physicalAfter,
+                    changes))
+            {
+                return ResolutionChanged(
+                    "Rename would change a physical target declaration's "
+                    + "conditional-family meaning.");
+            }
+
+            physicalCorrespondence.Add(
+                new VbaRenamePhysicalDefinitionCorrespondence(
+                    physicalBefore,
+                    physicalAfter));
+        }
+
+        var mappedAfterIdentities = physicalCorrespondence
+            .Select(pair => pair.AfterDefinition.Identity)
+            .ToHashSet();
+        if (mappedAfterIdentities.Count != physicalCorrespondence.Count)
+        {
+            return AnalysisIncomplete(
+                "Rename could not establish one-to-one physical target "
+                + "correspondence.");
+        }
+
+        if (afterPhysicalDefinitions.Count
+                != physicalCorrespondence.Count
+            || afterPhysicalDefinitions.Any(definition =>
+                !mappedAfterIdentities.Contains(definition.Identity))
+            || beforeTarget.IsConditionalFamily
+                != afterTarget.IsConditionalFamily
+            || !afterTarget.CanonicalName.Equals(
+                newName,
+                StringComparison.Ordinal))
+        {
+            return ResolutionChanged(
+                "Rename would change the target's physical declaration set "
+                + "or logical-family meaning.");
+        }
+
+        correspondence = new VbaRenameTargetCorrespondence(
+            beforeTarget,
+            afterTarget,
+            Array.AsReadOnly(physicalCorrespondence.ToArray()));
+        return null;
+    }
+
+    private bool AreConditionalCompilationPathsCorrespondent(
+        VbaSourceDefinition beforeDefinition,
+        VbaSourceDefinition afterDefinition,
+        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes)
+    {
+        var beforePath = beforeDefinition.ConditionalCompilationPath;
+        var afterPath = afterDefinition.ConditionalCompilationPath;
+        if (beforePath is null || afterPath is null)
+        {
+            return beforePath is null && afterPath is null;
+        }
+
+        if (beforePath.Branches.Count != afterPath.Branches.Count)
+        {
+            return false;
+        }
+
+        for (var index = 0; index < beforePath.Branches.Count; index++)
+        {
+            var beforeBranch = beforePath.Branches[index];
+            var afterBranch = afterPath.Branches[index];
+            if (MapDocumentOffset(
+                    beforeDefinition.Uri,
+                    beforeBranch.IfDirectiveOffset,
+                    changes) != afterBranch.IfDirectiveOffset
+                || MapDocumentOffset(
+                    beforeDefinition.Uri,
+                    beforeBranch.BranchDirectiveOffset,
+                    changes) != afterBranch.BranchDirectiveOffset)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private int MapDocumentOffset(
+        string uri,
+        int offset,
+        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes)
+    {
+        if (!changes.TryGetValue(uri, out var edits)
+            || definitionCandidates.FindDocument(uri) is not { } document)
+        {
+            return offset;
+        }
+
+        var lineStarts = GetLineStarts(document.Text);
+        var mappedOffset = offset;
+        foreach (var edit in edits)
+        {
+            var editStart = GetOffset(lineStarts, edit.Range.Start);
+            var editEnd = GetOffset(lineStarts, edit.Range.End);
+            if (editEnd <= offset)
+            {
+                mappedOffset += edit.NewText.Length - (editEnd - editStart);
+            }
+        }
+
+        return mappedOffset;
     }
 
     private IReadOnlyList<VbaSemanticOccurrence> GetUnresolvedSemanticOccurrences(
@@ -1302,7 +1881,9 @@ public sealed class VbaSemanticInventory
                 && string.Equals(
                     candidate.Name,
                     expectedName ?? definition.Name,
-                    StringComparison.OrdinalIgnoreCase));
+                    expectedName is null
+                        ? StringComparison.OrdinalIgnoreCase
+                        : StringComparison.Ordinal));
     }
 
     private static bool AreLogicalDefinitionsEquivalent(
@@ -1349,6 +1930,15 @@ public sealed class VbaSemanticInventory
             MapPosition(range.Start, edits, isRangeEnd: false),
             MapPosition(range.End, edits, isRangeEnd: true));
     }
+
+    private static VbaRange ToRange(VbaSyntaxRange range)
+        => new(
+            new VbaPosition(
+                range.Start.Line,
+                range.Start.Character),
+            new VbaPosition(
+                range.End.Line,
+                range.End.Character));
 
     private static VbaPosition MapPosition(
         VbaPosition position,

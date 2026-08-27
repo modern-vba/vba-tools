@@ -82,6 +82,8 @@ internal sealed class VbaConditionalDeclarationFamilyIndex
     private readonly IReadOnlyDictionary<
         VbaDefinitionIdentity,
         PropertyNameTargetDescriptor> propertiesByVariant;
+    private readonly IReadOnlyDictionary<VbaDefinitionIdentity, string>
+        logicalMemberScopes;
     private readonly object projectSnapshot;
 
     public VbaConditionalDeclarationFamilyIndex(
@@ -91,7 +93,7 @@ internal sealed class VbaConditionalDeclarationFamilyIndex
 
         projectSnapshot = new object();
         var families = new Dictionary<VbaDefinitionIdentity, ConditionalDeclarationFamily>();
-        var logicalMemberScopes = CreateLogicalMemberScopes(documents);
+        logicalMemberScopes = CreateLogicalMemberScopes(documents);
         var propertyIdentitiesByVariant = CreatePropertyIdentities(documents);
         var declarations = documents
             .SelectMany(document => document.Definitions)
@@ -275,6 +277,14 @@ internal sealed class VbaConditionalDeclarationFamilyIndex
             && familiesByVariant.TryGetValue(definition.Identity, out var family)
                 ? family
                 : null;
+
+    public bool HaveSameLogicalMemberScope(
+        VbaSourceDefinition left,
+        VbaSourceDefinition right)
+        => VbaDeclarationRelationshipPolicy.HaveSameLogicalMemberScope(
+            left,
+            right,
+            logicalMemberScopes);
 
     public VbaResolvedNameTarget CreateNameTarget(
         VbaSourceDefinition selectedDefinition)
@@ -673,7 +683,7 @@ internal static class VbaDeclarationRelationshipPolicy
         return IsDeclaredType(left) && IsDeclaredType(right);
     }
 
-    private static bool HaveSameLogicalMemberScope(
+    internal static bool HaveSameLogicalMemberScope(
         VbaSourceDefinition left,
         VbaSourceDefinition right,
         IReadOnlyDictionary<VbaDefinitionIdentity, string>? logicalMemberScopes)
