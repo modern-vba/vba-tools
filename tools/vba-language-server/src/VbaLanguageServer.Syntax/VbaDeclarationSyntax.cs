@@ -205,7 +205,13 @@ public sealed record VbaDeclarationSyntax(
     VbaSyntaxRange? WithEventsTypeDeclarationCharacterRange = null,
     VbaSyntaxRange? WithEventsTypeRequiredRange = null,
     VbaSyntaxRange? WithEventsTypeReferenceRange = null,
-    bool HasRecognizableWithEventsDeclaratorShape = true);
+    bool HasRecognizableWithEventsDeclaratorShape = true)
+{
+    /// <summary>
+    /// Gets whether the declarator writes an As String * length clause.
+    /// </summary>
+    public bool IsFixedLengthString { get; init; }
+}
 
 /// <summary>
 /// Represents a parsed callable declaration and its full source block.
@@ -246,7 +252,18 @@ public sealed record VbaCallableDeclarationSyntax(
     VbaPropertyAccessorKind? PropertyAccessorKind = null,
     string? VisibilityKeyword = null,
     VbaSyntaxRange? DeclarationKeywordRange = null,
-    VbaSyntaxRange? ParameterListRange = null);
+    VbaSyntaxRange? ParameterListRange = null)
+{
+    /// <summary>
+    /// Gets the source range from the callable name through its parameter list and return type.
+    /// </summary>
+    public VbaSyntaxRange? SignatureRange { get; init; }
+
+    /// <summary>
+    /// Gets whether the callable return type carries an array designator.
+    /// </summary>
+    public bool IsReturnArray { get; init; }
+}
 
 /// <summary>
 /// Represents one parsed parameter in a callable declaration.
@@ -267,7 +284,13 @@ public sealed record VbaCallableParameterSyntax(
     bool IsOptional = false,
     bool IsByRef = true,
     bool IsParamArray = false,
-    bool IsArray = false);
+    bool IsArray = false)
+{
+    /// <summary>
+    /// Gets the written Optional default expression, or null when absent.
+    /// </summary>
+    public string? DefaultExpression { get; init; }
+}
 
 /// <summary>
 /// Represents the display signature for a callable definition.
@@ -299,4 +322,10 @@ public sealed record VbaCallableParameterInfoSyntax(
     bool IsByRef = true,
     bool IsParamArray = false,
     bool IsArray = false,
-    VbaSyntaxRange? Range = null);
+    VbaSyntaxRange? Range = null)
+{
+    /// <summary>
+    /// Gets the written Optional default expression, or null when absent.
+    /// </summary>
+    public string? DefaultExpression { get; init; }
+}

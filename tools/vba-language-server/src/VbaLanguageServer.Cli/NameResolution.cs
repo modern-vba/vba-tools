@@ -599,6 +599,10 @@ public sealed class VbaNameResolutionService
     internal VbaSourceDocument? FindDocument(string uri)
         => candidates.FindDocument(uri);
 
+    internal IReadOnlyList<VbaSourceDefinition> GetLogicalDefinitions(
+        VbaSourceDefinition definition)
+        => candidates.ConditionalFamilies.GetLogicalDefinitions(definition);
+
     internal bool HasIndeterminateConditionalCompilationOwnership(
         VbaSourceDefinition definition)
         => definition.Identity.Origin == VbaDefinitionOrigin.Source

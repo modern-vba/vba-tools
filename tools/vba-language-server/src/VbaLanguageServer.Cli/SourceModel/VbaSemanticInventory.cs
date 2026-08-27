@@ -160,6 +160,22 @@ public sealed class VbaSemanticInventory
         int line,
         int character)
     {
+        var currentDocument = definitionCandidates.FindDocument(uri);
+        if (currentDocument is not null)
+        {
+            var interfaceContracts = semanticResolution
+                .ResolveInterfaceAccessorContractDefinitions(
+                    currentDocument,
+                    line,
+                    character);
+            if (interfaceContracts.Count > 0)
+            {
+                return interfaceContracts
+                    .Select(definition => definition.Location)
+                    .ToArray();
+            }
+        }
+
         var target = ResolveSourceTarget(uri, line, character);
         if (target is null)
         {

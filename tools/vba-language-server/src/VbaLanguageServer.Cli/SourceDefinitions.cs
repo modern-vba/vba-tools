@@ -235,7 +235,8 @@ public readonly struct VbaDefinitionIdentity : IEquatable<VbaDefinitionIdentity>
         VbaRange? declarationRange,
         string? referenceName,
         string? parentTypeName,
-        VbaSourceDefinitionKind? kind)
+        VbaSourceDefinitionKind? kind,
+        VbaPropertyAccessorKind? propertyAccessorKind)
     {
         Origin = origin;
         Name = name;
@@ -244,6 +245,7 @@ public readonly struct VbaDefinitionIdentity : IEquatable<VbaDefinitionIdentity>
         ReferenceName = referenceName;
         ParentTypeName = parentTypeName;
         Kind = kind;
+        PropertyAccessorKind = propertyAccessorKind;
     }
 
     /// <summary>
@@ -282,6 +284,11 @@ public readonly struct VbaDefinitionIdentity : IEquatable<VbaDefinitionIdentity>
     public VbaSourceDefinitionKind? Kind { get; }
 
     /// <summary>
+    /// Gets the physical Property accessor kind for a project-reference definition.
+    /// </summary>
+    public VbaPropertyAccessorKind? PropertyAccessorKind { get; }
+
+    /// <summary>
     /// Creates an identity for a source declaration.
     /// </summary>
     public static VbaDefinitionIdentity ForSource(string uri, string name, VbaRange declarationRange)
@@ -300,6 +307,7 @@ public readonly struct VbaDefinitionIdentity : IEquatable<VbaDefinitionIdentity>
             declarationRange,
             null,
             null,
+            null,
             null);
     }
 
@@ -311,6 +319,22 @@ public readonly struct VbaDefinitionIdentity : IEquatable<VbaDefinitionIdentity>
         string? parentTypeName,
         VbaSourceDefinitionKind kind,
         string name)
+        => ForProjectReference(
+            referenceName,
+            parentTypeName,
+            kind,
+            name,
+            propertyAccessorKind: null);
+
+    /// <summary>
+    /// Creates an identity for a physical project-reference Property accessor.
+    /// </summary>
+    internal static VbaDefinitionIdentity ForProjectReference(
+        string referenceName,
+        string? parentTypeName,
+        VbaSourceDefinitionKind kind,
+        string name,
+        VbaPropertyAccessorKind? propertyAccessorKind)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(referenceName);
         ArgumentNullException.ThrowIfNull(name);
@@ -335,7 +359,8 @@ public readonly struct VbaDefinitionIdentity : IEquatable<VbaDefinitionIdentity>
             null,
             referenceName,
             parentTypeName,
-            kind);
+            kind,
+            propertyAccessorKind);
     }
 
     /// <inheritdoc />
@@ -354,7 +379,8 @@ public readonly struct VbaDefinitionIdentity : IEquatable<VbaDefinitionIdentity>
             VbaDefinitionOrigin.ProjectReference =>
                 NameComparer.Equals(ReferenceName, other.ReferenceName)
                 && NameComparer.Equals(ParentTypeName, other.ParentTypeName)
-                && Kind == other.Kind,
+                && Kind == other.Kind
+                && PropertyAccessorKind == other.PropertyAccessorKind,
             _ => true
         };
     }
@@ -379,6 +405,7 @@ public readonly struct VbaDefinitionIdentity : IEquatable<VbaDefinitionIdentity>
                 hash.Add(ReferenceName, NameComparer);
                 hash.Add(ParentTypeName, NameComparer);
                 hash.Add(Kind);
+                hash.Add(PropertyAccessorKind);
                 break;
         }
 
@@ -454,6 +481,11 @@ public sealed record VbaSourceDefinition(
     bool IsAuthoringAvailable = true)
 {
     /// <summary>
+    /// Gets whether the source variable writes an As String * length clause.
+    /// </summary>
+    public bool IsFixedLengthString { get; init; }
+
+    /// <summary>
     /// Gets the editor-facing definition URI.
     /// </summary>
     public string Uri => Location.Uri;
@@ -515,6 +547,11 @@ public sealed record VbaCallableParameter(
     bool IsParamArray = false,
     bool IsArray = false)
 {
+    /// <summary>
+    /// Gets the written source Optional default expression, or null when absent.
+    /// </summary>
+    public string? DefaultExpression { get; init; }
+
     /// <summary>
     /// Gets the parameter segment shown inside its callable signature.
     /// </summary>
@@ -1037,6 +1074,7 @@ internal static class VbaSourceDocumentProjector
                 == GetEventRecoveryReasons(syntaxTree, declaration)
             && definition.WithEventsRecoveryReasons
                 == GetWithEventsRecoveryReasons(syntaxTree, declaration)
+            && definition.IsFixedLengthString == declaration.IsFixedLengthString
             && Equals(
                 definition.TypeReferenceRange,
                 declaration.WithEventsTypeReferenceRange is null
@@ -1122,7 +1160,10 @@ internal static class VbaSourceDocumentProjector
                 : MapRange(declaration.WithEventsTypeReferenceRange),
             CallableKind: declaration.CallableKind is null
                 ? null
-                : GetCallableKind(declaration));
+                : GetCallableKind(declaration))
+        {
+            IsFixedLengthString = declaration.IsFixedLengthString
+        };
     }
 
     private static VbaWithEventsRecoveryReason GetWithEventsRecoveryReasons(
@@ -1290,7 +1331,10 @@ internal static class VbaSourceDocumentProjector
                         : MapTypeReference(parameter.TypeReference),
                     IsByRef: parameter.IsByRef,
                     IsParamArray: parameter.IsParamArray,
-                    IsArray: parameter.IsArray))
+                    IsArray: parameter.IsArray)
+                {
+                    DefaultExpression = parameter.DefaultExpression
+                })
                 .ToArray(),
             signature.Documentation,
             CallableKind: callableKind,

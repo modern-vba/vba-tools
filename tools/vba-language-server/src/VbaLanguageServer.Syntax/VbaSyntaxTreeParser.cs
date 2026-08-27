@@ -225,12 +225,348 @@ internal static class VbaSyntaxTreeParser
             codeStartLine,
             sourceText.FullRange)
         {
+            ImplementsRelationships = ParseImplementsRelationships(
+                tokenStream,
+                kind,
+                codeStartLine,
+                parsedMembers.Members,
+                parsedMembers.CallableDeclarations),
+            DefTypeDirectives = ParseDefTypeDirectives(
+                tokenStream,
+                codeStartLine,
+                parsedMembers.Members,
+                parsedMembers.CallableDeclarations),
             IncompleteEventDeclarationRanges =
                 GetIncompleteEventDeclarationRanges(
                     physicalAnalysisSourceText,
                     codeStartLine)
         };
         return new VbaSyntaxTree(uri, sourceText, tokenStream, module, diagnostics);
+    }
+
+    private static IReadOnlyList<VbaImplementsRelationshipSyntax>
+        ParseImplementsRelationships(
+            VbaTokenStream tokenStream,
+            VbaModuleKind moduleKind,
+            int codeStartLine,
+            IReadOnlyList<VbaModuleMemberSyntax> members,
+            IReadOnlyList<VbaCallableDeclarationSyntax> callableDeclarations)
+    {
+        if (moduleKind != VbaModuleKind.ClassModule)
+        {
+            return [];
+        }
+
+        var relationships = new List<VbaImplementsRelationshipSyntax>();
+        var statement = new List<VbaToken>();
+        var lineContinues = false;
+        foreach (var token in tokenStream.Tokens)
+        {
+            if (token.Range.Start.Line < codeStartLine)
+            {
+                continue;
+            }
+
+            if (token.Kind == VbaTokenKind.Comment)
+            {
+                continue;
+            }
+
+            if (token.Kind == VbaTokenKind.LineContinuation)
+            {
+                lineContinues = true;
+                continue;
+            }
+
+            if (token.Kind == VbaTokenKind.NewLine)
+            {
+                if (lineContinues)
+                {
+                    lineContinues = false;
+                    continue;
+                }
+
+                AddImplementsRelationship(
+                    statement,
+                    relationships,
+                    members,
+                    callableDeclarations);
+                statement.Clear();
+                continue;
+            }
+
+            if (token.Kind == VbaTokenKind.Whitespace)
+            {
+                continue;
+            }
+
+            if (token.Kind == VbaTokenKind.Punctuation && token.Text == ":")
+            {
+                AddImplementsRelationship(
+                    statement,
+                    relationships,
+                    members,
+                    callableDeclarations);
+                statement.Clear();
+                continue;
+            }
+
+            statement.Add(token);
+        }
+
+        AddImplementsRelationship(
+            statement,
+            relationships,
+            members,
+            callableDeclarations);
+        return relationships;
+    }
+
+    private static void AddImplementsRelationship(
+        IReadOnlyList<VbaToken> statement,
+        ICollection<VbaImplementsRelationshipSyntax> relationships,
+        IReadOnlyList<VbaModuleMemberSyntax> members,
+        IReadOnlyList<VbaCallableDeclarationSyntax> callableDeclarations)
+    {
+        if (statement.Count is not (2 or 4)
+            || IsInsideNestedDeclaration(
+                statement[0].Range.Start,
+                members,
+                callableDeclarations)
+            || !statement[0].Text.Equals(
+                "Implements",
+                StringComparison.OrdinalIgnoreCase)
+            || !IsImplementsTypeName(statement[1]))
+        {
+            return;
+        }
+
+        VbaToken name;
+        VbaToken? qualifier;
+        if (statement.Count == 2)
+        {
+            qualifier = null;
+            name = statement[1];
+        }
+        else
+        {
+            if (statement[2].Text != "." || !IsImplementsTypeName(statement[3]))
+            {
+                return;
+            }
+
+            qualifier = statement[1];
+            name = statement[3];
+        }
+
+        var typeRange = new VbaSyntaxRange(statement[1].Range.Start, name.Range.End);
+        relationships.Add(new VbaImplementsRelationshipSyntax(
+            new VbaTypeReferenceSyntax(name.Text, qualifier?.Text),
+            typeRange,
+            name.Range,
+            qualifier?.Range,
+            new VbaSyntaxRange(statement[0].Range.Start, name.Range.End)));
+    }
+
+    private static bool IsImplementsTypeName(VbaToken token)
+        => token.Kind is VbaTokenKind.Identifier or VbaTokenKind.Keyword
+            && VbaIdentifier.IsIdentifier(token.Text);
+
+    private static IReadOnlyList<VbaDefTypeDirectiveSyntax>
+        ParseDefTypeDirectives(
+            VbaTokenStream tokenStream,
+            int codeStartLine,
+            IReadOnlyList<VbaModuleMemberSyntax> members,
+            IReadOnlyList<VbaCallableDeclarationSyntax> callableDeclarations)
+    {
+        var directives = new List<VbaDefTypeDirectiveSyntax>();
+        var statement = new List<VbaToken>();
+        var lineContinues = false;
+        foreach (var token in tokenStream.Tokens)
+        {
+            if (token.Range.Start.Line < codeStartLine)
+            {
+                continue;
+            }
+
+            if (token.Kind == VbaTokenKind.Comment)
+            {
+                continue;
+            }
+
+            if (token.Kind == VbaTokenKind.LineContinuation)
+            {
+                lineContinues = true;
+                continue;
+            }
+
+            if (token.Kind == VbaTokenKind.NewLine)
+            {
+                if (lineContinues)
+                {
+                    lineContinues = false;
+                    continue;
+                }
+
+                AddDefTypeDirective(
+                    statement,
+                    directives,
+                    members,
+                    callableDeclarations);
+                statement.Clear();
+                continue;
+            }
+
+            if (token.Kind == VbaTokenKind.Whitespace)
+            {
+                continue;
+            }
+
+            if (token.Kind == VbaTokenKind.Punctuation && token.Text == ":")
+            {
+                AddDefTypeDirective(
+                    statement,
+                    directives,
+                    members,
+                    callableDeclarations);
+                statement.Clear();
+                continue;
+            }
+
+            statement.Add(token);
+        }
+
+        AddDefTypeDirective(
+            statement,
+            directives,
+            members,
+            callableDeclarations);
+        return directives;
+    }
+
+    private static void AddDefTypeDirective(
+        IReadOnlyList<VbaToken> statement,
+        ICollection<VbaDefTypeDirectiveSyntax> directives,
+        IReadOnlyList<VbaModuleMemberSyntax> members,
+        IReadOnlyList<VbaCallableDeclarationSyntax> callableDeclarations)
+    {
+        if (statement.Count < 2
+            || IsInsideNestedDeclaration(
+                statement[0].Range.Start,
+                members,
+                callableDeclarations)
+            || !TryGetDefTypeName(statement[0].Text, out var typeName))
+        {
+            return;
+        }
+
+        var ranges = new List<VbaDefTypeLetterRangeSyntax>();
+        var index = 1;
+        while (index < statement.Count)
+        {
+            if (!TryGetDefTypeLetter(statement[index], out var start))
+            {
+                return;
+            }
+
+            var end = start;
+            index++;
+            if (index < statement.Count && statement[index].Text == "-")
+            {
+                index++;
+                if (index >= statement.Count
+                    || !TryGetDefTypeLetter(statement[index], out end))
+                {
+                    return;
+                }
+
+                index++;
+            }
+
+            if (start > end)
+            {
+                return;
+            }
+
+            ranges.Add(new VbaDefTypeLetterRangeSyntax(start, end));
+            if (index == statement.Count)
+            {
+                break;
+            }
+
+            if (statement[index].Text != ",")
+            {
+                return;
+            }
+
+            index++;
+        }
+
+        if (ranges.Count == 0)
+        {
+            return;
+        }
+
+        directives.Add(new VbaDefTypeDirectiveSyntax(
+            typeName,
+            ranges.ToArray(),
+            new VbaSyntaxRange(statement[0].Range.Start, statement[^1].Range.End)));
+    }
+
+    private static bool IsInsideNestedDeclaration(
+        VbaSyntaxPosition position,
+        IReadOnlyList<VbaModuleMemberSyntax> members,
+        IReadOnlyList<VbaCallableDeclarationSyntax> callableDeclarations)
+        => members.Any(member => member.Kind is
+                VbaDeclarationKind.Type or VbaDeclarationKind.Enum
+            && member.BlockRange.Start.Offset < position.Offset
+            && position.Offset < member.BlockRange.End.Offset)
+            || callableDeclarations.Any(callable =>
+        {
+            if (callable.IsExternal)
+            {
+                return false;
+            }
+
+            var headerEnd = (callable.SignatureRange ?? callable.Range).End.Offset;
+            return headerEnd <= position.Offset
+                && position.Offset < callable.BlockRange.End.Offset;
+        });
+
+    private static bool TryGetDefTypeName(string keyword, out string typeName)
+    {
+        typeName = keyword.ToUpperInvariant() switch
+        {
+            "DEFBOOL" => "Boolean",
+            "DEFBYTE" => "Byte",
+            "DEFCUR" => "Currency",
+            "DEFDATE" => "Date",
+            "DEFDBL" => "Double",
+            "DEFDEC" => "Decimal",
+            "DEFINT" => "Integer",
+            "DEFLNG" => "Long",
+            "DEFLNGLNG" => "LongLong",
+            "DEFLNGPTR" => "LongPtr",
+            "DEFOBJ" => "Object",
+            "DEFSNG" => "Single",
+            "DEFSTR" => "String",
+            "DEFVAR" => "Variant",
+            _ => ""
+        };
+        return typeName.Length > 0;
+    }
+
+    private static bool TryGetDefTypeLetter(VbaToken token, out char letter)
+    {
+        letter = '\0';
+        if (token.Text.Length != 1
+            || !char.IsAsciiLetter(token.Text[0]))
+        {
+            return false;
+        }
+
+        letter = char.ToUpperInvariant(token.Text[0]);
+        return true;
     }
 
     private static IEnumerable<VbaSyntaxDiagnostic> CollectWithEventsDeclarationDiagnostics(
@@ -1058,11 +1394,11 @@ internal static class VbaSyntaxTreeParser
                 continue;
             }
 
-            var procedureMatch = MatchIdentifier(ProcedurePattern, codeLine);
+            var procedureStatement = CreateLogicalStatement(sourceText, lineIndex);
+            var procedureMatch = MatchProcedureDeclaration(
+                procedureStatement.Text);
             if (procedureMatch.Success)
             {
-                var procedureStatement = CreateLogicalStatement(sourceText, lineIndex);
-                procedureMatch = MatchIdentifier(ProcedurePattern, procedureStatement.Text);
                 var declaration = CreateCallableDeclaration(
                     sourceText,
                     procedureMatch,
@@ -1848,7 +2184,17 @@ internal static class VbaSyntaxTreeParser
             documentation,
             allowAnyTypeReference: isExternal);
         var typeReference = ParseReturnTypeReference(match, line.Text);
-        var signature = CreateSignature(name, parameters, typeReference, documentation);
+        GetCallableSignatureEnd(
+            match,
+            line.Text,
+            isExternal,
+            out var isReturnArray);
+        var signature = CreateSignature(
+            name,
+            parameters,
+            typeReference,
+            documentation,
+            isReturnArray);
         var kind = match.Groups["kind"].Success && !match.Groups["propertyKind"].Success
             ? VbaDeclarationKind.Procedure
             : VbaDeclarationKind.Property;
@@ -1896,7 +2242,15 @@ internal static class VbaSyntaxTreeParser
                     match.Groups["parameters"].Index - 1,
                     match.Groups["parameters"].Index
                         + match.Groups["parameters"].Length + 1)
-                : null);
+                : null)
+        {
+            SignatureRange = CreateCallableSignatureRange(
+                sourceText,
+                match,
+                line,
+                isExternal),
+            IsReturnArray = isReturnArray
+        };
     }
 
     private static VbaCallableDeclarationSyntax CreateCallableDeclaration(
@@ -1911,7 +2265,17 @@ internal static class VbaSyntaxTreeParser
         var documentation = ParseDocumentationComment(sourceText.Lines, lineIndex);
         var parameters = ParseParameterSyntax(match, statement, documentation);
         var typeReference = ParseReturnTypeReference(match, statement.Text);
-        var signature = CreateSignature(name, parameters, typeReference, documentation);
+        GetCallableSignatureEnd(
+            match,
+            statement.Text,
+            isExternal: false,
+            out var isReturnArray);
+        var signature = CreateSignature(
+            name,
+            parameters,
+            typeReference,
+            documentation,
+            isReturnArray);
         var kind = match.Groups["kind"].Success && !match.Groups["propertyKind"].Success
             ? VbaDeclarationKind.Procedure
             : VbaDeclarationKind.Property;
@@ -1956,7 +2320,169 @@ internal static class VbaSyntaxTreeParser
                     match.Groups["parameters"].Index - 1,
                     match.Groups["parameters"].Index
                         + match.Groups["parameters"].Length + 1)
-                : null);
+                : null)
+        {
+            SignatureRange = CreateCallableSignatureRange(match, statement),
+            IsReturnArray = isReturnArray
+        };
+    }
+
+    private static VbaSyntaxRange CreateCallableSignatureRange(
+        VbaSourceText sourceText,
+        Match match,
+        VbaSourceLine line,
+        bool isExternal)
+    {
+        var start = match.Groups["name"].Index;
+        var end = GetCallableSignatureEnd(
+            match,
+            line.Text,
+            isExternal,
+            out _);
+        return sourceText.RangeForLine(line, start, end);
+    }
+
+    private static VbaSyntaxRange CreateCallableSignatureRange(
+        Match match,
+        LogicalStatement statement)
+    {
+        var start = match.Groups["name"].Index;
+        var end = GetCallableSignatureEnd(
+            match,
+            statement.Text,
+            isExternal: false,
+            out _);
+        return RangeFromLogicalSpan(statement, start, end);
+    }
+
+    private static int GetCallableSignatureEnd(
+        Match match,
+        string text,
+        bool isExternal,
+        out bool isReturnArray)
+    {
+        isReturnArray = false;
+        var name = match.Groups["name"];
+        var typeCharacter = match.Groups["typeCharacter"];
+        var parameters = match.Groups["parameters"];
+        var end = typeCharacter.Success
+            ? typeCharacter.Index + typeCharacter.Length
+            : name.Index + name.Length;
+        if (parameters.Success)
+        {
+            end = parameters.Index + parameters.Length + 1;
+        }
+        else if (isExternal)
+        {
+            end = Math.Max(end, match.Index + match.Length);
+        }
+
+        var suffixTokens = VbaTokenStream.FromText(text[end..]).Tokens
+            .Where(token => token.Kind is not VbaTokenKind.Whitespace
+                and not VbaTokenKind.NewLine
+                and not VbaTokenKind.LineContinuation
+                and not VbaTokenKind.Comment)
+            .ToArray();
+        var index = 0;
+        if (index >= suffixTokens.Length
+            || !suffixTokens[index].Text.Equals("As", StringComparison.OrdinalIgnoreCase))
+        {
+            return end;
+        }
+
+        index++;
+        if (index < suffixTokens.Length
+            && suffixTokens[index].Text.Equals("New", StringComparison.OrdinalIgnoreCase))
+        {
+            index++;
+        }
+
+        if (index >= suffixTokens.Length
+            || !IsTypeReferenceName(suffixTokens[index], allowAnyTypeReference: false))
+        {
+            return end;
+        }
+
+        var typeEndIndex = index;
+        if (index + 2 < suffixTokens.Length
+            && suffixTokens[index + 1].Text == "."
+            && IsTypeReferenceName(suffixTokens[index + 2], allowAnyTypeReference: false))
+        {
+            typeEndIndex = index + 2;
+        }
+
+        var arrayOpenIndex = typeEndIndex + 1;
+        if (arrayOpenIndex < suffixTokens.Length
+            && suffixTokens[arrayOpenIndex].Text == "(")
+        {
+            var arrayCloseIndex = VbaBlockHeaderSyntax.FindMatchingCloseParenthesis(
+                suffixTokens,
+                arrayOpenIndex);
+            if (arrayCloseIndex >= 0)
+            {
+                typeEndIndex = arrayCloseIndex;
+                isReturnArray = true;
+            }
+        }
+
+        return end + suffixTokens[typeEndIndex].Range.End.Offset;
+    }
+
+    private static Match MatchProcedureDeclaration(string text)
+        => MatchIdentifier(
+            ProcedurePattern,
+            MaskReturnArrayDesignator(GetDeclarationHeaderText(text)));
+
+    private static string GetDeclarationHeaderText(string text)
+    {
+        var separator = VbaTokenStream.FromText(text).Tokens.FirstOrDefault(token =>
+            token.Kind == VbaTokenKind.Punctuation && token.Text == ":");
+        return separator is null
+            ? text
+            : text[..separator.Range.Start.Offset];
+    }
+
+    private static string MaskReturnArrayDesignator(string text)
+    {
+        var tokens = VbaTokenStream.FromText(text).Tokens
+            .Where(token => token.Kind is not VbaTokenKind.Whitespace
+                and not VbaTokenKind.NewLine
+                and not VbaTokenKind.LineContinuation
+                and not VbaTokenKind.Comment)
+            .TakeWhile(token => token.Kind != VbaTokenKind.Punctuation
+                || token.Text != ":")
+            .ToArray();
+        var end = tokens.Length;
+        if (end > 0
+            && tokens[end - 1].Text.Equals(
+                "Static",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            end--;
+        }
+
+        if (end < 3
+            || tokens[end - 2].Text != "("
+            || tokens[end - 1].Text != ")"
+            || !tokens.Take(end - 2).Any(token => token.Text.Equals(
+                "As",
+                StringComparison.OrdinalIgnoreCase)))
+        {
+            return text;
+        }
+
+        var masked = new StringBuilder(text);
+        for (var index = end - 2; index < end; index++)
+        {
+            for (var offset = tokens[index].Range.Start.Offset;
+                 offset < tokens[index].Range.End.Offset;
+                 offset++)
+            {
+                masked[offset] = ' ';
+            }
+        }
+
+        return masked.ToString();
     }
 
     private static VbaDeclarationSyntax CreateCallableSourceDeclaration(VbaCallableDeclarationSyntax declaration)
@@ -1971,6 +2497,7 @@ internal static class VbaSyntaxTreeParser
             TypeReference: declaration.TypeReference,
             IsExternal: declaration.IsExternal,
             IsStatic: declaration.IsStatic,
+            IsArray: declaration.IsReturnArray,
             DeclarationLabel: CreateDeclarationLabel(declaration),
             CallableKind: declaration.DeclarationKeyword,
             PropertyAccessorKind: declaration.PropertyAccessorKind);
@@ -2372,6 +2899,9 @@ internal static class VbaSyntaxTreeParser
             var typeReference = ParseTypeReference(
                 segment.Text,
                 declaredName: name);
+            var isFixedLengthString = IsFixedLengthStringDeclaration(
+                segment.Text,
+                name);
             var withEventsKeywordRange = withEventsToken is null
                 ? null
                 : MapVariableDeclarationSpan(
@@ -2460,10 +2990,43 @@ internal static class VbaSyntaxTreeParser
                 HasRecognizableWithEventsDeclaratorShape: withEventsToken is null
                     || HasRecognizableWithEventsDeclaratorShape(
                         segment.Text,
-                        nameToken)));
+                        nameToken))
+            {
+                IsFixedLengthString = isFixedLengthString
+            });
         }
 
         return declarations;
+    }
+
+    private static bool IsFixedLengthStringDeclaration(
+        string text,
+        string declaredName)
+    {
+        var tokens = VbaTokenStream.FromText(text).Tokens
+            .Where(token => token.Kind is not (
+                VbaTokenKind.Whitespace
+                or VbaTokenKind.NewLine
+                or VbaTokenKind.LineContinuation
+                or VbaTokenKind.Comment))
+            .ToArray();
+        var asIndex = FindTypeClauseAsIndex(tokens, declaredName);
+        if (asIndex < 0 || asIndex + 2 >= tokens.Length)
+        {
+            return false;
+        }
+
+        var typeIndex = asIndex + 1;
+        if (tokens[typeIndex].Text.Equals("New", StringComparison.OrdinalIgnoreCase))
+        {
+            typeIndex++;
+        }
+
+        return typeIndex + 1 < tokens.Length
+            && tokens[typeIndex].Text.Equals(
+                "String",
+                StringComparison.OrdinalIgnoreCase)
+            && tokens[typeIndex + 1].Text == "*";
     }
 
     private static bool TryReadDeclaredName(
@@ -2539,7 +3102,10 @@ internal static class VbaSyntaxTreeParser
                 IsOptionalParameter(segment.Text),
                 IsByRefParameter(segment.Text),
                 IsParamArrayParameter(segment.Text),
-                IsArrayParameter(segment.Text, name)));
+                IsArrayParameter(segment.Text, name))
+            {
+                DefaultExpression = GetParameterDefaultExpression(segment.Text)
+            });
         }
 
         return parameters;
@@ -2579,7 +3145,10 @@ internal static class VbaSyntaxTreeParser
                 IsOptionalParameter(segment.Text),
                 IsByRefParameter(segment.Text),
                 IsParamArrayParameter(segment.Text),
-                IsArrayParameter(segment.Text, name)));
+                IsArrayParameter(segment.Text, name))
+            {
+                DefaultExpression = GetParameterDefaultExpression(segment.Text)
+            });
         }
 
         return parameters;
@@ -2589,13 +3158,14 @@ internal static class VbaSyntaxTreeParser
         string name,
         IReadOnlyList<VbaCallableParameterSyntax> parameters,
         VbaTypeReferenceSyntax? returnTypeReference,
-        DocumentationComment? documentation)
+        DocumentationComment? documentation,
+        bool isReturnArray = false)
     {
         var returnTypeName = returnTypeReference?.Name;
         var label = $"{name}({string.Join(", ", parameters.Select(CreateSignatureParameterLabel))})";
         if (!string.IsNullOrEmpty(returnTypeName))
         {
-            label = $"{label} As {returnTypeName}";
+            label = $"{label} As {returnTypeName}{(isReturnArray ? "()" : "")}";
         }
 
         var documentationLines = new List<string>();
@@ -2625,7 +3195,10 @@ internal static class VbaSyntaxTreeParser
                     parameter.IsByRef,
                     parameter.IsParamArray,
                     parameter.IsArray,
-                    parameter.Range))
+                    parameter.Range)
+                {
+                    DefaultExpression = parameter.DefaultExpression
+                })
                 .ToArray(),
             documentationLines.Count == 0 ? null : string.Join('\n', documentationLines));
     }
@@ -2729,6 +3302,40 @@ internal static class VbaSyntaxTreeParser
 
     private static bool IsParamArrayParameter(string text)
         => HasParameterModifier(text, "ParamArray");
+
+    private static string? GetParameterDefaultExpression(string text)
+    {
+        var tokens = VbaTokenStream.FromText(text).Tokens
+            .Where(token => token.Kind is not VbaTokenKind.Whitespace
+                and not VbaTokenKind.NewLine
+                and not VbaTokenKind.Comment
+                and not VbaTokenKind.LineContinuation)
+            .ToArray();
+        var parenthesesDepth = 0;
+        for (var index = 0; index < tokens.Length; index++)
+        {
+            if (tokens[index].Text == "(")
+            {
+                parenthesesDepth++;
+                continue;
+            }
+
+            if (tokens[index].Text == ")")
+            {
+                parenthesesDepth--;
+                continue;
+            }
+
+            if (tokens[index].Text != "=" || parenthesesDepth != 0)
+            {
+                continue;
+            }
+
+            return string.Concat(tokens[(index + 1)..].Select(token => token.Text));
+        }
+
+        return null;
+    }
 
     private static bool HasParameterModifier(string text, string modifier)
     {

@@ -8,10 +8,10 @@ namespace VbaLanguageServer.Tests;
 public sealed class VbaProjectReferenceCatalogPersistentStoreTests
 {
     [Fact]
-    public void TypeLibEventMetadataUsesANewGeneratorVersion()
+    public void TypeLibPropertyInvokeMetadataUsesANewGeneratorVersion()
     {
         Assert.Equal(
-            "typelib-catalog-v9",
+            "typelib-catalog-v10",
             VbaProjectReferenceCatalogPersistentStore.CurrentGeneratorVersion);
     }
 
@@ -40,7 +40,8 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
                 definition.Name == "GeneratedMember"
                 && definition.Kind == VbaSourceDefinitionKind.Property
                 && definition.ParentTypeName == "GeneratedType"
-                && definition.PropertyAccess == (VbaPropertyAccess.Readable | VbaPropertyAccess.Writable));
+                && definition.PropertyAccess == (VbaPropertyAccess.Readable | VbaPropertyAccess.Writable)
+                && definition.PropertyAccessorKind == VbaLanguageServer.Syntax.VbaPropertyAccessorKind.Get);
             Assert.Contains(entry.Catalog.Definitions, definition =>
                 definition.Name == "GeneratedMethod"
                 && definition.Signature?.CallableKind == VbaCallableKind.Function
@@ -784,7 +785,11 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
                     VbaSourceDefinitionKind.Property,
                     "Generated member.",
                     ParentTypeName: typeName,
-                    PropertyAccess: VbaPropertyAccess.Readable | VbaPropertyAccess.Writable),
+                    PropertyAccess: VbaPropertyAccess.Readable | VbaPropertyAccess.Writable)
+                {
+                    PropertyAccessorKind =
+                        VbaLanguageServer.Syntax.VbaPropertyAccessorKind.Get
+                },
                 new VbaProjectReferenceDefinition(
                     referenceName,
                     "GeneratedMethod",

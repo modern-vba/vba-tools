@@ -17,6 +17,7 @@ internal sealed class VbaSemanticResolution
     private readonly VbaCallSiteResolution callSiteResolution;
     private readonly VbaWithEventsSemanticModel withEventsSemantics;
     private readonly VbaHostClassEventSemanticModel hostClassEvents;
+    private readonly VbaInterfaceSemanticModel interfaceSemantics;
 
     /// <summary>
     /// Creates the semantic resolution service.
@@ -46,6 +47,7 @@ internal sealed class VbaSemanticResolution
             nameResolution,
             hostClassEvents,
             referenceCatalogIdentities);
+        interfaceSemantics = new VbaInterfaceSemanticModel(nameResolution);
         callSiteResolution = new VbaCallSiteResolution(
             nameResolution,
             memberChainResolution,
@@ -61,6 +63,20 @@ internal sealed class VbaSemanticResolution
         VbaSourceDefinition definition)
         => nameResolution
             .HasIndeterminateConditionalCompilationOwnership(definition);
+
+    internal IReadOnlyList<VbaProjectValidationDiagnostic>
+        GetInterfaceContractDiagnostics(VbaSourceDocument currentDocument)
+        => interfaceSemantics.GetDiagnostics(currentDocument);
+
+    internal IReadOnlyList<VbaSourceDefinition>
+        ResolveInterfaceAccessorContractDefinitions(
+            VbaSourceDocument currentDocument,
+            int line,
+            int character)
+        => interfaceSemantics.ResolveAccessorContractDefinitions(
+            currentDocument,
+            line,
+            character);
 
     internal VbaEventHandlerCompatibility AnalyzeWithEventsHandlerCompatibility(
         VbaSourceDocument currentDocument,
@@ -811,6 +827,16 @@ internal sealed class VbaSemanticResolution
         }
 
         var syntaxTree = GetSyntaxTree(currentDocument);
+        var interfaceSignatureHelp = interfaceSemantics.GetAccessorSignatureHelp(
+            currentDocument,
+            line,
+            character,
+            retriggerIdentity);
+        if (interfaceSignatureHelp is not null)
+        {
+            return interfaceSignatureHelp;
+        }
+
         var handlerSignatureHelp = TryGetWithEventsHandlerSignatureHelp(
             currentDocument,
             syntaxTree,

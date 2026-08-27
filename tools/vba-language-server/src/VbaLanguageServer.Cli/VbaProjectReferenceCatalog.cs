@@ -1,5 +1,6 @@
 using VbaLanguageServer.Diagnostics;
 using VbaLanguageServer.ProjectModel;
+using VbaLanguageServer.Syntax;
 
 namespace VbaLanguageServer.SourceModel;
 
@@ -49,7 +50,13 @@ public sealed record VbaProjectReferenceDefinition(
     VbaPropertyAccess PropertyAccess = VbaPropertyAccess.Unknown,
     bool IsCreatable = false,
     ReferenceDefinitionGlobalExposure GlobalExposure = ReferenceDefinitionGlobalExposure.None,
-    bool IsAuthoringAvailable = true);
+    bool IsAuthoringAvailable = true)
+{
+    /// <summary>
+    /// Gets the physical TypeLib Property invoke kind, when known.
+    /// </summary>
+    public VbaPropertyAccessorKind? PropertyAccessorKind { get; init; }
+}
 
 /// <summary>
 /// Contains reference-catalog definitions and qualifier aliases for one VBA project reference.
@@ -711,7 +718,8 @@ public sealed class VbaProjectReferenceCatalogSet
 
         return left.MemberId == right.MemberId
             && left.FunctionFlags == right.FunctionFlags
-            && left.IsComplete == right.IsComplete;
+            && left.IsComplete == right.IsComplete
+            && left.PropertyAccessorKind == right.PropertyAccessorKind;
     }
 
     private static bool HaveEquivalentTypeLibCallableSignatures(
@@ -810,7 +818,8 @@ public sealed class VbaProjectReferenceCatalogSet
                 definition.ReferenceName,
                 definition.ParentTypeName,
                 definition.Kind,
-                definition.Name),
+                definition.Name,
+                definition.PropertyAccessorKind),
             Location: location,
             Name: definition.Name,
             Kind: definition.Kind,
@@ -822,6 +831,7 @@ public sealed class VbaProjectReferenceCatalogSet
             TypeReference: definition.TypeReference,
             DeclarationLabel: CreateDeclarationLabel(definition, signature),
             PropertyAccess: definition.PropertyAccess,
+            PropertyAccessorKind: definition.PropertyAccessorKind,
             IsCreatable: definition.IsCreatable,
             ReferenceGlobalExposure: definition.GlobalExposure,
             CallableKind: signature?.CallableKind,

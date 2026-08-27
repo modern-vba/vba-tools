@@ -264,6 +264,19 @@ internal static class VbaSyntaxTreeIncrementalParser
             moduleContext.CodeStartLine,
             currentSource.FullRange)
         {
+            ImplementsRelationships = parsedLocalTree.Module
+                .ImplementsRelationships
+                .Select(relationship => Shift(
+                    relationship,
+                    origin.Line,
+                    origin.Utf16Offset))
+                .ToArray(),
+            DefTypeDirectives = parsedLocalTree.Module.DefTypeDirectives
+                .Select(directive => Shift(
+                    directive,
+                    origin.Line,
+                    origin.Utf16Offset))
+                .ToArray(),
             IncompleteEventDeclarationRanges = parsedLocalTree.Module
                 .IncompleteEventDeclarationRanges
                 .Select(range => Shift(range, origin.Line, origin.Utf16Offset))
@@ -399,6 +412,28 @@ internal static class VbaSyntaxTreeIncrementalParser
                 block => block.Range,
                 static (block, shiftLineDelta, shiftOffsetDelta) =>
                     Shift(block, shiftLineDelta, shiftOffsetDelta),
+                oldRange,
+                newRange),
+            ImplementsRelationships = MergeByRange(
+                previousTree.Module.ImplementsRelationships,
+                parsedMemberTree.Module.ImplementsRelationships,
+                relationship => relationship.Range,
+                static (relationship, shiftLineDelta, shiftOffsetDelta) =>
+                    Shift(
+                        relationship,
+                        shiftLineDelta,
+                        shiftOffsetDelta),
+                oldRange,
+                newRange),
+            DefTypeDirectives = MergeByRange(
+                previousTree.Module.DefTypeDirectives,
+                parsedMemberTree.Module.DefTypeDirectives,
+                directive => directive.Range,
+                static (directive, shiftLineDelta, shiftOffsetDelta) =>
+                    Shift(
+                        directive,
+                        shiftLineDelta,
+                        shiftOffsetDelta),
                 oldRange,
                 newRange),
             IncompleteEventDeclarationRanges = MergeByRange(
@@ -724,6 +759,10 @@ internal static class VbaSyntaxTreeIncrementalParser
                 .Select(parameter => parameter with { Range = Shift(parameter.Range, lineDelta, offsetDelta) })
                 .ToArray(),
             LineIndex = declaration.LineIndex + lineDelta,
+            SignatureRange = ShiftNullable(
+                declaration.SignatureRange,
+                lineDelta,
+                offsetDelta),
             DeclarationKeywordRange = ShiftNullable(
                 declaration.DeclarationKeywordRange,
                 lineDelta,
@@ -794,6 +833,33 @@ internal static class VbaSyntaxTreeIncrementalParser
         int lineDelta,
         int offsetDelta)
         => directive with { Range = Shift(directive.Range, lineDelta, offsetDelta) };
+
+    private static VbaImplementsRelationshipSyntax Shift(
+        VbaImplementsRelationshipSyntax relationship,
+        int lineDelta,
+        int offsetDelta)
+        => relationship with
+        {
+            InterfaceTypeRange = Shift(
+                relationship.InterfaceTypeRange,
+                lineDelta,
+                offsetDelta),
+            NameRange = Shift(relationship.NameRange, lineDelta, offsetDelta),
+            QualifierRange = ShiftNullable(
+                relationship.QualifierRange,
+                lineDelta,
+                offsetDelta),
+            Range = Shift(relationship.Range, lineDelta, offsetDelta)
+        };
+
+    private static VbaDefTypeDirectiveSyntax Shift(
+        VbaDefTypeDirectiveSyntax directive,
+        int lineDelta,
+        int offsetDelta)
+        => directive with
+        {
+            Range = Shift(directive.Range, lineDelta, offsetDelta)
+        };
 
     private static VbaPreprocessorBlockSyntax Shift(
         VbaPreprocessorBlockSyntax block,

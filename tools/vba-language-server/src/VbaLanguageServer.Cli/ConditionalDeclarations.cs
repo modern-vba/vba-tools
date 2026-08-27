@@ -792,6 +792,12 @@ internal sealed class VbaProjectValidationDiagnosticIndex
         {
             var syntaxTree = document.SyntaxTree
                 ?? VbaSyntaxTree.ParseModule(document.Uri, document.Text);
+            foreach (var diagnostic in semanticResolution
+                .GetInterfaceContractDiagnostics(document))
+            {
+                AddProjectDiagnostic(diagnostics, document.Uri, diagnostic);
+            }
+
             foreach (var variable in document.Definitions.Where(definition =>
                          definition.IsWithEvents
                          && !definition.IsRecoveredWithEventsVariableDeclaration))

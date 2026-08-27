@@ -71,6 +71,35 @@ internal static class VbaConstantExpressionSyntax
         return Evaluate(expression, resolveConstant, supportsLongLong);
     }
 
+    internal static VbaConditionalCompilationExpressionEvaluation
+        EvaluateOrdinaryConstantExpression(
+            IReadOnlyList<VbaToken> tokens,
+            int start,
+            int end)
+    {
+        if (start < 0 || end > tokens.Count || start >= end)
+        {
+            return VbaConditionalCompilationExpressionEvaluation.Failure(
+                VbaConditionalCompilationFailureKind.Malformed,
+                "The constant expression is malformed.");
+        }
+
+        var parser = new Parser(tokens, start, end, allowQualifiedNames: true);
+        if (!parser.TryParse(out var expression))
+        {
+            return VbaConditionalCompilationExpressionEvaluation.Failure(
+                VbaConditionalCompilationFailureKind.Malformed,
+                "The constant expression is malformed.");
+        }
+
+        return Evaluate(
+            expression,
+            _ => VbaConditionalCompilationExpressionEvaluation.Failure(
+                VbaConditionalCompilationFailureKind.Undefined,
+                "The constant name is unresolved."),
+            supportsLongLong: true);
+    }
+
     private static VbaConditionalCompilationExpressionEvaluation Evaluate(
         ExpressionNode expression,
         Func<string, VbaConditionalCompilationExpressionEvaluation> resolveConstant,

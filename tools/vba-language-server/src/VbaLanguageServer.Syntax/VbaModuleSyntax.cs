@@ -40,12 +40,52 @@ public sealed record VbaModuleSyntax(
     VbaSyntaxRange Range)
 {
     /// <summary>
+    /// Gets structurally complete source Implements relationships in source order.
+    /// </summary>
+    public IReadOnlyList<VbaImplementsRelationshipSyntax> ImplementsRelationships
+        { get; init; } = [];
+
+    /// <summary>
+    /// Gets structurally complete module DefType directives in source order.
+    /// </summary>
+    public IReadOnlyList<VbaDefTypeDirectiveSyntax> DefTypeDirectives
+        { get; init; } = [];
+
+    /// <summary>
     /// Gets Event-like declaration ranges whose names could not be recovered.
     /// These ranges make the source Event surface incomplete without creating
     /// synthetic declarations or names.
     /// </summary>
     public IReadOnlyList<VbaSyntaxRange> IncompleteEventDeclarationRanges { get; init; } = [];
 }
+
+/// <summary>
+/// Represents one structurally complete Implements relationship in a class module.
+/// </summary>
+/// <param name="InterfaceType">The written interface type reference.</param>
+/// <param name="InterfaceTypeRange">The complete qualified or unqualified type range.</param>
+/// <param name="NameRange">The unqualified interface-name range.</param>
+/// <param name="QualifierRange">The optional qualifier range.</param>
+/// <param name="Range">The complete Implements statement range through the type.</param>
+public sealed record VbaImplementsRelationshipSyntax(
+    VbaTypeReferenceSyntax InterfaceType,
+    VbaSyntaxRange InterfaceTypeRange,
+    VbaSyntaxRange NameRange,
+    VbaSyntaxRange? QualifierRange,
+    VbaSyntaxRange Range);
+
+/// <summary>
+/// Represents one inclusive ASCII initial-letter range in a DefType directive.
+/// </summary>
+public sealed record VbaDefTypeLetterRangeSyntax(char Start, char End);
+
+/// <summary>
+/// Represents one structurally complete module DefType directive.
+/// </summary>
+public sealed record VbaDefTypeDirectiveSyntax(
+    string TypeName,
+    IReadOnlyList<VbaDefTypeLetterRangeSyntax> LetterRanges,
+    VbaSyntaxRange Range);
 
 /// <summary>
 /// Represents the parsed module identity, usually from Attribute VB_Name.

@@ -170,6 +170,67 @@ public sealed class VbaSyntaxTreeProjectionTests
     }
 
     [Fact]
+    public void Incremental_parser_shifts_module_directive_facts_after_an_edited_member()
+    {
+        const string uri = "file:///C:/work/IncrementalDirectives.cls";
+        var original = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IncrementalDirectives\"",
+            "Private Sub Before()",
+            "    Debug.Print 1",
+            "    Debug.Print 3",
+            "End Sub",
+            "DefInt A-Z",
+            "Implements ISettings"
+        ]);
+        var updated = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IncrementalDirectives\"",
+            "Private Sub Before()",
+            "    Debug.Print 1",
+            "    Debug.Print 2",
+            "    Debug.Print 3",
+            "End Sub",
+            "DefInt A-Z",
+            "Implements ISettings"
+        ]);
+        var previous = VbaSyntaxTree.ParseModule(uri, original);
+
+        var result = VbaSyntaxTree.ParseOrUpdate(uri, updated, previous);
+        var clean = VbaSyntaxTree.ParseModule(uri, updated);
+
+        Assert.IsType<VbaSyntaxTreeChangeSet.ModuleMember>(result);
+        var expectedDefType = Assert.Single(clean.Module.DefTypeDirectives);
+        var incrementalDefType = Assert.Single(
+            result.SyntaxTree.Module.DefTypeDirectives);
+        Assert.Equal(
+            expectedDefType.TypeName,
+            incrementalDefType.TypeName);
+        Assert.Equal(
+            expectedDefType.LetterRanges.ToArray(),
+            incrementalDefType.LetterRanges.ToArray());
+        Assert.Equal(expectedDefType.Range, incrementalDefType.Range);
+
+        var expectedRelationship = Assert.Single(
+            clean.Module.ImplementsRelationships);
+        var incrementalRelationship = Assert.Single(
+            result.SyntaxTree.Module.ImplementsRelationships);
+        Assert.Equal(
+            expectedRelationship.InterfaceType,
+            incrementalRelationship.InterfaceType);
+        Assert.Equal(
+            expectedRelationship.InterfaceTypeRange,
+            incrementalRelationship.InterfaceTypeRange);
+        Assert.Equal(
+            expectedRelationship.NameRange,
+            incrementalRelationship.NameRange);
+        Assert.Equal(
+            expectedRelationship.QualifierRange,
+            incrementalRelationship.QualifierRange);
+        Assert.Equal(expectedRelationship.Range, incrementalRelationship.Range);
+    }
+
+    [Fact]
     public void Parser_returns_member_proof_for_a_conditional_directive_only_edit()
     {
         const string uri = "file:///C:/work/IncrementalConditionalFamily.bas";

@@ -32,7 +32,13 @@ public enum TypeLibCatalogRawTypeKind
 public sealed record TypeLibCatalogCallableMetadata(
     int MemberId,
     int FunctionFlags,
-    bool IsComplete = true);
+    bool IsComplete = true)
+{
+    /// <summary>
+    /// Gets the physical TypeLib Property invoke kind, when known.
+    /// </summary>
+    public VbaPropertyAccessorKind? PropertyAccessorKind { get; init; }
+}
 
 /// <summary>
 /// Retains one coclass implemented-interface association, raw type category, and callable surface.
@@ -167,7 +173,13 @@ public static class TypeLibReferenceCatalogBuilder
                     PropertyAccess: member.PropertyAccess,
                     GlobalExposure: GetGlobalExposure(type),
                     IsAuthoringAvailable:
-                        TypeLibCatalogMemberFacts.IsAuthoringAvailable(member)));
+                        TypeLibCatalogMemberFacts.IsAuthoringAvailable(member))
+                {
+                    PropertyAccessorKind = member.Kind
+                        == VbaSourceDefinitionKind.Property
+                            ? member.Metadata?.PropertyAccessorKind
+                            : null
+                });
             }
         }
 
@@ -202,7 +214,8 @@ public static class TypeLibReferenceCatalogBuilder
                     definition.ReferenceName,
                     definition.Name,
                     definition.Kind.ToString(),
-                    definition.ParentTypeName ?? ""),
+                    definition.ParentTypeName ?? "",
+                    definition.PropertyAccessorKind?.ToString() ?? ""),
                 StringComparer.OrdinalIgnoreCase)
             .Select(group =>
             {
@@ -722,7 +735,11 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
                     new TypeLibCatalogCallableMetadata(
                         funcDesc.memid,
                         funcDesc.wFuncFlags,
-                        IsComplete: areParametersComplete)));
+                        IsComplete: areParametersComplete)
+                    {
+                        PropertyAccessorKind = GetPropertyAccessorKind(
+                            funcDesc.invkind)
+                    }));
             }
             finally
             {
@@ -854,6 +871,16 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
 
         return access;
     }
+
+    internal static VbaPropertyAccessorKind? GetPropertyAccessorKind(
+        INVOKEKIND invokeKind)
+        => invokeKind switch
+        {
+            INVOKEKIND.INVOKE_PROPERTYGET => VbaPropertyAccessorKind.Get,
+            INVOKEKIND.INVOKE_PROPERTYPUT => VbaPropertyAccessorKind.Let,
+            INVOKEKIND.INVOKE_PROPERTYPUTREF => VbaPropertyAccessorKind.Set,
+            _ => null
+        };
 
     internal static bool IsCreatableTypeKind(TYPEKIND typeKind)
         => typeKind == TYPEKIND.TKIND_COCLASS;
